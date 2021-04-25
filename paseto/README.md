@@ -1,0 +1,41 @@
+# PASETO Web Tokens
+
+![Release](https://img.shields.io/github/release/contrib/paseto.svg)
+[![Discord](https://img.shields.io/badge/discord-join%20channel-7289DA)](https://gofiber.io/discord)
+![Test](https://github.com/contrib/paseto/workflows/Test/badge.svg)
+![Security](https://github.com/contrib/paseto/workflows/Security/badge.svg)
+![Linter](https://github.com/contrib/paseto/workflows/Linter/badge.svg)
+
+PASETO returns a Web Token (PASETO) auth middleware.
+
+- For valid token, it sets the payload data in Ctx.Locals and calls next handler.
+- For invalid token, it returns "401 - Unauthorized" error.
+- For missing token, it returns "400 - BadRequest" error.
+
+### Install
+
+This middleware supports Fiber v2.
+
+```
+go get -u github.com/gofiber/fiber/v2
+go get -u github.com/contrib/paseto
+go get -u github.com/o1egl/paseto
+```
+
+### Signature
+
+```go
+pasetoware.New(config ...pasetoware.Config) func(*fiber.Ctx) error
+```
+
+### Config
+
+| Property | Type | Description | Default |
+| :--- | :--- | :--- | :--- |
+| Next | `func(*Ctx) bool` | Defines a function to skip middleware | `nil` |
+| SuccessHandler | `func(*fiber.Ctx) error` |  SuccessHandler defines a function which is executed for a valid token. | `nil` |
+| ErrorHandler | `func(*fiber.Ctx, error) error` | ErrorHandler defines a function which is executed for an invalid token. | `401 Invalid or expired JWT` |
+| Validate | `PayloadValidator` | Defines a function to validate if payload is valid. Optional. In case payload used is created using `CreateToken` function. If token is created using another function, this function must be provided. | `nil` |
+| SymmetricKey | `[]byte` | Secret key to encrypt token. | `nil` |
+| ContextKey | `string` | Context key to store user information from the token into context. | `"auth-token"` |
+| TokenLookup | `[2]string` | TokenLookup is a string slice with size 2, that is used to extract token from the request | `["header","Authorization"]`
