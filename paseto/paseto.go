@@ -20,6 +20,8 @@ func New(authConfigs ...Config) fiber.Handler {
 		extractor = acquireFromParams
 	case LookupCookie:
 		extractor = acquireFromCookie
+	default:
+		extractor = acquireFromHeader
 	}
 
 	// Return middleware handler

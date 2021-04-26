@@ -59,15 +59,14 @@ var ConfigDefault = Config{
 // Helper function to set default values
 func configDefault(authConfigs ...Config) Config {
 	// Return default authConfigs if nothing provided
-	if len(authConfigs) < 1 {
-		return ConfigDefault
+
+	config := ConfigDefault
+	if len(authConfigs) > 0 {
+		// Override default authConfigs
+		config = authConfigs[0]
 	}
 
-	// Override default authConfigs
-	config := authConfigs[0]
-
 	// Set default values
-
 	if config.Next == nil {
 		config.Next = ConfigDefault.Next
 	}
