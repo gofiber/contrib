@@ -3,10 +3,11 @@ package pasetoware
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/gofiber/fiber/v2"
-	"golang.org/x/crypto/chacha20poly1305"
 	"strings"
 	"time"
+
+	"github.com/gofiber/fiber/v2"
+	"golang.org/x/crypto/chacha20poly1305"
 )
 
 // Config defines the config for BasicAuth middleware
@@ -16,7 +17,7 @@ type Config struct {
 	Next func(*fiber.Ctx) bool
 
 	// SuccessHandler defines a function which is executed for a valid token.
-	// Optional. Default: nil
+	// Optional. Default: c.Next()
 	SuccessHandler fiber.Handler
 
 	// ErrorHandler defines a function which is executed for an invalid token.
@@ -87,16 +88,16 @@ func configDefault(authConfigs ...Config) Config {
 	}
 
 	if config.Validate == nil {
-		config.Validate = func(data []byte) (error, interface{}) {
+		config.Validate = func(data []byte) (interface{}, error) {
 			var payload Payload
 			if err := json.Unmarshal(data, &payload); err != nil {
-				return ErrDataUnmarshal, nil
+				return nil, ErrDataUnmarshal
 			}
 
 			if time.Now().After(payload.ExpiredAt) {
-				return ErrExpiredToken, nil
+				return nil, ErrExpiredToken
 			}
-			return nil, payload.UserToken
+			return payload.UserToken, nil
 		}
 	}
 

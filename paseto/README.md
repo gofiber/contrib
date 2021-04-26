@@ -1,4 +1,4 @@
-# PASETO Web Tokens
+# PASETO (Platform-Agnostic SEcurity TOkens)
 
 ![Release](https://img.shields.io/github/release/contrib/paseto.svg)
 [![Discord](https://img.shields.io/badge/discord-join%20channel-7289DA)](https://gofiber.io/discord)
@@ -33,7 +33,7 @@ pasetoware.New(config ...pasetoware.Config) func(*fiber.Ctx) error
 | Property       | Type                            | Description                                                                                                                                                                                             | Default                         |
 | :------------- | :------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :------------------------------ |
 | Next           | `func(*Ctx) bool`               | Defines a function to skip middleware                                                                                                                                                                   | `nil`                           |
-| SuccessHandler | `func(*fiber.Ctx) error`        | SuccessHandler defines a function which is executed for a valid token.                                                                                                                                  | `nil`                           |
+| SuccessHandler | `func(*fiber.Ctx) error`        | SuccessHandler defines a function which is executed for a valid token.                                                                                                                                  | `c.Next()`                      |
 | ErrorHandler   | `func(*fiber.Ctx, error) error` | ErrorHandler defines a function which is executed for an invalid token.                                                                                                                                 | `401 Invalid or expired PASETO` |
 | Validate       | `PayloadValidator`              | Defines a function to validate if payload is valid. Optional. In case payload used is created using `CreateToken` function. If token is created using another function, this function must be provided. | `nil`                           |
 | SymmetricKey   | `[]byte`                        | Secret key to encrypt token.                                                                                                                                                                            | `nil`                           |

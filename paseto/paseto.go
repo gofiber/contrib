@@ -37,7 +37,7 @@ func New(authConfigs ...Config) fiber.Handler {
 		err := pasetoObject.Decrypt(token, config.SymmetricKey, &decryptedData, nil)
 		if err == nil {
 			var payload interface{}
-			err, payload = config.Validate(decryptedData)
+			payload, err = config.Validate(decryptedData)
 
 			if err == nil {
 				// Store user information from token into context.

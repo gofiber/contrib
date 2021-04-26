@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-type PayloadValidator func(decrypted []byte) (error, interface{})
+type PayloadValidator func(decrypted []byte) (interface{}, error)
 
 type Payload struct {
 	ID        uuid.UUID `json:"id"`
