@@ -120,8 +120,5 @@ func configDefault(authConfigs ...Config) Config {
 		)
 	}
 
-	if config.ContextKey == "" {
-		config.ContextKey = ConfigDefault.ContextKey
-	}
 	return config
 }

@@ -15,11 +15,6 @@ const (
 	symmetricKey = "go+fiber=love;FiberWithPASETO<3!"
 )
 
-func assertRecoveryPanic(t *testing.T) {
-	err := recover()
-	utils.AssertEqual(t, true, err != nil)
-}
-
 func generateTokenRequest(targetRoute string) (*http.Request, error) {
 	token, err := CreateToken([]byte(symmetricKey), testMessage, 10*time.Minute)
 	if err != nil {
@@ -30,16 +25,7 @@ func generateTokenRequest(targetRoute string) (*http.Request, error) {
 	return request, nil
 }
 
-func Test_PASETO_No_SymmetricKey(t *testing.T) {
-	defer assertRecoveryPanic(t)
-	app := fiber.New()
-	app.Use(New())
-
-	_, err := app.Test(httptest.NewRequest("GET", "/", nil))
-	utils.AssertEqual(t, false, err == nil)
-}
-
-func Test_Paseto_Next(t *testing.T) {
+func Test_PASETO_Next(t *testing.T) {
 	app := fiber.New()
 	app.Use(New(Config{
 		SymmetricKey: []byte(symmetricKey),
@@ -53,7 +39,7 @@ func Test_Paseto_Next(t *testing.T) {
 	utils.AssertEqual(t, fiber.StatusNotFound, resp.StatusCode)
 }
 
-func Test_Paseto_TokenDecrypt(t *testing.T) {
+func Test_PASETO_TokenDecrypt(t *testing.T) {
 	app := fiber.New()
 	app.Use(New(Config{
 		SymmetricKey: []byte(symmetricKey),
@@ -71,7 +57,7 @@ func Test_Paseto_TokenDecrypt(t *testing.T) {
 	}
 }
 
-func Test_Paseto_InvalidToken(t *testing.T) {
+func Test_PASETO_InvalidToken(t *testing.T) {
 	app := fiber.New()
 	app.Use(New(Config{
 		SymmetricKey: []byte(symmetricKey),
@@ -84,7 +70,7 @@ func Test_Paseto_InvalidToken(t *testing.T) {
 	utils.AssertEqual(t, fiber.StatusUnauthorized, resp.StatusCode)
 }
 
-func Test_CustomValidate(t *testing.T) {
+func Test_PASETO_CustomValidate(t *testing.T) {
 	type customPayload struct {
 		Data           string        `json:"data"`
 		ExpirationTime time.Duration `json:"expiration_time"`
