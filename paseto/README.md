@@ -1,10 +1,10 @@
 # PASETO (Platform-Agnostic SEcurity TOkens)
 
-![Release](https://img.shields.io/github/release/gofiber/contrib/paseto.svg)
+![Release](https://img.shields.io/github/release/gofiber/contrib.svg)
 [![Discord](https://img.shields.io/badge/discord-join%20channel-7289DA)](https://gofiber.io/discord)
-![Test](https://github.com/gofiber/contrib/paseto/workflows/Test/badge.svg)
-![Security](https://github.com/gofiber/contrib/paseto/workflows/Security/badge.svg)
-![Linter](https://github.com/gofiber/contrib/paseto/workflows/Linter/badge.svg)
+![Test](https://github.com/gofiber/contrib/workflows/Tests/badge.svg)
+![Security](https://github.com/gofiber/contrib/workflows/Security/badge.svg)
+![Linter](https://github.com/gofiber/contrib/workflows/Linter/badge.svg)
 
 PASETO returns a Web Token (PASETO) auth middleware.
 
