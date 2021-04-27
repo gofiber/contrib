@@ -1,7 +1,7 @@
 'on':
   - push
   - pull_request
-name: Local Storage
+name: Tests
 jobs:
   Tests:
     strategy:
