@@ -1,0 +1,19 @@
+on: [ push, pull_request ]
+name: Security
+jobs:
+    Gosec:
+        runs-on: ubuntu-latest
+        steps:
+            -   name: Fetch Repository
+                uses: actions/checkout@v2
+            -   name: Install Go
+                uses: actions/setup-go@v2
+            -   name: Install Gosec
+                run: |
+                    export PATH=${PATH}:`go env GOPATH`/bin
+                    go get -u github.com/securego/gosec/v2/cmd/gosec
+                # -----
+            -   name: Run Gosec (paseto)
+                working-directory: ./paseto
+                run: "`go env GOPATH`/bin/gosec -exclude-dir=internal ./..."
+                # -----
