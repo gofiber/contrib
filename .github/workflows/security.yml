@@ -10,6 +10,7 @@ jobs:
                 uses: actions/setup-go@v2
             -   name: Install Gosec
                 run: |
+                    export GO111MODULE=on
                     export PATH=${PATH}:`go env GOPATH`/bin
                     go get -u github.com/securego/gosec/v2/cmd/gosec
                 # -----
