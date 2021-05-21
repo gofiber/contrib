@@ -19,6 +19,7 @@ const (
 
 var (
 	ErrExpiredToken  = errors.New("token has expired")
+	ErrMissingToken  = errors.New("missing PASETO token")
 	ErrDataUnmarshal = errors.New("can't unmarshal token data to Payload type")
 	pasetoObject     = paseto.NewV2()
 )

@@ -1,7 +1,6 @@
 package pasetoware
 
 import (
-	"errors"
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -32,7 +31,7 @@ func New(authConfigs ...Config) fiber.Handler {
 			return c.Next()
 		}
 		if token == "" {
-			return config.ErrorHandler(c, errors.New("bad: missing PASETO token"))
+			return config.ErrorHandler(c, ErrMissingToken)
 		}
 
 		var decryptedData []byte

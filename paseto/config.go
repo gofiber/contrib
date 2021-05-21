@@ -2,8 +2,8 @@ package pasetoware
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -53,7 +53,10 @@ var ConfigDefault = Config{
 	Next:           nil,
 	SuccessHandler: nil,
 	ErrorHandler:   nil,
+	Validate:       nil,
 	SymmetricKey:   nil,
+	ContextKey:     DefaultContextKey,
+	TokenLookup:    [2]string{LookupHeader, fiber.HeaderAuthorization},
 }
 
 // Helper function to set default values
@@ -79,10 +82,11 @@ func configDefault(authConfigs ...Config) Config {
 
 	if config.ErrorHandler == nil {
 		config.ErrorHandler = func(c *fiber.Ctx, err error) error {
-			if strings.HasPrefix(err.Error(), "bad:") {
-				return c.Status(fiber.StatusBadRequest).SendString(err.Error())
+			errorStatus := fiber.StatusUnauthorized
+			if errors.Is(err, ErrMissingToken) {
+				errorStatus = fiber.StatusBadRequest
 			}
-			return c.Status(fiber.StatusUnauthorized).SendString(err.Error())
+			return c.Status(errorStatus).SendString(err.Error())
 		}
 	}
 
