@@ -113,14 +113,14 @@ func configDefault(authConfigs ...Config) Config {
 	}
 
 	if config.ContextKey == "" {
-		config.ContextKey = DefaultContextKey
+		config.ContextKey = ConfigDefault.ContextKey
 	}
 
 	if config.TokenLookup[0] == "" {
-		config.TokenLookup[0] = LookupHeader
+		config.TokenLookup[0] = ConfigDefault.TokenLookup[0]
 	}
 	if config.TokenLookup[1] == "" {
-		config.TokenLookup[1] = fiber.HeaderAuthorization
+		config.TokenLookup[1] = ConfigDefault.TokenLookup[1]
 	}
 
 	if len(config.SymmetricKey) != chacha20poly1305.KeySize {
