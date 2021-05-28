@@ -12,8 +12,7 @@ const (
 	pasetoTokenField    = "data"
 )
 
-type PayloadValidator func(decrypted []byte) (interface{}, error)
-
+// NewPayload generates a new paseto.JSONToken and returns it and a error that can be caused by uuid
 func NewPayload(userToken string, duration time.Duration) (*paseto.JSONToken, error) {
 	tokenID, err := uuid.NewRandom()
 	if err != nil {
@@ -25,7 +24,7 @@ func NewPayload(userToken string, duration time.Duration) (*paseto.JSONToken, er
 		Jti:        tokenID.String(),
 		Subject:    pasetoTokenSubject,
 		IssuedAt:   timeNow,
-		Expiration: time.Now().Add(duration),
+		Expiration: timeNow.Add(duration),
 		NotBefore:  timeNow,
 	}
 

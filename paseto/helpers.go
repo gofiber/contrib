@@ -24,10 +24,16 @@ var (
 	pasetoObject     = paseto.NewV2()
 )
 
-// Acquire Token methods
-
 type acquireToken func(c *fiber.Ctx, key string) string
 
+// PayloadValidator Function that receives the decrypted payload and returns an interface and an error
+// that's a result of validation logic
+type PayloadValidator func(decrypted []byte) (interface{}, error)
+
+// PayloadCreator Signature of a function that generates a payload token
+type PayloadCreator func(key []byte, dataInfo string, duration time.Duration) (string, error)
+
+// Acquire Token methods
 func acquireFromHeader(c *fiber.Ctx, key string) string {
 	return c.Get(key)
 }

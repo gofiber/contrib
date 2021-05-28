@@ -60,6 +60,15 @@ var ConfigDefault = Config{
 	TokenLookup:    [2]string{LookupHeader, fiber.HeaderAuthorization},
 }
 
+func defaultErrorHandler(c *fiber.Ctx, err error) error {
+	// default to badRequest if error is ErrMissingToken or any paseto decryption error
+	errorStatus := fiber.StatusBadRequest
+	if errors.Is(err, ErrDataUnmarshal) || errors.Is(err, ErrExpiredToken) {
+		errorStatus = fiber.StatusUnauthorized
+	}
+	return c.Status(errorStatus).SendString(err.Error())
+}
+
 // Helper function to set default values
 func configDefault(authConfigs ...Config) Config {
 	// Return default authConfigs if nothing provided
@@ -82,13 +91,7 @@ func configDefault(authConfigs ...Config) Config {
 	}
 
 	if config.ErrorHandler == nil {
-		config.ErrorHandler = func(c *fiber.Ctx, err error) error {
-			errorStatus := fiber.StatusUnauthorized
-			if errors.Is(err, ErrMissingToken) {
-				errorStatus = fiber.StatusBadRequest
-			}
-			return c.Status(errorStatus).SendString(err.Error())
-		}
+		config.ErrorHandler = defaultErrorHandler
 	}
 
 	if config.Validate == nil {
@@ -98,6 +101,9 @@ func configDefault(authConfigs ...Config) Config {
 				return nil, ErrDataUnmarshal
 			}
 
+			if time.Now().After(payload.Expiration) {
+				return nil, ErrExpiredToken
+			}
 			if err := payload.Validate(
 				paseto.ValidAt(time.Now()), paseto.Subject(pasetoTokenSubject),
 				paseto.ForAudience(pasetoTokenAudience),
@@ -105,9 +111,6 @@ func configDefault(authConfigs ...Config) Config {
 				return "", err
 			}
 
-			if time.Now().After(payload.Expiration) {
-				return nil, ErrExpiredToken
-			}
 			return payload.Get(pasetoTokenField), nil
 		}
 	}
