@@ -7,10 +7,11 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/o1egl/paseto"
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
-// Config defines the config for BasicAuth middleware
+// Config defines the config for PASETO middleware
 type Config struct {
 	// Filter defines a function to skip middleware.
 	// Optional. Default: nil
@@ -92,15 +93,22 @@ func configDefault(authConfigs ...Config) Config {
 
 	if config.Validate == nil {
 		config.Validate = func(data []byte) (interface{}, error) {
-			var payload Payload
+			var payload paseto.JSONToken
 			if err := json.Unmarshal(data, &payload); err != nil {
 				return nil, ErrDataUnmarshal
 			}
 
-			if time.Now().After(payload.ExpiredAt) {
+			if err := payload.Validate(
+				paseto.ValidAt(time.Now()), paseto.Subject(pasetoTokenSubject),
+				paseto.IssuedBy(pasetoTokenIssuer), paseto.ForAudience(pasetoTokenAudience),
+			); err != nil {
+				return "", err
+			}
+
+			if time.Now().After(payload.Expiration) {
 				return nil, ErrExpiredToken
 			}
-			return payload.UserToken, nil
+			return payload.Get(pasetoTokenField), nil
 		}
 	}
 

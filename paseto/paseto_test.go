@@ -51,7 +51,8 @@ func Test_PASETO_TokenDecrypt(t *testing.T) {
 	})
 	request, err := generateTokenRequest("/")
 	if err == nil {
-		resp, err := app.Test(request)
+		var resp *http.Response
+		resp, err = app.Test(request)
 		utils.AssertEqual(t, nil, err)
 		utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
 	}
