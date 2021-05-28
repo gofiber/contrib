@@ -2,30 +2,32 @@ package pasetoware
 
 import (
 	"github.com/google/uuid"
+	"github.com/o1egl/paseto"
 	"time"
 )
 
-type PayloadValidator func(decrypted []byte) (interface{}, error)
+const (
+	pasetoTokenAudience = "gofiber.gophers"
+	pasetoTokenSubject  = "user-token"
+	pasetoTokenField    = "data"
+)
 
-type Payload struct {
-	ID        uuid.UUID `json:"id"`
-	UserToken string    `json:"user_token"`
-	IssuedAt  time.Time `json:"issued_at"`
-	ExpiredAt time.Time `json:"expired_at"`
-}
-
-func NewPayload(userToken string, duration time.Duration) (*Payload, error) {
+// NewPayload generates a new paseto.JSONToken and returns it and a error that can be caused by uuid
+func NewPayload(userToken string, duration time.Duration) (*paseto.JSONToken, error) {
 	tokenID, err := uuid.NewRandom()
 	if err != nil {
 		return nil, err
 	}
-
-	payload := &Payload{
-		ID:        tokenID,
-		UserToken: userToken,
-		IssuedAt:  time.Now(),
-		ExpiredAt: time.Now().Add(duration),
+	timeNow := time.Now()
+	payload := &paseto.JSONToken{
+		Audience:   pasetoTokenAudience,
+		Jti:        tokenID.String(),
+		Subject:    pasetoTokenSubject,
+		IssuedAt:   timeNow,
+		Expiration: timeNow.Add(duration),
+		NotBefore:  timeNow,
 	}
 
+	payload.Set(pasetoTokenField, userToken)
 	return payload, nil
 }

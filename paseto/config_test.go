@@ -18,6 +18,13 @@ func Test_Config_No_SymmetricKey(t *testing.T) {
 	utils.AssertEqual(t, "", config.SymmetricKey)
 }
 
+func Test_Config_Invalid_SymmetricKey(t *testing.T) {
+	defer assertRecoveryPanic(t)
+	config := configDefault()
+
+	utils.AssertEqual(t, symmetricKey+symmetricKey, config.SymmetricKey)
+}
+
 func Test_ConfigDefault(t *testing.T) {
 	config := configDefault(Config{
 		SymmetricKey: []byte(symmetricKey),

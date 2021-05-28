@@ -2,15 +2,16 @@ package pasetoware
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/o1egl/paseto"
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
-// Config defines the config for BasicAuth middleware
+// Config defines the config for PASETO middleware
 type Config struct {
 	// Filter defines a function to skip middleware.
 	// Optional. Default: nil
@@ -53,7 +54,19 @@ var ConfigDefault = Config{
 	Next:           nil,
 	SuccessHandler: nil,
 	ErrorHandler:   nil,
+	Validate:       nil,
 	SymmetricKey:   nil,
+	ContextKey:     DefaultContextKey,
+	TokenLookup:    [2]string{LookupHeader, fiber.HeaderAuthorization},
+}
+
+func defaultErrorHandler(c *fiber.Ctx, err error) error {
+	// default to badRequest if error is ErrMissingToken or any paseto decryption error
+	errorStatus := fiber.StatusBadRequest
+	if errors.Is(err, ErrDataUnmarshal) || errors.Is(err, ErrExpiredToken) {
+		errorStatus = fiber.StatusUnauthorized
+	}
+	return c.Status(errorStatus).SendString(err.Error())
 }
 
 // Helper function to set default values
@@ -78,37 +91,39 @@ func configDefault(authConfigs ...Config) Config {
 	}
 
 	if config.ErrorHandler == nil {
-		config.ErrorHandler = func(c *fiber.Ctx, err error) error {
-			if strings.HasPrefix(err.Error(), "bad:") {
-				return c.Status(fiber.StatusBadRequest).SendString(err.Error())
-			}
-			return c.Status(fiber.StatusUnauthorized).SendString(err.Error())
-		}
+		config.ErrorHandler = defaultErrorHandler
 	}
 
 	if config.Validate == nil {
 		config.Validate = func(data []byte) (interface{}, error) {
-			var payload Payload
+			var payload paseto.JSONToken
 			if err := json.Unmarshal(data, &payload); err != nil {
 				return nil, ErrDataUnmarshal
 			}
 
-			if time.Now().After(payload.ExpiredAt) {
+			if time.Now().After(payload.Expiration) {
 				return nil, ErrExpiredToken
 			}
-			return payload.UserToken, nil
+			if err := payload.Validate(
+				paseto.ValidAt(time.Now()), paseto.Subject(pasetoTokenSubject),
+				paseto.ForAudience(pasetoTokenAudience),
+			); err != nil {
+				return "", err
+			}
+
+			return payload.Get(pasetoTokenField), nil
 		}
 	}
 
 	if config.ContextKey == "" {
-		config.ContextKey = DefaultContextKey
+		config.ContextKey = ConfigDefault.ContextKey
 	}
 
 	if config.TokenLookup[0] == "" {
-		config.TokenLookup[0] = LookupHeader
+		config.TokenLookup[0] = ConfigDefault.TokenLookup[0]
 	}
 	if config.TokenLookup[1] == "" {
-		config.TokenLookup[1] = fiber.HeaderAuthorization
+		config.TokenLookup[1] = ConfigDefault.TokenLookup[1]
 	}
 
 	if len(config.SymmetricKey) != chacha20poly1305.KeySize {

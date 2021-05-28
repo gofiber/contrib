@@ -2,6 +2,7 @@ package pasetoware
 
 import (
 	"encoding/json"
+	"errors"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/utils"
 	"net/http"
@@ -12,17 +13,89 @@ import (
 
 const (
 	testMessage  = "fiber with PASETO middleware!!"
+	invalidToken = "We are gophers!"
+	durationTest = 10 * time.Minute
 	symmetricKey = "go+fiber=love;FiberWithPASETO<3!"
 )
 
-func generateTokenRequest(targetRoute string) (*http.Request, error) {
-	token, err := CreateToken([]byte(symmetricKey), testMessage, 10*time.Minute)
+type customPayload struct {
+	Data           string        `json:"data"`
+	ExpirationTime time.Duration `json:"expiration_time"`
+	CreatedAt      time.Time     `json:"created_at"`
+}
+
+func createCustomToken(key []byte, dataInfo string, duration time.Duration) (string, error) {
+	return pasetoObject.Encrypt(key, customPayload{
+		Data:           dataInfo,
+		ExpirationTime: duration,
+		CreatedAt:      time.Now(),
+	}, nil)
+}
+
+func generateTokenRequest(
+	targetRoute string, tokenGenerator PayloadCreator, duration time.Duration,
+) (*http.Request, error) {
+	token, err := tokenGenerator([]byte(symmetricKey), testMessage, duration)
 	if err != nil {
 		return nil, err
 	}
 	request := httptest.NewRequest("GET", targetRoute, nil)
 	request.Header.Set(fiber.HeaderAuthorization, token)
 	return request, nil
+}
+
+func assertErrorHandler(t *testing.T, toAssert error) fiber.ErrorHandler {
+	return func(ctx *fiber.Ctx, err error) error {
+		utils.AssertEqual(t, toAssert, err)
+		utils.AssertEqual(t, true, errors.Is(err, toAssert))
+		return defaultErrorHandler(ctx, err)
+	}
+}
+
+func Test_PASETO_MissingToken(t *testing.T) {
+	app := fiber.New()
+	app.Use(New(Config{
+		SymmetricKey: []byte(symmetricKey),
+		ContextKey:   DefaultContextKey,
+		ErrorHandler: assertErrorHandler(t, ErrMissingToken),
+	}))
+	request := httptest.NewRequest("GET", "/", nil)
+	resp, err := app.Test(request)
+	if err == nil {
+		utils.AssertEqual(t, fiber.StatusBadRequest, resp.StatusCode)
+	}
+}
+
+func Test_PASETO_ErrDataUnmarshal(t *testing.T) {
+	app := fiber.New()
+	app.Use(New(Config{
+		SymmetricKey: []byte(symmetricKey),
+		ContextKey:   DefaultContextKey,
+		ErrorHandler: assertErrorHandler(t, ErrDataUnmarshal),
+	}))
+	request, err := generateTokenRequest("/", createCustomToken, durationTest)
+	if err == nil {
+		var resp *http.Response
+		resp, err = app.Test(request)
+		utils.AssertEqual(t, nil, err)
+		utils.AssertEqual(t, fiber.StatusUnauthorized, resp.StatusCode)
+	}
+}
+
+func Test_PASETO_ErrTokenExpired(t *testing.T) {
+	app := fiber.New()
+	app.Use(New(Config{
+		SymmetricKey: []byte(symmetricKey),
+		ContextKey:   DefaultContextKey,
+		ErrorHandler: assertErrorHandler(t, ErrExpiredToken),
+	}))
+	request, err := generateTokenRequest("/", CreateToken, time.Nanosecond*-10)
+	if err == nil {
+		var resp *http.Response
+		resp, err = app.Test(request)
+		utils.AssertEqual(t, nil, err)
+		utils.AssertEqual(t, fiber.StatusUnauthorized, resp.StatusCode)
+	}
 }
 
 func Test_PASETO_Next(t *testing.T) {
@@ -34,7 +107,9 @@ func Test_PASETO_Next(t *testing.T) {
 		},
 	}))
 
-	resp, err := app.Test(httptest.NewRequest("GET", "/", nil))
+	request := httptest.NewRequest("GET", "/", nil)
+	request.Header.Set(fiber.HeaderAuthorization, invalidToken)
+	resp, err := app.Test(request)
 	utils.AssertEqual(t, nil, err)
 	utils.AssertEqual(t, fiber.StatusNotFound, resp.StatusCode)
 }
@@ -49,9 +124,10 @@ func Test_PASETO_TokenDecrypt(t *testing.T) {
 		utils.AssertEqual(t, testMessage, ctx.Locals(DefaultContextKey))
 		return nil
 	})
-	request, err := generateTokenRequest("/")
+	request, err := generateTokenRequest("/", CreateToken, durationTest)
 	if err == nil {
-		resp, err := app.Test(request)
+		var resp *http.Response
+		resp, err = app.Test(request)
 		utils.AssertEqual(t, nil, err)
 		utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
 	}
@@ -64,19 +140,13 @@ func Test_PASETO_InvalidToken(t *testing.T) {
 		ContextKey:   DefaultContextKey,
 	}))
 	request := httptest.NewRequest("GET", "/", nil)
-	request.Header.Set(fiber.HeaderAuthorization, "We are gophers!")
+	request.Header.Set(fiber.HeaderAuthorization, invalidToken)
 	resp, err := app.Test(request)
 	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusUnauthorized, resp.StatusCode)
+	utils.AssertEqual(t, fiber.StatusBadRequest, resp.StatusCode)
 }
 
 func Test_PASETO_CustomValidate(t *testing.T) {
-	type customPayload struct {
-		Data           string        `json:"data"`
-		ExpirationTime time.Duration `json:"expiration_time"`
-		CreatedAt      time.Time     `json:"created_at"`
-	}
-
 	app := fiber.New()
 	app.Use(New(Config{
 		SymmetricKey: []byte(symmetricKey),

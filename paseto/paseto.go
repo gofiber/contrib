@@ -1,11 +1,11 @@
 package pasetoware
 
 import (
-	"errors"
 	"github.com/gofiber/fiber/v2"
 )
 
-// New ...
+// New PASETO middleware, returns a handler that takes a token in selected lookup param and in case token is valid
+// it saves the decrypted token on ctx.Locals, take a look on Config to know more configuration options
 func New(authConfigs ...Config) fiber.Handler {
 	// Set default authConfig
 	config := configDefault(authConfigs...)
@@ -32,7 +32,7 @@ func New(authConfigs ...Config) fiber.Handler {
 			return c.Next()
 		}
 		if token == "" {
-			return config.ErrorHandler(c, errors.New("bad: missing PASETO token"))
+			return config.ErrorHandler(c, ErrMissingToken)
 		}
 
 		var decryptedData []byte
