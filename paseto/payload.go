@@ -7,8 +7,7 @@ import (
 )
 
 const (
-	pasetoTokenAudience = "gofiber"
-	pasetoTokenIssuer   = "gofiber.pasetoware"
+	pasetoTokenAudience = "gofiber.gophers"
 	pasetoTokenSubject  = "user-token"
 	pasetoTokenField    = "data"
 )
@@ -23,7 +22,6 @@ func NewPayload(userToken string, duration time.Duration) (*paseto.JSONToken, er
 	timeNow := time.Now()
 	payload := &paseto.JSONToken{
 		Audience:   pasetoTokenAudience,
-		Issuer:     pasetoTokenIssuer,
 		Jti:        tokenID.String(),
 		Subject:    pasetoTokenSubject,
 		IssuedAt:   timeNow,

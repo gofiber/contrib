@@ -100,7 +100,7 @@ func configDefault(authConfigs ...Config) Config {
 
 			if err := payload.Validate(
 				paseto.ValidAt(time.Now()), paseto.Subject(pasetoTokenSubject),
-				paseto.IssuedBy(pasetoTokenIssuer), paseto.ForAudience(pasetoTokenAudience),
+				paseto.ForAudience(pasetoTokenAudience),
 			); err != nil {
 				return "", err
 			}
