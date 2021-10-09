@@ -69,7 +69,7 @@ func New(config ...Config) fiber.Handler {
 		}
 
 		// Add fields
-		fields := []zap.Field{}
+		fields := make([]zap.Field, 0, len(cfg.Fields))
 
 		for _, field := range cfg.Fields {
 			switch field {
