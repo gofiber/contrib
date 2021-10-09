@@ -47,6 +47,13 @@ type Config struct {
 	// - ["param","<name>"]
 	// - ["cookie","<name>"]
 	TokenLookup [2]string
+
+	// TokenPrefix is a string that holds the prefix for the token lookup.
+	// Generally it's used the "Bearer" prefix.
+	//
+	// Optional. Default value ""
+	// Recommended value: "Bearer"
+	TokenPrefix string
 }
 
 // ConfigDefault is the default config

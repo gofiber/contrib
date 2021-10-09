@@ -133,6 +133,26 @@ func Test_PASETO_TokenDecrypt(t *testing.T) {
 	}
 }
 
+func Test_PASETO_IncorrectBearerToken(t *testing.T) {
+	app := fiber.New()
+	app.Use(New(Config{
+		SymmetricKey: []byte(symmetricKey),
+		ContextKey:   DefaultContextKey,
+		TokenPrefix:  "Gopher",
+		ErrorHandler: func(ctx *fiber.Ctx, err error) error {
+			if errors.Is(err, ErrIncorrectTokenPrefix) {
+				return ctx.SendStatus(fiber.StatusUpgradeRequired)
+			}
+			return ctx.SendStatus(fiber.StatusBadRequest)
+		},
+	}))
+	request := httptest.NewRequest("GET", "/", nil)
+	request.Header.Set(fiber.HeaderAuthorization, "Bearer "+invalidToken)
+	resp, err := app.Test(request)
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusUpgradeRequired, resp.StatusCode)
+}
+
 func Test_PASETO_InvalidToken(t *testing.T) {
 	app := fiber.New()
 	app.Use(New(Config{
