@@ -2,6 +2,7 @@ package pasetoware
 
 import (
 	"github.com/gofiber/fiber/v2"
+	"strings"
 )
 
 // New PASETO middleware, returns a handler that takes a token in selected lookup param and in case token is valid
@@ -31,8 +32,16 @@ func New(authConfigs ...Config) fiber.Handler {
 		if config.Next != nil && config.Next(c) {
 			return c.Next()
 		}
-		if token == "" {
+		if len(token) <= 0 {
 			return config.ErrorHandler(c, ErrMissingToken)
+		}
+
+		if len(config.TokenPrefix) > 0 {
+			if strings.HasPrefix(token, config.TokenPrefix) {
+				token = strings.TrimPrefix(token, config.TokenPrefix+" ")
+			} else {
+				return config.ErrorHandler(c, ErrIncorrectTokenPrefix)
+			}
 		}
 
 		var decryptedData []byte
