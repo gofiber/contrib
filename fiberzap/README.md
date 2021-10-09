@@ -14,7 +14,7 @@ This middleware supports Fiber v2.
 
 ```
 go get -u github.com/gofiber/fiber/v2
-go get -u github.com/gofiber/contrib/zap
+go get -u github.com/gofiber/contrib/fiberzap
 go get -u go.uber.org/zap
 ```
 
