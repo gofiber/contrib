@@ -22,3 +22,5 @@ jobs:
         uses: actions/checkout@v2
       - name: Test PASETO Middleware
         run: cd ./paseto && go test ./... -v -race
+      - name: Test Fiberzap Middleware
+        run: cd ./fiberzap && go test ./... -v -race
