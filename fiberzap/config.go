@@ -14,7 +14,7 @@ type Config struct {
 
 	// Add custom zap logger.
 	//
-	// Optional. Default: zap.NewExample()\n
+	// Optional. Default: zap.NewDevelopment()\n
 	Logger *zap.Logger
 
 	// Add fields what you want see.
@@ -28,10 +28,13 @@ type Config struct {
 	Messages []string
 }
 
+// Use zap.NewDevelopment() as default logging instance.
+var logger, _ = zap.NewDevelopment()
+
 // ConfigDefault is the default config
 var ConfigDefault = Config{
 	Next:     nil,
-	Logger:   zap.NewExample(),
+	Logger:   logger,
 	Fields:   []string{"latency", "status", "method", "url"},
 	Messages: []string{"Server error", "Client error", "Success"},
 }
