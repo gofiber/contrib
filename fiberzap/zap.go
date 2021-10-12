@@ -25,6 +25,8 @@ func New(config ...Config) fiber.Handler {
 	)
 
 	var errPadding = 15
+	var latencyEnabled = contains("latency", cfg.Fields)
+
 	// Return new handler
 	return func(c *fiber.Ctx) (err error) {
 		// Don't execute middleware if Next returns true
@@ -49,7 +51,7 @@ func New(config ...Config) fiber.Handler {
 
 		var start, stop time.Time
 
-		if contains("latency", cfg.Fields) {
+		if latencyEnabled {
 			start = time.Now()
 		}
 
@@ -64,7 +66,7 @@ func New(config ...Config) fiber.Handler {
 		}
 
 		// Set latency stop time
-		if contains("latency", cfg.Fields) {
+		if latencyEnabled {
 			stop = time.Now()
 		}
 

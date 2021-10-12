@@ -19,7 +19,7 @@ type Config struct {
 
 	// Add fields what you want see.
 	//
-	// Optional. Default: {"pid", "latency"}
+	// Optional. Default: {"latency", "status", "method", "url"}
 	Fields []string
 
 	// Custom response messages.
@@ -52,7 +52,7 @@ func configDefault(config ...Config) Config {
 	}
 
 	if cfg.Logger == nil {
-		cfg.Logger = zap.NewExample()
+		cfg.Logger = ConfigDefault.Logger
 	}
 
 	if cfg.Fields == nil {
