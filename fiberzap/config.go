@@ -14,7 +14,7 @@ type Config struct {
 
 	// Add custom zap logger.
 	//
-	// Optional. Default: zap.NewDevelopment()\n
+	// Optional. Default: zap.NewProduction()\n
 	Logger *zap.Logger
 
 	// Add fields what you want see.
@@ -28,8 +28,8 @@ type Config struct {
 	Messages []string
 }
 
-// Use zap.NewDevelopment() as default logging instance.
-var logger, _ = zap.NewDevelopment()
+// Use zap.NewProduction() as default logging instance.
+var logger, _ = zap.NewProduction()
 
 // ConfigDefault is the default config
 var ConfigDefault = Config{

@@ -117,8 +117,6 @@ func New(config ...Config) fiber.Handler {
 				if chainErr != nil {
 					fields = append(fields, zap.String("error", chainErr.Error()))
 				}
-			default:
-				panic("You must enter valid field. Check fields!")
 			}
 		}
 
