@@ -18,10 +18,11 @@ const (
 )
 
 var (
-	ErrExpiredToken  = errors.New("token has expired")
-	ErrMissingToken  = errors.New("missing PASETO token")
-	ErrDataUnmarshal = errors.New("can't unmarshal token data to Payload type")
-	pasetoObject     = paseto.NewV2()
+	ErrExpiredToken         = errors.New("token has expired")
+	ErrMissingToken         = errors.New("missing PASETO token")
+	ErrIncorrectTokenPrefix = errors.New("missing prefix for PASETO token")
+	ErrDataUnmarshal        = errors.New("can't unmarshal token data to Payload type")
+	pasetoObject            = paseto.NewV2()
 )
 
 type acquireToken func(c *fiber.Ctx, key string) string
