@@ -8,3 +8,9 @@ updates:
             - "🤖 Dependencies"
         schedule:
             interval: "daily"
+    -   package-ecosystem: "gomod"
+        directory: "/otelfiber/" # Location of package manifests
+        labels:
+            - "🤖 Dependencies"
+        schedule:
+          interval: "daily"
