@@ -24,3 +24,5 @@ jobs:
         run: cd ./paseto && go test ./... -v -race
       - name: Test Fiberzap Middleware
         run: cd ./fiberzap && go test ./... -v -race
+      - name: Test otelfiber Middleware
+        run: cd ./otelfiber && go test ./... -v -race

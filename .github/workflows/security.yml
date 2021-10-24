@@ -22,3 +22,6 @@ jobs:
                 working-directory: ./fiberzap
                 run: "`go env GOPATH`/bin/gosec -exclude-dir=internal ./..."
                 # -----
+            -   name: Run Gosec (otelfiber)
+                working-directory: ./otelfiber
+                run: "`go env GOPATH`/bin/gosec -exclude-dir=internal ./..."
