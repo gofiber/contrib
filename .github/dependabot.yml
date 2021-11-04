@@ -5,13 +5,13 @@ updates:
     -   package-ecosystem: "gomod"
         directory: "/paseto/" # Location of package manifests
         labels:
-            - "🤖 Dependencies (PASETO)"
+            - "🤖 Dependencies"
         schedule:
             interval: "daily"
     -   package-ecosystem: "gomod"
         directory: "/fiberzap/" # Location of package manifests
         labels:
-            - "🤖 Dependencies (Fiberzap)"
+            - "🤖 Dependencies"
         schedule:
             interval: "daily"
     -   package-ecosystem: "gomod"
