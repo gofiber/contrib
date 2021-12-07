@@ -2,8 +2,8 @@ github.com/andybalholm/brotli v1.0.2 h1:JKnhI/XQ75uFBTiuzXpzFrUriDPiZjlOSzh6wXog
 github.com/andybalholm/brotli v1.0.2/go.mod h1:loMXtMfwqflxFJPmdbJO0a3KNoPuLBgiu3qAvBg8x/Y=
 github.com/davecgh/go-spew v1.1.0 h1:ZDRjVQ15GmhC3fiQ8ni8+OwkZQO4DARzQgrnXU1Liz8=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/gofiber/fiber/v2 v2.21.0 h1:tdRNrgqWqcHWBwE3o51oAleEVsil4Ro02zd2vMEuP4Q=
-github.com/gofiber/fiber/v2 v2.21.0/go.mod h1:MR1usVH3JHYRyQwMe2eZXRSZHRX38fkV+A7CPB+DlDQ=
+github.com/gofiber/fiber/v2 v2.23.0 h1:kcJGMC6SULJ2G7p7mbs+A28cVLOeJSR694jfGyGZqRI=
+github.com/gofiber/fiber/v2 v2.23.0/go.mod h1:MR1usVH3JHYRyQwMe2eZXRSZHRX38fkV+A7CPB+DlDQ=
 github.com/golang/snappy v0.0.3/go.mod h1:/XxbfmMg8lxefKM7IXC3fBNl/7bRcc72aCRzEWrmP2Q=
 github.com/google/go-cmp v0.5.6 h1:BKbKCqvP6I+rmFHt06ZmyQtvB8xAkWdhFyr0ZUNZcxQ=
 github.com/google/go-cmp v0.5.6/go.mod h1:v8dTdLbMG2kIc/vJvl+f65V22dbkXbowE6jgT/gNBxE=
@@ -20,8 +20,8 @@ github.com/valyala/fasthttp v1.31.0 h1:lrauRLII19afgCs2fnWRJ4M5IkV0lo2FqA61uGkNB
 github.com/valyala/fasthttp v1.31.0/go.mod h1:2rsYD01CKFrjjsvFxx75KlEUNpWNBY9JWD3K/7o2Cus=
 github.com/valyala/tcplisten v1.0.0 h1:rBHj/Xf+E1tRGZyWIWwJDiRY0zc1Js+CV5DqwacVSA8=
 github.com/valyala/tcplisten v1.0.0/go.mod h1:T0xQ8SeCZGxckz9qRXTfG43PvQ/mcWh7FwZEA7Ioqkc=
-go.opentelemetry.io/contrib v0.24.0 h1:bVBRFM9tOQkTlf45xEmr29hNyASQeYGrJf4iLzn2WOg=
-go.opentelemetry.io/contrib v0.24.0/go.mod h1:EH4yDYeNoaTqn/8yCWQmfNB78VHfGX2Jt2bvnvzBlGM=
+go.opentelemetry.io/contrib v1.2.0 h1:vVEJRwI3L9qnApWE8NimadDt0XLcvZEG4BE+7oT1mmg=
+go.opentelemetry.io/contrib v1.2.0/go.mod h1:EH4yDYeNoaTqn/8yCWQmfNB78VHfGX2Jt2bvnvzBlGM=
 go.opentelemetry.io/contrib/propagators/b3 v0.23.0 h1:sxitmDBHZS3Z2lw81kDntCRFt4dQglu9EOhBPNHN9CY=
 go.opentelemetry.io/contrib/propagators/b3 v0.23.0/go.mod h1:tAJUf0uW1xrgQ1QgOZqLXFbn3DNFO4tTmh0Nqe3kSzw=
 go.opentelemetry.io/otel v1.0.0-RC1/go.mod h1:x9tRa9HK4hSSq7jf2TKbqFbtt58/TGk0f9XiEYISI1I=
