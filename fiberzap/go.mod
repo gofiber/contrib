@@ -7,6 +7,6 @@ require (
 	github.com/gofiber/fiber/v2 v2.24.0
 	github.com/klauspost/compress v1.13.6 // indirect
 	github.com/valyala/fasthttp v1.31.0
-	go.uber.org/zap v1.19.1
+	go.uber.org/zap v1.20.0
 	golang.org/x/sys v0.0.0-20211013075003-97ac67df715c // indirect
 )
