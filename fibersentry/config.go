@@ -4,6 +4,7 @@ import "time"
 
 const hubKey = "sentry-hub"
 
+// Config defines the config for middleware.
 type Config struct {
 	// Repanic configures whether Sentry should repanic after recovery.
 	// Set to true, if Recover middleware is used.
