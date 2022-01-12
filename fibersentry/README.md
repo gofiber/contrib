@@ -42,36 +42,65 @@ And it should be used instead of the global `sentry.CaptureMessage`, `sentry.Cap
 **Keep in mind that `*sentry.Hub` won't be available in middleware attached before to `fibersentry`!**
 
 ```go
-// Later in the code
-sentryHandler := fibersentry.New(fibersentry.Options{
-    Repanic:         true,
-    WaitForDelivery: true,
-})
+package main
 
-enhanceSentryEvent := func(ctx *fiber.Ctx) {
-    if hub := fibersentry.GetHubFromContext(ctx); hub != nil {
-        hub.Scope().SetTag("someRandomTag", "maybeYouNeedIt")
-    }
-    ctx.Next()
+import (
+	"fmt"
+	"log"
+
+	"github.com/getsentry/sentry-go"
+	"github.com/gofiber/contrib/fibersentry"
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/utils"
+)
+
+func main() {
+	_ = sentry.Init(sentry.ClientOptions{
+		Dsn: "",
+		BeforeSend: func(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
+			if hint.Context != nil {
+				if c, ok := hint.Context.Value(sentry.RequestContextKey).(*fiber.Ctx); ok {
+					// You have access to the original Context if it panicked
+					fmt.Println(utils.ImmutableString(c.Hostname()))
+				}
+			}
+			fmt.Println(event)
+			return event
+		},
+		Debug:            true,
+		AttachStacktrace: true,
+	})
+
+	app := fiber.New()
+
+	app.Use(fibersentry.New(fibersentry.Config{
+		Repanic:         true,
+		WaitForDelivery: true,
+	}))
+
+	enhanceSentryEvent := func(c *fiber.Ctx) error {
+		if hub := fibersentry.GetHubFromContext(c); hub != nil {
+			hub.Scope().SetTag("someRandomTag", "maybeYouNeedIt")
+		}
+		return c.Next()
+	}
+
+	app.All("/foo", enhanceSentryEvent, func(c *fiber.Ctx) error {
+		panic("y tho")
+	})
+
+	app.All("/", func(c *fiber.Ctx) error {
+		if hub := fibersentry.GetHubFromContext(c); hub != nil {
+			hub.WithScope(func(scope *sentry.Scope) {
+				scope.SetExtra("unwantedQuery", "someQueryDataMaybe")
+				hub.CaptureMessage("User provided unwanted query string, but we recovered just fine")
+			})
+		}
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	log.Fatal(app.Listen(":3000"))
 }
-
-app := fiber.New()
-app.Use(sentryHandler)
-app.All("/foo", enhanceSentryEvent, func(ctx *fiber.Ctx) {
-    panic("y tho")
-})
-
-app.All("/", func(ctx *fiber.Ctx) {
-    if hub := fibersentry.GetHubFromContext(ctx); hub != nil {
-        hub.WithScope(func(scope *sentry.Scope) {
-            scope.SetExtra("unwantedQuery", "someQueryDataMaybe")
-            hub.CaptureMessage("User provided unwanted query string, but we recovered just fine")
-        })
-    }
-    ctx.Status(fiber.StatusOK)
-})
-
-app.Listen(3000)
 ```
 
 ### Accessing Context in `BeforeSend` callback
@@ -81,9 +110,9 @@ sentry.Init(sentry.ClientOptions{
 	Dsn: "your-public-dsn",
 	BeforeSend: func(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
 		if hint.Context != nil {
-			if ctx, ok := hint.Context.Value(sentry.RequestContextKey).(*fiber.Ctx); ok {
+			if c, ok := hint.Context.Value(sentry.RequestContextKey).(*fiber.Ctx); ok {
 				// You have access to the original Context if it panicked
-				fmt.Println(ctx.Hostname())
+				fmt.Println(c.Hostname())
 			}
 		}
 		return event
