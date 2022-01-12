@@ -5,14 +5,15 @@ import "time"
 const hubKey = "sentry"
 
 type Config struct {
-	// Repanic configures whether Sentry should repanic after recovery, in most cases it should be set to false,
-	// as fasthttp doesn't include it's own Recovery handler.
+	// Repanic configures whether Sentry should repanic after recovery.
+	// It should be set to true, if Recover middleware is used.
+	// https://github.com/gofiber/fiber/tree/master/middleware/recover
 	// Optional. Default: false
 	Repanic bool
 
 	// WaitForDelivery configures whether you want to block the request before moving forward with the response.
-	// Because fasthttp doesn't include it's own Recovery handler, it will restart the application,
-	// and event won't be delivered otherwise.
+	// If Recover middleware is used, it's safe to either skip this option or set it to false.
+	// https://github.com/gofiber/fiber/tree/master/middleware/recover
 	// Optional. Default: false
 	WaitForDelivery bool
 
