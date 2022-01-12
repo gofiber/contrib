@@ -47,17 +47,20 @@ sentryHandler := fibersentry.New(fibersentry.Options{
     Repanic:         true,
     WaitForDelivery: true,
 })
+
 enhanceSentryEvent := func(ctx *fiber.Ctx) {
     if hub := fibersentry.GetHubFromContext(ctx); hub != nil {
         hub.Scope().SetTag("someRandomTag", "maybeYouNeedIt")
     }
     ctx.Next()
 }
+
 app := fiber.New()
 app.Use(sentryHandler)
 app.All("/foo", enhanceSentryEvent, func(ctx *fiber.Ctx) {
     panic("y tho")
 })
+
 app.All("/", func(ctx *fiber.Ctx) {
     if hub := fibersentry.GetHubFromContext(ctx); hub != nil {
         hub.WithScope(func(scope *sentry.Scope) {
@@ -67,6 +70,7 @@ app.All("/", func(ctx *fiber.Ctx) {
     }
     ctx.Status(fiber.StatusOK)
 })
+
 app.Listen(3000)
 ```
 
