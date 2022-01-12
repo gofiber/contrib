@@ -2,11 +2,11 @@ package fibersentry
 
 import "time"
 
-const hubKey = "sentry"
+const hubKey = "sentry-hub"
 
 type Config struct {
 	// Repanic configures whether Sentry should repanic after recovery.
-	// It should be set to true, if Recover middleware is used.
+	// Set to true, if Recover middleware is used.
 	// https://github.com/gofiber/fiber/tree/master/middleware/recover
 	// Optional. Default: false
 	Repanic bool
@@ -20,4 +20,24 @@ type Config struct {
 	// Timeout for the event delivery requests.
 	// Optional. Default: 2 Seconds
 	Timeout time.Duration
+}
+
+// ConfigDefault is the default config
+var ConfigDefault = Config{
+	Repanic:         false,
+	WaitForDelivery: false,
+	Timeout:         time.Second * 2,
+}
+
+// Helper function to set default values
+func configDefault(config ...Config) Config {
+	// Return default config if nothing provided
+	if len(config) < 1 {
+		return ConfigDefault
+	}
+
+	// Override default config
+	cfg := config[0]
+
+	return cfg
 }
