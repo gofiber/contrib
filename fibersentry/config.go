@@ -39,5 +39,9 @@ func configDefault(config ...Config) Config {
 	// Override default config
 	cfg := config[0]
 
+	if cfg.Timeout == 0 {
+		cfg.Timeout = time.Second * 2
+	}
+
 	return cfg
 }
