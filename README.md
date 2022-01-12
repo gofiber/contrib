@@ -19,3 +19,6 @@ Repository for third party middlewares with dependencies
 * [Otelfiber (OpenTelemetry)](/otelfiber) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
     <img src="https://img.shields.io/github/workflow/status/gofiber/contrib/Tests?label=%F0%9F%A7%AA%20&style=flat&color=75C46B">
     </a>
+* [Fibersentry](/fibersentry) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
+    <img src="https://img.shields.io/github/workflow/status/gofiber/contrib/Tests?label=%F0%9F%A7%AA%20&style=flat&color=75C46B">
+    </a>
