@@ -2,7 +2,10 @@ package otelfiber
 
 import (
 	"context"
+	"encoding/base64"
+	"github.com/gofiber/fiber/v2/utils"
 	"net/http"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -16,7 +19,7 @@ import (
 
 const (
 	tracerKey  = "otel-go-contrib-tracer-gofiber-fiber"
-	tracerName = "go.opentelemetry.io/contrib/instrumentation/github.com/gofiber/fiber/otelfiber"
+	tracerName = "github.com/gofiber/contrib/otelfiber"
 )
 
 // Middleware returns fiber handler which will trace incoming requests.
@@ -65,6 +68,9 @@ func Middleware(service string, opts ...Option) fiber.Handler {
 				semconv.NetTransportTCP),
 			oteltrace.WithSpanKind(oteltrace.SpanKindServer),
 		}
+		if username, ok := hasBasicAuth(c.Get(fiber.HeaderAuthorization)); ok {
+			opts = append(opts, oteltrace.WithAttributes(semconv.EnduserIDKey.String(username)))
+		}
 		if len(c.IPs()) > 0 {
 			opts = append(opts, oteltrace.WithAttributes(semconv.HTTPClientIPKey.String(c.IPs()[0])))
 		}
@@ -92,10 +98,35 @@ func Middleware(service string, opts ...Option) fiber.Handler {
 		}
 
 		attrs := semconv.HTTPAttributesFromHTTPStatusCode(c.Response().StatusCode())
-		spanStatus, spanMessage := semconv.SpanStatusFromHTTPStatusCode(c.Response().StatusCode())
+		spanStatus, spanMessage := semconv.SpanStatusFromHTTPStatusCodeAndSpanKind(c.Response().StatusCode(), oteltrace.SpanKindServer)
 		span.SetAttributes(attrs...)
 		span.SetStatus(spanStatus, spanMessage)
 
 		return nil
 	}
+}
+
+func hasBasicAuth(auth string) (string, bool) {
+	if auth == "" {
+		return "", false
+	}
+
+	// Decode the header contents
+	raw, err := base64.StdEncoding.DecodeString(auth[6:])
+	if err != nil {
+		return "", false
+	}
+
+	// Get the credentials
+	creds := utils.UnsafeString(raw)
+
+	// Check if the credentials are in the correct form
+	// which is "username:password".
+	index := strings.Index(creds, ":")
+	if index == -1 {
+		return "", false
+	}
+
+	// Get the username
+	return creds[:index], true
 }

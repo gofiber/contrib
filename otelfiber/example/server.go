@@ -29,7 +29,7 @@ func main() {
 	app := fiber.New()
 	app.Use(otelfiber.Middleware("my-server"))
 
-	app.Get("/", func(ctx *fiber.Ctx) error {
+	app.Get("/error", func(ctx *fiber.Ctx) error {
 		return errors.New("abc")
 	})
 
