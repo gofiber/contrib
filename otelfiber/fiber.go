@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	tracerKey  = "otel-go-contrib-tracer-gofiber-fiber"
+	tracerKey  = "gofiber-contrib-tracer-fiber"
 	tracerName = "github.com/gofiber/contrib/otelfiber"
 )
 
