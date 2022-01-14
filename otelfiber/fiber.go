@@ -18,12 +18,16 @@ import (
 )
 
 const (
-	tracerKey  = "gofiber-contrib-tracer-fiber"
-	tracerName = "github.com/gofiber/contrib/otelfiber"
+	tracerKey          = "gofiber-contrib-tracer-fiber"
+	tracerName         = "github.com/gofiber/contrib/otelfiber"
+	defaultServiceName = "fiber-server"
 )
 
 // Middleware returns fiber handler which will trace incoming requests.
 func Middleware(service string, opts ...Option) fiber.Handler {
+	if service == "" {
+		service = defaultServiceName
+	}
 	cfg := config{}
 	for _, opt := range opts {
 		opt.apply(&cfg)
@@ -37,6 +41,10 @@ func Middleware(service string, opts ...Option) fiber.Handler {
 	)
 	if cfg.Propagators == nil {
 		cfg.Propagators = otel.GetTextMapPropagator()
+	}
+
+	if cfg.SpanNameFormatter == nil {
+		cfg.SpanNameFormatter = defaultSpanNameFormatter
 	}
 
 	return func(c *fiber.Ctx) error {
@@ -87,7 +95,7 @@ func Middleware(service string, opts ...Option) fiber.Handler {
 		// serve the request to the next middleware
 		err := c.Next()
 
-		span.SetName(c.Route().Path)
+		span.SetName(cfg.SpanNameFormatter(c))
 		span.SetAttributes(semconv.HTTPRouteKey.String(c.Route().Path))
 
 		if err != nil {
@@ -104,6 +112,12 @@ func Middleware(service string, opts ...Option) fiber.Handler {
 
 		return nil
 	}
+}
+
+// defaultSpanNameFormatter is the default formatter for spans created with the fiber
+// integration. Returns the route pathRaw
+func defaultSpanNameFormatter(ctx *fiber.Ctx) string {
+	return ctx.Route().Path
 }
 
 func hasBasicAuth(auth string) (string, bool) {

@@ -1,14 +1,16 @@
 package otelfiber
 
 import (
+	"github.com/gofiber/fiber/v2"
 	"go.opentelemetry.io/otel/propagation"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 // config is used to configure the Fiber middleware.
 type config struct {
-	TracerProvider oteltrace.TracerProvider
-	Propagators    propagation.TextMapPropagator
+	TracerProvider    oteltrace.TracerProvider
+	Propagators       propagation.TextMapPropagator
+	SpanNameFormatter func(*fiber.Ctx) string
 }
 
 // Option specifies instrumentation configuration options.
@@ -36,5 +38,13 @@ func WithPropagators(propagators propagation.TextMapPropagator) Option {
 func WithTracerProvider(provider oteltrace.TracerProvider) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.TracerProvider = provider
+	})
+}
+
+// WithSpanNameFormatter takes a function that will be called on every
+// request and the returned string will become the Span Name
+func WithSpanNameFormatter(f func(ctx *fiber.Ctx) string) Option {
+	return optionFunc(func(cfg *config) {
+		cfg.SpanNameFormatter = f
 	})
 }
