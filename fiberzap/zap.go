@@ -113,6 +113,8 @@ func New(config ...Config) fiber.Handler {
 				fields = append(fields, zap.String("route", c.Route().Path))
 			case "method":
 				fields = append(fields, zap.String("method", c.Method()))
+			case "requestId":
+				fields = append(fields, zap.String("requestId", c.Get(fiber.HeaderXRequestID)))
 			case "error":
 				if chainErr != nil {
 					fields = append(fields, zap.String("error", chainErr.Error()))
