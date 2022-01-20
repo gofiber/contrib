@@ -75,7 +75,7 @@ func New(config ...Config) fiber.Handler {
 
 		for _, field := range cfg.Fields {
 			switch field {
-			case "refeer":
+			case "referer":
 				fields = append(fields, zap.String("referer", c.Get(fiber.HeaderReferer)))
 			case "protocol":
 				fields = append(fields, zap.String("protocol", c.Protocol()))
