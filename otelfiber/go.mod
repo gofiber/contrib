@@ -6,10 +6,9 @@ require (
 	github.com/andybalholm/brotli v1.0.4 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/gofiber/fiber/v2 v2.24.0
+	github.com/gofiber/fiber/v2 v2.25.0
 	github.com/klauspost/compress v1.14.1 // indirect
 	github.com/stretchr/testify v1.7.0
-	github.com/valyala/fasthttp v1.32.0 // indirect
 	go.opentelemetry.io/contrib v1.3.0
 	go.opentelemetry.io/contrib/propagators/b3 v1.3.0
 	go.opentelemetry.io/otel v1.3.0
