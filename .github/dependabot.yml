@@ -19,4 +19,10 @@ updates:
         labels:
             - "🤖 Dependencies"
         schedule:
-          interval: "daily"
+            interval: "daily"
+    -   package-ecosystem: "gomod"
+        directory: "/swagger/" # Location of package manifests
+        labels:
+            - "🤖 Dependencies"
+        schedule:
+            interval: "daily"
