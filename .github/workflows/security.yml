@@ -30,3 +30,7 @@ jobs:
             -   name: Run Gosec (otelfiber - example)
                 working-directory: ./otelfiber/example
                 run: "`go env GOPATH`/bin/gosec ./..."
+            -   name: Run Gosec (swagger)
+                working-directory: ./swagger
+                run: "`go env GOPATH`/bin/gosec -exclude-dir=internal ./..."
+                # -----
