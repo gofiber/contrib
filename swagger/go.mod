@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/swagger
 go 1.17
 
 require (
-	github.com/go-openapi/loads v0.21.0
+	github.com/go-openapi/loads v0.21.1
 	github.com/go-openapi/runtime v0.21.1
 	github.com/gofiber/fiber/v2 v2.26.0
 	github.com/gorilla/handlers v1.5.1
@@ -18,7 +18,7 @@ require (
 	github.com/asaskevich/govalidator v0.0.0-20200907205600-7a23bdc65eef // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/felixge/httpsnoop v1.0.1 // indirect
-	github.com/go-openapi/analysis v0.20.1 // indirect
+	github.com/go-openapi/analysis v0.21.2 // indirect
 	github.com/go-openapi/errors v0.20.1 // indirect
 	github.com/go-openapi/jsonpointer v0.19.5 // indirect
 	github.com/go-openapi/jsonreference v0.19.6 // indirect
