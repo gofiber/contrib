@@ -72,7 +72,7 @@ func Middleware(service string, opts ...Option) fiber.Handler {
 				semconv.NetHostNameKey.String(c.Hostname()),
 				semconv.HTTPUserAgentKey.String(string(c.Request().Header.UserAgent())),
 				semconv.HTTPRequestContentLengthKey.Int(c.Request().Header.ContentLength()),
-				semconv.HTTPSchemeKey.String(c.Protocol()),
+				semconv.HTTPSchemeKey.String(c.Scheme()),
 				semconv.NetTransportTCP),
 			oteltrace.WithSpanKind(oteltrace.SpanKindServer),
 		}
