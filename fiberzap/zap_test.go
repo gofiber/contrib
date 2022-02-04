@@ -63,7 +63,7 @@ func Test_Logger_All(t *testing.T) {
 
 	app.Use(New(Config{
 		Logger: logger,
-		Fields: []string{"protocol", "pid", "body", "ip", "host", "url", "route", "method", "resBody", "queryParams", "bytesReceived", "bytesSent"},
+		Fields: []string{"scheme", "protocol", "pid", "body", "ip", "host", "url", "route", "method", "resBody", "queryParams", "bytesReceived", "bytesSent"},
 	}))
 
 	resp, err := app.Test(httptest.NewRequest("GET", "/?foo=bar", nil))
@@ -77,7 +77,8 @@ func Test_Logger_All(t *testing.T) {
 		"url":           "/?foo=bar",
 		"method":        "GET",
 		"route":         "/",
-		"protocol":      "http",
+		"scheme":        "http",
+		"protocol":      "HTTP/1.1",
 		"pid":           strconv.Itoa(os.Getpid()),
 		"queryParams":   "foo=bar",
 		"resBody":       "Cannot GET /",

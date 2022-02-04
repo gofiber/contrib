@@ -79,6 +79,8 @@ func New(config ...Config) fiber.Handler {
 				fields = append(fields, zap.String("referer", c.Get(fiber.HeaderReferer)))
 			case "protocol":
 				fields = append(fields, zap.String("protocol", c.Protocol()))
+			case "scheme":
+				fields = append(fields, zap.String("scheme", c.Scheme()))
 			case "pid":
 				fields = append(fields, zap.String("pid", pid))
 			case "port":
