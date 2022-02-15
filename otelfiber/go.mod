@@ -6,7 +6,7 @@ require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/gofiber/fiber/v2 v2.27.0
 	github.com/stretchr/testify v1.7.0
-	go.opentelemetry.io/contrib v1.3.0
+	go.opentelemetry.io/contrib v1.4.0
 	go.opentelemetry.io/contrib/propagators/b3 v1.4.0
 	go.opentelemetry.io/otel v1.4.0
 	go.opentelemetry.io/otel/oteltest v1.0.0-RC3
