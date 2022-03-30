@@ -33,7 +33,7 @@ app.Use(swagger.New(cfg))
 ### Custom Config
 
 ```go
-cfg := Config{
+cfg := swagger.Config{
     BasePath: "/", //swagger ui base path
     FilePath: "./docs/swagger.json",
 }
