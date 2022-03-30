@@ -35,7 +35,7 @@ app.Use(swagger.New(cfg))
 ```go
 cfg := Config{
     BasePath: "/", //swagger ui base path
-    FilePath: "./docs/swagger.json"
+    FilePath: "./docs/swagger.json",
 }
 
 app.Use(swagger.New(cfg))
