@@ -31,3 +31,7 @@ jobs:
                 working-directory: ./swagger
                 run: "`go env GOPATH`/bin/gosec -exclude-dir=internal ./..."
                 # -----
+            -   name: Run Gosec (casbin)
+                working-directory: ./casbin
+                run: "`go env GOPATH`/bin/gosec -exclude-dir=internal ./..."
+                # -----
