@@ -5,7 +5,7 @@ go 1.17
 require (
 	github.com/go-openapi/loads v0.21.1
 	github.com/go-openapi/runtime v0.23.3
-	github.com/gofiber/fiber/v2 v2.31.0
+	github.com/gofiber/fiber/v2 v2.32.0
 	github.com/gorilla/handlers v1.5.1
 	github.com/stretchr/testify v1.7.1
 	github.com/valyala/fasthttp v1.35.0
