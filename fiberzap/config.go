@@ -17,7 +17,7 @@ type Config struct {
 	// Optional. Default: nil
 	SkipBody func(c *fiber.Ctx) bool
 
-	// Next dSkipBody defines a function to skip log  "resBody" field when returned true.
+	// SkipResBody defines a function to skip log  "resBody" field when returned true.
 	//
 	// Optional. Default: nil
 	SkipResBody func(c *fiber.Ctx) bool
