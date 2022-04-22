@@ -100,11 +100,15 @@ func New(config ...Config) fiber.Handler {
 			case "status":
 				fields = append(fields, zap.Int("status", c.Response().StatusCode()))
 			case "resBody":
-				fields = append(fields, zap.ByteString("resBody", c.Response().Body()))
+				if cfg.SkipResBody == nil || !cfg.SkipResBody(c) {
+					fields = append(fields, zap.ByteString("resBody", c.Response().Body()))
+				}
 			case "queryParams":
 				fields = append(fields, zap.String("queryParams", c.Request().URI().QueryArgs().String()))
 			case "body":
-				fields = append(fields, zap.ByteString("body", c.Body()))
+				if cfg.SkipBody == nil || !cfg.SkipBody(c) {
+					fields = append(fields, zap.ByteString("body", c.Body()))
+				}
 			case "bytesReceived":
 				fields = append(fields, zap.Int("bytesReceived", len(c.Request().Body())))
 			case "bytesSent":
