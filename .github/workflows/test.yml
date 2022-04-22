@@ -27,3 +27,7 @@ jobs:
         run: cd ./fiberzap && go test ./... -v -race
       - name: Test otelfiber Middleware
         run: cd ./otelfiber && go test ./... -v -race
+      - name: Test swagger Middleware
+        run: cd ./swagger && go test ./... -v -race
+      - name: Test casbin Middleware
+        run: cd ./casbin && go test ./... -v -race

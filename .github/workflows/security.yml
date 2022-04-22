@@ -27,6 +27,11 @@ jobs:
             -   name: Run Gosec (otelfiber)
                 working-directory: ./otelfiber
                 run: "`go env GOPATH`/bin/gosec -exclude-dir=example ./..."
-            -   name: Run Gosec (otelfiber - example)
-                working-directory: ./otelfiber/example
-                run: "`go env GOPATH`/bin/gosec ./..."
+            -   name: Run Gosec (swagger)
+                working-directory: ./swagger
+                run: "`go env GOPATH`/bin/gosec -exclude-dir=internal ./..."
+                # -----
+            -   name: Run Gosec (casbin)
+                working-directory: ./casbin
+                run: "`go env GOPATH`/bin/gosec -exclude-dir=internal ./..."
+                # -----
