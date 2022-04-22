@@ -261,3 +261,24 @@ func Benchmark_Logger(b *testing.B) {
 
 	utils.AssertEqual(b, 200, fctx.Response.Header.StatusCode())
 }
+
+// go test -run Test_Request_Id
+func Test_Request_Id(t *testing.T) {
+	app := fiber.New()
+	logger, logs := setupLogsCapture()
+
+	app.Use(New(Config{
+		Logger: logger,
+		Fields: []string{"requestId"},
+	}))
+
+	app.Get("/", func(c *fiber.Ctx) error {
+		c.Response().Header.Add(fiber.HeaderXRequestID, "bf985e8e-6a32-42ec-8e50-05a21db8f0e4")
+		return c.SendString("hello")
+	})
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/", nil))
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
+	utils.AssertEqual(t, "bf985e8e-6a32-42ec-8e50-05a21db8f0e4", logs.All()[0].Context[0].String)
+}
