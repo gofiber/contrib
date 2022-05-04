@@ -1,8 +1,6 @@
 package casbin
 
 import (
-	"fmt"
-
 	"github.com/casbin/casbin/v2"
 	"github.com/casbin/casbin/v2/persist"
 	fileadapter "github.com/casbin/casbin/v2/persist/file-adapter"
@@ -46,10 +44,10 @@ var ConfigDefault = Config{
 }
 
 // Helper function to set default values
-func configDefault(config ...Config) Config {
+func configDefault(config ...Config) (Config, error) {
 	// Return default config if nothing provided
 	if len(config) < 1 {
-		return ConfigDefault
+		return ConfigDefault, nil
 	}
 
 	// Override default config
@@ -66,7 +64,7 @@ func configDefault(config ...Config) Config {
 
 		enforcer, err := casbin.NewEnforcer(cfg.ModelFilePath, cfg.PolicyAdapter)
 		if err != nil {
-			panic(fmt.Errorf("Fiber: casbin middleware error -> %w", err))
+			return cfg, err
 		}
 
 		cfg.Enforcer = enforcer
@@ -84,5 +82,5 @@ func configDefault(config ...Config) Config {
 		cfg.Forbidden = ConfigDefault.Forbidden
 	}
 
-	return cfg
+	return cfg, nil
 }
