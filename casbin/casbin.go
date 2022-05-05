@@ -1,6 +1,8 @@
 package casbin
 
 import (
+	"fmt"
+
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -11,8 +13,13 @@ type Middleware struct {
 
 // New creates an authorization middleware for use in Fiber
 func New(config ...Config) *Middleware {
+	cfg, err := configDefault(config...)
+	if err != nil {
+		panic(fmt.Errorf("Fiber: casbin middleware error -> %w", err))
+	}
+
 	return &Middleware{
-		config: configDefault(config...),
+		config: cfg,
 	}
 }
 

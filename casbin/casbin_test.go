@@ -1,88 +1,189 @@
 package casbin
 
 import (
-	"log"
+	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/casbin/casbin/v2"
 
-	fileadapter "github.com/casbin/casbin/v2/persist/file-adapter"
+	"github.com/casbin/casbin/v2/model"
+	"github.com/casbin/casbin/v2/persist"
 	"github.com/gofiber/fiber/v2"
 )
 
 var (
 	subjectAlice = func(c *fiber.Ctx) string { return "alice" }
 	subjectBob   = func(c *fiber.Ctx) string { return "bob" }
-	subjectNil   = func(c *fiber.Ctx) string { return "" }
+	subjectEmpty = func(c *fiber.Ctx) string { return "" }
 )
 
+const (
+	modelConf = `
+	[request_definition]
+	r = sub, obj, act
+	
+	[policy_definition]
+	p = sub, obj, act
+	
+	[role_definition]
+	g = _, _
+	
+	[policy_effect]
+	e = some(where (p.eft == allow))
+	
+	[matchers]
+	m = g(r.sub, p.sub) && r.obj == p.obj && r.act == p.act`
+
+	policyList = `
+	p,admin,blog,create
+	p,admin,blog,update
+	p,admin,blog,delete
+	p,user,comment,create
+	p,user,comment,delete
+
+	p,admin,/blog,POST
+	p,admin,/blog/1,PUT
+	p,admin,/blog/1,DELETE
+	p,user,/comment,POST
+
+
+	g,alice,admin
+	g,alice,user
+	g,bob,user`
+)
+
+// mockAdapter
+type mockAdapter struct {
+	text string
+}
+
+func newMockAdapter(text string) *mockAdapter {
+	return &mockAdapter{
+		text: text,
+	}
+}
+
+func (ma *mockAdapter) LoadPolicy(model model.Model) error {
+	if ma.text == "" {
+		return errors.New("text is required")
+	}
+
+	strs := strings.Split(ma.text, "\n")
+
+	for _, str := range strs {
+		if str == "" {
+			continue
+		}
+
+		persist.LoadPolicyLine(str, model)
+	}
+
+	return nil
+}
+
+func (ma *mockAdapter) SavePolicy(model model.Model) error {
+	return errors.New("not implemented")
+}
+
+func (ma *mockAdapter) AddPolicy(sec string, ptype string, rule []string) error {
+	return errors.New("not implemented")
+}
+
+func (ma *mockAdapter) RemovePolicy(sec string, ptype string, rule []string) error {
+	return errors.New("not implemented")
+}
+
+func (ma *mockAdapter) RemoveFilteredPolicy(sec string, ptype string, fieldIndex int, fieldValues ...string) error {
+	return errors.New("not implemented")
+}
+
+func setup() (*casbin.Enforcer, error) {
+	m, err := model.NewModelFromString(modelConf)
+	if err != nil {
+		return nil, err
+	}
+
+	enf, err := casbin.NewEnforcer(m, newMockAdapter(policyList))
+	if err != nil {
+		return nil, err
+	}
+
+	return enf, nil
+}
+
 func Test_RequiresPermission(t *testing.T) {
-	tests := []struct {
-		name        string
+	enf, err := setup()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	testCases := []struct {
+		desc        string
 		lookup      func(*fiber.Ctx) string
 		permissions []string
 		opts        []Option
 		statusCode  int
 	}{
 		{
-			name:        "alice has permission to create blog",
+			desc:        "alice has permission to create blog",
 			lookup:      subjectAlice,
 			permissions: []string{"blog:create"},
 			opts:        []Option{WithValidationRule(MatchAllRule)},
 			statusCode:  200,
 		},
 		{
-			name:        "alice has permission to create blog",
+			desc:        "alice has permission to create blog",
 			lookup:      subjectAlice,
 			permissions: []string{"blog:create"},
 			opts:        []Option{WithValidationRule(AtLeastOneRule)},
 			statusCode:  200,
 		},
 		{
-			name:        "alice has permission to create and update blog",
+			desc:        "alice has permission to create and update blog",
 			lookup:      subjectAlice,
 			permissions: []string{"blog:create", "blog:update"},
 			opts:        []Option{WithValidationRule(MatchAllRule)},
 			statusCode:  200,
 		},
 		{
-			name:        "alice has permission to create comment or blog",
+			desc:        "alice has permission to create comment or blog",
 			lookup:      subjectAlice,
 			permissions: []string{"comment:create", "blog:create"},
 			opts:        []Option{WithValidationRule(AtLeastOneRule)},
 			statusCode:  200,
 		},
 		{
-			name:        "bob has only permission to create comment",
+			desc:        "bob has only permission to create comment",
 			lookup:      subjectBob,
 			permissions: []string{"comment:create", "blog:create"},
 			opts:        []Option{WithValidationRule(AtLeastOneRule)},
 			statusCode:  200,
 		},
 		{
-			name:        "unauthenticated user has no permissions",
-			lookup:      subjectNil,
+			desc:        "unauthenticated user has no permissions",
+			lookup:      subjectEmpty,
 			permissions: []string{"comment:create"},
 			opts:        []Option{WithValidationRule(MatchAllRule)},
 			statusCode:  401,
 		},
 		{
-			name:        "bob has not permission to create blog",
+			desc:        "bob has not permission to create blog",
 			lookup:      subjectBob,
 			permissions: []string{"blog:create"},
 			opts:        []Option{WithValidationRule(MatchAllRule)},
 			statusCode:  403,
 		},
 		{
-			name:        "bob has not permission to delete blog",
+			desc:        "bob has not permission to delete blog",
 			lookup:      subjectBob,
 			permissions: []string{"blog:delete"},
 			opts:        []Option{WithValidationRule(MatchAllRule)},
 			statusCode:  403,
 		},
 		{
-			name:        "invalid permission",
+			desc:        "invalid permission",
 			lookup:      subjectBob,
 			permissions: []string{"unknown"},
 			opts:        []Option{WithValidationRule(MatchAllRule)},
@@ -90,101 +191,110 @@ func Test_RequiresPermission(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		app := *fiber.New()
+	for _, tC := range testCases {
+		app := fiber.New()
+
 		authz := New(Config{
-			ModelFilePath: "./example/model.conf",
-			PolicyAdapter: fileadapter.NewAdapter("./example/policy.csv"),
-			Lookup:        tt.lookup,
+			Enforcer: enf,
+			Lookup:   tC.lookup,
 		})
 
 		app.Post("/blog",
-			authz.RequiresPermissions(tt.permissions, tt.opts...),
+			authz.RequiresPermissions(tC.permissions, tC.opts...),
 			func(c *fiber.Ctx) error {
 				return c.SendStatus(fiber.StatusOK)
 			},
 		)
 
-		t.Run(tt.name, func(t *testing.T) {
-			req, _ := http.NewRequest("POST", "/blog", nil)
-			resp, err := app.Test(req)
+		t.Run(tC.desc, func(t *testing.T) {
+			req, err := http.NewRequest("POST", "/blog", nil)
 			if err != nil {
-				t.Fatalf(`%s: %s`, t.Name(), err)
+				t.Fatal(err)
 			}
 
-			if resp.StatusCode != tt.statusCode {
-				t.Fatalf(`%s: StatusCode: got %v - expected %v`, t.Name(), resp.StatusCode, tt.statusCode)
+			resp, err := app.Test(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if resp.StatusCode != tC.statusCode {
+				t.Errorf(`StatusCode: got %v - expected %v`, resp.StatusCode, tC.statusCode)
 			}
 		})
 	}
 }
 
 func Test_RequiresRoles(t *testing.T) {
-	tests := []struct {
-		name       string
+	enf, err := setup()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	testCases := []struct {
+		desc       string
 		lookup     func(*fiber.Ctx) string
 		roles      []string
 		opts       []Option
 		statusCode int
 	}{
 		{
-			name:       "alice has user role",
+			desc:       "alice has user role",
 			lookup:     subjectAlice,
 			roles:      []string{"user"},
 			opts:       []Option{WithValidationRule(MatchAllRule)},
 			statusCode: 200,
 		},
 		{
-			name:       "alice has admin role",
+			desc:       "alice has admin role",
 			lookup:     subjectAlice,
 			roles:      []string{"admin"},
 			opts:       []Option{WithValidationRule(AtLeastOneRule)},
 			statusCode: 200,
 		},
 		{
-			name:       "alice has both user and admin roles",
+			desc:       "alice has both user and admin roles",
 			lookup:     subjectAlice,
 			roles:      []string{"user", "admin"},
 			opts:       []Option{WithValidationRule(MatchAllRule)},
 			statusCode: 200,
 		},
 		{
-			name:       "alice has both user and admin roles",
+			desc:       "alice has both user and admin roles",
 			lookup:     subjectAlice,
 			roles:      []string{"user", "admin"},
 			opts:       []Option{WithValidationRule(AtLeastOneRule)},
 			statusCode: 200,
 		},
 		{
-			name:       "bob has only user role",
+			desc:       "bob has only user role",
 			lookup:     subjectBob,
 			roles:      []string{"user"},
 			opts:       []Option{WithValidationRule(AtLeastOneRule)},
 			statusCode: 200,
 		},
 		{
-			name:       "unauthenticated user has no permissions",
-			lookup:     subjectNil,
+			desc:       "unauthenticated user has no permissions",
+			lookup:     subjectEmpty,
 			roles:      []string{"user"},
 			opts:       []Option{WithValidationRule(MatchAllRule)},
 			statusCode: 401,
 		},
 		{
-			name:       "bob has not admin role",
+			desc:       "bob has not admin role",
 			lookup:     subjectBob,
 			roles:      []string{"admin"},
 			opts:       []Option{WithValidationRule(MatchAllRule)},
 			statusCode: 403,
 		},
 		{
-			name:       "bob has only user role",
+			desc:       "bob has only user role",
 			lookup:     subjectBob,
 			roles:      []string{"admin", "user"},
 			opts:       []Option{WithValidationRule(AtLeastOneRule)},
 			statusCode: 200,
 		},
 		{
-			name:       "invalid role",
+			desc:       "invalid role",
 			lookup:     subjectBob,
 			roles:      []string{"unknown"},
 			opts:       []Option{WithValidationRule(MatchAllRule)},
@@ -192,202 +302,107 @@ func Test_RequiresRoles(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		app := *fiber.New()
+	for _, tC := range testCases {
+		app := fiber.New()
+
 		authz := New(Config{
-			ModelFilePath: "./example/model.conf",
-			PolicyAdapter: fileadapter.NewAdapter("./example/policy.csv"),
-			Lookup:        tt.lookup,
+			Enforcer: enf,
+			Lookup:   tC.lookup,
 		})
 
 		app.Post("/blog",
-			authz.RequiresRoles(tt.roles, tt.opts...),
+			authz.RequiresRoles(tC.roles, tC.opts...),
 			func(c *fiber.Ctx) error {
 				return c.SendStatus(fiber.StatusOK)
 			},
 		)
 
-		t.Run(tt.name, func(t *testing.T) {
-			req, _ := http.NewRequest("POST", "/blog", nil)
-			resp, err := app.Test(req)
+		t.Run(tC.desc, func(t *testing.T) {
+			req, err := http.NewRequest("POST", "/blog", nil)
 			if err != nil {
-				t.Fatalf(`%s: %s`, t.Name(), err)
+				t.Fatal(err)
 			}
 
-			if resp.StatusCode != tt.statusCode {
-				t.Fatalf(`%s: StatusCode: got %v - expected %v`, t.Name(), resp.StatusCode, tt.statusCode)
+			resp, err := app.Test(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if resp.StatusCode != tC.statusCode {
+				t.Errorf(`StatusCode: got %v - expected %v`, resp.StatusCode, tC.statusCode)
 			}
 		})
 	}
 }
 
 func Test_RoutePermission(t *testing.T) {
-	tests := []struct {
-		name       string
-		url        string
-		method     string
-		subject    string
-		statusCode int
-	}{
-		{
-			name:       "alice has permission to create blog",
-			url:        "/blog",
-			method:     "POST",
-			subject:    "alice",
-			statusCode: 200,
-		},
-		{
-			name:       "alice has permission to update blog",
-			url:        "/blog/1",
-			method:     "PUT",
-			subject:    "alice",
-			statusCode: 200,
-		},
-		{
-			name:       "bob has only permission to create comment",
-			url:        "/comment",
-			method:     "POST",
-			subject:    "bob",
-			statusCode: 200,
-		},
-		{
-			name:       "unauthenticated user has no permissions",
-			url:        "/",
-			method:     "POST",
-			subject:    "",
-			statusCode: 401,
-		},
-		{
-			name:       "bob has not permission to create blog",
-			url:        "/blog",
-			method:     "POST",
-			subject:    "bob",
-			statusCode: 403,
-		},
-		{
-			name:       "bob has not permission to delete blog",
-			url:        "/blog/1",
-			method:     "DELETE",
-			subject:    "bob",
-			statusCode: 403,
-		},
-	}
-
-	app := *fiber.New()
-	authz := New(Config{
-		ModelFilePath: "./example/model.conf",
-		PolicyAdapter: fileadapter.NewAdapter("./example/policy.csv"),
-		Lookup: func(c *fiber.Ctx) string {
-			return c.Get("x-subject")
-		},
-	})
-
-	app.Use(authz.RoutePermission())
-	app.Post("/blog",
-		func(c *fiber.Ctx) error {
-			return c.SendStatus(fiber.StatusOK)
-		},
-	)
-	app.Put("/blog/:id",
-		func(c *fiber.Ctx) error {
-			return c.SendStatus(fiber.StatusOK)
-		},
-	)
-	app.Delete("/blog/:id",
-		func(c *fiber.Ctx) error {
-			return c.SendStatus(fiber.StatusOK)
-		},
-	)
-	app.Post("/comment",
-		func(c *fiber.Ctx) error {
-			return c.SendStatus(fiber.StatusOK)
-		},
-	)
-
-	for _, tt := range tests {
-
-		t.Run(tt.name, func(t *testing.T) {
-			req, _ := http.NewRequest(tt.method, tt.url, nil)
-			req.Header.Set("x-subject", tt.subject)
-			resp, err := app.Test(req)
-			if err != nil {
-				t.Fatalf(`%s: %s`, t.Name(), err)
-			}
-
-			if resp.StatusCode != tt.statusCode {
-				t.Fatalf(`%s: StatusCode: got %v - expected %v`, t.Name(), resp.StatusCode, tt.statusCode)
-			}
-		})
-	}
-}
-
-func Test_ModeEnforcer(t *testing.T) {
-	tests := []struct {
-		name       string
-		url        string
-		method     string
-		subject    string
-		statusCode int
-	}{
-		{
-			name:       "alice has permission to create blog",
-			url:        "/blog",
-			method:     "POST",
-			subject:    "alice",
-			statusCode: 200,
-		},
-		{
-			name:       "alice has permission to update blog",
-			url:        "/blog/1",
-			method:     "PUT",
-			subject:    "alice",
-			statusCode: 200,
-		},
-		{
-			name:       "bob has only permission to create comment",
-			url:        "/comment",
-			method:     "POST",
-			subject:    "bob",
-			statusCode: 200,
-		},
-		{
-			name:       "unauthenticated user has no permissions",
-			url:        "/",
-			method:     "POST",
-			subject:    "",
-			statusCode: 401,
-		},
-		{
-			name:       "bob has not permission to create blog",
-			url:        "/blog",
-			method:     "POST",
-			subject:    "bob",
-			statusCode: 403,
-		},
-		{
-			name:       "bob has not permission to delete blog",
-			url:        "/blog/1",
-			method:     "DELETE",
-			subject:    "bob",
-			statusCode: 403,
-		},
-	}
-
-	app := *fiber.New()
-
-	enforcer, err := casbin.NewEnforcer("./example/model.conf", fileadapter.NewAdapter("./example/policy.csv"))
+	enf, err := setup()
 	if err != nil {
-		log.Fatal(err)
+		t.Fatal(err)
 	}
 
+	testCases := []struct {
+		desc       string
+		url        string
+		method     string
+		subject    string
+		statusCode int
+	}{
+		{
+			desc:       "alice has permission to create blog",
+			url:        "/blog",
+			method:     "POST",
+			subject:    "alice",
+			statusCode: 200,
+		},
+		{
+			desc:       "alice has permission to update blog",
+			url:        "/blog/1",
+			method:     "PUT",
+			subject:    "alice",
+			statusCode: 200,
+		},
+		{
+			desc:       "bob has only permission to create comment",
+			url:        "/comment",
+			method:     "POST",
+			subject:    "bob",
+			statusCode: 200,
+		},
+		{
+			desc:       "unauthenticated user has no permissions",
+			url:        "/",
+			method:     "POST",
+			subject:    "",
+			statusCode: 401,
+		},
+		{
+			desc:       "bob has not permission to create blog",
+			url:        "/blog",
+			method:     "POST",
+			subject:    "bob",
+			statusCode: 403,
+		},
+		{
+			desc:       "bob has not permission to delete blog",
+			url:        "/blog/1",
+			method:     "DELETE",
+			subject:    "bob",
+			statusCode: 403,
+		},
+	}
+
+	app := fiber.New()
+
 	authz := New(Config{
-		Enforcer: enforcer,
+		Enforcer: enf,
 		Lookup: func(c *fiber.Ctx) string {
 			return c.Get("x-subject")
 		},
 	})
 
 	app.Use(authz.RoutePermission())
+
 	app.Post("/blog",
 		func(c *fiber.Ctx) error {
 			return c.SendStatus(fiber.StatusOK)
@@ -409,18 +424,21 @@ func Test_ModeEnforcer(t *testing.T) {
 		},
 	)
 
-	for _, tt := range tests {
-
-		t.Run(tt.name, func(t *testing.T) {
-			req, _ := http.NewRequest(tt.method, tt.url, nil)
-			req.Header.Set("x-subject", tt.subject)
-			resp, err := app.Test(req)
+	for _, tC := range testCases {
+		t.Run(tC.desc, func(t *testing.T) {
+			req, err := http.NewRequest(tC.method, tC.url, nil)
 			if err != nil {
-				t.Fatalf(`%s: %s`, t.Name(), err)
+				t.Fatal(err)
 			}
 
-			if resp.StatusCode != tt.statusCode {
-				t.Fatalf(`%s: StatusCode: got %v - expected %v`, t.Name(), resp.StatusCode, tt.statusCode)
+			req.Header.Set("x-subject", tC.subject)
+			resp, err := app.Test(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if resp.StatusCode != tC.statusCode {
+				t.Errorf(`StatusCode: got %v - expected %v`, resp.StatusCode, tC.statusCode)
 			}
 		})
 	}
