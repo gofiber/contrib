@@ -4,5 +4,5 @@ go 1.16
 
 require (
 	github.com/casbin/casbin/v2 v2.45.0
-	github.com/gofiber/fiber/v2 v2.32.0
+	github.com/gofiber/fiber/v2 v2.33.0
 )
