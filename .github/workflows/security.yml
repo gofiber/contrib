@@ -14,7 +14,7 @@ jobs:
                 run: |
                     export GO111MODULE=on
                     export PATH=${PATH}:`go env GOPATH`/bin
-                    go get -u github.com/securego/gosec/v2/cmd/gosec
+                    go install github.com/securego/gosec/v2/cmd/gosec@latest
                 # -----
             -   name: Run Gosec (paseto)
                 working-directory: ./paseto
