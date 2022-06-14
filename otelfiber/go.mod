@@ -4,7 +4,7 @@ go 1.16
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
-	github.com/gofiber/fiber/v2 v2.34.0
+	github.com/gofiber/fiber/v2 v2.34.1
 	github.com/stretchr/testify v1.7.1
 	go.opentelemetry.io/contrib v1.7.0
 	go.opentelemetry.io/contrib/propagators/b3 v1.7.0
