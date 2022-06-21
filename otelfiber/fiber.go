@@ -3,9 +3,10 @@ package otelfiber
 import (
 	"context"
 	"encoding/base64"
-	"github.com/gofiber/fiber/v2/utils"
 	"net/http"
 	"strings"
+
+	"github.com/gofiber/fiber/v2/utils"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -122,6 +123,11 @@ func defaultSpanNameFormatter(ctx *fiber.Ctx) string {
 
 func hasBasicAuth(auth string) (string, bool) {
 	if auth == "" {
+		return "", false
+	}
+
+	// Check if the Authorization header is Basic
+	if !strings.HasPrefix(auth, "Basic ") {
 		return "", false
 	}
 

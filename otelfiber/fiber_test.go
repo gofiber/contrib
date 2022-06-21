@@ -207,3 +207,40 @@ func TestPropagationWithCustomPropagators(t *testing.T) {
 	assert.Equal(t, pspan.SpanContext().TraceID(), mspan.SpanContext().TraceID())
 	assert.Equal(t, pspan.SpanContext().SpanID(), mspan.ParentSpanID())
 }
+
+func TestHasBasicAuth(t *testing.T) {
+	testCases := []struct {
+		desc  string
+		auth  string
+		user  string
+		valid bool
+	}{
+		{
+			desc:  "valid header",
+			auth:  "Basic dXNlcjpwYXNzd29yZA==",
+			user:  "user",
+			valid: true,
+		},
+		{
+			desc: "invalid header",
+			auth: "Bas",
+		},
+		{
+			desc: "invalid basic header",
+			auth: "Basic 12345",
+		},
+		{
+			desc: "no header",
+		},
+	}
+
+	for _, tC := range testCases {
+		t.Run(tC.desc, func(t *testing.T) {
+
+			val, valid := hasBasicAuth(tC.auth)
+
+			assert.Equal(t, tC.user, val)
+			assert.Equal(t, tC.valid, valid)
+		})
+	}
+}
