@@ -3,6 +3,12 @@
 version: 2
 updates:
     -   package-ecosystem: "gomod"
+        directory: "/sentry/" # Location of package manifests
+        labels:
+            - "🤖 Dependencies"
+        schedule:
+            interval: "daily"
+    -   package-ecosystem: "gomod"
         directory: "/paseto/" # Location of package manifests
         labels:
             - "🤖 Dependencies"

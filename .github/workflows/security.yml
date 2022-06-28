@@ -16,6 +16,10 @@ jobs:
                     export PATH=${PATH}:`go env GOPATH`/bin
                     go install github.com/securego/gosec/v2/cmd/gosec@latest
                 # -----
+            -   name: Run Gosec (sentry)
+                working-directory: ./sentry
+                run: "`go env GOPATH`/bin/gosec -exclude-dir=internal ./..."
+                # -----
             -   name: Run Gosec (paseto)
                 working-directory: ./paseto
                 run: "`go env GOPATH`/bin/gosec -exclude-dir=internal ./..."
