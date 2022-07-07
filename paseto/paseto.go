@@ -44,18 +44,26 @@ func New(authConfigs ...Config) fiber.Handler {
 			}
 		}
 
-		var decryptedData []byte
-		err := pasetoObject.Decrypt(token, config.SymmetricKey, &decryptedData, nil)
-		if err == nil {
-			var payload interface{}
-			payload, err = config.Validate(decryptedData)
+		var outData []byte
 
-			if err == nil {
-				// Store user information from token into context.
-				c.Locals(config.ContextKey, payload)
-				return config.SuccessHandler(c)
+		if config.SymmetricKey != nil {
+			if err := pasetoObject.Decrypt(token, config.SymmetricKey, &outData, nil); err != nil {
+				return config.ErrorHandler(c, err)
+			}
+		} else {
+			if err := pasetoObject.Verify(token, config.PublicKey, &outData, nil); err != nil {
+				return config.ErrorHandler(c, err)
 			}
 		}
+
+		payload, err := config.Validate(outData)
+		if err == nil {
+			// Store user information from token into context.
+			c.Locals(config.ContextKey, payload)
+
+			return config.SuccessHandler(c)
+		}
+
 		return config.ErrorHandler(c, err)
 	}
 }

@@ -1,6 +1,8 @@
 package pasetoware
 
 import (
+	"crypto"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,9 +33,23 @@ type Config struct {
 	// If token is created using another function, this function must be provided
 	Validate PayloadValidator
 
-	// SymmetricKey to validate token.
-	// Required.
+	// SymmetricKey to validate local tokens.
+	// If it's set the middleware will use local tokens
+	//
+	// Required if PrivateKey and PublicKey are not set
 	SymmetricKey []byte
+
+	// PrivateKey to sign public tokens
+	//
+	// If it's set the middleware will use public tokens
+	// Required if SymmetricKey is not set
+	PrivateKey ed25519.PrivateKey
+
+	// PrivateKey to verify public tokens
+	//
+	// If it's set the middleware will use public tokens
+	// Required if SymmetricKey is not set
+	PublicKey crypto.PublicKey
 
 	// ContextKey to store user information from the token into context.
 	// Optional. Default: DefaultContextKey.
@@ -49,7 +65,7 @@ type Config struct {
 	TokenLookup [2]string
 
 	// TokenPrefix is a string that holds the prefix for the token lookup.
-	// Generally it's used the "Bearer" prefix.
+	// Generally it'cs used the "Bearer" prefix.
 	//
 	// Optional. Default value ""
 	// Recommended value: "Bearer"
@@ -133,11 +149,27 @@ func configDefault(authConfigs ...Config) Config {
 		config.TokenLookup[1] = ConfigDefault.TokenLookup[1]
 	}
 
-	if len(config.SymmetricKey) != chacha20poly1305.KeySize {
+	if config.SymmetricKey != nil {
+		if len(config.SymmetricKey) != chacha20poly1305.KeySize {
+			panic(
+				fmt.Sprintf(
+					"Fiber: PASETO middleware requires a symmetric key with size %d",
+					chacha20poly1305.KeySize,
+				),
+			)
+		}
+
+		if config.PublicKey != nil || config.PrivateKey != nil {
+			panic(
+				fmt.Sprintf(
+					"Fiber: PASETO middleware: can't use PublicKey or PrivateKey with SymmetricKey",
+				),
+			)
+		}
+	} else if config.PublicKey == nil || config.PrivateKey == nil {
 		panic(
 			fmt.Sprintf(
-				"Fiber: PASETO middleware requires a symmetric key with size %d",
-				chacha20poly1305.KeySize,
+				"Fiber: PASETO middleware: need both PublicKey and PrivateKey",
 			),
 		)
 	}

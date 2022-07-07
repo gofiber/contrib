@@ -1,10 +1,12 @@
 package pasetoware
 
 import (
+	"crypto/ed25519"
 	"errors"
+	"time"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/o1egl/paseto"
-	"time"
 )
 
 const (
@@ -15,6 +17,13 @@ const (
 
 	// DefaultContextKey is the Default key used by this middleware to store decrypted token
 	DefaultContextKey = "auth-token"
+)
+
+type TokenPurpose int
+
+const (
+	PurposeLocal TokenPurpose = iota
+	PurposePublic
 )
 
 var (
@@ -32,7 +41,7 @@ type acquireToken func(c *fiber.Ctx, key string) string
 type PayloadValidator func(decrypted []byte) (interface{}, error)
 
 // PayloadCreator Signature of a function that generates a payload token
-type PayloadCreator func(key []byte, dataInfo string, duration time.Duration) (string, error)
+type PayloadCreator func(key []byte, dataInfo string, duration time.Duration, purpose TokenPurpose) (string, error)
 
 // Acquire Token methods
 func acquireFromHeader(c *fiber.Ctx, key string) string {
@@ -54,10 +63,18 @@ func acquireFromCookie(c *fiber.Ctx, key string) string {
 // Public helper functions
 
 // CreateToken Create a new Token Payload that will be stored in PASETO
-func CreateToken(key []byte, dataInfo string, duration time.Duration) (string, error) {
+func CreateToken(key []byte, dataInfo string, duration time.Duration, purpose TokenPurpose) (string, error) {
 	payload, err := NewPayload(dataInfo, duration)
 	if err != nil {
 		return "", err
 	}
-	return pasetoObject.Encrypt(key, payload, nil)
+
+	switch purpose {
+	case PurposeLocal:
+		return pasetoObject.Encrypt(key, payload, nil)
+	case PurposePublic:
+		return pasetoObject.Sign(ed25519.PrivateKey(key), payload, nil)
+	default:
+		return pasetoObject.Encrypt(key, payload, nil)
+	}
 }
