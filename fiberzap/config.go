@@ -12,6 +12,16 @@ type Config struct {
 	// Optional. Default: nil
 	Next func(c *fiber.Ctx) bool
 
+	// SkipBody defines a function to skip log  "body" field when returned true.
+	//
+	// Optional. Default: nil
+	SkipBody func(c *fiber.Ctx) bool
+
+	// SkipResBody defines a function to skip log  "resBody" field when returned true.
+	//
+	// Optional. Default: nil
+	SkipResBody func(c *fiber.Ctx) bool
+
 	// Add custom zap logger.
 	//
 	// Optional. Default: zap.NewProduction()\n

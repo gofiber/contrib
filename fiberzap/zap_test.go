@@ -1,6 +1,7 @@
 package fiberzap
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net/http"
@@ -20,6 +21,50 @@ import (
 func setupLogsCapture() (*zap.Logger, *observer.ObservedLogs) {
 	core, logs := observer.New(zap.InfoLevel)
 	return zap.New(core), logs
+}
+
+// go test -run Test_SkipBody
+func Test_SkipBody(t *testing.T) {
+	logger, logs := setupLogsCapture()
+
+	app := fiber.New()
+	app.Use(New(Config{
+		SkipBody: func(_ *fiber.Ctx) bool {
+			return true
+		},
+		Logger: logger,
+		Fields: []string{"pid", "body"},
+	}))
+
+	body := bytes.NewReader([]byte("this is test"))
+	resp, err := app.Test(httptest.NewRequest("GET", "/", body))
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusNotFound, resp.StatusCode)
+
+	_, ok := logs.All()[0].ContextMap()["body"]
+	utils.AssertEqual(t, false, ok)
+}
+
+// go test -run Test_SkipResBody
+func Test_SkipResBody(t *testing.T) {
+	logger, logs := setupLogsCapture()
+
+	app := fiber.New()
+	app.Use(New(Config{
+		SkipResBody: func(_ *fiber.Ctx) bool {
+			return true
+		},
+		Logger: logger,
+		Fields: []string{"pid", "resBody"},
+	}))
+
+	body := bytes.NewReader([]byte("this is test"))
+	resp, err := app.Test(httptest.NewRequest("GET", "/", body))
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusNotFound, resp.StatusCode)
+
+	_, ok := logs.All()[0].ContextMap()["resBody"]
+	utils.AssertEqual(t, false, ok)
 }
 
 // go test -run Test_Logger
