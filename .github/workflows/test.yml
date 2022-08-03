@@ -39,7 +39,7 @@ jobs:
                     restore-keys: |
                         ${{ runner.os }}-go-${{ matrix.go-version }}-
             -   name: Fetch Repository
-                uses: actions/checkout@v2
+                uses: actions/checkout@v3
             -   name: Test PASETO Middleware
                 run: cd ./paseto && go test ./... -v -race
             -   name: Test Fiberzap Middleware
