@@ -2,6 +2,12 @@
 
 version: 2
 updates:
+    -   package-ecosystem: "github-actions"
+        directory: "/"
+        schedule:
+            interval: "daily"
+        labels:
+            - "🤖 Dependencies"
     -   package-ecosystem: "gomod"
         directory: "/paseto/" # Location of package manifests
         labels:
