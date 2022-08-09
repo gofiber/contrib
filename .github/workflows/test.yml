@@ -31,3 +31,5 @@ jobs:
         run: cd ./swagger && go test ./... -v -race
       - name: Test casbin Middleware
         run: cd ./casbin && go test ./... -v -race
+      - name: Test fibernewrelic Middleware
+        run: cd ./fibernewrelic && go test ./... -v -race

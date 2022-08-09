@@ -35,3 +35,7 @@ jobs:
                 working-directory: ./casbin
                 run: "`go env GOPATH`/bin/gosec -exclude-dir=internal ./..."
                 # -----
+            -   name: Run Gosec (fibernewrelic)
+                working-directory: ./fibernewrelic
+                run: "`go env GOPATH`/bin/gosec -exclude-dir=internal ./..."
+                # -----
