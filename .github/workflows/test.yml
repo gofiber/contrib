@@ -52,3 +52,5 @@ jobs:
                 run: cd ./casbin && go test ./... -v -race
             -   name: Test fibernewrelic Middleware
                 run: cd ./fibernewrelic && go test ./... -v -race
+            -   name: Test opafiber Middleware
+                run: cd ./opafiber && go test ./... -v -race

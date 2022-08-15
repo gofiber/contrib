@@ -39,3 +39,7 @@ jobs:
                 working-directory: ./fibernewrelic
                 run: "`go env GOPATH`/bin/gosec -exclude-dir=internal ./..."
                 # -----
+            -   name: Run Gosec (opafiber)
+                working-directory: ./opafiber
+                run: "`go env GOPATH`/bin/gosec -exclude-dir=internal ./..."
+                # -----
