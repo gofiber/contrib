@@ -1,4 +1,5 @@
 ### NewRelic
+
 ![Release](https://img.shields.io/github/release/gofiber/contrib.svg)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Tests/badge.svg)
@@ -32,6 +33,22 @@ opafiber.New(config opafiber.Config) fiber.Handler
 | IncludeHeaders        | `[]string`  | Include headers as input to rego policy                      | -       |
 
 ### Usage
+
+OPA Fiber middleware sends the following example data to the policy engine as input:
+
+```json
+{
+  "method": "GET",
+  "path": "/somePath",
+  "query": {
+    "name": ["John Doe"]
+  },
+  "headers": {
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+  }
+}
+```
 
 ```go
 package main
