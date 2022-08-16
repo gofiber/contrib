@@ -50,7 +50,7 @@ func New(cfg Config) fiber.Handler {
 		if cfg.IncludeQueryString {
 			queryStringData := make(map[string][]string)
 			c.Request().URI().QueryArgs().VisitAll(func(key, value []byte) {
-				queryStringData[string(key)] = append(queryStringData[string(key)], string(value))
+				queryStringData[utils.UnsafeString(key)] = append(queryStringData[utils.UnsafeString(key)], utils.UnsafeString(value))
 			})
 			input["query"] = queryStringData
 		}
