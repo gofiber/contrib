@@ -52,3 +52,6 @@ jobs:
                 run: cd ./casbin && go test ./... -v -race
             -   name: Test fibernewrelic Middleware
                 run: cd ./fibernewrelic && go test ./... -v -race
+            -   name: Test opafiber Middleware
+                if: startsWith(matrix.go-version, '1.15') == false
+                run: cd ./opafiber && go test ./... -v -race
