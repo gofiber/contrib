@@ -6,13 +6,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/gofiber/fiber/v2/utils"
-
 	"github.com/gofiber/fiber/v2"
-
+	"github.com/gofiber/fiber/v2/utils"
 	otelcontrib "go.opentelemetry.io/contrib"
 	"go.opentelemetry.io/otel"
-
 	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -50,7 +47,7 @@ func Middleware(service string, opts ...Option) fiber.Handler {
 
 	return func(c *fiber.Ctx) error {
 		c.Locals(tracerKey, tracer)
-		savedCtx, cancel := context.WithCancel(c.Context())
+		savedCtx, cancel := context.WithCancel(c.UserContext())
 
 		defer func() {
 			c.SetUserContext(savedCtx)
