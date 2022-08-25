@@ -22,6 +22,11 @@ type Config struct {
 	// Optional. Default: nil
 	SkipResBody func(c *fiber.Ctx) bool
 
+	// Skip logging for these uri
+	//
+	// Optional. Default: nil
+	SkipURIs []string
+
 	// Add custom zap logger.
 	//
 	// Optional. Default: zap.NewProduction()\n

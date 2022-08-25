@@ -282,3 +282,23 @@ func Test_Request_Id(t *testing.T) {
 	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
 	utils.AssertEqual(t, "bf985e8e-6a32-42ec-8e50-05a21db8f0e4", logs.All()[0].Context[0].String)
 }
+
+// go test -run Test_Skip_URIs
+func Test_Skip_URIs(t *testing.T) {
+	app := fiber.New()
+	logger, logs := setupLogsCapture()
+
+	app.Use(New(Config{
+		Logger:   logger,
+		SkipURIs: []string{"/ignore_logging"},
+	}))
+
+	app.Get("/ignore_logging", func(c *fiber.Ctx) error {
+		return errors.New("no log")
+	})
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/ignore_logging", nil))
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusInternalServerError, resp.StatusCode)
+	utils.AssertEqual(t, 0, len(logs.All()))
+}
