@@ -4,7 +4,7 @@ go 1.14
 
 require (
 	github.com/benbjohnson/clock v1.3.0 // indirect
-	github.com/gofiber/fiber/v2 v2.36.0
+	github.com/gofiber/fiber/v2 v2.37.0
 	github.com/kr/pretty v0.3.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/rogpeppe/go-internal v1.8.1 // indirect
