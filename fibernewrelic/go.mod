@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/fibernewrelic
 go 1.18
 
 require (
-	github.com/gofiber/fiber/v2 v2.36.0
+	github.com/gofiber/fiber/v2 v2.37.0
 	github.com/newrelic/go-agent/v3 v3.18.1
 	github.com/stretchr/testify v1.8.0
 )
@@ -15,7 +15,7 @@ require (
 	github.com/klauspost/compress v1.15.9 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
-	github.com/valyala/fasthttp v1.38.0 // indirect
+	github.com/valyala/fasthttp v1.39.0 // indirect
 	github.com/valyala/tcplisten v1.0.0 // indirect
 	golang.org/x/net v0.0.0-20220225172249-27dd8689420f // indirect
 	golang.org/x/sys v0.0.0-20220727055044-e65921a090b8 // indirect
