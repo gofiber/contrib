@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/opafiber
 go 1.18
 
 require (
-	github.com/gofiber/fiber/v2 v2.36.0
+	github.com/gofiber/fiber/v2 v2.37.0
 	github.com/open-policy-agent/opa v0.43.0
 	github.com/stretchr/testify v1.8.0
 )
