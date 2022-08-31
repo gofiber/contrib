@@ -4,7 +4,7 @@ go 1.14
 
 require (
 	github.com/aead/chacha20poly1305 v0.0.0-20201124145622-1a5aba2a8b29 // indirect
-	github.com/gofiber/fiber/v2 v2.36.0
+	github.com/gofiber/fiber/v2 v2.37.0
 	github.com/google/uuid v1.3.0
 	github.com/kr/pretty v0.3.0 // indirect
 	github.com/o1egl/paseto v1.0.0
