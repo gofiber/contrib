@@ -27,10 +27,21 @@ func New(config ...Config) fiber.Handler {
 	var errPadding = 15
 	var latencyEnabled = contains("latency", cfg.Fields)
 
+	// put ignore uri into a map for faster match
+	skipURIs := make(map[string]struct{})
+	for _, uri := range cfg.SkipURIs {
+		skipURIs[uri] = struct{}{}
+	}
+
 	// Return new handler
 	return func(c *fiber.Ctx) (err error) {
 		// Don't execute middleware if Next returns true
 		if cfg.Next != nil && cfg.Next(c) {
+			return c.Next()
+		}
+
+		// skip uri
+		if _, ok := skipURIs[c.Path()]; ok {
 			return c.Next()
 		}
 
