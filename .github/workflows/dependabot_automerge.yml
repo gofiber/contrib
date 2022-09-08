@@ -9,14 +9,12 @@ jobs:
   dependabot:
     runs-on: ubuntu-latest
     if: ${{ github.actor == 'dependabot[bot]' }}
+    needs:
+        - Tests
+        - Golint
+        - Gosec
+        - analyse
     steps:
-      - name: Wait for tests to succeed
-        uses: lewagon/wait-on-check-action@v1.0.0
-        with:
-            ref: ${{ github.event.pull_request.head.sha || github.sha }}
-            check-regexp: Test .*
-            repo-token: ${{ secrets.GITHUB_TOKEN }}
-            wait-interval: 20
       - name: Dependabot metadata
         id: metadata
         uses: dependabot/fetch-metadata@v1.1.1
