@@ -21,18 +21,26 @@ go get -u github.com/gofiber/contrib/opafiber
 
 ```go
 opafiber.New(config opafiber.Config) fiber.Handler
+
 ```
 
 ### Config
 
-| Property              | Type        | Description                                                  | Default |
-|:----------------------|:------------|:-------------------------------------------------------------|:--------|
-| RegoQuery             | `string`    | Required - Rego query                                        | -       |
-| RegoPolicy            | `io.Reader` | Required - Rego policy                                       | -       |
-| IncludeQueryString    | `bool`      | Include query string as input to rego policy                 | `false` |
-| DeniedStatusCode      | `int`       | Http status code to return when policy denies request        | `400`   |
-| DeniedResponseMessage | `string`    | Http response body text to return when policy denies request | `""`    |
-| IncludeHeaders        | `[]string`  | Include headers as input to rego policy                      | -       |
+| Property              | Type                | Description                                                  | Default                                                             |
+|:----------------------|:--------------------|:-------------------------------------------------------------|:--------------------------------------------------------------------|
+| RegoQuery             | `string`            | Required - Rego query                                        | -                                                                   |
+| RegoPolicy            | `io.Reader`         | Required - Rego policy                                       | -                                                                   |
+| IncludeQueryString    | `bool`              | Include query string as input to rego policy                 | `false`                                                             |
+| DeniedStatusCode      | `int`               | Http status code to return when policy denies request        | `400`                                                               |
+| DeniedResponseMessage | `string`            | Http response body text to return when policy denies request | `""`                                                                |
+| IncludeHeaders        | `[]string`          | Include headers as input to rego policy                      | -                                                                   |
+| InputCreationMethod   | `InputCreationFunc` | Use your own function to provide input for OPA               | `func defaultInput(ctx *fiber.Ctx) (map[string]interface{}, error)` |
+
+### Types
+
+```go
+type InputCreationFunc func(c *fiber.Ctx) (map[string]interface{}, error)
+```
 
 ### Usage
 
@@ -79,6 +87,12 @@ allow {
 		DeniedStatusCode:      fiber.StatusForbidden,
 		DeniedResponseMessage: "status forbidden",
 		IncludeHeaders:        []string{"Authorization"},
+		InputCreationMethod:   func (ctx *fiber.Ctx) (map[string]interface{}, error) {
+            return map[string]interface{}{
+                "method": ctx.Method(),
+                "path": ctx.Path(),
+            }, nil
+        },
 	}
 	app.Use(opafiber.New(cfg))
 
