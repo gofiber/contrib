@@ -1,5 +1,9 @@
 name: Dependabot auto-merge
-on: pull_request
+on:
+    workflow_run:
+      workflows: [ Tests, Security, Linter, "CodeQL" ]
+      types:
+        - completed
 
 permissions:
   contents: write
@@ -11,14 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ github.actor == 'dependabot[bot]' }}
     steps:
-      - name: Wait for tests to succeed
-        uses: lewagon/wait-on-check-action@v1.1.2
-        with:
-            ref: ${{ github.ref }}
-            #If you would like to wait for all other checks to complete you may set running-workflow-name to the name of the current job and not set a check-name parameter.
-            running-workflow-name: 'Dependabot auto-merge'
-            repo-token: ${{ secrets.PR_TOKEN }}
-            wait-interval: 10
+      - uses: ahmadnassri/action-workflow-run-wait@v1
       - name: Dependabot metadata
         id: metadata
         uses: dependabot/fetch-metadata@v1.1.1
