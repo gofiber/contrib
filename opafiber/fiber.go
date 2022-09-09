@@ -38,8 +38,7 @@ func New(cfg Config) fiber.Handler {
 		panic(fmt.Sprint("rego policy error: %w", err))
 	}
 	return func(c *fiber.Ctx) error {
-		input := make(map[string]interface{})
-		input, err = cfg.InputCreationMethod(c)
+		input, err := cfg.InputCreationMethod(c)
 		if err != nil {
 			c.Response().SetStatusCode(fiber.StatusInternalServerError)
 			c.Response().SetBodyString(fmt.Sprintf("Error creating input: %s", err))
@@ -52,11 +51,13 @@ func New(cfg Config) fiber.Handler {
 			})
 			input["query"] = queryStringData
 		}
-		headers := make(map[string]string)
-		for _, header := range cfg.IncludeHeaders {
-			headers[header] = c.Get(header)
+		if len(cfg.IncludeHeaders) > 0 {
+			headers := make(map[string]string)
+			for _, header := range cfg.IncludeHeaders {
+				headers[header] = c.Get(header)
+			}
+			input["headers"] = headers
 		}
-		input["headers"] = headers
 		res, err := query.Eval(context.Background(), rego.EvalInput(input))
 		if err != nil {
 			c.Response().SetStatusCode(fiber.StatusInternalServerError)
@@ -83,7 +84,7 @@ func (c *Config) fillAndValidate() error {
 		c.DeniedStatusCode = fiber.StatusBadRequest
 	}
 	if c.DeniedResponseMessage == "" {
-		c.DeniedResponseMessage = "Bad request"
+		c.DeniedResponseMessage = fiber.ErrBadRequest.Error()
 	}
 	if c.IncludeHeaders == nil {
 		c.IncludeHeaders = []string{}

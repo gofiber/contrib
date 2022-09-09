@@ -321,7 +321,7 @@ func TestFillAndValidate(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.Equal(t, cfg.DeniedStatusCode, fiber.StatusBadRequest)
-	assert.Equal(t, cfg.DeniedResponseMessage, "Bad request")
+	assert.Equal(t, cfg.DeniedResponseMessage, fiber.ErrBadRequest.Error())
 	assert.IsType(t, cfg.InputCreationMethod, InputCreationFunc(nil))
 	assert.IsType(t, cfg.IncludeHeaders, []string(nil))
 }
