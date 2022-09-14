@@ -10,12 +10,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
        - name: Wait for check is finished
-         uses: fountainhead/action-wait-for-check@v1.0.0
+         uses: lewagon/wait-on-check-action@v1.0.0
          id: wait_for_checks
          with:
-             token: ${{ secrets.PR_TOKEN }}
-             checkName: "Tests"
              ref: ${{ github.event.pull_request.head.sha || github.sha }}
+             check-name: 'Tests'
+             repo-token: ${{ secrets.PR_TOKEN }}
+             wait-interval: 10
   dependabot:
     needs: [wait_for_checks]
     name: Dependabot auto-merge
