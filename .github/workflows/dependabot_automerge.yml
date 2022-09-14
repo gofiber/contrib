@@ -10,11 +10,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
        - name: Wait for build process to finish
-         uses: r0x0d/wait-for-ci-checks@v0.2.0
+         uses: fountainhead/action-wait-for-check@v1.0.0
+         id: wait-for-build
          with:
-           # If you're running this on a pull request from a fork
-           ref: ${{ github.event.pull_request.head.sha }}
-           checkNames: "Tests"
+             token: ${{ secrets.PR_TOKEN }}
+             checkName: "Tests"
+             ref: ${{ github.event.pull_request.head.sha || github.sha }}
   dependabot:
     needs: [wait_for_checks]
     name: Dependabot auto-merge
