@@ -14,7 +14,7 @@ jobs:
          id: wait_for_checks
          with:
              ref: ${{ github.event.pull_request.head.sha || github.sha }}
-             check-name: 'Tests'
+             running-workflow-name: "Tests"
              repo-token: ${{ secrets.PR_TOKEN }}
              wait-interval: 10
   dependabot:
