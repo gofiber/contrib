@@ -9,9 +9,9 @@ jobs:
   wait_for_checks:
     runs-on: ubuntu-latest
     steps:
-       - name: Wait for build process to finish
+       - name: Wait for check is finished
          uses: fountainhead/action-wait-for-check@v1.0.0
-         id: wait-for-build
+         id: wait_for_checks
          with:
              token: ${{ secrets.PR_TOKEN }}
              checkName: "Tests"
@@ -20,7 +20,7 @@ jobs:
     needs: [wait_for_checks]
     name: Dependabot auto-merge
     runs-on: ubuntu-latest
-    if: ${{ github.actor == 'dependabot[bot]' }}
+    if: ${{ needs.wait_for_checks.outputs.conclusion == 'success' && github.actor == 'dependabot[bot]' }}
     steps:
       - name: Dependabot metadata
         id: metadata
