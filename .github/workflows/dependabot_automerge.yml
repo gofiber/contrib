@@ -1,21 +1,26 @@
 name: Dependabot auto-merge
-on:
-    workflow_run:
-      workflows: [ Tests, Security, Linter, "CodeQL" ]
-      types:
-        - completed
+on: pull_request
 
 permissions:
   contents: write
   pull-requests: write
 
 jobs:
+  wait_for_checks:
+    runs-on: ubuntu-latest
+    steps:
+       - name: Wait for build process to finish
+         uses: r0x0d/wait-for-ci-checks@v0.2.0
+         with:
+           # If you're running this on a pull request from a fork
+           ref: ${{ github.event.pull_request.head.sha }}
+           checkNames: "Tests"
   dependabot:
+    needs: [wait_for_checks]
     name: Dependabot auto-merge
     runs-on: ubuntu-latest
     if: ${{ github.actor == 'dependabot[bot]' }}
     steps:
-      - uses: ahmadnassri/action-workflow-run-wait@v1
       - name: Dependabot metadata
         id: metadata
         uses: dependabot/fetch-metadata@v1.3.3
