@@ -30,8 +30,8 @@ github.com/valyala/fasthttp v1.40.0 h1:CRq/00MfruPGFLTQKY8b+8SfdK60TxNztjRMnH0t1
 github.com/valyala/fasthttp v1.40.0/go.mod h1:t/G+3rLek+CyY9bnIE+YlMRddxVAAGjhxndDB4i4C0I=
 github.com/valyala/tcplisten v1.0.0 h1:rBHj/Xf+E1tRGZyWIWwJDiRY0zc1Js+CV5DqwacVSA8=
 github.com/valyala/tcplisten v1.0.0/go.mod h1:T0xQ8SeCZGxckz9qRXTfG43PvQ/mcWh7FwZEA7Ioqkc=
-go.opentelemetry.io/contrib v1.9.0 h1:2KAoCVu4OMI9TYoSWvcV7+UbbIPOi4623S77nV+M/Ks=
-go.opentelemetry.io/contrib v1.9.0/go.mod h1:yp0N4+hnpWCpnMzs6T6WbD9Amfg7reEZsS0jAd/5M2Q=
+go.opentelemetry.io/contrib v1.10.0 h1:RczVFZu4UDkHjx0ErqGMV9fT/96knz7ZMu6ljFMzesg=
+go.opentelemetry.io/contrib v1.10.0/go.mod h1:yp0N4+hnpWCpnMzs6T6WbD9Amfg7reEZsS0jAd/5M2Q=
 go.opentelemetry.io/contrib/propagators/b3 v1.10.0 h1:6AD2VV8edRdEYNaD8cNckpzgdMLU2kbV9OYyxt2kvCg=
 go.opentelemetry.io/contrib/propagators/b3 v1.10.0/go.mod h1:oxvamQ/mTDFQVugml/uFS59+aEUnFLhmd1wsG+n5MOE=
 go.opentelemetry.io/otel v1.0.0-RC3/go.mod h1:Ka5j3ua8tZs4Rkq4Ex3hwgBgOchyPVq5S6P2lz//nKQ=
