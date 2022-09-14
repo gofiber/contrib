@@ -21,7 +21,7 @@ jobs:
     needs: [wait_for_checks]
     name: Dependabot auto-merge
     runs-on: ubuntu-latest
-    if: ${{ needs.wait_for_checks.outputs.conclusion == 'success' && github.actor == 'dependabot[bot]' }}
+    if: ${{ github.actor == 'dependabot[bot]' }}
     steps:
       - name: Dependabot metadata
         id: metadata
