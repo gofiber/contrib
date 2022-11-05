@@ -3,6 +3,7 @@ package fiberzap
 import (
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // Config defines the config for middleware.
@@ -41,6 +42,11 @@ type Config struct {
 	//
 	// Optional. Default: {"Server error", "Client error", "Success"}
 	Messages []string
+
+	// Custom response levels.
+	//
+	// Optional. Default: {zapcore.ErrorLevel, zapcore.WarnLevel, zapcore.InfoLevel}
+	Levels []zapcore.Level
 }
 
 // Use zap.NewProduction() as default logging instance.
@@ -52,6 +58,7 @@ var ConfigDefault = Config{
 	Logger:   logger,
 	Fields:   []string{"latency", "status", "method", "url"},
 	Messages: []string{"Server error", "Client error", "Success"},
+	Levels:   []zapcore.Level{zapcore.ErrorLevel, zapcore.WarnLevel, zapcore.InfoLevel},
 }
 
 // Helper function to set default values
@@ -79,6 +86,10 @@ func configDefault(config ...Config) Config {
 
 	if cfg.Messages == nil {
 		cfg.Messages = ConfigDefault.Messages
+	}
+
+	if cfg.Levels == nil {
+		cfg.Levels = ConfigDefault.Levels
 	}
 
 	return cfg

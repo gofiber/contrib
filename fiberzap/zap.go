@@ -8,6 +8,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // New creates a new middleware handler
@@ -81,8 +82,25 @@ func New(config ...Config) fiber.Handler {
 			stop = time.Now()
 		}
 
+		// Check if the logger has the appropriate level
+		s := c.Response().StatusCode()
+		var ce *zapcore.CheckedEntry
+		switch {
+		case s >= 500:
+			ce = cfg.Logger.Check(cfg.Levels[0], cfg.Messages[0])
+		case s >= 400:
+			ce = cfg.Logger.Check(cfg.Levels[1], cfg.Messages[1])
+		default:
+			ce = cfg.Logger.Check(cfg.Levels[2], cfg.Messages[2])
+		}
+
+		if ce == nil {
+			return nil
+		}
+
 		// Add fields
-		fields := make([]zap.Field, 0, len(cfg.Fields))
+		fields := make([]zap.Field, 0, len(cfg.Fields)+1)
+		fields = append(fields, zap.Error(err))
 
 		for _, field := range cfg.Fields {
 			switch field {
@@ -134,19 +152,14 @@ func New(config ...Config) fiber.Handler {
 				if chainErr != nil {
 					fields = append(fields, zap.String("error", chainErr.Error()))
 				}
+			case "reqHeaders":
+				c.Request().Header.VisitAll(func(k, v []byte) {
+					fields = append(fields, zap.ByteString(string(k), v))
+				})
 			}
 		}
 
-		// Return fields by status code
-		s := c.Response().StatusCode()
-		switch {
-		case s >= 500:
-			cfg.Logger.With(zap.Error(err)).Error(cfg.Messages[0], fields...)
-		case s >= 400:
-			cfg.Logger.With(zap.Error(err)).Warn(cfg.Messages[1], fields...)
-		default:
-			cfg.Logger.Info(cfg.Messages[2], fields...)
-		}
+		ce.Write(fields...)
 
 		return nil
 	}

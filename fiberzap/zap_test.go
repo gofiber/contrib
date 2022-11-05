@@ -280,7 +280,7 @@ func Test_Request_Id(t *testing.T) {
 	resp, err := app.Test(httptest.NewRequest("GET", "/", nil))
 	utils.AssertEqual(t, nil, err)
 	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
-	utils.AssertEqual(t, "bf985e8e-6a32-42ec-8e50-05a21db8f0e4", logs.All()[0].Context[0].String)
+	utils.AssertEqual(t, "bf985e8e-6a32-42ec-8e50-05a21db8f0e4", logs.All()[0].Context[1].String)
 }
 
 // go test -run Test_Skip_URIs
@@ -301,4 +301,33 @@ func Test_Skip_URIs(t *testing.T) {
 	utils.AssertEqual(t, nil, err)
 	utils.AssertEqual(t, fiber.StatusInternalServerError, resp.StatusCode)
 	utils.AssertEqual(t, 0, len(logs.All()))
+}
+
+// go test -run Test_Req_Headers
+func Test_Req_Headers(t *testing.T) {
+	app := fiber.New()
+	logger, logs := setupLogsCapture()
+
+	app.Use(New(Config{
+		Logger: logger,
+		Fields: []string{"reqHeaders"},
+	}))
+
+	app.Get("/", func(c *fiber.Ctx) error {
+		return c.SendString("hello")
+	})
+
+	expected := map[string]interface{}{
+		"Host": "example.com",
+		"Baz":  "foo",
+		"Foo":  "bar",
+	}
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Add("foo", "bar")
+	req.Header.Add("baz", "foo")
+	resp, err := app.Test(req)
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
+	utils.AssertEqual(t, expected, logs.All()[0].ContextMap())
 }
