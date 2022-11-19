@@ -4,11 +4,11 @@ go 1.14
 
 require (
 	github.com/benbjohnson/clock v1.3.0 // indirect
-	github.com/gofiber/fiber/v2 v2.39.0
+	github.com/gofiber/fiber/v2 v2.40.0
 	github.com/kr/pretty v0.3.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/rogpeppe/go-internal v1.8.1 // indirect
-	github.com/valyala/fasthttp v1.40.0
+	github.com/valyala/fasthttp v1.41.0
 	go.uber.org/atomic v1.9.0 // indirect
 	go.uber.org/goleak v1.1.12 // indirect
 	go.uber.org/multierr v1.7.0 // indirect
