@@ -15,6 +15,7 @@ import (
 	"github.com/gofiber/fiber/v2/utils"
 	"github.com/valyala/fasthttp"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
 )
 
@@ -330,4 +331,90 @@ func Test_Req_Headers(t *testing.T) {
 	utils.AssertEqual(t, nil, err)
 	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
 	utils.AssertEqual(t, expected, logs.All()[0].ContextMap())
+}
+
+// go test -run Test_LoggerLevelsAndMessages
+func Test_LoggerLevelsAndMessages(t *testing.T) {
+	app := fiber.New()
+	logger, logs := setupLogsCapture()
+
+	levels := []zapcore.Level{zapcore.ErrorLevel, zapcore.WarnLevel, zapcore.InfoLevel}
+	messages := []string{"server error", "client error", "success"}
+	app.Use(New(Config{
+		Logger:   logger,
+		Messages: messages,
+		Levels:   levels,
+	}))
+
+	app.Get("/200", func(c *fiber.Ctx) error {
+		c.Status(fiber.StatusOK)
+		return nil
+	})
+	app.Get("/400", func(c *fiber.Ctx) error {
+		c.Status(fiber.StatusBadRequest)
+		return nil
+	})
+	app.Get("/500", func(c *fiber.Ctx) error {
+		c.Status(fiber.StatusInternalServerError)
+		return nil
+	})
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/500", nil))
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusInternalServerError, resp.StatusCode)
+	utils.AssertEqual(t, levels[0], logs.All()[0].Level)
+	utils.AssertEqual(t, messages[0], logs.All()[0].Message)
+	resp, err = app.Test(httptest.NewRequest("GET", "/400", nil))
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusBadRequest, resp.StatusCode)
+	utils.AssertEqual(t, levels[1], logs.All()[1].Level)
+	utils.AssertEqual(t, messages[1], logs.All()[1].Message)
+	resp, err = app.Test(httptest.NewRequest("GET", "/200", nil))
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
+	utils.AssertEqual(t, levels[2], logs.All()[2].Level)
+	utils.AssertEqual(t, messages[2], logs.All()[2].Message)
+}
+
+// go test -run Test_LoggerLevelsAndMessagesSingle
+func Test_LoggerLevelsAndMessagesSingle(t *testing.T) {
+	app := fiber.New()
+	logger, logs := setupLogsCapture()
+
+	levels := []zapcore.Level{zapcore.ErrorLevel}
+	messages := []string{"server error"}
+	app.Use(New(Config{
+		Logger:   logger,
+		Messages: messages,
+		Levels:   levels,
+	}))
+
+	app.Get("/200", func(c *fiber.Ctx) error {
+		c.Status(fiber.StatusOK)
+		return nil
+	})
+	app.Get("/400", func(c *fiber.Ctx) error {
+		c.Status(fiber.StatusBadRequest)
+		return nil
+	})
+	app.Get("/500", func(c *fiber.Ctx) error {
+		c.Status(fiber.StatusInternalServerError)
+		return nil
+	})
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/500", nil))
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusInternalServerError, resp.StatusCode)
+	utils.AssertEqual(t, levels[0], logs.All()[0].Level)
+	utils.AssertEqual(t, messages[0], logs.All()[0].Message)
+	resp, err = app.Test(httptest.NewRequest("GET", "/400", nil))
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusBadRequest, resp.StatusCode)
+	utils.AssertEqual(t, levels[0], logs.All()[1].Level)
+	utils.AssertEqual(t, messages[0], logs.All()[1].Message)
+	resp, err = app.Test(httptest.NewRequest("GET", "/200", nil))
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
+	utils.AssertEqual(t, levels[0], logs.All()[2].Level)
+	utils.AssertEqual(t, messages[0], logs.All()[2].Message)
 }

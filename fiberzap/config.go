@@ -39,11 +39,21 @@ type Config struct {
 	Fields []string
 
 	// Custom response messages.
+	// Response codes >= 500 will be logged with Messages[0].
+	// Response codes >= 400 will be logged with Messages[1].
+	// Other response codes will be logged with Messages[2].
+	// You can specify less, than 3 messages, but you must specify at least 1.
+	// Specifying more than 3 messages is useless.
 	//
 	// Optional. Default: {"Server error", "Client error", "Success"}
 	Messages []string
 
 	// Custom response levels.
+	// Response codes >= 500 will be logged with Levels[0].
+	// Response codes >= 400 will be logged with Levels[1].
+	// Other response codes will be logged with Levels[2].
+	// You can specify less, than 3 levels, but you must specify at least 1.
+	// Specifying more than 3 levels is useless.
 	//
 	// Optional. Default: {zapcore.ErrorLevel, zapcore.WarnLevel, zapcore.InfoLevel}
 	Levels []zapcore.Level

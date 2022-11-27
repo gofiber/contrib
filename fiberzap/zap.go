@@ -8,7 +8,6 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 )
 
 // New creates a new middleware handler
@@ -83,17 +82,28 @@ func New(config ...Config) fiber.Handler {
 		}
 
 		// Check if the logger has the appropriate level
-		s := c.Response().StatusCode()
-		var ce *zapcore.CheckedEntry
+		var (
+			s     = c.Response().StatusCode()
+			index int
+		)
 		switch {
 		case s >= 500:
-			ce = cfg.Logger.Check(cfg.Levels[0], cfg.Messages[0])
+			// error index is zero
 		case s >= 400:
-			ce = cfg.Logger.Check(cfg.Levels[1], cfg.Messages[1])
+			index = 1
 		default:
-			ce = cfg.Logger.Check(cfg.Levels[2], cfg.Messages[2])
+			index = 2
+		}
+		levelIndex := index
+		if levelIndex >= len(cfg.Levels) {
+			levelIndex = len(cfg.Levels) - 1
+		}
+		messageIndex := index
+		if messageIndex >= len(cfg.Messages) {
+			messageIndex = len(cfg.Messages) - 1
 		}
 
+		ce := cfg.Logger.Check(cfg.Levels[levelIndex], cfg.Messages[messageIndex])
 		if ce == nil {
 			return nil
 		}
