@@ -8,7 +8,7 @@ require (
 	github.com/gofiber/fiber/v2 v2.40.1
 	github.com/gorilla/handlers v1.5.1
 	github.com/stretchr/testify v1.8.1
-	github.com/valyala/fasthttp v1.42.0
+	github.com/valyala/fasthttp v1.43.0
 )
 
 require (
