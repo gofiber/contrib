@@ -7,19 +7,17 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
-
 	"github.com/gofiber/fiber/v2"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
 	b3prop "go.opentelemetry.io/contrib/propagators/b3"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/oteltest"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/metric"
+	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
@@ -163,7 +161,7 @@ func TestPropagationWithGlobalPropagators(t *testing.T) {
 
 	r := httptest.NewRequest("GET", "/user/123", nil)
 
-	ctx, pspan := provider.Tracer(tracerName).Start(context.Background(), "test")
+	ctx, pspan := provider.Tracer(instrumentationName).Start(context.Background(), "test")
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(r.Header))
 
 	app := fiber.New()
@@ -190,7 +188,7 @@ func TestPropagationWithCustomPropagators(t *testing.T) {
 
 	r := httptest.NewRequest("GET", "/user/123", nil)
 
-	ctx, pspan := provider.Tracer(tracerName).Start(context.Background(), "test")
+	ctx, pspan := provider.Tracer(instrumentationName).Start(context.Background(), "test")
 	b3.Inject(ctx, propagation.HeaderCarrier(r.Header))
 
 	app := fiber.New()
@@ -243,4 +241,20 @@ func TestHasBasicAuth(t *testing.T) {
 			assert.Equal(t, tC.valid, valid)
 		})
 	}
+}
+
+func TestMetric(t *testing.T) {
+	reader := metric.NewManualReader()
+	provider := metric.NewMeterProvider(metric.WithReader(reader))
+
+	app := fiber.New()
+	app.Use(Middleware("foobar", WithMeterProvider(provider)))
+	app.Get("/", func(ctx *fiber.Ctx) error {
+		return ctx.SendStatus(http.StatusOK)
+	})
+	_, _ = app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+	metrics, err := reader.Collect(context.Background())
+	assert.NoError(t, err)
+	assert.Len(t, metrics.ScopeMetrics, 1)
+	assert.Equal(t, instrumentationName, metrics.ScopeMetrics[0].Scope.Name)
 }

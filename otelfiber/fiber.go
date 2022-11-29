@@ -5,20 +5,30 @@ import (
 	"encoding/base64"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/utils"
 	otelcontrib "go.opentelemetry.io/contrib"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/global"
+	"go.opentelemetry.io/otel/metric/instrument"
+	"go.opentelemetry.io/otel/metric/unit"
 	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 const (
-	tracerKey          = "gofiber-contrib-tracer-fiber"
-	tracerName         = "github.com/gofiber/contrib/otelfiber"
-	defaultServiceName = "fiber-server"
+	tracerKey           = "gofiber-contrib-tracer-fiber"
+	instrumentationName = "github.com/gofiber/contrib/otelfiber"
+	defaultServiceName  = "fiber-server"
+
+	metricNameHttpServerDuration       = "http.server.duration"
+	metricNameHttpServerRequestSize    = "http.server.request.size"
+	metricNameHttpServerResponseSize   = "http.server.response.size"
+	metricNameHttpServerActiveRequests = "http.server.active_requests"
 )
 
 // Middleware returns fiber handler which will trace incoming requests.
@@ -34,13 +44,35 @@ func Middleware(service string, opts ...Option) fiber.Handler {
 		cfg.TracerProvider = otel.GetTracerProvider()
 	}
 	tracer := cfg.TracerProvider.Tracer(
-		tracerName,
+		instrumentationName,
 		oteltrace.WithInstrumentationVersion(otelcontrib.SemVersion()),
 	)
+	if cfg.MeterProvider == nil {
+		cfg.MeterProvider = global.MeterProvider()
+	}
+	meter := cfg.MeterProvider.Meter(
+		instrumentationName,
+		metric.WithInstrumentationVersion(otelcontrib.SemVersion()),
+	)
+	httpServerDuration, err := meter.SyncFloat64().Histogram(metricNameHttpServerDuration, instrument.WithUnit(unit.Milliseconds), instrument.WithDescription("measures the duration inbound HTTP requests"))
+	if err != nil {
+		otel.Handle(err)
+	}
+	httpServerRequestSize, err := meter.SyncInt64().Histogram(metricNameHttpServerRequestSize, instrument.WithUnit(unit.Bytes), instrument.WithDescription("measures the size of HTTP request messages"))
+	if err != nil {
+		otel.Handle(err)
+	}
+	httpServerResponseSize, err := meter.SyncInt64().Histogram(metricNameHttpServerResponseSize, instrument.WithUnit(unit.Bytes), instrument.WithDescription("measures the size of HTTP response messages"))
+	if err != nil {
+		otel.Handle(err)
+	}
+	httpServerActiveRequests, err := meter.SyncInt64().UpDownCounter(metricNameHttpServerActiveRequests, instrument.WithUnit(unit.Dimensionless), instrument.WithDescription("measures the number of concurrent HTTP requests that are currently in-flight"))
+	if err != nil {
+		otel.Handle(err)
+	}
 	if cfg.Propagators == nil {
 		cfg.Propagators = otel.GetTextMapPropagator()
 	}
-
 	if cfg.SpanNameFormatter == nil {
 		cfg.SpanNameFormatter = defaultSpanNameFormatter
 	}
@@ -49,11 +81,17 @@ func Middleware(service string, opts ...Option) fiber.Handler {
 		c.Locals(tracerKey, tracer)
 		savedCtx, cancel := context.WithCancel(c.UserContext())
 
+		start := time.Now()
+		metricAttrs := httpServerMetricAttributesFromRequest(c, service)
+		httpServerActiveRequests.Add(savedCtx, 1, metricAttrs...)
 		defer func() {
+			httpServerDuration.Record(savedCtx, float64(time.Since(start).Microseconds())/1000, metricAttrs...)
+			httpServerRequestSize.Record(savedCtx, int64(len(c.Request().Body())), metricAttrs...)
+			httpServerResponseSize.Record(savedCtx, int64(len(c.Response().Body())), metricAttrs...)
+			httpServerActiveRequests.Add(savedCtx, -1, metricAttrs...)
 			c.SetUserContext(savedCtx)
 			cancel()
 		}()
-
 		reqHeader := make(http.Header)
 		c.Request().Header.VisitAll(func(k, v []byte) {
 			reqHeader.Add(string(k), string(v))
