@@ -32,6 +32,7 @@ fiberzap.New(config ...Config) fiber.Handler
 | Logger | `*zap.Logger`        | Add custom zap logger.                                                                                                                                  | `zap.NewDevelopment()`                      |
 | Fields   | `[]string` | Add fields what you want see.                                                                                                                                 | `[]string{"latency", "status", "method", "url"}` |
 | Messages       | `[]string`              | Custom response messages. | `[]string{"Server error", "Client error", "Success"}`                           |                
+| Levels       | `[]zapcore.Level`              | Custom response levels. | `[]zapcore.Level{zapcore.ErrorLevel, zapcore.WarnLevel, zapcore.InfoLevel}`                           |   
 | SkipURIs       | `[]string`              | Skip logging these URI. | `[]string{}`                           |                
 
 ### Example

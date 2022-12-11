@@ -81,8 +81,36 @@ func New(config ...Config) fiber.Handler {
 			stop = time.Now()
 		}
 
+		// Check if the logger has the appropriate level
+		var (
+			s     = c.Response().StatusCode()
+			index int
+		)
+		switch {
+		case s >= 500:
+			// error index is zero
+		case s >= 400:
+			index = 1
+		default:
+			index = 2
+		}
+		levelIndex := index
+		if levelIndex >= len(cfg.Levels) {
+			levelIndex = len(cfg.Levels) - 1
+		}
+		messageIndex := index
+		if messageIndex >= len(cfg.Messages) {
+			messageIndex = len(cfg.Messages) - 1
+		}
+
+		ce := cfg.Logger.Check(cfg.Levels[levelIndex], cfg.Messages[messageIndex])
+		if ce == nil {
+			return nil
+		}
+
 		// Add fields
-		fields := make([]zap.Field, 0, len(cfg.Fields))
+		fields := make([]zap.Field, 0, len(cfg.Fields)+1)
+		fields = append(fields, zap.Error(err))
 
 		for _, field := range cfg.Fields {
 			switch field {
@@ -134,19 +162,14 @@ func New(config ...Config) fiber.Handler {
 				if chainErr != nil {
 					fields = append(fields, zap.String("error", chainErr.Error()))
 				}
+			case "reqHeaders":
+				c.Request().Header.VisitAll(func(k, v []byte) {
+					fields = append(fields, zap.ByteString(string(k), v))
+				})
 			}
 		}
 
-		// Return fields by status code
-		s := c.Response().StatusCode()
-		switch {
-		case s >= 500:
-			cfg.Logger.With(zap.Error(err)).Error(cfg.Messages[0], fields...)
-		case s >= 400:
-			cfg.Logger.With(zap.Error(err)).Warn(cfg.Messages[1], fields...)
-		default:
-			cfg.Logger.Info(cfg.Messages[2], fields...)
-		}
+		ce.Write(fields...)
 
 		return nil
 	}
