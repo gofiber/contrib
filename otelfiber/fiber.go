@@ -130,17 +130,21 @@ func Middleware(service string, opts ...Option) fiber.Handler {
 		c.SetUserContext(ctx)
 
 		// serve the request to the next middleware
-		err := c.Next()
+		if err := c.Next(); err != nil {
+			span.RecordError(err)
+			// invokes the registered HTTP error handler
+			// to get the correct response status code
+			_ = c.App().Config().ErrorHandler(c, err)
+		}
 
-		span.SetName(cfg.SpanNameFormatter(c))
-
-		routeAttr := semconv.HTTPRouteKey.String(c.Route().Path) // no need to copy c.Route().Path: route strings should be immutable across app lifecycle
-
-		span.SetAttributes(routeAttr)
+		responseAttrs := append(
+			semconv.HTTPAttributesFromHTTPStatusCode(c.Response().StatusCode()),
+			semconv.HTTPRouteKey.String(c.Route().Path), // no need to copy c.Route().Path: route strings should be immutable across app lifecycle
+		)
 
 		responseMetricAttrs = append(
-			requestMetricsAttrs,
-			routeAttr)
+			responseMetricAttrs,
+			responseAttrs...)
 		requestSize := int64(len(c.Request().Body()))
 		responseSize := int64(len(c.Response().Body()))
 
@@ -153,16 +157,10 @@ func Middleware(service string, opts ...Option) fiber.Handler {
 			cancel()
 		}()
 
-		if err != nil {
-			span.RecordError(err)
-			// invokes the registered HTTP error handler
-			// to get the correct response status code
-			_ = c.App().Config().ErrorHandler(c, err)
-		}
+		span.SetAttributes(responseAttrs...)
+		span.SetName(cfg.SpanNameFormatter(c))
 
-		attrs := semconv.HTTPAttributesFromHTTPStatusCode(c.Response().StatusCode())
 		spanStatus, spanMessage := semconv.SpanStatusFromHTTPStatusCodeAndSpanKind(c.Response().StatusCode(), oteltrace.SpanKindServer)
-		span.SetAttributes(attrs...)
 		span.SetStatus(spanStatus, spanMessage)
 
 		return nil
