@@ -3,6 +3,7 @@ package otelfiber
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,13 +11,18 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	otelcontrib "go.opentelemetry.io/contrib"
 	b3prop "go.opentelemetry.io/contrib/propagators/b3"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric/unit"
 	"go.opentelemetry.io/otel/oteltest"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/instrumentation"
 	"go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
 	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
@@ -234,7 +240,6 @@ func TestHasBasicAuth(t *testing.T) {
 
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {
-
 			val, valid := hasBasicAuth(tC.auth)
 
 			assert.Equal(t, tC.user, val)
@@ -247,14 +252,116 @@ func TestMetric(t *testing.T) {
 	reader := metric.NewManualReader()
 	provider := metric.NewMeterProvider(metric.WithReader(reader))
 
+	serverName := "foobar"
+	route := "/foo"
+
 	app := fiber.New()
-	app.Use(Middleware("foobar", WithMeterProvider(provider)))
-	app.Get("/", func(ctx *fiber.Ctx) error {
+	app.Use(Middleware(serverName, WithMeterProvider(provider)))
+	app.Get(route, func(ctx *fiber.Ctx) error {
 		return ctx.SendStatus(http.StatusOK)
 	})
-	_, _ = app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+
+	r := httptest.NewRequest(http.MethodGet, route, nil)
+	_, _ = app.Test(r)
+
 	metrics, err := reader.Collect(context.Background())
 	assert.NoError(t, err)
 	assert.Len(t, metrics.ScopeMetrics, 1)
-	assert.Equal(t, instrumentationName, metrics.ScopeMetrics[0].Scope.Name)
+
+	requestAttrs := []attribute.KeyValue{
+		semconv.HTTPServerNameKey.String(serverName),
+		semconv.HTTPSchemeHTTP,
+		semconv.HTTPHostKey.String(r.Host),
+		semconv.HTTPFlavorKey.String(fmt.Sprintf("1.%d", r.ProtoMinor)),
+		semconv.HTTPMethodKey.String(http.MethodGet),
+	}
+	responseAttrs := append(
+		semconv.HTTPAttributesFromHTTPStatusCode(200),
+		semconv.HTTPRouteKey.String(route),
+	)
+
+	assertScopeMetrics(t, metrics.ScopeMetrics[0], route, requestAttrs, append(requestAttrs, responseAttrs...))
+}
+
+func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, requestAttrs []attribute.KeyValue, responseAttrs []attribute.KeyValue) {
+	assert.Equal(t, instrumentation.Scope{
+		Name:    instrumentationName,
+		Version: otelcontrib.SemVersion(),
+	}, sm.Scope)
+
+	// Duration value is not predictable.
+	m := sm.Metrics[0]
+	assert.Equal(t, metricNameHttpServerDuration, m.Name)
+	require.IsType(t, m.Data, metricdata.Histogram{})
+	hist := m.Data.(metricdata.Histogram)
+	assert.Equal(t, metricdata.CumulativeTemporality, hist.Temporality)
+	require.Len(t, hist.DataPoints, 1)
+	dp := hist.DataPoints[0]
+	assert.Equal(t, attribute.NewSet(responseAttrs...), dp.Attributes, "attributes")
+	assert.Equal(t, uint64(1), dp.Count, "count")
+	assert.Less(t, dp.Sum, float64(10)) // test shouldn't take longer than 10 milliseconds
+
+	// Request size
+	want := metricdata.Metrics{
+		Name:        metricNameHttpServerRequestSize,
+		Description: "measures the size of HTTP request messages",
+		Unit:        unit.Bytes,
+		Data:        getHistogram(0, responseAttrs),
+	}
+	metricdatatest.AssertEqual(t, want, sm.Metrics[1], metricdatatest.IgnoreTimestamp())
+
+	// Response size
+	want = metricdata.Metrics{
+		Name:        metricNameHttpServerResponseSize,
+		Description: "measures the size of HTTP response messages",
+		Unit:        unit.Bytes,
+		Data:        getHistogram(2, responseAttrs),
+	}
+	metricdatatest.AssertEqual(t, want, sm.Metrics[2], metricdatatest.IgnoreTimestamp())
+
+	// Active requests
+	want = metricdata.Metrics{
+		Name:        metricNameHttpServerActiveRequests,
+		Description: "measures the number of concurrent HTTP requests that are currently in-flight",
+		Unit:        unit.Dimensionless,
+		Data: metricdata.Sum[int64]{
+			DataPoints: []metricdata.DataPoint[int64]{
+				{Attributes: attribute.NewSet(requestAttrs...), Value: 0},
+			},
+			Temporality: metricdata.CumulativeTemporality,
+		},
+	}
+	metricdatatest.AssertEqual(t, want, sm.Metrics[3], metricdatatest.IgnoreTimestamp())
+}
+
+func getHistogram(value float64, attrs []attribute.KeyValue) metricdata.Histogram {
+	bounds := []float64{0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000}
+	bucketCounts := make([]uint64, len(bounds)+1)
+
+	for i, v := range bounds {
+		if value <= v {
+			bucketCounts[i]++
+			break
+		}
+
+		if i == len(bounds)-1 {
+			bounds[i+1]++
+			break
+		}
+	}
+
+	return metricdata.Histogram{
+		DataPoints: []metricdata.HistogramDataPoint{
+			{
+				Attributes:   attribute.NewSet(attrs...),
+				Bounds:       bounds,
+				BucketCounts: bucketCounts,
+				Count:        1,
+				Min:          &value,
+				Max:          &value,
+				Sum:          value,
+			},
+		},
+		Temporality: metricdata.CumulativeTemporality,
+	}
 }
