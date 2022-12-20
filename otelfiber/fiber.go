@@ -11,6 +11,7 @@ import (
 	"github.com/gofiber/fiber/v2/utils"
 	otelcontrib "go.opentelemetry.io/contrib"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/global"
 	"go.opentelemetry.io/otel/metric/instrument"
@@ -82,16 +83,13 @@ func Middleware(service string, opts ...Option) fiber.Handler {
 		savedCtx, cancel := context.WithCancel(c.UserContext())
 
 		start := time.Now()
-		metricAttrs := httpServerMetricAttributesFromRequest(c, service)
-		httpServerActiveRequests.Add(savedCtx, 1, metricAttrs...)
-		defer func() {
-			httpServerDuration.Record(savedCtx, float64(time.Since(start).Microseconds())/1000, metricAttrs...)
-			httpServerRequestSize.Record(savedCtx, int64(len(c.Request().Body())), metricAttrs...)
-			httpServerResponseSize.Record(savedCtx, int64(len(c.Response().Body())), metricAttrs...)
-			httpServerActiveRequests.Add(savedCtx, -1, metricAttrs...)
-			c.SetUserContext(savedCtx)
-			cancel()
-		}()
+
+		requestMetricsAttrs := httpServerMetricAttributesFromRequest(c, service)
+		httpServerActiveRequests.Add(savedCtx, 1, requestMetricsAttrs...)
+
+		responseMetricAttrs := make([]attribute.KeyValue, len(requestMetricsAttrs))
+		copy(responseMetricAttrs, requestMetricsAttrs)
+
 		reqHeader := make(http.Header)
 		c.Request().Header.VisitAll(func(k, v []byte) {
 			reqHeader.Add(string(k), string(v))
@@ -135,8 +133,25 @@ func Middleware(service string, opts ...Option) fiber.Handler {
 		err := c.Next()
 
 		span.SetName(cfg.SpanNameFormatter(c))
-		// no need to copy c.Route().Path: route strings should be immutable across app lifecycle
-		span.SetAttributes(semconv.HTTPRouteKey.String(c.Route().Path))
+
+		routeAttr := semconv.HTTPRouteKey.String(c.Route().Path) // no need to copy c.Route().Path: route strings should be immutable across app lifecycle
+
+		span.SetAttributes(routeAttr)
+
+		responseMetricAttrs = append(
+			requestMetricsAttrs,
+			routeAttr)
+		requestSize := int64(len(c.Request().Body()))
+		responseSize := int64(len(c.Response().Body()))
+
+		defer func() {
+			httpServerDuration.Record(savedCtx, float64(time.Since(start).Microseconds())/1000, responseMetricAttrs...)
+			httpServerRequestSize.Record(savedCtx, requestSize, responseMetricAttrs...)
+			httpServerResponseSize.Record(savedCtx, responseSize, responseMetricAttrs...)
+			httpServerActiveRequests.Add(savedCtx, -1, requestMetricsAttrs...)
+			c.SetUserContext(savedCtx)
+			cancel()
+		}()
 
 		if err != nil {
 			span.RecordError(err)

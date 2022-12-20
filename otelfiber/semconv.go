@@ -18,6 +18,5 @@ func httpServerMetricAttributesFromRequest(c *fiber.Ctx, service string) []attri
 	attrs = append(attrs, semconv.HTTPHostKey.String(utils.CopyString(c.Hostname())))
 	attrs = append(attrs, semconv.HTTPFlavorHTTP11)
 	attrs = append(attrs, semconv.HTTPMethodKey.String(utils.CopyString(c.Method())))
-	attrs = append(attrs, semconv.HTTPRouteKey.String(utils.CopyString(c.Route().Path)))
 	return attrs
 }
