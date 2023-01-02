@@ -253,10 +253,18 @@ func TestMetric(t *testing.T) {
 	provider := metric.NewMeterProvider(metric.WithReader(reader))
 
 	serverName := "foobar"
+	port := 8080
 	route := "/foo"
 
 	app := fiber.New()
-	app.Use(Middleware(serverName, WithMeterProvider(provider)))
+	app.Use(
+		Middleware(
+			serverName,
+			WithMeterProvider(provider),
+			WithPort(port),
+			WithServerName(serverName),
+		),
+	)
 	app.Get(route, func(ctx *fiber.Ctx) error {
 		return ctx.SendStatus(http.StatusOK)
 	})
@@ -269,11 +277,12 @@ func TestMetric(t *testing.T) {
 	assert.Len(t, metrics.ScopeMetrics, 1)
 
 	requestAttrs := []attribute.KeyValue{
-		semconv.HTTPServerNameKey.String(serverName),
-		semconv.HTTPSchemeHTTP,
-		semconv.HTTPHostKey.String(r.Host),
 		semconv.HTTPFlavorKey.String(fmt.Sprintf("1.%d", r.ProtoMinor)),
 		semconv.HTTPMethodKey.String(http.MethodGet),
+		semconv.HTTPSchemeHTTP,
+		semconv.NetHostNameKey.String(r.Host),
+		semconv.NetHostPortKey.Int(port),
+		semconv.HTTPServerNameKey.String(serverName),
 	}
 	responseAttrs := append(
 		semconv.HTTPAttributesFromHTTPStatusCode(200),

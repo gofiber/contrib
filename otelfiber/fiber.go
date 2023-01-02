@@ -84,7 +84,7 @@ func Middleware(service string, opts ...Option) fiber.Handler {
 
 		start := time.Now()
 
-		requestMetricsAttrs := httpServerMetricAttributesFromRequest(c, service)
+		requestMetricsAttrs := httpServerMetricAttributesFromRequest(c, cfg)
 		httpServerActiveRequests.Add(savedCtx, 1, requestMetricsAttrs...)
 
 		responseMetricAttrs := make([]attribute.KeyValue, len(requestMetricsAttrs))

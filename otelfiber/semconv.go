@@ -7,16 +7,30 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
 )
 
-func httpServerMetricAttributesFromRequest(c *fiber.Ctx, service string) []attribute.KeyValue {
-	var attrs []attribute.KeyValue
-	attrs = append(attrs, semconv.HTTPServerNameKey.String(service))
-	if c.Context().IsTLS() {
-		attrs = append(attrs, semconv.HTTPSchemeHTTPS)
-	} else {
-		attrs = append(attrs, semconv.HTTPSchemeHTTP)
+func httpServerMetricAttributesFromRequest(c *fiber.Ctx, cfg config) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{
+		httpFlavorAttribute(c),
+		semconv.HTTPMethodKey.String(utils.CopyString(c.Method())),
+		semconv.HTTPSchemeKey.String(utils.CopyString(c.Protocol())),
+		semconv.NetHostNameKey.String(utils.CopyString(c.Hostname())),
 	}
-	attrs = append(attrs, semconv.HTTPHostKey.String(utils.CopyString(c.Hostname())))
-	attrs = append(attrs, semconv.HTTPFlavorHTTP11)
-	attrs = append(attrs, semconv.HTTPMethodKey.String(utils.CopyString(c.Method())))
+
+	if cfg.Port != nil {
+		attrs = append(attrs, semconv.NetHostPortKey.Int(*cfg.Port))
+	}
+
+	if cfg.ServerName != nil {
+		attrs = append(attrs, semconv.HTTPServerNameKey.String(*cfg.ServerName))
+	}
+
 	return attrs
+}
+
+
+func httpFlavorAttribute(c *fiber.Ctx) attribute.KeyValue {
+	if c.Request().Header.IsHTTP11() {
+		return semconv.HTTPFlavorHTTP11
+	}
+
+	return semconv.HTTPFlavorHTTP10
 }
