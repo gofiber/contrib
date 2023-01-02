@@ -33,7 +33,7 @@ func TestChildSpanFromGlobalTracer(t *testing.T) {
 	var gotSpan oteltrace.Span
 
 	app := fiber.New()
-	app.Use(Middleware("foobar"))
+	app.Use(Middleware())
 	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
 		gotSpan = oteltrace.SpanFromContext(ctx.UserContext())
 		return ctx.SendStatus(http.StatusNoContent)
@@ -50,7 +50,7 @@ func TestChildSpanFromCustomTracer(t *testing.T) {
 	var gotSpan oteltrace.Span
 
 	app := fiber.New()
-	app.Use(Middleware("foobar", WithTracerProvider(provider)))
+	app.Use(Middleware(WithTracerProvider(provider)))
 	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
 		gotSpan = oteltrace.SpanFromContext(ctx.UserContext())
 		return ctx.SendStatus(http.StatusNoContent)
@@ -65,11 +65,17 @@ func TestChildSpanFromCustomTracer(t *testing.T) {
 func TestTrace200(t *testing.T) {
 	sr := new(oteltest.SpanRecorder)
 	provider := oteltest.NewTracerProvider(oteltest.WithSpanRecorder(sr))
+	serverName := "foobar"
 
 	var gotSpan oteltrace.Span
 
 	app := fiber.New()
-	app.Use(Middleware("foobar", WithTracerProvider(provider)))
+	app.Use(
+		Middleware(
+			WithTracerProvider(provider),
+			WithServerName(serverName),
+		),
+	)
 	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
 		gotSpan = oteltrace.SpanFromContext(ctx.UserContext())
 		id := ctx.Params("id")
@@ -83,7 +89,7 @@ func TestTrace200(t *testing.T) {
 
 	mspan, ok := gotSpan.(*oteltest.Span)
 	require.True(t, ok)
-	assert.Equal(t, attribute.StringValue("foobar"), mspan.Attributes()[semconv.HTTPServerNameKey])
+	assert.Equal(t, attribute.StringValue(serverName), mspan.Attributes()[semconv.HTTPServerNameKey])
 
 	// verify traces look good
 	spans := sr.Completed()
@@ -104,7 +110,7 @@ func TestError(t *testing.T) {
 
 	// setup
 	app := fiber.New()
-	app.Use(Middleware("foobar", WithTracerProvider(provider)))
+	app.Use(Middleware(WithTracerProvider(provider)))
 	// configure a handler that returns an error and 5xx status
 	// code
 	app.Get("/server_err", func(ctx *fiber.Ctx) error {
@@ -118,7 +124,6 @@ func TestError(t *testing.T) {
 	require.Len(t, spans, 1)
 	span := spans[0]
 	assert.Equal(t, "/server_err", span.Name())
-	assert.Equal(t, attribute.StringValue("foobar"), span.Attributes()["http.server_name"])
 	assert.Equal(t, attribute.IntValue(http.StatusInternalServerError), span.Attributes()["http.status_code"])
 	assert.Equal(t, attribute.StringValue("oh no"), span.Events()[0].Attributes[semconv.ExceptionMessageKey])
 	// server errors set the status
@@ -133,7 +138,7 @@ func TestErrorOnlyHandledOnce(t *testing.T) {
 			return fiber.NewError(http.StatusInternalServerError, err.Error())
 		},
 	})
-	app.Use(Middleware("test-service"))
+	app.Use(Middleware())
 	app.Get("/", func(ctx *fiber.Ctx) error {
 		return errors.New("mock error")
 	})
@@ -171,7 +176,7 @@ func TestPropagationWithGlobalPropagators(t *testing.T) {
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(r.Header))
 
 	app := fiber.New()
-	app.Use(Middleware("foobar", WithTracerProvider(provider)))
+	app.Use(Middleware(WithTracerProvider(provider)))
 	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
 		gotSpan = oteltrace.SpanFromContext(ctx.UserContext())
 		return ctx.SendStatus(http.StatusNoContent)
@@ -198,7 +203,7 @@ func TestPropagationWithCustomPropagators(t *testing.T) {
 	b3.Inject(ctx, propagation.HeaderCarrier(r.Header))
 
 	app := fiber.New()
-	app.Use(Middleware("foobar", WithTracerProvider(provider), WithPropagators(b3)))
+	app.Use(Middleware(WithTracerProvider(provider), WithPropagators(b3)))
 	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
 		gotSpan = oteltrace.SpanFromContext(ctx.UserContext())
 		return ctx.SendStatus(http.StatusNoContent)
@@ -259,7 +264,6 @@ func TestMetric(t *testing.T) {
 	app := fiber.New()
 	app.Use(
 		Middleware(
-			serverName,
 			WithMeterProvider(provider),
 			WithPort(port),
 			WithServerName(serverName),
