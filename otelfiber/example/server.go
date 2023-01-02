@@ -3,8 +3,9 @@ package main
 import (
 	"context"
 	"errors"
-	"go.opentelemetry.io/otel/sdk/resource"
 	"log"
+
+	"go.opentelemetry.io/otel/sdk/resource"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -12,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	stdout "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+
 	//"go.opentelemetry.io/otel/exporters/jaeger"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -32,11 +34,11 @@ func main() {
 	app := fiber.New()
 
 	// customise span name
-	//app.Use(otelfiber.Middleware("my-server", otelfiber.WithSpanNameFormatter(func(ctx *fiber.Ctx) string {
+	//app.Use(otelfiber.Middleware(otelfiber.WithSpanNameFormatter(func(ctx *fiber.Ctx) string {
 	//	return fmt.Sprintf("%s - %s", ctx.Method(), ctx.Route().Path)
 	//})))
 
-	app.Use(otelfiber.Middleware("my-server"))
+	app.Use(otelfiber.Middleware())
 
 	app.Get("/error", func(ctx *fiber.Ctx) error {
 		return errors.New("abc")
