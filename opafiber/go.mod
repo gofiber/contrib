@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/opafiber
 go 1.18
 
 require (
-	github.com/gofiber/fiber/v2 v2.40.1
+	github.com/gofiber/fiber/v2 v2.41.0
 	github.com/open-policy-agent/opa v0.47.4
 	github.com/stretchr/testify v1.8.1
 )
@@ -18,7 +18,7 @@ require (
 	github.com/klauspost/compress v1.15.12 // indirect
 	github.com/kr/pretty v0.1.0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
-	github.com/mattn/go-isatty v0.0.16 // indirect
+	github.com/mattn/go-isatty v0.0.17 // indirect
 	github.com/mattn/go-runewidth v0.0.14 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
