@@ -140,7 +140,11 @@ func New(config ...Config) fiber.Handler {
 				fields = append(fields, zap.Int("status", c.Response().StatusCode()))
 			case "resBody":
 				if cfg.SkipResBody == nil || !cfg.SkipResBody(c) {
-					fields = append(fields, zap.ByteString("resBody", c.Response().Body()))
+					if cfg.GetResBody == nil {
+						fields = append(fields, zap.ByteString("resBody", c.Response().Body()))
+					} else {
+						fields = append(fields, zap.ByteString("resBody", cfg.GetResBody(c)))
+					}
 				}
 			case "queryParams":
 				fields = append(fields, zap.String("queryParams", c.Request().URI().QueryArgs().String()))
