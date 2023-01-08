@@ -23,6 +23,12 @@ type Config struct {
 	// Optional. Default: nil
 	SkipResBody func(c *fiber.Ctx) bool
 
+	// GetResBody defines a function to get ResBody.
+	//  eg: when use compress middleware, resBody is unreadable. you can set GetResBody func to get readable resBody.
+	//
+	// Optional. Default: nil
+	GetResBody func(c *fiber.Ctx) []byte
+
 	// Skip logging for these uri
 	//
 	// Optional. Default: nil
