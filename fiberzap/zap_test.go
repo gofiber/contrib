@@ -24,6 +24,29 @@ func setupLogsCapture() (*zap.Logger, *observer.ObservedLogs) {
 	return zap.New(core), logs
 }
 
+func Test_GetResBody(t *testing.T) {
+	var readableResBody = "this is readable response body"
+
+	var app = fiber.New()
+	var logger, logs = setupLogsCapture()
+
+	app.Use(New(Config{
+		Logger: logger,
+		GetResBody: func(c *fiber.Ctx) []byte {
+			return []byte(readableResBody)
+		},
+		Fields: []string{"resBody"},
+	}))
+
+	app.Get("/", func(c *fiber.Ctx) error {
+		return c.SendString("------this is unreadable resp------")
+	})
+
+	_, err := app.Test(httptest.NewRequest("GET", "/", nil))
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, readableResBody, logs.All()[0].ContextMap()["resBody"])
+}
+
 // go test -run Test_SkipBody
 func Test_SkipBody(t *testing.T) {
 	logger, logs := setupLogsCapture()
