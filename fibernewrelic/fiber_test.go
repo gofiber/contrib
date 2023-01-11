@@ -183,6 +183,7 @@ func TestNewrelicAppConfig(t *testing.T) {
 			newrelicApp, err := newrelic.NewApplication(
 				newrelic.ConfigAppName("testApp"),
 				newrelic.ConfigLicense("0123456789abcdef0123456789abcdef01234567"),
+				newrelic.ConfigEnabled(true),
 			)
 
 			assert.NoError(t, err)
