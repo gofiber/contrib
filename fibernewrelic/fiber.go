@@ -5,20 +5,24 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/newrelic/go-agent/v3/newrelic"
 	"net/url"
+	"strings"
 )
 
 type Config struct {
 	// License parameter is required to initialize newrelic application
 	License string
-	// AppName parameter is required to initialize newrelic application, default is fiber-api
+	// AppName parameter passed to set app name, default is fiber-api
 	AppName string
 	// Enabled parameter passed to enable/disable newrelic
 	Enabled bool
 	// TransportType can be HTTP or HTTPS (case-sensitive), default is HTTP
 	TransportType string
+	// Application field is required to use an existing newrelic application
+	Application *newrelic.Application
 }
 
 var ConfigDefault = Config{
+	Application:   nil,
 	License:       "",
 	AppName:       "fiber-api",
 	Enabled:       false,
@@ -26,26 +30,37 @@ var ConfigDefault = Config{
 }
 
 func New(cfg Config) fiber.Handler {
-	if cfg.TransportType != "HTTP" && cfg.TransportType != "HTTPS" {
+	var app *newrelic.Application
+	var err error
+
+	if cfg.Application != nil {
+		app = cfg.Application
+	} else {
+		if cfg.AppName == "" {
+			cfg.AppName = ConfigDefault.AppName
+		}
+
+		if cfg.License == "" {
+			panic(fmt.Errorf("unable to create New Relic Application -> License can not be empty"))
+		}
+
+		app, err = newrelic.NewApplication(
+			newrelic.ConfigAppName(cfg.AppName),
+			newrelic.ConfigLicense(cfg.License),
+			newrelic.ConfigEnabled(cfg.Enabled),
+		)
+
+		if err != nil {
+			panic(fmt.Errorf("unable to create New Relic Application -> %w", err))
+		}
+	}
+
+	normalizeTransport := strings.ToUpper(cfg.TransportType)
+
+	if normalizeTransport != "HTTP" && normalizeTransport != "HTTPS" {
 		cfg.TransportType = ConfigDefault.TransportType
-	}
-
-	if cfg.AppName == "" {
-		cfg.AppName = ConfigDefault.AppName
-	}
-
-	if cfg.License == "" {
-		panic(fmt.Errorf("unable to create New Relic Application -> License can not be empty"))
-	}
-
-	app, err := newrelic.NewApplication(
-		newrelic.ConfigAppName(cfg.AppName),
-		newrelic.ConfigLicense(cfg.License),
-		newrelic.ConfigEnabled(cfg.Enabled),
-	)
-
-	if err != nil {
-		panic(fmt.Errorf("unable to create New Relic Application -> %w", err))
+	} else {
+		cfg.TransportType = normalizeTransport
 	}
 
 	return func(c *fiber.Ctx) error {
