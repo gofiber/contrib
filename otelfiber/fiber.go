@@ -2,28 +2,26 @@ package otelfiber
 
 import (
 	"context"
-	"encoding/base64"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/utils"
 	otelcontrib "go.opentelemetry.io/contrib"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/global"
 	"go.opentelemetry.io/otel/metric/instrument"
 	"go.opentelemetry.io/otel/metric/unit"
 	"go.opentelemetry.io/otel/propagation"
-	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 const (
 	tracerKey           = "gofiber-contrib-tracer-fiber"
 	instrumentationName = "github.com/gofiber/contrib/otelfiber"
-	defaultServiceName  = "fiber-server"
 
 	metricNameHttpServerDuration       = "http.server.duration"
 	metricNameHttpServerRequestSize    = "http.server.request.size"
@@ -32,14 +30,12 @@ const (
 )
 
 // Middleware returns fiber handler which will trace incoming requests.
-func Middleware(service string, opts ...Option) fiber.Handler {
-	if service == "" {
-		service = defaultServiceName
-	}
+func Middleware(opts ...Option) fiber.Handler {
 	cfg := config{}
 	for _, opt := range opts {
 		opt.apply(&cfg)
 	}
+
 	if cfg.TracerProvider == nil {
 		cfg.TracerProvider = otel.GetTracerProvider()
 	}
@@ -47,6 +43,7 @@ func Middleware(service string, opts ...Option) fiber.Handler {
 		instrumentationName,
 		oteltrace.WithInstrumentationVersion(otelcontrib.SemVersion()),
 	)
+
 	if cfg.MeterProvider == nil {
 		cfg.MeterProvider = global.MeterProvider()
 	}
@@ -54,6 +51,7 @@ func Middleware(service string, opts ...Option) fiber.Handler {
 		instrumentationName,
 		metric.WithInstrumentationVersion(otelcontrib.SemVersion()),
 	)
+
 	httpServerDuration, err := meter.SyncFloat64().Histogram(metricNameHttpServerDuration, instrument.WithUnit(unit.Milliseconds), instrument.WithDescription("measures the duration inbound HTTP requests"))
 	if err != nil {
 		otel.Handle(err)
@@ -70,6 +68,7 @@ func Middleware(service string, opts ...Option) fiber.Handler {
 	if err != nil {
 		otel.Handle(err)
 	}
+
 	if cfg.Propagators == nil {
 		cfg.Propagators = otel.GetTextMapPropagator()
 	}
@@ -82,45 +81,25 @@ func Middleware(service string, opts ...Option) fiber.Handler {
 		savedCtx, cancel := context.WithCancel(c.UserContext())
 
 		start := time.Now()
-		metricAttrs := httpServerMetricAttributesFromRequest(c, service)
-		httpServerActiveRequests.Add(savedCtx, 1, metricAttrs...)
-		defer func() {
-			httpServerDuration.Record(savedCtx, float64(time.Since(start).Microseconds())/1000, metricAttrs...)
-			httpServerRequestSize.Record(savedCtx, int64(len(c.Request().Body())), metricAttrs...)
-			httpServerResponseSize.Record(savedCtx, int64(len(c.Response().Body())), metricAttrs...)
-			httpServerActiveRequests.Add(savedCtx, -1, metricAttrs...)
-			c.SetUserContext(savedCtx)
-			cancel()
-		}()
+
+		requestMetricsAttrs := httpServerMetricAttributesFromRequest(c, cfg)
+		httpServerActiveRequests.Add(savedCtx, 1, requestMetricsAttrs...)
+
+		responseMetricAttrs := make([]attribute.KeyValue, len(requestMetricsAttrs))
+		copy(responseMetricAttrs, requestMetricsAttrs)
+
 		reqHeader := make(http.Header)
 		c.Request().Header.VisitAll(func(k, v []byte) {
 			reqHeader.Add(string(k), string(v))
 		})
 
 		ctx := cfg.Propagators.Extract(savedCtx, propagation.HeaderCarrier(reqHeader))
+
 		opts := []oteltrace.SpanStartOption{
-			oteltrace.WithAttributes(
-				// utils.CopyString: we need to copy the string as fasthttp strings are by default
-				// mutable so it will be unsafe to use in this middleware as it might be used after
-				// the handler returns.
-				semconv.HTTPServerNameKey.String(service),
-				semconv.HTTPMethodKey.String(utils.CopyString(c.Method())),
-				semconv.HTTPTargetKey.String(string(utils.CopyBytes(c.Request().RequestURI()))),
-				semconv.HTTPURLKey.String(utils.CopyString(c.OriginalURL())),
-				semconv.NetHostIPKey.String(utils.CopyString(c.IP())),
-				semconv.NetHostNameKey.String(utils.CopyString(c.Hostname())),
-				semconv.HTTPUserAgentKey.String(string(utils.CopyBytes(c.Request().Header.UserAgent()))),
-				semconv.HTTPRequestContentLengthKey.Int(c.Request().Header.ContentLength()),
-				semconv.HTTPSchemeKey.String(utils.CopyString(c.Protocol())),
-				semconv.NetTransportTCP),
+			oteltrace.WithAttributes(httpServerTraceAttributesFromRequest(c, cfg)...),
 			oteltrace.WithSpanKind(oteltrace.SpanKindServer),
 		}
-		if username, ok := hasBasicAuth(c.Get(fiber.HeaderAuthorization)); ok {
-			opts = append(opts, oteltrace.WithAttributes(semconv.EnduserIDKey.String(utils.CopyString(username))))
-		}
-		if len(c.IPs()) > 0 {
-			opts = append(opts, oteltrace.WithAttributes(semconv.HTTPClientIPKey.String(utils.CopyString(c.IPs()[0]))))
-		}
+
 		// temporary set to c.Path() first
 		// update with c.Route().Path after c.Next() is called
 		// to get pathRaw
@@ -132,22 +111,44 @@ func Middleware(service string, opts ...Option) fiber.Handler {
 		c.SetUserContext(ctx)
 
 		// serve the request to the next middleware
-		err := c.Next()
-
-		span.SetName(cfg.SpanNameFormatter(c))
-		// no need to copy c.Route().Path: route strings should be immutable across app lifecycle
-		span.SetAttributes(semconv.HTTPRouteKey.String(c.Route().Path))
-
-		if err != nil {
+		if err := c.Next(); err != nil {
 			span.RecordError(err)
 			// invokes the registered HTTP error handler
 			// to get the correct response status code
 			_ = c.App().Config().ErrorHandler(c, err)
 		}
 
-		attrs := semconv.HTTPAttributesFromHTTPStatusCode(c.Response().StatusCode())
+		// extract common attributes from response
+		responseAttrs := append(
+			semconv.HTTPAttributesFromHTTPStatusCode(c.Response().StatusCode()),
+			semconv.HTTPRouteKey.String(c.Route().Path), // no need to copy c.Route().Path: route strings should be immutable across app lifecycle
+		)
+
+		requestSize := int64(len(c.Request().Body()))
+		responseSize := int64(len(c.Response().Body()))
+
+		defer func() {
+			responseMetricAttrs = append(
+				responseMetricAttrs,
+				responseAttrs...)
+
+			httpServerActiveRequests.Add(savedCtx, -1, requestMetricsAttrs...)
+			httpServerDuration.Record(savedCtx, float64(time.Since(start).Microseconds())/1000, responseMetricAttrs...)
+			httpServerRequestSize.Record(savedCtx, requestSize, responseMetricAttrs...)
+			httpServerResponseSize.Record(savedCtx, responseSize, responseMetricAttrs...)
+
+			c.SetUserContext(savedCtx)
+			cancel()
+		}()
+
+		span.SetAttributes(
+			append(
+				responseAttrs,
+				semconv.HTTPResponseContentLengthKey.Int64(responseSize),
+			)...)
+		span.SetName(cfg.SpanNameFormatter(c))
+
 		spanStatus, spanMessage := semconv.SpanStatusFromHTTPStatusCodeAndSpanKind(c.Response().StatusCode(), oteltrace.SpanKindServer)
-		span.SetAttributes(attrs...)
 		span.SetStatus(spanStatus, spanMessage)
 
 		return nil
@@ -158,34 +159,4 @@ func Middleware(service string, opts ...Option) fiber.Handler {
 // integration. Returns the route pathRaw
 func defaultSpanNameFormatter(ctx *fiber.Ctx) string {
 	return ctx.Route().Path
-}
-
-func hasBasicAuth(auth string) (string, bool) {
-	if auth == "" {
-		return "", false
-	}
-
-	// Check if the Authorization header is Basic
-	if !strings.HasPrefix(auth, "Basic ") {
-		return "", false
-	}
-
-	// Decode the header contents
-	raw, err := base64.StdEncoding.DecodeString(auth[6:])
-	if err != nil {
-		return "", false
-	}
-
-	// Get the credentials
-	creds := utils.UnsafeString(raw)
-
-	// Check if the credentials are in the correct form
-	// which is "username:password".
-	index := strings.Index(creds, ":")
-	if index == -1 {
-		return "", false
-	}
-
-	// Get the username
-	return creds[:index], true
 }

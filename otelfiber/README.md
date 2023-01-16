@@ -22,7 +22,7 @@ go get -u github.com/gofiber/contrib/otelfiber
 ### Signature
 
 ```
-otelfiber.Middleware(service string, opts ...Option) fiber.Handler
+otelfiber.Middleware(opts ...Option) fiber.Handler
 ```
 
 ### Usage
