@@ -1,11 +1,12 @@
 package fibernewrelic
 
 import (
+	"net/http/httptest"
+	"testing"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/newrelic/go-agent/v3/newrelic"
 	"github.com/stretchr/testify/assert"
-	"net/http/httptest"
-	"testing"
 )
 
 func TestNewrelicAppConfig(t *testing.T) {
@@ -49,10 +50,6 @@ func TestNewrelicAppConfig(t *testing.T) {
 		func(t *testing.T) {
 			app := fiber.New()
 
-			app.Get("/", func(ctx *fiber.Ctx) error {
-				return ctx.SendStatus(200)
-			})
-
 			cfg := Config{
 				License:       "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
 				AppName:       "",
@@ -61,6 +58,10 @@ func TestNewrelicAppConfig(t *testing.T) {
 			}
 
 			app.Use(New(cfg))
+
+			app.Get("/", func(ctx *fiber.Ctx) error {
+				return ctx.SendStatus(200)
+			})
 
 			r := httptest.NewRequest("GET", "/", nil)
 			resp, _ := app.Test(r, -1)
@@ -71,10 +72,6 @@ func TestNewrelicAppConfig(t *testing.T) {
 		func(t *testing.T) {
 			app := fiber.New()
 
-			app.Get("/", func(ctx *fiber.Ctx) error {
-				return ctx.SendStatus(200)
-			})
-
 			cfg := Config{
 				License:       "0123456789abcdef0123456789abcdef01234567",
 				AppName:       "",
@@ -82,6 +79,10 @@ func TestNewrelicAppConfig(t *testing.T) {
 				TransportType: "",
 			}
 			app.Use(New(cfg))
+
+			app.Get("/", func(ctx *fiber.Ctx) error {
+				return ctx.SendStatus(200)
+			})
 
 			r := httptest.NewRequest("GET", "/invalid-url", nil)
 			resp, _ := app.Test(r, -1)
@@ -92,10 +93,6 @@ func TestNewrelicAppConfig(t *testing.T) {
 		func(t *testing.T) {
 			app := fiber.New()
 
-			app.Get("/", func(ctx *fiber.Ctx) error {
-				return ctx.SendStatus(200)
-			})
-
 			cfg := Config{
 				License:       "0123456789abcdef0123456789abcdef01234567",
 				AppName:       "",
@@ -103,6 +100,10 @@ func TestNewrelicAppConfig(t *testing.T) {
 				TransportType: "HTTP",
 			}
 			app.Use(New(cfg))
+
+			app.Get("/", func(ctx *fiber.Ctx) error {
+				return ctx.SendStatus(200)
+			})
 
 			r := httptest.NewRequest("GET", "/", nil)
 			resp, _ := app.Test(r, -1)
@@ -113,10 +114,6 @@ func TestNewrelicAppConfig(t *testing.T) {
 		func(t *testing.T) {
 			app := fiber.New()
 
-			app.Get("/", func(ctx *fiber.Ctx) error {
-				return ctx.SendStatus(200)
-			})
-
 			cfg := Config{
 				License:       "0123456789abcdef0123456789abcdef01234567",
 				AppName:       "",
@@ -124,6 +121,10 @@ func TestNewrelicAppConfig(t *testing.T) {
 				TransportType: "http",
 			}
 			app.Use(New(cfg))
+
+			app.Get("/", func(ctx *fiber.Ctx) error {
+				return ctx.SendStatus(200)
+			})
 
 			r := httptest.NewRequest("GET", "/", nil)
 			resp, _ := app.Test(r, -1)
@@ -134,10 +135,6 @@ func TestNewrelicAppConfig(t *testing.T) {
 		func(t *testing.T) {
 			app := fiber.New()
 
-			app.Get("/", func(ctx *fiber.Ctx) error {
-				return ctx.SendStatus(200)
-			})
-
 			cfg := Config{
 				License:       "0123456789abcdef0123456789abcdef01234567",
 				AppName:       "",
@@ -145,6 +142,10 @@ func TestNewrelicAppConfig(t *testing.T) {
 				TransportType: "HTTPS",
 			}
 			app.Use(New(cfg))
+
+			app.Get("/", func(ctx *fiber.Ctx) error {
+				return ctx.SendStatus(200)
+			})
 
 			r := httptest.NewRequest("GET", "/", nil)
 			resp, _ := app.Test(r, -1)
@@ -155,10 +156,6 @@ func TestNewrelicAppConfig(t *testing.T) {
 		func(t *testing.T) {
 			app := fiber.New()
 
-			app.Get("/", func(ctx *fiber.Ctx) error {
-				return ctx.SendStatus(200)
-			})
-
 			cfg := Config{
 				License:       "0123456789abcdef0123456789abcdef01234567",
 				AppName:       "",
@@ -166,6 +163,10 @@ func TestNewrelicAppConfig(t *testing.T) {
 				TransportType: "InvalidTransport",
 			}
 			app.Use(New(cfg))
+
+			app.Get("/", func(ctx *fiber.Ctx) error {
+				return ctx.SendStatus(200)
+			})
 
 			r := httptest.NewRequest("GET", "/", nil)
 			resp, _ := app.Test(r, -1)
@@ -176,23 +177,23 @@ func TestNewrelicAppConfig(t *testing.T) {
 		func(t *testing.T) {
 			app := fiber.New()
 
-			app.Get("/", func(ctx *fiber.Ctx) error {
-				return ctx.SendStatus(200)
-			})
-
 			newrelicApp, err := newrelic.NewApplication(
 				newrelic.ConfigAppName("testApp"),
 				newrelic.ConfigLicense("0123456789abcdef0123456789abcdef01234567"),
 				newrelic.ConfigEnabled(true),
 			)
 
-			assert.NoError(t, err)
-			assert.NotNil(t, newrelicApp)
-
 			cfg := Config{
 				Application: newrelicApp,
 			}
 			app.Use(New(cfg))
+
+			app.Get("/", func(ctx *fiber.Ctx) error {
+				return ctx.SendStatus(200)
+			})
+
+			assert.NoError(t, err)
+			assert.NotNil(t, newrelicApp)
 
 			r := httptest.NewRequest("GET", "/", nil)
 			resp, _ := app.Test(r, -1)
@@ -204,18 +205,19 @@ func TestNewrelicAppConfig(t *testing.T) {
 			assert.Panics(t, func() {
 				app := fiber.New()
 
-				app.Get("/", func(ctx *fiber.Ctx) error {
-					return ctx.SendStatus(200)
-				})
-
 				newrelicApp, err := newrelic.NewApplication()
-				assert.Error(t, err)
-				assert.Nil(t, newrelicApp)
 
 				cfg := Config{
 					Application: newrelicApp,
 				}
 				app.Use(New(cfg))
+				
+				app.Get("/", func(ctx *fiber.Ctx) error {
+					return ctx.SendStatus(200)
+				})
+
+				assert.Error(t, err)
+				assert.Nil(t, newrelicApp)
 
 				r := httptest.NewRequest("GET", "/", nil)
 				resp, _ := app.Test(r, -1)
