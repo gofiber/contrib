@@ -22,7 +22,7 @@ func newEmbedServer() *fiber.App {
 	app.Use(New(&Config{
 		Loader:           &EmbedLoader{fs},
 		UnmarshalFunc:    json.Unmarshal,
-		RootPath:         "example/localizeJSON",
+		RootPath:         "./example/localizeJSON/",
 		FormatBundleFile: "json",
 	}))
 	app.Get("/", func(ctx *fiber.Ctx) error {
@@ -32,14 +32,14 @@ func newEmbedServer() *fiber.App {
 		return ctx.SendString(MustGetMessage(&i18n.LocalizeConfig{
 			MessageID: "welcomeWithName",
 			TemplateData: map[string]string{
-				"name": ctx.Get("name"),
+				"name": ctx.Params("name"),
 			},
 		}))
 	})
 	return app
 }
 
-var app = newEmbedServer()
+var embedApp = newEmbedServer()
 
 func request(lang language.Tag, name string) (*http.Response, error) {
 	path := "/" + name
@@ -47,7 +47,7 @@ func request(lang language.Tag, name string) (*http.Response, error) {
 	req.Header.Add("Accept-Language", lang.String())
 	req.Method = "GET"
 	req.RequestURI = path
-	resp, err := app1.Test(req)
+	resp, err := embedApp.Test(req)
 	return resp, err
 }
 

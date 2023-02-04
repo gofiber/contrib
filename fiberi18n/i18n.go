@@ -2,31 +2,30 @@ package fiberi18n
 
 import (
 	"fmt"
-	"path/filepath"
-	"sync"
+	"path"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/nicksnyder/go-i18n/v2/i18n"
 )
 
-var dataPool = sync.Pool{New: func() interface{} { return new(Config) }}
+var appCfg *Config
 
 // New creates a new middleware handler
 func New(config ...*Config) fiber.Handler {
-	appCfg := configDefault(config...)
+	appCfg = configDefault(config...)
 	bundle := i18n.NewBundle(appCfg.DefaultLanguage)
 	bundle.RegisterUnmarshalFunc(appCfg.FormatBundleFile, appCfg.UnmarshalFunc)
 	appCfg.bundle = bundle
 
 	for _, lang := range appCfg.AcceptLanguages {
 		bundleFile := fmt.Sprintf("%s.%s", lang.String(), appCfg.FormatBundleFile)
-		path := filepath.Join(appCfg.RootPath, bundleFile)
+		filepath := path.Join(appCfg.RootPath, bundleFile)
 
-		buf, err := appCfg.Loader.LoadMessage(path)
+		buf, err := appCfg.Loader.LoadMessage(filepath)
 		if err != nil {
 			panic(err)
 		}
-		if _, err := appCfg.bundle.ParseMessageFileBytes(buf, path); err != nil {
+		if _, err := appCfg.bundle.ParseMessageFileBytes(buf, filepath); err != nil {
 			panic(err)
 		}
 	}
@@ -43,11 +42,11 @@ func New(config ...*Config) fiber.Handler {
 			appCfg.localizerMap[s] = i18n.NewLocalizer(appCfg.bundle, s)
 		}
 
-		dataPool.Put(appCfg)
+		// dataPool.Put(appCfg)
 
-		defaultLanguage := appCfg.DefaultLanguage.String()
-		if _, ok := appCfg.localizerMap[defaultLanguage]; !ok {
-			appCfg.localizerMap[defaultLanguage] = i18n.NewLocalizer(appCfg.bundle, defaultLanguage)
+		lang := appCfg.DefaultLanguage.String()
+		if _, ok := appCfg.localizerMap[lang]; !ok {
+			appCfg.localizerMap[lang] = i18n.NewLocalizer(appCfg.bundle, lang)
 		}
 
 		return c.Next()
@@ -86,15 +85,13 @@ GetMessage get the i18n message
 		})
 */
 func GetMessage(params interface{}) (string, error) {
-	var localizer *i18n.Localizer
 	var localizeConfig *i18n.LocalizeConfig
 
-	appCfg := dataPool.Get().(*Config)
-
 	lang := appCfg.LangHandler(appCfg.ctx, appCfg.DefaultLanguage.String())
-	localizer = appCfg.localizerMap[lang]
-
-	defer dataPool.Put(appCfg)
+	localizer, hasValue := appCfg.localizerMap[lang]
+	if !hasValue {
+		localizer = appCfg.localizerMap[appCfg.DefaultLanguage.String()]
+	}
 
 	switch paramValue := params.(type) {
 	case string:

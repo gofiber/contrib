@@ -29,7 +29,7 @@ func newServer() *fiber.App {
 	return app
 }
 
-var app1 = newServer()
+var i18nApp = newServer()
 
 func makeRequest(lang language.Tag, name string) (*http.Response, error) {
 	path := "/" + name
@@ -37,7 +37,7 @@ func makeRequest(lang language.Tag, name string) (*http.Response, error) {
 	req.Header.Add("Accept-Language", lang.String())
 	req.Method = "GET"
 	req.RequestURI = path
-	resp, err := app1.Test(req)
+	resp, err := i18nApp.Test(req)
 	return resp, err
 }
 
@@ -89,14 +89,14 @@ func TestI18nZH(t *testing.T) {
 		args args
 		want string
 	}{
-		//{
-		//	name: "hello world",
-		//	args: args{
-		//		name: "",
-		//		lang: language.Chinese,
-		//	},
-		//	want: "你好",
-		//},
+		{
+			name: "hello world",
+			args: args{
+				name: "",
+				lang: language.Chinese,
+			},
+			want: "你好",
+		},
 		{
 			name: "hello alex",
 			args: args{
