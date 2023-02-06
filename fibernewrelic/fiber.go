@@ -2,10 +2,12 @@ package fibernewrelic
 
 import (
 	"fmt"
-	"github.com/gofiber/fiber/v2"
-	"github.com/newrelic/go-agent/v3/newrelic"
 	"net/url"
 	"strings"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/utils"
+	"github.com/newrelic/go-agent/v3/newrelic"
 )
 
 type Config struct {
@@ -16,17 +18,17 @@ type Config struct {
 	// Enabled parameter passed to enable/disable newrelic
 	Enabled bool
 	// TransportType can be HTTP or HTTPS, default is HTTP
+	// Deprecated: The Transport type now acquiring from request URL scheme internally
 	TransportType string
 	// Application field is required to use an existing newrelic application
 	Application *newrelic.Application
 }
 
 var ConfigDefault = Config{
-	Application:   nil,
-	License:       "",
-	AppName:       "fiber-api",
-	Enabled:       false,
-	TransportType: string(newrelic.TransportHTTP),
+	Application: nil,
+	License:     "",
+	AppName:     "fiber-api",
+	Enabled:     false,
 }
 
 func New(cfg Config) fiber.Handler {
@@ -55,36 +57,55 @@ func New(cfg Config) fiber.Handler {
 		}
 	}
 
-	normalizeTransport := strings.ToUpper(cfg.TransportType)
-
-	if normalizeTransport != "HTTP" && normalizeTransport != "HTTPS" {
-		cfg.TransportType = ConfigDefault.TransportType
-	} else {
-		cfg.TransportType = normalizeTransport
-	}
-
 	return func(c *fiber.Ctx) error {
-		txn := app.StartTransaction(c.Method() + " " + c.Path())
-		originalURL, err := url.Parse(c.OriginalURL())
-		if err != nil {
-			return c.Next()
+		txn := app.StartTransaction("")
+		defer txn.End()
+
+		err := c.Next()
+
+		method := utils.CopyString(c.Method())
+		routePath := utils.CopyString(c.Route().Path)
+		host := string(c.Request().URI().Host())
+
+		u := url.URL{
+			Scheme:   string(c.Request().URI().Scheme()),
+			Host:     host,
+			Path:     string(c.Request().URI().Path()),
+			RawQuery: string(c.Request().URI().QueryString()),
 		}
 
 		txn.SetWebRequest(newrelic.WebRequest{
-			URL:       originalURL,
-			Method:    c.Method(),
-			Transport: newrelic.TransportType(cfg.TransportType),
-			Host:      c.Hostname(),
+			URL:       &u,
+			Method:    method,
+			Transport: transport(u.Scheme),
+			Host:      host,
 		})
+		txn.SetName(fmt.Sprintf("%s %s", method, routePath))
 
-		err = c.Next()
+		statusCode := c.Context().Response.StatusCode()
+
 		if err != nil {
+			if fiberErr, ok := err.(*fiber.Error); ok {
+				statusCode = fiberErr.Code
+			}
+
 			txn.NoticeError(err)
 		}
 
-		defer txn.SetWebResponse(nil).WriteHeader(c.Response().StatusCode())
-		defer txn.End()
+		txn.SetWebResponse(nil).WriteHeader(statusCode)
 
 		return err
 	}
+}
+
+func transport(schema string) newrelic.TransportType {
+	if strings.HasPrefix(schema, "https") {
+		return newrelic.TransportHTTPS
+	}
+
+	if strings.HasPrefix(schema, "http") {
+		return newrelic.TransportHTTP
+	}
+
+	return newrelic.TransportUnknown
 }
