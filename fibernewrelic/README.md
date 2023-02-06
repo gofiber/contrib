@@ -22,12 +22,13 @@ fibernewrelic.New(config fibernewrelic.Config) fiber.Handler
 
 ### Config
 
-| Property       | Type          | Description                      | Default     |
-|:---------------|:--------------|:---------------------------------|:------------|
-| License        | `string`      | Required - New Relic License Key | `""`        |
-| AppName        | `string`      | New Relic Application Name       | `fiber-api` |
-| Enabled        | `bool`        | Enable/Disable New Relic         | `false`     |
-| Application    | `Application` | Existing New Relic App           | `nil`       |
+| Property          | Type             | Description                            | Default        |
+|:------------------|:-----------------|:---------------------------------------|:---------------|
+| License           | `string`         | Required - New Relic License Key       | `""`           |
+| AppName           | `string`         | New Relic Application Name             | `fiber-api`    |
+| Enabled           | `bool`           | Enable/Disable New Relic               | `false`        |
+| ~~TransportType~~ | ~~`string`~~     | ~~Can be HTTP or HTTPS~~ (Deprecated)  | ~~`"HTTP"`~~   |
+| Application       | `Application`    | Existing New Relic App                 | `nil`          |
 
 ### Usage
 

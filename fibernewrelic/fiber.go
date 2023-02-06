@@ -17,6 +17,9 @@ type Config struct {
 	AppName string
 	// Enabled parameter passed to enable/disable newrelic
 	Enabled bool
+	// TransportType can be HTTP or HTTPS, default is HTTP
+	// Deprecated: The Transport type now acquiring from request URL scheme internally
+	TransportType string
 	// Application field is required to use an existing newrelic application
 	Application *newrelic.Application
 }
