@@ -14,10 +14,9 @@ func TestNewrelicAppConfig(t *testing.T) {
 		func(t *testing.T) {
 			assert.Panics(t, func() {
 				New(Config{
-					License:       "",
-					AppName:       "",
-					Enabled:       false,
-					TransportType: "",
+					License: "",
+					AppName: "",
+					Enabled: false,
 				})
 			})
 		})
@@ -26,10 +25,9 @@ func TestNewrelicAppConfig(t *testing.T) {
 		func(t *testing.T) {
 			assert.NotPanics(t, func() {
 				New(Config{
-					License:       "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
-					AppName:       "",
-					Enabled:       false,
-					TransportType: "",
+					License: "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+					AppName: "",
+					Enabled: false,
 				})
 			})
 		})
@@ -38,10 +36,9 @@ func TestNewrelicAppConfig(t *testing.T) {
 		func(t *testing.T) {
 			assert.Panics(t, func() {
 				New(Config{
-					License:       "invalid_key",
-					AppName:       "",
-					Enabled:       false,
-					TransportType: "",
+					License: "invalid_key",
+					AppName: "",
+					Enabled: false,
 				})
 			})
 		})
@@ -51,11 +48,39 @@ func TestNewrelicAppConfig(t *testing.T) {
 			app := fiber.New()
 
 			cfg := Config{
-				License:       "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
-				AppName:       "",
-				Enabled:       true,
-				TransportType: "",
+				License: "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+				AppName: "",
+				Enabled: true,
 			}
+
+			app.Use(New(cfg))
+
+			app.Get("/", func(ctx *fiber.Ctx) error {
+				return ctx.SendStatus(200)
+			})
+
+			r := httptest.NewRequest("GET", "/", nil)
+			resp, _ := app.Test(r, -1)
+			assert.Equal(t, 200, resp.StatusCode)
+		})
+
+	t.Run("Run successfully as middleware",
+		func(t *testing.T) {
+			app := fiber.New()
+
+			cfg := Config{
+				License: "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+				AppName: "",
+				Enabled: true,
+			}
+
+			newRelicApp, _ := newrelic.NewApplication(
+				newrelic.ConfigAppName(cfg.AppName),
+				newrelic.ConfigLicense(cfg.License),
+				newrelic.ConfigEnabled(cfg.Enabled),
+			)
+
+			cfg.Application = newRelicApp
 
 			app.Use(New(cfg))
 
@@ -73,10 +98,9 @@ func TestNewrelicAppConfig(t *testing.T) {
 			app := fiber.New()
 
 			cfg := Config{
-				License:       "0123456789abcdef0123456789abcdef01234567",
-				AppName:       "",
-				Enabled:       true,
-				TransportType: "",
+				License: "0123456789abcdef0123456789abcdef01234567",
+				AppName: "",
+				Enabled: true,
 			}
 			app.Use(New(cfg))
 
@@ -94,10 +118,9 @@ func TestNewrelicAppConfig(t *testing.T) {
 			app := fiber.New()
 
 			cfg := Config{
-				License:       "0123456789abcdef0123456789abcdef01234567",
-				AppName:       "",
-				Enabled:       true,
-				TransportType: "HTTP",
+				License: "0123456789abcdef0123456789abcdef01234567",
+				AppName: "",
+				Enabled: true,
 			}
 			app.Use(New(cfg))
 
@@ -115,10 +138,9 @@ func TestNewrelicAppConfig(t *testing.T) {
 			app := fiber.New()
 
 			cfg := Config{
-				License:       "0123456789abcdef0123456789abcdef01234567",
-				AppName:       "",
-				Enabled:       true,
-				TransportType: "http",
+				License: "0123456789abcdef0123456789abcdef01234567",
+				AppName: "",
+				Enabled: true,
 			}
 			app.Use(New(cfg))
 
@@ -136,31 +158,9 @@ func TestNewrelicAppConfig(t *testing.T) {
 			app := fiber.New()
 
 			cfg := Config{
-				License:       "0123456789abcdef0123456789abcdef01234567",
-				AppName:       "",
-				Enabled:       true,
-				TransportType: "HTTPS",
-			}
-			app.Use(New(cfg))
-
-			app.Get("/", func(ctx *fiber.Ctx) error {
-				return ctx.SendStatus(200)
-			})
-
-			r := httptest.NewRequest("GET", "/", nil)
-			resp, _ := app.Test(r, -1)
-			assert.Equal(t, 200, resp.StatusCode)
-		})
-
-	t.Run("Test invalid transport type",
-		func(t *testing.T) {
-			app := fiber.New()
-
-			cfg := Config{
-				License:       "0123456789abcdef0123456789abcdef01234567",
-				AppName:       "",
-				Enabled:       true,
-				TransportType: "InvalidTransport",
+				License: "0123456789abcdef0123456789abcdef01234567",
+				AppName: "",
+				Enabled: true,
 			}
 			app.Use(New(cfg))
 
@@ -211,7 +211,7 @@ func TestNewrelicAppConfig(t *testing.T) {
 					Application: newrelicApp,
 				}
 				app.Use(New(cfg))
-				
+
 				app.Get("/", func(ctx *fiber.Ctx) error {
 					return ctx.SendStatus(200)
 				})

@@ -27,7 +27,6 @@ fibernewrelic.New(config fibernewrelic.Config) fiber.Handler
 | License        | `string`      | Required - New Relic License Key | `""`        |
 | AppName        | `string`      | New Relic Application Name       | `fiber-api` |
 | Enabled        | `bool`        | Enable/Disable New Relic         | `false`     |
-| TransportType  | `string`      | Can be HTTP or HTTPS             | `"HTTP"`    |
 | Application    | `Application` | Existing New Relic App           | `nil`       |
 
 ### Usage
@@ -51,7 +50,6 @@ func main() {
 		License:       "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
 		AppName:       "MyCustomApi",
 		Enabled:       true,
-		TransportType: "HTTP",
 	}
 
 	app.Use(fibernewrelic.New(cfg))

@@ -17,18 +17,15 @@ type Config struct {
 	AppName string
 	// Enabled parameter passed to enable/disable newrelic
 	Enabled bool
-	// TransportType can be HTTP or HTTPS, default is HTTP
-	TransportType string
 	// Application field is required to use an existing newrelic application
 	Application *newrelic.Application
 }
 
 var ConfigDefault = Config{
-	Application:   nil,
-	License:       "",
-	AppName:       "fiber-api",
-	Enabled:       false,
-	TransportType: string(newrelic.TransportHTTP),
+	Application: nil,
+	License:     "",
+	AppName:     "fiber-api",
+	Enabled:     false,
 }
 
 func New(cfg Config) fiber.Handler {
@@ -55,14 +52,6 @@ func New(cfg Config) fiber.Handler {
 		if err != nil {
 			panic(fmt.Errorf("unable to create New Relic Application -> %w", err))
 		}
-	}
-
-	normalizeTransport := strings.ToUpper(cfg.TransportType)
-
-	if normalizeTransport != "HTTP" && normalizeTransport != "HTTPS" {
-		cfg.TransportType = ConfigDefault.TransportType
-	} else {
-		cfg.TransportType = normalizeTransport
 	}
 
 	return func(c *fiber.Ctx) error {
