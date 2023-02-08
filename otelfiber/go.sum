@@ -56,8 +56,8 @@ github.com/valyala/tcplisten v1.0.0 h1:rBHj/Xf+E1tRGZyWIWwJDiRY0zc1Js+CV5DqwacVS
 github.com/valyala/tcplisten v1.0.0/go.mod h1:T0xQ8SeCZGxckz9qRXTfG43PvQ/mcWh7FwZEA7Ioqkc=
 github.com/yuin/goldmark v1.2.1/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9decYSb74=
 github.com/yuin/goldmark v1.4.13/go.mod h1:6yULJ656Px+3vBD8DxQVa3kxgyrAnzto9xy5taEt/CY=
-go.opentelemetry.io/contrib v1.13.0 h1:mA+KzlhM6efNG521MRsty9X68ZphIOFw5HOJ4xud95o=
-go.opentelemetry.io/contrib v1.13.0/go.mod h1:O3SXx534x0bWzGJlxXiUXpV7Ao7Iweib+s/urIXELrs=
+go.opentelemetry.io/contrib v1.14.0 h1:XHKHbkvibjNRzXAIrubQXzNLImvkZrhOB2M1OodfAZs=
+go.opentelemetry.io/contrib v1.14.0/go.mod h1:O3SXx534x0bWzGJlxXiUXpV7Ao7Iweib+s/urIXELrs=
 go.opentelemetry.io/contrib/propagators/b3 v1.13.0 h1:f17PBmZK60RoHvOpJVqEka8oS2EXjpjHquESD/8zZ50=
 go.opentelemetry.io/contrib/propagators/b3 v1.13.0/go.mod h1:zy2hz1TpGUoJzSwlBchVGvVAFQS8s2pglKLbrAFZ+Sc=
 go.opentelemetry.io/otel v1.0.0-RC3/go.mod h1:Ka5j3ua8tZs4Rkq4Ex3hwgBgOchyPVq5S6P2lz//nKQ=
