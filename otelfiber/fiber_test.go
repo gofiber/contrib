@@ -363,6 +363,8 @@ func getHistogram(value float64, attrs []attribute.KeyValue) metricdata.Histogra
 		}
 	}
 
+	extremaValue := metricdata.NewExtrema(value)
+
 	return metricdata.Histogram{
 		DataPoints: []metricdata.HistogramDataPoint{
 			{
@@ -370,8 +372,8 @@ func getHistogram(value float64, attrs []attribute.KeyValue) metricdata.Histogra
 				Bounds:       bounds,
 				BucketCounts: bucketCounts,
 				Count:        1,
-				Min:          &value,
-				Max:          &value,
+				Min:          extremaValue,
+				Max:          extremaValue,
 				Sum:          value,
 			},
 		},

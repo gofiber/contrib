@@ -52,19 +52,19 @@ func Middleware(opts ...Option) fiber.Handler {
 		metric.WithInstrumentationVersion(otelcontrib.SemVersion()),
 	)
 
-	httpServerDuration, err := meter.SyncFloat64().Histogram(metricNameHttpServerDuration, instrument.WithUnit(unit.Milliseconds), instrument.WithDescription("measures the duration inbound HTTP requests"))
+	httpServerDuration, err := meter.Float64Histogram(metricNameHttpServerDuration, instrument.WithUnit(unit.Milliseconds), instrument.WithDescription("measures the duration inbound HTTP requests"))
 	if err != nil {
 		otel.Handle(err)
 	}
-	httpServerRequestSize, err := meter.SyncInt64().Histogram(metricNameHttpServerRequestSize, instrument.WithUnit(unit.Bytes), instrument.WithDescription("measures the size of HTTP request messages"))
+	httpServerRequestSize, err := meter.Int64Histogram(metricNameHttpServerRequestSize, instrument.WithUnit(unit.Bytes), instrument.WithDescription("measures the size of HTTP request messages"))
 	if err != nil {
 		otel.Handle(err)
 	}
-	httpServerResponseSize, err := meter.SyncInt64().Histogram(metricNameHttpServerResponseSize, instrument.WithUnit(unit.Bytes), instrument.WithDescription("measures the size of HTTP response messages"))
+	httpServerResponseSize, err := meter.Int64Histogram(metricNameHttpServerResponseSize, instrument.WithUnit(unit.Bytes), instrument.WithDescription("measures the size of HTTP response messages"))
 	if err != nil {
 		otel.Handle(err)
 	}
-	httpServerActiveRequests, err := meter.SyncInt64().UpDownCounter(metricNameHttpServerActiveRequests, instrument.WithUnit(unit.Dimensionless), instrument.WithDescription("measures the number of concurrent HTTP requests that are currently in-flight"))
+	httpServerActiveRequests, err := meter.Int64UpDownCounter(metricNameHttpServerActiveRequests, instrument.WithUnit(unit.Dimensionless), instrument.WithDescription("measures the number of concurrent HTTP requests that are currently in-flight"))
 	if err != nil {
 		otel.Handle(err)
 	}
