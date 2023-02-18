@@ -1,4 +1,4 @@
-### Casbin
+### Casbinn
 Casbin middleware for Fiber
 
 ### Install
