@@ -1,5 +1,5 @@
-name-template: 'v$RESOLVED_VERSION'
-tag-template: 'v$RESOLVED_VERSION'
+name-template: 'Fibersentry - v$RESOLVED_VERSION'
+tag-template: 'fibersentry/v$RESOLVED_VERSION'
 categories:
     - title: '🚀 New'
       labels:
