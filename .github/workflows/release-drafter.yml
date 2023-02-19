@@ -16,64 +16,64 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - uses: blast-hardcheese/release-drafter@v5.18.104
-                with:
-                    config-name: release-drafter-casbin.yml
-                env:
-                    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              with:
+                config-name: release-drafter-casbin.yml
+              env:
+                GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     draft_release_fibernewrelic:
         runs-on: ubuntu-latest
         steps:
             - uses: blast-hardcheese/release-drafter@v5.18.104
-                with:
-                    config-name: release-drafter-fibernewrelic.yml
-                env:
-                    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              with:
+                config-name: release-drafter-fibernewrelic.yml
+              env:
+                GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     draft_release_fibersentry:
         runs-on: ubuntu-latest
         steps:
             - uses: blast-hardcheese/release-drafter@v5.18.104
-                with:
-                    config-name: release-drafter-fibersentry.yml
-                env:
-                    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              with:
+                config-name: release-drafter-fibersentry.yml
+              env:
+                GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     draft_release_fiberzap:
         runs-on: ubuntu-latest
         steps:
             - uses: blast-hardcheese/release-drafter@v5.18.104
-                with:
-                    config-name: release-drafter-fiberzap.yml
-                env:
-                    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              with:
+                config-name: release-drafter-fiberzap.yml
+              env:
+                GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     draft_release_opafiber:
         runs-on: ubuntu-latest
         steps:
             - uses: blast-hardcheese/release-drafter@v5.18.104
-                with:
-                    config-name: release-drafter-opafiber.yml
-                env:
-                    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              with:
+                config-name: release-drafter-opafiber.yml
+              env:
+                GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     draft_release_otelfiber:
         runs-on: ubuntu-latest
         steps:
             - uses: blast-hardcheese/release-drafter@v5.18.104
-                with:
-                    config-name: release-drafter-otelfiber.yml
-                env:
-                    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              with:
+                config-name: release-drafter-otelfiber.yml
+              env:
+                GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     draft_release_paseto:
         runs-on: ubuntu-latest
         steps:
             - uses: blast-hardcheese/release-drafter@v5.18.104
-                with:
-                    config-name: release-drafter-paseto.yml
-                env:
-                    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              with:
+                config-name: release-drafter-paseto.yml
+              env:
+                GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     draft_release_swagger:
         runs-on: ubuntu-latest
         steps:
             - uses: blast-hardcheese/release-drafter@v5.18.104
-                with:
-                    config-name: release-drafter-swagger.yml
-                env:
-                    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              with:
+                config-name: release-drafter-swagger.yml
+              env:
+                GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
              
