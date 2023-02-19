@@ -1,5 +1,8 @@
 name-template: 'Paseto - v$RESOLVED_VERSION'
 tag-template: 'paseto/v$RESOLVED_VERSION'
+tag-prefix: paseto/v
+include-paths:
+  - paseto
 categories:
     - title: '🚀 New'
       labels:

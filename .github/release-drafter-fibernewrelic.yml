@@ -1,5 +1,8 @@
 name-template: 'Fibernewrelic - v$RESOLVED_VERSION'
 tag-template: 'fibernewrelic/v$RESOLVED_VERSION'
+tag-prefix: fibernewrelic/v
+include-paths:
+  - fibernewrelic
 categories:
     - title: '🚀 New'
       labels:

@@ -1,5 +1,8 @@
 name-template: 'Casbin - v$RESOLVED_VERSION'
 tag-template: 'casbin/v$RESOLVED_VERSION'
+tag-prefix: casbin/v
+include-paths:
+  - casbin
 categories:
     - title: '🚀 New'
       labels:
