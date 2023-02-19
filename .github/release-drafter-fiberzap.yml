@@ -1,5 +1,8 @@
 name-template: 'Fiberzap - v$RESOLVED_VERSION'
 tag-template: 'fiberzap/v$RESOLVED_VERSION'
+tag-prefix: fiberzap/v
+include-paths:
+  - fiberzap
 categories:
     - title: '🚀 New'
       labels:

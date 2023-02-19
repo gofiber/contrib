@@ -1,5 +1,8 @@
 name-template: 'Otelfiber - v$RESOLVED_VERSION'
 tag-template: 'otelfiber/v$RESOLVED_VERSION'
+tag-prefix: otelfiber/v
+include-paths:
+  - otelfiber
 categories:
     - title: '🚀 New'
       labels:

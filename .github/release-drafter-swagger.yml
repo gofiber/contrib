@@ -1,5 +1,8 @@
 name-template: 'Swagger - v$RESOLVED_VERSION'
 tag-template: 'swagger/v$RESOLVED_VERSION'
+tag-prefix: swagger/v
+include-paths:
+  - swagger
 categories:
     - title: '🚀 New'
       labels:

@@ -1,5 +1,8 @@
 name-template: 'Fibersentry - v$RESOLVED_VERSION'
 tag-template: 'fibersentry/v$RESOLVED_VERSION'
+tag-prefix: fibersentry/v
+include-paths:
+  - fibersentry
 categories:
     - title: '🚀 New'
       labels:

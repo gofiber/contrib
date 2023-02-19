@@ -1,5 +1,8 @@
 name-template: 'Opafiber - v$RESOLVED_VERSION'
 tag-template: 'opafiber/v$RESOLVED_VERSION'
+tag-prefix: opafiber/v
+include-paths:
+  - opafiber
 categories:
     - title: '🚀 New'
       labels:
