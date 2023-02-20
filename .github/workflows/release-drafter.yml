@@ -6,10 +6,6 @@ on:
         branches:
             - master
             - main
-    # pull_request event is required only for autolabeler
-    pull_request:
-        # Only following types are handled by the action, but one can default to all as well
-        types: [opened, reopened, synchronize]
 
 jobs:
     draft_release_casbin:
@@ -76,4 +72,4 @@ jobs:
                 config-name: release-drafter-swagger.yml
               env:
                 GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-             
+
