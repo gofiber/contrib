@@ -1,64 +1,3 @@
-name: Release Drafter Casbin
-on:
-    push:
-        # branches to consider in the event; optional, defaults to all
-        branches:
-            - master
-            - main
-        paths:
-            - 'casbin/**'
-jobs:
-    draft_release_casbin:
-        runs-on: ubuntu-latest
-        timeout-minutes: 30
-        steps:
-            -   uses: release-drafter/release-drafter@v5
-                with:
-                    config-name: release-drafter-casbin.yml
-                env:
-                    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
----
-name: Release Drafter Fibernewrelic
-on:
-    push:
-        # branches to consider in the event; optional, defaults to all
-        branches:
-            - master
-            - main
-        paths:
-            - 'fibernewrelic/**'
-jobs:
-    draft_release_fibernewrelic:
-        runs-on: ubuntu-latest
-        timeout-minutes: 30
-        steps:
-            -   uses: release-drafter/release-drafter@v5
-                with:
-                    config-name: release-drafter-fibernewrelic.yml
-                env:
-                    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
----
-name: Release Drafter Fibersentry
-on:
-    push:
-        # branches to consider in the event; optional, defaults to all
-        branches:
-            - master
-            - main
-        paths:
-            - 'fibersentry/**'
-jobs:
-    draft_release_fibersentry:
-        runs-on: ubuntu-latest
-        timeout-minutes: 30
-        steps:
-            -   uses: release-drafter/release-drafter@v5
-                with:
-                    config-name: release-drafter-fibersentry.yml
-                env:
-                    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
----
 name: Release Drafter Fiberzap
 on:
     push:
@@ -158,4 +97,3 @@ jobs:
                     config-name: release-drafter-swagger.yml
                 env:
                     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
