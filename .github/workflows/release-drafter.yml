@@ -10,6 +10,7 @@ on:
 jobs:
     draft_release_casbin:
         runs-on: ubuntu-latest
+        timeout-minutes: 30
         steps:
             -   uses: release-drafter/release-drafter@v5
                 with:
@@ -29,6 +30,7 @@ on:
 jobs:
     draft_release_fibernewrelic:
         runs-on: ubuntu-latest
+        timeout-minutes: 30
         steps:
             -   uses: release-drafter/release-drafter@v5
                 with:
@@ -49,6 +51,7 @@ on:
 jobs:
     draft_release_fibersentry:
         runs-on: ubuntu-latest
+        timeout-minutes: 30
         steps:
             -   uses: release-drafter/release-drafter@v5
                 with:
@@ -68,6 +71,7 @@ on:
 jobs:
     draft_release_fiberzap:
         runs-on: ubuntu-latest
+        timeout-minutes: 30
         steps:
             -   uses: release-drafter/release-drafter@v5
                 with:
@@ -87,6 +91,7 @@ on:
 jobs:
     draft_release_opafiber:
         runs-on: ubuntu-latest
+        timeout-minutes: 30
         steps:
             -   uses: release-drafter/release-drafter@v5
                 with:
@@ -106,6 +111,7 @@ on:
 jobs:
     draft_release_otelfiber:
         runs-on: ubuntu-latest
+        timeout-minutes: 30
         steps:
             -   uses: release-drafter/release-drafter@v5
                 with:
@@ -125,6 +131,7 @@ on:
 jobs:
     draft_release_paseto:
         runs-on: ubuntu-latest
+        timeout-minutes: 30
         steps:
             -   uses: release-drafter/release-drafter@v5
                 with:
@@ -144,6 +151,7 @@ on:
 jobs:
     draft_release_swagger:
         runs-on: ubuntu-latest
+        timeout-minutes: 30
         steps:
             -   uses: release-drafter/release-drafter@v5
                 with:
