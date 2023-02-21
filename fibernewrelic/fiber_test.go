@@ -1,6 +1,8 @@
 package fibernewrelic
 
 import (
+	"errors"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -224,4 +226,87 @@ func TestNewrelicAppConfig(t *testing.T) {
 				assert.Equal(t, 200, resp.StatusCode)
 			})
 		})
+
+	t.Run("config should use default error status code handler", func(t *testing.T) {
+		// given
+		app := fiber.New()
+
+		app.Use(New(Config{
+			License: "0123456789abcdef0123456789abcdef01234567",
+			AppName: "",
+			Enabled: true,
+		}))
+
+		app.Get("/", func(ctx *fiber.Ctx) error { return errors.New("system error") })
+
+		// when
+		resp, err := app.Test(httptest.NewRequest("GET", "/", nil), -1)
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	})
+
+	t.Run("config should use custom error status code handler when error status code handler is provided", func(t *testing.T) {
+		// given
+		var (
+			app                          = fiber.New()
+			errorStatusCodeHandlerCalled = false
+		)
+
+		errorStatusCodeHandler := func(c *fiber.Ctx, err error) int {
+			errorStatusCodeHandlerCalled = true
+			return http.StatusInternalServerError
+		}
+
+		app.Use(New(Config{
+			License:                "0123456789abcdef0123456789abcdef01234567",
+			AppName:                "",
+			Enabled:                true,
+			ErrorStatusCodeHandler: errorStatusCodeHandler,
+		}))
+
+		app.Get("/", func(ctx *fiber.Ctx) error { return errors.New("system error") })
+
+		// when
+		resp, err := app.Test(httptest.NewRequest("GET", "/", nil), -1)
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+		assert.True(t, errorStatusCodeHandlerCalled)
+	})
+}
+
+func TestDefaultErrorStatusCodeHandler(t *testing.T) {
+	t.Run("should return fiber status code when error is fiber error", func(t *testing.T) {
+		// given
+		err := &fiber.Error{
+			Code: http.StatusNotFound,
+		}
+
+		// when
+		statusCode := DefaultErrorStatusCodeHandler(nil, err)
+
+		// then
+		assert.Equal(t, http.StatusNotFound, statusCode)
+	})
+
+	t.Run("should return context status code when error is not fiber error", func(t *testing.T) {
+		// given
+		app := fiber.New()
+
+		app.Use(New(Config{
+			License: "0123456789abcdef0123456789abcdef01234567",
+			AppName: "",
+			Enabled: true,
+		}))
+
+		app.Get("/", func(ctx *fiber.Ctx) error {
+			err := ctx.SendStatus(http.StatusNotFound)
+			assert.Equal(t, http.StatusNotFound, DefaultErrorStatusCodeHandler(ctx, err))
+			return err
+		})
+
+		// when
+		resp, err := app.Test(httptest.NewRequest("GET", "/", nil), -1)
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
 }

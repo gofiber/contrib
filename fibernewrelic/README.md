@@ -29,6 +29,7 @@ fibernewrelic.New(config fibernewrelic.Config) fiber.Handler
 | Enabled           | `bool`           | Enable/Disable New Relic               | `false`        |
 | ~~TransportType~~ | ~~`string`~~     | ~~Can be HTTP or HTTPS~~ (Deprecated)  | ~~`"HTTP"`~~   |
 | Application       | `Application`    | Existing New Relic App                 | `nil`          |
+| ErrorStatusCodeHandler       | `func(c *fiber.Ctx, err error) int`    | If you want to change newrelic status code, you can use it.                 | `DefaultErrorStatusCodeHandler`          |
 
 ### Usage
 
