@@ -22,18 +22,26 @@ type Config struct {
 	TransportType string
 	// Application field is required to use an existing newrelic application
 	Application *newrelic.Application
+	// ErrorStatusCodeHandler is executed when an error is returned from handler
+	// Optional. Default: DefaultErrorStatusCodeHandler
+	ErrorStatusCodeHandler func(c *fiber.Ctx, err error) int
 }
 
 var ConfigDefault = Config{
-	Application: nil,
-	License:     "",
-	AppName:     "fiber-api",
-	Enabled:     false,
+	Application:            nil,
+	License:                "",
+	AppName:                "fiber-api",
+	Enabled:                false,
+	ErrorStatusCodeHandler: DefaultErrorStatusCodeHandler,
 }
 
 func New(cfg Config) fiber.Handler {
 	var app *newrelic.Application
 	var err error
+
+	if cfg.ErrorStatusCodeHandler == nil {
+		cfg.ErrorStatusCodeHandler = ConfigDefault.ErrorStatusCodeHandler
+	}
 
 	if cfg.Application != nil {
 		app = cfg.Application
@@ -61,18 +69,22 @@ func New(cfg Config) fiber.Handler {
 		txn := app.StartTransaction("")
 		defer txn.End()
 
-		err := c.Next()
+		handlerErr := c.Next()
 
-		method := utils.CopyString(c.Method())
-		routePath := utils.CopyString(c.Route().Path)
-		host := string(c.Request().URI().Host())
+		var (
+			method    = utils.CopyString(c.Method())
+			routePath = utils.CopyString(c.Route().Path)
+			host      = utils.CopyString(c.Hostname())
+		)
 
 		u := url.URL{
-			Scheme:   string(c.Request().URI().Scheme()),
 			Host:     host,
+			Scheme:   string(c.Request().URI().Scheme()),
 			Path:     string(c.Request().URI().Path()),
 			RawQuery: string(c.Request().URI().QueryString()),
 		}
+
+		txn.SetName(fmt.Sprintf("%s %s", method, routePath))
 
 		txn.SetWebRequest(newrelic.WebRequest{
 			URL:       &u,
@@ -80,21 +92,17 @@ func New(cfg Config) fiber.Handler {
 			Transport: transport(u.Scheme),
 			Host:      host,
 		})
-		txn.SetName(fmt.Sprintf("%s %s", method, routePath))
 
 		statusCode := c.Context().Response.StatusCode()
 
-		if err != nil {
-			if fiberErr, ok := err.(*fiber.Error); ok {
-				statusCode = fiberErr.Code
-			}
-
-			txn.NoticeError(err)
+		if handlerErr != nil {
+			statusCode = cfg.ErrorStatusCodeHandler(c, handlerErr)
+			txn.NoticeError(handlerErr)
 		}
 
 		txn.SetWebResponse(nil).WriteHeader(statusCode)
 
-		return err
+		return handlerErr
 	}
 }
 
@@ -108,4 +116,12 @@ func transport(schema string) newrelic.TransportType {
 	}
 
 	return newrelic.TransportUnknown
+}
+
+func DefaultErrorStatusCodeHandler(c *fiber.Ctx, err error) int {
+	if fiberErr, ok := err.(*fiber.Error); ok {
+		return fiberErr.Code
+	}
+
+	return c.Context().Response.StatusCode()
 }
