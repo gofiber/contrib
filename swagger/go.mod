@@ -7,7 +7,7 @@ require (
 	github.com/go-openapi/runtime v0.25.0
 	github.com/gofiber/fiber/v2 v2.42.0
 	github.com/gorilla/handlers v1.5.1
-	github.com/stretchr/testify v1.8.1
+	github.com/stretchr/testify v1.8.2
 	github.com/valyala/fasthttp v1.44.0
 )
 
