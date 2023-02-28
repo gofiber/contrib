@@ -16,7 +16,6 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/metric/unit"
 	"go.opentelemetry.io/otel/oteltest"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/instrumentation"
@@ -276,7 +275,8 @@ func TestMetric(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, route, nil)
 	_, _ = app.Test(r)
 
-	metrics, err := reader.Collect(context.Background())
+	metrics := metricdata.ResourceMetrics{}
+	err := reader.Collect(context.Background(), &metrics)
 	assert.NoError(t, err)
 	assert.Len(t, metrics.ScopeMetrics, 1)
 
@@ -318,7 +318,7 @@ func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, 
 	want := metricdata.Metrics{
 		Name:        metricNameHttpServerRequestSize,
 		Description: "measures the size of HTTP request messages",
-		Unit:        unit.Bytes,
+		Unit:        UnitBytes,
 		Data:        getHistogram(0, responseAttrs),
 	}
 	metricdatatest.AssertEqual(t, want, sm.Metrics[1], metricdatatest.IgnoreTimestamp())
@@ -327,7 +327,7 @@ func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, 
 	want = metricdata.Metrics{
 		Name:        metricNameHttpServerResponseSize,
 		Description: "measures the size of HTTP response messages",
-		Unit:        unit.Bytes,
+		Unit:        UnitBytes,
 		Data:        getHistogram(2, responseAttrs),
 	}
 	metricdatatest.AssertEqual(t, want, sm.Metrics[2], metricdatatest.IgnoreTimestamp())
@@ -336,7 +336,7 @@ func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, 
 	want = metricdata.Metrics{
 		Name:        metricNameHttpServerActiveRequests,
 		Description: "measures the number of concurrent HTTP requests that are currently in-flight",
-		Unit:        unit.Dimensionless,
+		Unit:        UnitDimensionless,
 		Data: metricdata.Sum[int64]{
 			DataPoints: []metricdata.DataPoint[int64]{
 				{Attributes: attribute.NewSet(requestAttrs...), Value: 0},
