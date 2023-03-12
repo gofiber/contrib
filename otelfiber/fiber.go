@@ -13,7 +13,6 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/global"
 	"go.opentelemetry.io/otel/metric/instrument"
-	"go.opentelemetry.io/otel/metric/unit"
 	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -27,6 +26,11 @@ const (
 	metricNameHttpServerRequestSize    = "http.server.request.size"
 	metricNameHttpServerResponseSize   = "http.server.response.size"
 	metricNameHttpServerActiveRequests = "http.server.active_requests"
+
+	// Unit constants for deprecated metric units
+	UnitDimensionless = "1"
+	UnitBytes         = "By"
+	UnitMilliseconds  = "ms"
 )
 
 // Middleware returns fiber handler which will trace incoming requests.
@@ -52,19 +56,19 @@ func Middleware(opts ...Option) fiber.Handler {
 		metric.WithInstrumentationVersion(otelcontrib.SemVersion()),
 	)
 
-	httpServerDuration, err := meter.Float64Histogram(metricNameHttpServerDuration, instrument.WithUnit(unit.Milliseconds), instrument.WithDescription("measures the duration inbound HTTP requests"))
+	httpServerDuration, err := meter.Float64Histogram(metricNameHttpServerDuration, instrument.WithUnit(UnitMilliseconds), instrument.WithDescription("measures the duration inbound HTTP requests"))
 	if err != nil {
 		otel.Handle(err)
 	}
-	httpServerRequestSize, err := meter.Int64Histogram(metricNameHttpServerRequestSize, instrument.WithUnit(unit.Bytes), instrument.WithDescription("measures the size of HTTP request messages"))
+	httpServerRequestSize, err := meter.Int64Histogram(metricNameHttpServerRequestSize, instrument.WithUnit(UnitBytes), instrument.WithDescription("measures the size of HTTP request messages"))
 	if err != nil {
 		otel.Handle(err)
 	}
-	httpServerResponseSize, err := meter.Int64Histogram(metricNameHttpServerResponseSize, instrument.WithUnit(unit.Bytes), instrument.WithDescription("measures the size of HTTP response messages"))
+	httpServerResponseSize, err := meter.Int64Histogram(metricNameHttpServerResponseSize, instrument.WithUnit(UnitBytes), instrument.WithDescription("measures the size of HTTP response messages"))
 	if err != nil {
 		otel.Handle(err)
 	}
-	httpServerActiveRequests, err := meter.Int64UpDownCounter(metricNameHttpServerActiveRequests, instrument.WithUnit(unit.Dimensionless), instrument.WithDescription("measures the number of concurrent HTTP requests that are currently in-flight"))
+	httpServerActiveRequests, err := meter.Int64UpDownCounter(metricNameHttpServerActiveRequests, instrument.WithUnit(UnitDimensionless), instrument.WithDescription("measures the number of concurrent HTTP requests that are currently in-flight"))
 	if err != nil {
 		otel.Handle(err)
 	}
