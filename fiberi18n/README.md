@@ -24,49 +24,17 @@ fiberi18n.New(config ...*Config) fiber.Handler
 ```
 
 ### Config
-```go
-type Config struct {
-	// Next defines a function to skip this middleware when returned true.
-	//
-	// Optional. Default: nil
-	Next func(c *fiber.Ctx) bool
-	
-	// RootPath is i18n template folder path
-	//
-	// Default: ./example/localize
-	RootPath string
-	
-	// AcceptLanguages is a collection of languages that can be processed
-	//
-	// Optional. Default: []language.Tag{language.Chinese, language.English}
-	AcceptLanguages []language.Tag
-	
-	// FormatBundleFile is type of template file.
-	//
-	// Optional. Default: "yaml"
-	FormatBundleFile string
-	
-	// DefaultLanguage is the default returned language type
-	//
-	// Optional. Default: language.English
-	DefaultLanguage language.Tag
-	
-	// Loader implements the Loader interface, which defines how to read the file.
-	// We provide both os.ReadFile and embed.FS.ReadFile
-	// Optional. Default: LoaderFunc(os.ReadFile)
-	Loader Loader
-	
-	// UnmarshalFunc for decoding template files
-	//
-	// Optional. Default: yaml.Unmarshal
-	UnmarshalFunc i18n.UnmarshalFunc
-	
-	// LangHandler is used to get the kind of language handled by *fiber.Ctx and defaultLang
-	//
-	// Optional. Default: The language type is retrieved from the request header: `Accept-Language` or query param : `lang`
-	LangHandler func(ctx *fiber.Ctx, defaultLang string) string
-}
-```
+
+| Property         | Type                                              | Description                                                  | Default                                                      |
+| ---------------- | ------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
+| Next             | `func(c *fiber.Ctx) bool`                         | A function to skip this middleware when returned `true`.     | `nil`                                                        |
+| RootPath         | `string`                                          | The i18n template folder path.                               | `"./example/localize"`                                       |
+| AcceptLanguages  | `[]language.Tag`                                  | A collection of languages that can be processed.             | `[]language.Tag{language.Chinese, language.English}`         |
+| FormatBundleFile | `string`                                          | The type of the template file.                               | `"yaml"`                                                     |
+| DefaultLanguage  | `language.Tag`                                    | The default returned language type.                          | `language.English`                                           |
+| Loader           | `Loader`                                          | The implementation of the Loader interface, which defines how to read the file. We provide both os.ReadFile and embed.FS.ReadFile. | `LoaderFunc(os.ReadFile)`                                    |
+| UnmarshalFunc    | `i18n.UnmarshalFunc`                              | The function used for decoding template files.               | `yaml.Unmarshal`                                             |
+| LangHandler      | `func(ctx *fiber.Ctx, defaultLang string) string` | Used to get the kind of language handled by *fiber.Ctx and defaultLang. | Retrieved from the request header `Accept-Language` or query parameter `lang`. |
 
 ### Example
 
