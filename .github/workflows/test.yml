@@ -54,3 +54,5 @@ jobs:
                 run: cd ./fibernewrelic && go test ./... -v -race
             -   name: Test opafiber Middleware
                 run: cd ./opafiber && go test ./... -v -race
+            -   name: Test fiberi18n Middleware
+                run: cd ./fiberi18n && go test ./... -v -race

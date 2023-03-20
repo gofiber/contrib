@@ -48,3 +48,7 @@ jobs:
                 working-directory: ./opafiber
                 run: "`go env GOPATH`/bin/gosec -exclude-dir=internal ./..."
                 # -----
+            -   name: Run Gosec (fiberi18n)
+                working-directory: ./fiberi18n
+                run: "`go env GOPATH`/bin/gosec -exclude-dir=internal ./..."
+                # -----
