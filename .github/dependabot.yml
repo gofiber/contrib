@@ -56,12 +56,12 @@ updates:
             - "🤖 Dependencies"
         schedule:
             interval: "daily"
-    - package-ecosystem: "gomod"
-      directory: "/fiberi18n"
-      labels:
-          - "🤖 Dependencies"
-      schedule:
-          interval: "daily"
+    -   package-ecosystem: "gomod"
+        directory: "/fiberi18n"
+        labels:
+            - "🤖 Dependencies"
+        schedule:
+            interval: "daily"
     -   package-ecosystem: "gomod"
         directory: "/fiberzerolog"
         labels:
