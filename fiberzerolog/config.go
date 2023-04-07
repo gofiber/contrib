@@ -66,6 +66,14 @@ type Config struct {
 	// Optional. Default: zerolog.New(os.Stderr).With().Timestamp().Logger()
 	Logger *zerolog.Logger
 
+	// GetLogger defines a function to get custom zerolog logger.
+	//  eg: when we need to create a new logger for each request.
+	//
+	// GetLogger will override Logger.
+	//
+	// Optional. Default: nil
+	GetLogger func(c *fiber.Ctx) zerolog.Logger
+
 	// Add fields what you want see.
 	//
 	// Optional. Default: {"latency", "status", "method", "url", "error"}
@@ -92,8 +100,16 @@ type Config struct {
 	Levels []zerolog.Level
 }
 
+func (c *Config) loggerCtx(fc *fiber.Ctx) zerolog.Context {
+	if c.GetLogger != nil {
+		return c.GetLogger(fc).With()
+	}
+
+	return c.Logger.With()
+}
+
 func (c *Config) logger(fc *fiber.Ctx, latency time.Duration, err error) zerolog.Logger {
-	zc := c.Logger.With()
+	zc := c.loggerCtx(fc)
 
 	for _, field := range c.Fields {
 		switch field {

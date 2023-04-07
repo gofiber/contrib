@@ -381,3 +381,27 @@ func Test_LoggerLevelsAndMessages(t *testing.T) {
 		})
 	}
 }
+
+func Test_Logger_FromContext(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+
+	app := fiber.New()
+	app.Use(New(Config{
+		GetLogger: func(c *fiber.Ctx) zerolog.Logger {
+			return zerolog.New(&buf).
+				With().
+				Str("foo", "bar").
+				Logger()
+		},
+	}))
+
+	_, err := app.Test(httptest.NewRequest("GET", "/", nil))
+	utils.AssertEqual(t, nil, err)
+
+	var logs map[string]any
+	_ = json.Unmarshal(buf.Bytes(), &logs)
+
+	utils.AssertEqual(t, "bar", logs["foo"])
+}
