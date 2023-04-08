@@ -8,7 +8,7 @@ on:
         paths:
             - 'fiberzerolog/**'
 jobs:
-    draft_release_fiberzap:
+    draft_release_fiberzerolog:
         runs-on: ubuntu-latest
         timeout-minutes: 30
         steps:

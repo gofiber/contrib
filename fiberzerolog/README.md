@@ -1,4 +1,4 @@
-# Fiberzap
+# Fiberzerolog
 
 ![Release](https://img.shields.io/github/release/gofiber/contrib.svg)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
@@ -30,6 +30,7 @@ fiberzerolog.New(config ...Config) fiber.Handler
 |:--------------|:-------------------------------|:------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|:----------------------------------------------------------------------------|
 | Next          | `func(*Ctx) bool`              | Define a function to skip this middleware when returned true                                                                                                                  | `nil`                                                                       |
 | Logger        | `*zerolog.Logger`               | Add custom zerolog logger.                                                                                                                                                        | `zerolog.New(os.Stderr).With().Timestamp().Logger()`                                                      |
+| GetLogger        | `func(*fiber.Ctx) zerolog.Logger`           | Get custom zerolog logger, if it's defined the returned logger will replace the `Logger` value.   | `nil`                                                      |
 | Fields        | `[]string`                     | Add fields what you want see.                                                                                                                                                 | `[]string{"latency", "status", "method", "url", "error"}`                            |
 | Messages      | `[]string`                     | Custom response messages.                                                                                                                                                     | `[]string{"Server error", "Client error", "Success"}`                       |
 | Levels        | `[]zerolog.Level`              | Custom response levels.                                                                                                                                                       | `[]zerolog.Level{zerolog.ErrorLevel, zerolog.WarnLevel, zerolog.InfoLevel}` |
