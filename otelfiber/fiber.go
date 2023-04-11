@@ -115,7 +115,8 @@ func Middleware(opts ...Option) fiber.Handler {
 		c.SetUserContext(ctx)
 
 		// serve the request to the next middleware
-		if err := c.Next(); err != nil {
+		err := c.Next()
+		if err != nil {
 			span.RecordError(err)
 			// invokes the registered HTTP error handler
 			// to get the correct response status code
@@ -155,7 +156,7 @@ func Middleware(opts ...Option) fiber.Handler {
 		spanStatus, spanMessage := semconv.SpanStatusFromHTTPStatusCodeAndSpanKind(c.Response().StatusCode(), oteltrace.SpanKindServer)
 		span.SetStatus(spanStatus, spanMessage)
 
-		return nil
+		return err
 	}
 }
 
