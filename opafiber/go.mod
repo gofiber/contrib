@@ -4,7 +4,7 @@ go 1.18
 
 require (
 	github.com/gofiber/fiber/v2 v2.44.0
-	github.com/open-policy-agent/opa v0.51.0
+	github.com/open-policy-agent/opa v0.52.0
 	github.com/stretchr/testify v1.8.2
 )
 
@@ -26,6 +26,7 @@ require (
 	github.com/rivo/uniseg v0.4.3 // indirect
 	github.com/savsgio/dictpool v0.0.0-20221023140959-7bf2e61cea94 // indirect
 	github.com/savsgio/gotils v0.0.0-20230208104028-c358bd845dee // indirect
+	github.com/sirupsen/logrus v1.9.0 // indirect
 	github.com/tchap/go-patricia/v2 v2.3.1 // indirect
 	github.com/tinylib/msgp v1.1.8 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
