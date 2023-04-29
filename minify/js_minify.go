@@ -3,6 +3,7 @@ package minify
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"io"
 )
 
@@ -18,9 +19,12 @@ func jsMinify(script []byte) (minified []byte, err error) {
 	m.init(r, w)
 	m.run()
 	if m.err != nil {
-		return script, err
+		return nil, err
 	}
-	w.Flush()
+	err = w.Flush()
+	if err != nil {
+		return nil, err
+	}
 
 	minified = buf.Bytes()
 	if len(minified) > 0 && minified[0] == '\n' {
@@ -49,8 +53,8 @@ func (m *jsminifier) init(r *bufio.Reader, w *bufio.Writer) {
 	m.theY = eof
 }
 
-func (m *jsminifier) error(s string) error {
-	return m.err
+func (m *jsminifier) error(s string) {
+	m.err = fmt.Errorf(s)
 }
 
 // return true if the character is a letter, digit, underscore, dollar sign, or non-ASCII character.
@@ -156,7 +160,10 @@ func (m *jsminifier) next() int {
 }
 
 func (m *jsminifier) putc(c int) {
-	m.w.WriteByte(byte(c))
+	err := m.w.WriteByte(byte(c))
+	if err != nil {
+		m.error(err.Error())
+	}
 }
 
 func (m *jsminifier) action(d int) {

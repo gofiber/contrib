@@ -244,7 +244,7 @@ func Test_Minify_HTML_Default_With_CSS(t *testing.T) {
 	body, err := io.ReadAll(resp.Body)
 
 	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, expectedData.HTMLWithCssDefault, string(body))
+	utils.AssertEqual(t, []byte(expectedData.HTMLWithCssDefault), body)
 }
 
 // go test -run Test_Minify_HTML_Default_With_JS
@@ -267,7 +267,7 @@ func Test_Minify_HTML_Default_With_JS(t *testing.T) {
 	// check if resp body equals expectedData
 	body, err := io.ReadAll(resp.Body)
 	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, expectedData.HTMLWithJsDefault, string(body))
+	utils.AssertEqual(t, []byte(expectedData.HTMLWithJsDefault), body)
 }
 
 // go test -run Test_Minify_HTML_Default_With_Css_And_JS
@@ -290,7 +290,7 @@ func Test_Minify_HTML_Default_With_Css_And_JS(t *testing.T) {
 	// check if resp body equals expectedData
 	body, err := io.ReadAll(resp.Body)
 	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, expectedData.HTMLWithCssAndJs, string(body))
+	utils.AssertEqual(t, []byte(expectedData.HTMLWithCssAndJs), body)
 }
 
 // go test -run Test_Minify_HTML_Config_Options_Styles_false
@@ -354,7 +354,7 @@ func Test_Minify_HTML_Config_Options_Scripts_false(t *testing.T) {
 	body, err := io.ReadAll(resp.Body)
 
 	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, expectedData.HTMLConfigOptionsJSFalse, string(body))
+	utils.AssertEqual(t, []byte(expectedData.HTMLConfigOptionsJSFalse), body)
 }
 
 // go test -run Test_Minify_HTML_Config_Options_Css_JS_false
@@ -386,7 +386,7 @@ func Test_Minify_HTML_Config_Options_Css_JS_false(t *testing.T) {
 	body, err := io.ReadAll(resp.Body)
 
 	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, expectedData.HTMLConfigOptionsCssJSFalse, string(body))
+	utils.AssertEqual(t, []byte(expectedData.HTMLConfigOptionsCssJSFalse), body)
 }
 
 // go test -run Test_Minify_HTML_Config_Options_Css_JS_true
@@ -418,7 +418,7 @@ func Test_Minify_HTML_Config_Options_Css_JS_true(t *testing.T) {
 	body, err := io.ReadAll(resp.Body)
 
 	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, expectedData.HTMLConfigOptionsCssJSTrue, string(body))
+	utils.AssertEqual(t, []byte(expectedData.HTMLConfigOptionsCssJSTrue), body)
 }
 
 // go test -run Test_Minify_CSS
@@ -500,7 +500,7 @@ func Test_Minify_CSS(t *testing.T) {
 			body, err := io.ReadAll(resp.Body)
 			utils.AssertEqual(t, nil, err)
 			if tc.minify {
-				utils.AssertEqual(t, tc.expectedCSS, string(body))
+				utils.AssertEqual(t, []byte(tc.expectedCSS), body)
 			} else {
 				utils.AssertEqual(t, tc.css, body)
 			}
@@ -585,7 +585,7 @@ func Test_Minify_JS(t *testing.T) {
 			body, err := io.ReadAll(resp.Body)
 			utils.AssertEqual(t, nil, err)
 			if tc.minify {
-				utils.AssertEqual(t, tc.expectedJs, string(body))
+				utils.AssertEqual(t, []byte(tc.expectedJs), body)
 			} else {
 				utils.AssertEqual(t, tc.js, body)
 			}

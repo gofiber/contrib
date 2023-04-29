@@ -1,6 +1,6 @@
 # test cases expected data
 HtmlMinify: <!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Document</title></head><body><p>Hello, Fiber!</p><input type="hidden" disabled><br></body></html>
-html_with_css_default: |-
+html_with_css_default: >-
   <!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Document</title><style>
       /* This a comment */
       body {
@@ -14,12 +14,12 @@ html_with_css_default: |-
         background-color: #ffffff;
       }
     </style></head><body><p>Hello, Fiber!</p></body></html>
-html_with_js_default: |-
+html_with_js_default: >-
   <!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Document</title><script>
       // This is a comment
       alert('Hello, Fiber!')
     </script></head><body><p>Hello, Fiber!</p></body></html>
-html_with_css_and_js: |-
+html_with_css_and_js: >-
   <!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Document</title><style>
       /* This a css comment */
       body {
@@ -36,7 +36,7 @@ html_with_css_and_js: |-
       // This is a js comment
       alert('Hello, Fiber!')
     </script></body></html>
-html_config_options_styles_false: |-
+html_config_options_styles_false: >-
   <!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Document</title><style>
       /* This a css comment */
       body {
@@ -50,12 +50,12 @@ html_config_options_styles_false: |-
         background-color: #ffffff;
       }
     </style></head><body><p>Hello, Fiber!</p><script>alert('Hello, Fiber!')</script></body></html>
-html_config_options_js_false: |-
+html_config_options_js_false: >-
   <!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Document</title><style>body{font-family:sans-serif;font-size:16px;color:#333;background-color:#fff}</style></head><body><p>Hello, Fiber!</p><script>
       // This is a js comment
       alert('Hello, Fiber!')
     </script></body></html>
-html_config_options_css_js_false: |-
+html_config_options_css_js_false: >-
   <!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Document</title><style>
       /* This a css comment */
       body {
