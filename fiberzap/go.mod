@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/fiberzap
 go 1.18
 
 require (
-	github.com/gofiber/fiber/v2 v2.44.0
+	github.com/gofiber/fiber/v2 v2.45.0
 	github.com/valyala/fasthttp v1.47.0
 	go.uber.org/zap v1.24.0
 )
@@ -27,5 +27,5 @@ require (
 	go.uber.org/atomic v1.10.0 // indirect
 	go.uber.org/goleak v1.1.12 // indirect
 	go.uber.org/multierr v1.8.0 // indirect
-	golang.org/x/sys v0.7.0 // indirect
+	golang.org/x/sys v0.8.0 // indirect
 )
