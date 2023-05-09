@@ -6,7 +6,7 @@ require (
 	github.com/gofiber/fiber/v2 v2.45.0
 	github.com/google/uuid v1.3.0
 	github.com/o1egl/paseto v1.0.0
-	golang.org/x/crypto v0.8.0
+	golang.org/x/crypto v0.9.0
 )
 
 require (
