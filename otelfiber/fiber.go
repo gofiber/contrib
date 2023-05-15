@@ -87,7 +87,7 @@ func Middleware(opts ...Option) fiber.Handler {
 		start := time.Now()
 
 		requestMetricsAttrs := httpServerMetricAttributesFromRequest(c, cfg)
-		httpServerActiveRequests.Add(savedCtx, 1, requestMetricsAttrs...)
+		httpServerActiveRequests.Add(savedCtx, 1, metric.WithAttributes(requestMetricsAttrs...))
 
 		responseMetricAttrs := make([]attribute.KeyValue, len(requestMetricsAttrs))
 		copy(responseMetricAttrs, requestMetricsAttrs)
@@ -136,10 +136,10 @@ func Middleware(opts ...Option) fiber.Handler {
 				responseMetricAttrs,
 				responseAttrs...)
 
-			httpServerActiveRequests.Add(savedCtx, -1, requestMetricsAttrs...)
-			httpServerDuration.Record(savedCtx, float64(time.Since(start).Microseconds())/1000, responseMetricAttrs...)
-			httpServerRequestSize.Record(savedCtx, requestSize, responseMetricAttrs...)
-			httpServerResponseSize.Record(savedCtx, responseSize, responseMetricAttrs...)
+			httpServerActiveRequests.Add(savedCtx, -1, metric.WithAttributes(requestMetricsAttrs...))
+			httpServerDuration.Record(savedCtx, float64(time.Since(start).Microseconds())/1000, metric.WithAttributes(responseMetricAttrs...))
+			httpServerRequestSize.Record(savedCtx, requestSize, metric.WithAttributes(responseMetricAttrs...))
+			httpServerResponseSize.Record(savedCtx, responseSize, metric.WithAttributes(responseMetricAttrs...))
 
 			c.SetUserContext(savedCtx)
 			cancel()
