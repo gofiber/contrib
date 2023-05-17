@@ -58,3 +58,5 @@ jobs:
                 run: cd ./fiberi18n && go test ./... -v -race
             -   name: Test fiberzerolog Middleware
                 run: cd ./fiberzerolog && go test ./... -v -race
+            -   name: Test websocket Middleware
+                run: cd ./websocket && go test ./... -v -race

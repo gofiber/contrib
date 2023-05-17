@@ -68,3 +68,9 @@ updates:
             - "🤖 Dependencies"
         schedule:
             interval: "daily"
+    -   package-ecosystem: "gomod"
+        directory: "/websocket"
+        labels:
+            - "🤖 Dependencies"
+        schedule:
+            interval: "daily"
