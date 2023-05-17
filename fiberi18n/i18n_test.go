@@ -116,3 +116,50 @@ func TestI18nZH(t *testing.T) {
 		})
 	}
 }
+
+func TestParallelI18n(t *testing.T) {
+	type args struct {
+		lang language.Tag
+		name string
+	}
+	tests := []struct {
+		name string
+		args args
+		want string
+	}{
+		{
+			name: "hello world",
+			args: args{
+				name: "",
+				lang: language.Chinese,
+			},
+			want: "你好",
+		},
+		{
+			name: "hello alex",
+			args: args{
+				name: "alex",
+				lang: language.Chinese,
+			},
+			want: "你好 alex",
+		},
+		{
+			name: "hello peter",
+			args: args{
+				name: "peter",
+				lang: language.English,
+			},
+			want: "hello peter",
+		},
+	}
+	t.Parallel()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := makeRequest(tt.args.lang, tt.args.name)
+			utils.AssertEqual(t, err, nil)
+			body, err := io.ReadAll(got.Body)
+			utils.AssertEqual(t, err, nil)
+			utils.AssertEqual(t, tt.want, string(body))
+		})
+	}
+}

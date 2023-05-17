@@ -13,44 +13,59 @@ var appCfg *Config
 // New creates a new middleware handler
 func New(config ...*Config) fiber.Handler {
 	appCfg = configDefault(config...)
-	bundle := i18n.NewBundle(appCfg.DefaultLanguage)
-	bundle.RegisterUnmarshalFunc(appCfg.FormatBundleFile, appCfg.UnmarshalFunc)
-	appCfg.bundle = bundle
-
-	for _, lang := range appCfg.AcceptLanguages {
-		bundleFile := fmt.Sprintf("%s.%s", lang.String(), appCfg.FormatBundleFile)
-		filepath := path.Join(appCfg.RootPath, bundleFile)
-
-		buf, err := appCfg.Loader.LoadMessage(filepath)
-		if err != nil {
-			panic(err)
-		}
-		if _, err := appCfg.bundle.ParseMessageFileBytes(buf, filepath); err != nil {
-			panic(err)
-		}
-	}
+	appCfg.bundle = initBundle()
+	loadMessages()
+	appCfg.localizerMap = initLocalizerMap()
 
 	return func(c *fiber.Ctx) error {
 		if appCfg.Next != nil && appCfg.Next(c) {
 			return c.Next()
 		}
-
 		appCfg.ctx = c
-		appCfg.localizerMap = map[string]*i18n.Localizer{}
-		for _, lang := range appCfg.AcceptLanguages {
-			s := lang.String()
-			appCfg.localizerMap[s] = i18n.NewLocalizer(appCfg.bundle, s)
-		}
-
-		// dataPool.Put(appCfg)
-
-		lang := appCfg.DefaultLanguage.String()
-		if _, ok := appCfg.localizerMap[lang]; !ok {
-			appCfg.localizerMap[lang] = i18n.NewLocalizer(appCfg.bundle, lang)
-		}
-
 		return c.Next()
 	}
+}
+
+func initBundle() *i18n.Bundle {
+	bundle := i18n.NewBundle(appCfg.DefaultLanguage)
+	bundle.RegisterUnmarshalFunc(appCfg.FormatBundleFile, appCfg.UnmarshalFunc)
+
+	return bundle
+}
+
+func loadMessage(filepath string) {
+	buf, err := appCfg.Loader.LoadMessage(filepath)
+	if err != nil {
+		panic(err)
+	}
+	if _, err := appCfg.bundle.ParseMessageFileBytes(buf, filepath); err != nil {
+		panic(err)
+	}
+}
+
+func loadMessages() {
+	for _, lang := range appCfg.AcceptLanguages {
+		bundleFile := fmt.Sprintf("%s.%s", lang.String(), appCfg.FormatBundleFile)
+		filepath := path.Join(appCfg.RootPath, bundleFile)
+
+		loadMessage(filepath)
+	}
+}
+
+func initLocalizerMap() map[string]*i18n.Localizer {
+	localizerMap := map[string]*i18n.Localizer{}
+
+	for _, lang := range appCfg.AcceptLanguages {
+		s := lang.String()
+		localizerMap[s] = i18n.NewLocalizer(appCfg.bundle, s)
+	}
+
+	lang := appCfg.DefaultLanguage.String()
+	if _, ok := localizerMap[lang]; !ok {
+		localizerMap[lang] = i18n.NewLocalizer(appCfg.bundle, lang)
+	}
+
+	return localizerMap
 }
 
 /*

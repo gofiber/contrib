@@ -72,20 +72,23 @@ var ConfigDefault = &Config{
 	FormatBundleFile: "yaml",
 	UnmarshalFunc:    yaml.Unmarshal,
 	Loader:           LoaderFunc(os.ReadFile),
-	LangHandler: func(c *fiber.Ctx, defaultLang string) string {
-		if c == nil {
-			return defaultLang
-		}
-		lang := c.Get("Accept-Language")
-		if lang != "" {
-			return lang
-		}
-		lang = c.Query("lang")
-		if lang == "" {
-			return defaultLang
-		}
+	LangHandler:      defaultLangHandler,
+}
+
+func defaultLangHandler(c *fiber.Ctx, defaultLang string) string {
+	var lang string
+	lang = c.Query("lang")
+	if lang != "" {
 		return lang
-	},
+	}
+
+	lang = c.Get("Accept-Language")
+	if lang != "" {
+		return lang
+	}
+
+	return defaultLang
+
 }
 
 func configDefault(config ...*Config) *Config {
