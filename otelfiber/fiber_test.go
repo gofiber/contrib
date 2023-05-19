@@ -305,8 +305,8 @@ func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, 
 	// Duration value is not predictable.
 	m := sm.Metrics[0]
 	assert.Equal(t, metricNameHttpServerDuration, m.Name)
-	require.IsType(t, m.Data, metricdata.Histogram{})
-	hist := m.Data.(metricdata.Histogram)
+	require.IsType(t, m.Data, metricdata.Histogram[float64]{})
+	hist := m.Data.(metricdata.Histogram[float64])
 	assert.Equal(t, metricdata.CumulativeTemporality, hist.Temporality)
 	require.Len(t, hist.DataPoints, 1)
 	dp := hist.DataPoints[0]
@@ -347,7 +347,7 @@ func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, 
 	metricdatatest.AssertEqual(t, want, sm.Metrics[3], metricdatatest.IgnoreTimestamp())
 }
 
-func getHistogram(value float64, attrs []attribute.KeyValue) metricdata.Histogram {
+func getHistogram(value float64, attrs []attribute.KeyValue) metricdata.Histogram[int64] {
 	bounds := []float64{0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000}
 	bucketCounts := make([]uint64, len(bounds)+1)
 
@@ -363,10 +363,10 @@ func getHistogram(value float64, attrs []attribute.KeyValue) metricdata.Histogra
 		}
 	}
 
-	extremaValue := metricdata.NewExtrema(value)
+	extremaValue := metricdata.NewExtrema[int64](int64(value))
 
-	return metricdata.Histogram{
-		DataPoints: []metricdata.HistogramDataPoint{
+	return metricdata.Histogram[int64]{
+		DataPoints: []metricdata.HistogramDataPoint[int64]{
 			{
 				Attributes:   attribute.NewSet(attrs...),
 				Bounds:       bounds,
@@ -374,7 +374,7 @@ func getHistogram(value float64, attrs []attribute.KeyValue) metricdata.Histogra
 				Count:        1,
 				Min:          extremaValue,
 				Max:          extremaValue,
-				Sum:          value,
+				Sum:          int64(value),
 			},
 		},
 		Temporality: metricdata.CumulativeTemporality,
