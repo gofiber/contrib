@@ -11,7 +11,7 @@ body:
         ### Notice
         - Dont't forget you can ask your questions on our [Discord server](https://gofiber.io/discord).
         - If you think this is just a bug, open the issue with **☢️ Bug Report** template.
-        - If you think Fiber contribs don't have a nice feature that you think, open the issue with **✏️ Feature Request** template.
+        - If you think Fiber contrib don't have a nice feature that you think, open the issue with **✏️ Feature Request** template.
         - Write your issue with clear and understandable English.
   - type: textarea
     id: description

@@ -46,8 +46,8 @@ body:
     id: version
     attributes:
       label: "Contrib package Version"
-      description: "Some bugs may be fixed in future contribs releases, so we have to know your contribs version."
-      placeholder: "Write your contribs version. (v1.0.0, v1.1.0...)"
+      description: "Some bugs may be fixed in future contrib releases, so we have to know your contribs version."
+      placeholder: "Write your contrib version. (v1.0.0, v1.1.0...)"
     validations:
       required: true
   - type: textarea
