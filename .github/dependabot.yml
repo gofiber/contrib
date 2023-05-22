@@ -68,3 +68,9 @@ updates:
             - "🤖 Dependencies"
         schedule:
             interval: "daily"
+    -   package-ecosystem: "gomod"
+        directory: "/jwt"
+        labels:
+            - "🤖 Dependencies"
+        schedule:
+            interval: "daily"
