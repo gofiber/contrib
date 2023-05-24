@@ -56,6 +56,10 @@ jobs:
                 working-directory: ./fiberzerolog
                 run: "`go env GOPATH`/bin/gosec -exclude-dir=internal ./..."
                 # -----
+            -   name: Run Gosec (jwt)
+                working-directory: ./jwt
+                run: "`go env GOPATH`/bin/gosec -exclude-dir=internal ./..."
+                # -----
             -   name: Run Gosec (websocket)
                 working-directory: ./websocket
                 run: "`go env GOPATH`/bin/gosec -exclude-dir=internal ./..."
