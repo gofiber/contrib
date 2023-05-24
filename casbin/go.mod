@@ -3,8 +3,8 @@ module github.com/gofiber/contrib/casbin
 go 1.18
 
 require (
-	github.com/casbin/casbin/v2 v2.69.0
-	github.com/gofiber/fiber/v2 v2.45.0
+	github.com/casbin/casbin/v2 v2.69.1
+	github.com/gofiber/fiber/v2 v2.46.0
 )
 
 require (

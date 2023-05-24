@@ -57,20 +57,27 @@ updates:
         schedule:
             interval: "daily"
     -   package-ecosystem: "gomod"
-        directory: "/fiberi18n"
+        directory: "/fiberi18n"  # Location of package manifests
         labels:
             - "🤖 Dependencies"
         schedule:
             interval: "daily"
     -   package-ecosystem: "gomod"
-        directory: "/fiberzerolog"
+        directory: "/fiberzerolog"  # Location of package manifests
         labels:
             - "🤖 Dependencies"
         schedule:
             interval: "daily"
     -   package-ecosystem: "gomod"
-        directory: "/jwt"
+        directory: "/jwt"  # Location of package manifests
         labels:
             - "🤖 Dependencies"
         schedule:
             interval: "daily"
+    -   package-ecosystem: "gomod"
+        directory: "/websocket"  # Location of package manifests
+        labels:
+            - "🤖 Dependencies"
+        schedule:
+            interval: "daily"
+
