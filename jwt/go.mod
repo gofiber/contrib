@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/jwt
 go 1.20
 
 require (
-	github.com/MicahParks/keyfunc/v2 v2.0.3
+	github.com/MicahParks/keyfunc/v2 v2.1.0
 	github.com/gofiber/fiber/v2 v2.46.0
 	github.com/golang-jwt/jwt/v5 v5.0.0
 )
