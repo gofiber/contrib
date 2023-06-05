@@ -15,6 +15,7 @@ type config struct {
 	Propagators       propagation.TextMapPropagator
 	ServerName        *string
 	SpanNameFormatter func(*fiber.Ctx) string
+	SkipURIs          []string
 }
 
 // Option specifies instrumentation configuration options.
