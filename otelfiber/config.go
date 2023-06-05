@@ -79,6 +79,7 @@ func WithPort(port int) Option {
 	})
 }
 
+// WithSkipURIs specifies the uris to exclude
 func WithSkipURIs(uris []string) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.SkipURIs = uris
