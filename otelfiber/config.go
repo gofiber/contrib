@@ -78,3 +78,9 @@ func WithPort(port int) Option {
 		cfg.Port = &port
 	})
 }
+
+func WithSkipURIs(uris []string) Option {
+	return optionFunc(func(cfg *config) {
+		cfg.SkipURIs = uris
+	})
+}
