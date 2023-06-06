@@ -79,14 +79,17 @@ func Middleware(opts ...Option) fiber.Handler {
 	}
 
 	return func(c *fiber.Ctx) error {
-		skipURIs := make(map[string]struct{})
-		for _, uri := range cfg.SkipURIs {
-			skipURIs[uri] = struct{}{}
-		}
 
-		// skip uri
-		if _, ok := skipURIs[c.Path()]; ok {
-			return c.Next()
+		if len(cfg.SkipURIs > 0) {
+			skipURIs := make(map[string]struct{})
+			for _, uri := range cfg.SkipURIs {
+				skipURIs[uri] = struct{}{}
+			}
+
+			// skip uri
+			if _, ok := skipURIs[c.Path()]; ok {
+				return c.Next()
+			}
 		}
 
 		c.Locals(tracerKey, tracer)
