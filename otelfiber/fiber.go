@@ -79,7 +79,6 @@ func Middleware(opts ...Option) fiber.Handler {
 	}
 
 	return func(c *fiber.Ctx) error {
-
 		if len(cfg.SkipURIs > 0) {
 			skipURIs := make(map[string]struct{})
 			for _, uri := range cfg.SkipURIs {
