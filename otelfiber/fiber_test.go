@@ -61,13 +61,16 @@ func TestChildSpanFromCustomTracer(t *testing.T) {
 	assert.True(t, ok)
 }
 
-func TestSkipURIs(t *testing.T) {
+func TestSkipWithNext(t *testing.T) {
 	otel.SetTracerProvider(oteltest.NewTracerProvider())
 
 	var gotSpan oteltrace.Span
 
 	app := fiber.New()
-	app.Use(Middleware(WithSkipURIs([]string{"/health"})))
+	app.Use(Middleware(Next(func(c *fiber.Ctx) bool {
+		return c.Path() == "/health"
+	})))
+
 	app.Get("/health", func(ctx *fiber.Ctx) error {
 		gotSpan = oteltrace.SpanFromContext(ctx.UserContext())
 		return ctx.SendStatus(http.StatusNoContent)
