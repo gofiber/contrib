@@ -4,7 +4,7 @@ go 1.18
 
 require (
 	github.com/gofiber/fiber/v2 v2.46.0
-	github.com/open-policy-agent/opa v0.53.0
+	github.com/open-policy-agent/opa v0.53.1
 	github.com/stretchr/testify v1.8.4
 )
 
