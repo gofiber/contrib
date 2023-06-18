@@ -68,7 +68,7 @@ func main() {
 
 	// JWT Middleware
 	app.Use(jwtware.New(jwtware.Config{
-		SigningKey: SigningKey{Key: []byte("secret")},
+		SigningKey: jwtware.SigningKey{Key: []byte("secret")},
 	}))
 
 	// Restricted Routes
