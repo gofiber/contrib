@@ -29,7 +29,7 @@ func (o optionFunc) apply(c *config) {
 	o(c)
 }
 
-func Next(f func(ctx *fiber.Ctx) bool) Option {
+func WithNext(f func(ctx *fiber.Ctx) bool) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.Next = f
 	})

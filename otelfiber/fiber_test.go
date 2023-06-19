@@ -67,7 +67,7 @@ func TestSkipWithNext(t *testing.T) {
 	var gotSpan oteltrace.Span
 
 	app := fiber.New()
-	app.Use(Middleware(Next(func(c *fiber.Ctx) bool {
+	app.Use(Middleware(WithNext(func(c *fiber.Ctx) bool {
 		return c.Path() == "/health"
 	})))
 
