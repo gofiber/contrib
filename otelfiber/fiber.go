@@ -43,7 +43,7 @@ func Middleware(opts ...Option) fiber.Handler {
 	}
 	tracer := cfg.TracerProvider.Tracer(
 		instrumentationName,
-		oteltrace.WithInstrumentationVersion(otelcontrib.SemVersion()),
+		oteltrace.WithInstrumentationVersion(otelcontrib.Version()),
 	)
 
 	if cfg.MeterProvider == nil {
@@ -51,7 +51,7 @@ func Middleware(opts ...Option) fiber.Handler {
 	}
 	meter := cfg.MeterProvider.Meter(
 		instrumentationName,
-		metric.WithInstrumentationVersion(otelcontrib.SemVersion()),
+		metric.WithInstrumentationVersion(otelcontrib.Version()),
 	)
 
 	httpServerDuration, err := meter.Float64Histogram(metricNameHttpServerDuration, metric.WithUnit(UnitMilliseconds), metric.WithDescription("measures the duration inbound HTTP requests"))
