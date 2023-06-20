@@ -1,4 +1,4 @@
-package otelfiber
+package test
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/gofiber/contrib/otelfiber"
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,43 +23,46 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
-func TestChildSpanFromGlobalTracer(t *testing.T) {
-	otel.SetTracerProvider(oteltest.NewTracerProvider())
+const instrumentationName = "github.com/gofiber/contrib/otelfiber"
 
-	var gotSpan oteltrace.Span
+func TestChildSpanFromGlobalTracer(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	otel.SetTracerProvider(tp)
 
 	app := fiber.New()
-	app.Use(Middleware())
+	app.Use(otelfiber.Middleware())
 	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
-		gotSpan = oteltrace.SpanFromContext(ctx.UserContext())
 		return ctx.SendStatus(http.StatusNoContent)
 	})
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/user/123", nil))
 
-	_, ok := gotSpan.(*oteltest.Span)
-	assert.True(t, ok)
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
 }
 
 func TestChildSpanFromCustomTracer(t *testing.T) {
-	provider := oteltest.NewTracerProvider()
-	var gotSpan oteltrace.Span
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	otel.SetTracerProvider(tp)
 
 	app := fiber.New()
-	app.Use(Middleware(WithTracerProvider(provider)))
+	app.Use(otelfiber.Middleware(otelfiber.WithTracerProvider(tp)))
 	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
-		gotSpan = oteltrace.SpanFromContext(ctx.UserContext())
 		return ctx.SendStatus(http.StatusNoContent)
 	})
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/user/123", nil))
 
-	_, ok := gotSpan.(*oteltest.Span)
-	assert.True(t, ok)
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
 }
 
 func TestTrace200(t *testing.T) {
@@ -70,9 +74,9 @@ func TestTrace200(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(
-		Middleware(
-			WithTracerProvider(provider),
-			WithServerName(serverName),
+		otelfiber.Middleware(
+			otelfiber.WithTracerProvider(provider),
+			otelfiber.WithServerName(serverName),
 		),
 	)
 	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
@@ -109,7 +113,7 @@ func TestError(t *testing.T) {
 
 	// setup
 	app := fiber.New()
-	app.Use(Middleware(WithTracerProvider(provider)))
+	app.Use(otelfiber.Middleware(otelfiber.WithTracerProvider(provider)))
 	// configure a handler that returns an error and 5xx status
 	// code
 	app.Get("/server_err", func(ctx *fiber.Ctx) error {
@@ -137,7 +141,7 @@ func TestErrorOnlyHandledOnce(t *testing.T) {
 			return fiber.NewError(http.StatusInternalServerError, err.Error())
 		},
 	})
-	app.Use(Middleware())
+	app.Use(otelfiber.Middleware())
 	app.Get("/", func(ctx *fiber.Ctx) error {
 		return errors.New("mock error")
 	})
@@ -175,7 +179,7 @@ func TestPropagationWithGlobalPropagators(t *testing.T) {
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(r.Header))
 
 	app := fiber.New()
-	app.Use(Middleware(WithTracerProvider(provider)))
+	app.Use(otelfiber.Middleware(otelfiber.WithTracerProvider(provider)))
 	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
 		gotSpan = oteltrace.SpanFromContext(ctx.UserContext())
 		return ctx.SendStatus(http.StatusNoContent)
@@ -202,7 +206,7 @@ func TestPropagationWithCustomPropagators(t *testing.T) {
 	b3.Inject(ctx, propagation.HeaderCarrier(r.Header))
 
 	app := fiber.New()
-	app.Use(Middleware(WithTracerProvider(provider), WithPropagators(b3)))
+	app.Use(otelfiber.Middleware(otelfiber.WithTracerProvider(provider), otelfiber.WithPropagators(b3)))
 	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
 		gotSpan = oteltrace.SpanFromContext(ctx.UserContext())
 		return ctx.SendStatus(http.StatusNoContent)
@@ -244,7 +248,7 @@ func TestHasBasicAuth(t *testing.T) {
 
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {
-			val, valid := hasBasicAuth(tC.auth)
+			val, valid := otelfiber.HasBasicAuth(tC.auth)
 
 			assert.Equal(t, tC.user, val)
 			assert.Equal(t, tC.valid, valid)
@@ -262,10 +266,10 @@ func TestMetric(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(
-		Middleware(
-			WithMeterProvider(provider),
-			WithPort(port),
-			WithServerName(serverName),
+		otelfiber.Middleware(
+			otelfiber.WithMeterProvider(provider),
+			otelfiber.WithPort(port),
+			otelfiber.WithServerName(serverName),
 		),
 	)
 	app.Get(route, func(ctx *fiber.Ctx) error {
@@ -299,12 +303,12 @@ func TestMetric(t *testing.T) {
 func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, requestAttrs []attribute.KeyValue, responseAttrs []attribute.KeyValue) {
 	assert.Equal(t, instrumentation.Scope{
 		Name:    instrumentationName,
-		Version: otelcontrib.SemVersion(),
+		Version: otelcontrib.Version(),
 	}, sm.Scope)
 
 	// Duration value is not predictable.
 	m := sm.Metrics[0]
-	assert.Equal(t, metricNameHttpServerDuration, m.Name)
+	assert.Equal(t, otelfiber.MetricNameHttpServerDuration, m.Name)
 	require.IsType(t, m.Data, metricdata.Histogram[float64]{})
 	hist := m.Data.(metricdata.Histogram[float64])
 	assert.Equal(t, metricdata.CumulativeTemporality, hist.Temporality)
@@ -316,27 +320,27 @@ func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, 
 
 	// Request size
 	want := metricdata.Metrics{
-		Name:        metricNameHttpServerRequestSize,
+		Name:        otelfiber.MetricNameHttpServerRequestSize,
 		Description: "measures the size of HTTP request messages",
-		Unit:        UnitBytes,
+		Unit:        otelfiber.UnitBytes,
 		Data:        getHistogram(0, responseAttrs),
 	}
 	metricdatatest.AssertEqual(t, want, sm.Metrics[1], metricdatatest.IgnoreTimestamp())
 
 	// Response size
 	want = metricdata.Metrics{
-		Name:        metricNameHttpServerResponseSize,
+		Name:        otelfiber.MetricNameHttpServerResponseSize,
 		Description: "measures the size of HTTP response messages",
-		Unit:        UnitBytes,
+		Unit:        otelfiber.UnitBytes,
 		Data:        getHistogram(2, responseAttrs),
 	}
 	metricdatatest.AssertEqual(t, want, sm.Metrics[2], metricdatatest.IgnoreTimestamp())
 
 	// Active requests
 	want = metricdata.Metrics{
-		Name:        metricNameHttpServerActiveRequests,
+		Name:        otelfiber.MetricNameHttpServerActiveRequests,
 		Description: "measures the number of concurrent HTTP requests that are currently in-flight",
-		Unit:        UnitDimensionless,
+		Unit:        otelfiber.UnitDimensionless,
 		Data: metricdata.Sum[int64]{
 			DataPoints: []metricdata.DataPoint[int64]{
 				{Attributes: attribute.NewSet(requestAttrs...), Value: 0},

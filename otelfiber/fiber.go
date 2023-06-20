@@ -20,10 +20,10 @@ const (
 	tracerKey           = "gofiber-contrib-tracer-fiber"
 	instrumentationName = "github.com/gofiber/contrib/otelfiber"
 
-	metricNameHttpServerDuration       = "http.server.duration"
-	metricNameHttpServerRequestSize    = "http.server.request.size"
-	metricNameHttpServerResponseSize   = "http.server.response.size"
-	metricNameHttpServerActiveRequests = "http.server.active_requests"
+	MetricNameHttpServerDuration       = "http.server.duration"
+	MetricNameHttpServerRequestSize    = "http.server.request.size"
+	MetricNameHttpServerResponseSize   = "http.server.response.size"
+	MetricNameHttpServerActiveRequests = "http.server.active_requests"
 
 	// Unit constants for deprecated metric units
 	UnitDimensionless = "1"
@@ -43,7 +43,7 @@ func Middleware(opts ...Option) fiber.Handler {
 	}
 	tracer := cfg.TracerProvider.Tracer(
 		instrumentationName,
-		oteltrace.WithInstrumentationVersion(otelcontrib.SemVersion()),
+		oteltrace.WithInstrumentationVersion(otelcontrib.Version()),
 	)
 
 	if cfg.MeterProvider == nil {
@@ -51,22 +51,22 @@ func Middleware(opts ...Option) fiber.Handler {
 	}
 	meter := cfg.MeterProvider.Meter(
 		instrumentationName,
-		metric.WithInstrumentationVersion(otelcontrib.SemVersion()),
+		metric.WithInstrumentationVersion(otelcontrib.Version()),
 	)
 
-	httpServerDuration, err := meter.Float64Histogram(metricNameHttpServerDuration, metric.WithUnit(UnitMilliseconds), metric.WithDescription("measures the duration inbound HTTP requests"))
+	httpServerDuration, err := meter.Float64Histogram(MetricNameHttpServerDuration, metric.WithUnit(UnitMilliseconds), metric.WithDescription("measures the duration inbound HTTP requests"))
 	if err != nil {
 		otel.Handle(err)
 	}
-	httpServerRequestSize, err := meter.Int64Histogram(metricNameHttpServerRequestSize, metric.WithUnit(UnitBytes), metric.WithDescription("measures the size of HTTP request messages"))
+	httpServerRequestSize, err := meter.Int64Histogram(MetricNameHttpServerRequestSize, metric.WithUnit(UnitBytes), metric.WithDescription("measures the size of HTTP request messages"))
 	if err != nil {
 		otel.Handle(err)
 	}
-	httpServerResponseSize, err := meter.Int64Histogram(metricNameHttpServerResponseSize, metric.WithUnit(UnitBytes), metric.WithDescription("measures the size of HTTP response messages"))
+	httpServerResponseSize, err := meter.Int64Histogram(MetricNameHttpServerResponseSize, metric.WithUnit(UnitBytes), metric.WithDescription("measures the size of HTTP response messages"))
 	if err != nil {
 		otel.Handle(err)
 	}
-	httpServerActiveRequests, err := meter.Int64UpDownCounter(metricNameHttpServerActiveRequests, metric.WithUnit(UnitDimensionless), metric.WithDescription("measures the number of concurrent HTTP requests that are currently in-flight"))
+	httpServerActiveRequests, err := meter.Int64UpDownCounter(MetricNameHttpServerActiveRequests, metric.WithUnit(UnitDimensionless), metric.WithDescription("measures the number of concurrent HTTP requests that are currently in-flight"))
 	if err != nil {
 		otel.Handle(err)
 	}
