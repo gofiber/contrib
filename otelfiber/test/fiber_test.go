@@ -66,21 +66,19 @@ func TestChildSpanFromCustomTracer(t *testing.T) {
 }
 
 func TestTrace200(t *testing.T) {
-	sr := new(oteltest.SpanRecorder)
-	provider := oteltest.NewTracerProvider(oteltest.WithSpanRecorder(sr))
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	otel.SetTracerProvider(tp)
 	serverName := "foobar"
-
-	var gotSpan oteltrace.Span
 
 	app := fiber.New()
 	app.Use(
 		otelfiber.Middleware(
-			otelfiber.WithTracerProvider(provider),
+			otelfiber.WithTracerProvider(tp),
 			otelfiber.WithServerName(serverName),
 		),
 	)
 	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
-		gotSpan = oteltrace.SpanFromContext(ctx.UserContext())
 		id := ctx.Params("id")
 		return ctx.SendString(id)
 	})
@@ -90,21 +88,20 @@ func TestTrace200(t *testing.T) {
 	// do and verify the request
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
-	mspan, ok := gotSpan.(*oteltest.Span)
-	require.True(t, ok)
-	assert.Equal(t, attribute.StringValue(serverName), mspan.Attributes()[semconv.HTTPServerNameKey])
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
 
 	// verify traces look good
-	spans := sr.Completed()
-	require.Len(t, spans, 1)
 	span := spans[0]
+	attr := span.Attributes()
+
 	assert.Equal(t, "/user/:id", span.Name())
 	assert.Equal(t, oteltrace.SpanKindServer, span.SpanKind())
-	assert.Equal(t, attribute.StringValue("foobar"), span.Attributes()["http.server_name"])
-	assert.Equal(t, attribute.IntValue(http.StatusOK), span.Attributes()["http.status_code"])
-	assert.Equal(t, attribute.StringValue("GET"), span.Attributes()["http.method"])
-	assert.Equal(t, attribute.StringValue("/user/123"), span.Attributes()["http.target"])
-	assert.Equal(t, attribute.StringValue("/user/:id"), span.Attributes()["http.route"])
+	assert.Contains(t, attr, attribute.String("http.server_name", serverName))
+	assert.Contains(t, attr, attribute.Int("http.status_code", http.StatusOK))
+	assert.Contains(t, attr, attribute.String("http.method", "GET"))
+	assert.Contains(t, attr, attribute.String("http.target", "/user/123"))
+	assert.Contains(t, attr, attribute.String("http.route", "/user/:id"))
 }
 
 func TestError(t *testing.T) {
