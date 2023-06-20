@@ -5,7 +5,7 @@ go 1.20
 require (
 	github.com/fasthttp/websocket v1.5.3
 	github.com/gofiber/fiber/v2 v2.46.0
-	github.com/valyala/fasthttp v1.47.0
+	github.com/valyala/fasthttp v1.48.0
 )
 
 require (
