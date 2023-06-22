@@ -16,7 +16,7 @@ import (
 	b3prop "go.opentelemetry.io/contrib/propagators/b3"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	//"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/oteltest"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/instrumentation"
@@ -125,12 +125,12 @@ func TestError(t *testing.T) {
 	require.Len(t, spans, 1)
 	span := spans[0]
 	attr := span.Attributes()
-	
+
 	assert.Equal(t, "/server_err", span.Name())
 	assert.Contains(t, attr, attribute.Int("http.status_code", http.StatusInternalServerError))
-	//assert.Equal(t, attribute.StringValue("oh no"), span.Events()[0].Attributes[semconv.ExceptionMessageKey])
+	assert.Equal(t, attribute.StringValue("oh no"), span.Events()[0].Attributes[1].Value)
 	// server errors set the status
-	// assert.Equal(t, codes.Error, span.StatusCode())
+	assert.Equal(t, codes.Error, span.Status().Code)
 }
 
 func TestErrorOnlyHandledOnce(t *testing.T) {
