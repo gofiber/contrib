@@ -299,7 +299,7 @@ func TestMetric(t *testing.T) {
 func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, requestAttrs []attribute.KeyValue, responseAttrs []attribute.KeyValue) {
 	assert.Equal(t, instrumentation.Scope{
 		Name:    instrumentationName,
-		Version: otelcontrib.SemVersion(),
+		Version: otelcontrib.Version(),
 	}, sm.Scope)
 
 	// Duration value is not predictable.
