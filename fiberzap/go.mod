@@ -25,3 +25,5 @@ require (
 	go.uber.org/multierr v1.8.0 // indirect
 	golang.org/x/sys v0.10.0 // indirect
 )
+
+replace github.com/gofiber/fiber/v2 v2.47.0 => ../../fiber
