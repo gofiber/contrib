@@ -332,6 +332,65 @@ func TestCustomKeyfunc(t *testing.T) {
 	utils.AssertEqual(t, 200, resp.StatusCode)
 }
 
+func TestMultiKeys(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		// Assert
+		if err := recover(); err != nil {
+			t.Fatalf("Middleware should not panic")
+		}
+	}()
+
+	signMethod := jwt.SigningMethodHS512
+
+	keys := map[string]jwtware.SigningKey{
+		"1": {
+			JWTAlg: signMethod.Name,
+			Key:    []byte("aaa"),
+		},
+		"2": {
+			JWTAlg: signMethod.Name,
+			Key:    []byte("bbb"),
+		},
+	}
+
+	testTokens := make(map[string]string)
+	for kid, key := range keys {
+		token := jwt.New(signMethod)
+		token.Header["kid"] = kid
+		tokenStr, err := token.SignedString(key.Key)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		testTokens[kid] = tokenStr
+	}
+
+	// Arrange
+	app := fiber.New()
+
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKeys: keys,
+	}))
+
+	app.Get("/ok", func(c *fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+
+	for _, tokenStr := range testTokens {
+		req := httptest.NewRequest("GET", "/ok", nil)
+		req.Header.Add("Authorization", "Bearer "+tokenStr)
+
+		// Act
+		resp, err := app.Test(req)
+
+		// Assert
+		utils.AssertEqual(t, nil, err)
+		utils.AssertEqual(t, 200, resp.StatusCode)
+	}
+}
+
 func customKeyfunc() jwt.Keyfunc {
 	return func(t *jwt.Token) (interface{}, error) {
 		// Always check the signing method

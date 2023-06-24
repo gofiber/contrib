@@ -142,7 +142,7 @@ func makeCfg(config []Config) (cfg Config) {
 			if cfg.SigningKeys != nil {
 				givenKeys = make(map[string]keyfunc.GivenKey, len(cfg.SigningKeys))
 				for kid, key := range cfg.SigningKeys {
-					givenKeys[kid] = keyfunc.NewGivenCustom(key, keyfunc.GivenKeyOptions{
+					givenKeys[kid] = keyfunc.NewGivenCustom(key.Key, keyfunc.GivenKeyOptions{
 						Algorithm: key.JWTAlg,
 					})
 				}
