@@ -17,7 +17,6 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/oteltest"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/instrumentation"
 	"go.opentelemetry.io/otel/sdk/metric"
@@ -196,9 +195,9 @@ func TestPropagationWithGlobalPropagators(t *testing.T) {
 }
 
 func TestPropagationWithCustomPropagators(t *testing.T) {
-	sr := new(oteltest.SpanRecorder)
-	provider := oteltest.NewTracerProvider(oteltest.WithSpanRecorder(sr))
-	var gotSpan oteltrace.Span
+	sr := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	otel.SetTracerProvider(provider)
 
 	b3 := b3prop.New()
 
@@ -210,16 +209,16 @@ func TestPropagationWithCustomPropagators(t *testing.T) {
 	app := fiber.New()
 	app.Use(otelfiber.Middleware(otelfiber.WithTracerProvider(provider), otelfiber.WithPropagators(b3)))
 	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
-		gotSpan = oteltrace.SpanFromContext(ctx.UserContext())
 		return ctx.SendStatus(http.StatusNoContent)
 	})
 
 	_, _ = app.Test(r)
 
-	mspan, ok := gotSpan.(*oteltest.Span)
-	require.True(t, ok)
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+	mspan := spans[0]
 	assert.Equal(t, pspan.SpanContext().TraceID(), mspan.SpanContext().TraceID())
-	assert.Equal(t, pspan.SpanContext().SpanID(), mspan.ParentSpanID())
+	assert.Equal(t, pspan.SpanContext().SpanID(), mspan.Parent().SpanID())
 }
 
 func TestHasBasicAuth(t *testing.T) {
