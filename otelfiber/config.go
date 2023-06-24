@@ -29,6 +29,8 @@ func (o optionFunc) apply(c *config) {
 	o(c)
 }
 
+// WithNext takes a function that will be called on every
+// request, the middleware will be skipped if returning true
 func WithNext(f func(ctx *fiber.Ctx) bool) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.Next = f
