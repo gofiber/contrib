@@ -79,6 +79,11 @@ func Middleware(opts ...Option) fiber.Handler {
 	}
 
 	return func(c *fiber.Ctx) error {
+		// Don't execute middleware if Next returns true
+		if cfg.Next != nil && cfg.Next(c) {
+			return c.Next()
+		}
+
 		c.Locals(tracerKey, tracer)
 		savedCtx, cancel := context.WithCancel(c.UserContext())
 
