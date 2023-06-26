@@ -64,6 +64,27 @@ func TestChildSpanFromCustomTracer(t *testing.T) {
 	require.Len(t, spans, 1)
 }
 
+func TestSkipWithNext(t *testing.T) {
+	otel.SetTracerProvider(oteltest.NewTracerProvider())
+
+	var gotSpan oteltrace.Span
+
+	app := fiber.New()
+	app.Use(Middleware(WithNext(func(c *fiber.Ctx) bool {
+		return c.Path() == "/health"
+	})))
+
+	app.Get("/health", func(ctx *fiber.Ctx) error {
+		gotSpan = oteltrace.SpanFromContext(ctx.UserContext())
+		return ctx.SendStatus(http.StatusNoContent)
+	})
+
+	_, _ = app.Test(httptest.NewRequest("GET", "/health", nil))
+
+	_, ok := gotSpan.(*oteltest.Span)
+	assert.False(t, ok)
+}
+
 func TestTrace200(t *testing.T) {
 	sr := tracetest.NewSpanRecorder()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))

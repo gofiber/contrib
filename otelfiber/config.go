@@ -9,6 +9,7 @@ import (
 
 // config is used to configure the Fiber middleware.
 type config struct {
+	Next              func(*fiber.Ctx) bool
 	TracerProvider    oteltrace.TracerProvider
 	MeterProvider     otelmetric.MeterProvider
 	Port              *int
@@ -26,6 +27,14 @@ type optionFunc func(*config)
 
 func (o optionFunc) apply(c *config) {
 	o(c)
+}
+
+// WithNext takes a function that will be called on every
+// request, the middleware will be skipped if returning true
+func WithNext(f func(ctx *fiber.Ctx) bool) Option {
+	return optionFunc(func(cfg *config) {
+		cfg.Next = f
+	})
 }
 
 // WithPropagators specifies propagators to use for extracting
@@ -77,3 +86,4 @@ func WithPort(port int) Option {
 		cfg.Port = &port
 	})
 }
+
