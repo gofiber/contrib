@@ -14,9 +14,19 @@ import (
 var _ fiberlog.AllLogger = (*LoggerConfig)(nil)
 
 type LoggerConfig struct {
+	// CoreConfigs allows users to configure Encoder, WriteSyncer, LevelEnabler configuration items provided by zapcore
+	//
+	// Optional. Default: LoggerConfigDefault
 	CoreConfigs []CoreConfig
-	ZapOptions  []zap.Option
-	ExtraKeys   []string
+	// ZapOptions allow users to configure the zap.Option supplied by zap.
+	//
+	// Optional. Default: []zap.Option
+	ZapOptions []zap.Option
+
+	// ExtraKeys allow users log extra values from context
+	//
+	// Optional. Default: []string
+	ExtraKeys []string
 
 	// SetLogger sets *zap.Logger for fiberlog, if set, ZapOptions, CoreConfigs, SetLevel, SetOutput will be ignored
 	//
@@ -26,13 +36,15 @@ type LoggerConfig struct {
 	logger *zap.Logger
 }
 
+// WithContext adds extra fields from context
 func (l *LoggerConfig) WithContext(ctx context.Context) fiberlog.CommonLogger {
-	log := l.logger.Sugar()
+	sugar := l.logger.Sugar()
 	if len(l.ExtraKeys) > 0 {
 		for _, k := range l.ExtraKeys {
 			value := ctx.Value(k)
-			log = log.With(k, value)
+			sugar = sugar.With(k, value)
 		}
+		l.logger = sugar.Desugar()
 	}
 	return l
 }
@@ -52,8 +64,6 @@ var LoggerConfigDefault = LoggerConfig{
 			LevelEncoder: zap.NewAtomicLevelAt(zap.InfoLevel),
 		},
 	},
-	ZapOptions: []zap.Option{},
-	ExtraKeys:  []string{},
 }
 
 func loggerConfigDefault(config ...LoggerConfig) LoggerConfig {
@@ -67,14 +77,6 @@ func loggerConfigDefault(config ...LoggerConfig) LoggerConfig {
 
 	if cfg.CoreConfigs == nil {
 		cfg.CoreConfigs = LoggerConfigDefault.CoreConfigs
-	}
-
-	if cfg.ZapOptions == nil {
-		cfg.ZapOptions = LoggerConfigDefault.ZapOptions
-	}
-
-	if cfg.ExtraKeys == nil {
-		cfg.ExtraKeys = LoggerConfigDefault.ExtraKeys
 	}
 
 	if cfg.SetLogger != nil {
@@ -163,7 +165,7 @@ func (l *LoggerConfig) SetLevel(lv fiberlog.Level) {
 	l.logger = zap.New(core, l.ZapOptions...)
 }
 
-func (l *LoggerConfig) logf(level fiberlog.Level, format string, kvs ...interface{}) {
+func (l *LoggerConfig) Logf(level fiberlog.Level, format string, kvs ...interface{}) {
 	logger := l.logger.Sugar()
 	switch level {
 	case fiberlog.LevelTrace, fiberlog.LevelDebug:
@@ -181,144 +183,91 @@ func (l *LoggerConfig) logf(level fiberlog.Level, format string, kvs ...interfac
 	}
 }
 
-func (l *LoggerConfig) ctxLogf(level fiberlog.Level, ctx context.Context, format string, kvs ...interface{}) {
-	log := l.logger.Sugar()
-	if len(l.ExtraKeys) > 0 {
-		for _, k := range l.ExtraKeys {
-			log = log.With(k, ctx.Value(k))
-		}
-	}
-	switch level {
-	case fiberlog.LevelDebug, fiberlog.LevelTrace:
-		log.Debugf(format, kvs...)
-	case fiberlog.LevelInfo:
-		log.Infof(format, kvs...)
-	case fiberlog.LevelWarn:
-		log.Warnf(format, kvs...)
-	case fiberlog.LevelError:
-		log.Errorf(format, kvs...)
-	case fiberlog.LevelFatal:
-		log.Fatalf(format, kvs...)
-	case fiberlog.LevelPanic:
-		log.Panicf(format, kvs...)
-	default:
-		log.Warnf(format, kvs...)
-	}
-}
-
 func (l *LoggerConfig) Trace(v ...interface{}) {
-	l.log(fiberlog.LevelTrace, v...)
+	l.Log(fiberlog.LevelTrace, v...)
 }
 
 func (l *LoggerConfig) Debug(v ...interface{}) {
-	l.log(fiberlog.LevelDebug, v...)
+	l.Log(fiberlog.LevelDebug, v...)
 }
 
 func (l *LoggerConfig) Info(v ...interface{}) {
-	l.log(fiberlog.LevelInfo, v...)
+	l.Log(fiberlog.LevelInfo, v...)
 }
 
 func (l *LoggerConfig) Warn(v ...interface{}) {
-	l.log(fiberlog.LevelWarn, v...)
+	l.Log(fiberlog.LevelWarn, v...)
 }
 
 func (l *LoggerConfig) Error(v ...interface{}) {
-	l.log(fiberlog.LevelError, v...)
+	l.Log(fiberlog.LevelError, v...)
 }
 
 func (l *LoggerConfig) Fatal(v ...interface{}) {
-	l.log(fiberlog.LevelFatal, v...)
+	l.Log(fiberlog.LevelFatal, v...)
 }
 
 func (l *LoggerConfig) Panic(v ...interface{}) {
-	l.log(fiberlog.LevelPanic, v...)
+	l.Log(fiberlog.LevelPanic, v...)
 }
 
 func (l *LoggerConfig) Tracef(format string, v ...interface{}) {
-	l.logf(fiberlog.LevelTrace, format, v...)
+	l.Logf(fiberlog.LevelTrace, format, v...)
 }
 
 func (l *LoggerConfig) Debugf(format string, v ...interface{}) {
-	l.logf(fiberlog.LevelDebug, format, v...)
+	l.Logf(fiberlog.LevelDebug, format, v...)
 }
 
 func (l *LoggerConfig) Infof(format string, v ...interface{}) {
-	l.logf(fiberlog.LevelInfo, format, v...)
+	l.Logf(fiberlog.LevelInfo, format, v...)
 }
 
 func (l *LoggerConfig) Warnf(format string, v ...interface{}) {
-	l.logf(fiberlog.LevelWarn, format, v...)
+	l.Logf(fiberlog.LevelWarn, format, v...)
 }
 
 func (l *LoggerConfig) Errorf(format string, v ...interface{}) {
-	l.logf(fiberlog.LevelError, format, v...)
+	l.Logf(fiberlog.LevelError, format, v...)
 }
 
 func (l *LoggerConfig) Fatalf(format string, v ...interface{}) {
-	l.logf(fiberlog.LevelFatal, format, v...)
+	l.Logf(fiberlog.LevelFatal, format, v...)
 }
 
 func (l *LoggerConfig) Panicf(format string, v ...interface{}) {
-	l.logf(fiberlog.LevelPanic, format, v...)
-}
-
-func (l *LoggerConfig) CtxTracef(ctx context.Context, format string, v ...interface{}) {
-	l.ctxLogf(fiberlog.LevelTrace, ctx, format, v...)
-}
-
-func (l *LoggerConfig) CtxDebugf(ctx context.Context, format string, v ...interface{}) {
-	l.ctxLogf(fiberlog.LevelDebug, ctx, format, v...)
-}
-
-func (l *LoggerConfig) CtxInfof(ctx context.Context, format string, v ...interface{}) {
-	l.ctxLogf(fiberlog.LevelInfo, ctx, format, v...)
-}
-
-func (l *LoggerConfig) CtxWarnf(ctx context.Context, format string, v ...interface{}) {
-	l.ctxLogf(fiberlog.LevelWarn, ctx, format, v...)
-}
-
-func (l *LoggerConfig) CtxErrorf(ctx context.Context, format string, v ...interface{}) {
-	l.ctxLogf(fiberlog.LevelError, ctx, format, v...)
-}
-
-func (l *LoggerConfig) CtxFatalf(ctx context.Context, format string, v ...interface{}) {
-	l.ctxLogf(fiberlog.LevelFatal, ctx, format, v...)
-}
-
-func (l *LoggerConfig) CtxPanicf(ctx context.Context, format string, v ...interface{}) {
-	l.ctxLogf(fiberlog.LevelPanic, ctx, format, v...)
+	l.Logf(fiberlog.LevelPanic, format, v...)
 }
 
 func (l *LoggerConfig) Tracew(msg string, keysAndValues ...interface{}) {
-	l.logw(fiberlog.LevelTrace, msg, keysAndValues...)
+	l.Logw(fiberlog.LevelTrace, msg, keysAndValues...)
 }
 
 func (l *LoggerConfig) Debugw(msg string, keysAndValues ...interface{}) {
-	l.logw(fiberlog.LevelDebug, msg, keysAndValues...)
+	l.Logw(fiberlog.LevelDebug, msg, keysAndValues...)
 }
 
 func (l *LoggerConfig) Infow(msg string, keysAndValues ...interface{}) {
-	l.logw(fiberlog.LevelInfo, msg, keysAndValues...)
+	l.Logw(fiberlog.LevelInfo, msg, keysAndValues...)
 }
 
 func (l *LoggerConfig) Warnw(msg string, keysAndValues ...interface{}) {
-	l.logw(fiberlog.LevelWarn, msg, keysAndValues...)
+	l.Logw(fiberlog.LevelWarn, msg, keysAndValues...)
 }
 
 func (l *LoggerConfig) Errorw(msg string, keysAndValues ...interface{}) {
-	l.logw(fiberlog.LevelError, msg, keysAndValues...)
+	l.Logw(fiberlog.LevelError, msg, keysAndValues...)
 }
 
 func (l *LoggerConfig) Fatalw(msg string, keysAndValues ...interface{}) {
-	l.logw(fiberlog.LevelFatal, msg, keysAndValues...)
+	l.Logw(fiberlog.LevelFatal, msg, keysAndValues...)
 }
 
 func (l *LoggerConfig) Panicw(msg string, keysAndValues ...interface{}) {
-	l.logw(fiberlog.LevelPanic, msg, keysAndValues...)
+	l.Logw(fiberlog.LevelPanic, msg, keysAndValues...)
 }
 
-func (l *LoggerConfig) log(level fiberlog.Level, kvs ...interface{}) {
+func (l *LoggerConfig) Log(level fiberlog.Level, kvs ...interface{}) {
 	sugar := l.logger.Sugar()
 	switch level {
 	case fiberlog.LevelTrace, fiberlog.LevelDebug:
@@ -338,9 +287,9 @@ func (l *LoggerConfig) log(level fiberlog.Level, kvs ...interface{}) {
 	}
 }
 
-func (l *LoggerConfig) logw(level fiberlog.Level, msg string, keyvals ...interface{}) {
+func (l *LoggerConfig) Logw(level fiberlog.Level, msg string, keyvals ...interface{}) {
 	keylen := len(keyvals)
-	if keylen == 0 || keylen%2-1 != 0 {
+	if keylen == 0 || keylen%2 != 0 {
 		l.Logger().Warn(fmt.Sprint("Keyvalues must appear in pairs: ", keyvals))
 		return
 	}
@@ -364,41 +313,12 @@ func (l *LoggerConfig) logw(level fiberlog.Level, msg string, keyvals ...interfa
 	}
 }
 
-func (l *LoggerConfig) Log(level fiberlog.Level, keyvals ...interface{}) error {
-	keylen := len(keyvals)
-	if keylen == 0 || keylen%2 != 0 {
-		l.Logger().Warn(fmt.Sprint("Keyvalues must appear in pairs: ", keyvals))
-		return nil
-	}
-
-	data := make([]zap.Field, 0, (keylen/2)+1)
-	for i := 0; i < keylen; i += 2 {
-		data = append(data, zap.Any(fmt.Sprint(keyvals[i]), keyvals[i+1]))
-	}
-	switch level {
-	case fiberlog.LevelTrace, fiberlog.LevelDebug:
-		l.Logger().Debug("", data...)
-	case fiberlog.LevelInfo:
-		l.Logger().Info("", data...)
-	case fiberlog.LevelWarn:
-		l.Logger().Warn("", data...)
-	case fiberlog.LevelError:
-		l.Logger().Error("", data...)
-	case fiberlog.LevelFatal:
-		l.Logger().Fatal("", data...)
-	default:
-		l.Logger().Warn("", data...)
-	}
-	return nil
-}
-
 // Sync flushes any buffered log entries.
 func (l *LoggerConfig) Sync() error {
 	return l.logger.Sync()
 }
 
 // Logger returns the underlying *zap.Logger when not using SetLogger
-// if you want to customize the field, you can use Logger to manipulate the native zap
 func (l *LoggerConfig) Logger() *zap.Logger {
 	return l.logger
 }

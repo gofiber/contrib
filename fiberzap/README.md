@@ -11,7 +11,7 @@ title: Fiberzap
 
 [Zap](https://github.com/uber-go/zap) logging support for Fiber.
 
-### Install
+## Install
 
 This middleware supports Fiber v2.
 
@@ -65,3 +65,52 @@ func main() {
     log.Fatal(app.Listen(":3000"))
 }
 ```
+
+## NewLogger
+
+### Signature
+
+```go
+fiberzap.NewLogger(config ...LoggerConfig) *LoggerConfig 
+```
+
+### LoggerConfig
+
+
+| Property    | Type           | Description                                                                                              | Default                        |
+|:------------|:---------------|:---------------------------------------------------------------------------------------------------------|:-------------------------------|
+| CoreConfigs | `[]CoreConfig` | Define Config for zapcore                                                                                | `fiberzap.LoggerConfigDefault` |
+| SetLogger   | `*zap.Logger`  | Add custom zap logger. if not nil, `ZapOptions`, `CoreConfigs`, `SetLevel`, `SetOutput` will be ignored. | `nil`                          |
+| ExtraKeys   | `[]string`     | Allow users log extra values from context.                                                               | `[]string{}`                   |
+| ZapOptions  | `[]zap.Option` | Allow users to configure the zap.Option supplied by zap.                                                 | `[]zap.Option{}`               |                
+ 
+### Example
+
+```go
+package main
+
+import (
+	"context"
+	"github.com/gofiber/contrib/fiberzap"
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/log"
+)
+
+func main() {
+    app := fiber.New()
+    log.SetLogger(fiberzap.NewLogger(fiberzap.LoggerConfig{
+        ExtraKeys: []string{"request_id"},
+    }))
+    app.Use(func(c *fiber.Ctx) error {
+        ctx := context.WithValue(c.UserContext(), "request_id", "123")
+        c.SetUserContext(ctx)
+        return c.Next()
+    })
+    app.Get("/", func(c *fiber.Ctx) error {
+        log.WithContext(c.UserContext()).Info("Hello, World!")
+        return c.SendString("Hello, World!")
+    })
+    log.Fatal(app.Listen(":3000"))
+}
+```
+
