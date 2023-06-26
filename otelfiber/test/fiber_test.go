@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gofiber/contrib/otelfiber"
+	"github.com/gofiber/contrib/otelfiber/v2"
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -65,9 +65,9 @@ func TestChildSpanFromCustomTracer(t *testing.T) {
 }
 
 func TestSkipWithNext(t *testing.T) {
-	otel.SetTracerProvider(oteltest.NewTracerProvider())
-
-	var gotSpan oteltrace.Span
+	sr := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	otel.SetTracerProvider(provider)
 
 	app := fiber.New()
 	app.Use(Middleware(WithNext(func(c *fiber.Ctx) bool {
@@ -75,14 +75,13 @@ func TestSkipWithNext(t *testing.T) {
 	})))
 
 	app.Get("/health", func(ctx *fiber.Ctx) error {
-		gotSpan = oteltrace.SpanFromContext(ctx.UserContext())
 		return ctx.SendStatus(http.StatusNoContent)
 	})
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/health", nil))
 
-	_, ok := gotSpan.(*oteltest.Span)
-	assert.False(t, ok)
+	spans := sr.Ended()
+	require.Len(t, spans, 0)
 }
 
 func TestTrace200(t *testing.T) {
