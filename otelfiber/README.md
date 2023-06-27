@@ -15,7 +15,7 @@ Can be found on [OpenTelemetry Registry](https://opentelemetry.io/registry/instr
 This middleware supports Fiber v2.
 
 ```
-go get -u github.com/gofiber/contrib/otelfiber
+go get -u github.com/gofiber/contrib/otelfiber/v2
 ```
 
 ### Signature
