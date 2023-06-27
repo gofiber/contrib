@@ -70,7 +70,7 @@ func TestSkipWithNext(t *testing.T) {
 	otel.SetTracerProvider(provider)
 
 	app := fiber.New()
-	app.Use(Middleware(WithNext(func(c *fiber.Ctx) bool {
+	app.Use(otelfiber.Middleware(otelfiber.WithNext(func(c *fiber.Ctx) bool {
 		return c.Path() == "/health"
 	})))
 
