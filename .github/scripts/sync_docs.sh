@@ -12,7 +12,7 @@ git config --global user.email "${AUTHOR_EMAIL}"
 git config --global user.name "${AUTHOR_USERNAME}"
 
 # Exit if event is not PUSH
-if [$EVENT != "push"]; then
+if [ $EVENT != "push" ]; then
   exit 0
 fi
 
