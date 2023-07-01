@@ -1,4 +1,4 @@
-name: "Test swagger"
+name: "Test websocket"
 
 on:
   push:
@@ -6,10 +6,10 @@ on:
       - master
       - main
     paths:
-      - 'swagger/**'
+      - 'websocket/**'
   pull_request:
     paths:
-      - 'swagger/**'
+      - 'websocket/**'
 
 jobs:
   Tests:
@@ -28,5 +28,5 @@ jobs:
         with:
           go-version: '${{ matrix.go-version }}'
       - name: Run Test
-        working-directory: ./swagger
+        working-directory: ./websocket
         run: go test -v -race ./...
