@@ -131,8 +131,7 @@ func TestError(t *testing.T) {
 	// setup
 	app := fiber.New()
 	app.Use(otelfiber.Middleware(otelfiber.WithTracerProvider(provider)))
-	// configure a handler that returns an error and 5xx status
-	// code
+	// configure a handler that returns an error and 5xx status code
 	app.Get("/server_err", func(ctx *fiber.Ctx) error {
 		return errors.New("oh no")
 	})
