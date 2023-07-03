@@ -27,8 +27,9 @@ for f in */; do
   fi
 
   log_output=$(git log --oneline "${BRANCH}" HEAD~1..HEAD --name-status -- "${f}README.md")
-    if [[ $log_output != "" || ! -f "fiber-docs/$REPO/${f::-1}.md" ]]; then
-      cp "${f}README.md" fiber-docs/$REPO/${f::-1}.md
+    if [[ $log_output != "" || ! -f "fiber-docs/$REPO/${f::-1}/README.md" ]]; then
+      mkdir -p fiber-docs/$REPO/${f::-1}
+      cp "${f}README.md" fiber-docs/$REPO/${f::-1}/README.md
     fi
 done
 
