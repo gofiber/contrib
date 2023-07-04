@@ -10,7 +10,7 @@ import (
 )
 
 func TestWebSocketMiddleware(t *testing.T) {
-	app := fiber.New()
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	defer app.Shutdown()
 
 	app.Use("/ws", func(c *fiber.Ctx) error {
