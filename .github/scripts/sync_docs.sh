@@ -12,25 +12,20 @@ git config --global user.email "${AUTHOR_EMAIL}"
 git config --global user.name "${AUTHOR_USERNAME}"
 
 # Exit if event is not PUSH
-if [ $EVENT != "push" ]; then
+if [ "$EVENT" != "push" ]; then
   exit 0
 fi
 
 latest_commit=$(git rev-parse --short HEAD)
 
 git clone https://${TOKEN}@${REPO_URL} fiber-docs
-mkdir -p fiber-docs/$REPO
-
-for f in */; do
-  if [ "$f" == "fiber-docs/" ]; then
-    continue
-  fi
-
+for f in $(find . -type f -name "*.md"); do
   log_output=$(git log --oneline "${BRANCH}" HEAD~1..HEAD --name-status -- "${f}README.md")
-    if [[ $log_output != "" || ! -f "fiber-docs/$REPO/${f::-1}/README.md" ]]; then
-      mkdir -p fiber-docs/$REPO/${f::-1}
-      cp "${f}README.md" fiber-docs/$REPO/${f::-1}/README.md
-    fi
+  
+  if [[ $log_output != "" || ! -f "fiber-docs/$f" ]]; then
+    mkdir -p fiber-docs/$(dirname $f)
+    cp "${f}" fiber-docs/$f
+  fi
 done
 
 # Push changes for contrib instance docs
