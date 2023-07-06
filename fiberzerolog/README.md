@@ -1,6 +1,9 @@
-# Fiberzerolog
+---
+id: fiberzerolog
+title: Fiberzerolog
+---
 
-![Release](https://img.shields.io/github/release/gofiber/contrib.svg)
+![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=fiberzerolog*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Tests/badge.svg)
 ![Security](https://github.com/gofiber/contrib/workflows/Security/badge.svg)
@@ -35,7 +38,7 @@ fiberzerolog.New(config ...Config) fiber.Handler
 | Messages      | `[]string`                     | Custom response messages.                                                                                                                                                     | `[]string{"Server error", "Client error", "Success"}`                       |
 | Levels        | `[]zerolog.Level`              | Custom response levels.                                                                                                                                                       | `[]zerolog.Level{zerolog.ErrorLevel, zerolog.WarnLevel, zerolog.InfoLevel}` |
 | SkipURIs      | `[]string`                     | Skip logging these URI.                                                                                                                                                       | `[]string{}`                                                                |
-| GetResBody    | func(c *fiber.Ctx) []byte      | Define a function to get response body when return non-nil.<br>eg: When use compress middleware, resBody is unreadable. you can set GetResBody func to get readable resBody.  | `nil`                                                                       |
+| GetResBody    | func(c *fiber.Ctx) []byte      | Define a function to get response body when return non-nil.<br/>eg: When use compress middleware, resBody is unreadable. you can set GetResBody func to get readable resBody.  | `nil`                                                                       |
 
 ## Example
 

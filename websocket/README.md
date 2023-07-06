@@ -1,7 +1,10 @@
-# WebSocket
+---
+id: websocket
+title: Websocket
+---
 
-![Release](https://img.shields.io/github/release/gofiber/websocket.svg)
-[![Discord](https://img.shields.io/badge/discord-join%20channel-7289DA)](https://gofiber.io/discord)
+![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=websocket*)
+[![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Tests/badge.svg)
 ![Security](https://github.com/gofiber/contrib/workflows/Security/badge.svg)
 ![Linter](https://github.com/gofiber/contrib/workflows/Linter/badge.svg)
