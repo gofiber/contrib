@@ -1,6 +1,6 @@
 ---
 id: otelfiber-example
-title: Otelfiber Example
+title: Example
 ---
 
 An HTTP server using gofiber fiber and instrumentation. The server has a
