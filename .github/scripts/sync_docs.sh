@@ -19,12 +19,12 @@ fi
 latest_commit=$(git rev-parse --short HEAD)
 
 git clone https://${TOKEN}@${REPO_URL} fiber-docs
-for f in $(find . -type f -name "*.md"); do
-  log_output=$(git log --oneline "${BRANCH}" HEAD~1..HEAD --name-status -- "${f}README.md")
-  
-  if [[ $log_output != "" || ! -f "fiber-docs/$f" ]]; then
-    mkdir -p fiber-docs/$(dirname $f)
-    cp "${f}" fiber-docs/$f
+for f in $(find . -type f -name "*.md" -not -path "./fiber-docs/*"); do
+  log_output=$(git log --oneline "${BRANCH}" HEAD~1..HEAD --name-status -- "${f}")
+
+  if [[ $log_output != "" || ! -f "fiber-docs/docs/contrib/$f" ]]; then
+    mkdir -p fiber-docs/docs/contrib/$(dirname $f)
+    cp "${f}" fiber-docs/docs/contrib/$f
   fi
 done
 
