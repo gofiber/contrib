@@ -9,39 +9,39 @@ Repository for third party middlewares with dependencies.
 
 ## 📑 Middleware Implementations
 
-* [Paseto](./paseto/readme.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
+* [Paseto](./paseto/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
   <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" />
   </a>
-* [Fiberzap](./fiberzap/readme.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
+* [Fiberzap](./fiberzap/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
   <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" />
   </a>
-* [Otelfiber (OpenTelemetry)](./otelfiber/readme.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
+* [Otelfiber (OpenTelemetry)](./otelfiber/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
     <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" />
     </a>
-* [Fibersentry](./fibersentry/readme.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
+* [Fibersentry](./fibersentry/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
     <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" />
     </a>
-* [Swagger](./swagger/readme.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
+* [Swagger](./swagger/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
     <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" />
     </a>
-* [Casbin](./casbin/readme.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
+* [Casbin](./casbin/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
     <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" />
     </a>
-* [NewRelic](./fibernewrelic/readme.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
+* [NewRelic](./fibernewrelic/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
     <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" />
     </a>
-* [Open Policy Agent](./opafiber/readme.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
+* [Open Policy Agent](./opafiber/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
     <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" />
     </a>
-* [Fiberi18n](./fiberi18n/readme.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
+* [Fiberi18n](./fiberi18n/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
   <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" />
   </a>
-* [Fiberzerolog](./fiberzerolog/readme.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
+* [Fiberzerolog](./fiberzerolog/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
   <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" />
   </a>
-* [JWT](./jwt/readme.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
+* [JWT](./jwt/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
   <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" />
   </a>
-* [Websocket](./websocket/readme.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
+* [Websocket](./websocket/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Tests%22">
   <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" />
   </a>
