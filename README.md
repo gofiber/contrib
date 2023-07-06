@@ -5,7 +5,6 @@
 ![Security](https://github.com/gofiber/contrib/workflows/Security/badge.svg)
 ![Linter](https://github.com/gofiber/contrib/workflows/Linter/badge.svg)
 
-
 Repository for third party middlewares with dependencies
 
 ## 📑 Middleware Implementations
