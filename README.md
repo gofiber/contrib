@@ -7,7 +7,7 @@ sidebar_position: 1
     <source height="125" media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/gofiber/contrib/master/.github/logo-dark.svg" />
     <img height="125" alt="Fiber" src="https://raw.githubusercontent.com/gofiber/contrib/master/.github/logo.svg" />
   </picture>
-  <br>
+  <br />
 
 # Contrib
 
