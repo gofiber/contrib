@@ -2,6 +2,13 @@
 title: 👋 Welcome
 sidebar_position: 1
 ---
+<p align="center">
+  <picture>
+    <source height="125" media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/gofiber/contrib/master/.github/logo-dark.svg">
+    <img height="125" alt="Fiber" src="https://raw.githubusercontent.com/gofiber/contrib/master/.github/logo.svg">
+  </picture>
+  <br>
+
 # Contrib
 
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
@@ -10,6 +17,8 @@ sidebar_position: 1
 ![Linter](https://github.com/gofiber/contrib/workflows/Linter/badge.svg)
 
 Repository for third party middlewares with dependencies.
+
+</p>
 
 ## 📑 Middleware Implementations
 
