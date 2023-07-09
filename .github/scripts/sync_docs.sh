@@ -37,7 +37,7 @@ elif [ "$EVENT" == "release" ]; then
   major_version="${major_version%%.*}"
 
   # Form new version name
-  new_version="${package_name}_v${major_version}.x.x"
+  new_version="${package_name}_${major_version}.x.x"
 
   cd fiber-docs/ || true
   npm ci
