@@ -5,10 +5,10 @@ BRANCH="main"
 REPO_URL="github.com/gofiber/docs.git"
 AUTHOR_EMAIL="github-actions[bot]@users.noreply.github.com"
 AUTHOR_USERNAME="github-actions[bot]"
-DOCUSAURUS_CMD="docs:version:contrib"
 VERSION_FILE="contrib_versions.json"
 REPO_DIR="contrib"
 COMMIT_URL="https://github.com/gofiber/contrib"
+DOCUSAURUS_COMMAND="npm run docusaurus -- docs:version:contrib"
 
 # Set commit author
 git config --global user.email "${AUTHOR_EMAIL}"
@@ -29,8 +29,6 @@ if [ "$EVENT" == "push" ]; then
     fi
   done
 
-  commit_msg="Add docs from ${COMMIT_URL}/commit/${latest_commit}"
-
 # Handle release event
 elif [ "$EVENT" == "release" ]; then
   # Extract package name from tag
@@ -41,7 +39,8 @@ elif [ "$EVENT" == "release" ]; then
   # Form new version name
   new_version="${package_name}_v${major_version}.x.x"
 
-  cd fiber-docs/ || return
+  cd fiber-docs/ || true
+  npm ci
 
   # Check if contrib_versions.json exists and modify it if required
   if [[ -f $VERSION_FILE ]]; then
@@ -49,13 +48,15 @@ elif [ "$EVENT" == "release" ]; then
   fi
 
   # Run docusaurus versioning command
-  npm run docusaurus -- $DOCUSAURUS_CMD $new_version
-
-  commit_msg="Sync docs for release ${COMMIT_URL}/releases/tag/${TAG_NAME}"
+  $DOCUSAURUS_COMMAND "${new_version}"
 fi
 
 # Push changes
-cd fiber-docs/ || return
+cd fiber-docs/ || true
 git add .
-git commit -m "$commit_msg"
+if [[ $EVENT == "push" ]]; then
+    git commit -m "Add docs from ${COMMIT_URL}/commit/${latest_commit}"
+elif [[ $EVENT == "release" ]]; then
+    git commit -m "Sync docs for release ${COMMIT_URL}/releases/tag/${TAG_NAME}"
+fi
 git push https://${TOKEN}@${REPO_URL}
