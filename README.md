@@ -3,7 +3,7 @@ title: 👋 Welcome
 sidebar_position: 1
 ---
 
-<p align="center">
+<div align="center">
   <img height="125" alt="Fiber" src="https://raw.githubusercontent.com/gofiber/contrib/master/.github/logo-dark.svg#gh-dark-mode-only" />
   <img height="125" alt="Fiber" src="https://raw.githubusercontent.com/gofiber/contrib/master/.github/logo.svg#gh-light-mode-only" />
   <br />
@@ -17,7 +17,7 @@ sidebar_position: 1
 
 Repository for third party middlewares with dependencies.
 
-</p>
+</div>
 
 ## 📑 Middleware Implementations
 
