@@ -1,4 +1,4 @@
-package test
+package otelfiber_test
 
 import (
 	"context"
