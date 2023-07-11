@@ -8,7 +8,6 @@ sidebar_position: 1
   <img height="125" alt="Fiber" src="https://raw.githubusercontent.com/gofiber/contrib/master/.github/logo.svg#gh-light-mode-only" />
   <br />
 
-# Contrib
 
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Tests/badge.svg)
