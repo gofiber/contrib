@@ -47,7 +47,6 @@ func createCustomToken(key []byte, dataInfo string, duration time.Duration, purp
 func generateTokenRequest(
 	targetRoute string, tokenGenerator PayloadCreator, duration time.Duration, purpose TokenPurpose,
 ) (*http.Request, error) {
-
 	var token string
 	var err error
 	if purpose == PurposeLocal {
@@ -167,7 +166,6 @@ func Test_PASETO_LocalToken_ErrTokenExpired(t *testing.T) {
 }
 
 func Test_PASETO_PublicToken_ErrTokenExpired(t *testing.T) {
-
 	privateKey := getPrivateKey()
 
 	app := fiber.New()

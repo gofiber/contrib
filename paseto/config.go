@@ -45,7 +45,7 @@ type Config struct {
 	// Required if SymmetricKey is not set
 	PrivateKey ed25519.PrivateKey
 
-	// PrivateKey to verify public tokens
+	// PublicKey to verify public tokens
 	//
 	// If it's set the middleware will use public tokens
 	// Required if SymmetricKey is not set

@@ -1,8 +1,9 @@
 package pasetoware
 
 import (
-	"github.com/gofiber/fiber/v2"
 	"strings"
+
+	"github.com/gofiber/fiber/v2"
 )
 
 // New PASETO middleware, returns a handler that takes a token in selected lookup param and in case token is valid
