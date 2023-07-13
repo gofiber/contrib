@@ -11,20 +11,7 @@ import (
 func New(authConfigs ...Config) fiber.Handler {
 	// Set default authConfig
 	config := configDefault(authConfigs...)
-
-	var extractor acquireToken
-	switch config.TokenLookup[0] {
-	case LookupHeader:
-		extractor = acquireFromHeader
-	case LookupQuery:
-		extractor = acquireFromQuery
-	case LookupParam:
-		extractor = acquireFromParams
-	case LookupCookie:
-		extractor = acquireFromCookie
-	default:
-		extractor = acquireFromHeader
-	}
+	extractor := getExtractor(config.TokenLookup[0])
 
 	// Return middleware handler
 	return func(c *fiber.Ctx) error {
