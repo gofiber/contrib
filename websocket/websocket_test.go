@@ -316,3 +316,53 @@ func TestWebSocketFormatCloseMessage(t *testing.T) {
 
 	assert.Equal(t, []byte{0x3, 0xe8, 0x74, 0x65, 0x73, 0x74}, closeMsg)
 }
+
+func TestWebsocketRecoverDefaultHandlerShouldNotPanic(t *testing.T) {
+	app := setupTestApp(Config{}, func(c *Conn) {
+		panic("test panic")
+
+		c.WriteJSON(fiber.Map{
+			"message": "hello websocket",
+		})
+	})
+	defer app.Shutdown()
+
+	conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
+	defer conn.Close()
+	assert.NoError(t, err)
+	assert.Equal(t, 101, resp.StatusCode)
+	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
+
+	var msg fiber.Map
+	err = conn.ReadJSON(&msg)
+	assert.NoError(t, err)
+	assert.Equal(t, "test panic", msg["error"])
+}
+
+func TestWebsocketRecoverCustomHandlerShouldNotPanic(t *testing.T) {
+	app := setupTestApp(Config{
+		Recover: func(conn *Conn) {
+			if err := recover(); err != nil {
+				conn.WriteJSON(fiber.Map{"customError": "error occurred"})
+			}
+		},
+	}, func(c *Conn) {
+		panic("test panic")
+
+		c.WriteJSON(fiber.Map{
+			"message": "hello websocket",
+		})
+	})
+	defer app.Shutdown()
+
+	conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
+	defer conn.Close()
+	assert.NoError(t, err)
+	assert.Equal(t, 101, resp.StatusCode)
+	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
+
+	var msg fiber.Map
+	err = conn.ReadJSON(&msg)
+	assert.NoError(t, err)
+	assert.Equal(t, "error occurred", msg["customError"])
+}
