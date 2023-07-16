@@ -6,7 +6,10 @@ package websocket
 
 import (
 	"errors"
+	"fmt"
 	"io"
+	"os"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -56,13 +59,17 @@ type Config struct {
 
 	// Recover is a panic handler function that recovers from panics
 	// Default recover function is used when nil and writes error message in a response field `error`
+	// It prints stack trace to the stderr by default
 	// Optional. Default: defaultRecover
 	Recover func(*Conn)
 }
 
 func defaultRecover(c *Conn) {
 	if err := recover(); err != nil {
-		c.WriteJSON(fiber.Map{"error": err})
+		_, _ = os.Stderr.WriteString(fmt.Sprintf("panic: %v\n%s\n", err, debug.Stack())) //nolint:errcheck // This will never fail
+		if err := c.WriteJSON(fiber.Map{"error": err}); err != nil {
+			_, _ = os.Stderr.WriteString(fmt.Sprintf("could not write error response: %v\n", err))
+		}
 	}
 }
 
