@@ -341,7 +341,7 @@ func TestWebsocketRecoverDefaultHandlerShouldNotPanic(t *testing.T) {
 
 func TestWebsocketRecoverCustomHandlerShouldNotPanic(t *testing.T) {
 	app := setupTestApp(Config{
-		Recover: func(conn *Conn) {
+		RecoverHandler: func(conn *Conn) {
 			if err := recover(); err != nil {
 				conn.WriteJSON(fiber.Map{"customError": "error occurred"})
 			}

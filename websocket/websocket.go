@@ -57,11 +57,11 @@ type Config struct {
 	// takeover" modes are supported.
 	EnableCompression bool
 
-	// Recover is a panic handler function that recovers from panics
+	// RecoverHandler is a panic handler function that recovers from panics
 	// Default recover function is used when nil and writes error message in a response field `error`
 	// It prints stack trace to the stderr by default
 	// Optional. Default: defaultRecover
-	Recover func(*Conn)
+	RecoverHandler func(*Conn)
 }
 
 func defaultRecover(c *Conn) {
@@ -90,8 +90,8 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 	if cfg.WriteBufferSize == 0 {
 		cfg.WriteBufferSize = 1024
 	}
-	if cfg.Recover == nil {
-		cfg.Recover = defaultRecover
+	if cfg.RecoverHandler == nil {
+		cfg.RecoverHandler = defaultRecover
 	}
 	var upgrader = websocket.FastHTTPUpgrader{
 		HandshakeTimeout:  cfg.HandshakeTimeout,
@@ -148,7 +148,7 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		if err := upgrader.Upgrade(c.Context(), func(fconn *websocket.Conn) {
 			conn.Conn = fconn
 			defer releaseConn(conn)
-			defer cfg.Recover(conn)
+			defer cfg.RecoverHandler(conn)
 			handler(conn)
 		}); err != nil { // Upgrading required
 			return fiber.ErrUpgradeRequired
