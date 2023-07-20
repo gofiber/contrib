@@ -45,7 +45,7 @@ type Config struct {
 	// Required if SymmetricKey is not set
 	PrivateKey ed25519.PrivateKey
 
-	// PrivateKey to verify public tokens
+	// PublicKey to verify public tokens
 	//
 	// If it's set the middleware will use public tokens
 	// Required if SymmetricKey is not set
@@ -92,6 +92,25 @@ func defaultErrorHandler(c *fiber.Ctx, err error) error {
 	return c.Status(errorStatus).SendString(err.Error())
 }
 
+func defaultValidateFunc(data []byte) (interface{}, error) {
+	var payload paseto.JSONToken
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, ErrDataUnmarshal
+	}
+
+	if time.Now().After(payload.Expiration) {
+		return nil, ErrExpiredToken
+	}
+	if err := payload.Validate(
+		paseto.ValidAt(time.Now()), paseto.Subject(pasetoTokenSubject),
+		paseto.ForAudience(pasetoTokenAudience),
+	); err != nil {
+		return "", err
+	}
+
+	return payload.Get(pasetoTokenField), nil
+}
+
 // Helper function to set default values
 func configDefault(authConfigs ...Config) Config {
 	// Return default authConfigs if nothing provided
@@ -118,24 +137,7 @@ func configDefault(authConfigs ...Config) Config {
 	}
 
 	if config.Validate == nil {
-		config.Validate = func(data []byte) (interface{}, error) {
-			var payload paseto.JSONToken
-			if err := json.Unmarshal(data, &payload); err != nil {
-				return nil, ErrDataUnmarshal
-			}
-
-			if time.Now().After(payload.Expiration) {
-				return nil, ErrExpiredToken
-			}
-			if err := payload.Validate(
-				paseto.ValidAt(time.Now()), paseto.Subject(pasetoTokenSubject),
-				paseto.ForAudience(pasetoTokenAudience),
-			); err != nil {
-				return "", err
-			}
-
-			return payload.Get(pasetoTokenField), nil
-		}
+		config.Validate = defaultValidateFunc
 	}
 
 	if config.ContextKey == "" {

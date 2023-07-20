@@ -1,9 +1,10 @@
 package pasetoware
 
 import (
+	"testing"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/utils"
-	"testing"
 )
 
 func assertRecoveryPanic(t *testing.T) {
