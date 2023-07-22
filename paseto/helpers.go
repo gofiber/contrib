@@ -60,6 +60,23 @@ func acquireFromCookie(c *fiber.Ctx, key string) string {
 	return c.Cookies(key)
 }
 
+func getExtractor(lookupOrigin string) (extractor acquireToken) {
+	switch lookupOrigin {
+	case LookupHeader:
+		extractor = acquireFromHeader
+	case LookupQuery:
+		extractor = acquireFromQuery
+	case LookupParam:
+		extractor = acquireFromParams
+	case LookupCookie:
+		extractor = acquireFromCookie
+	default:
+		extractor = acquireFromHeader
+	}
+
+	return
+}
+
 // Public helper functions
 
 // CreateToken Create a new Token Payload that will be stored in PASETO

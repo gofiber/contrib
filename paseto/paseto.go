@@ -1,8 +1,9 @@
 package pasetoware
 
 import (
-	"github.com/gofiber/fiber/v2"
 	"strings"
+
+	"github.com/gofiber/fiber/v2"
 )
 
 // New PASETO middleware, returns a handler that takes a token in selected lookup param and in case token is valid
@@ -10,20 +11,7 @@ import (
 func New(authConfigs ...Config) fiber.Handler {
 	// Set default authConfig
 	config := configDefault(authConfigs...)
-
-	var extractor acquireToken
-	switch config.TokenLookup[0] {
-	case LookupHeader:
-		extractor = acquireFromHeader
-	case LookupQuery:
-		extractor = acquireFromQuery
-	case LookupParam:
-		extractor = acquireFromParams
-	case LookupCookie:
-		extractor = acquireFromCookie
-	default:
-		extractor = acquireFromHeader
-	}
+	extractor := getExtractor(config.TokenLookup[0])
 
 	// Return middleware handler
 	return func(c *fiber.Ctx) error {

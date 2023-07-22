@@ -1,6 +1,9 @@
-# JSON Web Tokens
+---
+id: jwt
+title: JWT
+---
 
-![Release](https://img.shields.io/github/release/gofiber/contrib.svg)
+![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=jwt*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Tests/badge.svg)
 ![Security](https://github.com/gofiber/contrib/workflows/Security/badge.svg)
