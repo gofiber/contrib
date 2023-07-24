@@ -1,7 +1,8 @@
 ---
 id: fibernewrelic
-title: Fibernewrelic
 ---
+
+# Fibernewrelic
 
 ![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=fibernewrelic*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
@@ -11,20 +12,20 @@ title: Fibernewrelic
 
 [NewRelic](https://github.com/newrelic/go-agent) support for Fiber.
 
-### Install
+## Install
 
 ```
 go get -u github.com/gofiber/fiber/v2
 go get -u github.com/gofiber/contrib/fibernewrelic
 ```
 
-### Signature
+## Signature
 
 ```go
 fibernewrelic.New(config fibernewrelic.Config) fiber.Handler
 ```
 
-### Config
+## Config
 
 | Property          | Type             | Description                            | Default        |
 |:------------------|:-----------------|:---------------------------------------|:---------------|
@@ -35,7 +36,7 @@ fibernewrelic.New(config fibernewrelic.Config) fiber.Handler
 | Application       | `Application`    | Existing New Relic App                 | `nil`          |
 | ErrorStatusCodeHandler       | `func(c *fiber.Ctx, err error) int`    | If you want to change newrelic status code, you can use it.                 | `DefaultErrorStatusCodeHandler`          |
 
-### Usage
+## Usage
 
 ```go
 package main
@@ -64,7 +65,7 @@ func main() {
 }
 ```
 
-### Usage with existing New Relic application
+## Usage with existing New Relic application
 
 ```go
 package main

@@ -1,7 +1,8 @@
 ---
 id: swagger
-title: Swagger
 ---
+
+# Swagger
 
 ![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=swagger*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
@@ -11,17 +12,20 @@ title: Swagger
 
 Swagger middleware for [Fiber](https://github.com/gofiber/fiber). The middleware handles Swagger UI. 
 
-### Table of Contents
-- [Signatures](#signatures)
-- [Examples](#examples)
-
-
-### Signatures
+## Signatures
 ```go
-func New(config ...Config) fiber.Handler
+func New(config ...swagger.Config) fiber.Handler
 ```
 
-### Examples
+## Config
+
+| Property  | Type     | Description                                                           | Default |
+|:----------|:---------|:----------------------------------------------------------------------|:--------|
+| BasePath  | `string` | BasePath is the base path for the configuration file.                  | `""`    |
+| FilePath  | `string` | FilePath is the file path to the configuration file.                   | `""`    |
+
+
+## Examples
 Import the middleware package that is part of the Fiber web framework
 ```go
 import (
@@ -34,13 +38,13 @@ Then create a Fiber app with app := fiber.New().
 
 After you initiate your Fiber app, you can use the following possibilities:
 
-### Default Config
+## Default Config
 
 ```go
 app.Use(swagger.New(cfg))
 ```
 
-### Custom Config
+## Custom Config
 
 ```go
 cfg := swagger.Config{

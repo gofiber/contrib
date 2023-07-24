@@ -1,7 +1,8 @@
 ---
 id: fiberzap
-title: Fiberzap
 ---
+
+# Fiberzap
 
 ![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=fiberzap*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
@@ -24,7 +25,7 @@ go get -u go.uber.org/zap
 ### Signature
 
 ```go
-fiberzap.New(config ...Config) fiber.Handler
+fiberzap.New(config ...fiberzap.Config) fiber.Handler
 ```
 
 ### Config
@@ -38,6 +39,7 @@ fiberzap.New(config ...Config) fiber.Handler
 | Levels        | `[]zapcore.Level`              | Custom response levels.                                                                                                                                                       | `[]zapcore.Level{zapcore.ErrorLevel, zapcore.WarnLevel, zapcore.InfoLevel}` |   
 | SkipURIs      | `[]string`                     | Skip logging these URI.                                                                                                                                                       | `[]string{}`                                                                |                
 | GetResBody    | func(c *fiber.Ctx) []byte      | Define a function to get response body when return non-nil.<br />eg: When use compress middleware, resBody is unreadable. you can set GetResBody func to get readable resBody.  | `nil`                                                                       |
+
 ### Example
 ```go
 package main
@@ -71,7 +73,7 @@ func main() {
 ### Signature
 
 ```go
-fiberzap.NewLogger(config ...LoggerConfig) *LoggerConfig 
+fiberzap.NewLogger(config ...fiberzap.LoggerConfig) *fiberzap.LoggerConfig 
 ```
 
 ### LoggerConfig

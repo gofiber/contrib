@@ -1,7 +1,8 @@
 ---
 id: paseto
-title: Paseto
 ---
+
+# Paseto
 
 ![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=paseto*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
@@ -15,7 +16,7 @@ PASETO returns a Web Token (PASETO) auth middleware.
 - For invalid token, it returns "401 - Unauthorized" error.
 - For missing token, it returns "400 - BadRequest" error.
 
-### Install
+## Install
 
 This middleware supports Fiber v2.
 
@@ -25,13 +26,13 @@ go get -u github.com/gofiber/contrib/paseto
 go get -u github.com/o1egl/paseto
 ```
 
-### Signature
+## Signature
 
 ```go
 pasetoware.New(config ...pasetoware.Config) func(*fiber.Ctx) error
 ```
 
-### Config
+## Config
 
 | Property       | Type                            | Description                                                                                                                                                                                             | Default                         |
 |:---------------|:--------------------------------|:--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|:--------------------------------|
@@ -45,7 +46,7 @@ pasetoware.New(config ...pasetoware.Config) func(*fiber.Ctx) error
 | ContextKey     | `string`                        | Context key to store user information from the token into context.                                                                                                                                      | `"auth-token"`                  |
 | TokenLookup    | `[2]string`                     | TokenLookup is a string slice with size 2, that is used to extract token from the request                                                                                                               | `["header","Authorization"]`    |
 
-### Instructions
+## Instructions
 
 When using this middleware, and creating a token for authentication, you can use the function pasetoware.CreateToken,
 that will create a token, encrypt or sign it and returns the PASETO token.
@@ -56,12 +57,12 @@ and `PrivateKey` results in a public (signed) token.
 In case you want to use your own data structure, is needed to provide the `Validate` function in `paseware.Config`, that
 will return the data stored in the token, and a error.
 
-### Examples
+## Examples
 
 Below have a list of some examples that can help you start to use this middleware. In case of any additional example
 that doesn't show here, please take a look at the test file.
 
-#### SymmetricKey
+### SymmetricKey
 
 ```go
 package main
@@ -131,7 +132,7 @@ func restricted(c *fiber.Ctx) error {
 
 ```
 
-##### Test it
+#### Test it
 
 _Login using username and password to retrieve a token._
 
@@ -159,7 +160,7 @@ _Response_
 Welcome john
 ```
 
-#### SymmetricKey + Custom Validator callback
+### SymmetricKey + Custom Validator callback
 
 ```go
 package main
@@ -245,7 +246,7 @@ func restricted(c *fiber.Ctx) error {
 
 ```
 
-##### Test it
+#### Test it
 
 _Login using username and password to retrieve a token._
 
@@ -273,7 +274,7 @@ _Response_
 Welcome John Doe
 ```
 
-#### PublicPrivate Key
+### PublicPrivate Key
 
 ```go
 package main
@@ -353,7 +354,7 @@ func restricted(c *fiber.Ctx) error {
 
 ```
 
-##### Test it
+#### Test it
 
 _Login using username and password to retrieve a token._
 

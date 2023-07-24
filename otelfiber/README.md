@@ -1,7 +1,8 @@
 ---
 id: otelfiber
-title: Otelfiber
 ---
+
+# Otelfiber
 
 ![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=otelfiber*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
@@ -13,7 +14,7 @@ title: Otelfiber
 
 Can be found on [OpenTelemetry Registry](https://opentelemetry.io/registry/instrumentation-go-fiber/).
 
-### Install
+## Install
 
 This middleware supports Fiber v2.
 
@@ -21,14 +22,13 @@ This middleware supports Fiber v2.
 go get -u github.com/gofiber/contrib/otelfiber
 ```
 
-### Signature
+## Signature
 
 ```
-otelfiber.Middleware(opts ...Option) fiber.Handler
+otelfiber.Middleware(opts ...otelfiber.Option) fiber.Handler
 ```
 
-### Config
-
+## Config
 
 | Property          | Type                            | Description                                                                      | Default                                                             |
 | :------------------ | :-------------------------------- | :--------------------------------------------------------------------------------- | :-------------------------------------------------------------------- |
@@ -40,12 +40,11 @@ otelfiber.Middleware(opts ...Option) fiber.Handler
 | ServerName        | `*string`                       | specifies the value to use when setting the `http.server_name` attribute on metrics/spans                                          | -                                                                   |
 | SpanNameFormatter | `func(*fiber.Ctx) string`       | Takes a function that will be called on every request and the returned string will become the Span Name                                   | default formatter returns the route pathRaw |
 
-### Usage
+## Usage
 
 Please refer to [example](./example)
 
-### Example
-
+## Example
 
 ```go
 package main

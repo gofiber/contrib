@@ -1,7 +1,8 @@
 ---
 id: otelfiber-example
-title: Example
 ---
+
+# Example
 
 An HTTP server using gofiber fiber and instrumentation. The server has a
 `/users/:id` endpoint. The server generates span information to

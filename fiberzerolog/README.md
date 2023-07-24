@@ -1,7 +1,8 @@
 ---
 id: fiberzerolog
-title: Fiberzerolog
 ---
+
+# Fiberzerolog
 
 ![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=fiberzerolog*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
@@ -24,7 +25,7 @@ go get -u github.com/rs/zerolog/log
 ## Signature
 
 ```go
-fiberzerolog.New(config ...Config) fiber.Handler
+fiberzerolog.New(config ...fiberzerolog.Config) fiber.Handler
 ```
 
 ## Config

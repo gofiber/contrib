@@ -1,7 +1,8 @@
 ---
 id: opafiber
-title: Opafiber
 ---
+
+# Opafiber
 
 ![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=opafiber*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
@@ -13,21 +14,21 @@ title: Opafiber
 
 **Note: Requires Go 1.18 and above**
 
-### Install
+## Install
 
 ```
 go get -u github.com/gofiber/fiber/v2
 go get -u github.com/gofiber/contrib/opafiber
 ```
 
-### Signature
+## Signature
 
 ```go
 opafiber.New(config opafiber.Config) fiber.Handler
 
 ```
 
-### Config
+## Config
 
 | Property              | Type                | Description                                                  | Default                                                             |
 |:----------------------|:--------------------|:-------------------------------------------------------------|:--------------------------------------------------------------------|
@@ -39,13 +40,13 @@ opafiber.New(config opafiber.Config) fiber.Handler
 | IncludeHeaders        | `[]string`          | Include headers as input to rego policy                      | -                                                                   |
 | InputCreationMethod   | `InputCreationFunc` | Use your own function to provide input for OPA               | `func defaultInput(ctx *fiber.Ctx) (map[string]interface{}, error)` |
 
-### Types
+## Types
 
 ```go
 type InputCreationFunc func(c *fiber.Ctx) (map[string]interface{}, error)
 ```
 
-### Usage
+## Usage
 
 OPA Fiber middleware sends the following example data to the policy engine as input:
 
