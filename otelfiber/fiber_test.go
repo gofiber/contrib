@@ -401,3 +401,49 @@ func getHistogram(value float64, attrs []attribute.KeyValue) metricdata.Histogra
 		Temporality: metricdata.CumulativeTemporality,
 	}
 }
+
+func TestCustomAttributes(t *testing.T) {
+	sr := new(oteltest.SpanRecorder)
+	provider := oteltest.NewTracerProvider(oteltest.WithSpanRecorder(sr))
+
+	var gotSpan oteltrace.Span
+
+	app := fiber.New()
+	app.Use(
+		Middleware(
+			WithTracerProvider(provider),
+			WithCustomAttributes(func(ctx *fiber.Ctx) []attribute.KeyValue {
+				return []attribute.KeyValue{
+					attribute.Key("http.query_params").String(ctx.Request().URI().QueryArgs().String()),
+				}
+			}),
+		),
+	)
+
+	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
+		gotSpan = oteltrace.SpanFromContext(ctx.UserContext())
+		id := ctx.Params("id")
+		return ctx.SendString(id)
+	})
+
+	resp, _ := app.Test(httptest.NewRequest("GET", "/user/123?foo=bar", nil), 3000)
+
+	// do and verify the request
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	mspan, ok := gotSpan.(*oteltest.Span)
+	require.True(t, ok)
+	assert.Equal(t, attribute.StringValue("foo=bar"), mspan.Attributes()["http.query_params"])
+
+	// verify traces look good
+	spans := sr.Completed()
+	require.Len(t, spans, 1)
+	span := spans[0]
+	assert.Equal(t, "/user/:id", span.Name())
+	assert.Equal(t, oteltrace.SpanKindServer, span.SpanKind())
+	assert.Equal(t, attribute.IntValue(http.StatusOK), span.Attributes()["http.status_code"])
+	assert.Equal(t, attribute.StringValue("GET"), span.Attributes()["http.method"])
+	assert.Equal(t, attribute.StringValue("/user/123?foo=bar"), span.Attributes()["http.target"])
+	assert.Equal(t, attribute.StringValue("/user/:id"), span.Attributes()["http.route"])
+	assert.Equal(t, attribute.StringValue("foo=bar"), span.Attributes()["http.query_params"])
+}
