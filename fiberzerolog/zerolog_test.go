@@ -191,6 +191,7 @@ func Test_Logger_All(t *testing.T) {
 			FieldIP,
 			FieldHost,
 			FieldURL,
+			FieldLatency,
 			FieldRoute,
 			FieldMethod,
 			FieldResBody,
@@ -199,6 +200,11 @@ func Test_Logger_All(t *testing.T) {
 			FieldBytesSent,
 		},
 	}))
+
+	app.Get("/", func(c *fiber.Ctx) error {
+		time.Sleep(100 * time.Millisecond)
+		return c.SendStatus(fiber.StatusNotFound)
+	})
 
 	resp, err := app.Test(httptest.NewRequest("GET", "/?foo=bar", nil))
 	utils.AssertEqual(t, nil, err)
@@ -216,40 +222,19 @@ func Test_Logger_All(t *testing.T) {
 		"protocol":      "http",
 		"pid":           float64(os.Getpid()),
 		"queryParams":   "foo=bar",
-		"resBody":       "Cannot GET /",
+		"resBody":       "Not Found",
 		"bytesReceived": float64(0),
-		"bytesSent":     float64(12),
+		"bytesSent":     float64(9),
 	}
 
 	var logs map[string]any
 	_ = json.Unmarshal(buf.Bytes(), &logs)
 
-	utils.AssertEqual(t, expected, logs)
+	for key, value := range expected {
+		utils.AssertEqual(t, value, logs[key])
+	}
 
-	var latBuf bytes.Buffer
-	latencyLogger := zerolog.New(&latBuf)
-
-	latencyApp := fiber.New()
-	latencyApp.Use(New(Config{
-		Logger: &latencyLogger,
-		Fields: []string{
-			FieldLatency,
-		},
-	}))
-
-	latencyApp.Get("/latencytest", func(c *fiber.Ctx) error {
-		time.Sleep(100 * time.Millisecond)
-		return c.SendStatus(fiber.StatusOK)
-	})
-
-	latencyResp, latencyErr := latencyApp.Test(httptest.NewRequest("GET", "/latencytest", nil))
-	utils.AssertEqual(t, nil, latencyErr)
-	utils.AssertEqual(t, fiber.StatusOK, latencyResp.StatusCode)
-
-	var latencyLogs map[string]any
-	_ = json.Unmarshal(latBuf.Bytes(), &latencyLogs)
-
-	latencyStr, ok := latencyLogs[FieldLatency].(string)
+	latencyStr, ok := logs[FieldLatency].(string)
 	if !ok {
 		t.Errorf("Failed to parse latency from logs")
 	}
