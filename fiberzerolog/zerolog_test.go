@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/utils"
@@ -123,6 +125,39 @@ func Test_Logger(t *testing.T) {
 
 	utils.AssertEqual(t, "some random error", logs[FieldError])
 	utils.AssertEqual(t, float64(500), logs[FieldStatus])
+}
+
+func Test_Latency(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	app := fiber.New()
+	app.Use(New(Config{
+		Logger: &logger,
+	}))
+
+	app.Get("/", func(c *fiber.Ctx) error {
+		time.Sleep(100 * time.Millisecond)
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/", nil))
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
+
+	var logs map[string]any
+	_ = json.Unmarshal(buf.Bytes(), &logs)
+
+	latencyStr, ok := logs[FieldLatency].(string)
+	if !ok {
+		t.Errorf("Failed to parse latency from logs")
+	}
+	if !strings.Contains(latencyStr, "ms") {
+		t.Errorf("Latency does not contain 'ms': %s", latencyStr)
+	}
+	utils.AssertEqual(t, float64(200), logs[FieldStatus])
 }
 
 func Test_Logger_Next(t *testing.T) {
