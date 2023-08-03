@@ -225,6 +225,37 @@ func Test_Logger_All(t *testing.T) {
 	_ = json.Unmarshal(buf.Bytes(), &logs)
 
 	utils.AssertEqual(t, expected, logs)
+
+	var latBuf bytes.Buffer
+	latencyLogger := zerolog.New(&latBuf)
+
+	latencyApp := fiber.New()
+	latencyApp.Use(New(Config{
+		Logger: &latencyLogger,
+		Fields: []string{
+			FieldLatency,
+		},
+	}))
+
+	latencyApp.Get("/latencytest", func(c *fiber.Ctx) error {
+		time.Sleep(100 * time.Millisecond)
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	latencyResp, latencyErr := latencyApp.Test(httptest.NewRequest("GET", "/latencytest", nil))
+	utils.AssertEqual(t, nil, latencyErr)
+	utils.AssertEqual(t, fiber.StatusOK, latencyResp.StatusCode)
+
+	var latencyLogs map[string]any
+	_ = json.Unmarshal(latBuf.Bytes(), &latencyLogs)
+
+	latencyStr, ok := latencyLogs[FieldLatency].(string)
+	if !ok {
+		t.Errorf("Failed to parse latency from logs")
+	}
+	if !strings.Contains(latencyStr, "ms") {
+		t.Errorf("Latency does not contain 'ms': %s", latencyStr)
+	}
 }
 
 func Test_Response_Body(t *testing.T) {
