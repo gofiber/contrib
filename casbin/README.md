@@ -12,6 +12,8 @@ id: casbin
 
 Casbin middleware for Fiber.
 
+**Note: Requires Go 1.18 and above**
+
 ## Install
 ```
 go get -u github.com/gofiber/fiber/v2
