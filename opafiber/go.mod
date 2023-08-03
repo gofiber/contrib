@@ -1,4 +1,4 @@
-module github.com/gofiber/contrib/opafiber
+module github.com/gofiber/contrib/opafiber/v2
 
 go 1.19
 

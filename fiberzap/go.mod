@@ -1,4 +1,4 @@
-module github.com/gofiber/contrib/fiberzap
+module github.com/gofiber/contrib/fiberzap/v2
 
 go 1.19
 
