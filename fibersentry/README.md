@@ -12,6 +12,8 @@ id: fibersentry
 
 [Sentry](https://sentry.io/) support for Fiber.
 
+**Note: Requires Go 1.18 and above**
+
 ## Install
 
 This middleware supports Fiber v2.

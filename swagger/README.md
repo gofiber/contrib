@@ -12,6 +12,15 @@ id: swagger
 
 Swagger middleware for [Fiber](https://github.com/gofiber/fiber). The middleware handles Swagger UI. 
 
+**Note: Requires Go 1.18 and above**
+
+## Install
+
+```
+go get -u github.com/gofiber/fiber/v2
+go get -u github.com/gofiber/contrib/swagger
+```
+
 ## Signatures
 ```go
 func New(config ...swagger.Config) fiber.Handler

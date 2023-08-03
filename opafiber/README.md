@@ -12,7 +12,7 @@ id: opafiber
 
 [Open Policy Agent](https://github.com/open-policy-agent/opa) support for Fiber.
 
-**Note: Requires Go 1.18 and above**
+**Note: Requires Go 1.19 and above**
 
 ## Install
 
