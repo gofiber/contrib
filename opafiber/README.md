@@ -12,13 +12,13 @@ id: opafiber
 
 [Open Policy Agent](https://github.com/open-policy-agent/opa) support for Fiber.
 
-**Note: Requires Go 1.18 and above**
+**Note: Requires Go 1.19 and above**
 
 ## Install
 
 ```
 go get -u github.com/gofiber/fiber/v2
-go get -u github.com/gofiber/contrib/opafiber
+go get -u github.com/gofiber/contrib/opafiber/v2
 ```
 
 ## Signature
@@ -69,7 +69,7 @@ package main
 
 import (
 	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/contrib/opafiber"
+	"github.com/gofiber/contrib/opafiber/v2"
 )
 
 func main() {

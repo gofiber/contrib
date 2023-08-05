@@ -12,6 +12,8 @@ id: fiberzerolog
 
 [Zerolog](https://zerolog.io/) logging support for Fiber.
 
+**Note: Requires Go 1.18 and above**
+
 ## Install
 
 This middleware supports Fiber v2.

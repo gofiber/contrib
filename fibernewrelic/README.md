@@ -12,6 +12,8 @@ id: fibernewrelic
 
 [NewRelic](https://github.com/newrelic/go-agent) support for Fiber.
 
+**Note: Requires Go 1.18 and above**
+
 ## Install
 
 ```

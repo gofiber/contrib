@@ -14,12 +14,14 @@ id: otelfiber
 
 Can be found on [OpenTelemetry Registry](https://opentelemetry.io/registry/instrumentation-go-fiber/).
 
+**Note: Requires Go 1.19 and above**
+
 ## Install
 
 This middleware supports Fiber v2.
 
 ```
-go get -u github.com/gofiber/contrib/otelfiber
+go get -u github.com/gofiber/contrib/otelfiber/v2
 ```
 
 ## Signature

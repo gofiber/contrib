@@ -1,4 +1,4 @@
-package otelfiber
+package otelfiber_test
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/gofiber/contrib/otelfiber/v2"
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -16,88 +17,87 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/oteltest"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/instrumentation"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
-func TestChildSpanFromGlobalTracer(t *testing.T) {
-	otel.SetTracerProvider(oteltest.NewTracerProvider())
+const instrumentationName = "github.com/gofiber/contrib/otelfiber"
 
-	var gotSpan oteltrace.Span
+func TestChildSpanFromGlobalTracer(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	otel.SetTracerProvider(provider)
 
 	app := fiber.New()
-	app.Use(Middleware())
+	app.Use(otelfiber.Middleware())
 	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
-		gotSpan = oteltrace.SpanFromContext(ctx.UserContext())
 		return ctx.SendStatus(http.StatusNoContent)
 	})
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/user/123", nil))
 
-	_, ok := gotSpan.(*oteltest.Span)
-	assert.True(t, ok)
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
 }
 
 func TestChildSpanFromCustomTracer(t *testing.T) {
-	provider := oteltest.NewTracerProvider()
-	var gotSpan oteltrace.Span
+	sr := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	otel.SetTracerProvider(provider)
 
 	app := fiber.New()
-	app.Use(Middleware(WithTracerProvider(provider)))
+	app.Use(otelfiber.Middleware(otelfiber.WithTracerProvider(provider)))
 	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
-		gotSpan = oteltrace.SpanFromContext(ctx.UserContext())
 		return ctx.SendStatus(http.StatusNoContent)
 	})
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/user/123", nil))
 
-	_, ok := gotSpan.(*oteltest.Span)
-	assert.True(t, ok)
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
 }
 
 func TestSkipWithNext(t *testing.T) {
-	otel.SetTracerProvider(oteltest.NewTracerProvider())
-
-	var gotSpan oteltrace.Span
+	sr := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	otel.SetTracerProvider(provider)
 
 	app := fiber.New()
-	app.Use(Middleware(WithNext(func(c *fiber.Ctx) bool {
+	app.Use(otelfiber.Middleware(otelfiber.WithNext(func(c *fiber.Ctx) bool {
 		return c.Path() == "/health"
 	})))
 
 	app.Get("/health", func(ctx *fiber.Ctx) error {
-		gotSpan = oteltrace.SpanFromContext(ctx.UserContext())
 		return ctx.SendStatus(http.StatusNoContent)
 	})
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/health", nil))
 
-	_, ok := gotSpan.(*oteltest.Span)
-	assert.False(t, ok)
+	spans := sr.Ended()
+	require.Len(t, spans, 0)
 }
 
 func TestTrace200(t *testing.T) {
-	sr := new(oteltest.SpanRecorder)
-	provider := oteltest.NewTracerProvider(oteltest.WithSpanRecorder(sr))
+	sr := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	otel.SetTracerProvider(provider)
 	serverName := "foobar"
-
-	var gotSpan oteltrace.Span
 
 	app := fiber.New()
 	app.Use(
-		Middleware(
-			WithTracerProvider(provider),
-			WithServerName(serverName),
+		otelfiber.Middleware(
+			otelfiber.WithTracerProvider(provider),
+			otelfiber.WithServerName(serverName),
 		),
 	)
 	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
-		gotSpan = oteltrace.SpanFromContext(ctx.UserContext())
 		id := ctx.Params("id")
 		return ctx.SendString(id)
 	})
@@ -107,32 +107,31 @@ func TestTrace200(t *testing.T) {
 	// do and verify the request
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
-	mspan, ok := gotSpan.(*oteltest.Span)
-	require.True(t, ok)
-	assert.Equal(t, attribute.StringValue(serverName), mspan.Attributes()[semconv.HTTPServerNameKey])
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
 
 	// verify traces look good
-	spans := sr.Completed()
-	require.Len(t, spans, 1)
 	span := spans[0]
+	attr := span.Attributes()
+
 	assert.Equal(t, "/user/:id", span.Name())
 	assert.Equal(t, oteltrace.SpanKindServer, span.SpanKind())
-	assert.Equal(t, attribute.StringValue("foobar"), span.Attributes()["http.server_name"])
-	assert.Equal(t, attribute.IntValue(http.StatusOK), span.Attributes()["http.status_code"])
-	assert.Equal(t, attribute.StringValue("GET"), span.Attributes()["http.method"])
-	assert.Equal(t, attribute.StringValue("/user/123"), span.Attributes()["http.target"])
-	assert.Equal(t, attribute.StringValue("/user/:id"), span.Attributes()["http.route"])
+	assert.Contains(t, attr, attribute.String("http.server_name", serverName))
+	assert.Contains(t, attr, attribute.Int("http.status_code", http.StatusOK))
+	assert.Contains(t, attr, attribute.String("http.method", "GET"))
+	assert.Contains(t, attr, attribute.String("http.target", "/user/123"))
+	assert.Contains(t, attr, attribute.String("http.route", "/user/:id"))
 }
 
 func TestError(t *testing.T) {
-	sr := new(oteltest.SpanRecorder)
-	provider := oteltest.NewTracerProvider(oteltest.WithSpanRecorder(sr))
+	sr := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	otel.SetTracerProvider(provider)
 
 	// setup
 	app := fiber.New()
-	app.Use(Middleware(WithTracerProvider(provider)))
-	// configure a handler that returns an error and 5xx status
-	// code
+	app.Use(otelfiber.Middleware(otelfiber.WithTracerProvider(provider)))
+	// configure a handler that returns an error and 5xx status code
 	app.Get("/server_err", func(ctx *fiber.Ctx) error {
 		return errors.New("oh no")
 	})
@@ -140,14 +139,16 @@ func TestError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 
 	// verify the errors and status are correct
-	spans := sr.Completed()
+	spans := sr.Ended()
 	require.Len(t, spans, 1)
 	span := spans[0]
+	attr := span.Attributes()
+
 	assert.Equal(t, "/server_err", span.Name())
-	assert.Equal(t, attribute.IntValue(http.StatusInternalServerError), span.Attributes()["http.status_code"])
-	assert.Equal(t, attribute.StringValue("oh no"), span.Events()[0].Attributes[semconv.ExceptionMessageKey])
+	assert.Contains(t, attr, attribute.Int("http.status_code", http.StatusInternalServerError))
+	assert.Equal(t, attribute.StringValue("oh no"), span.Events()[0].Attributes[1].Value)
 	// server errors set the status
-	assert.Equal(t, codes.Error, span.StatusCode())
+	assert.Equal(t, codes.Error, span.Status().Code)
 }
 
 func TestErrorOnlyHandledOnce(t *testing.T) {
@@ -158,7 +159,7 @@ func TestErrorOnlyHandledOnce(t *testing.T) {
 			return fiber.NewError(http.StatusInternalServerError, err.Error())
 		},
 	})
-	app.Use(Middleware())
+	app.Use(otelfiber.Middleware())
 	app.Get("/", func(ctx *fiber.Ctx) error {
 		return errors.New("mock error")
 	})
@@ -184,11 +185,11 @@ func TestGetSpanNotInstrumented(t *testing.T) {
 }
 
 func TestPropagationWithGlobalPropagators(t *testing.T) {
-	sr := new(oteltest.SpanRecorder)
-	provider := oteltest.NewTracerProvider(oteltest.WithSpanRecorder(sr))
+	sr := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	otel.SetTracerProvider(provider)
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 	defer otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator())
-	var gotSpan oteltrace.Span
 
 	r := httptest.NewRequest("GET", "/user/123", nil)
 
@@ -196,24 +197,26 @@ func TestPropagationWithGlobalPropagators(t *testing.T) {
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(r.Header))
 
 	app := fiber.New()
-	app.Use(Middleware(WithTracerProvider(provider)))
+	app.Use(otelfiber.Middleware(otelfiber.WithTracerProvider(provider)))
 	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
-		gotSpan = oteltrace.SpanFromContext(ctx.UserContext())
 		return ctx.SendStatus(http.StatusNoContent)
 	})
 
 	_, _ = app.Test(r)
 
-	mspan, ok := gotSpan.(*oteltest.Span)
-	require.True(t, ok)
-	assert.Equal(t, pspan.SpanContext().TraceID(), mspan.SpanContext().TraceID())
-	assert.Equal(t, pspan.SpanContext().SpanID(), mspan.ParentSpanID())
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+
+	// verify traces look good
+	span := spans[0]
+	assert.Equal(t, pspan.SpanContext().TraceID(), span.SpanContext().TraceID())
+	assert.Equal(t, pspan.SpanContext().SpanID(), span.Parent().SpanID())
 }
 
 func TestPropagationWithCustomPropagators(t *testing.T) {
-	sr := new(oteltest.SpanRecorder)
-	provider := oteltest.NewTracerProvider(oteltest.WithSpanRecorder(sr))
-	var gotSpan oteltrace.Span
+	sr := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	otel.SetTracerProvider(provider)
 
 	b3 := b3prop.New()
 
@@ -223,18 +226,18 @@ func TestPropagationWithCustomPropagators(t *testing.T) {
 	b3.Inject(ctx, propagation.HeaderCarrier(r.Header))
 
 	app := fiber.New()
-	app.Use(Middleware(WithTracerProvider(provider), WithPropagators(b3)))
+	app.Use(otelfiber.Middleware(otelfiber.WithTracerProvider(provider), otelfiber.WithPropagators(b3)))
 	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
-		gotSpan = oteltrace.SpanFromContext(ctx.UserContext())
 		return ctx.SendStatus(http.StatusNoContent)
 	})
 
 	_, _ = app.Test(r)
 
-	mspan, ok := gotSpan.(*oteltest.Span)
-	require.True(t, ok)
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+	mspan := spans[0]
 	assert.Equal(t, pspan.SpanContext().TraceID(), mspan.SpanContext().TraceID())
-	assert.Equal(t, pspan.SpanContext().SpanID(), mspan.ParentSpanID())
+	assert.Equal(t, pspan.SpanContext().SpanID(), mspan.Parent().SpanID())
 }
 
 func TestHasBasicAuth(t *testing.T) {
@@ -265,7 +268,7 @@ func TestHasBasicAuth(t *testing.T) {
 
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {
-			val, valid := hasBasicAuth(tC.auth)
+			val, valid := otelfiber.HasBasicAuth(tC.auth)
 
 			assert.Equal(t, tC.user, val)
 			assert.Equal(t, tC.valid, valid)
@@ -283,10 +286,10 @@ func TestMetric(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(
-		Middleware(
-			WithMeterProvider(provider),
-			WithPort(port),
-			WithServerName(serverName),
+		otelfiber.Middleware(
+			otelfiber.WithMeterProvider(provider),
+			otelfiber.WithPort(port),
+			otelfiber.WithServerName(serverName),
 		),
 	)
 	app.Get(route, func(ctx *fiber.Ctx) error {
@@ -325,7 +328,7 @@ func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, 
 
 	// Duration value is not predictable.
 	m := sm.Metrics[0]
-	assert.Equal(t, metricNameHttpServerDuration, m.Name)
+	assert.Equal(t, otelfiber.MetricNameHttpServerDuration, m.Name)
 	require.IsType(t, m.Data, metricdata.Histogram[float64]{})
 	hist := m.Data.(metricdata.Histogram[float64])
 	assert.Equal(t, metricdata.CumulativeTemporality, hist.Temporality)
@@ -337,27 +340,27 @@ func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, 
 
 	// Request size
 	want := metricdata.Metrics{
-		Name:        metricNameHttpServerRequestSize,
+		Name:        otelfiber.MetricNameHttpServerRequestSize,
 		Description: "measures the size of HTTP request messages",
-		Unit:        UnitBytes,
+		Unit:        otelfiber.UnitBytes,
 		Data:        getHistogram(0, responseAttrs),
 	}
 	metricdatatest.AssertEqual(t, want, sm.Metrics[1], metricdatatest.IgnoreTimestamp())
 
 	// Response size
 	want = metricdata.Metrics{
-		Name:        metricNameHttpServerResponseSize,
+		Name:        otelfiber.MetricNameHttpServerResponseSize,
 		Description: "measures the size of HTTP response messages",
-		Unit:        UnitBytes,
+		Unit:        otelfiber.UnitBytes,
 		Data:        getHistogram(2, responseAttrs),
 	}
 	metricdatatest.AssertEqual(t, want, sm.Metrics[2], metricdatatest.IgnoreTimestamp())
 
 	// Active requests
 	want = metricdata.Metrics{
-		Name:        metricNameHttpServerActiveRequests,
+		Name:        otelfiber.MetricNameHttpServerActiveRequests,
 		Description: "measures the number of concurrent HTTP requests that are currently in-flight",
-		Unit:        UnitDimensionless,
+		Unit:        otelfiber.UnitDimensionless,
 		Data: metricdata.Sum[int64]{
 			DataPoints: []metricdata.DataPoint[int64]{
 				{Attributes: attribute.NewSet(requestAttrs...), Value: 0},
