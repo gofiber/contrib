@@ -41,6 +41,7 @@ otelfiber.Middleware(opts ...otelfiber.Option) fiber.Handler
 | Propagators       | `propagation.TextMapPropagator` | Specifies propagators to use for extracting information from the HTTP requests                     | If none are specified, global ones will be used                                                               |
 | ServerName        | `*string`                       | specifies the value to use when setting the `http.server_name` attribute on metrics/spans                                          | -                                                                   |
 | SpanNameFormatter | `func(*fiber.Ctx) string`       | Takes a function that will be called on every request and the returned string will become the Span Name                                   | default formatter returns the route pathRaw |
+| CustomAttributes  | `func(*fiber.Ctx) []attribute.KeyValue` | Define a function to add custom attributes to the span                  | nil                                                                 |
 
 ## Usage
 

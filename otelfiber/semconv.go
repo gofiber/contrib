@@ -61,6 +61,10 @@ func httpServerTraceAttributesFromRequest(c *fiber.Ctx, cfg config) []attribute.
 		attrs = append(attrs, semconv.HTTPClientIPKey.String(utils.CopyString(clientIP)))
 	}
 
+	if cfg.CustomAttributes != nil {
+		attrs = append(attrs, cfg.CustomAttributes(c)...)
+	}
+
 	return attrs
 }
 

@@ -404,3 +404,45 @@ func getHistogram(value float64, attrs []attribute.KeyValue) metricdata.Histogra
 		Temporality: metricdata.CumulativeTemporality,
 	}
 }
+
+func TestCustomAttributes(t *testing.T) {
+	sr := new(tracetest.SpanRecorder)
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+
+	app := fiber.New()
+	app.Use(
+		otelfiber.Middleware(
+			otelfiber.WithTracerProvider(provider),
+			otelfiber.WithCustomAttributes(func(ctx *fiber.Ctx) []attribute.KeyValue {
+				return []attribute.KeyValue{
+					attribute.Key("http.query_params").String(ctx.Request().URI().QueryArgs().String()),
+				}
+			}),
+		),
+	)
+
+	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
+		id := ctx.Params("id")
+		return ctx.SendString(id)
+	})
+
+	resp, _ := app.Test(httptest.NewRequest("GET", "/user/123?foo=bar", nil), 3000)
+
+	// do and verify the request
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+
+	// verify traces look good
+	span := spans[0]
+	attr := span.Attributes()
+
+	assert.Equal(t, "/user/:id", span.Name())
+	assert.Equal(t, oteltrace.SpanKindServer, span.SpanKind())
+	assert.Contains(t, attr, attribute.Int("http.status_code", http.StatusOK))
+	assert.Contains(t, attr, attribute.String("http.method", "GET"))
+	assert.Contains(t, attr, attribute.String("http.target", "/user/123?foo=bar"))
+	assert.Contains(t, attr, attribute.String("http.route", "/user/:id"))
+	assert.Contains(t, attr, attribute.String("http.query_params", "foo=bar"))
+}
