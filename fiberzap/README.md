@@ -14,6 +14,7 @@ id: fiberzap
 
 **Note: Requires Go 1.19 and above**
 
+
 ## Install
 
 This middleware supports Fiber v2.
