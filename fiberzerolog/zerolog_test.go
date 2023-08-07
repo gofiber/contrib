@@ -151,12 +151,8 @@ func Test_Latency(t *testing.T) {
 	_ = json.Unmarshal(buf.Bytes(), &logs)
 
 	latencyStr, ok := logs[FieldLatency].(string)
-	if !ok {
-		t.Errorf("Failed to parse latency from logs")
-	}
-	if !strings.Contains(latencyStr, "ms") {
-		t.Errorf("Latency does not contain 'ms': %s", latencyStr)
-	}
+	utils.AssertEqual(t, true, ok)
+	utils.AssertEqual(t, true, strings.Contains(latencyStr, "ms"))
 	utils.AssertEqual(t, float64(200), logs[FieldStatus])
 }
 
@@ -235,12 +231,8 @@ func Test_Logger_All(t *testing.T) {
 	}
 
 	latencyStr, ok := logs[FieldLatency].(string)
-	if !ok {
-		t.Errorf("Failed to parse latency from logs")
-	}
-	if !strings.Contains(latencyStr, "ms") {
-		t.Errorf("Latency does not contain 'ms': %s", latencyStr)
-	}
+	utils.AssertEqual(t, true, ok)
+	utils.AssertEqual(t, true, strings.Contains(latencyStr, "ms"))
 }
 
 func Test_Response_Body(t *testing.T) {
