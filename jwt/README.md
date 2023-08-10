@@ -1,6 +1,10 @@
-# JSON Web Tokens
+---
+id: jwt
+---
 
-![Release](https://img.shields.io/github/release/gofiber/contrib.svg)
+# JWT
+
+![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=jwt*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Tests/badge.svg)
 ![Security](https://github.com/gofiber/contrib/workflows/Security/badge.svg)
@@ -13,7 +17,9 @@ For missing token, it returns "400 - Bad Request" error.
 
 Special thanks and credits to [Echo](https://echo.labstack.com/middleware/jwt)
 
-### Install
+**Note: Requires Go 1.19 and above**
+
+## Install
 
 This middleware supports Fiber v1 & v2, install accordingly.
 
@@ -23,12 +29,13 @@ go get -u github.com/gofiber/contrib/jwt
 go get -u github.com/golang-jwt/jwt/v5
 ```
 
-### Signature
+## Signature
 ```go
 jwtware.New(config ...jwtware.Config) func(*fiber.Ctx) error
 ```
 
-### Config
+## Config
+
 | Property       | Type                            | Description                                                                                                                                             | Default                      |
 |:---------------|:--------------------------------|:--------------------------------------------------------------------------------------------------------------------------------------------------------|:-----------------------------|
 | Filter         | `func(*fiber.Ctx) bool`         | Defines a function to skip middleware                                                                                                                   | `nil`                        |
@@ -44,7 +51,7 @@ jwtware.New(config ...jwtware.Config) func(*fiber.Ctx) error
 | JWKSetURLs     | `[]string`                      | A slice of unique JSON Web Key (JWK) Set URLs to used to parse JWTs.                                                                                    | `nil`                        |
 
 
-### HS256 Example
+## HS256 Example
 ```go
 package main
 
@@ -118,7 +125,7 @@ func restricted(c *fiber.Ctx) error {
 
 ```
 
-### HS256 Test
+## HS256 Test
 _Login using username and password to retrieve a token._
 ```
 curl --data "user=john&pass=doe" http://localhost:3000/login
@@ -140,7 +147,7 @@ _Response_
 Welcome John Doe
 ```
 
-### RS256 Example
+## RS256 Example
 ```go
 package main
 
@@ -236,13 +243,13 @@ func restricted(c *fiber.Ctx) error {
 }
 ```
 
-### RS256 Test
+## RS256 Test
 The RS256 is actually identical to the HS256 test above.
 
-### JWK Set Test
+## JWK Set Test
 The tests are identical to basic `JWT` tests above, with exception that `JWKSetURLs` to valid public keys collection in JSON Web Key (JWK) Set format should be supplied. See [RFC 7517](https://www.rfc-editor.org/rfc/rfc7517).
 
-### Custom KeyFunc example
+## Custom KeyFunc example
 
 KeyFunc defines a user-defined function that supplies the public key for a token validation.
 The function shall take care of verifying the signing algorithm and selecting the proper key.

@@ -1,9 +1,10 @@
 package pasetoware
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/o1egl/paseto"
-	"time"
 )
 
 const (

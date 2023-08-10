@@ -2,6 +2,7 @@ package otelfiber
 
 import (
 	"github.com/gofiber/fiber/v2"
+	"go.opentelemetry.io/otel/attribute"
 	otelmetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -16,6 +17,7 @@ type config struct {
 	Propagators       propagation.TextMapPropagator
 	ServerName        *string
 	SpanNameFormatter func(*fiber.Ctx) string
+	CustomAttributes  func(*fiber.Ctx) []attribute.KeyValue
 }
 
 // Option specifies instrumentation configuration options.
@@ -87,3 +89,10 @@ func WithPort(port int) Option {
 	})
 }
 
+// WithCustomAttributes specifies a function that will be called on every
+// request and the returned attributes will be added to the span.
+func WithCustomAttributes(f func(ctx *fiber.Ctx) []attribute.KeyValue) Option {
+	return optionFunc(func(cfg *config) {
+		cfg.CustomAttributes = f
+	})
+}

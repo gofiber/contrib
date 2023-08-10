@@ -1,6 +1,10 @@
+---
+id: fiberi18n
+---
+
 # Fiberi18n
 
-![Release](https://img.shields.io/github/release/gofiber/contrib.svg)
+![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=fiberi18n*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Tests/badge.svg)
 ![Security](https://github.com/gofiber/contrib/workflows/Security/badge.svg)
@@ -8,7 +12,9 @@
 
 [go-i18n](https://github.com/nicksnyder/go-i18n) support for Fiber.
 
-### Install
+**Note: Requires Go 1.18 and above**
+
+## Install
 
 This middleware supports Fiber v2.
 
@@ -17,13 +23,13 @@ go get -u github.com/gofiber/fiber/v2
 go get -u github.com/gofiber/contrib/fiberi18n
 ```
 
-### Signature
+## Signature
 
 ```
-fiberi18n.New(config ...*Config) fiber.Handler
+fiberi18n.New(config ...*fiberi18n.Config) fiber.Handler
 ```
 
-### Config
+## Config
 
 | Property         | Type                                              | Description                                                  | Default                                                      |
 | ---------------- | ------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
@@ -36,7 +42,7 @@ fiberi18n.New(config ...*Config) fiber.Handler
 | UnmarshalFunc    | `i18n.UnmarshalFunc`                              | The function used for decoding template files.               | `yaml.Unmarshal`                                             |
 | LangHandler      | `func(ctx *fiber.Ctx, defaultLang string) string` | Used to get the kind of language handled by *fiber.Ctx and defaultLang. | Retrieved from the request header `Accept-Language` or query parameter `lang`. |
 
-### Example
+## Example
 
 ```go
 package main

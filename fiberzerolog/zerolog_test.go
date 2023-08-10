@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/utils"
@@ -125,6 +127,35 @@ func Test_Logger(t *testing.T) {
 	utils.AssertEqual(t, float64(500), logs[FieldStatus])
 }
 
+func Test_Latency(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	app := fiber.New()
+	app.Use(New(Config{
+		Logger: &logger,
+	}))
+
+	app.Get("/", func(c *fiber.Ctx) error {
+		time.Sleep(100 * time.Millisecond)
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/", nil))
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
+
+	var logs map[string]any
+	_ = json.Unmarshal(buf.Bytes(), &logs)
+
+	latencyStr, ok := logs[FieldLatency].(string)
+	utils.AssertEqual(t, true, ok)
+	utils.AssertEqual(t, true, strings.Contains(latencyStr, "ms"))
+	utils.AssertEqual(t, float64(200), logs[FieldStatus])
+}
+
 func Test_Logger_Next(t *testing.T) {
 	t.Parallel()
 
@@ -156,6 +187,7 @@ func Test_Logger_All(t *testing.T) {
 			FieldIP,
 			FieldHost,
 			FieldURL,
+			FieldLatency,
 			FieldRoute,
 			FieldMethod,
 			FieldResBody,
@@ -164,6 +196,11 @@ func Test_Logger_All(t *testing.T) {
 			FieldBytesSent,
 		},
 	}))
+
+	app.Get("/", func(c *fiber.Ctx) error {
+		time.Sleep(100 * time.Millisecond)
+		return c.SendStatus(fiber.StatusNotFound)
+	})
 
 	resp, err := app.Test(httptest.NewRequest("GET", "/?foo=bar", nil))
 	utils.AssertEqual(t, nil, err)
@@ -181,15 +218,21 @@ func Test_Logger_All(t *testing.T) {
 		"protocol":      "http",
 		"pid":           float64(os.Getpid()),
 		"queryParams":   "foo=bar",
-		"resBody":       "Cannot GET /",
+		"resBody":       "Not Found",
 		"bytesReceived": float64(0),
-		"bytesSent":     float64(12),
+		"bytesSent":     float64(9),
 	}
 
 	var logs map[string]any
 	_ = json.Unmarshal(buf.Bytes(), &logs)
 
-	utils.AssertEqual(t, expected, logs)
+	for key, value := range expected {
+		utils.AssertEqual(t, value, logs[key])
+	}
+
+	latencyStr, ok := logs[FieldLatency].(string)
+	utils.AssertEqual(t, true, ok)
+	utils.AssertEqual(t, true, strings.Contains(latencyStr, "ms"))
 }
 
 func Test_Response_Body(t *testing.T) {

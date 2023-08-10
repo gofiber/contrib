@@ -134,7 +134,7 @@ func (c *Config) logger(fc *fiber.Ctx, latency time.Duration, err error) zerolog
 		case FieldUserAgent:
 			zc = zc.Str(FieldUserAgent, fc.Get(fiber.HeaderUserAgent))
 		case FieldLatency:
-			zc = zc.Dur(FieldLatency, latency)
+			zc = zc.Str(FieldLatency, latency.String())
 		case FieldStatus:
 			zc = zc.Int(FieldStatus, fc.Response().StatusCode())
 		case FieldResBody:

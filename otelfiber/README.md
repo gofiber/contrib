@@ -1,6 +1,10 @@
+---
+id: otelfiber
+---
+
 # Otelfiber
 
-![Release](https://img.shields.io/github/release/gofiber/contrib.svg)
+![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=otelfiber*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Tests/badge.svg)
 ![Security](https://github.com/gofiber/contrib/workflows/Security/badge.svg)
@@ -10,22 +14,23 @@
 
 Can be found on [OpenTelemetry Registry](https://opentelemetry.io/registry/instrumentation-go-fiber/).
 
-### Install
+**Note: Requires Go 1.19 and above**
+
+## Install
 
 This middleware supports Fiber v2.
 
 ```
-go get -u github.com/gofiber/contrib/otelfiber
+go get -u github.com/gofiber/contrib/otelfiber/v2
 ```
 
-### Signature
+## Signature
 
 ```
-otelfiber.Middleware(opts ...Option) fiber.Handler
+otelfiber.Middleware(opts ...otelfiber.Option) fiber.Handler
 ```
 
-### Config
-
+## Config
 
 | Property          | Type                            | Description                                                                      | Default                                                             |
 | :------------------ | :-------------------------------- | :--------------------------------------------------------------------------------- | :-------------------------------------------------------------------- |
@@ -36,13 +41,13 @@ otelfiber.Middleware(opts ...Option) fiber.Handler
 | Propagators       | `propagation.TextMapPropagator` | Specifies propagators to use for extracting information from the HTTP requests                     | If none are specified, global ones will be used                                                               |
 | ServerName        | `*string`                       | specifies the value to use when setting the `http.server_name` attribute on metrics/spans                                          | -                                                                   |
 | SpanNameFormatter | `func(*fiber.Ctx) string`       | Takes a function that will be called on every request and the returned string will become the Span Name                                   | default formatter returns the route pathRaw |
+| CustomAttributes  | `func(*fiber.Ctx) []attribute.KeyValue` | Define a function to add custom attributes to the span                  | nil                                                                 |
 
-### Usage
+## Usage
 
 Please refer to [example](./example)
 
-### Example
-
+## Example
 
 ```go
 package main

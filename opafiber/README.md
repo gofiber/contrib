@@ -1,6 +1,10 @@
-### Open Policy Agent
+---
+id: opafiber
+---
 
-![Release](https://img.shields.io/github/release/gofiber/contrib.svg)
+# Opafiber
+
+![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=opafiber*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Tests/badge.svg)
 ![Security](https://github.com/gofiber/contrib/workflows/Security/badge.svg)
@@ -8,23 +12,23 @@
 
 [Open Policy Agent](https://github.com/open-policy-agent/opa) support for Fiber.
 
-**Note: Requires Go 1.18 and above**
+**Note: Requires Go 1.19 and above**
 
-### Install
+## Install
 
 ```
 go get -u github.com/gofiber/fiber/v2
-go get -u github.com/gofiber/contrib/opafiber
+go get -u github.com/gofiber/contrib/opafiber/v2
 ```
 
-### Signature
+## Signature
 
 ```go
 opafiber.New(config opafiber.Config) fiber.Handler
 
 ```
 
-### Config
+## Config
 
 | Property              | Type                | Description                                                  | Default                                                             |
 |:----------------------|:--------------------|:-------------------------------------------------------------|:--------------------------------------------------------------------|
@@ -36,13 +40,13 @@ opafiber.New(config opafiber.Config) fiber.Handler
 | IncludeHeaders        | `[]string`          | Include headers as input to rego policy                      | -                                                                   |
 | InputCreationMethod   | `InputCreationFunc` | Use your own function to provide input for OPA               | `func defaultInput(ctx *fiber.Ctx) (map[string]interface{}, error)` |
 
-### Types
+## Types
 
 ```go
 type InputCreationFunc func(c *fiber.Ctx) (map[string]interface{}, error)
 ```
 
-### Usage
+## Usage
 
 OPA Fiber middleware sends the following example data to the policy engine as input:
 
@@ -65,7 +69,7 @@ package main
 
 import (
 	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/contrib/opafiber"
+	"github.com/gofiber/contrib/opafiber/v2"
 )
 
 func main() {
