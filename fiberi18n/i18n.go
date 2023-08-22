@@ -3,6 +3,7 @@ package fiberi18n
 import (
 	"fmt"
 	"path"
+	"sync"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/nicksnyder/go-i18n/v2/i18n"
@@ -13,59 +14,56 @@ var appCfg *Config
 // New creates a new middleware handler
 func New(config ...*Config) fiber.Handler {
 	appCfg = configDefault(config...)
-	appCfg.bundle = initBundle()
-	loadMessages()
-	appCfg.localizerMap = initLocalizerMap()
+	// init bundle
+	bundle := i18n.NewBundle(appCfg.DefaultLanguage)
+	bundle.RegisterUnmarshalFunc(appCfg.FormatBundleFile, appCfg.UnmarshalFunc)
+	appCfg.bundle = bundle
+
+	appCfg.loadMessages().initLocalizerMap()
 
 	return func(c *fiber.Ctx) error {
 		if appCfg.Next != nil && appCfg.Next(c) {
 			return c.Next()
 		}
+
 		appCfg.ctx = c
+
 		return c.Next()
 	}
 }
 
-func initBundle() *i18n.Bundle {
-	bundle := i18n.NewBundle(appCfg.DefaultLanguage)
-	bundle.RegisterUnmarshalFunc(appCfg.FormatBundleFile, appCfg.UnmarshalFunc)
-
-	return bundle
-}
-
-func loadMessage(filepath string) {
-	buf, err := appCfg.Loader.LoadMessage(filepath)
+func (c *Config) loadMessage(filepath string) {
+	buf, err := c.Loader.LoadMessage(filepath)
 	if err != nil {
 		panic(err)
 	}
-	if _, err := appCfg.bundle.ParseMessageFileBytes(buf, filepath); err != nil {
+	if _, err := c.bundle.ParseMessageFileBytes(buf, filepath); err != nil {
 		panic(err)
 	}
 }
 
-func loadMessages() {
-	for _, lang := range appCfg.AcceptLanguages {
-		bundleFile := fmt.Sprintf("%s.%s", lang.String(), appCfg.FormatBundleFile)
-		filepath := path.Join(appCfg.RootPath, bundleFile)
-
-		loadMessage(filepath)
+func (c *Config) loadMessages() *Config {
+	for _, lang := range c.AcceptLanguages {
+		bundleFilePath := fmt.Sprintf("%s.%s", lang.String(), c.FormatBundleFile)
+		filepath := path.Join(c.RootPath, bundleFilePath)
+		c.loadMessage(filepath)
 	}
+	return c
 }
 
-func initLocalizerMap() map[string]*i18n.Localizer {
-	localizerMap := map[string]*i18n.Localizer{}
+func (c *Config) initLocalizerMap() {
+	localizerMap := &sync.Map{}
 
-	for _, lang := range appCfg.AcceptLanguages {
+	for _, lang := range c.AcceptLanguages {
 		s := lang.String()
-		localizerMap[s] = i18n.NewLocalizer(appCfg.bundle, s)
+		localizerMap.Store(s, i18n.NewLocalizer(c.bundle, s))
 	}
 
-	lang := appCfg.DefaultLanguage.String()
-	if _, ok := localizerMap[lang]; !ok {
-		localizerMap[lang] = i18n.NewLocalizer(appCfg.bundle, lang)
+	lang := c.DefaultLanguage.String()
+	if _, ok := localizerMap.Load(lang); !ok {
+		localizerMap.Store(lang, i18n.NewLocalizer(c.bundle, lang))
 	}
-
-	return localizerMap
+	c.localizerMap = localizerMap
 }
 
 /*
@@ -100,14 +98,15 @@ GetMessage get the i18n message
 		})
 */
 func GetMessage(params interface{}) (string, error) {
-	var localizeConfig *i18n.LocalizeConfig
-
 	lang := appCfg.LangHandler(appCfg.ctx, appCfg.DefaultLanguage.String())
-	localizer, hasValue := appCfg.localizerMap[lang]
-	if !hasValue {
-		localizer = appCfg.localizerMap[appCfg.DefaultLanguage.String()]
+
+	localizer, _ := appCfg.localizerMap.Load(lang)
+	if localizer == nil {
+		defaultLang := appCfg.DefaultLanguage.String()
+		localizer, _ = appCfg.localizerMap.Load(defaultLang)
 	}
 
+	var localizeConfig *i18n.LocalizeConfig
 	switch paramValue := params.(type) {
 	case string:
 		localizeConfig = &i18n.LocalizeConfig{MessageID: paramValue}
@@ -115,9 +114,9 @@ func GetMessage(params interface{}) (string, error) {
 		localizeConfig = paramValue
 	}
 
-	message, err := localizer.Localize(localizeConfig)
+	message, err := localizer.(*i18n.Localizer).Localize(localizeConfig)
 	if err != nil {
-		return "", fmt.Errorf("i18n.Localize error: %v", err.Error())
+		return "", fmt.Errorf("i18n.Localize error: %v", err)
 	}
 	return message, nil
 }
