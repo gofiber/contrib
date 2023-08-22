@@ -2,8 +2,10 @@ package fiberi18n
 
 import (
 	"os"
+	"sync"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/utils"
 	"github.com/nicksnyder/go-i18n/v2/i18n"
 	"golang.org/x/text/language"
 	"gopkg.in/yaml.v2"
@@ -52,7 +54,7 @@ type Config struct {
 
 	ctx          *fiber.Ctx
 	bundle       *i18n.Bundle
-	localizerMap map[string]*i18n.Localizer
+	localizerMap *sync.Map
 }
 
 type Loader interface {
@@ -77,18 +79,16 @@ var ConfigDefault = &Config{
 
 func defaultLangHandler(c *fiber.Ctx, defaultLang string) string {
 	var lang string
-	lang = c.Query("lang")
+	lang = utils.CopyString(c.Query("lang"))
 	if lang != "" {
 		return lang
 	}
-
-	lang = c.Get("Accept-Language")
+	lang = utils.CopyString(c.Get("Accept-Language"))
 	if lang != "" {
 		return lang
 	}
 
 	return defaultLang
-
 }
 
 func configDefault(config ...*Config) *Config {
@@ -135,5 +135,6 @@ func configDefault(config ...*Config) *Config {
 	if cfg.LangHandler == nil {
 		cfg.LangHandler = ConfigDefault.LangHandler
 	}
+
 	return cfg
 }
