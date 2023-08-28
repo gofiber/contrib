@@ -19,10 +19,10 @@ func main() {
 		}),
 	)
 	app.Get("/", func(c *fiber.Ctx) error {
-		return c.SendString(fiberi18n.MustGetMessage("welcome"))
+		return c.SendString(fiberi18n.MustLocalize(c, "welcome"))
 	})
 	app.Get("/:name", func(ctx *fiber.Ctx) error {
-		return ctx.SendString(fiberi18n.MustGetMessage(&i18n.LocalizeConfig{
+		return ctx.SendString(fiberi18n.MustLocalize(ctx, &i18n.LocalizeConfig{
 			MessageID: "welcomeWithName",
 			TemplateData: map[string]string{
 				"name": ctx.Params("name"),
