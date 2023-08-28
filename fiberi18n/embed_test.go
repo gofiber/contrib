@@ -26,10 +26,10 @@ func newEmbedServer() *fiber.App {
 		FormatBundleFile: "json",
 	}))
 	app.Get("/", func(ctx *fiber.Ctx) error {
-		return ctx.SendString(MustGetMessage("welcome"))
+		return ctx.SendString(MustLocalize(ctx, "welcome"))
 	})
 	app.Get("/:name", func(ctx *fiber.Ctx) error {
-		return ctx.SendString(MustGetMessage(&i18n.LocalizeConfig{
+		return ctx.SendString(MustLocalize(ctx, &i18n.LocalizeConfig{
 			MessageID: "welcomeWithName",
 			TemplateData: map[string]string{
 				"name": ctx.Params("name"),
@@ -52,6 +52,7 @@ func request(lang language.Tag, name string) (*http.Response, error) {
 }
 
 func TestEmbedLoader_LoadMessage(t *testing.T) {
+	t.Parallel()
 	type args struct {
 		lang language.Tag
 		name string
