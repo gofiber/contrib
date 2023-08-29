@@ -54,6 +54,7 @@ type Config struct {
 
 	bundle       *i18n.Bundle
 	localizerMap *sync.Map
+	mu           sync.Mutex
 }
 
 type Loader interface {
