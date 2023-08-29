@@ -1,6 +1,6 @@
-module github.com/gofiber/contrib/fiberi18n
+module github.com/gofiber/contrib/fiberi18n/v2
 
-go 1.18
+go 1.19
 
 require (
 	github.com/gofiber/fiber/v2 v2.49.0
