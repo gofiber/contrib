@@ -20,7 +20,7 @@ This middleware supports Fiber v2.
 
 ```
 go get -u github.com/gofiber/fiber/v2
-go get -u github.com/gofiber/contrib/fiberi18n
+go get -u github.com/gofiber/contrib/fiberi18n/v2
 ```
 
 ## Signature
@@ -52,7 +52,7 @@ package main
 import (
 	"log"
 
-	"github.com/gofiber/contrib/fiberi18n"
+	"github.com/gofiber/contrib/fiberi18n/v2"
 	"github.com/gofiber/fiber/v2"
 	"github.com/nicksnyder/go-i18n/v2/i18n"
 	"golang.org/x/text/language"
@@ -68,7 +68,11 @@ func main() {
 		}),
 	)
 	app.Get("/", func(c *fiber.Ctx) error {
-		return c.SendString(fiberi18n.MustLocalize(c, "welcome"))
+		localize, err := fiberi18n.Localize(c, "welcome")
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).SendString(err.Error())
+		}
+		return c.SendString(localize)
 	})
 	app.Get("/:name", func(ctx *fiber.Ctx) error {
 		return ctx.SendString(fiberi18n.MustLocalize(ctx, &i18n.LocalizeConfig{
