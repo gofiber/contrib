@@ -206,7 +206,6 @@ func TestLocalize(t *testing.T) {
 }
 
 func Test_defaultLangHandler(t *testing.T) {
-	t.Parallel()
 	app := fiber.New()
 	app.Use(New())
 	app.Get("/", func(c *fiber.Ctx) error {
@@ -215,7 +214,7 @@ func Test_defaultLangHandler(t *testing.T) {
 	app.Get("/test", func(c *fiber.Ctx) error {
 		return c.SendString(defaultLangHandler(c, language.English.String()))
 	})
-
+	t.Parallel()
 	t.Run("test nil ctx", func(t *testing.T) {
 		var wg sync.WaitGroup
 		want := 100

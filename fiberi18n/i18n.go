@@ -12,19 +12,20 @@ import (
 
 // New creates a new middleware handler
 func New(config ...*Config) fiber.Handler {
-	appCfg := configDefault(config...)
+	cfg := configDefault(config...)
 	// init bundle
-	bundle := i18n.NewBundle(appCfg.DefaultLanguage)
-	bundle.RegisterUnmarshalFunc(appCfg.FormatBundleFile, appCfg.UnmarshalFunc)
-	appCfg.bundle = bundle
+	bundle := i18n.NewBundle(cfg.DefaultLanguage)
+	bundle.RegisterUnmarshalFunc(cfg.FormatBundleFile, cfg.UnmarshalFunc)
+	cfg.bundle = bundle
 
-	appCfg.loadMessages().initLocalizerMap()
+	cfg.loadMessages()
+	cfg.initLocalizerMap()
 
 	return func(c *fiber.Ctx) error {
-		if appCfg.Next != nil && appCfg.Next(c) {
+		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
 		}
-		c.Locals("fiberi18n", appCfg)
+		c.Locals("fiberi18n", cfg)
 		return c.Next()
 	}
 }
@@ -40,6 +41,8 @@ func (c *Config) loadMessage(filepath string) {
 }
 
 func (c *Config) loadMessages() *Config {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	for _, lang := range c.AcceptLanguages {
 		bundleFilePath := fmt.Sprintf("%s.%s", lang.String(), c.FormatBundleFile)
 		filepath := path.Join(c.RootPath, bundleFilePath)
@@ -60,7 +63,16 @@ func (c *Config) initLocalizerMap() {
 	if _, ok := localizerMap.Load(lang); !ok {
 		localizerMap.Store(lang, i18n.NewLocalizer(c.bundle, lang))
 	}
-	c.localizerMap = localizerMap
+	c.mu.Lock()
+
+	newLocalizerMap := &sync.Map{}
+	localizerMap.Range(func(key, value interface{}) bool {
+		newLocalizerMap.Store(key, value)
+		return true
+	})
+
+	c.localizerMap = newLocalizerMap
+	c.mu.Unlock()
 }
 
 /*
