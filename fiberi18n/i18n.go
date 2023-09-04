@@ -41,8 +41,6 @@ func (c *Config) loadMessage(filepath string) {
 }
 
 func (c *Config) loadMessages() *Config {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	for _, lang := range c.AcceptLanguages {
 		bundleFilePath := fmt.Sprintf("%s.%s", lang.String(), c.FormatBundleFile)
 		filepath := path.Join(c.RootPath, bundleFilePath)
@@ -66,7 +64,6 @@ func (c *Config) initLocalizerMap() {
 	c.mu.Lock()
 	c.localizerMap = localizerMap
 	c.mu.Unlock()
-
 }
 
 /*
