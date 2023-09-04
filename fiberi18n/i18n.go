@@ -64,14 +64,9 @@ func (c *Config) initLocalizerMap() {
 		localizerMap.Store(lang, i18n.NewLocalizer(c.bundle, lang))
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	newLocalizerMap := &sync.Map{}
-	localizerMap.Range(func(key, value interface{}) bool {
-		newLocalizerMap.Store(key, value)
-		return true
-	})
+	c.localizerMap = localizerMap
+	c.mu.Unlock()
 
-	c.localizerMap = newLocalizerMap
 }
 
 /*
