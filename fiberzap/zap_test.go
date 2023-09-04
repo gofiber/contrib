@@ -441,3 +441,26 @@ func Test_LoggerLevelsAndMessagesSingle(t *testing.T) {
 	utils.AssertEqual(t, levels[0], logs.All()[2].Level)
 	utils.AssertEqual(t, messages[0], logs.All()[2].Message)
 }
+
+// go test -run Test_Fields_Func
+func Test_Fields_Func(t *testing.T) {
+	app := fiber.New()
+	logger, logs := setupLogsCapture()
+
+	app.Use(New(Config{
+		Logger: logger,
+		FieldsFunc: func(c *fiber.Ctx) []zap.Field {
+			return []zap.Field{zap.String("test.custom.field", "test")}
+		},
+	}))
+
+	app.Get("/", func(c *fiber.Ctx) error {
+		return c.SendString("hello")
+	})
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/", nil))
+
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
+	utils.AssertEqual(t, "test", logs.All()[0].Context[0].String)
+}

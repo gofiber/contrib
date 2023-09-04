@@ -14,7 +14,6 @@ id: fiberzap
 
 **Note: Requires Go 1.19 and above**
 
-
 ## Install
 
 This middleware supports Fiber v2.
@@ -33,17 +32,19 @@ fiberzap.New(config ...fiberzap.Config) fiber.Handler
 
 ### Config
 
-| Property      | Type                           | Description                                                                                                                                                                   | Default                                                                     |
-|:--------------|:-------------------------------|:------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|:----------------------------------------------------------------------------|
-| Next          | `func(*Ctx) bool`              | Define a function to skip this middleware when returned true                                                                                                                  | `nil`                                                                       |
-| Logger        | `*zap.Logger`                  | Add custom zap logger.                                                                                                                                                        | `zap.NewDevelopment()`                                                      |
-| Fields        | `[]string`                     | Add fields what you want see.                                                                                                                                                 | `[]string{"latency", "status", "method", "url"}`                            |
-| Messages      | `[]string`                     | Custom response messages.                                                                                                                                                     | `[]string{"Server error", "Client error", "Success"}`                       |                
-| Levels        | `[]zapcore.Level`              | Custom response levels.                                                                                                                                                       | `[]zapcore.Level{zapcore.ErrorLevel, zapcore.WarnLevel, zapcore.InfoLevel}` |   
-| SkipURIs      | `[]string`                     | Skip logging these URI.                                                                                                                                                       | `[]string{}`                                                                |                
-| GetResBody    | func(c *fiber.Ctx) []byte      | Define a function to get response body when return non-nil.<br />eg: When use compress middleware, resBody is unreadable. you can set GetResBody func to get readable resBody.  | `nil`                                                                       |
+| Property   | Type                       | Description                                                                                                                                                                    | Default                                                                     |
+| :--------- | :------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------- |
+| Next       | `func(*Ctx) bool`          | Define a function to skip this middleware when returned true                                                                                                                   | `nil`                                                                       |
+| Logger     | `*zap.Logger`              | Add custom zap logger.                                                                                                                                                         | `zap.NewDevelopment()`                                                      |
+| Fields     | `[]string`                 | Add fields what you want see.                                                                                                                                                  | `[]string{"latency", "status", "method", "url"}`                            |
+| FieldsFunc | `[]zap.Field`              | Define a function to add custom fields.                                                                                                                                        | `nil`                                                                       |
+| Messages   | `[]string`                 | Custom response messages.                                                                                                                                                      | `[]string{"Server error", "Client error", "Success"}`                       |
+| Levels     | `[]zapcore.Level`          | Custom response levels.                                                                                                                                                        | `[]zapcore.Level{zapcore.ErrorLevel, zapcore.WarnLevel, zapcore.InfoLevel}` |
+| SkipURIs   | `[]string`                 | Skip logging these URI.                                                                                                                                                        | `[]string{}`                                                                |
+| GetResBody | func(c \*fiber.Ctx) []byte | Define a function to get response body when return non-nil.<br />eg: When use compress middleware, resBody is unreadable. you can set GetResBody func to get readable resBody. | `nil`                                                                       |
 
 ### Example
+
 ```go
 package main
 
@@ -76,19 +77,18 @@ func main() {
 ### Signature
 
 ```go
-fiberzap.NewLogger(config ...fiberzap.LoggerConfig) *fiberzap.LoggerConfig 
+fiberzap.NewLogger(config ...fiberzap.LoggerConfig) *fiberzap.LoggerConfig
 ```
 
 ### LoggerConfig
 
-
 | Property    | Type           | Description                                                                                              | Default                        |
-|:------------|:---------------|:---------------------------------------------------------------------------------------------------------|:-------------------------------|
+| :---------- | :------------- | :------------------------------------------------------------------------------------------------------- | :----------------------------- |
 | CoreConfigs | `[]CoreConfig` | Define Config for zapcore                                                                                | `fiberzap.LoggerConfigDefault` |
 | SetLogger   | `*zap.Logger`  | Add custom zap logger. if not nil, `ZapOptions`, `CoreConfigs`, `SetLevel`, `SetOutput` will be ignored. | `nil`                          |
 | ExtraKeys   | `[]string`     | Allow users log extra values from context.                                                               | `[]string{}`                   |
-| ZapOptions  | `[]zap.Option` | Allow users to configure the zap.Option supplied by zap.                                                 | `[]zap.Option{}`               |                
- 
+| ZapOptions  | `[]zap.Option` | Allow users to configure the zap.Option supplied by zap.                                                 | `[]zap.Option{}`               |
+
 ### Example
 
 ```go
@@ -118,4 +118,3 @@ func main() {
     log.Fatal(app.Listen(":3000"))
 }
 ```
-

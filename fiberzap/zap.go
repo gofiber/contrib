@@ -110,6 +110,11 @@ func New(config ...Config) fiber.Handler {
 
 		// Add fields
 		fields := make([]zap.Field, 0, len(cfg.Fields)+1)
+
+		if cfg.FieldsFunc != nil {
+			fields = cfg.FieldsFunc(c)
+		}
+
 		fields = append(fields, zap.Error(err))
 
 		for _, field := range cfg.Fields {
