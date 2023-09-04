@@ -449,6 +449,7 @@ func Test_Fields_Func(t *testing.T) {
 
 	app.Use(New(Config{
 		Logger: logger,
+		Fields: []string{"protocol", "pid", "body", "ip", "host", "url", "route", "method", "resBody", "queryParams", "bytesReceived", "bytesSent"},
 		FieldsFunc: func(c *fiber.Ctx) []zap.Field {
 			return []zap.Field{zap.String("test.custom.field", "test")}
 		},
@@ -462,5 +463,22 @@ func Test_Fields_Func(t *testing.T) {
 
 	utils.AssertEqual(t, nil, err)
 	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
-	utils.AssertEqual(t, "test", logs.All()[0].Context[0].String)
+
+	expected := map[string]interface{}{
+		"body":              "",
+		"ip":                "0.0.0.0",
+		"host":              "example.com",
+		"url":               "/",
+		"method":            "GET",
+		"route":             "/",
+		"protocol":          "http",
+		"pid":               strconv.Itoa(os.Getpid()),
+		"queryParams":       "",
+		"resBody":           "hello",
+		"bytesReceived":     int64(0),
+		"bytesSent":         int64(5),
+		"test.custom.field": "test",
+	}
+
+	utils.AssertEqual(t, expected, logs.All()[0].ContextMap())
 }
