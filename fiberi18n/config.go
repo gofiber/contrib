@@ -52,9 +52,9 @@ type Config struct {
 	// Optional. Default: The language type is retrieved from the request header: `Accept-Language` or query param : `lang`
 	LangHandler func(ctx *fiber.Ctx, defaultLang string) string
 
-	ctx          *fiber.Ctx
 	bundle       *i18n.Bundle
 	localizerMap *sync.Map
+	mu           sync.Mutex
 }
 
 type Loader interface {
@@ -68,6 +68,7 @@ func (f LoaderFunc) LoadMessage(path string) ([]byte, error) {
 }
 
 var ConfigDefault = &Config{
+	Next:             nil,
 	RootPath:         "./example/localize",
 	DefaultLanguage:  language.English,
 	AcceptLanguages:  []language.Tag{language.Chinese, language.English},
@@ -78,6 +79,9 @@ var ConfigDefault = &Config{
 }
 
 func defaultLangHandler(c *fiber.Ctx, defaultLang string) string {
+	if c == nil || c.Request() == nil {
+		return defaultLang
+	}
 	var lang string
 	lang = utils.CopyString(c.Query("lang"))
 	if lang != "" {
