@@ -25,11 +25,11 @@ go get -u github.com/gofiber/contrib/fiberi18n/v2
 
 ## Signature
 
-| Name         | Signature                                                          | Description                                                                                                                            |   
-|--------------|--------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------|
-| New          | `New(config ...*fiberi18n.Config) fiber.Handler`                   | Create a new fiberi18n middleware handler                                                                                              | 
-| Localize     | `Localize(ctx *fiber.Ctx, params interface{}) (string, error)`     | Localize returns a localized message. param is one of these type: messageID, *i18n.LocalizeConfig                                      |                
-| MustLocalize | `MustLocalize(ctx *fiber.Ctx, params interface{}) (string, error)` | MustLocalize is similar to Localize, except it panics if an error happens. param is one of these type: messageID, *i18n.LocalizeConfig |  
+| Name         | Signature                                                      | Description                                                                                                                            |   
+|--------------|----------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------|
+| New          | `New(config ...*fiberi18n.Config) fiber.Handler`               | Create a new fiberi18n middleware handler                                                                                              | 
+| Localize     | `Localize(ctx *fiber.Ctx, params interface{}) (string, error)` | Localize returns a localized message. param is one of these type: messageID, *i18n.LocalizeConfig                                      |                
+| MustLocalize | `MustLocalize(ctx *fiber.Ctx, params interface{}) string`      | MustLocalize is similar to Localize, except it panics if an error happens. param is one of these type: messageID, *i18n.LocalizeConfig |  
 
 ## Config
 
