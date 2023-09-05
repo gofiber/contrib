@@ -10,6 +10,8 @@ import (
 	"github.com/nicksnyder/go-i18n/v2/i18n"
 )
 
+const localsKey = "fiberi18n"
+
 // New creates a new middleware handler
 func New(config ...*Config) fiber.Handler {
 	cfg := configDefault(config...)
@@ -25,7 +27,7 @@ func New(config ...*Config) fiber.Handler {
 		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
 		}
-		c.Locals("fiberi18n", cfg)
+		c.Locals(localsKey, cfg)
 		return c.Next()
 	}
 }
@@ -101,7 +103,7 @@ Localize get the i18n message
 		})
 */
 func Localize(ctx *fiber.Ctx, params interface{}) (string, error) {
-	appCfg := ctx.Locals("fiberi18n").(*Config)
+	appCfg := ctx.Locals(localsKey).(*Config)
 	lang := appCfg.LangHandler(ctx, appCfg.DefaultLanguage.String())
 
 	localizer, _ := appCfg.localizerMap.Load(lang)
