@@ -44,6 +44,11 @@ type Config struct {
 	// Optional. Default: {"latency", "status", "method", "url"}
 	Fields []string
 
+	// FieldsFunc defines a function to return custom zap fields to append to the log.
+	//
+	// Optional. Default: nil
+	FieldsFunc func(c *fiber.Ctx) []zap.Field
+
 	// Custom response messages.
 	// Response codes >= 500 will be logged with Messages[0].
 	// Response codes >= 400 will be logged with Messages[1].
@@ -70,11 +75,12 @@ var logger, _ = zap.NewProduction()
 
 // ConfigDefault is the default config
 var ConfigDefault = Config{
-	Next:     nil,
-	Logger:   logger,
-	Fields:   []string{"latency", "status", "method", "url"},
-	Messages: []string{"Server error", "Client error", "Success"},
-	Levels:   []zapcore.Level{zapcore.ErrorLevel, zapcore.WarnLevel, zapcore.InfoLevel},
+	Next:       nil,
+	Logger:     logger,
+	Fields:     []string{"latency", "status", "method", "url"},
+	FieldsFunc: nil,
+	Messages:   []string{"Server error", "Client error", "Success"},
+	Levels:     []zapcore.Level{zapcore.ErrorLevel, zapcore.WarnLevel, zapcore.InfoLevel},
 }
 
 // Helper function to set default values
@@ -106,6 +112,10 @@ func configDefault(config ...Config) Config {
 
 	if cfg.Levels == nil {
 		cfg.Levels = ConfigDefault.Levels
+	}
+
+	if cfg.FieldsFunc == nil {
+		cfg.FieldsFunc = ConfigDefault.FieldsFunc
 	}
 
 	return cfg

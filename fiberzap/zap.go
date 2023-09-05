@@ -112,6 +112,12 @@ func New(config ...Config) fiber.Handler {
 		fields := make([]zap.Field, 0, len(cfg.Fields)+1)
 		fields = append(fields, zap.Error(err))
 
+		if cfg.FieldsFunc != nil {
+			for _, field := range cfg.FieldsFunc(c) {
+				fields = append(fields, field)
+			}
+		}
+
 		for _, field := range cfg.Fields {
 			switch field {
 			case "referer":

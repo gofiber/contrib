@@ -441,3 +441,44 @@ func Test_LoggerLevelsAndMessagesSingle(t *testing.T) {
 	utils.AssertEqual(t, levels[0], logs.All()[2].Level)
 	utils.AssertEqual(t, messages[0], logs.All()[2].Message)
 }
+
+// go test -run Test_Fields_Func
+func Test_Fields_Func(t *testing.T) {
+	app := fiber.New()
+	logger, logs := setupLogsCapture()
+
+	app.Use(New(Config{
+		Logger: logger,
+		Fields: []string{"protocol", "pid", "body", "ip", "host", "url", "route", "method", "resBody", "queryParams", "bytesReceived", "bytesSent"},
+		FieldsFunc: func(c *fiber.Ctx) []zap.Field {
+			return []zap.Field{zap.String("test.custom.field", "test")}
+		},
+	}))
+
+	app.Get("/", func(c *fiber.Ctx) error {
+		return c.SendString("hello")
+	})
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/", nil))
+
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
+
+	expected := map[string]interface{}{
+		"body":              "",
+		"ip":                "0.0.0.0",
+		"host":              "example.com",
+		"url":               "/",
+		"method":            "GET",
+		"route":             "/",
+		"protocol":          "http",
+		"pid":               strconv.Itoa(os.Getpid()),
+		"queryParams":       "",
+		"resBody":           "hello",
+		"bytesReceived":     int64(0),
+		"bytesSent":         int64(5),
+		"test.custom.field": "test",
+	}
+
+	utils.AssertEqual(t, expected, logs.All()[0].ContextMap())
+}
