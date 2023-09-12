@@ -9,7 +9,7 @@ require (
 	go.opentelemetry.io/contrib/propagators/b3 v1.18.0
 	go.opentelemetry.io/otel v1.18.0
 	go.opentelemetry.io/otel/metric v1.18.0
-	go.opentelemetry.io/otel/sdk v1.17.0
+	go.opentelemetry.io/otel/sdk v1.18.0
 	go.opentelemetry.io/otel/sdk/metric v0.40.0
 	go.opentelemetry.io/otel/trace v1.18.0
 )
@@ -29,6 +29,6 @@ require (
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.49.0 // indirect
 	github.com/valyala/tcplisten v1.0.0 // indirect
-	golang.org/x/sys v0.11.0 // indirect
+	golang.org/x/sys v0.12.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
