@@ -2,6 +2,7 @@ package fibernewrelic
 
 import (
 	"fmt"
+	"github.com/gofiber/fiber/v2/utils"
 	"net/url"
 	"strings"
 
@@ -68,14 +69,19 @@ func New(cfg Config) fiber.Handler {
 		txn := app.StartTransaction(createTransactionName(c))
 		defer txn.End()
 
+		var (
+			host   = utils.CopyString(c.Hostname())
+			method = utils.CopyString(c.Method())
+		)
+
 		scheme := c.Request().URI().Scheme()
 
 		txn.SetWebRequest(newrelic.WebRequest{
-			Host:      c.Hostname(),
-			Method:    c.Method(),
+			Host:      host,
+			Method:    method,
 			Transport: transport(string(scheme)),
 			URL: &url.URL{
-				Host:     c.Hostname(),
+				Host:     host,
 				Scheme:   string(c.Request().URI().Scheme()),
 				Path:     string(c.Request().URI().Path()),
 				RawQuery: string(c.Request().URI().QueryString()),
