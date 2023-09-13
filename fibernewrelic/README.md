@@ -90,9 +90,19 @@ func main() {
 	app.Get("/", func(ctx *fiber.Ctx) error {
 		return ctx.SendStatus(200)
 	})
+	
+	app.Get("/foo", func(ctx *fiber.Ctx) error {
+		txn := newrelic.FromContext(ctx)
+		segment := txn.StartSegment("foo segment")
+		defer segment.End()
+		
+		// do foo 
+
+		return nil
+	})
 
 	cfg := fibernewrelic.Config{
-		Application:       newrelicApp
+		Application:       newrelicApp,
 	}
 
 	app.Use(fibernewrelic.New(cfg))

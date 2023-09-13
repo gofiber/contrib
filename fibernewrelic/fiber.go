@@ -2,11 +2,11 @@ package fibernewrelic
 
 import (
 	"fmt"
+	"github.com/gofiber/fiber/v2/utils"
 	"net/url"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/utils"
 	"github.com/newrelic/go-agent/v3/newrelic"
 )
 
@@ -66,33 +66,31 @@ func New(cfg Config) fiber.Handler {
 	}
 
 	return func(c *fiber.Ctx) error {
-		txn := app.StartTransaction("")
+		txn := app.StartTransaction(createTransactionName(c))
 		defer txn.End()
 
-		handlerErr := c.Next()
-
 		var (
-			method    = utils.CopyString(c.Method())
-			routePath = utils.CopyString(c.Route().Path)
-			host      = utils.CopyString(c.Hostname())
+			host   = utils.CopyString(c.Hostname())
+			method = utils.CopyString(c.Method())
 		)
 
-		u := url.URL{
-			Host:     host,
-			Scheme:   string(c.Request().URI().Scheme()),
-			Path:     string(c.Request().URI().Path()),
-			RawQuery: string(c.Request().URI().QueryString()),
-		}
-
-		txn.SetName(fmt.Sprintf("%s %s", method, routePath))
+		scheme := c.Request().URI().Scheme()
 
 		txn.SetWebRequest(newrelic.WebRequest{
-			URL:       &u,
-			Method:    method,
-			Transport: transport(u.Scheme),
 			Host:      host,
+			Method:    method,
+			Transport: transport(string(scheme)),
+			URL: &url.URL{
+				Host:     host,
+				Scheme:   string(c.Request().URI().Scheme()),
+				Path:     string(c.Request().URI().Path()),
+				RawQuery: string(c.Request().URI().QueryString()),
+			},
 		})
 
+		c.SetUserContext(newrelic.NewContext(c.UserContext(), txn))
+
+		handlerErr := c.Next()
 		statusCode := c.Context().Response.StatusCode()
 
 		if handlerErr != nil {
@@ -104,6 +102,16 @@ func New(cfg Config) fiber.Handler {
 
 		return handlerErr
 	}
+}
+
+// FromContext returns the Transaction from the context if present, and nil
+// otherwise.
+func FromContext(c *fiber.Ctx) *newrelic.Transaction {
+	return newrelic.FromContext(c.UserContext())
+}
+
+func createTransactionName(c *fiber.Ctx) string {
+	return fmt.Sprintf("%s %s", c.Request().Header.Method(), c.Request().URI().Path())
 }
 
 func transport(schema string) newrelic.TransportType {

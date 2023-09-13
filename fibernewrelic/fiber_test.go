@@ -61,9 +61,9 @@ func TestNewrelicAppConfig(t *testing.T) {
 				return ctx.SendStatus(200)
 			})
 
-			r := httptest.NewRequest("GET", "/", nil)
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
 			resp, _ := app.Test(r, -1)
-			assert.Equal(t, 200, resp.StatusCode)
+			assert.Equal(t, http.StatusOK, resp.StatusCode)
 		})
 
 	t.Run("Run successfully as middleware",
@@ -309,4 +309,36 @@ func TestDefaultErrorStatusCodeHandler(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 	})
+}
+
+func TestFromContext(t *testing.T) {
+	// given
+	cfg := Config{
+		License: "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+		AppName: "",
+		Enabled: true,
+	}
+	app := fiber.New()
+	app.Use(New(cfg))
+	app.Get("/foo", func(ctx *fiber.Ctx) error {
+		tx := FromContext(ctx)
+
+		if tx.Name() != "GET /foo" {
+			return ctx.SendStatus(http.StatusInternalServerError)
+		}
+
+		segment := tx.StartSegment("foo")
+		defer segment.End()
+
+		return ctx.SendStatus(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/foo", http.NoBody)
+
+	// when
+	res, err := app.Test(req, -1)
+
+	// then
+	assert.Nil(t, err)
+	assert.Equal(t, http.StatusOK, res.StatusCode)
 }
