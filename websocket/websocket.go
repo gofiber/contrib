@@ -194,8 +194,12 @@ func releaseConn(conn *Conn) {
 
 // Locals makes it possible to pass interface{} values under string keys scoped to the request
 // and therefore available to all following routes that match the request.
-func (conn *Conn) Locals(key string) interface{} {
-	return conn.locals[key]
+func (conn *Conn) Locals(key string, value ...interface{}) interface{} {
+    if len(value) == 0 {
+        return conn.locals[key]
+    }
+    conn.locals[key] = value[0]
+    return value[0]
 }
 
 // Params is used to get the route parameters.
