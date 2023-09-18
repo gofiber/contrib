@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
+	"path"
 	"strings"
 
 	"github.com/go-openapi/runtime/middleware"
@@ -88,16 +88,8 @@ func New(config ...Config) fiber.Handler {
 	}
 
 	// Generate URL path's for the middleware
-	specURL, err := url.JoinPath(cfg.BasePath, cfg.FilePath)
-	if err != nil {
-		log.Fatalf("Failed to join URL path between %s and %s", cfg.BasePath, cfg.FilePath)
-		panic(err)
-	}
-	swaggerUIPath, err := url.JoinPath(cfg.BasePath, cfg.Path)
-	if err != nil {
-		log.Fatalf("UnaFailedble to join URL between %s and %s", cfg.BasePath, cfg.Path)
-		panic(err)
-	}
+	specURL := path.Join(cfg.BasePath, cfg.FilePath)
+	swaggerUIPath := path.Join(cfg.BasePath, cfg.Path)
 
 	// Serve the Swagger spec from memory
 	swaggerSpecHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
