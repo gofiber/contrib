@@ -1,5 +1,6 @@
 ---
 id: swagger
+title: Swagger
 ---
 
 # Swagger
@@ -14,28 +15,30 @@ Swagger middleware for [Fiber](https://github.com/gofiber/fiber). The middleware
 
 **Note: Requires Go 1.18 and above**
 
-## Install
+### Table of Contents
+- [Signatures](#signatures)
+- [Installation](#installation)
+- [Examples](#examples)
+- [Config](#config)
+- [Default Config](#default-config)
 
-```
-go get -u github.com/gofiber/fiber/v2
-go get -u github.com/gofiber/contrib/swagger
-```
-
-## Signatures
+### Signatures
 ```go
 func New(config ...swagger.Config) fiber.Handler
 ```
 
-## Config
+### Installation
+Swagger is tested on the latests [Go versions](https://golang.org/dl/) with support for modules. So make sure to initialize one first if you didn't do that yet:
+```bash
+go mod init github.com/<user>/<repo>
+```
+And then install the swagger middleware:
+```bash
+go get github.com/gofiber/contrib/swagger
+```
 
-| Property  | Type     | Description                                                           | Default |
-|:----------|:---------|:----------------------------------------------------------------------|:--------|
-| BasePath  | `string` | BasePath is the base path for the configuration file.                  | `""`    |
-| FilePath  | `string` | FilePath is the file path to the configuration file.                   | `""`    |
-
-
-## Examples
-Import the middleware package that is part of the Fiber web framework
+### Examples
+Import the middleware package
 ```go
 import (
   "github.com/gofiber/fiber/v2"
@@ -43,23 +46,81 @@ import (
 )
 ```
 
-Then create a Fiber app with app := fiber.New().
-
-After you initiate your Fiber app, you can use the following possibilities:
-
-## Default Config
-
+Using the default config:
 ```go
 app.Use(swagger.New(cfg))
 ```
 
-## Custom Config
-
+Using a custom config:
 ```go
 cfg := swagger.Config{
-    BasePath: "/", //swagger ui base path
+    BasePath: "/",
     FilePath: "./docs/swagger.json",
+    Path:     "swagger",
+    Title:    "Swagger API Docs",
 }
 
 app.Use(swagger.New(cfg))
+```
+
+Using multiple instances of Swagger:
+```go
+// Create Swagger middleware for v1
+//
+// Swagger will be available at: /api/v1/docs
+app.Use(swagger.New(swagger.Config{
+    BasePath: "/api/v1/",
+    FilePath: "./docs/v1/swagger.json",
+    Path:     "docs",
+}))
+
+// Create Swagger middleware for v2
+//
+// Swagger will be available at: /api/v2/docs
+app.Use(swagger.New(swagger.Config{
+    BasePath: "/api/v2/",
+    FilePath: "./docs/v2/swagger.json",
+    Path:     "docs",
+}))
+```
+
+### Config
+```go
+type Config struct {
+	// Next defines a function to skip this middleware when returned true.
+	//
+	// Optional. Default: nil
+	Next func(c *fiber.Ctx) bool
+
+	// BasePath for the UI path
+	//
+	// Optional. Default: /
+	BasePath string
+
+	// FilePath for the swagger.json or swagger.yaml file
+	//
+	// Optional. Default: ./swagger.json
+	FilePath string
+
+	// Path combines with BasePath for the full UI path
+	//
+	// Optional. Default: docs
+	Path string
+
+	// Title for the documentation site
+	//
+	// Optional. Default: Fiber API documentation
+	Title string
+}
+```
+
+### Default Config
+```go
+var ConfigDefault = Config{
+	Next:     nil,
+	BasePath: "/",
+	FilePath: "./swagger.json",
+	Path:     "docs",
+	Title:    "Fiber API documentation",
+}
 ```
