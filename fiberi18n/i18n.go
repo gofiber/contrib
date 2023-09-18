@@ -103,10 +103,19 @@ Localize get the i18n message
 		})
 */
 func Localize(ctx *fiber.Ctx, params interface{}) (string, error) {
-	appCfg := ctx.Locals(localsKey).(*Config)
-	lang := appCfg.LangHandler(ctx, appCfg.DefaultLanguage.String())
+	local := ctx.Locals(localsKey)
+	if local == nil {
+		return "", fmt.Errorf("i18n.Localize error: %v", "Config is nil")
+	}
 
+	appCfg, ok := local.(*Config)
+	if !ok {
+		return "", fmt.Errorf("i18n.Localize error: %v", "Config is not *Config type")
+	}
+
+	lang := appCfg.LangHandler(ctx, appCfg.DefaultLanguage.String())
 	localizer, _ := appCfg.localizerMap.Load(lang)
+
 	if localizer == nil {
 		defaultLang := appCfg.DefaultLanguage.String()
 		localizer, _ = appCfg.localizerMap.Load(defaultLang)
