@@ -6,6 +6,7 @@ require (
 	github.com/go-openapi/runtime v0.26.0
 	github.com/gofiber/fiber/v2 v2.49.2
 	github.com/stretchr/testify v1.8.4
+	gopkg.in/yaml.v2 v2.4.0
 )
 
 require (

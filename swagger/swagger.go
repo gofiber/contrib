@@ -1,7 +1,7 @@
 package swagger
 
 import (
-	"errors"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -12,6 +12,7 @@ import (
 	"github.com/go-openapi/runtime/middleware"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/adaptor"
+	"gopkg.in/yaml.v2"
 )
 
 // Config defines the config for middleware.
@@ -40,6 +41,11 @@ type Config struct {
 	//
 	// Optional. Default: Fiber API documentation
 	Title string
+
+	// CacheAge defines the max-age for the Cache-Control header in seconds.
+	//
+	// Optional. Default: 3600 (1 hour)
+	CacheAge int
 }
 
 // ConfigDefault is the default config
@@ -49,6 +55,7 @@ var ConfigDefault = Config{
 	FilePath: "./swagger.json",
 	Path:     "docs",
 	Title:    "Fiber API documentation",
+	CacheAge: 3600, // Default to 1 hour
 }
 
 // New creates a new middleware handler
@@ -73,18 +80,32 @@ func New(config ...Config) fiber.Handler {
 		if len(cfg.Title) == 0 {
 			cfg.Title = ConfigDefault.Title
 		}
+		if cfg.CacheAge == 0 {
+			cfg.CacheAge = ConfigDefault.CacheAge
+		}
 	}
 
 	// Verify Swagger file exists
 	if _, err := os.Stat(cfg.FilePath); os.IsNotExist(err) {
-		panic(errors.New(fmt.Sprintf("%s file does not exist", cfg.FilePath)))
+		panic(fmt.Errorf("%s file does not exist", cfg.FilePath))
 	}
 
 	// Read Swagger Spec into memory
 	rawSpec, err := os.ReadFile(cfg.FilePath)
 	if err != nil {
-		log.Fatalf("Failed to read Swagger YAML file: %v", err)
+		log.Fatalf("Failed to read provided Swagger file (%s): %v", cfg.FilePath, err.Error())
 		panic(err)
+	}
+
+	// Validate we have valid JSON or YAML
+	var jsonData map[string]interface{}
+	errJSON := json.Unmarshal(rawSpec, &jsonData)
+	var yamlData map[string]interface{}
+	errYAML := yaml.Unmarshal(rawSpec, &yamlData)
+
+	if errJSON != nil && errYAML != nil {
+		log.Fatalf("Failed to parse the Swagger spec as JSON or YAML: JSON error: %s, YAML error: %s", errJSON, errYAML)
+		panic(fmt.Errorf("Invalid Swagger spec file: %s", cfg.FilePath))
 	}
 
 	// Generate URL path's for the middleware
@@ -93,12 +114,22 @@ func New(config ...Config) fiber.Handler {
 
 	// Serve the Swagger spec from memory
 	swaggerSpecHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, specURL) || strings.HasSuffix(r.URL.Path, specURL) {
+		if strings.HasSuffix(r.URL.Path, ".yaml") || strings.HasSuffix(r.URL.Path, ".yml") {
 			w.Header().Set("Content-Type", "application/yaml")
-			w.Write(rawSpec)
-		} else if strings.HasSuffix(r.URL.Path, specURL) {
+			w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", cfg.CacheAge))
+			_, err := w.Write(rawSpec)
+			if err != nil {
+				http.Error(w, "Error processing YAML Swagger Spec", http.StatusInternalServerError)
+				return
+			}
+		} else if strings.HasSuffix(r.URL.Path, ".json") {
 			w.Header().Set("Content-Type", "application/json")
-			w.Write(rawSpec)
+			w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", cfg.CacheAge))
+			_, err := w.Write(rawSpec)
+			if err != nil {
+				http.Error(w, "Error processing JSON Swagger Spec", http.StatusInternalServerError)
+				return
+			}
 		} else {
 			http.NotFound(w, r)
 		}
@@ -128,7 +159,6 @@ func New(config ...Config) fiber.Handler {
 		}
 
 		// Pass Fiber context to handler
-		middlewareHandler(c)
-		return nil
+		return middlewareHandler(c)
 	}
 }
