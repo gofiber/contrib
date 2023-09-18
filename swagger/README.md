@@ -111,6 +111,11 @@ type Config struct {
 	//
 	// Optional. Default: Fiber API documentation
 	Title string
+
+	// CacheAge defines the max-age for the Cache-Control header in seconds.
+	//
+	// Optional. Default: 3600 (1 hour)
+	CacheAge int
 }
 ```
 
@@ -122,5 +127,6 @@ var ConfigDefault = Config{
 	FilePath: "./swagger.json",
 	Path:     "docs",
 	Title:    "Fiber API documentation",
+	CacheAge: 3600, // Default to 1 hour
 }
 ```
