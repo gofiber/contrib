@@ -108,7 +108,6 @@ func New(config ...Config) fiber.Handler {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write(rawSpec)
 		} else {
-			fmt.Printf("Somehow here? %s\n", r.URL.Path)
 			http.NotFound(w, r)
 		}
 	})
@@ -131,22 +130,9 @@ func New(config ...Config) fiber.Handler {
 			return c.Next()
 		}
 
-		// Only respond to requests to this middleware
+		// Only respond to requests to SwaggerUI and SpecURL (swagger.json)
 		if !(c.Path() == swaggerUIPath || c.Path() == specURL) {
-			fmt.Println("-----")
-			fmt.Printf("c.Path() is %s\n", c.Path())
-			fmt.Printf("BasePath is %s\n", cfg.BasePath)
-			fmt.Printf("swaggerUIPath is %s\n", swaggerUIPath)
-			fmt.Printf("specURL is %s\n", specURL)
-
 			return c.Next()
-		} else {
-			fmt.Println("+++++")
-			fmt.Printf("c.Path() is %s\n", c.Path())
-			fmt.Printf("BasePath is %s\n", cfg.BasePath)
-			fmt.Printf("swaggerUIPath is %s\n", swaggerUIPath)
-			fmt.Printf("specURL is %s\n", specURL)
-
 		}
 
 		// Pass Fiber context to handler
