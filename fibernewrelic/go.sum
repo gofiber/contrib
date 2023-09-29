@@ -20,8 +20,8 @@ github.com/mattn/go-isatty v0.0.19 h1:JITubQf0MOLdlGRuRq+jtsDlekdYPia9ZFsB8h/APP
 github.com/mattn/go-isatty v0.0.19/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
 github.com/mattn/go-runewidth v0.0.15 h1:UNAjwbU9l54TA3KzvqLGxwWjHmMgBUVhBiTjelZgg3U=
 github.com/mattn/go-runewidth v0.0.15/go.mod h1:Jdepj2loyihRzMpdS35Xk/zdY8IAYHsh153qUoGf23w=
-github.com/newrelic/go-agent/v3 v3.25.1 h1:Fa+4apO08bcGJk9aOB0TlnacAOrXS4FzMYJzoG0ihA8=
-github.com/newrelic/go-agent/v3 v3.25.1/go.mod h1:MANAXqchXM8ko+EXPZ+6mzX243/lehYwJWq8HOV2ytc=
+github.com/newrelic/go-agent/v3 v3.26.0 h1:xJkqiQgLtC3ys5zoBxD91ITm7sVHZNEF+7/mqmFjnl0=
+github.com/newrelic/go-agent/v3 v3.26.0/go.mod h1:sE2WdlLF3B/xI5HUuIHTa7Aht1gpcIY65pzaUoN1pJs=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/rivo/uniseg v0.2.0 h1:S1pD9weZBuJdFmowNwbpi7BJ8TNftyUImj/0WQi72jY=
