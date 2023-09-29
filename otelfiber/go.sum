@@ -35,8 +35,8 @@ github.com/valyala/tcplisten v1.0.0 h1:rBHj/Xf+E1tRGZyWIWwJDiRY0zc1Js+CV5DqwacVS
 github.com/valyala/tcplisten v1.0.0/go.mod h1:T0xQ8SeCZGxckz9qRXTfG43PvQ/mcWh7FwZEA7Ioqkc=
 go.opentelemetry.io/contrib v1.20.0 h1:oXUiIQLlkbi9uZB/bt5B1WRLsrTKqb7bPpAQ+6htn2w=
 go.opentelemetry.io/contrib v1.20.0/go.mod h1:gIzjwWFoGazJmtCaDgViqOSJPde2mCWzv60o0bWPcZs=
-go.opentelemetry.io/contrib/propagators/b3 v1.19.0 h1:ulz44cpm6V5oAeg5Aw9HyqGFMS6XM7untlMEhD7YzzA=
-go.opentelemetry.io/contrib/propagators/b3 v1.19.0/go.mod h1:OzCmE2IVS+asTI+odXQstRGVfXQ4bXv9nMBRK0nNyqQ=
+go.opentelemetry.io/contrib/propagators/b3 v1.20.0 h1:Yty9Vs4F3D6/liF1o6FNt0PvN85h/BJJ6DQKJ3nrcM0=
+go.opentelemetry.io/contrib/propagators/b3 v1.20.0/go.mod h1:On4VgbkqYL18kbJlWsa18+cMNe6rYpBnPi1ARI/BrsU=
 go.opentelemetry.io/otel v1.19.0 h1:MuS/TNf4/j4IXsZuJegVzI1cwut7Qc00344rgH7p8bs=
 go.opentelemetry.io/otel v1.19.0/go.mod h1:i0QyjOq3UPoTzff0PJB2N66fb4S0+rSbSB15/oyH9fY=
 go.opentelemetry.io/otel/metric v1.19.0 h1:aTzpGtV0ar9wlV4Sna9sdJyII5jTVJEvKETPiOKwvpE=
