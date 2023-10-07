@@ -38,9 +38,10 @@ type LoggerConfig struct {
 
 // WithContext returns a new LoggerConfig with extra fields from context
 func (l *LoggerConfig) WithContext(ctx context.Context) fiberlog.CommonLogger {
-	// create a new LoggerConfig with the same logger
+	loggerOptions := l.logger.WithOptions(zap.AddCallerSkip(-1))
+	newLogger := &LoggerConfig{logger: loggerOptions}
+
 	if len(l.ExtraKeys) > 0 {
-		newLogger := &LoggerConfig{logger: l.logger}
 		sugar := l.logger.Sugar()
 		for _, k := range l.ExtraKeys {
 			value := ctx.Value(k)
@@ -48,9 +49,8 @@ func (l *LoggerConfig) WithContext(ctx context.Context) fiberlog.CommonLogger {
 		}
 		// assign the new sugar to the new LoggerConfig
 		newLogger.logger = sugar.Desugar()
-		return newLogger
 	}
-	return l
+	return newLogger
 }
 
 type CoreConfig struct {
@@ -67,6 +67,10 @@ var LoggerConfigDefault = LoggerConfig{
 			WriteSyncer:  zapcore.AddSync(os.Stdout),
 			LevelEncoder: zap.NewAtomicLevelAt(zap.InfoLevel),
 		},
+	},
+	ZapOptions: []zap.Option{
+		zap.AddCaller(),
+		zap.AddCallerSkip(3),
 	},
 }
 
@@ -85,6 +89,10 @@ func loggerConfigDefault(config ...LoggerConfig) LoggerConfig {
 
 	if cfg.SetLogger != nil {
 		cfg.logger = cfg.SetLogger
+	}
+
+	if cfg.ZapOptions == nil {
+		cfg.ZapOptions = LoggerConfigDefault.ZapOptions
 	}
 
 	// Remove duplicated extraKeys
