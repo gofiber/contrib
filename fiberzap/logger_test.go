@@ -167,23 +167,37 @@ func TestZapOptions(t *testing.T) {
 	assert.True(t, strings.Contains(buf.String(), "caller"))
 }
 
+func TestWithContextCaller(t *testing.T) {
+	buf := new(bytes.Buffer)
+	logger := NewLogger(LoggerConfig{
+		ZapOptions: []zap.Option{
+			zap.AddCaller(),
+			zap.AddCallerSkip(3),
+		},
+	})
+	logger.SetOutput(buf)
+
+	logger.WithContext(context.Background()).Info("Hello, World!")
+	var logStructMap map[string]interface{}
+	err := json.Unmarshal(buf.Bytes(), &logStructMap)
+	assert.Nil(t, err)
+	value := logStructMap["caller"]
+	assert.Equal(t, value, "fiberzap/logger_test.go:180")
+}
+
 // TestWithExtraKeys test WithExtraKeys option
 func TestWithExtraKeys(t *testing.T) {
 	buf := new(bytes.Buffer)
-
 	logger := NewLogger(LoggerConfig{
 		ExtraKeys: []string{"requestId"},
 	})
 	logger.SetOutput(buf)
 
 	ctx := context.WithValue(context.Background(), "requestId", "123")
-
 	logger.WithContext(ctx).Infof("%s logger", "extra")
 
 	var logStructMap map[string]interface{}
-
 	err := json.Unmarshal(buf.Bytes(), &logStructMap)
-
 	assert.Nil(t, err)
 
 	value, ok := logStructMap["requestId"]
