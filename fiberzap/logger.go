@@ -129,7 +129,7 @@ func NewLogger(config ...LoggerConfig) *LoggerConfig {
 // SetOutput sets the output destination for the logger.
 func (l *LoggerConfig) SetOutput(w io.Writer) {
 	if l.SetLogger != nil {
-		fiberlog.Warn("SetLevel is ignored when SetLogger is set")
+		fiberlog.Warn("SetOutput is ignored when SetLogger is set")
 		return
 	}
 	l.CoreConfigs[0].WriteSyncer = zapcore.AddSync(w)
