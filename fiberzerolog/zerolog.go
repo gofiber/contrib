@@ -73,21 +73,23 @@ func New(config ...Config) fiber.Handler {
 		message := cfg.Messages[messageIndex]
 
 		logger := cfg.logger(c, latency, chainErr)
+		ctx := c.UserContext()
+
 		switch level {
 		case zerolog.DebugLevel:
-			logger.Debug().Msg(message)
+			logger.Debug().Ctx(ctx).Msg(message)
 		case zerolog.InfoLevel:
-			logger.Info().Msg(message)
+			logger.Info().Ctx(ctx).Msg(message)
 		case zerolog.WarnLevel:
-			logger.Warn().Msg(message)
+			logger.Warn().Ctx(ctx).Msg(message)
 		case zerolog.ErrorLevel:
-			logger.Error().Msg(message)
+			logger.Error().Ctx(ctx).Msg(message)
 		case zerolog.FatalLevel:
-			logger.Fatal().Msg(message)
+			logger.Fatal().Ctx(ctx).Msg(message)
 		case zerolog.PanicLevel:
-			logger.Panic().Msg(message)
+			logger.Panic().Ctx(ctx).Msg(message)
 		case zerolog.TraceLevel:
-			logger.Trace().Msg(message)
+			logger.Trace().Ctx(ctx).Msg(message)
 		}
 
 		return nil
