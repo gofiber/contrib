@@ -145,6 +145,9 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 			conn.headers[string(key)] = string(value)
 		})
 
+		// ip address
+		conn.ip = c.IP()
+
 		if err := upgrader.Upgrade(c.Context(), func(fconn *websocket.Conn) {
 			conn.Conn = fconn
 			defer releaseConn(conn)
@@ -166,6 +169,7 @@ type Conn struct {
 	cookies map[string]string
 	headers map[string]string
 	queries map[string]string
+	ip      string
 }
 
 // Conn pool
@@ -195,11 +199,11 @@ func releaseConn(conn *Conn) {
 // Locals makes it possible to pass interface{} values under string keys scoped to the request
 // and therefore available to all following routes that match the request.
 func (conn *Conn) Locals(key string, value ...interface{}) interface{} {
-    if len(value) == 0 {
-        return conn.locals[key]
-    }
-    conn.locals[key] = value[0]
-    return value[0]
+	if len(value) == 0 {
+		return conn.locals[key]
+	}
+	conn.locals[key] = value[0]
+	return value[0]
 }
 
 // Params is used to get the route parameters.
@@ -244,6 +248,11 @@ func (conn *Conn) Headers(key string, defaultValue ...string) string {
 		return defaultValue[0]
 	}
 	return v
+}
+
+// IP returns the client's network address
+func (conn *Conn) IP() string {
+	return conn.ip
 }
 
 // Constants are taken from https://github.com/fasthttp/websocket/blob/master/conn.go#L43

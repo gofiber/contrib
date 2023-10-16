@@ -247,6 +247,30 @@ func TestWebSocketConnLocals(t *testing.T) {
 	assert.Equal(t, "hello websocket", msg["message"])
 }
 
+func TestWebSocketConnIP(t *testing.T) {
+	app := setupTestApp(Config{}, func(c *Conn) {
+		ip := c.IP()
+
+		assert.Equal(t, "127.0.0.1", ip)
+
+		c.WriteJSON(fiber.Map{
+			"message": "hello websocket",
+		})
+	})
+	defer app.Shutdown()
+
+	conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
+	defer conn.Close()
+	assert.NoError(t, err)
+	assert.Equal(t, 101, resp.StatusCode)
+	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
+
+	var msg fiber.Map
+	err = conn.ReadJSON(&msg)
+	assert.NoError(t, err)
+	assert.Equal(t, "hello websocket", msg["message"])
+}
+
 func setupTestApp(cfg Config, h func(c *Conn)) *fiber.App {
 	var handler fiber.Handler
 	if h == nil {
