@@ -1,10 +1,10 @@
 package fiberzap
 
 import (
-	"os"
-	"strconv"
-	"sync"
-	"time"
+    "os"
+    "strconv"
+    "sync"
+    "time"
 
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
@@ -113,9 +113,7 @@ func New(config ...Config) fiber.Handler {
 		fields = append(fields, zap.Error(err))
 
 		if cfg.FieldsFunc != nil {
-			for _, field := range cfg.FieldsFunc(c) {
-				fields = append(fields, field)
-			}
+			fields = append(fields, cfg.FieldsFunc(c)...)
 		}
 
 		for _, field := range cfg.Fields {

@@ -162,18 +162,10 @@ func configDefault(authConfigs ...Config) Config {
 		}
 
 		if config.PublicKey != nil || config.PrivateKey != nil {
-			panic(
-				fmt.Sprintf(
-					"Fiber: PASETO middleware: can't use PublicKey or PrivateKey with SymmetricKey",
-				),
-			)
+			panic("Fiber: PASETO middleware: can't use PublicKey or PrivateKey with SymmetricKey")
 		}
 	} else if config.PublicKey == nil || config.PrivateKey == nil {
-		panic(
-			fmt.Sprintf(
-				"Fiber: PASETO middleware: need both PublicKey and PrivateKey",
-			),
-		)
+		panic("Fiber: PASETO middleware: need both PublicKey and PrivateKey")
 	}
 
 	return config

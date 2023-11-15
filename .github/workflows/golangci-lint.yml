@@ -20,12 +20,30 @@ on:
             - ".github/dependabot.yml"
 
 jobs:
-  golangci-lint:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Fetch Repository
-        uses: actions/checkout@v4
-      - name: Run golangci-lint
-        uses: reviewdog/action-golangci-lint@v2
-        with:
-          golangci_lint_flags: "--tests=false"
+    golangci-lint:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Fetch Repository
+              uses: actions/checkout@v4
+
+            - name: Set up Go
+              uses: actions/setup-go@v3
+              with:
+                  go-version: '1.x'
+
+            - name: Install golangci-lint
+              run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.55.2
+
+            - name: Get directories to lint
+              run: |
+                  REPO_ROOT=$(pwd)
+                  go list -f '{{.Dir}}' -m > dirs.txt
+                  sed -i "s|${REPO_ROOT}/||" dirs.txt
+                  cat dirs.txt
+
+            - name: Run golangci-lint for each directory
+              run: |
+                  while IFS= read -r dir; do
+                    echo "Linting directory $dir"
+                    (cd "$dir" && golangci-lint run --tests=false)
+                  done < dirs.txt

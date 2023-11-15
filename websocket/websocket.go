@@ -127,7 +127,7 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		// params
 		params := c.Route().Params
 		for i := 0; i < len(params); i++ {
-			conn.params[utils.CopyString(params[i])] = utils.ImmutableString(c.Params(params[i]))
+			conn.params[utils.CopyString(params[i])] = utils.CopyString(c.Params(params[i]))
 		}
 
 		// queries
