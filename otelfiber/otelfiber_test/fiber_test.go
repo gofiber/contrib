@@ -446,3 +446,53 @@ func TestCustomAttributes(t *testing.T) {
 	assert.Contains(t, attr, attribute.String("http.route", "/user/:id"))
 	assert.Contains(t, attr, attribute.String("http.query_params", "foo=bar"))
 }
+
+func TestOutboundTracingPropagation(t *testing.T) {
+	sr := new(tracetest.SpanRecorder)
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+
+	app := fiber.New()
+	app.Use(otelfiber.Middleware(
+		otelfiber.WithTracerProvider(provider),
+		otelfiber.WithPropagators(b3prop.New(b3prop.WithInjectEncoding(b3prop.B3MultipleHeader))),
+	))
+	app.Get("/foo", func(ctx *fiber.Ctx) error {
+		return ctx.SendStatus(http.StatusNoContent)
+	})
+
+	resp, _ := app.Test(httptest.NewRequest("GET", "/foo", nil), 3000)
+
+	assert.Equal(t, "1", resp.Header.Get("X-B3-Sampled"))
+	assert.NotEmpty(t, resp.Header.Get("X-B3-SpanId"))
+	assert.NotEmpty(t, resp.Header.Get("X-B3-TraceId"))
+
+}
+
+func TestOutboundTracingPropagationWithInboundContext(t *testing.T) {
+	const spanId = "619907d88b766fb8"
+	const traceId = "813dd2766ff711bf02b60e9883014964"
+
+	sr := new(tracetest.SpanRecorder)
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+
+	app := fiber.New()
+	app.Use(otelfiber.Middleware(
+		otelfiber.WithTracerProvider(provider),
+		otelfiber.WithPropagators(b3prop.New(b3prop.WithInjectEncoding(b3prop.B3MultipleHeader))),
+	))
+	app.Get("/foo", func(ctx *fiber.Ctx) error {
+		return ctx.SendStatus(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest("GET", "/foo", nil)
+
+	req.Header.Set("X-B3-SpanId", spanId)
+	req.Header.Set("X-B3-TraceId", traceId)
+	req.Header.Set("X-B3-Sampled", "1")
+
+	resp, _ := app.Test(req, 3000)
+
+	assert.NotEmpty(t, resp.Header.Get("X-B3-SpanId"))
+	assert.Equal(t, traceId, resp.Header.Get("X-B3-TraceId"))
+	assert.Equal(t, "1", resp.Header.Get("X-B3-Sampled"))
+}
