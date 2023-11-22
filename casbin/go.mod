@@ -3,13 +3,13 @@ module github.com/gofiber/contrib/casbin
 go 1.18
 
 require (
-	github.com/casbin/casbin/v2 v2.77.2
+	github.com/casbin/casbin/v2 v2.78.0
 	github.com/gofiber/fiber/v2 v2.51.0
 )
 
 require (
-	github.com/Knetic/govaluate v3.0.1-0.20171022003610-9aa49832a739+incompatible // indirect
 	github.com/andybalholm/brotli v1.0.5 // indirect
+	github.com/casbin/govaluate v1.1.0 // indirect
 	github.com/google/uuid v1.4.0 // indirect
 	github.com/klauspost/compress v1.16.7 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
