@@ -3,7 +3,6 @@ package fgprof
 import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/utils"
-	"github.com/stretchr/testify/assert"
 	"io"
 	"net/http/httptest"
 	"testing"
@@ -19,12 +18,12 @@ func Test_Non_Fgprof_Path(t *testing.T) {
 	})
 
 	resp, err := app.Test(httptest.NewRequest("GET", "/", nil))
-	assert.Nil(t, err)
-	assert.Equal(t, 200, resp.StatusCode)
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, 200, resp.StatusCode)
 
 	body, err := io.ReadAll(resp.Body)
-	assert.Nil(t, err)
-	assert.Equal(t, "escaped", string(body))
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, "escaped", string(body))
 }
 
 // go test -run Test_Non_Fgprof_Path_WithPrefix
@@ -39,12 +38,12 @@ func Test_Non_Fgprof_Path_WithPrefix(t *testing.T) {
 	})
 
 	resp, err := app.Test(httptest.NewRequest("GET", "/", nil))
-	assert.Nil(t, err)
-	assert.Equal(t, 200, resp.StatusCode)
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, 200, resp.StatusCode)
 
 	body, err := io.ReadAll(resp.Body)
-	assert.Nil(t, err)
-	assert.Equal(t, "escaped", string(body))
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, "escaped", string(body))
 }
 
 // go test -run Test_Fgprof_Path
@@ -54,8 +53,8 @@ func Test_Fgprof_Path(t *testing.T) {
 
 	// Default fgprof interval is 30 seconds
 	resp, err := app.Test(httptest.NewRequest("GET", "/debug/fgprof?seconds=1", nil), 1500)
-	assert.Nil(t, err)
-	assert.Equal(t, 200, resp.StatusCode)
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, 200, resp.StatusCode)
 }
 
 // go test -run Test_Fgprof_Path_WithPrefix
@@ -70,16 +69,16 @@ func Test_Fgprof_Path_WithPrefix(t *testing.T) {
 
 	// Non fgprof prefix path
 	resp, err := app.Test(httptest.NewRequest("GET", "/prefix/debug/fgprof?seconds=1", nil), 1500)
-	assert.Nil(t, err)
-	assert.Equal(t, 404, resp.StatusCode)
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, 404, resp.StatusCode)
 	// Fgprof prefix path
 	resp, err = app.Test(httptest.NewRequest("GET", "/test/debug/fgprof?seconds=1", nil), 1500)
-	assert.Nil(t, err)
-	assert.Equal(t, 200, resp.StatusCode)
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, 200, resp.StatusCode)
 }
 
-// go test -run Test_Pprof_Next
-func Test_Pprof_Next(t *testing.T) {
+// go test -run Test_Fgprof_Next
+func Test_Fgprof_Next(t *testing.T) {
 	app := fiber.New()
 
 	app.Use(New(Config{
@@ -93,8 +92,8 @@ func Test_Pprof_Next(t *testing.T) {
 	utils.AssertEqual(t, 404, resp.StatusCode)
 }
 
-// go test -run Test_Pprof_Next_WithPrefix
-func Test_Pprof_Next_WithPrefix(t *testing.T) {
+// go test -run Test_Fgprof_Next_WithPrefix
+func Test_Fgprof_Next_WithPrefix(t *testing.T) {
 	app := fiber.New()
 
 	app.Use(New(Config{

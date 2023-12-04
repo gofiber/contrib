@@ -3,7 +3,7 @@ package fgprof
 import (
 	"github.com/felixge/fgprof"
 	"github.com/gofiber/fiber/v2"
-	"github.com/valyala/fasthttp/fasthttpadaptor"
+	"github.com/gofiber/fiber/v2/middleware/adaptor"
 )
 
 func New(conf ...Config) fiber.Handler {
@@ -12,7 +12,7 @@ func New(conf ...Config) fiber.Handler {
 
 	fgProfPath := cfg.Prefix + "/debug/fgprof"
 
-	var fgprofHandler = fasthttpadaptor.NewFastHTTPHandlerFunc(fgprof.Handler().ServeHTTP)
+	var fgprofHandler = adaptor.HTTPHandler(fgprof.Handler())
 
 	// Return new handler
 	return func(c *fiber.Ctx) error {
@@ -22,8 +22,7 @@ func New(conf ...Config) fiber.Handler {
 		}
 
 		if c.Path() == fgProfPath {
-			fgprofHandler(c.Context())
-			return nil
+			return fgprofHandler(c)
 		}
 		return c.Next()
 	}

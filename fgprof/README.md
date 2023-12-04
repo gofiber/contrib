@@ -22,7 +22,7 @@ Using fgprof to profiling your Fiber app.
 
 ```
 go get -u github.com/gofiber/fiber/v2
-go get -u github.com/gofiber/contrib/fgorof/v2
+go get -u github.com/gofiber/contrib/fgorof
 ```
 
 ## Config
@@ -40,7 +40,7 @@ package main
 import (
 	"log"
 
-	"github.com/gofiber/contrib/fgprof/v2"
+	"github.com/gofiber/contrib/fgprof"
 	"github.com/gofiber/fiber/v2"
 )
 
