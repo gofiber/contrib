@@ -22,7 +22,7 @@ Using fgprof to profiling your Fiber app.
 
 ```
 go get -u github.com/gofiber/fiber/v2
-go get -u github.com/gofiber/contrib/fgorof
+go get -u github.com/gofiber/contrib/fgprof
 ```
 
 ## Config
