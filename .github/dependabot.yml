@@ -80,4 +80,10 @@ updates:
             - "🤖 Dependencies"
         schedule:
             interval: "daily"
+    - package-ecosystem: "fgprof"
+      directory: "/fgprof"  # Location of package manifests
+      labels:
+          - "🤖 Dependencies"
+      schedule:
+          interval: "daily"
 
