@@ -2,12 +2,11 @@ package fibersentry
 
 import (
 	"context"
-	"net/http"
 
 	"github.com/getsentry/sentry-go"
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/adaptor"
 	"github.com/gofiber/fiber/v2/utils"
-	"github.com/valyala/fasthttp/fasthttpadaptor"
 )
 
 // New creates a new middleware handler
@@ -18,15 +17,16 @@ func New(config ...Config) fiber.Handler {
 	// Return new handler
 	return func(c *fiber.Ctx) error {
 		// Convert fiber request to http request
-		var r http.Request
-		if err := fasthttpadaptor.ConvertRequest(c.Context(), &r, true); err != nil {
+		r, err := adaptor.ConvertRequest(c, true)
+
+		if err != nil {
 			return err
 		}
 
 		// Init sentry hub
 		hub := sentry.CurrentHub().Clone()
 		scope := hub.Scope()
-		scope.SetRequest(&r)
+		scope.SetRequest(r)
 		scope.SetRequestBody(utils.CopyBytes(c.Body()))
 		c.Locals(hubKey, hub)
 

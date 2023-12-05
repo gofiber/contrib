@@ -9,7 +9,7 @@ import (
 
 	"github.com/getsentry/sentry-go"
 	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/utils"
+	"github.com/stretchr/testify/require"
 )
 
 func Test_Sentry(t *testing.T) {
@@ -150,10 +150,10 @@ func Test_Sentry(t *testing.T) {
 		t.Run(tC.desc, func(t *testing.T) {
 			if err := sentry.Init(sentry.ClientOptions{
 				BeforeSend: func(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
-					utils.AssertEqual(t, tC.event.Message, event.Message)
-					utils.AssertEqual(t, tC.event.Request, event.Request)
-					utils.AssertEqual(t, tC.event.Level, event.Level)
-					utils.AssertEqual(t, tC.event.Exception, event.Exception)
+					require.Equal(t, tC.event.Message, event.Message)
+					require.Equal(t, tC.event.Request, event.Request)
+					require.Equal(t, tC.event.Level, event.Level)
+					require.Equal(t, tC.event.Exception, event.Exception)
 					return event
 				},
 			}); err != nil {
