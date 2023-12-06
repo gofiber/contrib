@@ -78,3 +78,7 @@ jobs:
         working-directory: ./websocket
         run: gosec -exclude-dir=internal ./...
         # -----
+      - name: Run Gosec (fgprof)
+        working-directory: ./fgprof
+        run: gosec -exclude-dir=internal ./...
+        # -----
