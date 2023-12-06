@@ -2,7 +2,7 @@ name-template: 'Fgprof - v$RESOLVED_VERSION'
 tag-template: 'fgprof/v$RESOLVED_VERSION'
 tag-prefix: fgprof/v
 include-paths:
-  - fgrpof
+  - fgprof
 categories:
     - title: '❗ Breaking Changes'
       labels:

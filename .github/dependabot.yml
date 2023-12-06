@@ -80,7 +80,7 @@ updates:
             - "🤖 Dependencies"
         schedule:
             interval: "daily"
-    - package-ecosystem: "fgprof"
+    - package-ecosystem: "gomod"
       directory: "/fgprof"  # Location of package manifests
       labels:
           - "🤖 Dependencies"
