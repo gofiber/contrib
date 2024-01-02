@@ -42,10 +42,6 @@ type Config struct {
 	// The order of precedence is: KeyFunc, JWKSetURLs, SigningKeys, SigningKey.
 	SigningKeys map[string]SigningKey
 
-	// Context key to store user information from the token into context.
-	// Optional. Default: "user".
-	ContextKey string
-
 	// Claims are extendable claims data defining token content.
 	// Optional. Default value jwt.MapClaims
 	Claims jwt.Claims
@@ -121,9 +117,6 @@ func makeCfg(config []Config) (cfg Config) {
 	}
 	if cfg.SigningKey.Key == nil && len(cfg.SigningKeys) == 0 && len(cfg.JWKSetURLs) == 0 && cfg.KeyFunc == nil {
 		panic("Fiber: JWT middleware configuration: At least one of the following is required: KeyFunc, JWKSetURLs, SigningKeys, or SigningKey.")
-	}
-	if cfg.ContextKey == "" {
-		cfg.ContextKey = "user"
 	}
 	if cfg.Claims == nil {
 		cfg.Claims = jwt.MapClaims{}

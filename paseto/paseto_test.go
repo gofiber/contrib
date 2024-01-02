@@ -84,7 +84,6 @@ func Test_PASETO_LocalToken_MissingToken(t *testing.T) {
 	app := fiber.New()
 	app.Use(New(Config{
 		SymmetricKey: []byte(symmetricKey),
-		ContextKey:   DefaultContextKey,
 		ErrorHandler: assertErrorHandler(t, ErrMissingToken),
 	}))
 	request := httptest.NewRequest("GET", "/", nil)
@@ -101,7 +100,6 @@ func Test_PASETO_PublicToken_MissingToken(t *testing.T) {
 	app.Use(New(Config{
 		PrivateKey:   privateKey,
 		PublicKey:    privateKey.Public(),
-		ContextKey:   DefaultContextKey,
 		ErrorHandler: assertErrorHandler(t, ErrMissingToken),
 	}))
 
@@ -117,7 +115,6 @@ func Test_PASETO_LocalToken_ErrDataUnmarshal(t *testing.T) {
 	app := fiber.New()
 	app.Use(New(Config{
 		SymmetricKey: []byte(symmetricKey),
-		ContextKey:   DefaultContextKey,
 		ErrorHandler: assertErrorHandler(t, ErrDataUnmarshal),
 	}))
 	request, err := generateTokenRequest("/", createCustomToken, durationTest, PurposeLocal)
@@ -136,7 +133,6 @@ func Test_PASETO_PublicToken_ErrDataUnmarshal(t *testing.T) {
 	app.Use(New(Config{
 		PrivateKey: privateKey,
 		PublicKey:  privateKey.Public(),
-		ContextKey: DefaultContextKey,
 	}))
 
 	request, err := generateTokenRequest("/", createCustomToken, durationTest, PurposePublic)
@@ -153,7 +149,6 @@ func Test_PASETO_LocalToken_ErrTokenExpired(t *testing.T) {
 	app := fiber.New()
 	app.Use(New(Config{
 		SymmetricKey: []byte(symmetricKey),
-		ContextKey:   DefaultContextKey,
 		ErrorHandler: assertErrorHandler(t, ErrExpiredToken),
 	}))
 	request, err := generateTokenRequest("/", CreateToken, time.Nanosecond*-10, PurposeLocal)
@@ -172,7 +167,6 @@ func Test_PASETO_PublicToken_ErrTokenExpired(t *testing.T) {
 	app.Use(New(Config{
 		PrivateKey:   privateKey,
 		PublicKey:    privateKey.Public(),
-		ContextKey:   DefaultContextKey,
 		ErrorHandler: assertErrorHandler(t, ErrExpiredToken),
 	}))
 
@@ -226,10 +220,9 @@ func Test_PASETO_LocalTokenDecrypt(t *testing.T) {
 	app := fiber.New()
 	app.Use(New(Config{
 		SymmetricKey: []byte(symmetricKey),
-		ContextKey:   DefaultContextKey,
 	}))
 	app.Get("/", func(ctx *fiber.Ctx) error {
-		utils.AssertEqual(t, testMessage, ctx.Locals(DefaultContextKey))
+		utils.AssertEqual(t, testMessage, FromContext(ctx))
 		return nil
 	})
 	request, err := generateTokenRequest("/", CreateToken, durationTest, PurposeLocal)
@@ -249,10 +242,9 @@ func Test_PASETO_PublicTokenVerify(t *testing.T) {
 	app.Use(New(Config{
 		PrivateKey: privateKey,
 		PublicKey:  privateKey.Public(),
-		ContextKey: DefaultContextKey,
 	}))
 	app.Get("/", func(ctx *fiber.Ctx) error {
-		utils.AssertEqual(t, testMessage, ctx.Locals(DefaultContextKey))
+		utils.AssertEqual(t, testMessage, FromContext(ctx))
 		return nil
 	})
 	request, err := generateTokenRequest("/", CreateToken, durationTest, PurposePublic)
@@ -268,7 +260,6 @@ func Test_PASETO_LocalToken_IncorrectBearerToken(t *testing.T) {
 	app := fiber.New()
 	app.Use(New(Config{
 		SymmetricKey: []byte(symmetricKey),
-		ContextKey:   DefaultContextKey,
 		TokenPrefix:  "Gopher",
 		ErrorHandler: func(ctx *fiber.Ctx, err error) error {
 			if errors.Is(err, ErrIncorrectTokenPrefix) {
@@ -312,7 +303,6 @@ func Test_PASETO_LocalToken_InvalidToken(t *testing.T) {
 	app := fiber.New()
 	app.Use(New(Config{
 		SymmetricKey: []byte(symmetricKey),
-		ContextKey:   DefaultContextKey,
 	}))
 	request := httptest.NewRequest("GET", "/", nil)
 	request.Header.Set(fiber.HeaderAuthorization, invalidToken)
@@ -328,7 +318,6 @@ func Test_PASETO_PublicToken_InvalidToken(t *testing.T) {
 	app.Use(New(Config{
 		PrivateKey: privateKey,
 		PublicKey:  privateKey.Public(),
-		ContextKey: DefaultContextKey,
 	}))
 
 	request := httptest.NewRequest("GET", "/", nil)
@@ -357,7 +346,7 @@ func Test_PASETO_LocalToken_CustomValidate(t *testing.T) {
 	}))
 
 	app.Get("/", func(ctx *fiber.Ctx) error {
-		utils.AssertEqual(t, testMessage, ctx.Locals(DefaultContextKey))
+		utils.AssertEqual(t, testMessage, FromContext(ctx))
 		return nil
 	})
 
@@ -394,7 +383,7 @@ func Test_PASETO_PublicToken_CustomValidate(t *testing.T) {
 	}))
 
 	app.Get("/", func(ctx *fiber.Ctx) error {
-		utils.AssertEqual(t, testMessage, ctx.Locals(DefaultContextKey))
+		utils.AssertEqual(t, testMessage, FromContext(ctx))
 		return nil
 	})
 

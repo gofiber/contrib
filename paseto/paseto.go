@@ -6,6 +6,15 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
+// The contextKey type is unexported to prevent collisions with context keys defined in
+// other packages.
+type contextKey int
+
+// The following contextKey values are defined to store values in context.
+const (
+	payloadKey contextKey = 0
+)
+
 // New PASETO middleware, returns a handler that takes a token in selected lookup param and in case token is valid
 // it saves the decrypted token on ctx.Locals, take a look on Config to know more configuration options
 func New(authConfigs ...Config) fiber.Handler {
@@ -47,11 +56,16 @@ func New(authConfigs ...Config) fiber.Handler {
 		payload, err := config.Validate(outData)
 		if err == nil {
 			// Store user information from token into context.
-			c.Locals(config.ContextKey, payload)
+			c.Locals(payloadKey, payload)
 
 			return config.SuccessHandler(c)
 		}
 
 		return config.ErrorHandler(c, err)
 	}
+}
+
+// FromContext returns the payload from the context.
+func FromContext(c *fiber.Ctx) interface{} {
+	return c.Locals(payloadKey)
 }

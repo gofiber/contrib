@@ -40,9 +40,6 @@ func TestDefaultConfiguration(t *testing.T) {
 	cfg := makeCfg(config)
 
 	// Assert
-	if cfg.ContextKey != "user" {
-		t.Fatalf("Default context key should be 'user'")
-	}
 	if cfg.Claims == nil {
 		t.Fatalf("Default claims should not be 'nil'")
 	}
