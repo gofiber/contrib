@@ -11,7 +11,7 @@ id: jwt
 ![Linter](https://github.com/gofiber/contrib/workflows/Linter/badge.svg)
 
 JWT returns a JSON Web Token (JWT) auth middleware.
-For valid token, it sets the user in Ctx.Locals and calls next handler.
+For valid token, it sets the token in Ctx.Locals and calls next handler.
 For invalid token, it returns "401 - Unauthorized" error.
 For missing token, it returns "400 - Bad Request" error.
 
@@ -32,6 +32,7 @@ go get -u github.com/golang-jwt/jwt/v5
 ## Signature
 ```go
 jwtware.New(config ...jwtware.Config) func(*fiber.Ctx) error
+jwtware.FromContext(c *fiber.Ctx) *jwt.Token
 ```
 
 ## Config
@@ -43,7 +44,6 @@ jwtware.New(config ...jwtware.Config) func(*fiber.Ctx) error
 | ErrorHandler   | `func(*fiber.Ctx, error) error` | ErrorHandler defines a function which is executed for an invalid token.                                                                                 | `401 Invalid or expired JWT` |
 | SigningKey     | `interface{}`                   | Signing key to validate token. Used as fallback if SigningKeys has length 0.                                                                            | `nil`                        |
 | SigningKeys    | `map[string]interface{}`        | Map of signing keys to validate token with kid field usage.                                                                                             | `nil`                        |
-| ContextKey     | `string`                        | Context key to store user information from the token into context.                                                                                      | `"user"`                     |
 | Claims         | `jwt.Claim`                     | Claims are extendable claims data defining token content.                                                                                               | `jwt.MapClaims{}`            |
 | TokenLookup    | `string`                        | TokenLookup is a string in the form of `<source>:<name>` that is used                                                                                   | `"header:Authorization"`     |
 | AuthScheme     | `string`                        | AuthScheme to be used in the Authorization header. The default value (`"Bearer"`) will only be used in conjuction with the default `TokenLookup` value. | `"Bearer"`                   |
@@ -117,7 +117,10 @@ func accessible(c *fiber.Ctx) error {
 }
 
 func restricted(c *fiber.Ctx) error {
-	user := c.Locals("user").(*jwt.Token)
+	user := jwtware.FromContext(c)
+	if user == nil {
+		return c.SendStatus(fiber.StatusUnauthorized)
+	}
 	claims := user.Claims.(jwt.MapClaims)
 	name := claims["name"].(string)
 	return c.SendString("Welcome " + name)
@@ -236,7 +239,10 @@ func accessible(c *fiber.Ctx) error {
 }
 
 func restricted(c *fiber.Ctx) error {
-	user := c.Locals("user").(*jwt.Token)
+	user := jwtware.FromContext(c)
+	if user == nil {
+		return c.SendStatus(fiber.StatusUnauthorized)
+	}
 	claims := user.Claims.(jwt.MapClaims)
 	name := claims["name"].(string)
 	return c.SendString("Welcome " + name)
