@@ -74,9 +74,17 @@ func New(cfg Config) fiber.Handler {
 			method = utils.CopyString(c.Method())
 		)
 
+		// New request header from fiber context header
+		rh := make(http.Header)
+		c.Request().Header.VisitAll(func(k, v []byte) {
+			rh.Add(string(k), string(v))
+		})
+		
 		scheme := c.Request().URI().Scheme()
 
+		// Assign request header for distribute tracing
 		txn.SetWebRequest(newrelic.WebRequest{
+			Header:    rh,
 			Host:      host,
 			Method:    method,
 			Transport: transport(string(scheme)),
