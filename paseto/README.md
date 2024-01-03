@@ -32,6 +32,7 @@ go get -u github.com/o1egl/paseto
 
 ```go
 pasetoware.New(config ...pasetoware.Config) func(*fiber.Ctx) error
+pasetoware.FromContext(c *fiber.Ctx) interface{}
 ```
 
 ## Config
@@ -353,6 +354,12 @@ func restricted(c *fiber.Ctx) error {
 	return c.SendString("Welcome " + payload)
 }
 
+```
+
+#### Get the payload from the context
+
+```go
+payload := pasetoware.FromContext(c).(string)
 ```
 
 #### Test it
