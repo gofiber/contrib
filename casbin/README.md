@@ -40,6 +40,20 @@ casbin.New(config ...casbin.Config) *casbin.Middleware
 | Unauthorized  | `func(*fiber.Ctx) error`  | Response body for unauthorized responses | `Unauthorized`                                                      |
 | Forbidden     | `func(*fiber.Ctx) error`  | Response body for forbidden responses    | `Forbidden`                                                         |
 
+## Notes on Config's Enforcer to utilize https://casbin.org/docs/adapters/
+```go
+...
+import cb "github.com/casbin/casbin/v2"
+...
+  authz := casbin.New(casbin.Config{
+      Enforcer: cb.NewEnforcer("./model.conf", "./policy.csv"), // go wild from https://casbin.org/docs/adapters/
+      Lookup: func(c *fiber.Ctx) string {
+          // fetch authenticated user subject
+      },
+  })
+...
+```
+
 ### Examples
 - [Gorm Adapter](https://github.com/svcg/-fiber_casbin_demo)
 - [File Adapter](https://github.com/gofiber/contrib/casbin/tree/master/example)
