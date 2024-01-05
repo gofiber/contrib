@@ -153,3 +153,63 @@ func main() {
   app.Listen(":8080")
 }
 ```
+## Notes on Config's Enforcer
+
+Use this property instead, if you
+- manage to test out above example with success
+- don't want to expose model and policy to filesystem, thus reveal less and prevent filesystem modifications.
+- original casbin.NewEnforcer() supports way more [adapters](https://casbin.org/docs/adapters) and more ways to initialize *casbin.Enforcer 
+
+below example doesn't require `./model.conf` and `./policy.csv` to be present.
+```go
+package main
+
+import (
+  ...
+  cb "github.com/casbin/casbin/v2"
+  "github.com/casbin/casbin/v2/model"
+  jsonadapter "github.com/casbin/json-adapter/v2
+  ...
+)
+
+const (
+  rbac_models = `
+[request_definition]
+r = sub, obj, act
+
+[policy_definition]
+p = sub, obj, act
+
+[role_definition]
+g = _, _
+
+[policy_effect]
+e = some(where (p.eft == allow))
+
+[matchers]
+m = g(r.sub, p.sub) && r.obj == p.obj && r.act == p.act
+`
+  rbac_policy_json = `
+[
+  {"PType":"p","V0":"admin","V1":"blog","V2":"create"},
+  {"PType":"p","V0":"admin","V1":"blog","V2":"update"},
+  {"PType":"p","V0":"admin","V1":"blog","V2":"update"},
+  {"PType":"p","V0":"user","V1":"comment","V2":"read"},
+  {"PType":"p","V0":"user","V1":"comment","V2":"write"},
+  {"PType":"p","V0":"admin","V1":"/login","V2":"POST"},
+  {"PType":"p","V0":"admin","V1":"/blog","V2":"POST"},
+  {"PType":"p","V0":"admin","V1":"/blog/1","V2":"PUT"},
+  {"PType":"p","V0":"admin","V1":"/blog/2","V2":"DELETE"},
+  {"PType":"p","V0":"user","V1":"/comment","V2":"POST"}
+]`
+)
+
+func main() {
+  ...
+  m, _ := model.NewModelFromString(rbac_models)
+  b := []byte(rbac_policy_json)
+  e, _ := cb.NewEnforcer(m, jsonadapter.NewAdapter(&b))
+  authz := casbin.New(casbin.Config{Enforcer: e, Lookup: lookupSession})
+  ...
+}
+```
