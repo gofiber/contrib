@@ -4,12 +4,29 @@ id: loadshed
 
 # LoadShed
 
+![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=loadshed*)
+[![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
+![Test](https://github.com/gofiber/contrib/workflows/Tests/badge.svg)
+![Security](https://github.com/gofiber/contrib/workflows/Security/badge.svg)
+![Linter](https://github.com/gofiber/contrib/workflows/Linter/badge.svg)
+
 The LoadShed middleware for [Fiber](https://github.com/gofiber/fiber) is designed to help manage server load by shedding requests based on certain load criteria.
+
+**Note: Requires Go 1.19 and above**
+
+## Install
+
+This middleware supports Fiber v2
+
+```
+go get -u github.com/gofiber/fiber/v2
+go get -u github.com/gofiber/contrib/loadshed
+```
 
 ## Signatures
 
 ```go
-func New(config ...Config) fiber.Handler
+loadshed.New(config ...loadshed.Config) fiber.Handler
 ```
 
 ## Examples
@@ -21,7 +38,7 @@ package main
 
 import (
   "github.com/gofiber/fiber/v2"
-  "github.com/gofiber/fiber/v2/middleware/loadshed"
+  loadshed "github.com/gofiber/contrib/loadshed"
 )
 
 func main() {

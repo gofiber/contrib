@@ -5,7 +5,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/gofiber/fiber/v2/internal/gopsutil/cpu"
+	"github.com/shirou/gopsutil/cpu"
 )
 
 // LoadCriteria interface for different types of load metrics.

@@ -8,7 +8,6 @@ sidebar_position: 1
   <img height="125" alt="Fiber" src="https://raw.githubusercontent.com/gofiber/contrib/master/.github/logo.svg#gh-light-mode-only" />
   <br />
 
-
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Tests/badge.svg)
 ![Security](https://github.com/gofiber/contrib/workflows/Security/badge.svg)
@@ -33,3 +32,4 @@ Repository for third party middlewares with dependencies.
 * [Swagger](./swagger/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Test+swagger%22"> <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test-swagger.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" /> </a>
 * [Websocket](./websocket/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Test+websocket%22"> <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test-websocket.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" /> </a>
 * [Fgprof](./fgprof/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Test+Fgprof%22"> <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test-fgprof.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" /> </a>
+* [Loadshed](./loadshed/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Test+Loadshed%22"> <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test-loadshed.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" /> </a>
