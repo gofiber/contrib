@@ -28,11 +28,10 @@ jobs:
             - name: Fetch Repository
               uses: actions/checkout@v4
             - name: Generate Matrix
-              working-directory: .
               id: generate-matrix
               run: |
-                  SUBDIRS=$(find . -maxdepth 1 -type d -not -name '.*' -not -name 'internal' | sed 's|./||' | tr '\n' ' ')
-                  JSON_MATRIX=$(echo "$SUBDIRS" | jq -R -c -s 'split(" ")')
+                  SUBDIRS=$(find . -maxdepth 1 -type d -not -name '.*' -not -name 'internal' -not -empty | sed 's|./||' | tr '\n' ' ' | sed 's/ $//')
+                  JSON_MATRIX=$(echo "$SUBDIRS" | jq -R -c -s 'split(" ") | map(select(. != "")) | .[-1] |= sub("\n$"; "")')
                   echo "::set-output name=matrix::$JSON_MATRIX"
               shell: bash
 
