@@ -32,8 +32,7 @@ jobs:
         run: |
             SUBDIRS=$(find . -maxdepth 1 -type d -not -name '.*' -not -name 'internal' -not -empty | sed 's|./||' | tr '\n' ' ' | sed 's/ $//')
             JSON_MATRIX=$(echo "$SUBDIRS" | jq -R -c -s 'split(" ") | map(select(. != "")) | .[-1] |= sub("\n$"; "")')
-            echo "::set-output name=matrix::$JSON_MATRIX"
-        shell: bash
+            echo "matrix=$JSON_MATRIX" >> $GITHUB_OUTPUT
 
   govulncheck-check:
     runs-on: ubuntu-latest
