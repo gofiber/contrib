@@ -96,7 +96,8 @@ func Middleware(opts ...Option) fiber.Handler {
 		copy(responseMetricAttrs, requestMetricsAttrs)
 
 		reqHeader := make(http.Header)
-		c.Request().Header.VisitAll(func(k, v []byte) {
+		request := c.Request()
+		request.Header.VisitAll(func(k, v []byte) {
 			reqHeader.Add(string(k), string(v))
 		})
 
@@ -126,13 +127,24 @@ func Middleware(opts ...Option) fiber.Handler {
 		}
 
 		// extract common attributes from response
+		response := c.Response()
 		responseAttrs := append(
-			semconv.HTTPAttributesFromHTTPStatusCode(c.Response().StatusCode()),
+			semconv.HTTPAttributesFromHTTPStatusCode(response.StatusCode()),
 			semconv.HTTPRouteKey.String(c.Route().Path), // no need to copy c.Route().Path: route strings should be immutable across app lifecycle
 		)
 
-		requestSize := int64(len(c.Request().Body()))
-		responseSize := int64(len(c.Response().Body()))
+		var (
+			requestSize  int64 = -1
+			responseSize int64 = -1
+		)
+
+		if !request.IsBodyStream() {
+			requestSize = int64(len(request.Body()))
+		}
+
+		if !response.IsBodyStream() {
+			responseSize = int64(len(response.Body()))
+		}
 
 		defer func() {
 			responseMetricAttrs = append(
@@ -155,7 +167,7 @@ func Middleware(opts ...Option) fiber.Handler {
 			)...)
 		span.SetName(cfg.SpanNameFormatter(c))
 
-		spanStatus, spanMessage := semconv.SpanStatusFromHTTPStatusCodeAndSpanKind(c.Response().StatusCode(), oteltrace.SpanKindServer)
+		spanStatus, spanMessage := semconv.SpanStatusFromHTTPStatusCodeAndSpanKind(response.StatusCode(), oteltrace.SpanKindServer)
 		span.SetStatus(spanStatus, spanMessage)
 
 		return nil
