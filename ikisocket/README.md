@@ -1,6 +1,3 @@
-
----
-
 id: ikisocket
 ---
 
