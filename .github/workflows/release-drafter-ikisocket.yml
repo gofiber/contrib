@@ -1,4 +1,4 @@
-name: Release Drafter Websocket
+name: Release Drafter ikisocket
 on:
     push:
         # branches to consider in the event; optional, defaults to all
