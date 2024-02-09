@@ -224,9 +224,7 @@ func (l *safeListeners) get(event string) []eventCallback {
 	}
 
 	ret := make([]eventCallback, 0)
-	for _, v := range l.list[event] {
-		ret = append(ret, v)
-	}
+	ret = append(ret, l.list[event]...)
 	return ret
 }
 
