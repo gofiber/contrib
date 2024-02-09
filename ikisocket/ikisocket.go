@@ -91,7 +91,7 @@ type EventPayload struct {
 	// Unique connection UUID
 	SocketUUID string
 	// Optional websocket attributes
-	SocketAttributes map[string]interface{}
+	SocketAttributes map[string]any
 	// Optional error when are fired events like
 	// - Disconnect
 	// - Error
