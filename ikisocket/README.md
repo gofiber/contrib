@@ -8,8 +8,7 @@ id: ikisocket
 ![Security](https://github.com/gofiber/contrib/workflows/Security/badge.svg)
 ![Linter](https://github.com/gofiber/contrib/workflows/Linter/badge.svg)
 
-WebSocket wrapper for [Fiber](https://github.com/gofiber/fiber) with events support and inspired
-by [Socket.io](https://github.com/socketio/socket.io)
+WebSocket wrapper for [Fiber](https://github.com/gofiber/fiber) with events support and inspired by [Socket.io](https://github.com/socketio/socket.io)
 
 **Note: Requires Go 1.18 and above**
 
@@ -25,12 +24,12 @@ go get -u github.com/gofiber/contrib/ikisocket
 ```go
 // Initialize new ikisocket in the callback this will
 // execute a callback that expects kws *Websocket Object
-func New(callback func (kws *Websocket)) func (*fiber.Ctx) error
+func New(callback func(kws *Websocket)) func(*fiber.Ctx) error
 ```
 
 ```go
 // Add listener callback for an event into the listeners list
-func On(event string, callback func (payload *EventPayload))
+func On(event string, callback func(payload *EventPayload))
 ```
 
 ```go
