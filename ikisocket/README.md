@@ -57,7 +57,6 @@ func Broadcast(message []byte)
 func Fire(event string, data []byte) 
 ```
 
-
 ## Example
 
 ```go
@@ -194,122 +193,46 @@ func main() {
 
 ---
 
-
 ## Supported events
 
-```go
-// Supported event list
-const (
- // Fired when a Text/Binary message is received
- EventMessage = "message"
- // More details here:
- // @url https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API/Writing_WebSocket_servers#Pings_and_Pongs_The_Heartbeat_of_WebSockets
- EventPing = "ping"
- EventPong = "pong"
- // Fired on disconnection
- // The error provided in disconnection event
- // is defined in RFC 6455, section 11.7.
- // @url https://github.com/gofiber/websocket/blob/cd4720c435de415b864d975a9ca23a47eaf081ef/websocket.go#L192
- EventDisconnect = "disconnect"
- // Fired on first connection
- EventConnect = "connect"
- // Fired when the connection is actively closed from the server
- EventClose = "close"
- // Fired when some error appears useful also for debugging websockets
- EventError = "error"
-)
-```
+| Const            | Event                        | Description                                                                                                                  |
+|:--------------------|:----------------------------|:--------------------------------------------------------------------------------------------------------------------------------|
+| EventMessage| `message`|Fired when a Text/Binary message is received|
+| EventPing| `ping`| More details here: @url <https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API/Writing_WebSocket_servers#Pings_and_Pongs_The_Heartbeat_of_WebSockets>|
+| EventPong| `pong`| Refer to ping description|
+| EventDisconnect| `disconnect`|  Fired on disconnection. The error provided in disconnection event as defined in RFC 6455, section 11.7.|
+| EventConnect      | `connect`| Fired on first connection|
+| EventClose     | `close`|Fired when the connection is actively closed from the server. Different from client disconnection |
+| EventError     | `error`| Fired when some error appears useful also for debugging websockets|
 
 ## Event Payload object
 
-```go
-// Event Payload is the object that
-// stores all the information about the event and
-// the connection
-type EventPayload struct {
- // The connection object
- Kws *Websocket
- // The name of the event
- Name string
- // Unique connection UUID
- SocketUUID string
- // Optional websocket attributes
- SocketAttributes map[string]string
- // Optional error when are fired events like
- // - Disconnect
- // - Error
- Error error
- // Data is used on Message and on Error event
- Data []byte
-}
-```
-
----
-
-**The FastHTTP connection can be accessed directly from the struct**
-
-```go
-type Websocket struct {
-    // The FastHTTP connection
-    Conn *websocket.Conn
-}
-```
-
-Can be accessed from
-
-```go
-kws.Conn
-```
+| Variable            | Type                        | Description                                                                                                                  |
+|:--------------------|:----------------------------|:--------------------------------------------------------------------------------------------------------------------------------|
+| Kws| `*Websocket`|The connection object|
+| Name|`string`|The name of the event|
+| SocketUUID| `string`|Unique connection UUID|
+| SocketAttributes| `map[string]string`| Optional websocket attributes|
+| Error      | `error`|(optional) Fired from disconnection or error events|
+| Data     | `[]byte`|Data used on Message and on Error event, contains the payload for custom events|
 
 ## Socket instance functions
 
-```go
-// Set a specific attribute for the specific socket connection
-func (kws *Websocket) SetAttribute(key string, attribute string)
-```
+| Name            | Type                        | Description                                                                                                                  |
+|:--------------------|:----------------------------|:--------------------------------------------------------------------------------------------------------------------------------|
+| SetAttribute| `void`|Set a specific attribute for the specific socket connection|
+| GetUUID|`string`|Get socket connection UUID|
+| SetUUID|`void`|Set socket connection UUID|
+| GetAttribute|`string`|Get a specific attribute from the socket attributes|
+| EmitToList|`void`|Emit the message to a specific socket uuids list|
+| EmitTo|`error`|Emit to a specific socket connection|
+| Broadcast|`void`|Broadcast to all the active connections except broadcasting the message to itself|
+| Fire|`void`| Fire custom event|
+| Emit|`void`|Emit/Write the message into the given connection|
+| Close|`void`|Actively close the connection from the server|
+
+**Note: the FastHTTP connection can be accessed directly from the instance**
 
 ```go
-// Get socket connection UUID
-func (kws *Websocket) GetUUID() string
-```
-
-```go
-// Set socket connection UUID
-func (kws *Websocket) SetUUID(uuid string)
-```
-
-```go
-// Get a specific attribute from the socket attributes
-func (kws *Websocket) GetAttribute(key string) string
-```
-
-```go
-// Emit the message to a specific socket uuids list
-func (kws *Websocket) EmitToList(uuids []string, message []byte) 
-```
-
-```go
-// Emit to a specific socket connection
-func (kws *Websocket) EmitTo(uuid string, message []byte) error
-```
-
-```go
-// Broadcast to all the active connections
-// except avoid broadcasting the message to itself
-func (kws *Websocket) Broadcast(message []byte, except bool)
-```
-
-```go
-// Fire custom event
-func (kws *Websocket) Fire(event string, data []byte)
-```
-
-```go
-// Emit/Write the message into the given connection
-func (kws *Websocket) Emit(message []byte)
-```
-
-```go
-// Actively close the connection from the server
-func (kws *Websocket) Close() 
+kws.Conn
 ```
