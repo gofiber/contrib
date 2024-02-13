@@ -41,7 +41,7 @@ type Config struct {
 
 	// Add fields what you want see.
 	//
-	// Optional. Default: {"latency", "status", "method", "url"}
+	// Optional. Default: {"ip", "latency", "status", "method", "url"}
 	Fields []string
 
 	// FieldsFunc defines a function to return custom zap fields to append to the log.
@@ -77,7 +77,7 @@ var logger, _ = zap.NewProduction()
 var ConfigDefault = Config{
 	Next:       nil,
 	Logger:     logger,
-	Fields:     []string{"latency", "status", "method", "url"},
+	Fields:     []string{"ip", "latency", "status", "method", "url"},
 	FieldsFunc: nil,
 	Messages:   []string{"Server error", "Client error", "Success"},
 	Levels:     []zapcore.Level{zapcore.ErrorLevel, zapcore.WarnLevel, zapcore.InfoLevel},

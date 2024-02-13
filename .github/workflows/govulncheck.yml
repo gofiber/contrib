@@ -20,61 +20,39 @@ on:
       - ".github/dependabot.yml"
 
 jobs:
+  set-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.generate-matrix.outputs.matrix }}
+    steps:
+      - name: Fetch Repository
+        uses: actions/checkout@v4
+      - name: Generate Matrix
+        id: generate-matrix
+        run: |
+            SUBDIRS=$(find . -maxdepth 1 -type d -not -name '.*' -not -name 'internal' -not -empty | sed 's|./||' | tr '\n' ' ' | sed 's/ $//')
+            JSON_MATRIX=$(echo "$SUBDIRS" | jq -R -c -s 'split(" ") | map(select(. != "")) | .[-1] |= sub("\n$"; "")')
+            echo "matrix=$JSON_MATRIX" >> $GITHUB_OUTPUT
+
   govulncheck-check:
     runs-on: ubuntu-latest
+    needs: set-matrix
+    strategy:
+      matrix:
+        directory: ${{fromJson(needs.set-matrix.outputs.matrix)}}
     env:
       GO111MODULE: on
     steps:
     - name: Fetch Repository
       uses: actions/checkout@v4
     - name: Install Go
-      uses: actions/setup-go@v4
+      uses: actions/setup-go@v5
       with:
         go-version: 'stable'
         check-latest: true
         cache: false
     - name: Install Govulncheck
       run: go install golang.org/x/vuln/cmd/govulncheck@latest
-    - name: Run govulncheck (paseto)
-      working-directory: ./paseto
+    - name: Run Govulncheck for ${{ matrix.directory }}
+      working-directory: ./${{ matrix.directory }}
       run: govulncheck ./...
-      # -----
-    - name: Run govulncheck (fiberzap)
-      working-directory: ./fiberzap
-      run: govulncheck ./...
-      # -----
-    - name: Run govulncheck (otelfiber)
-      working-directory: ./otelfiber
-      run: govulncheck ./...
-    - name: Run govulncheck (swagger)
-      working-directory: ./swagger
-      run: govulncheck ./...
-      # -----
-    - name: Run govulncheck (casbin)
-      working-directory: ./casbin
-      run: govulncheck ./...
-      # -----
-    - name: Run govulncheck (fibernewrelic)
-      working-directory: ./fibernewrelic
-      run: govulncheck ./...
-      # -----
-    - name: Run govulncheck (opafiber)
-      working-directory: ./opafiber
-      run: govulncheck ./...
-      # -----
-    - name: Run govulncheck (fiberi18n)
-      working-directory: ./fiberi18n
-      run: govulncheck ./...
-      # -----
-    - name: Run govulncheck (fiberzerolog)
-      working-directory: ./fiberzerolog
-      run: govulncheck ./...
-      # -----
-    - name: Run govulncheck (jwt)
-      working-directory: ./jwt
-      run: govulncheck ./...
-      # -----
-    - name: Run govulncheck (websocket)
-      working-directory: ./websocket
-      run: govulncheck ./...
-      # -----

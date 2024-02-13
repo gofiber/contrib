@@ -76,7 +76,7 @@ type Config struct {
 
 	// Add fields what you want see.
 	//
-	// Optional. Default: {"latency", "status", "method", "url", "error"}
+	// Optional. Default: {"ip", "latency", "status", "method", "url", "error"}
 	Fields []string
 
 	// Custom response messages.
@@ -181,7 +181,7 @@ var logger = zerolog.New(os.Stderr).With().Timestamp().Logger()
 var ConfigDefault = Config{
 	Next:     nil,
 	Logger:   &logger,
-	Fields:   []string{FieldLatency, FieldStatus, FieldMethod, FieldURL, FieldError},
+	Fields:   []string{FieldIP, FieldLatency, FieldStatus, FieldMethod, FieldURL, FieldError},
 	Messages: []string{"Server error", "Client error", "Success"},
 	Levels:   []zerolog.Level{zerolog.ErrorLevel, zerolog.WarnLevel, zerolog.InfoLevel},
 }

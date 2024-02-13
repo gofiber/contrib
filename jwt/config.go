@@ -113,8 +113,8 @@ func makeCfg(config []Config) (cfg Config) {
 	}
 	if cfg.ErrorHandler == nil {
 		cfg.ErrorHandler = func(c *fiber.Ctx, err error) error {
-			if err.Error() == "Missing or malformed JWT" {
-				return c.Status(fiber.StatusBadRequest).SendString("Missing or malformed JWT")
+			if err.Error() == ErrJWTMissingOrMalformed.Error() {
+				return c.Status(fiber.StatusBadRequest).SendString(ErrJWTMissingOrMalformed.Error())
 			}
 			return c.Status(fiber.StatusUnauthorized).SendString("Invalid or expired JWT")
 		}
