@@ -40,7 +40,7 @@ type WebsocketMock struct {
 	Cookies    func(key string, defaultValue ...string) string
 }
 
-func (s *WebsocketMock) SetUUID(uuid string) {
+func (s *WebsocketMock) SetUUID(uuid string) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -49,6 +49,7 @@ func (s *WebsocketMock) SetUUID(uuid string) {
 		panic(ErrorUUIDDuplication)
 	}
 	s.UUID = uuid
+	return nil
 }
 
 func (s *WebsocketMock) GetIntAttribute(key string) int {

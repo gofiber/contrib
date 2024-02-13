@@ -219,7 +219,7 @@ func main() {
 |:-------------|:---------|:----------------------------------------------------------------------------------|
 | SetAttribute | `void`   | Set a specific attribute for the specific socket connection                       |
 | GetUUID      | `string` | Get socket connection UUID                                                        |
-| SetUUID      | `void`   | Set socket connection UUID                                                        |
+| SetUUID      | `error`   | Set socket connection UUID                                                        |
 | GetAttribute | `string` | Get a specific attribute from the socket attributes                               |
 | EmitToList   | `void`   | Emit the message to a specific socket uuids list                                  |
 | EmitTo       | `error`  | Emit to a specific socket connection                                              |

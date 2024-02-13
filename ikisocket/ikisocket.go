@@ -103,7 +103,7 @@ type EventPayload struct {
 type ws interface {
 	IsAlive() bool
 	GetUUID() string
-	SetUUID(uuid string)
+	SetUUID(uuid string) error
 	SetAttribute(key string, attribute interface{})
 	GetAttribute(key string) interface{}
 	GetIntAttribute(key string) int
@@ -176,14 +176,14 @@ func (p *safePool) all() map[string]ws {
 	return ret
 }
 
-func (p *safePool) get(key string) ws {
+func (p *safePool) get(key string) (ws, error) {
 	p.RLock()
 	ret, ok := p.conn[key]
 	p.RUnlock()
 	if !ok {
-		panic("not found")
+		return nil, ErrorInvalidConnection
 	}
-	return ret
+	return ret, nil
 }
 
 func (p *safePool) contains(key string) bool {
@@ -278,14 +278,15 @@ func (kws *Websocket) GetUUID() string {
 	return kws.UUID
 }
 
-func (kws *Websocket) SetUUID(uuid string) {
+func (kws *Websocket) SetUUID(uuid string) error {
 	kws.mu.Lock()
 	defer kws.mu.Unlock()
 
 	if pool.contains(uuid) {
-		panic(ErrorUUIDDuplication)
+		return ErrorUUIDDuplication
 	}
 	kws.UUID = uuid
+	return nil
 }
 
 // SetAttribute Set a specific attribute for the specific socket connection
@@ -319,7 +320,6 @@ func (kws *Websocket) GetIntAttribute(key string) int {
 }
 
 // GetStringAttribute Convenience method to retrieve an attribute as a string.
-// Will panic if attribute is not an int.
 func (kws *Websocket) GetStringAttribute(key string) string {
 	kws.mu.RLock()
 	defer kws.mu.RUnlock()
@@ -351,22 +351,31 @@ func EmitToList(uuids []string, message []byte, mType ...int) {
 // EmitTo Emit to a specific socket connection
 func (kws *Websocket) EmitTo(uuid string, message []byte, mType ...int) error {
 
-	if !pool.contains(uuid) || !pool.get(uuid).IsAlive() {
+	conn, err := pool.get(uuid)
+	if err != nil {
+		return err
+	}
+	if !pool.contains(uuid) || !conn.IsAlive() {
 		kws.fireEvent(EventError, []byte(uuid), ErrorInvalidConnection)
 		return ErrorInvalidConnection
 	}
 
-	pool.get(uuid).Emit(message, mType...)
+	conn.Emit(message, mType...)
 	return nil
 }
 
 // EmitTo Emit to a specific socket connection
 func EmitTo(uuid string, message []byte, mType ...int) error {
-	if !pool.contains(uuid) || !pool.get(uuid).IsAlive() {
+	conn, err := pool.get(uuid)
+	if err != nil {
+		return err
+	}
+
+	if !pool.contains(uuid) || !conn.IsAlive() {
 		return ErrorInvalidConnection
 	}
 
-	pool.get(uuid).Emit(message, mType...)
+	conn.Emit(message, mType...)
 	return nil
 }
 
