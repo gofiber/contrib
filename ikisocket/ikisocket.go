@@ -199,6 +199,7 @@ func (p *safePool) delete(key string) {
 	p.Unlock()
 }
 
+//nolint:all
 func (p *safePool) reset() {
 	p.Lock()
 	p.conn = make(map[string]ws)
@@ -433,6 +434,7 @@ func (kws *Websocket) setAlive(alive bool) {
 	kws.isAlive = alive
 }
 
+//nolint:all
 func (kws *Websocket) queueLength() int {
 	kws.mu.RLock()
 	defer kws.mu.RUnlock()
