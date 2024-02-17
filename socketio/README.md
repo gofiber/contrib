@@ -10,7 +10,7 @@ id: socketio
 
 WebSocket wrapper for [Fiber](https://github.com/gofiber/fiber) with events support and inspired by [Socket.io](https://github.com/socketio/socket.io)
 
-**Note: Requires Go 1.18 and above**
+**Note: Requires Go 1.20 and above**
 
 ## Install
 
