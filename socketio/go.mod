@@ -1,4 +1,4 @@
-module github.com/gofiber/contrib/ikisocket
+module github.com/gofiber/contrib/socketio
 
 go 1.20
 

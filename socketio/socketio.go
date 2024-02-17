@@ -1,4 +1,4 @@
-package ikisocket
+package socketio
 
 import (
 	"context"

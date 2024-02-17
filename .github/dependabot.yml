@@ -81,7 +81,7 @@ updates:
         schedule:
             interval: "daily"
      -  package-ecosystem: "gomod"
-        directory: "/ikisocket"  # Location of package manifests
+        directory: "/socketio"  # Location of package manifests
         labels:
             - "🤖 Dependencies"
         schedule:
