@@ -351,6 +351,126 @@ func Test_Req_Headers(t *testing.T) {
 	utils.AssertEqual(t, expected, logs)
 }
 
+func Test_Req_Headers_WrapHeaders(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	app := fiber.New()
+	app.Use(New(Config{
+		Logger:      &logger,
+		Fields:      []string{FieldReqHeaders},
+		WrapHeaders: true,
+	}))
+
+	app.Get("/", func(c *fiber.Ctx) error {
+		return c.SendString("hello")
+	})
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Add("foo", "bar")
+	req.Header.Add("baz", "foo")
+
+	resp, err := app.Test(req)
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
+
+	expected := map[string]interface{}{
+		"reqHeaders": map[string]interface{}{
+			"Host": "example.com",
+			"Baz":  "foo",
+			"Foo":  "bar",
+		},
+		"level":   "info",
+		"message": "Success",
+	}
+
+	var logs map[string]any
+	_ = json.Unmarshal(buf.Bytes(), &logs)
+
+	utils.AssertEqual(t, expected, logs)
+}
+
+func Test_Res_Headers(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	app := fiber.New()
+	app.Use(New(Config{
+		Logger: &logger,
+		Fields: []string{FieldResHeaders},
+	}))
+
+	app.Get("/", func(c *fiber.Ctx) error {
+		c.Set("foo", "bar")
+		c.Set("baz", "foo")
+		return c.SendString("hello")
+	})
+
+	req := httptest.NewRequest("GET", "/", nil)
+
+	resp, err := app.Test(req)
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
+
+	expected := map[string]interface{}{
+		"Content-Type": "text/plain; charset=utf-8",
+		"Baz":          "foo",
+		"Foo":          "bar",
+		"level":        "info",
+		"message":      "Success",
+	}
+
+	var logs map[string]any
+	_ = json.Unmarshal(buf.Bytes(), &logs)
+
+	utils.AssertEqual(t, expected, logs)
+}
+
+func Test_Res_Headers_WrapHeaders(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	app := fiber.New()
+	app.Use(New(Config{
+		Logger:      &logger,
+		Fields:      []string{FieldResHeaders},
+		WrapHeaders: true,
+	}))
+
+	app.Get("/", func(c *fiber.Ctx) error {
+		c.Set("foo", "bar")
+		c.Set("baz", "foo")
+		return c.SendString("hello")
+	})
+
+	req := httptest.NewRequest("GET", "/", nil)
+
+	resp, err := app.Test(req)
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
+
+	expected := map[string]interface{}{
+		"resHeaders": map[string]interface{}{
+			"Content-Type": "text/plain; charset=utf-8",
+			"Baz":          "foo",
+			"Foo":          "bar",
+		},
+		"level":   "info",
+		"message": "Success",
+	}
+
+	var logs map[string]any
+	_ = json.Unmarshal(buf.Bytes(), &logs)
+
+	utils.AssertEqual(t, expected, logs)
+}
+
 func Test_LoggerLevelsAndMessages(t *testing.T) {
 	t.Parallel()
 
