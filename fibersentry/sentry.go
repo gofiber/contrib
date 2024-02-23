@@ -52,6 +52,10 @@ func New(config ...Config) fiber.Handler {
 	}
 }
 
+func MustGetHubFromContext(ctx *fiber.Ctx) *sentry.Hub {
+	return ctx.Locals(hubKey).(*sentry.Hub)
+}
+
 func GetHubFromContext(ctx *fiber.Ctx) *sentry.Hub {
 	hub, ok := ctx.Locals(hubKey).(*sentry.Hub)
 	if !ok {
