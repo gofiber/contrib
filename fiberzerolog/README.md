@@ -38,11 +38,11 @@ fiberzerolog.New(config ...fiberzerolog.Config) fiber.Handler
 | Logger        | `*zerolog.Logger`               | Add custom zerolog logger.                                                                                                                                                        | `zerolog.New(os.Stderr).With().Timestamp().Logger()`                                                      |
 | GetLogger        | `func(*fiber.Ctx) zerolog.Logger`           | Get custom zerolog logger, if it's defined the returned logger will replace the `Logger` value.   | `nil`                                                      |
 | Fields        | `[]string`                     | Add fields what you want see.                                                                                                                                                 | `[]string{"latency", "status", "method", "url", "error"}`                            |
+| WrapHeaders   | bool                           | Wrap headers to dictionary.<br />If false: `{"method":"POST", "header-key":"header value"}`<br>If true: `{"method":"POST", "reqHeaders": {"header-key":"header value"}}`  | `false` |
 | Messages      | `[]string`                     | Custom response messages.                                                                                                                                                     | `[]string{"Server error", "Client error", "Success"}`                       |
 | Levels        | `[]zerolog.Level`              | Custom response levels.                                                                                                                                                       | `[]zerolog.Level{zerolog.ErrorLevel, zerolog.WarnLevel, zerolog.InfoLevel}` |
 | SkipURIs      | `[]string`                     | Skip logging these URI.                                                                                                                                                       | `[]string{}`                                                                |
-| GetResBody    | func(c *fiber.Ctx) []byte      | Define a function to get response body when return non-nil.<br />eg: When use compress middleware, resBody is unreadable. you can set GetResBody func to get readable resBody.  | `nil`                                                                       |
-
+| GetResBody    | func(c *fiber.Ctx) []byte      | Define a function to get response body when return non-nil.<br />eg: When use compress middleware, resBody is unreadable. you can set GetResBody func to get readable resBody.  | `nil` |
 ## Example
 
 ```go
