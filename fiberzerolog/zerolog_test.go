@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/requestid"
 	"github.com/gofiber/fiber/v2/utils"
 	"github.com/rs/zerolog"
 )
@@ -463,6 +464,68 @@ func Test_Res_Headers_WrapHeaders(t *testing.T) {
 		},
 		"level":   "info",
 		"message": "Success",
+	}
+
+	var logs map[string]any
+	_ = json.Unmarshal(buf.Bytes(), &logs)
+
+	utils.AssertEqual(t, expected, logs)
+}
+
+func Test_FieldsSnakeCase(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	app := fiber.New()
+	app.Use(requestid.New())
+	app.Use(New(Config{
+		Logger: &logger,
+		Fields: []string{
+			FieldResBody,
+			FieldQueryParams,
+			FieldBytesReceived,
+			FieldBytesSent,
+			FieldRequestID,
+			FieldResHeaders,
+			FieldReqHeaders,
+		},
+		FieldsSnakeCase: true,
+		WrapHeaders:     true,
+	}))
+
+	app.Get("/", func(c *fiber.Ctx) error {
+		c.Set("Foo", "bar")
+		return c.SendString("hello")
+	})
+
+	req := httptest.NewRequest("GET", "/?param=value", nil)
+	req.Header.Add("X-Request-ID", "uuid")
+	req.Header.Add("Baz", "foo")
+
+	resp, err := app.Test(req)
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
+
+	expected := map[string]interface{}{
+		"bytes_received": float64(0),
+		"bytes_sent":     float64(5),
+		"query_params":   "param=value",
+		"req_headers": map[string]interface{}{
+			"Host":         "example.com",
+			"Baz":          "foo",
+			"X-Request-Id": "uuid",
+		},
+		"res_headers": map[string]interface{}{
+			"Content-Type": "text/plain; charset=utf-8",
+			"Foo":          "bar",
+			"X-Request-Id": "uuid",
+		},
+		"request_id": "uuid",
+		"res_body":   "hello",
+		"level":      "info",
+		"message":    "Success",
 	}
 
 	var logs map[string]any
