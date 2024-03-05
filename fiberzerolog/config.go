@@ -31,6 +31,7 @@ const (
 	FieldRequestID     = "requestId"
 	FieldError         = "error"
 	FieldReqHeaders    = "reqHeaders"
+	FieldResHeaders    = "resHeaders"
 )
 
 // Config defines the config for middleware.
@@ -78,6 +79,13 @@ type Config struct {
 	//
 	// Optional. Default: {"ip", "latency", "status", "method", "url", "error"}
 	Fields []string
+
+	// Wrap headers to dictionary.
+	// If false: {"method":"POST", "header-key":"header value"}
+	// If true: {"method":"POST", "reqHeaders": {"header-key":"header value"}}
+	//
+	// Optional. Default: false
+	WrapHeaders bool
 
 	// Custom response messages.
 	// Response codes >= 500 will be logged with Messages[0].
@@ -166,9 +174,29 @@ func (c *Config) logger(fc *fiber.Ctx, latency time.Duration, err error) zerolog
 				zc = zc.Err(err)
 			}
 		case FieldReqHeaders:
-			fc.Request().Header.VisitAll(func(k, v []byte) {
-				zc = zc.Bytes(string(k), v)
-			})
+			if c.WrapHeaders {
+				dict := zerolog.Dict()
+				fc.Request().Header.VisitAll(func(k, v []byte) {
+					dict.Bytes(string(k), v)
+				})
+				zc = zc.Dict(FieldReqHeaders, dict)
+			} else {
+				fc.Request().Header.VisitAll(func(k, v []byte) {
+					zc = zc.Bytes(string(k), v)
+				})
+			}
+		case FieldResHeaders:
+			if c.WrapHeaders {
+				dict := zerolog.Dict()
+				fc.Response().Header.VisitAll(func(k, v []byte) {
+					dict.Bytes(string(k), v)
+				})
+				zc = zc.Dict(FieldResHeaders, dict)
+			} else {
+				fc.Response().Header.VisitAll(func(k, v []byte) {
+					zc = zc.Bytes(string(k), v)
+				})
+			}
 		}
 	}
 

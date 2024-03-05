@@ -228,6 +228,13 @@ func Middleware(opts ...Option) fiber.Handler {
 		spanStatus, spanMessage := semconv.SpanStatusFromHTTPStatusCodeAndSpanKind(response.StatusCode(), oteltrace.SpanKindServer)
 		span.SetStatus(spanStatus, spanMessage)
 
+		//Propagate tracing context as headers in outbound response
+		tracingHeaders := make(propagation.HeaderCarrier)
+		cfg.Propagators.Inject(c.UserContext(), tracingHeaders)
+		for _, headerKey := range tracingHeaders.Keys() {
+			c.Set(headerKey, tracingHeaders.Get(headerKey))
+		}
+
 		return nil
 	}
 }

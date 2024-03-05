@@ -1,4 +1,4 @@
-name: Release Drafter Fibersentry
+name: Release Drafter socketio
 on:
     push:
         # branches to consider in the event; optional, defaults to all
@@ -6,14 +6,14 @@ on:
             - master
             - main
         paths:
-            - 'fibersentry/**'
+            - 'socketio/**'
 jobs:
-    draft_release_fibersentry:
+    draft_release_socketio:
         runs-on: ubuntu-latest
         timeout-minutes: 30
         steps:
             -   uses: release-drafter/release-drafter@v6
                 with:
-                    config-name: release-drafter-fibersentry.yml
+                    config-name: release-drafter-socketio.yml
                 env:
                     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
