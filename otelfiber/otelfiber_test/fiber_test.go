@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -445,4 +446,80 @@ func TestCustomAttributes(t *testing.T) {
 	assert.Contains(t, attr, attribute.String("http.target", "/user/123?foo=bar"))
 	assert.Contains(t, attr, attribute.String("http.route", "/user/:id"))
 	assert.Contains(t, attr, attribute.String("http.query_params", "foo=bar"))
+}
+
+type fakeFile interface {
+	io.Reader
+}
+
+var _ fakeFile = (*fakeFileImpl)(nil)
+
+type fakeFileImpl struct {
+	done bool
+	pos  int
+}
+
+const fakeFileLen = 4096 * 2
+
+func (f *fakeFileImpl) Read(p []byte) (n int, err error) {
+	if f.done {
+		f.done = false
+		f.pos = 0
+		return 0, io.EOF
+	}
+
+	toRead := len(p)
+	if toRead > fakeFileLen-f.pos {
+		toRead = fakeFileLen - f.pos
+	}
+
+	for ix := 0; ix < toRead; ix++ {
+		p[ix] = byte(ix)
+		f.pos++
+	}
+
+	f.done = fakeFileLen-f.pos == 0
+	return toRead, nil
+}
+
+func TestStreamedResponseBody(t *testing.T) {
+	reader := metric.NewManualReader()
+	meterProvider := metric.NewMeterProvider(metric.WithReader(reader))
+	sr := new(tracetest.SpanRecorder)
+	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+
+	app := fiber.New()
+	app.Use(
+		otelfiber.Middleware(
+			otelfiber.WithMeterProvider(meterProvider),
+			otelfiber.WithTracerProvider(tracerProvider),
+		),
+	)
+
+	app.Post("/streams", func(ctx *fiber.Ctx) error {
+		return ctx.SendStream(&fakeFileImpl{})
+	})
+
+	request := httptest.NewRequest(http.MethodPost, "/streams", nil)
+	resp, err := app.Test(request, 3000)
+
+	// do and verify the request
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+
+	metrics := metricdata.ResourceMetrics{}
+	err = reader.Collect(context.Background(), &metrics)
+	assert.NoError(t, err)
+
+	assert.Len(t, metrics.ScopeMetrics, 1)
+	scopeMetrics := metrics.ScopeMetrics[0].Metrics
+	for _, m := range scopeMetrics {
+		if m.Name == otelfiber.MetricNameHttpServerResponseSize {
+			histogram := m.Data.(metricdata.Histogram[int64])
+			assert.Len(t, histogram.DataPoints, 1)
+			assert.Equal(t, histogram.DataPoints[0].Sum, int64(fakeFileLen))
+		}
+	}
 }
