@@ -48,7 +48,7 @@ import (
 
 Using the default config:
 ```go
-app.Use(swagger.New(cfg))
+app.Use(swagger.New())
 ```
 
 Using a custom config:
