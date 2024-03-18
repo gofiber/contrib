@@ -496,3 +496,41 @@ func TestOutboundTracingPropagationWithInboundContext(t *testing.T) {
 	assert.Equal(t, traceId, resp.Header.Get("X-B3-TraceId"))
 	assert.Equal(t, "1", resp.Header.Get("X-B3-Sampled"))
 }
+
+func TestCollectClientIP(t *testing.T) {
+	t.Parallel()
+
+	for _, enabled := range []bool{true, false} {
+		enabled := enabled
+		t.Run(fmt.Sprintf("enabled=%t", enabled), func(t *testing.T) {
+			t.Parallel()
+
+			sr := tracetest.NewSpanRecorder()
+			provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+			otel.SetTracerProvider(provider)
+
+			app := fiber.New()
+			app.Use(otelfiber.Middleware(
+				otelfiber.WithTracerProvider(provider),
+				otelfiber.WithCollectClientIP(enabled),
+			))
+			app.Get("/foo", func(ctx *fiber.Ctx) error {
+				return ctx.SendStatus(http.StatusNoContent)
+			})
+
+			req := httptest.NewRequest("GET", "/foo", nil)
+			_, _ = app.Test(req)
+
+			spans := sr.Ended()
+			require.Len(t, spans, 1)
+
+			span := spans[0]
+			attrs := span.Attributes()
+			if enabled {
+				assert.Contains(t, attrs, attribute.String("http.client_ip", "0.0.0.0"))
+			} else {
+				assert.NotContains(t, attrs, attribute.String("http.client_ip", "0.0.0.0"))
+			}
+		})
+	}
+}
