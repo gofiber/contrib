@@ -74,4 +74,5 @@ func main() {
 
 ## Credits
 
-- Original middleware was contributed and created by https://github.com/ansrivas under MIT license
+- Thanks to https://github.com/ansrivas for creating the original middleware and contributing it to the GoFiber Framework. This middleware was licensed under MIT License.
+- Thanks to https://github.com/Fesaa for adding support for Cache Metrics.
