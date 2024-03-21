@@ -26,7 +26,7 @@ go get -u github.com/gofiber/contrib/otelfiber/v2
 
 ## Signature
 
-```
+```go
 otelfiber.Middleware(opts ...otelfiber.Option) fiber.Handler
 ```
 
