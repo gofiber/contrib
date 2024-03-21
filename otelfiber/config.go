@@ -18,6 +18,7 @@ type config struct {
 	ServerName        *string
 	SpanNameFormatter func(*fiber.Ctx) string
 	CustomAttributes  func(*fiber.Ctx) []attribute.KeyValue
+	collectClientIP   bool
 }
 
 // Option specifies instrumentation configuration options.
@@ -94,5 +95,13 @@ func WithPort(port int) Option {
 func WithCustomAttributes(f func(ctx *fiber.Ctx) []attribute.KeyValue) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.CustomAttributes = f
+	})
+}
+
+// WithCollectClientIP specifies whether to collect the client's IP address
+// from the request. This is enabled by default.
+func WithCollectClientIP(collect bool) Option {
+	return optionFunc(func(cfg *config) {
+		cfg.collectClientIP = collect
 	})
 }
