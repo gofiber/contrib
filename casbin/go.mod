@@ -4,7 +4,7 @@ go 1.18
 
 require (
 	github.com/casbin/casbin/v2 v2.85.0
-	github.com/gofiber/fiber/v2 v2.52.2
+	github.com/gofiber/fiber/v2 v2.52.3
 )
 
 require (
