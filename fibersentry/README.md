@@ -41,10 +41,10 @@ fibersentry.New(config ...fibersentry.Config) fiber.Handler
 ## Usage
 
 `fibersentry` attaches an instance of `*sentry.Hub` (https://godoc.org/github.com/getsentry/sentry-go#Hub) to the request's context, which makes it available throughout the rest of the request's lifetime.
-You can access it by using the `fibersentry.GetHubFromContext()` or `fibersentry.MustGetHubFromContext()` method on the context itself in any of your proceeding middleware and routes. If the hub is not available, it will return `nil` or panic, respectively.
+You can access it by using the `fibersentry.GetHubFromContext()` or `fibersentry.MustGetHubFromContext()` method on the context itself in any of your proceeding middleware and routes.
 Keep in mind that `*sentry.Hub` should be used instead of the global `sentry.CaptureMessage`, `sentry.CaptureException`, or any other calls, as it keeps the separation of data between the requests.
 
-**Keep in mind that `*sentry.Hub` won't be available in middleware attached before to `fibersentry`!**
+**Keep in mind that `*sentry.Hub` won't be available in middleware attached before to `fibersentry`! In this case `GetHubFromContext()` returns nil and `MustGetHubFromContext()` will panic.**
 
 ```go
 package main
