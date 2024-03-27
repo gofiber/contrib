@@ -44,7 +44,7 @@ fibersentry.New(config ...fibersentry.Config) fiber.Handler
 You can access it by using the `fibersentry.GetHubFromContext()` or `fibersentry.MustGetHubFromContext()` method on the context itself in any of your proceeding middleware and routes.
 Keep in mind that `*sentry.Hub` should be used instead of the global `sentry.CaptureMessage`, `sentry.CaptureException`, or any other calls, as it keeps the separation of data between the requests.
 
-**Keep in mind that `*sentry.Hub` won't be available in middleware attached before to `fibersentry`! In this case `GetHubFromContext()` returns nil and `MustGetHubFromContext()` will panic.**
+- **Keep in mind that `*sentry.Hub` won't be available in middleware attached before `fibersentry`. In this case, `GetHubFromContext()` returns nil, and `MustGetHubFromContext()` will panic.**
 
 ```go
 package main
