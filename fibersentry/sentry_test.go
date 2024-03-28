@@ -12,141 +12,175 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func Test_Sentry(t *testing.T) {
-	app := fiber.New()
-	app.Use(New())
+type testCase struct {
+	desc    string
+	path    string
+	method  string
+	body    string
+	handler fiber.Handler
+	event   *sentry.Event
+}
 
-	testCases := []struct {
-		desc    string
-		path    string
-		method  string
-		body    string
-		handler fiber.Handler
-		event   *sentry.Event
-	}{
+func testCasesBeforeRegister(t *testing.T) []testCase {
+	return []testCase{
 		{
-			desc:   "panic",
-			path:   "/panic",
+			desc:   "MustGetHubFromContext without Sentry middleware",
+			path:   "/no-middleware",
 			method: "GET",
 			handler: func(c *fiber.Ctx) error {
-				panic("test")
-			},
-			event: &sentry.Event{
-				Level:   sentry.LevelFatal,
-				Message: "test",
-				Request: &sentry.Request{
-					URL:    "http://example.com/panic",
-					Method: "GET",
-					Headers: map[string]string{
-						"Host":       "example.com",
-						"User-Agent": "fiber",
-					},
-				},
-			},
-		},
-		{
-			desc:   "post",
-			path:   "/post",
-			method: "POST",
-			body:   "payload",
-			handler: func(c *fiber.Ctx) error {
-				hub := GetHubFromContext(c)
-				hub.CaptureMessage("post: " + string(c.Body()))
+				defer func() {
+					if r := recover(); r == nil {
+						t.Fatal("MustGetHubFromContext did not panic")
+					}
+				}()
+				_ = MustGetHubFromContext(c) // This should panic
 				return nil
 			},
-			event: &sentry.Event{
-				Level:   sentry.LevelInfo,
-				Message: "post: payload",
-				Request: &sentry.Request{
-					URL:    "http://example.com/post",
-					Method: "POST",
-					Data:   "payload",
-					Headers: map[string]string{
-						"Content-Length": "7",
-						"Host":           "example.com",
-						"User-Agent":     "fiber",
-					},
-				},
-			},
+			event: nil, // No event expected because a panic should occur
 		},
 		{
-			desc:   "get",
-			path:   "/get",
+			desc:   "GetHubFromContext without Sentry middleware",
+			path:   "/no-middleware-2",
 			method: "GET",
 			handler: func(c *fiber.Ctx) error {
 				hub := GetHubFromContext(c)
-				hub.CaptureMessage("get")
+				if hub != nil {
+					t.Fatal("Expected nil, got a Sentry hub instance")
+				}
 				return nil
 			},
-			event: &sentry.Event{
-				Level:   sentry.LevelInfo,
-				Message: "get",
-				Request: &sentry.Request{
-					URL:    "http://example.com/get",
-					Method: "GET",
-					Headers: map[string]string{
-						"Host":       "example.com",
-						"User-Agent": "fiber",
-					},
-				},
-			},
-		},
-		{
-			desc:   "large body",
-			path:   "/post/large",
-			method: "POST",
-			body:   strings.Repeat("Large", 3*1024), // 15 KB
-			handler: func(c *fiber.Ctx) error {
-				hub := GetHubFromContext(c)
-				hub.CaptureMessage(fmt.Sprintf("post: %d KB", len(c.Body())/1024))
-				return nil
-			},
-			event: &sentry.Event{
-				Level:   sentry.LevelInfo,
-				Message: "post: 15 KB",
-				Request: &sentry.Request{
-					URL:    "http://example.com/post/large",
-					Method: "POST",
-					// Actual request body omitted because too large.
-					Data: "",
-					Headers: map[string]string{
-						"Content-Length": "15360",
-						"Host":           "example.com",
-						"User-Agent":     "fiber",
-					},
-				},
-			},
-		},
-		{
-			desc:   "ignore body",
-			path:   "/post/body-ignored",
-			method: "POST",
-			body:   "client sends, fasthttp always reads, SDK reports",
-			handler: func(c *fiber.Ctx) error {
-				hub := GetHubFromContext(c)
-				hub.CaptureMessage("body ignored")
-				return nil
-			},
-			event: &sentry.Event{
-				Level:   sentry.LevelInfo,
-				Message: "body ignored",
-				Request: &sentry.Request{
-					URL:    "http://example.com/post/body-ignored",
-					Method: "POST",
-					// Actual request body included because fasthttp always
-					// reads full request body.
-					Data: "client sends, fasthttp always reads, SDK reports",
-					Headers: map[string]string{
-						"Content-Length": "48",
-						"Host":           "example.com",
-						"User-Agent":     "fiber",
-					},
-				},
-			},
+			event: nil, // No Sentry event expected here
 		},
 	}
+}
 
-	for _, tC := range testCases {
+var testCasesAfterRegister = []testCase{
+	{
+		desc:   "panic",
+		path:   "/panic",
+		method: "GET",
+		handler: func(c *fiber.Ctx) error {
+			panic("test")
+		},
+		event: &sentry.Event{
+			Level:   sentry.LevelFatal,
+			Message: "test",
+			Request: &sentry.Request{
+				URL:    "http://example.com/panic",
+				Method: "GET",
+				Headers: map[string]string{
+					"Host":       "example.com",
+					"User-Agent": "fiber",
+				},
+			},
+		},
+	},
+	{
+		desc:   "post",
+		path:   "/post",
+		method: "POST",
+		body:   "payload",
+		handler: func(c *fiber.Ctx) error {
+			hub := MustGetHubFromContext(c)
+			hub.CaptureMessage("post: " + string(c.Body()))
+			return nil
+		},
+		event: &sentry.Event{
+			Level:   sentry.LevelInfo,
+			Message: "post: payload",
+			Request: &sentry.Request{
+				URL:    "http://example.com/post",
+				Method: "POST",
+				Data:   "payload",
+				Headers: map[string]string{
+					"Content-Length": "7",
+					"Host":           "example.com",
+					"User-Agent":     "fiber",
+				},
+			},
+		},
+	},
+	{
+		desc:   "get",
+		path:   "/get",
+		method: "GET",
+		handler: func(c *fiber.Ctx) error {
+			hub := MustGetHubFromContext(c)
+			hub.CaptureMessage("get")
+			return nil
+		},
+		event: &sentry.Event{
+			Level:   sentry.LevelInfo,
+			Message: "get",
+			Request: &sentry.Request{
+				URL:    "http://example.com/get",
+				Method: "GET",
+				Headers: map[string]string{
+					"Host":       "example.com",
+					"User-Agent": "fiber",
+				},
+			},
+		},
+	},
+	{
+		desc:   "large body",
+		path:   "/post/large",
+		method: "POST",
+		body:   strings.Repeat("Large", 3*1024), // 15 KB
+		handler: func(c *fiber.Ctx) error {
+			hub := MustGetHubFromContext(c)
+			hub.CaptureMessage(fmt.Sprintf("post: %d KB", len(c.Body())/1024))
+			return nil
+		},
+		event: &sentry.Event{
+			Level:   sentry.LevelInfo,
+			Message: "post: 15 KB",
+			Request: &sentry.Request{
+				URL:    "http://example.com/post/large",
+				Method: "POST",
+				// Actual request body omitted because too large.
+				Data: "",
+				Headers: map[string]string{
+					"Content-Length": "15360",
+					"Host":           "example.com",
+					"User-Agent":     "fiber",
+				},
+			},
+		},
+	},
+	{
+		desc:   "ignore body",
+		path:   "/post/body-ignored",
+		method: "POST",
+		body:   "client sends, fasthttp always reads, SDK reports",
+		handler: func(c *fiber.Ctx) error {
+			hub := MustGetHubFromContext(c)
+			hub.CaptureMessage("body ignored")
+			return nil
+		},
+		event: &sentry.Event{
+			Level:   sentry.LevelInfo,
+			Message: "body ignored",
+			Request: &sentry.Request{
+				URL:    "http://example.com/post/body-ignored",
+				Method: "POST",
+				// Actual request body included because fasthttp always
+				// reads full request body.
+				Data: "client sends, fasthttp always reads, SDK reports",
+				Headers: map[string]string{
+					"Content-Length": "48",
+					"Host":           "example.com",
+					"User-Agent":     "fiber",
+				},
+			},
+		},
+	},
+}
+
+func Test_Sentry(t *testing.T) {
+	app := fiber.New()
+
+	testFunc := func(t *testing.T, tC testCase) {
 		t.Run(tC.desc, func(t *testing.T) {
 			if err := sentry.Init(sentry.ClientOptions{
 				BeforeSend: func(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
@@ -178,6 +212,16 @@ func Test_Sentry(t *testing.T) {
 				t.Fatalf("Status code = %d", resp.StatusCode)
 			}
 		})
+	}
+
+	for _, tC := range testCasesBeforeRegister(t) {
+		testFunc(t, tC)
+	}
+
+	app.Use(New())
+
+	for _, tC := range testCasesAfterRegister {
+		testFunc(t, tC)
 	}
 
 	if ok := sentry.Flush(time.Second); !ok {

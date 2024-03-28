@@ -18,7 +18,6 @@ func New(config ...Config) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		// Convert fiber request to http request
 		r, err := adaptor.ConvertRequest(c, true)
-
 		if err != nil {
 			return err
 		}
@@ -53,6 +52,14 @@ func New(config ...Config) fiber.Handler {
 	}
 }
 
-func GetHubFromContext(ctx *fiber.Ctx) *sentry.Hub {
+func MustGetHubFromContext(ctx *fiber.Ctx) *sentry.Hub {
 	return ctx.Locals(hubKey).(*sentry.Hub)
+}
+
+func GetHubFromContext(ctx *fiber.Ctx) *sentry.Hub {
+	hub, ok := ctx.Locals(hubKey).(*sentry.Hub)
+	if !ok {
+		return nil
+	}
+	return hub
 }

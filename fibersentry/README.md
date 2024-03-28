@@ -33,7 +33,7 @@ fibersentry.New(config ...fibersentry.Config) fiber.Handler
 ## Config
 
 | Property        | Type            | Description                                                                                                                                                                                                                                                          | Default           |
-|:----------------|:----------------|:---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|:------------------|
+| :-------------- | :-------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------- |
 | Repanic         | `bool`          | Repanic configures whether Sentry should repanic after recovery. Set to true, if [Recover](https://github.com/gofiber/fiber/tree/master/middleware/recover) middleware is used.                                                                                      | `false`           |
 | WaitForDelivery | `bool`          | WaitForDelivery configures whether you want to block the request before moving forward with the response. If [Recover](https://github.com/gofiber/fiber/tree/master/middleware/recover) middleware is used, it's safe to either skip this option or set it to false. | `false`           |
 | Timeout         | `time.Duration` | Timeout for the event delivery requests.                                                                                                                                                                                                                             | `time.Second * 2` |
@@ -41,10 +41,10 @@ fibersentry.New(config ...fibersentry.Config) fiber.Handler
 ## Usage
 
 `fibersentry` attaches an instance of `*sentry.Hub` (https://godoc.org/github.com/getsentry/sentry-go#Hub) to the request's context, which makes it available throughout the rest of the request's lifetime.
-You can access it by using the `fibersentry.GetHubFromContext()` method on the context itself in any of your proceeding middleware and routes.
-And it should be used instead of the global `sentry.CaptureMessage`, `sentry.CaptureException`, or any other calls, as it keeps the separation of data between the requests.
+You can access it by using the `fibersentry.GetHubFromContext()` or `fibersentry.MustGetHubFromContext()` method on the context itself in any of your proceeding middleware and routes.
+Keep in mind that `*sentry.Hub` should be used instead of the global `sentry.CaptureMessage`, `sentry.CaptureException`, or any other calls, as it keeps the separation of data between the requests.
 
-**Keep in mind that `*sentry.Hub` won't be available in middleware attached before to `fibersentry`!**
+- **Keep in mind that `*sentry.Hub` won't be available in middleware attached before `fibersentry`. In this case, `GetHubFromContext()` returns nil, and `MustGetHubFromContext()` will panic.**
 
 ```go
 package main
