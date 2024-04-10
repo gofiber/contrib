@@ -23,9 +23,9 @@ func TestHCaptcha(t *testing.T) {
 		},
 	})
 
-	app.Get("/hcaptcha", m, func(c fiber.Ctx) error {
+	app.Get("/hcaptcha", func(c fiber.Ctx) error {
 		return c.Status(200).SendString("ok")
-	})
+	}, m)
 
 	req := httptest.NewRequest("GET", "/hcaptcha?token="+TestResponseToken, nil)
 	req.Header.Set("Content-Type", "application/json")

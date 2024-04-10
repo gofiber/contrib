@@ -47,7 +47,7 @@ func (h *HCaptcha) Validate(c fiber.Ctx) error {
 	req.Header.SetMethod("POST")
 	req.Header.SetContentType("application/x-www-form-urlencoded; charset=UTF-8")
 	req.Header.Set("Accept", "application/json")
-	req.SetRequestURI(c.Host())
+	req.SetRequestURI(h.SiteVerifyURL)
 	res := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(res)
 
