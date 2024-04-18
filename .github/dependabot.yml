@@ -80,7 +80,7 @@ updates:
             - "🤖 Dependencies"
         schedule:
             interval: "daily"
-     -  package-ecosystem: "gomod"
+    -   package-ecosystem: "gomod"
         directory: "/socketio"  # Location of package manifests
         labels:
             - "🤖 Dependencies"
@@ -100,7 +100,7 @@ updates:
           interval: "daily"
     - package-ecosystem: "gomod"
       directory: "/loadshed" # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
+      labels:
+          - "🤖 Dependencies"
+      schedule:
+          interval: "daily"
