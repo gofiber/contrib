@@ -13,14 +13,21 @@ id: hcaptcha
 
 A simple [HCaptcha](https://hcaptcha.com) middleware to prevent bot attacks.
 
-**Note: Requires Go 1.21 and above**
+:::note
+
+Requires Go **1.21** and above
+
+:::
 
 ## Install
 
-This middleware only supports Fiber v3.
+:::caution
 
+This middleware only supports Fiber **v3**.
 
-```
+:::
+
+```shell
 go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/hcaptcha
 ```
