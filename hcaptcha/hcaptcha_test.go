@@ -13,6 +13,7 @@ const (
 	TestResponseToken = "20000000-aaaa-bbbb-cccc-000000000002" // Got by using this site key: 20000000-ffff-ffff-ffff-000000000002
 )
 
+// TestHCaptcha tests the hcaptcha middleware
 func TestHCaptcha(t *testing.T) {
 	app := fiber.New()
 

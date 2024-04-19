@@ -12,10 +12,12 @@ import (
 	"net/url"
 )
 
+// HCaptcha is a middleware handler that checks for an HCaptcha UUID and then validates it.
 type HCaptcha struct {
 	Config
 }
 
+// New creates a new HCaptcha middleware handler.
 func New(config Config) fiber.Handler {
 	if config.SiteVerifyURL == "" {
 		config.SiteVerifyURL = DefaultSiteVerifyURL
@@ -31,6 +33,7 @@ func New(config Config) fiber.Handler {
 	return h.Validate
 }
 
+// Validate checks for an HCaptcha UUID and then validates it.
 func (h *HCaptcha) Validate(c fiber.Ctx) error {
 	token, err := h.ResponseKeyFunc(c)
 	if err != nil {
@@ -51,6 +54,7 @@ func (h *HCaptcha) Validate(c fiber.Ctx) error {
 	res := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(res)
 
+	// Send the request to the HCaptcha API
 	if err = fasthttp.Do(req, res); err != nil {
 		c.Status(fiber.StatusBadRequest)
 		return fmt.Errorf("error sending request to HCaptcha API: %w", err)
