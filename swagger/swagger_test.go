@@ -274,13 +274,14 @@ func TestNewWithFileContent(t *testing.T) {
 		cfg := Config{
 			Path:        "custompath",
 			FileContent: swaggerJSON,
+			FilePath:    "doesnotexist-swagger.json",
 		}
 		app.Use(New(cfg))
 
 		w1 := performRequest("GET", "/custompath", app)
 		require.Equal(t, 200, w1.StatusCode)
 
-		w2 := performRequest("GET", "/swagger.json", app)
+		w2 := performRequest("GET", "/doesnotexist-swagger.json", app)
 		require.Equal(t, 200, w2.StatusCode)
 
 		w3 := performRequest("GET", "/notfound", app)
@@ -293,13 +294,14 @@ func TestNewWithFileContent(t *testing.T) {
 		cfg := Config{
 			BasePath:    "/api/v1",
 			FileContent: swaggerJSON,
+			FilePath:    "doesnotexist-swagger.json",
 		}
 		app.Use(New(cfg))
 
 		w1 := performRequest("GET", "/api/v1/docs", app)
 		require.Equal(t, 200, w1.StatusCode)
 
-		w2 := performRequest("GET", "/api/v1/swagger.json", app)
+		w2 := performRequest("GET", "/api/v1/doesnotexist-swagger.json", app)
 		require.Equal(t, 200, w2.StatusCode)
 
 		w3 := performRequest("GET", "/notfound", app)
@@ -311,7 +313,7 @@ func TestNewWithFileContent(t *testing.T) {
 
 		cfg := Config{
 			BasePath:    "/",
-			FilePath:    "swagger.json",
+			FilePath:    "doesnotexist-swagger.json",
 			FileContent: swaggerJSON,
 		}
 		app.Use(New(cfg))
@@ -319,7 +321,7 @@ func TestNewWithFileContent(t *testing.T) {
 		w1 := performRequest("GET", "/docs", app)
 		require.Equal(t, 200, w1.StatusCode)
 
-		w2 := performRequest("GET", "/swagger.json", app)
+		w2 := performRequest("GET", "/doesnotexist-swagger.json", app)
 		require.Equal(t, 200, w2.StatusCode)
 
 		w3 := performRequest("GET", "/notfound", app)
@@ -331,7 +333,7 @@ func TestNewWithFileContent(t *testing.T) {
 
 		cfg := Config{
 			BasePath:    "/",
-			FilePath:    "swagger.json",
+			FilePath:    "doesnotexist-swagger.json",
 			Path:        "swagger",
 			FileContent: swaggerJSON,
 		}
@@ -340,7 +342,7 @@ func TestNewWithFileContent(t *testing.T) {
 		w1 := performRequest("GET", "/swagger", app)
 		require.Equal(t, 200, w1.StatusCode)
 
-		w2 := performRequest("GET", "/swagger.json", app)
+		w2 := performRequest("GET", "/doesnotexist-swagger.json", app)
 		require.Equal(t, 200, w2.StatusCode)
 
 		w3 := performRequest("GET", "/notfound", app)
@@ -352,7 +354,7 @@ func TestNewWithFileContent(t *testing.T) {
 
 		cfg := Config{
 			BasePath:    "/",
-			FilePath:    "./swagger.yaml",
+			FilePath:    "./doesnotexist-swagger.yaml",
 			FileContent: swaggerYAML,
 		}
 		app.Use(New(cfg))
@@ -360,7 +362,7 @@ func TestNewWithFileContent(t *testing.T) {
 		w1 := performRequest("GET", "/docs", app)
 		require.Equal(t, 200, w1.StatusCode)
 
-		w2 := performRequest("GET", "/swagger.yaml", app)
+		w2 := performRequest("GET", "/doesnotexist-swagger.yaml", app)
 		require.Equal(t, 200, w2.StatusCode)
 
 		w3 := performRequest("GET", "/notfound", app)
@@ -372,7 +374,7 @@ func TestNewWithFileContent(t *testing.T) {
 
 		cfg := Config{
 			BasePath:    "/",
-			FilePath:    "swagger.yaml",
+			FilePath:    "doesnotexist-swagger.yaml",
 			Path:        "swagger",
 			FileContent: swaggerYAML,
 		}
@@ -381,7 +383,7 @@ func TestNewWithFileContent(t *testing.T) {
 		w1 := performRequest("GET", "/swagger", app)
 		require.Equal(t, 200, w1.StatusCode)
 
-		w2 := performRequest("GET", "/swagger.yaml", app)
+		w2 := performRequest("GET", "/doesnotexist-swagger.yaml", app)
 		require.Equal(t, 200, w2.StatusCode)
 
 		w3 := performRequest("GET", "/notfound", app)
@@ -391,14 +393,17 @@ func TestNewWithFileContent(t *testing.T) {
 	t.Run("Endpoint check with empty custom config", func(t *testing.T) {
 		app := fiber.New()
 
-		cfg := Config{FileContent: swaggerJSON}
+		cfg := Config{
+			FileContent: swaggerJSON,
+			FilePath:    "doesnotexist-swagger.json",
+		}
 
 		app.Use(New(cfg))
 
 		w1 := performRequest("GET", "/docs", app)
 		require.Equal(t, 200, w1.StatusCode)
 
-		w2 := performRequest("GET", "/swagger.json", app)
+		w2 := performRequest("GET", "/doesnotexist-swagger.json", app)
 		require.Equal(t, 200, w2.StatusCode)
 
 		w3 := performRequest("GET", "/notfound", app)
@@ -423,23 +428,25 @@ func TestNewWithFileContent(t *testing.T) {
 		app.Use(New(Config{
 			BasePath:    "/api/v1",
 			FileContent: swaggerJSON,
+			FilePath:    "doesnotexist-swagger.json",
 		}))
 
 		app.Use(New(Config{
 			BasePath:    "/api/v2",
 			FileContent: swaggerJSON,
+			FilePath:    "doesnotexist-swagger.json",
 		}))
 
 		w1 := performRequest("GET", "/api/v1/docs", app)
 		require.Equal(t, 200, w1.StatusCode)
 
-		w2 := performRequest("GET", "/api/v1/swagger.json", app)
+		w2 := performRequest("GET", "/api/v1/doesnotexist-swagger.json", app)
 		require.Equal(t, 200, w2.StatusCode)
 
 		w3 := performRequest("GET", "/api/v2/docs", app)
 		require.Equal(t, 200, w3.StatusCode)
 
-		w4 := performRequest("GET", "/api/v2/swagger.json", app)
+		w4 := performRequest("GET", "/api/v2/doesnotexist-swagger.json", app)
 		require.Equal(t, 200, w4.StatusCode)
 
 		w5 := performRequest("GET", "/notfound", app)
@@ -452,6 +459,7 @@ func TestNewWithFileContent(t *testing.T) {
 		app.Use(New(Config{
 			BasePath:    "/api/v1",
 			FileContent: swaggerJSON,
+			FilePath:    "doesnotexist-swagger.json",
 		}))
 
 		app.Get("/api/v1/tasks", func(c *fiber.Ctx) error {
@@ -465,7 +473,7 @@ func TestNewWithFileContent(t *testing.T) {
 		w1 := performRequest("GET", "/api/v1/docs", app)
 		require.Equal(t, 200, w1.StatusCode)
 
-		w2 := performRequest("GET", "/api/v1/swagger.json", app)
+		w2 := performRequest("GET", "/api/v1/doesnotexist-swagger.json", app)
 		require.Equal(t, 200, w2.StatusCode)
 
 		w3 := performRequest("GET", "/notfound", app)
