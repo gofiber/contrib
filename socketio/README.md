@@ -192,15 +192,15 @@ func main() {
 
 ## Supported events
 
-| Const           | Event        | Description                                                                                                                                                     |
-|:----------------|:-------------|:----------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| EventMessage    | `message`    | Fired when a Text/Binary message is received                                                                                                                    |
-| EventPing       | `ping`       | More details here: @url <https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API/Writing_WebSocket_servers#Pings_and_Pongs_The_Heartbeat_of_WebSockets> |
-| EventPong       | `pong`       | Refer to ping description                                                                                                                                       |
-| EventDisconnect | `disconnect` | Fired on disconnection. The error provided in disconnection event as defined in RFC 6455, section 11.7.                                                         |
-| EventConnect    | `connect`    | Fired on first connection                                                                                                                                       |
-| EventClose      | `close`      | Fired when the connection is actively closed from the server. Different from client disconnection                                                               |
-| EventError      | `error`      | Fired when some error appears useful also for debugging websockets                                                                                              |
+| Const           | Event        | Description                                                                                                                                                |
+|:----------------|:-------------|:-----------------------------------------------------------------------------------------------------------------------------------------------------------|
+| EventMessage    | `message`    | Fired when a Text/Binary message is received                                                                                                               |
+| EventPing       | `ping`       | [More details here](https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API/Writing_WebSocket_servers#Pings_and_Pongs_The_Heartbeat_of_WebSockets) |
+| EventPong       | `pong`       | Refer to ping description                                                                                                                                  |
+| EventDisconnect | `disconnect` | Fired on disconnection. The error provided in disconnection event as defined in RFC 6455, section 11.7.                                                    |
+| EventConnect    | `connect`    | Fired on first connection                                                                                                                                  |
+| EventClose      | `close`      | Fired when the connection is actively closed from the server. Different from client disconnection                                                          |
+| EventError      | `error`      | Fired when some error appears useful also for debugging websockets                                                                                         |
 
 ## Event Payload object
 
