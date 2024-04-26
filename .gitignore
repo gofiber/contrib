@@ -24,7 +24,5 @@
 *.workspace
 
 # Dependencies
-/vendor/
-vendor/
 vendor
 /Godeps/

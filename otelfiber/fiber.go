@@ -33,7 +33,9 @@ const (
 
 // Middleware returns fiber handler which will trace incoming requests.
 func Middleware(opts ...Option) fiber.Handler {
-	cfg := config{}
+	cfg := config{
+		collectClientIP: true,
+	}
 	for _, opt := range opts {
 		opt.apply(&cfg)
 	}
