@@ -6,7 +6,7 @@ require (
 	github.com/fasthttp/websocket v1.5.8
 	github.com/gofiber/fiber/v2 v2.52.4
 	github.com/stretchr/testify v1.9.0
-	github.com/valyala/fasthttp v1.52.0
+	github.com/valyala/fasthttp v1.53.0
 )
 
 require (
