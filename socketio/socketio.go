@@ -234,7 +234,7 @@ var listeners = safeListeners{
 	list: make(map[string][]eventCallback),
 }
 
-func New(callback func(kws *Websocket)) func(*fiber.Ctx) error {
+func New(callback func(kws *Websocket), config ...websocket.Config) func(*fiber.Ctx) error {
 	return websocket.New(func(c *websocket.Conn) {
 		kws := &Websocket{
 			Conn: c,
@@ -269,7 +269,7 @@ func New(callback func(kws *Websocket)) func(*fiber.Ctx) error {
 
 		// Run the loop for the given connection
 		kws.run()
-	})
+	}, config...)
 }
 
 func (kws *Websocket) GetUUID() string {
