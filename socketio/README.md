@@ -24,7 +24,8 @@ go get -u github.com/gofiber/contrib/socketio
 ```go
 // Initialize new socketio in the callback this will
 // execute a callback that expects kws *Websocket Object
-func New(callback func(kws *Websocket)) func(*fiber.Ctx) error
+// and optional config websocket.Config
+func New(callback func(kws *Websocket), config ...websocket.Config) func(*fiber.Ctx) error
 ```
 
 ```go
