@@ -5,7 +5,7 @@ go 1.19
 require (
 	github.com/gofiber/fiber/v2 v2.52.4
 	github.com/stretchr/testify v1.9.0
-	github.com/valyala/fasthttp v1.53.0
+	github.com/valyala/fasthttp v1.54.0
 	go.uber.org/zap v1.27.0
 )
 
