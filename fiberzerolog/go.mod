@@ -4,7 +4,7 @@ go 1.18
 
 require (
 	github.com/gofiber/fiber/v2 v2.52.4
-	github.com/rs/zerolog v1.32.0
+	github.com/rs/zerolog v1.33.0
 )
 
 require (
