@@ -9,7 +9,7 @@ const (
 
 var OptionsDefault = Options{
 	ValidationRule:   MatchAllRule,
-	PermissionParser: PermissionParserWithSeperator(":"),
+	PermissionParser: PermissionParserWithSeparator(":"),
 }
 
 type (
@@ -45,7 +45,7 @@ func WithPermissionParser(pp PermissionParserFunc) Option {
 	})
 }
 
-func PermissionParserWithSeperator(sep string) PermissionParserFunc {
+func PermissionParserWithSeparator(sep string) PermissionParserFunc {
 	return func(str string) []string {
 		return strings.Split(str, sep)
 	}
