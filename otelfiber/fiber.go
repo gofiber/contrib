@@ -2,6 +2,8 @@ package otelfiber
 
 import (
 	"context"
+	"github.com/valyala/fasthttp"
+	"io"
 	"net/http"
 	"time"
 
@@ -30,6 +32,27 @@ const (
 	UnitBytes         = "By"
 	UnitMilliseconds  = "ms"
 )
+
+var _ io.Reader = (*bodyStreamSizeReader)(nil)
+
+type bodyStreamSizeReader struct {
+	impl       io.Reader
+	histogram  metric.Int64Histogram
+	measureOpt metric.MeasurementOption
+	ctx        context.Context
+	read       int64
+}
+
+func (b *bodyStreamSizeReader) Read(p []byte) (n int, err error) {
+	n, err = b.impl.Read(p)
+	b.read += int64(n)
+	if err == io.EOF {
+		b.histogram.Record(b.ctx, b.read, b.measureOpt)
+		b.read = 0
+	}
+
+	return n, err
+}
 
 // Middleware returns fiber handler which will trace incoming requests.
 func Middleware(opts ...Option) fiber.Handler {
@@ -98,7 +121,8 @@ func Middleware(opts ...Option) fiber.Handler {
 		copy(responseMetricAttrs, requestMetricsAttrs)
 
 		reqHeader := make(http.Header)
-		c.Request().Header.VisitAll(func(k, v []byte) {
+		request := c.Request()
+		request.Header.VisitAll(func(k, v []byte) {
 			reqHeader.Add(string(k), string(v))
 		})
 
@@ -128,13 +152,54 @@ func Middleware(opts ...Option) fiber.Handler {
 		}
 
 		// extract common attributes from response
+		response := c.Response()
 		responseAttrs := append(
-			semconv.HTTPAttributesFromHTTPStatusCode(c.Response().StatusCode()),
+			semconv.HTTPAttributesFromHTTPStatusCode(response.StatusCode()),
 			semconv.HTTPRouteKey.String(c.Route().Path), // no need to copy c.Route().Path: route strings should be immutable across app lifecycle
 		)
 
-		requestSize := int64(len(c.Request().Body()))
-		responseSize := int64(len(c.Response().Body()))
+		var (
+			requestSize  int64
+			responseSize int64
+		)
+
+		if !request.IsBodyStream() {
+			requestSize = int64(len(request.Body()))
+		} else {
+			// NOTICE: we have to create response copy because underlying steam closed before change
+			copyReq := &fasthttp.Request{}
+			request.CopyTo(copyReq)
+			copyReq.SetBodyStream(&bodyStreamSizeReader{
+				impl:      response.BodyStream(),
+				histogram: httpServerRequestSize,
+				measureOpt: metric.WithAttributes(append(
+					responseMetricAttrs,
+					responseAttrs...)...),
+				ctx:  context.WithoutCancel(savedCtx),
+				read: 0,
+			}, -1)
+
+			request = copyReq
+		}
+
+		if !response.IsBodyStream() {
+			responseSize = int64(len(response.Body()))
+		} else {
+			// NOTICE: we have to create response copy because underlying steam closed before change
+			copyResp := &fasthttp.Response{}
+			response.CopyTo(copyResp)
+			copyResp.SetBodyStream(&bodyStreamSizeReader{
+				impl:      response.BodyStream(),
+				histogram: httpServerResponseSize,
+				measureOpt: metric.WithAttributes(append(
+					responseMetricAttrs,
+					responseAttrs...)...),
+				ctx:  context.WithoutCancel(savedCtx),
+				read: 0,
+			}, -1)
+
+			response = copyResp
+		}
 
 		defer func() {
 			responseMetricAttrs = append(
@@ -143,8 +208,13 @@ func Middleware(opts ...Option) fiber.Handler {
 
 			httpServerActiveRequests.Add(savedCtx, -1, metric.WithAttributes(requestMetricsAttrs...))
 			httpServerDuration.Record(savedCtx, float64(time.Since(start).Microseconds())/1000, metric.WithAttributes(responseMetricAttrs...))
-			httpServerRequestSize.Record(savedCtx, requestSize, metric.WithAttributes(responseMetricAttrs...))
-			httpServerResponseSize.Record(savedCtx, responseSize, metric.WithAttributes(responseMetricAttrs...))
+			if !request.IsBodyStream() {
+				httpServerRequestSize.Record(savedCtx, requestSize, metric.WithAttributes(responseMetricAttrs...))
+			}
+
+			if !response.IsBodyStream() {
+				httpServerResponseSize.Record(savedCtx, responseSize, metric.WithAttributes(responseMetricAttrs...))
+			}
 
 			c.SetUserContext(savedCtx)
 			cancel()
@@ -157,7 +227,7 @@ func Middleware(opts ...Option) fiber.Handler {
 			)...)
 		span.SetName(cfg.SpanNameFormatter(c))
 
-		spanStatus, spanMessage := semconv.SpanStatusFromHTTPStatusCodeAndSpanKind(c.Response().StatusCode(), oteltrace.SpanKindServer)
+		spanStatus, spanMessage := semconv.SpanStatusFromHTTPStatusCodeAndSpanKind(response.StatusCode(), oteltrace.SpanKindServer)
 		span.SetStatus(spanStatus, spanMessage)
 
 		//Propagate tracing context as headers in outbound response
