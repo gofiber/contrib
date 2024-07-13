@@ -25,6 +25,9 @@ type Config struct {
 	// ErrorStatusCodeHandler is executed when an error is returned from handler
 	// Optional. Default: DefaultErrorStatusCodeHandler
 	ErrorStatusCodeHandler func(c *fiber.Ctx, err error) int
+	// Next defines a function to skip this middleware when returned true.
+	// Optional. Default: nil
+	Next func(c *fiber.Ctx) bool
 }
 
 var ConfigDefault = Config{
@@ -33,6 +36,7 @@ var ConfigDefault = Config{
 	AppName:                "fiber-api",
 	Enabled:                false,
 	ErrorStatusCodeHandler: DefaultErrorStatusCodeHandler,
+	Next:                   nil,
 }
 
 func New(cfg Config) fiber.Handler {
@@ -66,6 +70,10 @@ func New(cfg Config) fiber.Handler {
 	}
 
 	return func(c *fiber.Ctx) error {
+		if cfg.Next != nil && cfg.Next(c) {
+			return c.Next()
+		}
+
 		txn := app.StartTransaction(createTransactionName(c))
 		defer txn.End()
 

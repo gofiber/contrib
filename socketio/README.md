@@ -24,7 +24,8 @@ go get -u github.com/gofiber/contrib/socketio
 ```go
 // Initialize new socketio in the callback this will
 // execute a callback that expects kws *Websocket Object
-func New(callback func(kws *Websocket)) func(*fiber.Ctx) error
+// and optional config websocket.Config
+func New(callback func(kws *Websocket), config ...websocket.Config) func(*fiber.Ctx) error
 ```
 
 ```go
@@ -98,12 +99,12 @@ func main() {
 
     // Multiple event handling supported
     socketio.On(socketio.EventConnect, func(ep *socketio.EventPayload) {
-        fmt.Println(fmt.Sprintf("Connection event 1 - User: %s", ep.Kws.GetStringAttribute("user_id")))
+        fmt.Printf("Connection event 1 - User: %s", ep.Kws.GetStringAttribute("user_id"))
     })
 
     // Custom event handling supported
     socketio.On("CUSTOM_EVENT", func(ep *socketio.EventPayload) {
-        fmt.Println(fmt.Sprintf("Custom event - User: %s", ep.Kws.GetStringAttribute("user_id")))
+        fmt.Printf("Custom event - User: %s", ep.Kws.GetStringAttribute("user_id"))
         // --->
 
         // DO YOUR BUSINESS HERE
@@ -114,7 +115,7 @@ func main() {
     // On message event
     socketio.On(socketio.EventMessage, func(ep *socketio.EventPayload) {
 
-        fmt.Println(fmt.Sprintf("Message event - User: %s - Message: %s", ep.Kws.GetStringAttribute("user_id"), string(ep.Data)))
+        fmt.Printf("Message event - User: %s - Message: %s", ep.Kws.GetStringAttribute("user_id"), string(ep.Data))
 
         message := MessageObject{}
 
@@ -148,7 +149,7 @@ func main() {
     socketio.On(socketio.EventDisconnect, func(ep *socketio.EventPayload) {
         // Remove the user from the local clients
         delete(clients, ep.Kws.GetStringAttribute("user_id"))
-        fmt.Println(fmt.Sprintf("Disconnection event - User: %s", ep.Kws.GetStringAttribute("user_id")))
+        fmt.Printf("Disconnection event - User: %s", ep.Kws.GetStringAttribute("user_id"))
     })
 
     // On close event
@@ -156,12 +157,12 @@ func main() {
     socketio.On(socketio.EventClose, func(ep *socketio.EventPayload) {
         // Remove the user from the local clients
         delete(clients, ep.Kws.GetStringAttribute("user_id"))
-        fmt.Println(fmt.Sprintf("Close event - User: %s", ep.Kws.GetStringAttribute("user_id")))
+        fmt.Printf("Close event - User: %s", ep.Kws.GetStringAttribute("user_id"))
     })
 
     // On error event
     socketio.On(socketio.EventError, func(ep *socketio.EventPayload) {
-        fmt.Println(fmt.Sprintf("Error event - User: %s", ep.Kws.GetStringAttribute("user_id")))
+        fmt.Printf("Error event - User: %s", ep.Kws.GetStringAttribute("user_id"))
     })
 
     app.Get("/ws/:id", socketio.New(func(kws *socketio.Websocket) {
