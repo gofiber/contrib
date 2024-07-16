@@ -10,15 +10,16 @@ import (
 
 // config is used to configure the Fiber middleware.
 type config struct {
-	Next              func(*fiber.Ctx) bool
-	TracerProvider    oteltrace.TracerProvider
-	MeterProvider     otelmetric.MeterProvider
-	Port              *int
-	Propagators       propagation.TextMapPropagator
-	ServerName        *string
-	SpanNameFormatter func(*fiber.Ctx) string
-	CustomAttributes  func(*fiber.Ctx) []attribute.KeyValue
-	collectClientIP   bool
+	Next                   func(*fiber.Ctx) bool
+	TracerProvider         oteltrace.TracerProvider
+	MeterProvider          otelmetric.MeterProvider
+	Port                   *int
+	Propagators            propagation.TextMapPropagator
+	ServerName             *string
+	SpanNameFormatter      func(*fiber.Ctx) string
+	CustomAttributes       func(*fiber.Ctx) []attribute.KeyValue
+	CustomMetricAttributes func(*fiber.Ctx) []attribute.KeyValue
+	collectClientIP        bool
 }
 
 // Option specifies instrumentation configuration options.
@@ -95,6 +96,14 @@ func WithPort(port int) Option {
 func WithCustomAttributes(f func(ctx *fiber.Ctx) []attribute.KeyValue) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.CustomAttributes = f
+	})
+}
+
+// WithCustomMetricAttributes specifies a function that will be called on every
+// request and the returned attributes will be added to the metrics.
+func WithCustomMetricAttributes(f func(ctx *fiber.Ctx) []attribute.KeyValue) Option {
+	return optionFunc(func(cfg *config) {
+		cfg.CustomMetricAttributes = f
 	})
 }
 
