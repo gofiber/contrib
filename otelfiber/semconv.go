@@ -26,6 +26,10 @@ func httpServerMetricAttributesFromRequest(c *fiber.Ctx, cfg config) []attribute
 		attrs = append(attrs, semconv.HTTPServerNameKey.String(*cfg.ServerName))
 	}
 
+	if cfg.CustomMetricAttributes != nil {
+		attrs = append(attrs, cfg.CustomMetricAttributes(c)...)
+	}
+
 	return attrs
 }
 
