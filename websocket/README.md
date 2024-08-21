@@ -150,4 +150,4 @@ The config `Subprotocols` only helps you negotiate subprotocols and sets a `Sec-
 
 All connections will be sent to the handler function no matter whether the subprotocol negotiation is successful or not. You can get the selected subprotocol from `conn.Subprotocol()`. 
 
-If there is a connection with `Sec-Websocket-Protocol` header in the request with failed negotitation, the connection will be disconnected by browser after received upgrade response immediately.
+If a connection includes the `Sec-Websocket-Protocol` header in the request but the protocol negotiation fails, the browser will immediately disconnect the connection after receiving the upgrade response.
