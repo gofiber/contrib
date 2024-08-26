@@ -567,13 +567,12 @@ func (kws *Websocket) disconnected(err error) {
 	kws.mu.Lock()
 	defer kws.mu.Unlock()
 
-	kws.fireEvent(EventDisconnect, nil, err)
-
 	// may be called multiple times from different go routines
 	if kws.IsAlive() {
+		kws.setAlive(false)
 		close(kws.done)
+		kws.fireEvent(EventDisconnect, nil, err)
 	}
-	kws.setAlive(false)
 
 	// Fire error event if the connection is
 	// disconnected by an error
