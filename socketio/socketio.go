@@ -125,7 +125,8 @@ type ws interface {
 }
 
 type Websocket struct {
-	mu sync.RWMutex
+	once sync.Once
+	mu   sync.RWMutex
 	// The Fiber.Websocket connection
 	Conn *websocket.Conn
 	// Define if the connection is alive or not
@@ -564,13 +565,14 @@ func (kws *Websocket) read(ctx context.Context) {
 
 // When the connection closes, disconnected method
 func (kws *Websocket) disconnected(err error) {
+	kws.fireEvent(EventDisconnect, nil, err)
+
 	// may be called multiple times from different go routines
 	if kws.IsAlive() {
-		kws.setAlive(false)
-		if !kws.IsAlive() {
+		kws.once.Do(func() {
+			kws.setAlive(false)
 			close(kws.done)
-		}
-		kws.fireEvent(EventDisconnect, nil, err)
+		})
 	}
 
 	// Fire error event if the connection is
