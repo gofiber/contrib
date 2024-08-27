@@ -564,13 +564,12 @@ func (kws *Websocket) read(ctx context.Context) {
 
 // When the connection closes, disconnected method
 func (kws *Websocket) disconnected(err error) {
-	kws.mu.Lock()
-	defer kws.mu.Unlock()
-
 	// may be called multiple times from different go routines
 	if kws.IsAlive() {
 		kws.setAlive(false)
-		close(kws.done)
+		if !kws.IsAlive() {
+			close(kws.done)
+		}
 		kws.fireEvent(EventDisconnect, nil, err)
 	}
 
