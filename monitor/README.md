@@ -32,7 +32,7 @@ monitor.New(config ...monitor.Config) fiber.Handler
 | Refresh    | `time.Duration`           | Refresh period.                                                                      | `3 seconds`                                                                 |
 | APIOnly    | `bool`                    | Whether the service should expose only the montioring API.                           | `false`                                                                     |
 | Next       | `func(c *fiber.Ctx) bool` | Define a function to add custom fields.                                              | `nil`                                                                       |
-| CustomHead | `string`                  | Custom HTML conde to Head Section(Before End).                                       | `empty`                                                                     |
+| CustomHead | `string`                  | Custom HTML code to Head Section(Before End).                                        | `empty`                                                                     |
 | FontURL    | `string`                  | FontURL for specilt font resource path or URL. also you can use relative path.       | `https://fonts.googleapis.com/css2?family=Roboto:wght@400;900&display=swap` |
 | ChartJsURL | `string`                  | ChartJsURL for specilt chartjs library, path or URL, also you can use relative path. | `https://cdn.jsdelivr.net/npm/chart.js@2.9/dist/Chart.bundle.min.js`        |
 
