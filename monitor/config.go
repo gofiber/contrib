@@ -38,10 +38,10 @@ type Config struct {
 	// Optional. Default: https://fonts.googleapis.com/css2?family=Roboto:wght@400;900&display=swap
 	FontURL string
 
-	// ChartJsURL for specify ChartJS library  path or URL . also you can use relative path
+	// ChartJSURL for specify ChartJS library  path or URL . also you can use relative path
 	//
 	// Optional. Default: https://cdn.jsdelivr.net/npm/chart.js@2.9/dist/Chart.bundle.min.js
-	ChartJsURL string // TODO: Rename to "ChartJSURL" in v3
+	ChartJSURL string
 
 	index string
 }
@@ -50,7 +50,7 @@ var ConfigDefault = Config{
 	Title:      defaultTitle,
 	Refresh:    defaultRefresh,
 	FontURL:    defaultFontURL,
-	ChartJsURL: defaultChartJSURL,
+	ChartJSURL: defaultChartJSURL,
 	CustomHead: defaultCustomHead,
 	APIOnly:    false,
 	Next:       nil,
@@ -69,7 +69,7 @@ func configDefault(config ...Config) Config {
 	if ConfigDefault.Title != defaultTitle ||
 		ConfigDefault.Refresh != defaultRefresh ||
 		ConfigDefault.FontURL != defaultFontURL ||
-		ConfigDefault.ChartJsURL != defaultChartJSURL ||
+		ConfigDefault.ChartJSURL != defaultChartJSURL ||
 		ConfigDefault.CustomHead != defaultCustomHead {
 		if ConfigDefault.Refresh < minRefresh {
 			ConfigDefault.Refresh = minRefresh
@@ -79,7 +79,7 @@ func configDefault(config ...Config) Config {
 			ConfigDefault.Title,
 			ConfigDefault.Refresh,
 			ConfigDefault.FontURL,
-			ConfigDefault.ChartJsURL,
+			ConfigDefault.ChartJSURL,
 			ConfigDefault.CustomHead,
 		})
 	}
@@ -104,8 +104,8 @@ func configDefault(config ...Config) Config {
 		cfg.FontURL = defaultFontURL
 	}
 
-	if cfg.ChartJsURL == "" {
-		cfg.ChartJsURL = defaultChartJSURL
+	if cfg.ChartJSURL == "" {
+		cfg.ChartJSURL = defaultChartJSURL
 	}
 	if cfg.Refresh < minRefresh {
 		cfg.Refresh = minRefresh
@@ -124,7 +124,7 @@ func configDefault(config ...Config) Config {
 		title:      cfg.Title,
 		refresh:    cfg.Refresh,
 		fontURL:    cfg.FontURL,
-		chartJSURL: cfg.ChartJsURL,
+		chartJSURL: cfg.ChartJSURL,
 		customHead: cfg.CustomHead,
 	})
 
