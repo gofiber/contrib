@@ -1,6 +1,6 @@
 module github.com/gofiber/contrib/monitor
 
-go 1.22.6
+go 1.22
 
 require (
 	github.com/gofiber/fiber/v3 v3.0.0-beta.3
