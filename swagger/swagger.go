@@ -32,6 +32,12 @@ type Config struct {
 	// Optional. Default: ./swagger.json
 	FilePath string
 
+	// FileContent for the content of the swagger.json or swagger.yaml file.
+	// If provided, FilePath will not be read.
+	//
+	// Optional. Default: nil
+	FileContent []byte
+
 	// Path combines with BasePath for the full UI path
 	//
 	// Optional. Default: docs
@@ -85,16 +91,20 @@ func New(config ...Config) fiber.Handler {
 		}
 	}
 
-	// Verify Swagger file exists
-	if _, err := os.Stat(cfg.FilePath); os.IsNotExist(err) {
-		panic(fmt.Errorf("%s file does not exist", cfg.FilePath))
-	}
+	rawSpec := cfg.FileContent
+	if len(rawSpec) == 0 {
+		// Verify Swagger file exists
+		_, err := os.Stat(cfg.FilePath)
+		if os.IsNotExist(err) {
+			panic(fmt.Errorf("%s file does not exist", cfg.FilePath))
+		}
 
-	// Read Swagger Spec into memory
-	rawSpec, err := os.ReadFile(cfg.FilePath)
-	if err != nil {
-		log.Fatalf("Failed to read provided Swagger file (%s): %v", cfg.FilePath, err.Error())
-		panic(err)
+		// Read Swagger Spec into memory
+		rawSpec, err = os.ReadFile(cfg.FilePath)
+		if err != nil {
+			log.Fatalf("Failed to read provided Swagger file (%s): %v", cfg.FilePath, err.Error())
+			panic(err)
+		}
 	}
 
 	// Validate we have valid JSON or YAML
@@ -105,6 +115,9 @@ func New(config ...Config) fiber.Handler {
 
 	if errJSON != nil && errYAML != nil {
 		log.Fatalf("Failed to parse the Swagger spec as JSON or YAML: JSON error: %s, YAML error: %s", errJSON, errYAML)
+		if len(cfg.FileContent) != 0 {
+			panic(fmt.Errorf("Invalid Swagger spec: %s", string(rawSpec)))
+		}
 		panic(fmt.Errorf("Invalid Swagger spec file: %s", cfg.FilePath))
 	}
 

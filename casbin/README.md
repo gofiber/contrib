@@ -19,7 +19,7 @@ Casbin middleware for Fiber.
 go get -u github.com/gofiber/fiber/v2
 go get -u github.com/gofiber/contrib/casbin
 ```
-choose an adapter from [here](https://casbin.org/docs/en/adapters)
+choose an adapter from [here](https://casbin.org/docs/adapters)
 ```
 go get -u github.com/casbin/xorm-adapter
 ```

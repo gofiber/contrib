@@ -1,93 +1,17 @@
 # https://help.github.com/github/administering-a-repository/configuration-options-for-dependency-updates
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file#directories
 
 version: 2
 updates:
-    -   package-ecosystem: "github-actions"
-        directory: "/"
-        schedule:
-            interval: "daily"
-        labels:
-            - "🤖 Dependencies"
-    -   package-ecosystem: "gomod"
-        directory: "/paseto/" # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/fiberzap/" # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/otelfiber/" # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/otelfiber/example/" # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/swagger/" # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/casbin/" # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/fibernewrelic/" # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/opafiber/" # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/fiberi18n"  # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/fiberzerolog"  # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/jwt"  # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/websocket"  # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/fibersentry"  # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
+    - package-ecosystem: "github-actions"
+      directory: "/"
+      labels:
+          - "🤖 Dependencies"
+      schedule:
+          interval: "daily"
     - package-ecosystem: "gomod"
-      directory: "/fgprof"  # Location of package manifests
+      directories:
+          - "**/*"
       labels:
           - "🤖 Dependencies"
       schedule:

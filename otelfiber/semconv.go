@@ -26,6 +26,10 @@ func httpServerMetricAttributesFromRequest(c *fiber.Ctx, cfg config) []attribute
 		attrs = append(attrs, semconv.HTTPServerNameKey.String(*cfg.ServerName))
 	}
 
+	if cfg.CustomMetricAttributes != nil {
+		attrs = append(attrs, cfg.CustomMetricAttributes(c)...)
+	}
+
 	return attrs
 }
 
@@ -56,9 +60,11 @@ func httpServerTraceAttributesFromRequest(c *fiber.Ctx, cfg config) []attribute.
 	if username, ok := HasBasicAuth(c.Get(fiber.HeaderAuthorization)); ok {
 		attrs = append(attrs, semconv.EnduserIDKey.String(utils.CopyString(username)))
 	}
-	clientIP := c.IP()
-	if len(clientIP) > 0 {
-		attrs = append(attrs, semconv.HTTPClientIPKey.String(utils.CopyString(clientIP)))
+	if cfg.collectClientIP {
+		clientIP := c.IP()
+		if len(clientIP) > 0 {
+			attrs = append(attrs, semconv.HTTPClientIPKey.String(utils.CopyString(clientIP)))
+		}
 	}
 
 	if cfg.CustomAttributes != nil {

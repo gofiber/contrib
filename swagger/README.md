@@ -11,7 +11,7 @@ title: Swagger
 ![Security](https://github.com/gofiber/contrib/workflows/Security/badge.svg)
 ![Linter](https://github.com/gofiber/contrib/workflows/Linter/badge.svg)
 
-Swagger middleware for [Fiber](https://github.com/gofiber/fiber). The middleware handles Swagger UI. 
+Swagger middleware for [Fiber](https://github.com/gofiber/fiber). The middleware handles Swagger UI.
 
 **Note: Requires Go 1.18 and above**
 
@@ -48,7 +48,7 @@ import (
 
 Using the default config:
 ```go
-app.Use(swagger.New(cfg))
+app.Use(swagger.New())
 ```
 
 Using a custom config:
@@ -58,6 +58,19 @@ cfg := swagger.Config{
     FilePath: "./docs/swagger.json",
     Path:     "swagger",
     Title:    "Swagger API Docs",
+}
+
+app.Use(swagger.New(cfg))
+```
+
+Use program data for Swagger content:
+```go
+cfg := swagger.Config{
+    BasePath:    "/",
+    FilePath:    "./docs/swagger.json",
+    FileContent: mySwaggerByteSlice,
+    Path:        "swagger",
+    Title:       "Swagger API Docs",
 }
 
 app.Use(swagger.New(cfg))
@@ -101,6 +114,12 @@ type Config struct {
 	//
 	// Optional. Default: ./swagger.json
 	FilePath string
+
+	// FileContent for the content of the swagger.json or swagger.yaml file.
+	// If provided, FilePath will not be read.
+	//
+	// Optional. Default: nil
+	FileContent []byte
 
 	// Path combines with BasePath for the full UI path
 	//

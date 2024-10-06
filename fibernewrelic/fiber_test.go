@@ -272,6 +272,70 @@ func TestNewrelicAppConfig(t *testing.T) {
 		assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 		assert.True(t, errorStatusCodeHandlerCalled)
 	})
+
+	t.Run("Jump Newrelic execution if next function is set",
+		func(t *testing.T) {
+			app := fiber.New()
+
+			cfg := Config{
+				License: "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+				AppName: "",
+				Enabled: true,
+				Next: func(c *fiber.Ctx) bool {
+					return c.OriginalURL() == "/jump"
+				},
+			}
+
+			newRelicApp, _ := newrelic.NewApplication(
+				newrelic.ConfigAppName(cfg.AppName),
+				newrelic.ConfigLicense(cfg.License),
+				newrelic.ConfigEnabled(cfg.Enabled),
+			)
+
+			cfg.Application = newRelicApp
+
+			app.Use(New(cfg))
+
+			app.Get("/jump", func(ctx *fiber.Ctx) error {
+				return ctx.SendStatus(200)
+			})
+
+			r := httptest.NewRequest("GET", "/jump", nil)
+			resp, _ := app.Test(r, -1)
+			assert.Equal(t, 200, resp.StatusCode)
+		})
+
+	t.Run("Continue Newrelic execution if next function is set",
+		func(t *testing.T) {
+			app := fiber.New()
+
+			cfg := Config{
+				License: "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+				AppName: "",
+				Enabled: true,
+				Next: func(c *fiber.Ctx) bool {
+					return c.OriginalURL() == "/jump"
+				},
+			}
+
+			newRelicApp, _ := newrelic.NewApplication(
+				newrelic.ConfigAppName(cfg.AppName),
+				newrelic.ConfigLicense(cfg.License),
+				newrelic.ConfigEnabled(cfg.Enabled),
+			)
+
+			cfg.Application = newRelicApp
+
+			app.Use(New(cfg))
+
+			app.Get("/", func(ctx *fiber.Ctx) error {
+				return ctx.SendStatus(200)
+			})
+
+			r := httptest.NewRequest("GET", "/", nil)
+			resp, _ := app.Test(r, -1)
+			assert.Equal(t, 200, resp.StatusCode)
+		})
 }
 
 func TestDefaultErrorStatusCodeHandler(t *testing.T) {

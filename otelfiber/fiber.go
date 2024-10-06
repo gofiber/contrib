@@ -33,7 +33,9 @@ const (
 
 // Middleware returns fiber handler which will trace incoming requests.
 func Middleware(opts ...Option) fiber.Handler {
-	cfg := config{}
+	cfg := config{
+		collectClientIP: true,
+	}
 	for _, opt := range opts {
 		opt.apply(&cfg)
 	}
@@ -131,8 +133,11 @@ func Middleware(opts ...Option) fiber.Handler {
 			semconv.HTTPRouteKey.String(c.Route().Path), // no need to copy c.Route().Path: route strings should be immutable across app lifecycle
 		)
 
+		var responseSize int64
 		requestSize := int64(len(c.Request().Body()))
-		responseSize := int64(len(c.Response().Body()))
+		if c.GetRespHeader("Content-Type") != "text/event-stream" {
+			responseSize = int64(len(c.Response().Body()))
+		}
 
 		defer func() {
 			responseMetricAttrs = append(
@@ -157,6 +162,13 @@ func Middleware(opts ...Option) fiber.Handler {
 
 		spanStatus, spanMessage := semconv.SpanStatusFromHTTPStatusCodeAndSpanKind(c.Response().StatusCode(), oteltrace.SpanKindServer)
 		span.SetStatus(spanStatus, spanMessage)
+
+		//Propagate tracing context as headers in outbound response
+		tracingHeaders := make(propagation.HeaderCarrier)
+		cfg.Propagators.Inject(c.UserContext(), tracingHeaders)
+		for _, headerKey := range tracingHeaders.Keys() {
+			c.Set(headerKey, tracingHeaders.Get(headerKey))
+		}
 
 		return nil
 	}

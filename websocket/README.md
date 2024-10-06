@@ -143,3 +143,11 @@ app.Get("/ws/:id", websocket.New(func(c *websocket.Conn) {}, cfg))
 
 
 ```
+
+## Note for WebSocket subprotocols
+
+The config `Subprotocols` only helps you negotiate subprotocols and sets a `Sec-Websocket-Protocol` header if it has a suitable subprotocol. For more about negotiates process, check the comment for `Subprotocols` in [fasthttp.Upgrader](https://pkg.go.dev/github.com/fasthttp/websocket#Upgrader) .
+
+All connections will be sent to the handler function no matter whether the subprotocol negotiation is successful or not. You can get the selected subprotocol from `conn.Subprotocol()`. 
+
+If a connection includes the `Sec-Websocket-Protocol` header in the request but the protocol negotiation fails, the browser will immediately disconnect the connection after receiving the upgrade response.

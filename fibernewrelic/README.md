@@ -29,14 +29,16 @@ fibernewrelic.New(config fibernewrelic.Config) fiber.Handler
 
 ## Config
 
-| Property          | Type             | Description                            | Default        |
-|:------------------|:-----------------|:---------------------------------------|:---------------|
-| License           | `string`         | Required - New Relic License Key       | `""`           |
-| AppName           | `string`         | New Relic Application Name             | `fiber-api`    |
-| Enabled           | `bool`           | Enable/Disable New Relic               | `false`        |
-| ~~TransportType~~ | ~~`string`~~     | ~~Can be HTTP or HTTPS~~ (Deprecated)  | ~~`"HTTP"`~~   |
-| Application       | `Application`    | Existing New Relic App                 | `nil`          |
-| ErrorStatusCodeHandler       | `func(c *fiber.Ctx, err error) int`    | If you want to change newrelic status code, you can use it.                 | `DefaultErrorStatusCodeHandler`          |
+| Property               | Type             | Description                                                 | Default                         |
+|:-----------------------|:-----------------|:------------------------------------------------------------|:--------------------------------|
+| License                | `string`         | Required - New Relic License Key                            | `""`                            |
+| AppName                | `string`         | New Relic Application Name                                  | `fiber-api`                     |
+| Enabled                | `bool`           | Enable/Disable New Relic                                    | `false`                         |
+| ~~TransportType~~      | ~~`string`~~     | ~~Can be HTTP or HTTPS~~ (Deprecated)                       | ~~`"HTTP"`~~                    |
+| Application            | `Application`    | Existing New Relic App                                      | `nil`                           |
+| ErrorStatusCodeHandler | `func(c *fiber.Ctx, err error) int`    | If you want to change newrelic status code, you can use it. | `DefaultErrorStatusCodeHandler` |
+| Next                   | `func(c *fiber.Ctx) bool`    | Next defines a function to skip this middleware when returned true.                                                           | `nil`                           |
+
 
 ## Usage
 
