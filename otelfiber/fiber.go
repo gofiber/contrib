@@ -2,6 +2,7 @@ package otelfiber
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -10,9 +11,10 @@ import (
 	otelcontrib "go.opentelemetry.io/contrib"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
-	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
@@ -20,16 +22,11 @@ const (
 	tracerKey           = "gofiber-contrib-tracer-fiber"
 	instrumentationName = "github.com/gofiber/contrib/otelfiber"
 
-	MetricNameHttpServerDuration       = "http.server.duration"
-	MetricNameHttpServerRequestSize    = "http.server.request.size"
-	MetricNameHttpServerResponseSize   = "http.server.response.size"
-	MetricNameHttpServerActiveRequests = "http.server.active_requests"
-
-	// Unit constants for deprecated metric units
-	UnitDimensionless = "1"
-	UnitBytes         = "By"
-	UnitMilliseconds  = "ms"
+	AttributeNameHTTPRequestHeaderContentLength = "http.request.header.content-length"
 )
+
+// http.server.request.duration SHOULD be specified with ExplicitBucketBoundaries of [ 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10 ].
+var ExplicitBucketBoundaries = []float64{0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10}
 
 // Middleware returns fiber handler which will trace incoming requests.
 func Middleware(opts ...Option) fiber.Handler {
@@ -56,19 +53,19 @@ func Middleware(opts ...Option) fiber.Handler {
 		metric.WithInstrumentationVersion(otelcontrib.Version()),
 	)
 
-	httpServerDuration, err := meter.Float64Histogram(MetricNameHttpServerDuration, metric.WithUnit(UnitMilliseconds), metric.WithDescription("measures the duration inbound HTTP requests"))
+	httpServerDuration, err := meter.Float64Histogram(semconv.HTTPServerRequestDurationName, metric.WithUnit(semconv.HTTPServerRequestDurationUnit), metric.WithDescription(semconv.HTTPServerRequestDurationDescription), metric.WithExplicitBucketBoundaries(ExplicitBucketBoundaries...))
 	if err != nil {
 		otel.Handle(err)
 	}
-	httpServerRequestSize, err := meter.Int64Histogram(MetricNameHttpServerRequestSize, metric.WithUnit(UnitBytes), metric.WithDescription("measures the size of HTTP request messages"))
+	httpServerRequestSize, err := meter.Int64Histogram(semconv.HTTPServerRequestBodySizeName, metric.WithUnit(semconv.HTTPServerRequestBodySizeUnit), metric.WithDescription(semconv.HTTPServerRequestBodySizeDescription))
 	if err != nil {
 		otel.Handle(err)
 	}
-	httpServerResponseSize, err := meter.Int64Histogram(MetricNameHttpServerResponseSize, metric.WithUnit(UnitBytes), metric.WithDescription("measures the size of HTTP response messages"))
+	httpServerResponseSize, err := meter.Int64Histogram(semconv.HTTPServerResponseBodySizeName, metric.WithUnit(semconv.HTTPServerResponseBodySizeUnit), metric.WithDescription(semconv.HTTPServerResponseBodySizeDescription))
 	if err != nil {
 		otel.Handle(err)
 	}
-	httpServerActiveRequests, err := meter.Int64UpDownCounter(MetricNameHttpServerActiveRequests, metric.WithUnit(UnitDimensionless), metric.WithDescription("measures the number of concurrent HTTP requests that are currently in-flight"))
+	httpServerActiveRequests, err := meter.Int64UpDownCounter(semconv.HTTPServerActiveRequestsName, metric.WithUnit(semconv.HTTPServerActiveRequestsUnit), metric.WithDescription(semconv.HTTPServerActiveRequestsDescription))
 	if err != nil {
 		otel.Handle(err)
 	}
@@ -128,10 +125,10 @@ func Middleware(opts ...Option) fiber.Handler {
 		}
 
 		// extract common attributes from response
-		responseAttrs := append(
-			semconv.HTTPAttributesFromHTTPStatusCode(c.Response().StatusCode()),
+		responseAttrs := []attribute.KeyValue{
+			semconv.HTTPResponseStatusCode(c.Response().StatusCode()),
 			semconv.HTTPRouteKey.String(c.Route().Path), // no need to copy c.Route().Path: route strings should be immutable across app lifecycle
-		)
+		}
 
 		var responseSize int64
 		requestSize := int64(len(c.Request().Body()))
@@ -145,9 +142,9 @@ func Middleware(opts ...Option) fiber.Handler {
 				responseAttrs...)
 
 			httpServerActiveRequests.Add(savedCtx, -1, metric.WithAttributes(requestMetricsAttrs...))
-			httpServerDuration.Record(savedCtx, float64(time.Since(start).Microseconds())/1000, metric.WithAttributes(responseMetricAttrs...))
 			httpServerRequestSize.Record(savedCtx, requestSize, metric.WithAttributes(responseMetricAttrs...))
 			httpServerResponseSize.Record(savedCtx, responseSize, metric.WithAttributes(responseMetricAttrs...))
+			httpServerDuration.Record(savedCtx, time.Since(start).Seconds(), metric.WithAttributes(responseMetricAttrs...))
 
 			c.SetUserContext(savedCtx)
 			cancel()
@@ -156,12 +153,11 @@ func Middleware(opts ...Option) fiber.Handler {
 		span.SetAttributes(
 			append(
 				responseAttrs,
-				semconv.HTTPResponseContentLengthKey.Int64(responseSize),
+				semconv.HTTPResponseBodySize(int(responseSize)),
 			)...)
 		span.SetName(cfg.SpanNameFormatter(c))
 
-		spanStatus, spanMessage := semconv.SpanStatusFromHTTPStatusCodeAndSpanKind(c.Response().StatusCode(), oteltrace.SpanKindServer)
-		span.SetStatus(spanStatus, spanMessage)
+		span.SetStatus(Status(c.Response().StatusCode()))
 
 		//Propagate tracing context as headers in outbound response
 		tracingHeaders := make(propagation.HeaderCarrier)
@@ -178,4 +174,17 @@ func Middleware(opts ...Option) fiber.Handler {
 // integration. Returns the route pathRaw
 func defaultSpanNameFormatter(ctx *fiber.Ctx) string {
 	return ctx.Route().Path
+}
+
+// Status returns a span status code and message for an HTTP status code
+// value returned by a server. Status codes in the 400-499 range are not
+// returned as errors.
+func Status(code int) (codes.Code, string) {
+	if code < 100 || code >= 600 {
+		return codes.Error, fmt.Sprintf("Invalid HTTP status code %d", code)
+	}
+	if code >= 500 {
+		return codes.Error, ""
+	}
+	return codes.Unset, ""
 }
