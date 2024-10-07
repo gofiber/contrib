@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/stretchr/testify/assert"
 
 	"github.com/valyala/fasthttp"
 )
@@ -21,8 +22,8 @@ func Test_Monitor_405(t *testing.T) {
 	app.Use("/", New())
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, "/", nil))
-	AssertEqual(t, nil, err)
-	AssertEqual(t, 405, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, 405, resp.StatusCode)
 }
 
 func Test_Monitor_Html(t *testing.T) {
@@ -34,32 +35,32 @@ func Test_Monitor_Html(t *testing.T) {
 	app.Get("/", New())
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
 
-	AssertEqual(t, nil, err)
-	AssertEqual(t, 200, resp.StatusCode)
-	AssertEqual(t, fiber.MIMETextHTMLCharsetUTF8,
+	assert.Equal(t, nil, err)
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, fiber.MIMETextHTMLCharsetUTF8,
 		resp.Header.Get(fiber.HeaderContentType))
 	buf, err := io.ReadAll(resp.Body)
-	AssertEqual(t, nil, err)
-	AssertEqual(t, true, bytes.Contains(buf, []byte("<title>"+defaultTitle+"</title>")))
+	assert.Equal(t, nil, err)
+	assert.Equal(t, true, bytes.Contains(buf, []byte("<title>"+defaultTitle+"</title>")))
 	timeoutLine := fmt.Sprintf("setTimeout(fetchJSON, %d)",
 		defaultRefresh.Milliseconds()-timeoutDiff)
-	AssertEqual(t, true, bytes.Contains(buf, []byte(timeoutLine)))
+	assert.Equal(t, true, bytes.Contains(buf, []byte(timeoutLine)))
 
 	// custom config
 	conf := Config{Title: "New " + defaultTitle, Refresh: defaultRefresh + time.Second}
 	app.Get("/custom", New(conf))
 	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/custom", nil))
 
-	AssertEqual(t, nil, err)
-	AssertEqual(t, 200, resp.StatusCode)
-	AssertEqual(t, fiber.MIMETextHTMLCharsetUTF8,
+	assert.Equal(t, nil, err)
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, fiber.MIMETextHTMLCharsetUTF8,
 		resp.Header.Get(fiber.HeaderContentType))
 	buf, err = io.ReadAll(resp.Body)
-	AssertEqual(t, nil, err)
-	AssertEqual(t, true, bytes.Contains(buf, []byte("<title>"+conf.Title+"</title>")))
+	assert.Equal(t, nil, err)
+	assert.Equal(t, true, bytes.Contains(buf, []byte("<title>"+conf.Title+"</title>")))
 	timeoutLine = fmt.Sprintf("setTimeout(fetchJSON, %d)",
 		conf.Refresh.Milliseconds()-timeoutDiff)
-	AssertEqual(t, true, bytes.Contains(buf, []byte(timeoutLine)))
+	assert.Equal(t, true, bytes.Contains(buf, []byte(timeoutLine)))
 }
 
 func Test_Monitor_Html_CustomCodes(t *testing.T) {
@@ -71,16 +72,16 @@ func Test_Monitor_Html_CustomCodes(t *testing.T) {
 	app.Get("/", New())
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
 
-	AssertEqual(t, nil, err)
-	AssertEqual(t, 200, resp.StatusCode)
-	AssertEqual(t, fiber.MIMETextHTMLCharsetUTF8,
+	assert.Equal(t, nil, err)
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, fiber.MIMETextHTMLCharsetUTF8,
 		resp.Header.Get(fiber.HeaderContentType))
 	buf, err := io.ReadAll(resp.Body)
-	AssertEqual(t, nil, err)
-	AssertEqual(t, true, bytes.Contains(buf, []byte("<title>"+defaultTitle+"</title>")))
+	assert.Equal(t, nil, err)
+	assert.Equal(t, true, bytes.Contains(buf, []byte("<title>"+defaultTitle+"</title>")))
 	timeoutLine := fmt.Sprintf("setTimeout(fetchJSON, %d)",
 		defaultRefresh.Milliseconds()-timeoutDiff)
-	AssertEqual(t, true, bytes.Contains(buf, []byte(timeoutLine)))
+	assert.Equal(t, true, bytes.Contains(buf, []byte(timeoutLine)))
 
 	// custom config
 	conf := Config{
@@ -93,20 +94,20 @@ func Test_Monitor_Html_CustomCodes(t *testing.T) {
 	app.Get("/custom", New(conf))
 	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/custom", nil))
 
-	AssertEqual(t, nil, err)
-	AssertEqual(t, 200, resp.StatusCode)
-	AssertEqual(t, fiber.MIMETextHTMLCharsetUTF8,
+	assert.Equal(t, nil, err)
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, fiber.MIMETextHTMLCharsetUTF8,
 		resp.Header.Get(fiber.HeaderContentType))
 	buf, err = io.ReadAll(resp.Body)
-	AssertEqual(t, nil, err)
-	AssertEqual(t, true, bytes.Contains(buf, []byte("<title>"+conf.Title+"</title>")))
-	AssertEqual(t, true, bytes.Contains(buf, []byte("https://cdnjs.com/libraries/Chart.js")))
-	AssertEqual(t, true, bytes.Contains(buf, []byte("/public/my-font.css")))
-	AssertEqual(t, true, bytes.Contains(buf, []byte(conf.CustomHead)))
+	assert.Equal(t, nil, err)
+	assert.Equal(t, true, bytes.Contains(buf, []byte("<title>"+conf.Title+"</title>")))
+	assert.Equal(t, true, bytes.Contains(buf, []byte("https://cdnjs.com/libraries/Chart.js")))
+	assert.Equal(t, true, bytes.Contains(buf, []byte("/public/my-font.css")))
+	assert.Equal(t, true, bytes.Contains(buf, []byte(conf.CustomHead)))
 
 	timeoutLine = fmt.Sprintf("setTimeout(fetchJSON, %d)",
 		conf.Refresh.Milliseconds()-timeoutDiff)
-	AssertEqual(t, true, bytes.Contains(buf, []byte(timeoutLine)))
+	assert.Equal(t, true, bytes.Contains(buf, []byte(timeoutLine)))
 }
 
 // go test -run Test_Monitor_JSON -race
@@ -120,14 +121,14 @@ func Test_Monitor_JSON(t *testing.T) {
 	req := httptest.NewRequest(fiber.MethodGet, "/", nil)
 	req.Header.Set(fiber.HeaderAccept, fiber.MIMEApplicationJSON)
 	resp, err := app.Test(req)
-	AssertEqual(t, nil, err)
-	AssertEqual(t, 200, resp.StatusCode)
-	AssertEqual(t, fiber.MIMEApplicationJSON, resp.Header.Get(fiber.HeaderContentType))
+	assert.Equal(t, nil, err)
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, fiber.MIMEApplicationJSON, resp.Header.Get(fiber.HeaderContentType))
 
 	b, err := io.ReadAll(resp.Body)
-	AssertEqual(t, nil, err)
-	AssertEqual(t, true, bytes.Contains(b, []byte("pid")))
-	AssertEqual(t, true, bytes.Contains(b, []byte("os")))
+	assert.Equal(t, nil, err)
+	assert.Equal(t, true, bytes.Contains(b, []byte("pid")))
+	assert.Equal(t, true, bytes.Contains(b, []byte("os")))
 }
 
 // go test -v -run=^$ -bench=Benchmark_Monitor -benchmem -count=4
@@ -152,8 +153,8 @@ func Benchmark_Monitor(b *testing.B) {
 		}
 	})
 
-	AssertEqual(b, 200, fctx.Response.Header.StatusCode())
-	AssertEqual(b,
+	assert.Equal(b, 200, fctx.Response.Header.StatusCode())
+	assert.Equal(b,
 		fiber.MIMEApplicationJSON,
 		string(fctx.Response.Header.Peek(fiber.HeaderContentType)))
 }
@@ -171,8 +172,8 @@ func Test_Monitor_Next(t *testing.T) {
 	}))
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, "/", nil))
-	AssertEqual(t, nil, err)
-	AssertEqual(t, 404, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, 404, resp.StatusCode)
 }
 
 // go test -run Test_Monitor_APIOnly -race
@@ -186,12 +187,12 @@ func Test_Monitor_APIOnly(t *testing.T) {
 	req := httptest.NewRequest(fiber.MethodGet, "/", nil)
 	req.Header.Set(fiber.HeaderAccept, fiber.MIMEApplicationJSON)
 	resp, err := app.Test(req)
-	AssertEqual(t, nil, err)
-	AssertEqual(t, 200, resp.StatusCode)
-	AssertEqual(t, fiber.MIMEApplicationJSON, resp.Header.Get(fiber.HeaderContentType))
+	assert.Equal(t, nil, err)
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, fiber.MIMEApplicationJSON, resp.Header.Get(fiber.HeaderContentType))
 
 	b, err := io.ReadAll(resp.Body)
-	AssertEqual(t, nil, err)
-	AssertEqual(t, true, bytes.Contains(b, []byte("pid")))
-	AssertEqual(t, true, bytes.Contains(b, []byte("os")))
+	assert.Equal(t, nil, err)
+	assert.Equal(t, true, bytes.Contains(b, []byte("pid")))
+	assert.Equal(t, true, bytes.Contains(b, []byte("os")))
 }
