@@ -33,12 +33,12 @@ type Config struct {
 	// Optional. Default: empty
 	CustomHead string
 
-	// FontURL for specify font resource path or URL . also you can use relative path
+	// FontURL to specify font resource path or URL. You can also use a relative path.
 	//
 	// Optional. Default: https://fonts.googleapis.com/css2?family=Roboto:wght@400;900&display=swap
 	FontURL string
 
-	// ChartJSURL for specify ChartJS library  path or URL . also you can use relative path
+	// ChartJSURL to specify ChartJS library path or URL. You can also use a relative path.
 	//
 	// Optional. Default: https://cdn.jsdelivr.net/npm/chart.js@2.9/dist/Chart.bundle.min.js
 	ChartJSURL string
