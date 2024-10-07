@@ -53,7 +53,6 @@ func main() {
 
     app.Use("/monitor", monitor.New())
 
-
     log.Fatal(app.Listen(":3000"))
 }
 ```
