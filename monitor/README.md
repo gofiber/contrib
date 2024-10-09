@@ -5,9 +5,14 @@ id: monitor
 # Monitor
 
 ![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=monitor*)
+![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)
 ![Test](https://github.com/gofiber/contrib/workflows/Tests/badge.svg)
 ![Security](https://github.com/gofiber/contrib/workflows/Security/badge.svg)
 ![Linter](https://github.com/gofiber/contrib/workflows/Linter/badge.svg)
+
+Monitor middleware for [Fiber](https://github.com/gofiber/fiber) that reports server metrics, inspired by [express-status-monitor](https://github.com/RafalWilinski/express-status-monitor)
+
+![](https://i.imgur.com/nHAtBpJ.gif)
 
 ## Install
 
@@ -51,8 +56,29 @@ import (
 func main() {
     app := fiber.New()
 
-    app.Use("/monitor", monitor.New())
+    // Initialize default config (Assign the middleware to /metrics)
+    app.Get("/metrics", monitor.New())
+
+    // Or extend your config for customization
+    // Assign the middleware to /metrics
+    // and change the Title to `MyService Metrics Page`
+    app.Get("/metrics", monitor.New(monitor.Config{Title: "MyService Metrics Page"}))
 
     log.Fatal(app.Listen(":3000"))
+}
+```
+
+
+## Default Config
+
+```go
+var ConfigDefault = Config{
+	Title:      defaultTitle,
+	Refresh:    defaultRefresh,
+	FontURL:    defaultFontURL,
+	ChartJsURL: defaultChartJSURL,
+	CustomHead: defaultCustomHead,
+	APIOnly:    false,
+	Next:       nil,
 }
 ```
