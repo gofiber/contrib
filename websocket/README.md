@@ -10,7 +10,7 @@ id: websocket
 ![Security](https://github.com/gofiber/contrib/workflows/Security/badge.svg)
 ![Linter](https://github.com/gofiber/contrib/workflows/Linter/badge.svg)
 
-Based on [Fasthttp WebSocket](https://github.com/fasthttp/websocket) for [Fiber](https://github.com/gofiber/fiber) with available `*fiber.Ctx` methods like [Locals](http://docs.gofiber.io/ctx#locals), [Params](http://docs.gofiber.io/ctx#params), [Query](http://docs.gofiber.io/ctx#query) and [Cookies](http://docs.gofiber.io/ctx#cookies).
+Based on [Fasthttp WebSocket](https://github.com/fasthttp/websocket) for [Fiber](https://github.com/gofiber/fiber) with available `fiber.Ctx` methods like [Locals](http://docs.gofiber.io/ctx#locals), [Params](http://docs.gofiber.io/ctx#params), [Query](http://docs.gofiber.io/ctx#query) and [Cookies](http://docs.gofiber.io/ctx#cookies).
 
 **Note: Requires Go 1.18 and above**
 
@@ -28,16 +28,16 @@ func New(handler func(*websocket.Conn), config ...websocket.Config) fiber.Handle
 
 ## Config
 
-| Property            | Type                        | Description                                                                                                                   | Default                |
-|:--------------------|:----------------------------|:------------------------------------------------------------------------------------------------------------------------------|:-----------------------|
-| Filter              | `func(*fiber.Ctx) bool`     | Defines a function to skip middleware.                                                                                        | `nil`                  |
-| HandshakeTimeout    | `time.Duration`             | HandshakeTimeout specifies the duration for the handshake to complete.                                                       | `0` (No timeout)       |
-| Subprotocols        | `[]string`                  | Subprotocols specifies the client's requested subprotocols.                                                                   | `nil`                  |
-| Origins             | `[]string`                  | Allowed Origins based on the Origin header. If empty, everything is allowed.                                                  | `nil`                  |
-| ReadBufferSize      | `int`                       | ReadBufferSize specifies the I/O buffer size in bytes for incoming messages.                                                  | `0` (Use default size) |
-| WriteBufferSize     | `int`                       | WriteBufferSize specifies the I/O buffer size in bytes for outgoing messages.                                                 | `0` (Use default size) |
-| WriteBufferPool     | `websocket.BufferPool`      | WriteBufferPool is a pool of buffers for write operations.                                                                     | `nil`                  |
-| EnableCompression   | `bool`                      | EnableCompression specifies if the client should attempt to negotiate per message compression (RFC 7692).                     | `false`                |
+| Property            | Type                         | Description                                                                                                                   | Default                |
+|:--------------------|:-----------------------------|:------------------------------------------------------------------------------------------------------------------------------|:-----------------------|
+| Filter              | `func(fiber.Ctx) bool`       | Defines a function to skip middleware.                                                                                        | `nil`                  |
+| HandshakeTimeout    | `time.Duration`              | HandshakeTimeout specifies the duration for the handshake to complete.                                                       | `0` (No timeout)       |
+| Subprotocols        | `[]string`                   | Subprotocols specifies the client's requested subprotocols.                                                                   | `nil`                  |
+| Origins             | `[]string`                   | Allowed Origins based on the Origin header. If empty, everything is allowed.                                                  | `nil`                  |
+| ReadBufferSize      | `int`                        | ReadBufferSize specifies the I/O buffer size in bytes for incoming messages.                                                  | `0` (Use default size) |
+| WriteBufferSize     | `int`                        | WriteBufferSize specifies the I/O buffer size in bytes for outgoing messages.                                                 | `0` (Use default size) |
+| WriteBufferPool     | `websocket.BufferPool`       | WriteBufferPool is a pool of buffers for write operations.                                                                     | `nil`                  |
+| EnableCompression   | `bool`                       | EnableCompression specifies if the client should attempt to negotiate per message compression (RFC 7692).                     | `false`                |
 | RecoverHandler      | `func(*websocket.Conn) void` | RecoverHandler is a panic handler function that recovers from panics.                                                         | `defaultRecover`       |
 
 
@@ -56,7 +56,7 @@ import (
 func main() {
 	app := fiber.New()
 
-	app.Use("/ws", func(c *fiber.Ctx) error {
+	app.Use("/ws", func(c fiber.Ctx) error {
 		// IsWebSocketUpgrade returns true if the client
 		// requested upgrade to the WebSocket protocol.
 		if websocket.IsWebSocketUpgrade(c) {
@@ -108,7 +108,7 @@ If you get the error `websocket: bad handshake` when using the [cache middleware
 ```go
 app := fiber.New()
 app.Use(cache.New(cache.Config{
-		Next: func(c *fiber.Ctx) bool {
+		Next: func(c fiber.Ctx) bool {
 			return strings.Contains(c.Route().Path, "/ws")
 		},
 }))
@@ -126,7 +126,7 @@ By default, config `RecoverHandler` is recovers from panic and writes stack trac
 app := fiber.New()
 
 app.Use(cache.New(cache.Config{
-    Next: func(c *fiber.Ctx) bool {
+    Next: func(c fiber.Ctx) bool {
         return strings.Contains(c.Route().Path, "/ws")
     },
 }))

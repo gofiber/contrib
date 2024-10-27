@@ -23,7 +23,7 @@ import (
 type Config struct {
 	// Filter defines a function to skip middleware.
 	// Optional. Default: nil
-	Filter func(*fiber.Ctx) bool
+	Filter func(fiber.Ctx) bool
 
 	// HandshakeTimeout specifies the duration for the handshake to complete.
 	HandshakeTimeout time.Duration
@@ -113,7 +113,7 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 			return false
 		},
 	}
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		if cfg.Filter != nil && !cfg.Filter(c) {
 			return c.Next()
 		}
@@ -330,7 +330,7 @@ func IsUnexpectedCloseError(err error, expectedCodes ...int) bool {
 
 // IsWebSocketUpgrade returns true if the client requested upgrade to the
 // WebSocket protocol.
-func IsWebSocketUpgrade(c *fiber.Ctx) bool {
+func IsWebSocketUpgrade(c fiber.Ctx) bool {
 	return websocket.FastHTTPIsWebSocketUpgrade(c.Context())
 }
 

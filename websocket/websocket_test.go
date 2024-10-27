@@ -285,7 +285,7 @@ func setupTestApp(cfg Config, h func(c *Conn)) *fiber.App {
 
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 
-	app.Use("/ws", func(c *fiber.Ctx) error {
+	app.Use("/ws", func(c fiber.Ctx) error {
 		if IsWebSocketUpgrade(c) {
 			c.Locals("allowed", true)
 			c.Locals("local1", "value1")
