@@ -1,6 +1,6 @@
 module github.com/gofiber/contrib/websocket
 
-go 1.18
+go 1.22
 
 require (
 	github.com/fasthttp/websocket v1.5.7
