@@ -39,11 +39,12 @@ hcaptcha.New(config hcaptcha.Config) fiber.Handler
 
 ## Config
 
-| Property        | Type                              | Description                                                                                                                                                                                          | Default                               |
-|:----------------|:----------------------------------|:-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|:--------------------------------------|
-| SecretKey       | `string`                          | The secret key you obtained from the HCaptcha admin panel. This field must not be empty.                                                                                                             | `""`                                  |
-| ResponseKeyFunc | `func(fiber.Ctx) (string, error)` | ResponseKeyFunc should return the token that captcha provides upon successful solving. By default, it gets the token from the body by parsing a JSON request and returns the `hcaptcha_token` field. | `hcaptcha.DefaultResponseKeyFunc`     |
-| SiteVerifyURL   | `string`                          | This property specifies the API resource used for token authentication.                                                                                                                              | `https://api.hcaptcha.com/siteverify` |
+| Property         | Type                              | Description                                                                                                                                                                                          | Default                               |
+|:-----------------|:----------------------------------|:-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|:--------------------------------------|
+| SecretKey        | `string`                          | The secret key you obtained from the HCaptcha admin panel. This field must not be empty.                                                                                                             | `""`                                  |
+| ResponseKeyFunc  | `func(fiber.Ctx) (string, error)`| ResponseKeyFunc should return the token that captcha provides upon successful solving. By default, it gets the token from the body by parsing a JSON request and returns the `hcaptcha_token` field. | `hcaptcha.DefaultResponseKeyFunc`    |
+| SiteVerifyURL    | `string`                          | This property specifies the API resource used for token authentication.                                                                                                                              | `https://api.hcaptcha.com/siteverify` |
+| ValidateFunc     | `func(bool, fiber.Ctx) error`    | A custom validation function that allows you to define the behavior upon validation success or failure. If set, it will be called with the validation result and the context.                       | `nil`                                 |
 
 ## Example
 
@@ -51,6 +52,7 @@ hcaptcha.New(config hcaptcha.Config) fiber.Handler
 package main
 
 import (
+    "errors"
     "github.com/gofiber/contrib/hcaptcha"
     "github.com/gofiber/fiber/v3"
     "log"
@@ -63,9 +65,22 @@ const (
 
 func main() {
     app := fiber.New()
+    
+    // Create HCaptcha middleware
     captcha := hcaptcha.New(hcaptcha.Config{
         // Must set the secret key
         SecretKey: TestSecretKey,
+        // Custom validation function (optional)
+        ValidateFunc: func(success bool, c fiber.Ctx) error {
+            if !success {
+                c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+                    "error":   "Custom error: validation failed, please try again",
+                    "details": "The HCaptcha validation was unsuccessful.",
+                })
+                return errors.New("custom error: validation failed")
+            }
+            return nil
+        },
     })
 	
     app.Get("/api/", func(c fiber.Ctx) error {
@@ -74,9 +89,9 @@ func main() {
         })
     })
 	
-    app.Post("/api/robots-excluded", func(c fiber.Ctx) error {
+    app.Post("/api/submit", captcha, func(c fiber.Ctx) error {
         return c.SendString("You are not a robot")
-    }, captcha)
+    })
 	
     log.Fatal(app.Listen(":3000"))
 }
