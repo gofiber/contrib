@@ -19,7 +19,7 @@ func Test_Monitor_405(t *testing.T) {
 
 	app := fiber.New()
 
-	app.Use("/", New())
+	app.Use("/", New[fiber.Ctx]())
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, "/", nil))
 	assert.Equal(t, nil, err)
@@ -32,7 +32,7 @@ func Test_Monitor_Html(t *testing.T) {
 	app := fiber.New()
 
 	// defaults
-	app.Get("/", New())
+	app.Get("/", New[fiber.Ctx]())
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
 
 	assert.Equal(t, nil, err)
@@ -48,7 +48,7 @@ func Test_Monitor_Html(t *testing.T) {
 
 	// custom config
 	conf := Config{Title: "New " + defaultTitle, Refresh: defaultRefresh + time.Second}
-	app.Get("/custom", New(conf))
+	app.Get("/custom", New[fiber.Ctx](conf))
 	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/custom", nil))
 
 	assert.Equal(t, nil, err)
@@ -69,7 +69,7 @@ func Test_Monitor_Html_CustomCodes(t *testing.T) {
 	app := fiber.New()
 
 	// defaults
-	app.Get("/", New())
+	app.Get("/", New[fiber.Ctx]())
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
 
 	assert.Equal(t, nil, err)
@@ -91,7 +91,7 @@ func Test_Monitor_Html_CustomCodes(t *testing.T) {
 		FontURL:    "/public/my-font.css",
 		CustomHead: `<style>body{background:#fff}</style>`,
 	}
-	app.Get("/custom", New(conf))
+	app.Get("/custom", New[fiber.Ctx](conf))
 	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/custom", nil))
 
 	assert.Equal(t, nil, err)
@@ -116,7 +116,7 @@ func Test_Monitor_JSON(t *testing.T) {
 
 	app := fiber.New()
 
-	app.Get("/", New())
+	app.Get("/", New[fiber.Ctx]())
 
 	req := httptest.NewRequest(fiber.MethodGet, "/", nil)
 	req.Header.Set(fiber.HeaderAccept, fiber.MIMEApplicationJSON)
@@ -135,7 +135,7 @@ func Test_Monitor_JSON(t *testing.T) {
 func Benchmark_Monitor(b *testing.B) {
 	app := fiber.New()
 
-	app.Get("/", New())
+	app.Get("/", New[fiber.Ctx]())
 
 	h := app.Handler()
 
@@ -165,8 +165,8 @@ func Test_Monitor_Next(t *testing.T) {
 
 	app := fiber.New()
 
-	app.Use("/", New(Config{
-		Next: func(_ *fiber.Ctx) bool {
+	app.Use("/", New[fiber.Ctx](Config{
+		Next: func(_ Context) bool {
 			return true
 		},
 	}))
@@ -180,7 +180,7 @@ func Test_Monitor_Next(t *testing.T) {
 func Test_Monitor_APIOnly(t *testing.T) {
 	app := fiber.New()
 
-	app.Get("/", New(Config{
+	app.Get("/", New[fiber.Ctx](Config{
 		APIOnly: true,
 	}))
 

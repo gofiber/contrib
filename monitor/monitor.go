@@ -53,7 +53,7 @@ var (
 )
 
 // New creates a new middleware handler
-func New(config ...Config) fiber.Handler {
+func New[T Context](config ...Config) Handler[T] {
 	// Set default config
 	cfg := configDefault(config...)
 
@@ -74,9 +74,9 @@ func New(config ...Config) fiber.Handler {
 
 	// Return new handler
 	//nolint:errcheck // Ignore the type-assertion errors
-	return func(c fiber.Ctx) error {
+	return func(c T) error {
 		// Don't execute middleware if Next returns true
-		if cfg.Next != nil && cfg.Next(&c) {
+		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
 		}
 
