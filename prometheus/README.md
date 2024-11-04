@@ -10,7 +10,7 @@ id: prometheus
 
 Prometheus middleware for [Fiber](https://github.com/gofiber/fiber).
 
-**Note: Requires Go 1.21 and above**
+**Note: This middleware is only supported on the latest two versions of Go**
 
 ## Install
 
@@ -19,13 +19,12 @@ go get -u github.com/gofiber/fiber/v2
 go get -u github.com/gofiber/contrib/prometheus
 ```
 
-## Following metrics are available by default:
+## Following metrics are available:
 
 ```
 http_requests_total
 http_request_duration_seconds
 http_requests_in_progress_total
-http_cache_results
 ```
 
 ## Example
@@ -40,22 +39,12 @@ import (
 
 func main() {
   app := fiber.New()
-
-  // This here will appear as a label, one can also use
-  // fiberprometheus.NewWith(servicename, namespace, subsystem )
-  // or
-  // labels := map[string]string{"custom_label1":"custom_value1", "custom_label2":"custom_value2"}
-  // fiberprometheus.NewWithLabels(labels, namespace, subsystem )
-  prom := prometheus.New("my-service-name")
+  prom := prometheus.New("my-fiber-app")
   prom.RegisterAt(app, "/metrics")
   app.Use(prom.Middleware)
 
   app.Get("/", func(c *fiber.Ctx) error {
     return c.SendString("Hello World")
-  })
-
-  app.Post("/hello", func(c *fiber.Ctx) error {
-    return c.SendString("Hello World!")
   })
 
   app.Listen(":3000")
@@ -64,8 +53,8 @@ func main() {
 
 ## Result
 
-- Hit the default url at http://localhost:3000
-- Navigate to http://localhost:3000/metrics
+- Visit your server http://localhost:3000
+- Navigate to http://localhost:3000/metrics to see the Prom metrics
 
 ## Grafana Dashboards
 
@@ -75,4 +64,3 @@ func main() {
 ## Credits
 
 - Thanks to https://github.com/ansrivas for creating the original middleware and contributing it to the GoFiber Framework. This middleware was licensed under MIT License.
-- Thanks to https://github.com/Fesaa for adding support for Cache Metrics.

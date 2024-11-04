@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"io"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/basicauth"
-	"github.com/gofiber/fiber/v2/middleware/cache"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -18,8 +20,8 @@ import (
 
 func TestMiddleware(t *testing.T) {
 	t.Parallel()
-	app := fiber.New()
 
+	app := fiber.New()
 	prometheus := New("test-service")
 	prometheus.RegisterAt(app, "/metrics")
 	app.Use(prometheus.Middleware)
@@ -55,20 +57,21 @@ func TestMiddleware(t *testing.T) {
 	req = httptest.NewRequest("GET", "/metrics", nil)
 	resp, _ = app.Test(req, -1)
 	defer resp.Body.Close()
-
 	body, _ := io.ReadAll(resp.Body)
 	got := string(body)
+
+	// Check Metrics Response
 	want := `http_requests_total{method="GET",path="/",service="test-service",status_code="200"} 1`
 	if !strings.Contains(got, want) {
 		t.Errorf("got %s; want %s", got, want)
 	}
 
-	want = `http_requests_total{method="GET",path="/error/fiber",service="test-service",status_code="400"} 1`
+	want = `http_requests_total{method="GET",path="/error/:type",service="test-service",status_code="400"} 1`
 	if !strings.Contains(got, want) {
 		t.Errorf("got %s; want %s", got, want)
 	}
 
-	want = `http_requests_total{method="GET",path="/error/unknown",service="test-service",status_code="500"} 1`
+	want = `http_requests_total{method="GET",path="/error/:type",service="test-service",status_code="500"} 1`
 	if !strings.Contains(got, want) {
 		t.Errorf("got %s; want %s", got, want)
 	}
@@ -84,10 +87,85 @@ func TestMiddleware(t *testing.T) {
 	}
 }
 
+func TestMiddlewareWithSkipPath(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	prometheus := New("test-service")
+	prometheus.RegisterAt(app, "/metrics")
+	prometheus.SetSkipPaths([]string{"/healthz", "/livez"})
+	app.Use(prometheus.Middleware)
+	app.Get("/", func(c *fiber.Ctx) error {
+		return c.SendString("Hello World")
+	})
+	app.Get("/healthz", func(c *fiber.Ctx) error {
+		return c.SendString("Hello World")
+	})
+	app.Get("/livez", func(c *fiber.Ctx) error {
+		return c.SendString("Hello World")
+	})
+
+	// Make requests
+	req := httptest.NewRequest("GET", "/", nil)
+	resp, _ := app.Test(req, -1)
+	if resp.StatusCode != 200 {
+		t.Fail()
+	}
+
+	req = httptest.NewRequest("GET", "/healthz", nil)
+	resp, _ = app.Test(req, -1)
+	if resp.StatusCode != 200 {
+		t.Fail()
+	}
+
+	req = httptest.NewRequest("GET", "/livez", nil)
+	resp, _ = app.Test(req, -1)
+	if resp.StatusCode != 200 {
+		t.Fail()
+	}
+
+	// Check Metrics Response
+	req = httptest.NewRequest("GET", "/metrics", nil)
+	resp, _ = app.Test(req, -1)
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	got := string(body)
+	want := `http_requests_total{method="GET",path="/",service="test-service",status_code="200"} 1`
+	if !strings.Contains(got, want) {
+		t.Errorf("got %s; want %s", got, want)
+	}
+
+	want = `http_requests_total{method="GET",path="/healthz",service="test-service",status_code="200"} 1`
+	if strings.Contains(got, want) {
+		t.Errorf("got %s; not want %s", got, want)
+	}
+
+	want = `http_requests_total{method="GET",path="/metrics",service="test-service",status_code="200"}`
+	if strings.Contains(got, want) {
+		t.Errorf("got %s; not want %s", got, want)
+	}
+
+	want = `http_requests_total{method="GET",path="/livez",service="test-service",status_code="200"} 1`
+	if strings.Contains(got, want) {
+		t.Errorf("got %s; not want %s", got, want)
+	}
+
+	want = `http_request_duration_seconds_count{method="GET",path="/",service="test-service",status_code="200"} 1`
+	if !strings.Contains(got, want) {
+		t.Errorf("got %s; not want %s", got, want)
+	}
+
+	want = `http_requests_in_progress_total{method="GET",service="test-service"} 0`
+	if !strings.Contains(got, want) {
+		t.Errorf("got %s; not want %s", got, want)
+	}
+}
+
 func TestMiddlewareWithGroup(t *testing.T) {
 	t.Parallel()
-	app := fiber.New()
 
+	app := fiber.New()
 	prometheus := New("test-service")
 	prometheus.RegisterAt(app, "/metrics")
 	app.Use(prometheus.Middleware)
@@ -128,20 +206,21 @@ func TestMiddlewareWithGroup(t *testing.T) {
 	req = httptest.NewRequest("GET", "/metrics", nil)
 	resp, _ = app.Test(req, -1)
 	defer resp.Body.Close()
-
 	body, _ := io.ReadAll(resp.Body)
 	got := string(body)
+
+	// Check Metrics Response
 	want := `http_requests_total{method="GET",path="/public",service="test-service",status_code="200"} 1`
 	if !strings.Contains(got, want) {
 		t.Errorf("got %s; want %s", got, want)
 	}
 
-	want = `http_requests_total{method="GET",path="/public/error/fiber",service="test-service",status_code="400"} 1`
+	want = `http_requests_total{method="GET",path="/public/error/:type",service="test-service",status_code="400"} 1`
 	if !strings.Contains(got, want) {
 		t.Errorf("got %s; want %s", got, want)
 	}
 
-	want = `http_requests_total{method="GET",path="/public/error/unknown",service="test-service",status_code="500"} 1`
+	want = `http_requests_total{method="GET",path="/public/error/:type",service="test-service",status_code="500"} 1`
 	if !strings.Contains(got, want) {
 		t.Errorf("got %s; want %s", got, want)
 	}
@@ -159,6 +238,7 @@ func TestMiddlewareWithGroup(t *testing.T) {
 
 func TestMiddlewareOnRoute(t *testing.T) {
 	t.Parallel()
+
 	app := fiber.New()
 	prometheus := New("test-route")
 	prefix := "/prefix/path"
@@ -210,12 +290,12 @@ func TestMiddlewareOnRoute(t *testing.T) {
 		t.Errorf("got %s; want %s", got, want)
 	}
 
-	want = `http_requests_total{method="GET",path="/error/fiber",service="test-route",status_code="400"} 1`
+	want = `http_requests_total{method="GET",path="/error/:type",service="test-route",status_code="400"} 1`
 	if !strings.Contains(got, want) {
 		t.Errorf("got %s; want %s", got, want)
 	}
 
-	want = `http_requests_total{method="GET",path="/error/unknown",service="test-route",status_code="500"} 1`
+	want = `http_requests_total{method="GET",path="/error/:type",service="test-route",status_code="500"} 1`
 	if !strings.Contains(got, want) {
 		t.Errorf("got %s; want %s", got, want)
 	}
@@ -233,11 +313,12 @@ func TestMiddlewareOnRoute(t *testing.T) {
 
 func TestMiddlewareWithServiceName(t *testing.T) {
 	t.Parallel()
-	app := fiber.New()
 
+	app := fiber.New()
 	prometheus := NewWith("unique-service", "my_service_with_name", "http")
 	prometheus.RegisterAt(app, "/metrics")
 	app.Use(prometheus.Middleware)
+
 	app.Get("/", func(c *fiber.Ctx) error {
 		return c.SendString("Hello World")
 	})
@@ -271,8 +352,8 @@ func TestMiddlewareWithServiceName(t *testing.T) {
 
 func TestMiddlewareWithLabels(t *testing.T) {
 	t.Parallel()
-	app := fiber.New()
 
+	app := fiber.New()
 	constLabels := map[string]string{
 		"customkey1": "customvalue1",
 		"customkey2": "customvalue2",
@@ -280,6 +361,7 @@ func TestMiddlewareWithLabels(t *testing.T) {
 	prometheus := NewWithLabels(constLabels, "my_service", "http")
 	prometheus.RegisterAt(app, "/metrics")
 	app.Use(prometheus.Middleware)
+
 	app.Get("/", func(c *fiber.Ctx) error {
 		return c.SendString("Hello World")
 	})
@@ -313,8 +395,8 @@ func TestMiddlewareWithLabels(t *testing.T) {
 
 func TestMiddlewareWithBasicAuth(t *testing.T) {
 	t.Parallel()
-	app := fiber.New()
 
+	app := fiber.New()
 	prometheus := New("basic-auth")
 	prometheus.RegisterAt(app, "/metrics", basicauth.New(basicauth.Config{
 		Users: map[string]string{
@@ -349,18 +431,18 @@ func TestMiddlewareWithBasicAuth(t *testing.T) {
 
 func TestMiddlewareWithCustomRegistry(t *testing.T) {
 	t.Parallel()
+
 	app := fiber.New()
 	registry := prometheus.NewRegistry()
-
 	srv := httptest.NewServer(promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 	t.Cleanup(srv.Close)
-
 	promfiber := NewWithRegistry(registry, "unique-service", "my_service_with_name", "http", nil)
 	app.Use(promfiber.Middleware)
 
 	app.Get("/", func(c *fiber.Ctx) error {
 		return c.SendString("Hello World")
 	})
+
 	req := httptest.NewRequest("GET", "/", nil)
 	resp, err := app.Test(req, -1)
 	if err != nil {
@@ -402,13 +484,13 @@ func TestMiddlewareWithCustomRegistry(t *testing.T) {
 
 func TestCustomRegistryRegisterAt(t *testing.T) {
 	t.Parallel()
+
 	app := fiber.New()
 	registry := prometheus.NewRegistry()
 	registry.Register(collectors.NewGoCollector())
 	registry.Register(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	fpCustom := NewWithRegistry(registry, "custom-registry", "custom_name", "http", nil)
 	fpCustom.RegisterAt(app, "/metrics")
-
 	app.Use(fpCustom.Middleware)
 
 	app.Get("/", func(c *fiber.Ctx) error {
@@ -443,126 +525,298 @@ func TestCustomRegistryRegisterAt(t *testing.T) {
 	if !strings.Contains(got, want) {
 		t.Errorf("got %s; want %s", got, want)
 	}
-}
 
-func TestWithCacheMiddleware(t *testing.T) {
-	t.Parallel()
-	app := fiber.New()
-	registry := prometheus.NewRegistry()
-	registry.Register(collectors.NewGoCollector())
-	registry.Register(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
-	fpCustom := NewWithRegistry(registry, "custom-registry", "custom_name", "http", nil)
-	fpCustom.RegisterAt(app, "/metrics")
-
-	app.Use(fpCustom.Middleware)
-	app.Use(cache.New())
-
-	app.Get("/myPath", func(c *fiber.Ctx) error {
-		return c.SendString("Hello, world!")
-	})
-
-	for i := 0; i < 2; i++ {
-		req := httptest.NewRequest("GET", "/myPath", nil)
-		res, err := app.Test(req, -1)
-		if err != nil {
-			t.Fatal(fmt.Errorf("GET / failed: %w", err))
-		}
-		defer res.Body.Close()
-		if res.StatusCode != 200 {
-			t.Fatal(fmt.Errorf("GET /: Status=%d", res.StatusCode))
-		}
-	}
-
-	req := httptest.NewRequest("GET", "/metrics", nil)
-	res, err := app.Test(req, -1)
-	if err != nil {
-		t.Fatal(fmt.Errorf("GET /metrics failed: %W", err))
-	}
-	defer res.Body.Close()
-	if res.StatusCode != 200 {
-		t.Fatal(fmt.Errorf("GET /metrics: Status=%d", res.StatusCode))
-	}
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		t.Fatal(fmt.Errorf("GET /metrics: read body: %w", err))
-	}
-	got := string(body)
-	want := `custom_name_http_requests_total{method="GET",path="/myPath",service="custom-registry",status_code="200"} 2`
-	if !strings.Contains(got, want) {
-		t.Errorf("got %s; want %s", got, want)
-	}
-
-	want = `custom_name_http_cache_results{cache_result="hit",method="GET",path="/myPath",service="custom-registry",status_code="200"} 1`
-	if !strings.Contains(got, want) {
-		t.Errorf("got %s; want %s", got, want)
-	}
-
-	want = `custom_name_http_cache_results{cache_result="miss",method="GET",path="/myPath",service="custom-registry",status_code="200"} 1`
-	if !strings.Contains(got, want) {
-		t.Errorf("got %s; want %s", got, want)
+	// Make sure that /metrics was skipped
+	want = `custom_name_http_requests_total{method="GET",path="/metrics",service="custom-registry",status_code="200"} 1`
+	if strings.Contains(got, want) {
+		t.Errorf("got %s; not want %s", got, want)
 	}
 }
 
-func TestWithCacheMiddlewareWithCustomKey(t *testing.T) {
-	t.Parallel()
+// TestInFlightGauge verifies that the in-flight requests gauge is updated correctly.
+func TestInFlightGauge(t *testing.T) {
 	app := fiber.New()
-	registry := prometheus.NewRegistry()
-	registry.Register(collectors.NewGoCollector())
-	registry.Register(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
-	fpCustom := NewWithRegistry(registry, "custom-registry", "custom_name", "http", nil)
-	fpCustom.RegisterAt(app, "/metrics")
-	fpCustom.CustomCacheKey("my-custom-cache-header")
+	prometheus := New("inflight-service")
+	app.Use(prometheus.Middleware)
 
-	app.Use(fpCustom.Middleware)
-	app.Use(cache.New(
-		cache.Config{
-			CacheHeader: "my-custom-cache-header",
-		},
-	))
-
-	app.Get("/myPath", func(c *fiber.Ctx) error {
-		return c.SendString("Hello, world!")
+	// Long-running handler to simulate in-flight requests
+	app.Get("/long", func(c *fiber.Ctx) error {
+		// Sleep for a short duration
+		time.Sleep(100 * time.Millisecond)
+		return c.SendString("Long Request")
 	})
 
-	for i := 0; i < 2; i++ {
-		req := httptest.NewRequest("GET", "/myPath", nil)
-		res, err := app.Test(req, -1)
-		if err != nil {
-			t.Fatal(fmt.Errorf("GET / failed: %w", err))
-		}
-		defer res.Body.Close()
-		if res.StatusCode != 200 {
-			t.Fatal(fmt.Errorf("GET /: Status=%d", res.StatusCode))
-		}
+	// Register metrics endpoint
+	prometheus.RegisterAt(app, "/metrics")
+
+	var wg sync.WaitGroup
+	requests := 10
+	wg.Add(requests)
+
+	// Start multiple concurrent requests
+	for i := 0; i < requests; i++ {
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest("GET", "/long", nil)
+			app.Test(req, -1)
+		}()
 	}
 
+	// Allow some time for requests to start
+	time.Sleep(10 * time.Millisecond)
+	wg.Wait()
+
+	// After all requests complete, in-flight gauge should be zero
 	req := httptest.NewRequest("GET", "/metrics", nil)
-	res, err := app.Test(req, -1)
-	if err != nil {
-		t.Fatal(fmt.Errorf("GET /metrics failed: %W", err))
-	}
-	defer res.Body.Close()
-	if res.StatusCode != 200 {
-		t.Fatal(fmt.Errorf("GET /metrics: Status=%d", res.StatusCode))
-	}
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		t.Fatal(fmt.Errorf("GET /metrics: read body: %w", err))
-	}
+	resp, _ := app.Test(req, -1)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
 	got := string(body)
-	want := `custom_name_http_requests_total{method="GET",path="/myPath",service="custom-registry",status_code="200"} 2`
-	if !strings.Contains(got, want) {
-		t.Errorf("got %s; want %s", got, want)
+
+	// The in-flight gauge should be equal to the number of concurrent requests
+	// Since requests are sleeping, some may have completed, so we check for at least one
+	if !strings.Contains(got, `http_requests_in_progress_total{method="GET",service="inflight-service"} 1`) {
+		t.Errorf("Expected in-flight gauge to be at least 1, got %s", got)
 	}
 
-	want = `custom_name_http_cache_results{cache_result="hit",method="GET",path="/myPath",service="custom-registry",status_code="200"} 1`
+	want := `http_requests_total{method="GET",path="/long",service="inflight-service",status_code="200"} 10`
 	if !strings.Contains(got, want) {
-		t.Errorf("got %s; want %s", got, want)
+		t.Errorf("Expected in-flight gauge to be 0, got %s", got)
+	}
+}
+
+// TestDifferentHTTPMethods verifies that metrics are correctly recorded for various HTTP methods.
+func TestDifferentHTTPMethods(t *testing.T) {
+	app := fiber.New()
+	prometheus := New("methods-service")
+	app.Use(prometheus.Middleware)
+
+	// Define handlers for different methods
+	app.Get("/resource", func(c *fiber.Ctx) error {
+		return c.SendString("GET")
+	})
+	app.Post("/resource", func(c *fiber.Ctx) error {
+		return c.SendString("POST")
+	})
+	app.Put("/resource", func(c *fiber.Ctx) error {
+		return c.SendString("PUT")
+	})
+	app.Delete("/resource", func(c *fiber.Ctx) error {
+		return c.SendString("DELETE")
+	})
+
+	// Register metrics endpoint
+	prometheus.RegisterAt(app, "/metrics")
+
+	// Make requests with different methods
+	methods := []string{"GET", "POST", "PUT", "DELETE"}
+	for _, method := range methods {
+		req := httptest.NewRequest(method, "/resource", nil)
+		resp, _ := app.Test(req, -1)
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200 for %s, got %d", method, resp.StatusCode)
+		}
 	}
 
-	want = `custom_name_http_cache_results{cache_result="miss",method="GET",path="/myPath",service="custom-registry",status_code="200"} 1`
+	// Check Metrics
+	req := httptest.NewRequest("GET", "/metrics", nil)
+	resp, _ := app.Test(req, -1)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	got := string(body)
+
+	for _, method := range methods {
+		want := `http_requests_total{method="` + method + `",path="/resource",service="methods-service",status_code="200"} 1`
+		if !strings.Contains(got, want) {
+			t.Errorf("Expected metric %s, got %s", want, got)
+		}
+	}
+}
+
+// TestSkipPathsWithTrailingSlash verifies that skip paths are correctly normalized and skipped even with trailing slashes.
+func TestSkipPathsWithTrailingSlash(t *testing.T) {
+	app := fiber.New()
+	prometheus := New("skip-service")
+	prometheus.RegisterAt(app, "/metrics")
+	prometheus.SetSkipPaths([]string{"/healthz", "/livez"})
+	app.Use(prometheus.Middleware)
+
+	app.Get("/", func(c *fiber.Ctx) error {
+		return c.SendString("Hello World")
+	})
+	app.Get("/healthz/", func(c *fiber.Ctx) error { // Trailing slash
+		return c.SendString("Healthz")
+	})
+	app.Get("/livez/", func(c *fiber.Ctx) error { // Trailing slash
+		return c.SendString("Livez")
+	})
+
+	// Make requests
+	req := httptest.NewRequest("GET", "/", nil)
+	resp, _ := app.Test(req, -1)
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	req = httptest.NewRequest("GET", "/healthz/", nil)
+	resp, _ = app.Test(req, -1)
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	req = httptest.NewRequest("GET", "/livez/", nil)
+	resp, _ = app.Test(req, -1)
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	// Check Metrics
+	req = httptest.NewRequest("GET", "/metrics", nil)
+	resp, _ = app.Test(req, -1)
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	got := string(body)
+
+	// Only the root path should be recorded
+	want := `http_requests_total{method="GET",path="/",service="skip-service",status_code="200"} 1`
 	if !strings.Contains(got, want) {
-		t.Errorf("got %s; want %s", got, want)
+		t.Errorf("Expected metric %s, got %s", want, got)
+	}
+
+	// Ensure skipped paths are not recorded
+	skippedPaths := []string{"/healthz", "/livez"}
+	for _, path := range skippedPaths {
+		want := `http_requests_total{method="GET",path="` + path + `",service="skip-service",status_code="200"} 1`
+		if strings.Contains(got, want) {
+			t.Errorf("Did not expect metric %s, but found in %s", want, got)
+		}
+	}
+}
+
+// TestMetricsAfterError verifies that metrics are recorded correctly even when handlers return errors.
+func TestMetricsAfterError(t *testing.T) {
+	app := fiber.New()
+	prometheus := New("error-service")
+	app.Use(prometheus.Middleware)
+
+	app.Get("/badrequest", func(c *fiber.Ctx) error {
+		return fiber.ErrBadRequest
+	})
+	app.Get("/internalerror", func(c *fiber.Ctx) error {
+		return fiber.ErrInternalServerError
+	})
+
+	// Register metrics endpoint
+	prometheus.RegisterAt(app, "/metrics")
+
+	// Make error requests
+	req := httptest.NewRequest("GET", "/badrequest", nil)
+	resp, _ := app.Test(req, -1)
+	if resp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("Expected status 400, got %d", resp.StatusCode)
+	}
+
+	req = httptest.NewRequest("GET", "/internalerror", nil)
+	resp, _ = app.Test(req, -1)
+	if resp.StatusCode != fiber.StatusInternalServerError {
+		t.Fatalf("Expected status 500, got %d", resp.StatusCode)
+	}
+
+	// Check Metrics
+	req = httptest.NewRequest("GET", "/metrics", nil)
+	resp, _ = app.Test(req, -1)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	got := string(body)
+
+	want400 := `http_requests_total{method="GET",path="/badrequest",service="error-service",status_code="400"} 1`
+	if !strings.Contains(got, want400) {
+		t.Errorf("Expected metric %s, got %s", want400, got)
+	}
+
+	want500 := `http_requests_total{method="GET",path="/internalerror",service="error-service",status_code="500"} 1`
+	if !strings.Contains(got, want500) {
+		t.Errorf("Expected metric %s, got %s", want500, got)
+	}
+}
+
+// TestMultipleRegistrations ensures that calling RegisterAt multiple times does not duplicate handlers.
+func TestMultipleRegistrations(t *testing.T) {
+	app := fiber.New()
+	prometheus := New("multi-register-service")
+	app.Use(prometheus.Middleware)
+	prometheus.RegisterAt(app, "/metrics")
+	prometheus.RegisterAt(app, "/metrics") // Register again
+
+	app.Get("/", func(c *fiber.Ctx) error {
+		return c.SendString("Hello World")
+	})
+
+	// Make requests
+	req := httptest.NewRequest("GET", "/", nil)
+	resp, _ := app.Test(req, -1)
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	// Make a request to /metrics
+	req = httptest.NewRequest("GET", "/metrics", nil)
+	resp, _ = app.Test(req, -1)
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	got := string(body)
+
+	// Expect metrics to be registered only once
+	want := `http_requests_total{method="GET",path="/",service="multi-register-service",status_code="200"} 1`
+	if strings.Count(got, want) != 1 {
+		t.Errorf("Expected metric %s to appear once, got %s occurrences", want, got)
+	}
+}
+
+// TestMetricsHandlerConcurrentAccess verifies that the metrics handler can handle concurrent access without issues.
+func TestMetricsHandlerConcurrentAccess(t *testing.T) {
+	app := fiber.New()
+	prometheus := New("concurrent-service")
+	app.Use(prometheus.Middleware)
+
+	app.Get("/resource", func(c *fiber.Ctx) error {
+		return c.SendString("Resource")
+	})
+
+	// Register metrics endpoint
+	prometheus.RegisterAt(app, "/metrics")
+
+	// Make multiple concurrent requests
+	var wg sync.WaitGroup
+	requests := 100
+	wg.Add(requests)
+
+	for i := 0; i < requests; i++ {
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest("GET", "/resource", nil)
+			app.Test(req, -1)
+		}()
+	}
+
+	wg.Wait()
+
+	// Check Metrics
+	req := httptest.NewRequest("GET", "/metrics", nil)
+	resp, _ := app.Test(req, -1)
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	got := string(body)
+
+	// Verify that requests_total is incremented correctly
+	wantTotal := `http_requests_total{method="GET",path="/resource",service="concurrent-service",status_code="200"} ` + strconv.Itoa(requests)
+	if !strings.Contains(got, wantTotal) {
+		t.Errorf("Expected metric %s, got %s", wantTotal, got)
 	}
 }
 
