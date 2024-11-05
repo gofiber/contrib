@@ -1,6 +1,7 @@
 package jwtware_test
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -103,6 +104,47 @@ const (
 }
 `
 )
+
+func TestJwtDeobfuscation(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		// Assert
+		if err := recover(); err != nil {
+			t.Fatalf("Middleware should not panic")
+		}
+	}()
+
+	for _, test := range hamac {
+		// Arrange
+		app := fiber.New()
+
+		app.Use(jwtware.New(jwtware.Config{
+			SigningKey: jwtware.SigningKey{
+				JWTAlg: test.SigningMethod,
+				Key:    []byte(defaultSigningKey),
+			},
+			TokenDeobfuscatorFunc: func(obfuscatedToken string) (string, error) {
+				token, err := hex.DecodeString(obfuscatedToken)
+				return string(token), err
+			},
+		}))
+
+		app.Get("/ok", func(c *fiber.Ctx) error {
+			return c.SendString("OK")
+		})
+
+		req := httptest.NewRequest("GET", "/ok", nil)
+		req.Header.Add("Authorization", "Bearer "+hex.EncodeToString([]byte(test.Token)))
+
+		// Act
+		resp, err := app.Test(req)
+
+		// Assert
+		utils.AssertEqual(t, nil, err)
+		utils.AssertEqual(t, 200, resp.StatusCode)
+	}
+}
 
 func TestJwtFromHeader(t *testing.T) {
 	t.Parallel()
