@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/utils"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
 	otelcontrib "go.opentelemetry.io/contrib"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -18,7 +18,7 @@ import (
 
 const (
 	tracerKey           = "gofiber-contrib-tracer-fiber"
-	instrumentationName = "github.com/gofiber/contrib/otelfiber"
+	instrumentationName = "github.com/gofiber/contrib/otelfiber/v3"
 
 	MetricNameHttpServerDuration       = "http.server.duration"
 	MetricNameHttpServerRequestSize    = "http.server.request.size"
@@ -80,7 +80,7 @@ func Middleware(opts ...Option) fiber.Handler {
 		cfg.SpanNameFormatter = defaultSpanNameFormatter
 	}
 
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		// Don't execute middleware if Next returns true
 		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
@@ -176,6 +176,6 @@ func Middleware(opts ...Option) fiber.Handler {
 
 // defaultSpanNameFormatter is the default formatter for spans created with the fiber
 // integration. Returns the route pathRaw
-func defaultSpanNameFormatter(ctx *fiber.Ctx) string {
+func defaultSpanNameFormatter(ctx fiber.Ctx) string {
 	return ctx.Route().Path
 }

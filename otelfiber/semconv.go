@@ -4,17 +4,17 @@ import (
 	"encoding/base64"
 	"strings"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/utils"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
 	"go.opentelemetry.io/otel/attribute"
 	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
 )
 
-func httpServerMetricAttributesFromRequest(c *fiber.Ctx, cfg config) []attribute.KeyValue {
+func httpServerMetricAttributesFromRequest(c fiber.Ctx, cfg config) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		httpFlavorAttribute(c),
 		semconv.HTTPMethodKey.String(utils.CopyString(c.Method())),
-		semconv.HTTPSchemeKey.String(utils.CopyString(c.Protocol())),
+		semconv.HTTPSchemeKey.String(utils.CopyString(c.Scheme())),
 		semconv.NetHostNameKey.String(utils.CopyString(c.Hostname())),
 	}
 
@@ -33,7 +33,7 @@ func httpServerMetricAttributesFromRequest(c *fiber.Ctx, cfg config) []attribute
 	return attrs
 }
 
-func httpServerTraceAttributesFromRequest(c *fiber.Ctx, cfg config) []attribute.KeyValue {
+func httpServerTraceAttributesFromRequest(c fiber.Ctx, cfg config) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		httpFlavorAttribute(c),
 		// utils.CopyString: we need to copy the string as fasthttp strings are by default
@@ -41,7 +41,7 @@ func httpServerTraceAttributesFromRequest(c *fiber.Ctx, cfg config) []attribute.
 		// the handler returns.
 		semconv.HTTPMethodKey.String(utils.CopyString(c.Method())),
 		semconv.HTTPRequestContentLengthKey.Int(c.Request().Header.ContentLength()),
-		semconv.HTTPSchemeKey.String(utils.CopyString(c.Protocol())),
+		semconv.HTTPSchemeKey.String(utils.CopyString(c.Scheme())),
 		semconv.HTTPTargetKey.String(string(utils.CopyBytes(c.Request().RequestURI()))),
 		semconv.HTTPURLKey.String(utils.CopyString(c.OriginalURL())),
 		semconv.HTTPUserAgentKey.String(string(utils.CopyBytes(c.Request().Header.UserAgent()))),
@@ -74,7 +74,7 @@ func httpServerTraceAttributesFromRequest(c *fiber.Ctx, cfg config) []attribute.
 	return attrs
 }
 
-func httpFlavorAttribute(c *fiber.Ctx) attribute.KeyValue {
+func httpFlavorAttribute(c fiber.Ctx) attribute.KeyValue {
 	if c.Request().Header.IsHTTP11() {
 		return semconv.HTTPFlavorHTTP11
 	}
