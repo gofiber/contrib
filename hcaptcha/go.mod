@@ -5,7 +5,7 @@ go 1.21
 require (
 	github.com/gofiber/fiber/v3 v3.0.0-beta.3
 	github.com/stretchr/testify v1.9.0
-	github.com/valyala/fasthttp v1.57.0
+	github.com/valyala/fasthttp v1.58.0
 )
 
 require (
@@ -19,6 +19,6 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/tcplisten v1.0.0 // indirect
-	golang.org/x/sys v0.26.0 // indirect
+	golang.org/x/sys v0.27.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
