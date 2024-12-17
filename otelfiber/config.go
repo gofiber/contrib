@@ -1,7 +1,7 @@
 package otelfiber
 
 import (
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"go.opentelemetry.io/otel/attribute"
 	otelmetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
@@ -10,15 +10,15 @@ import (
 
 // config is used to configure the Fiber middleware.
 type config struct {
-	Next                   func(*fiber.Ctx) bool
+	Next                   func(fiber.Ctx) bool
 	TracerProvider         oteltrace.TracerProvider
 	MeterProvider          otelmetric.MeterProvider
 	Port                   *int
 	Propagators            propagation.TextMapPropagator
 	ServerName             *string
-	SpanNameFormatter      func(*fiber.Ctx) string
-	CustomAttributes       func(*fiber.Ctx) []attribute.KeyValue
-	CustomMetricAttributes func(*fiber.Ctx) []attribute.KeyValue
+	SpanNameFormatter      func(fiber.Ctx) string
+	CustomAttributes       func(fiber.Ctx) []attribute.KeyValue
+	CustomMetricAttributes func(fiber.Ctx) []attribute.KeyValue
 	collectClientIP        bool
 }
 
@@ -35,7 +35,7 @@ func (o optionFunc) apply(c *config) {
 
 // WithNext takes a function that will be called on every
 // request, the middleware will be skipped if returning true
-func WithNext(f func(ctx *fiber.Ctx) bool) Option {
+func WithNext(f func(ctx fiber.Ctx) bool) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.Next = f
 	})
@@ -68,7 +68,7 @@ func WithMeterProvider(provider otelmetric.MeterProvider) Option {
 
 // WithSpanNameFormatter takes a function that will be called on every
 // request and the returned string will become the Span Name
-func WithSpanNameFormatter(f func(ctx *fiber.Ctx) string) Option {
+func WithSpanNameFormatter(f func(ctx fiber.Ctx) string) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.SpanNameFormatter = f
 	})
@@ -93,7 +93,7 @@ func WithPort(port int) Option {
 
 // WithCustomAttributes specifies a function that will be called on every
 // request and the returned attributes will be added to the span.
-func WithCustomAttributes(f func(ctx *fiber.Ctx) []attribute.KeyValue) Option {
+func WithCustomAttributes(f func(ctx fiber.Ctx) []attribute.KeyValue) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.CustomAttributes = f
 	})
@@ -101,7 +101,7 @@ func WithCustomAttributes(f func(ctx *fiber.Ctx) []attribute.KeyValue) Option {
 
 // WithCustomMetricAttributes specifies a function that will be called on every
 // request and the returned attributes will be added to the metrics.
-func WithCustomMetricAttributes(f func(ctx *fiber.Ctx) []attribute.KeyValue) Option {
+func WithCustomMetricAttributes(f func(ctx fiber.Ctx) []attribute.KeyValue) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.CustomMetricAttributes = f
 	})
