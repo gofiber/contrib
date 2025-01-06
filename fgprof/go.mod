@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/fgprof
 go 1.19
 
 require (
-	github.com/felixge/fgprof v0.9.4
+	github.com/felixge/fgprof v0.9.5
 	github.com/gofiber/fiber/v2 v2.52.5
 )
 
