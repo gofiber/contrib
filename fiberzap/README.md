@@ -59,6 +59,7 @@ import (
 func main() {
     app := fiber.New()
     logger, _ := zap.NewProduction()
+    defer logger.Sync()
 
     app.Use(fiberzap.New(fiberzap.Config{
         Logger: logger,
@@ -103,9 +104,12 @@ import (
 
 func main() {
     app := fiber.New()
-    log.SetLogger(fiberzap.NewLogger(fiberzap.LoggerConfig{
+    logger := fiberzap.NewLogger(fiberzap.LoggerConfig{
         ExtraKeys: []string{"request_id"},
-    }))
+    })
+    log.SetLogger(logger)
+    defer logger.Sync()
+
     app.Use(func(c *fiber.Ctx) error {
         ctx := context.WithValue(c.UserContext(), "request_id", "123")
         c.SetUserContext(ctx)
