@@ -60,6 +60,11 @@ type Config struct {
 	// - "cookie:<name>"
 	TokenLookup string
 
+	// TokenDeobfuscatorFunc defines a function to deobfuscate the founded token with [TokenLookup].
+	// This help to implement a Token obfuscation algoritm to prevent information disclosure.
+	// Optional. Default: nil
+	TokenDeobfuscatorFunc func(obfuscatedToken string) (string, error)
+
 	// AuthScheme to be used in the Authorization header.
 	// Optional. Default: "Bearer".
 	AuthScheme string
