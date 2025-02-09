@@ -31,7 +31,6 @@ otelfiber.Middleware(opts ...otelfiber.Option) fiber.Handler
 ## Config
 You can configure the middleware using functional parameters
 
-
 | Function                | Argument Type                            | Description                                                                      | Default                                                             |
 | :------------------------ | :-------------------------------- | :--------------------------------------------------------------------------------- | :-------------------------------------------------------------------- |
 | `WithNext`                    | `func(*fiber.Ctx) bool`         | Define a function to skip this middleware when returned true .| nil                                                                 |
@@ -39,7 +38,6 @@ You can configure the middleware using functional parameters
 | `WithMeterProvider`           | `otelmetric.MeterProvider`      | Specifies a meter provider to use for reporting.                                     | nil - the global meter provider is used                                                             |
 | `WithPort`                    | `int`                          | Specifies the value to use when setting the `net.host.port` attribute on metrics/spans.                            | Defaults to (`80` for `http`, `443` for `https`)              |
 | `WithPropagators`             | `propagation.TextMapPropagator` | Specifies propagators to use for extracting information from the HTTP requests.                     | If none are specified, global ones will be used                                                               |
-| `WithServerName`              | `string`                       | Specifies the value to use when setting the `http.server_name` attribute on metrics/spans.                                          | -                                                                   |
 | `WithSpanNameFormatter`       | `func(*fiber.Ctx) string`       | Takes a function that will be called on every request and the returned string will become the span Name.                                   | Default formatter returns the route pathRaw |
 | `WithCustomAttributes`        | `func(*fiber.Ctx) []attribute.KeyValue` | Define a function to add custom attributes to the span.                  | nil                                                                 |
 | `WithCustomMetricAttributes`  | `func(*fiber.Ctx) []attribute.KeyValue` | Define a function to add custom attributes to the metrics.               | nil                                                                 |

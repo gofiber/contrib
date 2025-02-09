@@ -24,7 +24,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
@@ -88,21 +88,18 @@ func TestTrace200(t *testing.T) {
 	sr := tracetest.NewSpanRecorder()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 	otel.SetTracerProvider(provider)
-	serverName := "foobar"
 
 	app := fiber.New()
 	app.Use(
-		otelfiber.Middleware(
-			otelfiber.WithTracerProvider(provider),
-			otelfiber.WithServerName(serverName),
-		),
+		otelfiber.Middleware(otelfiber.WithTracerProvider(provider)),
 	)
 	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
 		id := ctx.Params("id")
 		return ctx.SendString(id)
 	})
 
-	resp, _ := app.Test(httptest.NewRequest("GET", "/user/123", nil), 3000)
+	r := httptest.NewRequest("GET", "/user/123", nil)
+	resp, _ := app.Test(r, 3000)
 
 	// do and verify the request
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -116,10 +113,10 @@ func TestTrace200(t *testing.T) {
 
 	assert.Equal(t, "/user/:id", span.Name())
 	assert.Equal(t, oteltrace.SpanKindServer, span.SpanKind())
-	assert.Contains(t, attr, attribute.String("http.server_name", serverName))
-	assert.Contains(t, attr, attribute.Int("http.status_code", http.StatusOK))
-	assert.Contains(t, attr, attribute.String("http.method", "GET"))
-	assert.Contains(t, attr, attribute.String("http.target", "/user/123"))
+	assert.Contains(t, attr, attribute.String("server.address", r.Host))
+	assert.Contains(t, attr, attribute.Int("http.response.status_code", http.StatusOK))
+	assert.Contains(t, attr, attribute.String("http.request.method", "GET"))
+	assert.Contains(t, attr, attribute.String("url.path", "/user/123"))
 	assert.Contains(t, attr, attribute.String("http.route", "/user/:id"))
 }
 
@@ -145,7 +142,7 @@ func TestError(t *testing.T) {
 	attr := span.Attributes()
 
 	assert.Equal(t, "/server_err", span.Name())
-	assert.Contains(t, attr, attribute.Int("http.status_code", http.StatusInternalServerError))
+	assert.Contains(t, attr, attribute.Int("http.response.status_code", http.StatusInternalServerError))
 	assert.Equal(t, attribute.StringValue("oh no"), span.Events()[0].Attributes[1].Value)
 	// server errors set the status
 	assert.Equal(t, codes.Error, span.Status().Code)
@@ -280,7 +277,6 @@ func TestMetric(t *testing.T) {
 	reader := metric.NewManualReader()
 	provider := metric.NewMeterProvider(metric.WithReader(reader))
 
-	serverName := "foobar"
 	port := 8080
 	route := "/foo"
 
@@ -289,7 +285,6 @@ func TestMetric(t *testing.T) {
 		otelfiber.Middleware(
 			otelfiber.WithMeterProvider(provider),
 			otelfiber.WithPort(port),
-			otelfiber.WithServerName(serverName),
 		),
 	)
 	app.Get(route, func(ctx *fiber.Ctx) error {
@@ -305,17 +300,17 @@ func TestMetric(t *testing.T) {
 	assert.Len(t, metrics.ScopeMetrics, 1)
 
 	requestAttrs := []attribute.KeyValue{
-		semconv.HTTPFlavorKey.String(fmt.Sprintf("1.%d", r.ProtoMinor)),
-		semconv.HTTPMethodKey.String(http.MethodGet),
-		semconv.HTTPSchemeHTTP,
-		semconv.NetHostNameKey.String(r.Host),
-		semconv.NetHostPortKey.Int(port),
-		semconv.HTTPServerNameKey.String(serverName),
+		semconv.NetworkProtocolName("http"),
+		semconv.NetworkProtocolVersion(fmt.Sprintf("1.%d", r.ProtoMinor)),
+		semconv.URLScheme("http"),
+		semconv.HTTPRequestMethodKey.String(http.MethodGet),
+		semconv.ServerAddress(r.Host),
+		semconv.ServerPort(port),
 	}
-	responseAttrs := append(
-		semconv.HTTPAttributesFromHTTPStatusCode(200),
+	responseAttrs := []attribute.KeyValue{
+		semconv.HTTPResponseStatusCode(200),
 		semconv.HTTPRouteKey.String(route),
-	)
+	}
 
 	assertScopeMetrics(t, metrics.ScopeMetrics[0], route, requestAttrs, append(requestAttrs, responseAttrs...))
 }
@@ -440,18 +435,17 @@ func TestCustomAttributes(t *testing.T) {
 
 	assert.Equal(t, "/user/:id", span.Name())
 	assert.Equal(t, oteltrace.SpanKindServer, span.SpanKind())
-	assert.Contains(t, attr, attribute.Int("http.status_code", http.StatusOK))
-	assert.Contains(t, attr, attribute.String("http.method", "GET"))
-	assert.Contains(t, attr, attribute.String("http.target", "/user/123?foo=bar"))
+	assert.Contains(t, attr, attribute.Int("http.response.status_code", http.StatusOK))
+	assert.Contains(t, attr, attribute.String("http.request.method", "GET"))
+	assert.Contains(t, attr, attribute.String("url.path", "/user/123?foo=bar"))
 	assert.Contains(t, attr, attribute.String("http.route", "/user/:id"))
-	assert.Contains(t, attr, attribute.String("http.query_params", "foo=bar"))
+	assert.Contains(t, attr, semconv.URLQuery("foo=bar"))
 }
 
 func TestCustomMetricAttributes(t *testing.T) {
 	reader := metric.NewManualReader()
 	provider := metric.NewMeterProvider(metric.WithReader(reader))
 
-	serverName := "foobar"
 	port := 8080
 	route := "/foo"
 
@@ -460,11 +454,8 @@ func TestCustomMetricAttributes(t *testing.T) {
 		otelfiber.Middleware(
 			otelfiber.WithMeterProvider(provider),
 			otelfiber.WithPort(port),
-			otelfiber.WithServerName(serverName),
 			otelfiber.WithCustomMetricAttributes(func(ctx *fiber.Ctx) []attribute.KeyValue {
-				return []attribute.KeyValue{
-					attribute.Key("http.query_params").String(ctx.Request().URI().QueryArgs().String()),
-				}
+				return []attribute.KeyValue{semconv.URLQuery(ctx.Request().URI().QueryArgs().String())}
 			}),
 		),
 	)
@@ -485,18 +476,18 @@ func TestCustomMetricAttributes(t *testing.T) {
 	assert.Len(t, metrics.ScopeMetrics, 1)
 
 	requestAttrs := []attribute.KeyValue{
-		semconv.HTTPFlavorKey.String(fmt.Sprintf("1.%d", r.ProtoMinor)),
-		semconv.HTTPMethodKey.String(http.MethodGet),
-		semconv.HTTPSchemeHTTP,
-		semconv.NetHostNameKey.String(r.Host),
-		semconv.NetHostPortKey.Int(port),
-		semconv.HTTPServerNameKey.String(serverName),
-		attribute.String("http.query_params", "foo=bar"),
+		semconv.NetworkProtocolName("http"),
+		semconv.NetworkProtocolVersion(fmt.Sprintf("1.%d", r.ProtoMinor)),
+		semconv.HTTPRequestMethodKey.String(http.MethodGet),
+		semconv.URLSchemeKey.String("http"),
+		semconv.ServerAddress(r.Host),
+		semconv.ServerPort(port),
+		semconv.URLQuery("foo=bar"),
 	}
-	responseAttrs := append(
-		semconv.HTTPAttributesFromHTTPStatusCode(200),
+	responseAttrs := []attribute.KeyValue{
+		semconv.HTTPResponseStatusCode(200),
 		semconv.HTTPRouteKey.String(route),
-	)
+	}
 
 	assertScopeMetrics(t, metrics.ScopeMetrics[0], route, requestAttrs, append(requestAttrs, responseAttrs...))
 }
@@ -581,9 +572,9 @@ func TestCollectClientIP(t *testing.T) {
 			span := spans[0]
 			attrs := span.Attributes()
 			if enabled {
-				assert.Contains(t, attrs, attribute.String("http.client_ip", "0.0.0.0"))
+				assert.Contains(t, attrs, attribute.String("client.address", "0.0.0.0"))
 			} else {
-				assert.NotContains(t, attrs, attribute.String("http.client_ip", "0.0.0.0"))
+				assert.NotContains(t, attrs, attribute.String("client.address", "0.0.0.0"))
 			}
 		})
 	}
