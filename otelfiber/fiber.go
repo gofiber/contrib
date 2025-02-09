@@ -2,6 +2,7 @@ package otelfiber
 
 import (
 	"context"
+	"github.com/gofiber/contrib/otelfiber/v2/internal"
 	"net/http"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
-	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
@@ -128,10 +129,10 @@ func Middleware(opts ...Option) fiber.Handler {
 		}
 
 		// extract common attributes from response
-		responseAttrs := append(
-			semconv.HTTPAttributesFromHTTPStatusCode(c.Response().StatusCode()),
+		responseAttrs := []attribute.KeyValue{
+			semconv.HTTPResponseStatusCode(c.Response().StatusCode()),
 			semconv.HTTPRouteKey.String(c.Route().Path), // no need to copy c.Route().Path: route strings should be immutable across app lifecycle
-		)
+		}
 
 		var responseSize int64
 		requestSize := int64(len(c.Request().Body()))
@@ -140,9 +141,7 @@ func Middleware(opts ...Option) fiber.Handler {
 		}
 
 		defer func() {
-			responseMetricAttrs = append(
-				responseMetricAttrs,
-				responseAttrs...)
+			responseMetricAttrs = append(responseMetricAttrs, responseAttrs...)
 
 			httpServerActiveRequests.Add(savedCtx, -1, metric.WithAttributes(requestMetricsAttrs...))
 			httpServerDuration.Record(savedCtx, float64(time.Since(start).Microseconds())/1000, metric.WithAttributes(responseMetricAttrs...))
@@ -153,14 +152,10 @@ func Middleware(opts ...Option) fiber.Handler {
 			cancel()
 		}()
 
-		span.SetAttributes(
-			append(
-				responseAttrs,
-				semconv.HTTPResponseContentLengthKey.Int64(responseSize),
-			)...)
+		span.SetAttributes(append(responseAttrs, semconv.HTTPResponseBodySizeKey.Int64(responseSize))...)
 		span.SetName(cfg.SpanNameFormatter(c))
 
-		spanStatus, spanMessage := semconv.SpanStatusFromHTTPStatusCodeAndSpanKind(c.Response().StatusCode(), oteltrace.SpanKindServer)
+		spanStatus, spanMessage := internal.SpanStatusFromHTTPStatusCodeAndSpanKind(c.Response().StatusCode(), oteltrace.SpanKindServer)
 		span.SetStatus(spanStatus, spanMessage)
 
 		//Propagate tracing context as headers in outbound response

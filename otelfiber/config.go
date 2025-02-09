@@ -15,7 +15,6 @@ type config struct {
 	MeterProvider          otelmetric.MeterProvider
 	Port                   *int
 	Propagators            propagation.TextMapPropagator
-	ServerName             *string
 	SpanNameFormatter      func(*fiber.Ctx) string
 	CustomAttributes       func(*fiber.Ctx) []attribute.KeyValue
 	CustomMetricAttributes func(*fiber.Ctx) []attribute.KeyValue
@@ -74,15 +73,7 @@ func WithSpanNameFormatter(f func(ctx *fiber.Ctx) string) Option {
 	})
 }
 
-// WithServerName specifies the value to use when setting the `http.server_name`
-// attribute on metrics/spans.
-func WithServerName(serverName string) Option {
-	return optionFunc(func(cfg *config) {
-		cfg.ServerName = &serverName
-	})
-}
-
-// WithPort specifies the value to use when setting the `net.host.port`
+// WithPort specifies the value to use when setting the `server.port`
 // attribute on metrics/spans. Attribute is "Conditionally Required: If not
 // default (`80` for `http`, `443` for `https`).
 func WithPort(port int) Option {
