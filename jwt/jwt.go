@@ -41,8 +41,8 @@ func New(config ...Config) fiber.Handler {
 			return cfg.ErrorHandler(c, err)
 		}
 
-		if cfg.TokenDeobfuscatorFunc != nil {
-			auth, err = cfg.TokenDeobfuscatorFunc(auth)
+		if cfg.TokenProcessorFunc != nil {
+			auth, err = cfg.TokenProcessorFunc(auth)
 			if err != nil {
 				return cfg.ErrorHandler(c, err)
 			}

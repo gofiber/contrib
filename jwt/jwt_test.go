@@ -124,8 +124,8 @@ func TestJwtDeobfuscation(t *testing.T) {
 				JWTAlg: test.SigningMethod,
 				Key:    []byte(defaultSigningKey),
 			},
-			TokenDeobfuscatorFunc: func(obfuscatedToken string) (string, error) {
-				token, err := hex.DecodeString(obfuscatedToken)
+			TokenProcessorFunc: func(token string) (string, error) {
+				token, err := hex.DecodeString(token)
 				return string(token), err
 			},
 		}))
