@@ -19,40 +19,39 @@ var (
 
 // Config defines the config for JWT middleware
 type Config struct {
-	// Filter defines a function to skip middleware.
+	// Filter is a function to skip middleware execution for specific requests.
 	// Optional. Default: nil
 	Filter func(*fiber.Ctx) bool
 
-	// SuccessHandler defines a function which is executed for a valid token.
+	// SuccessHandler is executed when a token is successfully validated.
 	// Optional. Default: nil
 	SuccessHandler fiber.Handler
 
-	// ErrorHandler defines a function which is executed for an invalid token.
-	// It may be used to define a custom JWT error.
+	// ErrorHandler is executed when token validation fails.
+	// It allows customization of JWT error responses.
 	// Optional. Default: 401 Invalid or expired JWT
 	ErrorHandler fiber.ErrorHandler
 
-	// Signing key to validate token. Used as fallback if SigningKeys has length 0.
+	// SigningKey is the primary key used to validate tokens.
+	// Used as a fallback if SigningKeys is empty.
 	// At least one of the following is required: KeyFunc, JWKSetURLs, SigningKeys, or SigningKey.
-	// The order of precedence is: KeyFunc, JWKSetURLs, SigningKeys, SigningKey.
 	SigningKey SigningKey
 
-	// Map of signing keys to validate token with kid field usage.
+	// SigningKeys is a map of keys used to validate tokens with the "kid" field.
 	// At least one of the following is required: KeyFunc, JWKSetURLs, SigningKeys, or SigningKey.
-	// The order of precedence is: KeyFunc, JWKSetURLs, SigningKeys, SigningKey.
 	SigningKeys map[string]SigningKey
 
-	// Context key to store user information from the token into context.
+	// ContextKey specifies the key used to store user information in the context.
 	// Optional. Default: "user".
 	ContextKey string
 
-	// Claims are extendable claims data defining token content.
-	// Optional. Default value jwt.MapClaims
+	// Claims defines the structure of token claims.
+	// Optional. Default: jwt.MapClaims
 	Claims jwt.Claims
 
-	// TokenLookup is a string in the form of "<source>:<name>" that is used
-	// to extract token from the request.
-	// Optional. Default value "header:Authorization".
+	// TokenLookup specifies how to extract the token from the request.
+	// Format: "<source>:<name>"
+	// Optional. Default: "header:Authorization".
 	// Possible values:
 	// - "header:<name>"
 	// - "query:<name>"
@@ -60,35 +59,28 @@ type Config struct {
 	// - "cookie:<name>"
 	TokenLookup string
 
-	// TokenProcessorFunc defines a function for processing the token found with [TokenLookup].
+	// TokenProcessorFunc processes the token extracted using TokenLookup.
 	// Optional. Default: nil
 	TokenProcessorFunc func(token string) (string, error)
 
-	// AuthScheme to be used in the Authorization header.
+	// AuthScheme specifies the scheme used in the Authorization header.
 	// Optional. Default: "Bearer".
 	AuthScheme string
 
-	// KeyFunc is a function that supplies the public key for JWT cryptographic verification.
-	// The function shall take care of verifying the signing algorithm and selecting the proper key.
-	// Internally, github.com/MicahParks/keyfunc/v2 package is used project defaults. If you need more customization,
-	// you can provide a jwt.Keyfunc using that package or make your own implementation.
-	//
+	// KeyFunc provides the public key for JWT verification.
+	// It handles algorithm verification and key selection.
+	// By default, the github.com/MicahParks/keyfunc/v2 package is used.
 	// At least one of the following is required: KeyFunc, JWKSetURLs, SigningKeys, or SigningKey.
-	// The order of precedence is: KeyFunc, JWKSetURLs, SigningKeys, SigningKey.
 	KeyFunc jwt.Keyfunc
 
-	// JWKSetURLs is a slice of HTTP URLs that contain the JSON Web Key Set (JWKS) used to verify the signatures of
-	// JWTs. Use of HTTPS is recommended. The presence of the "kid" field in the JWT header and JWKs is mandatory for
-	// this feature.
-	//
-	// By default, all JWK Sets in this slice will:
-	//   * Refresh every hour.
-	//   * Refresh automatically if a new "kid" is seen in a JWT being verified.
-	//   * Rate limit refreshes to once every 5 minutes.
-	//   * Timeout refreshes after 10 seconds.
-	//
+	// JWKSetURLs is a list of URLs containing JSON Web Key Sets (JWKS) for signature verification.
+	// HTTPS is recommended. The "kid" field in the JWT header and JWKs is mandatory.
+	// Default behavior:
+	// - Refresh every hour.
+	// - Auto-refresh on new "kid" in JWT.
+	// - Rate limit refreshes to once every 5 minutes.
+	// - Timeout refreshes after 10 seconds.
 	// At least one of the following is required: KeyFunc, JWKSetURLs, SigningKeys, or SigningKey.
-	// The order of precedence is: KeyFunc, JWKSetURLs, SigningKeys, SigningKey.
 	JWKSetURLs []string
 }
 

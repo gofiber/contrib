@@ -105,7 +105,7 @@ const (
 `
 )
 
-func TestJwtDeobfuscation(t *testing.T) {
+func TestJwtTokenProcessorFunc(t *testing.T) {
 	t.Parallel()
 
 	defer func() {
@@ -125,8 +125,8 @@ func TestJwtDeobfuscation(t *testing.T) {
 				Key:    []byte(defaultSigningKey),
 			},
 			TokenProcessorFunc: func(token string) (string, error) {
-				token, err := hex.DecodeString(token)
-				return string(token), err
+				decodedToken, err := hex.DecodeString(token)
+				return string(decodedToken), err
 			},
 		}))
 
