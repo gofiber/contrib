@@ -6,9 +6,7 @@ id: fgprof
 
 ![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=fgprof*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
-![Test](https://github.com/gofiber/contrib/workflows/Tests/badge.svg)
-![Security](https://github.com/gofiber/contrib/workflows/Security/badge.svg)
-![Linter](https://github.com/gofiber/contrib/workflows/Linter/badge.svg)
+![Test](https://github.com/gofiber/contrib/workflows/Test%20Fgprof/badge.svg)
 
 [fgprof](https://github.com/felixge/fgprof) support for Fiber.
 
