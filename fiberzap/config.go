@@ -36,7 +36,7 @@ type Config struct {
 
 	// Add custom zap logger.
 	//
-	// Optional. Default: zap.NewProduction()\n
+	// Optional. Default: zap.NewProduction()
 	Logger *zap.Logger
 
 	// Add fields what you want see.

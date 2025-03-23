@@ -6,9 +6,7 @@ id: fiberzap
 
 ![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=fiberzap*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
-![Test](https://github.com/gofiber/contrib/workflows/Tests/badge.svg)
-![Security](https://github.com/gofiber/contrib/workflows/Security/badge.svg)
-![Linter](https://github.com/gofiber/contrib/workflows/Linter/badge.svg)
+![Test](https://github.com/gofiber/contrib/workflows/Test%20fiberzap/badge.svg)
 
 [Zap](https://github.com/uber-go/zap) logging support for Fiber.
 
@@ -59,6 +57,7 @@ import (
 func main() {
     app := fiber.New()
     logger, _ := zap.NewProduction()
+    defer logger.Sync()
 
     app.Use(fiberzap.New(fiberzap.Config{
         Logger: logger,
@@ -103,9 +102,12 @@ import (
 
 func main() {
     app := fiber.New()
-    log.SetLogger(fiberzap.NewLogger(fiberzap.LoggerConfig{
+    logger := fiberzap.NewLogger(fiberzap.LoggerConfig{
         ExtraKeys: []string{"request_id"},
-    }))
+    })
+    log.SetLogger(logger)
+    defer logger.Sync()
+
     app.Use(func(c *fiber.Ctx) error {
         ctx := context.WithValue(c.UserContext(), "request_id", "123")
         c.SetUserContext(ctx)
