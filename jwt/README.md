@@ -17,7 +17,7 @@ For missing token, it returns "400 - Bad Request" error.
 
 Special thanks and credits to [Echo](https://echo.labstack.com/middleware/jwt)
 
-## Note: Requires Go 1.19 and above**
+**Note: Requires Go 1.19 and above**
 
 ## Install
 
