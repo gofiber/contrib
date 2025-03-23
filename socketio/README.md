@@ -5,9 +5,8 @@ id: socketio
 # Socket.io
 
 ![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=socketio*)
-![Test](https://github.com/gofiber/contrib/workflows/Tests/badge.svg)
-![Security](https://github.com/gofiber/contrib/workflows/Security/badge.svg)
-![Linter](https://github.com/gofiber/contrib/workflows/Linter/badge.svg)
+[![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
+![Test](https://github.com/gofiber/contrib/workflows/Test%20Socket.io/badge.svg)
 
 WebSocket wrapper for [Fiber](https://github.com/gofiber/fiber) with events support and inspired by [Socket.io](https://github.com/socketio/socket.io)
 
