@@ -1,11 +1,12 @@
 module github.com/gofiber/contrib/fiberi18n/v2
 
 go 1.19
+toolchain go1.24.1
 
 require (
 	github.com/gofiber/fiber/v2 v2.52.6
 	github.com/nicksnyder/go-i18n/v2 v2.4.1
-	golang.org/x/text v0.19.0
+	golang.org/x/text v0.23.0
 	gopkg.in/yaml.v2 v2.4.0
 )
 
