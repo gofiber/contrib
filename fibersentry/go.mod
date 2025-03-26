@@ -1,14 +1,16 @@
 module github.com/gofiber/contrib/fibersentry
 
 go 1.18
+toolchain go1.24.1
 
 require (
-	github.com/getsentry/sentry-go v0.29.1
+	github.com/getsentry/sentry-go v0.31.1
 	github.com/gofiber/fiber/v2 v2.52.6
 )
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/kr/text v0.2.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.52.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
