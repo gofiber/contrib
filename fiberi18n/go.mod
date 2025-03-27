@@ -4,8 +4,8 @@ go 1.19
 
 require (
 	github.com/gofiber/fiber/v2 v2.52.6
-	github.com/nicksnyder/go-i18n/v2 v2.4.1
-	golang.org/x/text v0.19.0
+	github.com/nicksnyder/go-i18n/v2 v2.5.1
+	golang.org/x/text v0.21.0
 	gopkg.in/yaml.v2 v2.4.0
 )
 
