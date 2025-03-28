@@ -21,36 +21,36 @@ const (
 
 // CircuitBreaker implements the circuit breaker pattern
 type CircuitBreaker struct {
-	failureCount      int32                // Count of failures
-	successCount      int32                // Count of successes in half-open state
-	state             CircuitBreakerState  // Current state of circuit breaker
-	mutex             sync.RWMutex         // Protects state transitions
-	threshold         int                  // Max failures before opening circuit
-	timeout           time.Duration        // Duration to stay open before transitioning to half-open
-	successReset      int                  // Successes required to close circuit
-	openExpiry        time.Time            // Time when open state expires
-	ctx               context.Context      // Context for cancellation
-	cancel            context.CancelFunc   // Cancel function for cleanup
-	config            CircuitBreakerConfig // Configuration settings
-	now               func() time.Time     // Function for getting current time (useful for testing)
-	halfOpenSemaphore chan struct{}        // Controls limited requests in half-open state
+	failureCount      int32               // Count of failures
+	successCount      int32               // Count of successes in half-open state
+	state             CircuitBreakerState // Current state of circuit breaker
+	mutex             sync.RWMutex        // Protects state transitions
+	failureThreshold  int                 // Max failures before opening circuit
+	timeout           time.Duration       // Duration to stay open before transitioning to half-open
+	successThreshold  int                 // Successes required to close circuit
+	openExpiry        time.Time           // Time when open state expires
+	ctx               context.Context     // Context for cancellation
+	cancel            context.CancelFunc  // Cancel function for cleanup
+	config            Config              // Configuration settings
+	now               func() time.Time    // Function for getting current time (useful for testing)
+	halfOpenSemaphore chan struct{}       // Controls limited requests in half-open state
 }
 
-// CircuitBreakerConfig holds the configurable parameters
-type CircuitBreakerConfig struct {
-	Threshold    int
-	Timeout      time.Duration
-	SuccessReset int
-	OnOpen       func(*fiber.Ctx) error
-	OnHalfOpen   func(*fiber.Ctx) error
-	OnClose      func(*fiber.Ctx) error
+// Config holds the configurable parameters
+type Config struct {
+	FailureThreshold int
+	Timeout          time.Duration
+	SuccessThreshold int
+	OnOpen           func(*fiber.Ctx) error
+	OnHalfOpen       func(*fiber.Ctx) error
+	OnClose          func(*fiber.Ctx) error
 }
 
 // Default configuration values for the circuit breaker
-var DefaultCircuitBreakerConfig = CircuitBreakerConfig{
-	Threshold:    5,
-	Timeout:      5 * time.Second,
-	SuccessReset: 1,
+var DefaultConfig = Config{
+	FailureThreshold: 5,
+	Timeout:          5 * time.Second,
+	SuccessThreshold: 1,
 	OnOpen: func(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
 			"error": "service unavailable",
@@ -66,13 +66,13 @@ var DefaultCircuitBreakerConfig = CircuitBreakerConfig{
 	},
 }
 
-// NewCircuitBreaker initializes a circuit breaker with the given configuration
-func NewCircuitBreaker(config CircuitBreakerConfig) *CircuitBreaker {
+// New initializes a circuit breaker with the given configuration
+func New(config Config) *CircuitBreaker {
 	ctx, cancel := context.WithCancel(context.Background())
 	cb := &CircuitBreaker{
-		threshold:         config.Threshold,
+		failureThreshold:  config.FailureThreshold,
 		timeout:           config.Timeout,
-		successReset:      config.SuccessReset,
+		successThreshold:  config.SuccessThreshold,
 		state:             StateClosed,
 		ctx:               ctx,
 		cancel:            cancel,
@@ -138,7 +138,7 @@ func (cb *CircuitBreaker) ReportSuccess() {
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
 
-	if cb.state == StateHalfOpen && int(atomic.LoadInt32(&cb.successCount)) >= cb.successReset {
+	if cb.state == StateHalfOpen && int(atomic.LoadInt32(&cb.successCount)) >= cb.successThreshold {
 		cb.state = StateClosed
 		atomic.StoreInt32(&cb.failureCount, 0)
 		atomic.StoreInt32(&cb.successCount, 0)
@@ -159,7 +159,7 @@ func (cb *CircuitBreaker) ReportFailure() {
 		cb.openExpiry = now.Add(cb.timeout)
 		atomic.StoreInt32(&cb.failureCount, 0)
 	case StateClosed:
-		if int(atomic.LoadInt32(&cb.failureCount)) >= cb.threshold {
+		if int(atomic.LoadInt32(&cb.failureCount)) >= cb.failureThreshold {
 			cb.state = StateOpen
 			cb.openExpiry = now.Add(cb.timeout)
 		}

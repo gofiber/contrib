@@ -4,51 +4,52 @@ import (
 	"testing"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestNewCircuitBreaker ensures circuit breaker initializes with correct defaults
 func TestNewCircuitBreaker(t *testing.T) {
-	cb := NewCircuitBreaker(DefaultCircuitBreakerConfig)
-	assert.Equal(t, StateClosed, cb.state)
-	assert.Equal(t, DefaultCircuitBreakerConfig.Threshold, cb.threshold)
-	assert.Equal(t, DefaultCircuitBreakerConfig.Timeout, cb.timeout)
-	assert.Equal(t, DefaultCircuitBreakerConfig.SuccessReset, cb.successReset)
+	cb := New(DefaultConfig)
+	require.Equal(t, StateClosed, cb.state)
+	require.Equal(t, DefaultConfig.FailureThreshold, cb.failureThreshold)
+	require.Equal(t, DefaultConfig.Timeout, cb.timeout)
+	require.Equal(t, DefaultConfig.SuccessThreshold, cb.successThreshold)
+	t.Cleanup(cb.Stop)
 }
 
 // TestAllowRequest checks request allowance in different states
 func TestAllowRequest(t *testing.T) {
-	cb := NewCircuitBreaker(CircuitBreakerConfig{Threshold: 3})
+	cb := New(Config{FailureThreshold: 3})
 
-	assert.True(t, cb.AllowRequest())
+	require.True(t, cb.AllowRequest())
 	cb.ReportFailure()
 	cb.ReportFailure()
 	cb.ReportFailure()
-	assert.False(t, cb.AllowRequest())
+	require.False(t, cb.AllowRequest())
 }
 
 // TestReportSuccess verifies state transitions after successful requests
 func TestReportSuccess(t *testing.T) {
-	cb := NewCircuitBreaker(CircuitBreakerConfig{Threshold: 2, SuccessReset: 2})
+	cb := New(Config{FailureThreshold: 2, SuccessThreshold: 2})
 	cb.state = StateHalfOpen
 	cb.ReportSuccess()
-	assert.Equal(t, StateHalfOpen, cb.state)
+	require.Equal(t, StateHalfOpen, cb.state)
 	cb.ReportSuccess()
-	assert.Equal(t, StateClosed, cb.state)
+	require.Equal(t, StateClosed, cb.state)
 }
 
 // TestReportFailure checks state transitions after failures
 func TestReportFailureThreshold(t *testing.T) {
-	cb := NewCircuitBreaker(CircuitBreakerConfig{Threshold: 2})
+	cb := New(Config{FailureThreshold: 2})
 	cb.ReportFailure()
-	assert.Equal(t, StateClosed, cb.state)
+	require.Equal(t, StateClosed, cb.state)
 	cb.ReportFailure()
-	assert.Equal(t, StateOpen, cb.state)
+	require.Equal(t, StateOpen, cb.state)
 }
 
 func TestCircuitBreakerMiddleware(t *testing.T) {
 	app := fiber.New()
-	cb := NewCircuitBreaker(DefaultCircuitBreakerConfig)
+	cb := New(DefaultConfig)
 
 	app.Use(Middleware(cb))
 
@@ -57,24 +58,84 @@ func TestCircuitBreakerMiddleware(t *testing.T) {
 	})
 
 	t.Run("Initial state is closed", func(t *testing.T) {
-		assert.Equal(t, StateClosed, cb.state)
+		require.Equal(t, StateClosed, cb.state)
 	})
 
 	t.Run("Trips to open state after threshold", func(t *testing.T) {
 		for i := 0; i < 5; i++ {
 			cb.ReportFailure()
 		}
-		assert.Equal(t, StateOpen, cb.state)
+		require.Equal(t, StateOpen, cb.state)
 	})
 
 	t.Run("Allows requests in half-open state", func(t *testing.T) {
 		cb.state = StateHalfOpen
-		assert.True(t, cb.AllowRequest())
+		require.True(t, cb.AllowRequest())
 	})
 
 	t.Run("Recovers to closed state after success", func(t *testing.T) {
 		cb.state = StateHalfOpen
 		cb.ReportSuccess()
-		assert.Equal(t, StateClosed, cb.state)
+		require.Equal(t, StateClosed, cb.state)
 	})
 }
+
+// func TestCircuitBreakerMiddlewareNew(t *testing.T) {
+// 	app := fiber.New()
+// 	openCalled := false
+// 	halfOpenCalled := false
+// 	closeCalled := false
+
+// 	cb := New(Config{
+// 		Threshold:    DefaultConfig.Threshold,
+// 		Timeout:      DefaultConfig.Timeout,
+// 		SuccessReset: DefaultConfig.SuccessReset,
+// 		OnOpen: func(c *fiber.Ctx) error {
+// 			openCalled = true
+// 			return nil
+// 		},
+// 		OnHalfOpen: func(c *fiber.Ctx) error {
+// 			halfOpenCalled = true
+// 			return nil
+// 		},
+// 		OnClose: func(c *fiber.Ctx) error {
+// 			closeCalled = true
+// 			return nil
+// 		},
+// 	})
+
+// 	app.Use(Middleware(cb))
+
+// 	app.Get("/", func(c *fiber.Ctx) error {
+// 		return c.SendString("OK")
+// 	})
+
+// 	t.Run("Initial state is closed", func(t *testing.T) {
+// 		require.Equal(t, StateClosed, cb.state)
+// 		require.False(t, openCalled)
+// 		require.False(t, halfOpenCalled)
+// 		require.False(t, closeCalled)
+// 	})
+
+// 	t.Run("Trips to open state after threshold", func(t *testing.T) {
+// 		for i := 0; i < 5; i++ {
+// 			cb.ReportFailure()
+// 		}
+// 		require.Equal(t, StateOpen, cb.state)
+// 		require.True(t, openCalled)
+// 		require.False(t, halfOpenCalled)
+// 	})
+
+// 	t.Run("Allows requests in half-open state", func(t *testing.T) {
+// 		cb.state = StateHalfOpen
+// 		require.True(t, cb.AllowRequest())
+// 		require.True(t, halfOpenCalled)
+// 	})
+
+// 	t.Run("Recovers to closed state after success", func(t *testing.T) {
+// 		cb.state = StateHalfOpen
+// 		cb.ReportSuccess()
+// 		require.Equal(t, StateClosed, cb.state)
+// 		require.True(t, closeCalled)
+// 	})
+// }
