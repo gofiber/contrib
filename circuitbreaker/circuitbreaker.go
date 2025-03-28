@@ -10,30 +10,30 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-// CircuitBreakerState represents the state of the circuit breaker
-type CircuitBreakerState string
+// State represents the state of the circuit breaker
+type State string
 
 const (
-	StateClosed   CircuitBreakerState = "closed"    // Normal operation
-	StateOpen     CircuitBreakerState = "open"      // Requests are blocked
-	StateHalfOpen CircuitBreakerState = "half-open" // Limited requests allowed to check recovery
+	StateClosed   State = "closed"    // Normal operation
+	StateOpen     State = "open"      // Requests are blocked
+	StateHalfOpen State = "half-open" // Limited requests allowed to check recovery
 )
 
 // CircuitBreaker implements the circuit breaker pattern
 type CircuitBreaker struct {
-	failureCount      int32               // Count of failures
-	successCount      int32               // Count of successes in half-open state
-	state             CircuitBreakerState // Current state of circuit breaker
-	mutex             sync.RWMutex        // Protects state transitions
-	failureThreshold  int                 // Max failures before opening circuit
-	timeout           time.Duration       // Duration to stay open before transitioning to half-open
-	successThreshold  int                 // Successes required to close circuit
-	openExpiry        time.Time           // Time when open state expires
-	ctx               context.Context     // Context for cancellation
-	cancel            context.CancelFunc  // Cancel function for cleanup
-	config            Config              // Configuration settings
-	now               func() time.Time    // Function for getting current time (useful for testing)
-	halfOpenSemaphore chan struct{}       // Controls limited requests in half-open state
+	failureCount      int32              // Count of failures
+	successCount      int32              // Count of successes in half-open state
+	state             State              // Current state of circuit breaker
+	mutex             sync.RWMutex       // Protects state transitions
+	failureThreshold  int                // Max failures before opening circuit
+	timeout           time.Duration      // Duration to stay open before transitioning to half-open
+	successThreshold  int                // Successes required to close circuit
+	openExpiry        time.Time          // Time when open state expires
+	ctx               context.Context    // Context for cancellation
+	cancel            context.CancelFunc // Cancel function for cleanup
+	config            Config             // Configuration settings
+	now               func() time.Time   // Function for getting current time (useful for testing)
+	halfOpenSemaphore chan struct{}      // Controls limited requests in half-open state
 }
 
 // Config holds the configurable parameters
