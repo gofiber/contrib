@@ -10,6 +10,7 @@ on:
   pull_request:
     paths:
       - 'circuitbreaker/**'
+      - '.github/workflows/**'
 
 jobs:
   Tests:
