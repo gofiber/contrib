@@ -5,8 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/utils"
+	"github.com/gofiber/fiber/v3"
 	otelcontrib "go.opentelemetry.io/contrib"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -80,14 +79,14 @@ func Middleware(opts ...Option) fiber.Handler {
 		cfg.SpanNameFormatter = defaultSpanNameFormatter
 	}
 
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		// Don't execute middleware if Next returns true
 		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
 		}
 
 		c.Locals(tracerKey, tracer)
-		savedCtx, cancel := context.WithCancel(c.UserContext())
+		savedCtx, cancel := context.WithCancel(c.Context())
 
 		start := time.Now()
 
@@ -112,12 +111,12 @@ func Middleware(opts ...Option) fiber.Handler {
 		// temporary set to c.Path() first
 		// update with c.Route().Path after c.Next() is called
 		// to get pathRaw
-		spanName := utils.CopyString(c.Path())
+		spanName := CopyString(c.Path())
 		ctx, span := tracer.Start(ctx, spanName, opts...)
 		defer span.End()
 
 		// pass the span through userContext
-		c.SetUserContext(ctx)
+		c.SetContext(ctx)
 
 		// serve the request to the next middleware
 		if err := c.Next(); err != nil {
@@ -149,7 +148,7 @@ func Middleware(opts ...Option) fiber.Handler {
 			httpServerRequestSize.Record(savedCtx, requestSize, metric.WithAttributes(responseMetricAttrs...))
 			httpServerResponseSize.Record(savedCtx, responseSize, metric.WithAttributes(responseMetricAttrs...))
 
-			c.SetUserContext(savedCtx)
+			c.SetContext(savedCtx)
 			cancel()
 		}()
 
@@ -165,7 +164,7 @@ func Middleware(opts ...Option) fiber.Handler {
 
 		//Propagate tracing context as headers in outbound response
 		tracingHeaders := make(propagation.HeaderCarrier)
-		cfg.Propagators.Inject(c.UserContext(), tracingHeaders)
+		cfg.Propagators.Inject(c.Context(), tracingHeaders)
 		for _, headerKey := range tracingHeaders.Keys() {
 			c.Set(headerKey, tracingHeaders.Get(headerKey))
 		}
@@ -176,6 +175,6 @@ func Middleware(opts ...Option) fiber.Handler {
 
 // defaultSpanNameFormatter is the default formatter for spans created with the fiber
 // integration. Returns the route pathRaw
-func defaultSpanNameFormatter(ctx *fiber.Ctx) string {
+func defaultSpanNameFormatter(ctx fiber.Ctx) string {
 	return ctx.Route().Path
 }
