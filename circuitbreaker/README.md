@@ -48,16 +48,17 @@ circuitbreaker.New(config ...circuitbreaker.Config) *circuitbreaker.Middleware
 | FailureThreshold | `int` | Number of consecutive errors required to open the circuit | `5` |
 | Timeout | `time.Duration` | Timeout for the circuit breaker | `10 * time.Second` |
 | SuccessThreshold | `int` | Number of successful requests required to close the circuit | `5` |
-| HalfOpenSemaphore | `chan struct{}` | Semaphore for limiting concurrent requests in half-open state | `nil` |
-| OnOpen | `func(*fiber.Ctx)` | Callback function when the circuit is opened | `nil` |
-| OnClose | `func(*fiber.Ctx)` | Callback function when the circuit is closed | `nil` |
-| OnHalfOpen | `func(*fiber.Ctx)` | Callback function when the circuit is half-open | `nil` |
+| HalfOpenMaxConcurrent | `int` | Max concurrent requests in half-open state | `1` |
+| IsFailure | `func(error) bool` | Custom function to determine if an error is a failure | `Status >= 500` |
+| OnOpen | `func(*fiber.Ctx)` | Callback function when the circuit is opened | `503 response` |
+| OnClose | `func(*fiber.Ctx)` | Callback function when the circuit is closed | `Continue request` |
+| OnHalfOpen | `func(*fiber.Ctx)` | Callback function when the circuit is half-open | `429 response` |
 
-## Circuit Breaker Usage in Fiber (Example) 
+## Circuit Breaker Usage in Fiber (Example)
 
 This guide explains how to use a Circuit Breaker in a Fiber application at different levels, from basic setup to advanced customization.
 
-### 1. Basic Usage: Global Circuit Breaker
+### 1. Basic Setup
 
 A **global** Circuit Breaker protects all routes.
 
@@ -74,7 +75,7 @@ import (
 func main() {
 	app := fiber.New()
 	
-	// Create a new Circuit Breaker
+	// Create a new Circuit Breaker with custom configuration
 	cb := circuitbreaker.New(circuitbreaker.Config{
 		FailureThreshold: 3,               // Max failures before opening the circuit
 		Timeout:          5 * time.Second, // Wait time before retrying
@@ -89,11 +90,25 @@ func main() {
 		return c.SendString("Hello, world!")
 	})
 
+	// Optional: Expose health check endpoint
+	app.Get("/health/circuit", cb.HealthHandler())
+
+	// Optional: Expose metrics about the circuit breaker:
+	app.Get("/metrics/circuit", func(c *fiber.Ctx) error {
+  		return c.JSON(cb.GetStateStats())
+	})
+
 	app.Listen(":3000")
+
+	// In your application shutdown logic
+	app.Shutdown(func() {
+		// Make sure to stop the circuit breaker when your application shuts down:
+		cb.Stop()
+	})
 }
 ```
 
-### 2. Route-Specific Circuit Breaker
+### 2. Route & Route-Group Specific Circuit Breaker
 
 Apply the Circuit Breaker **only to specific routes**.
 
@@ -101,6 +116,16 @@ Apply the Circuit Breaker **only to specific routes**.
 app.Get("/protected", circuitbreaker.Middleware(cb), func(c *fiber.Ctx) error {
 	return c.SendString("Protected service running")
 })
+```
+Apply the Circuit Breaker **only to specific routes groups**.
+
+```go
+app := route.Group("/api")
+app.Use(circuitbreaker.Middleware(cb))
+
+// All routes in this group will be protected
+app.Get("/users", getUsersHandler)
+app.Post("/users", createUserHandler)
 ```
 
 ### 3. Circuit Breaker with Custom Failure Handling
@@ -195,8 +220,8 @@ Use different Circuit Breakers for different services.
 
 ```go
 
-dbCB := circuitbreaker.New(circuitbreaker.Config{Threshold: 5, Timeout: 10 * time.Second})
-apiCB := circuitbreaker.New(circuitbreaker.Config{Threshold: 3, Timeout: 5 * time.Second})
+dbCB := circuitbreaker.New(circuitbreaker.Config{FailureThreshold: 5, Timeout: 10 * time.Second})
+apiCB := circuitbreaker.New(circuitbreaker.Config{FailureThreshold: 3, Timeout: 5 * time.Second})
 
 app.Get("/db-service", circuitbreaker.Middleware(dbCB), func(c *fiber.Ctx) error {
 	return c.SendString("DB service request")
