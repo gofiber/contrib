@@ -48,6 +48,7 @@ circuitbreaker.New(config ...circuitbreaker.Config) *circuitbreaker.Middleware
 | FailureThreshold | `int` | Number of consecutive errors required to open the circuit | `5` |
 | Timeout | `time.Duration` | Timeout for the circuit breaker | `10 * time.Second` |
 | SuccessThreshold | `int` | Number of successful requests required to close the circuit | `5` |
+| HalfOpenSemaphore | `chan struct{}` | Semaphore for limiting concurrent requests in half-open state | `nil` |
 | OnOpen | `func(*fiber.Ctx)` | Callback function when the circuit is opened | `nil` |
 | OnClose | `func(*fiber.Ctx)` | Callback function when the circuit is closed | `nil` |
 | OnHalfOpen | `func(*fiber.Ctx)` | Callback function when the circuit is half-open | `nil` |
@@ -75,9 +76,9 @@ func main() {
 	
 	// Create a new Circuit Breaker
 	cb := circuitbreaker.New(circuitbreaker.Config{
-		Threshold:    3,                 // Max failures before opening the circuit
-		Timeout:      5 * time.Second,   // Wait time before retrying
-		SuccessReset: 2,                 // Required successes to move back to closed state
+		FailureThreshold: 3,               // Max failures before opening the circuit
+		Timeout:          5 * time.Second, // Wait time before retrying
+		SuccessThreshold: 2,               // Required successes to move back to closed state
 	})
 
 	// Apply Circuit Breaker to ALL routes
@@ -108,7 +109,7 @@ Customize the response when the circuit **opens**.
 
 ```go
 cb := circuitbreaker.New(circuitbreaker.Config{
-	Threshold: 3,
+	FailureThreshold: 3,
 	Timeout:   10 * time.Second,
 	OnOpen: func(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusServiceUnavailable).
@@ -156,9 +157,9 @@ Use a **semaphore-based** approach to **limit concurrent requests.**
 
 ```go
 cb := circuitbreaker.New(circuitbreaker.Config{
-	Threshold:         3,
+	FailureThreshold:  3,
 	Timeout:           5 * time.Second,
-	SuccessReset:      2,
+	SuccessThreshold:  2,
 	HalfOpenSemaphore: make(chan struct{}, 2), // Allow only 2 concurrent requests
 })
 
@@ -176,7 +177,7 @@ Integrate **Prometheus metrics** and **structured logging**.
 
 ```go
 cb := circuitbreaker.New(circuitbreaker.Config{
-	Threshold: 5,
+	FailureThreshold: 5,
 	Timeout:   10 * time.Second,
 	OnOpen: func(c *fiber.Ctx) error {
 		log.Println("Circuit Breaker Opened!")
