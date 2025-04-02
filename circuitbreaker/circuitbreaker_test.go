@@ -210,11 +210,12 @@ func TestCircuitBreakerCallbacks(t *testing.T) {
 
 	// Test OnHalfOpen callback
 	t.Run("OnHalfOpen Callback", func(t *testing.T) {
-		// Force transition to half-open
 		cb.transitionToHalfOpen()
 
 		// Acquire the one allowed request
-		cb.trySemaphore()
+		allowed, state := cb.AllowRequest()
+		require.True(t, allowed)
+		require.Equal(t, StateHalfOpen, state)
 
 		// Second request should be rejected with OnHalfOpen callback
 		req := httptest.NewRequest("GET", "/test", nil)

@@ -283,16 +283,6 @@ func (cb *CircuitBreaker) AllowRequest() (bool, State) {
 	}
 }
 
-// trySemaphore attempts to acquire the half-open semaphore
-func (cb *CircuitBreaker) trySemaphore() bool {
-	select {
-	case cb.halfOpenSemaphore <- struct{}{}:
-		return true
-	default:
-		return false
-	}
-}
-
 // ReleaseSemaphore releases a slot in the half-open semaphore
 func (cb *CircuitBreaker) ReleaseSemaphore() {
 	select {
