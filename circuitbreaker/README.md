@@ -2,7 +2,7 @@
 id: circuitbreaker
 ---
 
-# Circuit Breaker Middleware for [Fiber](https://github.com/gofiber/fiber)
+# Circuit Breaker
 
 A **Circuit Breaker** is a software design pattern used to prevent system failures when a service is experiencing high failures or slow responses. It helps improve system resilience by **stopping requests** to an unhealthy service and **allowing recovery** once it stabilizes.
 
