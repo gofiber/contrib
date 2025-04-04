@@ -4,6 +4,10 @@ id: circuitbreaker
 
 # Circuit Breaker
 
+![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=circuitbreaker*)
+[![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
+![Test](https://github.com/gofiber/contrib/workflows/Test%20CircuitBreaker/badge.svg)
+
 A **Circuit Breaker** is a software design pattern used to prevent system failures when a service is experiencing high failures or slow responses. It helps improve system resilience by **stopping requests** to an unhealthy service and **allowing recovery** once it stabilizes.
 
 ## How It Works
