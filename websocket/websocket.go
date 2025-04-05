@@ -120,7 +120,8 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 
 		conn := acquireConn()
 		// locals
-		c.Context().VisitUserValues(func(key []byte, value interface{}) {
+
+		c.RequestCtx().VisitUserValues(func(key []byte, value interface{}) {
 			conn.locals[string(key)] = value
 		})
 
@@ -131,24 +132,24 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		}
 
 		// queries
-		c.Context().QueryArgs().VisitAll(func(key, value []byte) {
+		c.RequestCtx().QueryArgs().VisitAll(func(key, value []byte) {
 			conn.queries[string(key)] = string(value)
 		})
 
 		// cookies
-		c.Context().Request.Header.VisitAllCookie(func(key, value []byte) {
+		c.RequestCtx().Request.Header.VisitAllCookie(func(key, value []byte) {
 			conn.cookies[string(key)] = string(value)
 		})
 
 		// headers
-		c.Context().Request.Header.VisitAll(func(key, value []byte) {
+		c.RequestCtx().Request.Header.VisitAll(func(key, value []byte) {
 			conn.headers[string(key)] = string(value)
 		})
 
 		// ip address
 		conn.ip = c.IP()
 
-		if err := upgrader.Upgrade(c.Context(), func(fconn *websocket.Conn) {
+		if err := upgrader.Upgrade(c.RequestCtx(), func(fconn *websocket.Conn) {
 			conn.Conn = fconn
 			defer releaseConn(conn)
 			defer cfg.RecoverHandler(conn)
@@ -331,7 +332,7 @@ func IsUnexpectedCloseError(err error, expectedCodes ...int) bool {
 // IsWebSocketUpgrade returns true if the client requested upgrade to the
 // WebSocket protocol.
 func IsWebSocketUpgrade(c fiber.Ctx) bool {
-	return websocket.FastHTTPIsWebSocketUpgrade(c.Context())
+	return websocket.FastHTTPIsWebSocketUpgrade(c.RequestCtx())
 }
 
 // JoinMessages concatenates received messages to create a single io.Reader.
