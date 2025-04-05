@@ -18,6 +18,7 @@ Repository for third party middlewares with dependencies.
 ## 📑 Middleware Implementations
 
 * [Casbin](./casbin/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Test+Casbin%22"> <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test-casbin.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" /> </a>
+* [CircuitBreaker](./circuitbreaker/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Test+CircuitBreaker%22"> <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test-circuitbreaker.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" /> </a>
 * [Fgprof](./fgprof/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Test+Fgprof%22"> <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test-fgprof.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" /> </a>
 * [Fiberi18n](./fiberi18n/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Test+fiberi18n%22"> <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test-fiberi18n.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" /> </a>
 * [Fibersentry](./fibersentry/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Test+fibersentry%22"> <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test-fibersentry.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" /> </a>
