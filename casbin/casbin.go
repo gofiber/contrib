@@ -15,7 +15,7 @@ type Middleware struct {
 func New(config ...Config) *Middleware {
 	cfg, err := configDefault(config...)
 	if err != nil {
-		panic(fmt.Errorf("Fiber: casbin middleware error -> %w", err))
+		panic(fmt.Errorf("fiber: casbin middleware error -> %w", err))
 	}
 
 	return &Middleware{
@@ -38,7 +38,8 @@ func (m *Middleware) RequiresPermissions(permissions []string, opts ...Option) f
 			return m.config.Unauthorized(c)
 		}
 
-		if options.ValidationRule == MatchAllRule {
+		switch options.ValidationRule {
+		case MatchAllRule:
 			for _, permission := range permissions {
 				vals := append([]string{sub}, options.PermissionParser(permission)...)
 				if ok, err := m.config.Enforcer.Enforce(stringSliceToInterfaceSlice(vals)...); err != nil {
@@ -48,7 +49,7 @@ func (m *Middleware) RequiresPermissions(permissions []string, opts ...Option) f
 				}
 			}
 			return c.Next()
-		} else if options.ValidationRule == AtLeastOneRule {
+		case AtLeastOneRule:
 			for _, permission := range permissions {
 				vals := append([]string{sub}, options.PermissionParser(permission)...)
 				if ok, err := m.config.Enforcer.Enforce(stringSliceToInterfaceSlice(vals)...); err != nil {
@@ -104,14 +105,15 @@ func (m *Middleware) RequiresRoles(roles []string, opts ...Option) fiber.Handler
 			return c.SendStatus(fiber.StatusInternalServerError)
 		}
 
-		if options.ValidationRule == MatchAllRule {
+		switch options.ValidationRule {
+		case MatchAllRule:
 			for _, role := range roles {
 				if !containsString(userRoles, role) {
 					return m.config.Forbidden(c)
 				}
 			}
 			return c.Next()
-		} else if options.ValidationRule == AtLeastOneRule {
+		case AtLeastOneRule:
 			for _, role := range roles {
 				if containsString(userRoles, role) {
 					return c.Next()
