@@ -2,9 +2,10 @@ package internal
 
 import (
 	"fmt"
+	"net/http"
+
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
-	"net/http"
 )
 
 // SpanStatusFromHTTPStatusCodeAndSpanKind generates a status code and a message
@@ -12,7 +13,7 @@ import (
 // Exclude 4xx for SERVER to set the appropriate status.
 func SpanStatusFromHTTPStatusCodeAndSpanKind(code int, spanKind trace.SpanKind) (codes.Code, string) {
 	// This code block ignores the HTTP 306 status code. The 306 status code is no longer in use.
-	if len(http.StatusText(code)) == 0 {
+	if http.StatusText(code) == "" {
 		return codes.Error, fmt.Sprintf("Invalid HTTP status code %d", code)
 	}
 
