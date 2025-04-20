@@ -45,7 +45,7 @@ func httpServerTraceAttributesFromRequest(c *fiber.Ctx, cfg config) []attribute.
 		semconv.HTTPRequestMethodKey.String(utils.CopyString(c.Method())),
 		semconv.URLScheme(utils.CopyString(c.Protocol())),
 		semconv.HTTPRequestBodySize(c.Request().Header.ContentLength()),
-		semconv.URLPath(string(utils.CopyBytes(c.Request().RequestURI()))),
+		semconv.URLPath(string(utils.CopyBytes(c.Request().URI().Path()))),
 		semconv.URLQuery(c.Request().URI().QueryArgs().String()),
 		semconv.URLFull(utils.CopyString(c.OriginalURL())),
 		semconv.UserAgentOriginal(string(utils.CopyBytes(c.Request().Header.UserAgent()))),

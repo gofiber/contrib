@@ -437,7 +437,7 @@ func TestCustomAttributes(t *testing.T) {
 	assert.Equal(t, oteltrace.SpanKindServer, span.SpanKind())
 	assert.Contains(t, attr, attribute.Int("http.response.status_code", http.StatusOK))
 	assert.Contains(t, attr, attribute.String("http.request.method", "GET"))
-	assert.Contains(t, attr, attribute.String("url.path", "/user/123?foo=bar"))
+	assert.Contains(t, attr, attribute.String("url.path", "/user/123"))
 	assert.Contains(t, attr, attribute.String("http.route", "/user/:id"))
 	assert.Contains(t, attr, semconv.URLQuery("foo=bar"))
 }
