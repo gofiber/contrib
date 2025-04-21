@@ -28,7 +28,7 @@ type Config struct {
 
 	// FilePath for the swagger.json or swagger.yaml file
 	//
-	// Optional. Default: ./swagger.json
+	// Optional. Default: ./docs/swagger.json
 	FilePath string
 
 	// FileContent for the content of the swagger.json or swagger.yaml file.
