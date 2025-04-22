@@ -4,18 +4,17 @@ import (
 	"encoding/base64"
 	"strings"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/utils"
+	"github.com/gofiber/fiber/v3"
 	"go.opentelemetry.io/otel/attribute"
 	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
 )
 
-func httpServerMetricAttributesFromRequest(c *fiber.Ctx, cfg config) []attribute.KeyValue {
+func httpServerMetricAttributesFromRequest(c fiber.Ctx, cfg config) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		httpFlavorAttribute(c),
-		semconv.HTTPMethodKey.String(utils.CopyString(c.Method())),
-		semconv.HTTPSchemeKey.String(utils.CopyString(c.Protocol())),
-		semconv.NetHostNameKey.String(utils.CopyString(c.Hostname())),
+		semconv.HTTPMethodKey.String(CopyString(c.Method())),
+		semconv.HTTPSchemeKey.String(CopyString(c.Protocol())),
+		semconv.NetHostNameKey.String(CopyString(c.Hostname())),
 	}
 
 	if cfg.Port != nil {
@@ -33,19 +32,19 @@ func httpServerMetricAttributesFromRequest(c *fiber.Ctx, cfg config) []attribute
 	return attrs
 }
 
-func httpServerTraceAttributesFromRequest(c *fiber.Ctx, cfg config) []attribute.KeyValue {
+func httpServerTraceAttributesFromRequest(c fiber.Ctx, cfg config) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		httpFlavorAttribute(c),
-		// utils.CopyString: we need to copy the string as fasthttp strings are by default
+		// CopyString: we need to copy the string as fasthttp strings are by default
 		// mutable so it will be unsafe to use in this middleware as it might be used after
 		// the handler returns.
-		semconv.HTTPMethodKey.String(utils.CopyString(c.Method())),
+		semconv.HTTPMethodKey.String(CopyString(c.Method())),
 		semconv.HTTPRequestContentLengthKey.Int(c.Request().Header.ContentLength()),
-		semconv.HTTPSchemeKey.String(utils.CopyString(c.Protocol())),
-		semconv.HTTPTargetKey.String(string(utils.CopyBytes(c.Request().RequestURI()))),
-		semconv.HTTPURLKey.String(utils.CopyString(c.OriginalURL())),
-		semconv.HTTPUserAgentKey.String(string(utils.CopyBytes(c.Request().Header.UserAgent()))),
-		semconv.NetHostNameKey.String(utils.CopyString(c.Hostname())),
+		semconv.HTTPSchemeKey.String(CopyString(c.Protocol())),
+		semconv.HTTPTargetKey.String(string(CopyBytes(c.Request().RequestURI()))),
+		semconv.HTTPURLKey.String(CopyString(c.OriginalURL())),
+		semconv.HTTPUserAgentKey.String(string(CopyBytes(c.Request().Header.UserAgent()))),
+		semconv.NetHostNameKey.String(CopyString(c.Hostname())),
 		semconv.NetTransportTCP,
 	}
 
@@ -58,12 +57,12 @@ func httpServerTraceAttributesFromRequest(c *fiber.Ctx, cfg config) []attribute.
 	}
 
 	if username, ok := HasBasicAuth(c.Get(fiber.HeaderAuthorization)); ok {
-		attrs = append(attrs, semconv.EnduserIDKey.String(utils.CopyString(username)))
+		attrs = append(attrs, semconv.EnduserIDKey.String(CopyString(username)))
 	}
 	if cfg.collectClientIP {
 		clientIP := c.IP()
 		if len(clientIP) > 0 {
-			attrs = append(attrs, semconv.HTTPClientIPKey.String(utils.CopyString(clientIP)))
+			attrs = append(attrs, semconv.HTTPClientIPKey.String(CopyString(clientIP)))
 		}
 	}
 
@@ -74,7 +73,7 @@ func httpServerTraceAttributesFromRequest(c *fiber.Ctx, cfg config) []attribute.
 	return attrs
 }
 
-func httpFlavorAttribute(c *fiber.Ctx) attribute.KeyValue {
+func httpFlavorAttribute(c fiber.Ctx) attribute.KeyValue {
 	if c.Request().Header.IsHTTP11() {
 		return semconv.HTTPFlavorHTTP11
 	}
@@ -99,7 +98,7 @@ func HasBasicAuth(auth string) (string, bool) {
 	}
 
 	// Get the credentials
-	creds := utils.UnsafeString(raw)
+	creds := UnsafeString(raw)
 
 	// Check if the credentials are in the correct form
 	// which is "username:password".
