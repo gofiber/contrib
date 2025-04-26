@@ -10,12 +10,12 @@ id: websocket
 
 Based on [Fasthttp WebSocket](https://github.com/fasthttp/websocket) for [Fiber](https://github.com/gofiber/fiber) with available `*fiber.Ctx` methods like [Locals](http://docs.gofiber.io/ctx#locals), [Params](http://docs.gofiber.io/ctx#params), [Query](http://docs.gofiber.io/ctx#query) and [Cookies](http://docs.gofiber.io/ctx#cookies).
 
-**Note: Requires Go 1.18 and above**
+**Note: Requires Go 1.23 and above**
 
 ## Install
 
 ```
-go get -u github.com/gofiber/fiber/v2
+go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/websocket
 ```
 
