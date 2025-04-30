@@ -7,7 +7,7 @@ title: Scalar
 
 Scalar middleware for [Fiber](https://github.com/gofiber/fiber). The middleware handles Scalar UI.
 
-**Note: Requires Go 1.24.2 and above**
+**Note: Requires Go 1.23.0 and above**
 
 ### Table of Contents
 - [Signatures](#signatures)
