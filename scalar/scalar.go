@@ -92,6 +92,12 @@ func New(config ...Config) fiber.Handler {
 			return ctx.SendFile("./scalar.min.js")
 		}
 
+		if cfg.CacheAge > 0 {
+			ctx.Set("Cache-Control", fmt.Sprintf("public, max-age=%d", cfg.CacheAge))
+		} else {
+			ctx.Set("Cache-Control", "no-store")
+		}
+
 		ctx.Type("html")
 		return html.Execute(ctx, cfg)
 	}

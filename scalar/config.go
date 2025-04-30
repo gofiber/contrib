@@ -43,6 +43,11 @@ type Config struct {
 	// Optional. Default: Fiber API documentation
 	Title string
 
+	// CacheAge defines the max-age for the Cache-Control header in seconds.
+	//
+	// Optional. Default: 1 min (no cache)
+	CacheAge int
+
 	// Custom Scalar Style
 	// Ref: https://github.com/scalar/scalar/blob/main/packages/themes/src/variables.css
 	// Optional. Default: ""
@@ -59,5 +64,6 @@ var ConfigDefault = Config{
 	FilePath: "./docs/swagger.json",
 	Path:     "docs",
 	Title:    "Fiber API documentation",
+	CacheAge: 60,
 	ProxyUrl: "https://proxy.scalar.com",
 }
