@@ -24,13 +24,11 @@ type Config struct {
 	FilePath string
 
 	// FileContent for the content of the swagger.json or swagger.yaml file.
-	// If provided, FilePath will not be read.
 	//
 	// Optional. Default: nil
 	FileContent []byte
 
 	// FileContent for the content of the swagger.json or swagger.yaml file.
-	// If provided, FilePath will not be read.
 	//
 	// Optional. Default: nil
 	FileContentString string

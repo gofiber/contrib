@@ -33,9 +33,6 @@ func New(config ...Config) fiber.Handler {
 		if len(cfg.Title) == 0 {
 			cfg.Title = ConfigDefault.Title
 		}
-		if cfg.CacheAge == 0 {
-			cfg.CacheAge = ConfigDefault.CacheAge
-		}
 		if len(cfg.ProxyUrl) == 0 {
 			cfg.ProxyUrl = ConfigDefault.ProxyUrl
 		}
@@ -43,16 +40,16 @@ func New(config ...Config) fiber.Handler {
 
 	rawSpec := cfg.FileContent
 	if len(rawSpec) == 0 {
-		// Verify Swagger file exists
+		// Verify OpenAPI file exists
 		_, err := os.Stat(cfg.FilePath)
 		if os.IsNotExist(err) {
 			panic(fmt.Errorf("%s file does not exist", cfg.FilePath))
 		}
 
-		// Read Swagger Spec into memory
+		// Read OpenAPI Spec into memory
 		rawSpec, err = os.ReadFile(cfg.FilePath)
 		if err != nil {
-			panic(fmt.Errorf("Failed to read provided Swagger file (%s): %v", cfg.FilePath, err.Error()))
+			panic(fmt.Errorf("Failed to read provided OpenAPI file (%s): %v", cfg.FilePath, err.Error()))
 		}
 	}
 
@@ -63,11 +60,11 @@ func New(config ...Config) fiber.Handler {
 	errYAML := yaml.Unmarshal(rawSpec, &yamlData)
 
 	if errJSON != nil && errYAML != nil {
-		log.Fatalf("Failed to parse the Swagger spec as JSON or YAML: JSON error: %s, YAML error: %s", errJSON, errYAML)
+		log.Fatalf("Failed to parse the OpenAPI spec as JSON or YAML: JSON error: %s, YAML error: %s", errJSON, errYAML)
 		if len(cfg.FileContent) != 0 {
-			panic(fmt.Errorf("Invalid Swagger spec: %s", string(rawSpec)))
+			panic(fmt.Errorf("Invalid OpenAPI spec: %s", string(rawSpec)))
 		}
-		panic(fmt.Errorf("Invalid Swagger spec file: %s", cfg.FilePath))
+		panic(fmt.Errorf("Invalid OpenAPI spec file: %s", cfg.FilePath))
 	}
 
 	cfg.FileContent = rawSpec
@@ -75,7 +72,7 @@ func New(config ...Config) fiber.Handler {
 
 	// Generate URL path's for the middleware
 	specURL := path.Join(cfg.BasePath, cfg.FilePath)
-	swaggerUIPath := path.Join(cfg.BasePath, cfg.Path)
+	scalarUIPath := path.Join(cfg.BasePath, cfg.Path)
 
 	html, err := template.New("index.html").Parse(templateHTML)
 	if err != nil {
@@ -87,7 +84,7 @@ func New(config ...Config) fiber.Handler {
 			return ctx.Next()
 		}
 
-		if !(ctx.Path() == swaggerUIPath || ctx.Path() == specURL) {
+		if !(ctx.Path() == scalarUIPath || ctx.Path() == specURL) {
 			return ctx.Next()
 		}
 
