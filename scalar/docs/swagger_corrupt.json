@@ -1,0 +1,15 @@
+{
+  "openapi":
+  "info": {
+    "title": "TestApi",
+    "description": "Documentation for TestApi",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "http://localhost/"
+    }
+  ],
+  "paths": {},
+  "components": {}
+}
