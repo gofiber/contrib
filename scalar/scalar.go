@@ -3,7 +3,6 @@ package scalar
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path"
 	"text/template"
@@ -60,7 +59,7 @@ func New(config ...Config) fiber.Handler {
 	errYAML := yaml.Unmarshal(rawSpec, &yamlData)
 
 	if errJSON != nil && errYAML != nil {
-		log.Fatalf("Failed to parse the OpenAPI spec as JSON or YAML: JSON error: %s, YAML error: %s", errJSON, errYAML)
+		fmt.Printf("Failed to parse the OpenAPI spec as JSON or YAML: JSON error: %s, YAML error: %s", errJSON, errYAML)
 		if len(cfg.FileContent) != 0 {
 			panic(fmt.Errorf("Invalid OpenAPI spec: %s", string(rawSpec)))
 		}
@@ -84,10 +83,6 @@ func New(config ...Config) fiber.Handler {
 			return ctx.Next()
 		}
 
-		if !(ctx.Path() == scalarUIPath || ctx.Path() == specURL) {
-			return ctx.Next()
-		}
-
 		// fallback js
 		jsPath := path.Join(cfg.BasePath, "js/api-reference.min.js")
 		if ctx.Path() == jsPath {
@@ -103,6 +98,14 @@ func New(config ...Config) fiber.Handler {
 			ctx.Set("Cache-Control", fmt.Sprintf("public, max-age=%d", cfg.CacheAge))
 		} else {
 			ctx.Set("Cache-Control", "no-store")
+		}
+
+		if ctx.Path() == specURL {
+			return ctx.Send(rawSpec)
+		}
+
+		if !(ctx.Path() == scalarUIPath || ctx.Path() == specURL) {
+			return ctx.Next()
 		}
 
 		ctx.Type("html")
