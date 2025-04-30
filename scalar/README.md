@@ -55,8 +55,8 @@ Using a custom config:
 cfg := scalar.Config{
     BasePath: "/",
     FilePath: "./docs/swagger.json",
-    Path:     "swagger",
-    Title:    "Swagger API Docs",
+    Path:     "swagger", // replace original swagger path
+    Title:    "Your app API Docs",
 }
 
 app.Use(scalar.New(cfg))
@@ -94,10 +94,14 @@ type Config struct {
 	FilePath string
 
 	// FileContent for the content of the swagger.json or swagger.yaml file.
-	// If provided, FilePath will not be read.
 	//
 	// Optional. Default: nil
 	FileContent []byte
+
+	// FileContent for the content of the swagger.json or swagger.yaml file.
+	//
+	// Optional. Default: nil
+	FileContentString string
 
 	// Path combines with BasePath for the full UI path
 	//
@@ -111,8 +115,17 @@ type Config struct {
 
 	// CacheAge defines the max-age for the Cache-Control header in seconds.
 	//
-	// Optional. Default: 0 (no cache)
+	// Optional. Default: 1 min (no cache)
 	CacheAge int
+
+	// Custom Scalar Style
+	// Ref: https://github.com/scalar/scalar/blob/main/packages/themes/src/variables.css
+	// Optional. Default: ""
+	CustomStyle template.CSS
+
+	// Proxy to avoid CORS issues
+	// Optional. Default: "https://proxy.scalar.com"
+	ProxyUrl string
 }
 ```
 
@@ -124,6 +137,7 @@ var ConfigDefault = Config{
 	FilePath: "./docs/swagger.json",
 	Path:     "docs",
 	Title:    "Fiber API documentation",
-	CacheAge: 0,
+	CacheAge: 60,
+	ProxyUrl: "https://proxy.scalar.com",
 }
 ```
