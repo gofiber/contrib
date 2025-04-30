@@ -88,8 +88,15 @@ func New(config ...Config) fiber.Handler {
 			return ctx.Next()
 		}
 
-		if ctx.Path() == "/js/api-reference.min.js" {
-			return ctx.SendFile("./scalar.min.js")
+		// fallback js
+		jsPath := path.Join(cfg.BasePath, "js/api-reference.min.js")
+		if ctx.Path() == jsPath {
+			scalarJS := "./scalar.min.js"
+			if _, err := os.Stat(scalarJS); os.IsNotExist(err) {
+				return ctx.Status(fiber.StatusNotFound).
+					SendString("Scalar JS file not found")
+			}
+			return ctx.SendFile(scalarJS)
 		}
 
 		if cfg.CacheAge > 0 {
