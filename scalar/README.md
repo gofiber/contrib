@@ -32,21 +32,26 @@ go get github.com/gofiber/contrib/scalar
 ```
 
 ### Examples
-Import the middleware package
-```go
-import (
-  "github.com/gofiber/fiber/v2"
-  "github.com/gofiber/contrib/scalar"
-)
-```
-
 Using swaggo to generate documents default output path is `(root)/docs`:
 ```bash
 swag init -v3.1
 ```
 
+Import the middleware package
+```go
+import (
+  "YOUR_MODULE/docs"
+
+  "github.com/gofiber/fiber/v2"
+  "github.com/gofiber/contrib/scalar"
+)
+```
+
 Using the default config:
 ```go
+// Register swag
+swag.Register(docs.SwaggerInfo.InstanceName(), docs.SwaggerInfo)
+
 app.Use(scalar.New())
 ```
 
@@ -54,7 +59,6 @@ Using a custom config:
 ```go
 cfg := scalar.Config{
     BasePath: "/",
-    FilePath: "./docs/swagger.json",
     Path:     "swagger", // replace original swagger path
     Title:    "Your app API Docs",
 }
@@ -65,11 +69,10 @@ app.Use(scalar.New(cfg))
 Use program data for Swagger content:
 ```go
 cfg := scalar.Config{
-    BasePath:    "/",
-    FilePath:    "./docs/swagger.json",
-    FileContent: mySwaggerByteSlice,
-    Path:        "swagger",
-    Title:       "Swagger API Docs",
+    BasePath:          "/",
+    FileContentString: jsonString,
+    Path:              "scalar",
+    Title:             "Scalar API Docs",
 }
 
 app.Use(scalar.New(cfg))
@@ -87,16 +90,6 @@ type Config struct {
 	//
 	// Optional. Default: /
 	BasePath string
-
-	// FilePath for the swagger.json or swagger.yaml file
-	//
-	// Optional. Default: ./docs/swagger.json
-	FilePath string
-
-	// FileContent for the content of the swagger.json or swagger.yaml file.
-	//
-	// Optional. Default: nil
-	FileContent []byte
 
 	// FileContent for the content of the swagger.json or swagger.yaml file.
 	//
@@ -126,18 +119,22 @@ type Config struct {
 	// Proxy to avoid CORS issues
 	// Optional. Default: "https://proxy.scalar.com"
 	ProxyUrl string
+
+	// Raw Space Url
+	// Optional. Default: doc.json
+	RawSpecUrl string
 }
 ```
 
 ### Default Config
 ```go
 var ConfigDefault = Config{
-	Next:     nil,
-	BasePath: "/",
-	FilePath: "./docs/swagger.json",
-	Path:     "docs",
-	Title:    "Fiber API documentation",
-	CacheAge: 60,
-	ProxyUrl: "https://proxy.scalar.com",
+	Next:       nil,
+	BasePath:   "/",
+	Path:       "docs",
+	Title:      "Fiber API documentation",
+	CacheAge:   60,
+	ProxyUrl:   "https://proxy.scalar.com",
+	RawSpecUrl: "doc.json",
 }
 ```

@@ -23,7 +23,7 @@ const templateHTML = `
     <script>
       if (!navigator.onLine) {
         var script = document.createElement('script');
-        script.src = '/js/scalar.min.js';
+        script.src = '{{ .Extra.FallbackUrl }}';
         script.onload = initScalar;
         document.head.appendChild(script);
       } else {
@@ -32,7 +32,7 @@ const templateHTML = `
         cdn.onload = initScalar;
         cdn.onerror = function () {
           var fallback = document.createElement('script');
-          fallback.src = '/js/api-reference.min.js';
+          fallback.src = '{{ .Extra.FallbackUrl }}';
           fallback.onload = initScalar;
           document.head.appendChild(fallback);
         };

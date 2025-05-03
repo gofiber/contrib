@@ -18,16 +18,6 @@ type Config struct {
 	// Optional. Default: /
 	BasePath string
 
-	// FilePath for the swagger.json or swagger.yaml file
-	//
-	// Optional. Default: ./docs/swagger.json
-	FilePath string
-
-	// FileContent for the content of the swagger.json or swagger.yaml file.
-	//
-	// Optional. Default: nil
-	FileContent []byte
-
 	// FileContent for the content of the swagger.json or swagger.yaml file.
 	//
 	// Optional. Default: nil
@@ -56,14 +46,18 @@ type Config struct {
 	// Proxy to avoid CORS issues
 	// Optional. Default: "https://proxy.scalar.com"
 	ProxyUrl string
+
+	// Raw Space Url
+	// Optional. Default: doc.json
+	RawSpecUrl string
 }
 
 var ConfigDefault = Config{
-	Next:     nil,
-	BasePath: "/",
-	FilePath: "./docs/swagger.json",
-	Path:     "docs",
-	Title:    "Fiber API documentation",
-	CacheAge: 60,
-	ProxyUrl: "https://proxy.scalar.com",
+	Next:       nil,
+	BasePath:   "/",
+	Path:       "docs",
+	Title:      "Fiber API documentation",
+	CacheAge:   60,
+	ProxyUrl:   "https://proxy.scalar.com",
+	RawSpecUrl: "doc.json",
 }
