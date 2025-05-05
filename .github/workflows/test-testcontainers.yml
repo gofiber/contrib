@@ -1,0 +1,33 @@
+name: "Test Testcontainers Services"
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - 'testcontainers/**'
+  pull_request:
+    paths:
+      - 'testcontainers/**'
+
+jobs:
+  Tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version:
+          - 1.23.x
+          - 1.24.x
+    steps:
+      - name: Fetch Repository
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '${{ matrix.go-version }}'
+
+      - name: Run Test
+        working-directory: ./testcontainers
+        run: go test -v -race ./...
