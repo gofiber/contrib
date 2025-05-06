@@ -19,6 +19,7 @@ type config struct {
 	CustomAttributes       func(*fiber.Ctx) []attribute.KeyValue
 	CustomMetricAttributes func(*fiber.Ctx) []attribute.KeyValue
 	collectClientIP        bool
+	withoutMetrics         bool
 }
 
 // Option specifies instrumentation configuration options.
@@ -103,5 +104,12 @@ func WithCustomMetricAttributes(f func(ctx *fiber.Ctx) []attribute.KeyValue) Opt
 func WithCollectClientIP(collect bool) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.collectClientIP = collect
+	})
+}
+
+// WithoutMetrics disables metrics collection when set to true
+func WithoutMetrics(withoutMetrics bool) Option {
+	return optionFunc(func(cfg *config) {
+		cfg.withoutMetrics = withoutMetrics
 	})
 }
