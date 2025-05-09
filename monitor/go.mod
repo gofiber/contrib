@@ -1,12 +1,12 @@
 module github.com/gofiber/contrib/monitor
 
-go 1.22
+go 1.23.0
 
 require (
 	github.com/gofiber/fiber/v3 v3.0.0-beta.3
 	github.com/shirou/gopsutil/v4 v4.25.2
 	github.com/stretchr/testify v1.10.0
-	github.com/valyala/fasthttp v1.59.0
+	github.com/valyala/fasthttp v1.62.0
 )
 
 require (
@@ -16,7 +16,7 @@ require (
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/gofiber/utils/v2 v2.0.0-beta.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/klauspost/compress v1.17.11 // indirect
+	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
@@ -26,6 +26,6 @@ require (
 	github.com/tklauser/numcpus v0.8.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
-	golang.org/x/sys v0.30.0 // indirect
+	golang.org/x/sys v0.33.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
