@@ -150,10 +150,15 @@ func New(config ...Config) fiber.Handler {
 
 	// Define UI Options
 	swaggerUIOpts := middleware.SwaggerUIOpts{
-		BasePath: cfg.BasePath,
-		SpecURL:  specURL,
-		Path:     cfg.Path,
-		Title:    cfg.Title,
+		BasePath:         cfg.BasePath,
+		SpecURL:          specURL,
+		Path:             cfg.Path,
+		Title:            cfg.Title,
+		SwaggerURL:       "https://cdn.jsdelivr.net/npm/swagger-ui-dist/swagger-ui-bundle.min.js",
+		SwaggerPresetURL: "https://cdn.jsdelivr.net/npm/swagger-ui-dist/swagger-ui-standalone-preset.min.js",
+		SwaggerStylesURL: "https://cdn.jsdelivr.net/npm/swagger-ui-dist/swagger-ui.css",
+		Favicon32:        "https://cdn.jsdelivr.net/npm/swagger-ui-dist/favicon-32x32.png",
+		Favicon16:        "https://cdn.jsdelivr.net/npm/swagger-ui-dist/favicon-16x16.png",
 	}
 
 	// Create UI middleware
