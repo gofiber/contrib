@@ -52,6 +52,19 @@ type Config struct {
 	//
 	// Optional. Default: 3600 (1 hour)
 	CacheAge int
+
+	// The three components needed to embed swagger-ui
+
+	// SwaggerURL points to the js that generates the SwaggerUI site.
+	//
+	// Defaults to: https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js
+	SwaggerURL string
+
+	SwaggerPresetURL string
+	SwaggerStylesURL string
+
+	Favicon32 string
+	Favicon16 string
 }
 
 // ConfigDefault is the default config
@@ -150,10 +163,26 @@ func New(config ...Config) fiber.Handler {
 
 	// Define UI Options
 	swaggerUIOpts := middleware.SwaggerUIOpts{
-		BasePath: cfg.BasePath,
-		SpecURL:  specURL,
-		Path:     cfg.Path,
-		Title:    cfg.Title,
+		BasePath:         cfg.BasePath,
+		SpecURL:          specURL,
+		Path:             cfg.Path,
+		Title:            cfg.Title,
+	}
+
+	if cfg.SwaggerURL != "" {
+		swaggerUIOpts.SwaggerURL = cfg.SwaggerURL
+	}
+	if cfg.SwaggerPresetURL != "" {
+		swaggerUIOpts.SwaggerPresetURL = cfg.SwaggerPresetURL
+	}
+	if cfg.SwaggerStylesURL != "" {
+		swaggerUIOpts.SwaggerStylesURL = cfg.SwaggerStylesURL
+	}
+	if cfg.Favicon32 != "" {
+		swaggerUIOpts.Favicon32 = cfg.Favicon32
+	}
+	if cfg.Favicon16 != "" {
+		swaggerUIOpts.Favicon16 = cfg.Favicon16
 	}
 
 	// Create UI middleware
