@@ -51,7 +51,7 @@ jobs:
     strategy:
       matrix:
         package: ${{ fromJSON(needs.changes.outputs.packages || '[]') }}
-    if: ${{ needs.generate-matrix.outputs.matrix != '[]' }}
+    if: ${{ needs.changes.outputs.packages != '[]' }}
     steps:
       - name: Fetch Repository
         uses: actions/checkout@v4
