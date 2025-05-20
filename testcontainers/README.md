@@ -45,7 +45,7 @@ testcontainers.AddModule(ctx context.Context, cfg *fiber.Config, serviceKey stri
 
 ### ContainerService
 
-The `ContainerService` type is a generic type that embeds a [testcontainers.Container](https:/https://pkg.go.dev/github.com/testcontainers/testcontainers-go#Container) interface, and implements the [fiber.Service] interface, thanks to the
+The `ContainerService` type is a generic type that embeds a [testcontainers.Container](https://pkg.go.dev/github.com/testcontainers/testcontainers-go#Container) interface, and implements the [fiber.Service] interface, thanks to the
 Start, String, State and Terminate methods.
 
 ```go

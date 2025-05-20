@@ -18,7 +18,7 @@ func ExampleAdd() {
 
 	// Define the base key for the generic container.
 	// The service returned by the [testcontainers.Add] function,
-	// using the [ServiceContainer.Key] method,
+	// using the [ContainerService.Key] method,
 	// concatenates the base key with the "using testcontainers-go" suffix.
 	const (
 		nginxKey = "nginx-generic"
@@ -58,7 +58,7 @@ func ExampleAddModule() {
 
 	// Define the base keys for the containers.
 	// The service returned by the [testcontainers.AddModule] function,
-	// using the [ServiceContainer.Key] method,
+	// using the [ContainerService.Key] method,
 	// concatenates the base key with the "using testcontainers-go" suffix.
 	const (
 		redisKey    = "redis-module"

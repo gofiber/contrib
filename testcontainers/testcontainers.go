@@ -38,7 +38,6 @@ type ContainerService[T testcontainers.Container] struct {
 	initialized bool
 
 	// The key used to identify the service in the Fiber app's state.
-	// It's recommended to use the [BuildKey] function to build this key.
 	key string
 
 	// The image to use for the container.
@@ -107,7 +106,7 @@ func (c *ContainerService[T]) Terminate(ctx context.Context) error {
 // The module should be a function like redis.Run or postgres.Run that returns a container type
 // which embeds [testcontainers.Container].
 // - The cfg is the Fiber app's configuration.
-// - The serviceKey is the key used to identify the service in the Fiber app's state. It can be built using the [BuildKey] function.
+// - The serviceKey is the key used to identify the service in the Fiber app's state.
 // - The moduleRunFn is the function to use to run the container. It's usually the Run function from the module, like redis.Run or postgres.Run.
 // - The img is the image to use for the container.
 // - The opts are the functional options to pass to the [testcontainers.Run] function. This argument is optional.
@@ -142,7 +141,7 @@ func AddModule[T testcontainers.Container](
 // and an error if the config is nil.
 // It's equivalent to calling [AddModule] with the [testcontainers.Run] function.
 // - The cfg is the Fiber app's configuration.
-// - The serviceKey is the key used to identify the service in the Fiber app's state. It can be built using the [BuildKey] function.
+// - The serviceKey is the key used to identify the service in the Fiber app's state.
 // - The img is the image name to use for the container.
 // - The opts are the functional options to pass to the [testcontainers.Run] function. This argument is optional.
 func Add(
