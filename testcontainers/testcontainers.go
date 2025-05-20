@@ -105,11 +105,18 @@ func (c *ContainerService[T]) Terminate(ctx context.Context) error {
 		return ErrContainerNotRunning
 	}
 
-	return c.ctr.Terminate(ctx)
+	if err := c.ctr.Terminate(ctx); err != nil {
+		return fmt.Errorf("terminate container: %w", err)
+	}
+
+	c.initialized = false
+
+	return nil
 }
 
-// AddModule adds a Testcontainers module container as a [fiber.Service] for the Fiber app,
-// returning the key used to identify the service in the Fiber app's state, and an error if the config is nil.
+// AddModule adds a Testcontainers module container as a [fiber.Service] for the Fiber app.
+// It returns a pointer to a [ContainerService[T]] object, which contains the key used to identify
+// the service in the Fiber app's state, and an error if the config is nil.
 // The module should be a function like redis.Run or postgres.Run that returns a container type
 // which embeds [testcontainers.Container].
 // - The cfg is the Fiber app's configuration.
@@ -148,8 +155,8 @@ func AddModule[T testcontainers.Container](
 }
 
 // Add adds a Testcontainers container as a [fiber.Service] to the Fiber app,
-// using the [testcontainers.Run] function. It returns the key used to identify the service in the Fiber app's state,
-// and an error if the config is nil.
+// using the [testcontainers.Run] function. It returns a [*ContainerService[*testcontainers.DockerContainer]]
+// representing the service added to the Fiber app, and an error if the config is nil.
 // It's equivalent to calling [AddModule] with the [testcontainers.Run] function.
 // - The cfg is the Fiber app's configuration.
 // - The serviceKey is the key used to identify the service in the Fiber app's state.

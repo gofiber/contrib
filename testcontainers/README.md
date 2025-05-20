@@ -58,34 +58,34 @@ type ContainerService[T testcontainers.Container] struct
 
 #### Signature
 
-**Key**
+##### Key
 ```go
 // Key returns the key used to identify the service in the Fiber app's state.
 func (c *ContainerService[T]) Key() string
 ```
 
-**Start**
+##### Start
 ```go
 // Start creates and starts the container, calling the [runFn] function with the [img] and [opts] arguments.
 // It implements the [fiber.Service] interface.
 func (c *ContainerService[T]) Start(ctx context.Context) error
 ```
 
-**String**
+##### String
 ```go
 // String returns a human-readable representation of the container's state.
 // It implements the [fiber.Service] interface.
 func (c *ContainerService[T]) String() string
 ```
 
-**State**
+##### State
 ```go
 // State returns the status of the container.
 // It implements the [fiber.Service] interface.
 func (c *ContainerService[T]) State(ctx context.Context) (string, error)
 ```
 
-**Terminate**
+##### Terminate
 ```go
 // Terminate stops and removes the container. It implements the [fiber.Service] interface.
 func (c *ContainerService[T]) Terminate(ctx context.Context) error
