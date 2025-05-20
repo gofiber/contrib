@@ -18,6 +18,9 @@ var (
 
 	// ErrContainerNotRunning is returned when the container is not running.
 	ErrContainerNotRunning = errors.New("container is not running")
+
+	// ErrEmptyServiceKey is returned when the service key is empty.
+	ErrEmptyServiceKey = errors.New("service key is empty")
 )
 
 // buildKey builds a key for a container service.
@@ -98,6 +101,10 @@ func (c *ContainerService[T]) State(ctx context.Context) (string, error) {
 
 // Terminate stops and removes the container. It implements the [fiber.Service] interface.
 func (c *ContainerService[T]) Terminate(ctx context.Context) error {
+	if !c.initialized {
+		return ErrContainerNotRunning
+	}
+
 	return c.ctr.Terminate(ctx)
 }
 
@@ -120,6 +127,10 @@ func AddModule[T testcontainers.Container](
 ) (*ContainerService[T], error) {
 	if cfg == nil {
 		return nil, ErrNilConfig
+	}
+
+	if serviceKey == "" {
+		return nil, ErrEmptyServiceKey
 	}
 
 	k := buildKey(serviceKey)

@@ -26,6 +26,12 @@ func TestAdd(t *testing.T) {
 		require.Nil(t, srv)
 	})
 
+	t.Run("empty-service-key", func(t *testing.T) {
+		srv, err := testcontainers.Add(context.Background(), &fiber.Config{}, "", nginxAlpineImg)
+		require.ErrorIs(t, err, testcontainers.ErrEmptyServiceKey)
+		require.Nil(t, srv)
+	})
+
 	t.Run("success", func(t *testing.T) {
 		cfg := fiber.Config{}
 
@@ -50,6 +56,12 @@ func TestAddModule(t *testing.T) {
 	t.Run("nil-config", func(t *testing.T) {
 		srv, err := testcontainers.AddModule(context.Background(), nil, "redis-module", redis.Run, redisAlpineImg)
 		require.ErrorIs(t, err, testcontainers.ErrNilConfig)
+		require.Nil(t, srv)
+	})
+
+	t.Run("empty-service-key", func(t *testing.T) {
+		srv, err := testcontainers.AddModule(context.Background(), &fiber.Config{}, "", redis.Run, redisAlpineImg)
+		require.ErrorIs(t, err, testcontainers.ErrEmptyServiceKey)
 		require.Nil(t, srv)
 	})
 
@@ -99,6 +111,7 @@ func TestContainerService(t *testing.T) {
 
 	t.Run("state", func(t *testing.T) {
 		cfg := fiber.Config{}
+
 		t.Run("running", func(t *testing.T) {
 			srv, err := testcontainers.AddModule(context.Background(), &cfg, "redis-module-running", redis.Run, redisAlpineImg)
 			require.NoError(t, err)
@@ -125,16 +138,27 @@ func TestContainerService(t *testing.T) {
 	t.Run("terminate", func(t *testing.T) {
 		cfg := fiber.Config{}
 
-		srv, err := testcontainers.AddModule(context.Background(), &cfg, "redis-module", redis.Run, redisAlpineImg)
-		require.NoError(t, err)
+		t.Run("running", func(t *testing.T) {
+			srv, err := testcontainers.AddModule(context.Background(), &cfg, "redis-module", redis.Run, redisAlpineImg)
+			require.NoError(t, err)
 
-		// Start the service to be able to terminate it.
-		require.NoError(t, srv.Start(context.Background()))
+			// Start the service to be able to terminate it.
+			require.NoError(t, srv.Start(context.Background()))
 
-		require.NoError(t, srv.Terminate(context.Background()))
+			require.NoError(t, srv.Terminate(context.Background()))
 
-		// The container is terminated, so the state should not be available.
-		_, err = srv.State(context.Background())
-		require.Error(t, err)
+			// The container is terminated, so the state should not be available.
+			_, err = srv.State(context.Background())
+			require.Error(t, err)
+		})
+
+		t.Run("not-running", func(t *testing.T) {
+			srv, err := testcontainers.AddModule(context.Background(), &cfg, "redis-module-not-running", redis.Run, redisAlpineImg)
+			require.NoError(t, err)
+			require.Equal(t, "redis-module-not-running (using testcontainers-go)", srv.String())
+
+			err = srv.Terminate(context.Background())
+			require.ErrorIs(t, err, testcontainers.ErrContainerNotRunning)
+		})
 	})
 }
