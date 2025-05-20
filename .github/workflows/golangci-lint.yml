@@ -20,52 +20,38 @@ on:
       - ".github/dependabot.yml"
 
 jobs:
-  generate-matrix:
+  changes:
     runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
       - name: Fetch Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - id: set-matrix
+
+      - name: Generate filters
+        id: filter-setup
         run: |
-            # Determine the base and head commits for diff based on the event type
-            BASE_SHA="${{ github.event.pull_request.base.sha || github.event.before }}"
-            HEAD_SHA="${{ github.event.pull_request.head.sha || github.event.after }}"
+          filters=$(find . -maxdepth 1 -type d ! -path ./.git ! -path . -exec basename {} \; | grep -v '^\.' | awk '{printf "%s: \"%s/**\"\n", $1, $1}')
+          echo "filters<<EOF" >> $GITHUB_OUTPUT
+          echo "$filters" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        shell: bash
 
-            # Extract directories from changed files, only include those with go.mod files
-            GO_MOD_DIRECTORIES=()
-            CURRENT_BRANCH="${{ github.ref_name }}"
-            if [[ "$CURRENT_BRANCH" == "main" ]]; then
-                GO_MOD_DIRECTORIES=$(find . -type f -name "go.mod" -exec dirname {} \; | sort -u)
-            else
-                FILES=$(git diff --name-only $BASE_SHA $HEAD_SHA | grep -vE '/\.')
-                DIRECTORIES=$(echo "$FILES" | xargs -L1 dirname | sort -u)
-                for dir in $DIRECTORIES; do
-                    if [[ -f "$dir/go.mod" ]] && [[ "$dir" != "." ]]; then
-                        GO_MOD_DIRECTORIES+=("$dir")
-                    fi
-                done
-            fi
+      - name: Filter changes
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: ${{ steps.filter-setup.outputs.filters }}
+    outputs:
+      packages: ${{ steps.filter.outputs.changes || '[]' }}
 
-            # Check if GO_MOD_DIRECTORIES is empty
-            if [[ ${#GO_MOD_DIRECTORIES[@]} -eq 0 ]]; then
-              JSON_ARRAY="[]"
-            else
-              # Export the JSON array
-              JSON_ARRAY=$(printf '%s\n' "${GO_MOD_DIRECTORIES[@]}" | jq -R -s -c 'split("\n")[:-1]')
-            fi
-
-            echo "matrix=${JSON_ARRAY}" >> $GITHUB_OUTPUT
   lint:
-    needs: generate-matrix
-    if: ${{ needs.generate-matrix.outputs.matrix != '[]' }}
+    needs: changes
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        modules: ${{fromJson(needs.generate-matrix.outputs.matrix)}}
+        package: ${{ fromJSON(needs.changes.outputs.packages || '[]') }}
+    if: ${{ needs.changes.outputs.packages != '[]' }}
     steps:
       - name: Fetch Repository
         uses: actions/checkout@v4
@@ -78,7 +64,7 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           args: "--tests=false --timeout=5m"
-          working-directory: ${{ matrix.modules }}
+          working-directory: ${{ matrix.package }}
             # NOTE: Keep this in sync with the version from .golangci.yml
           version: v1.64.7
             # NOTE(ldez): temporary workaround
