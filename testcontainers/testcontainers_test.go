@@ -88,6 +88,9 @@ func TestContainerService(t *testing.T) {
 			require.NoError(t, err)
 
 			require.NoError(t, srv.Start(context.Background()))
+			t.Cleanup(func() {
+				require.NoError(t, srv.Terminate(context.Background()))
+			})
 
 			st, err := srv.State(context.Background())
 			require.NoError(t, err)
@@ -118,6 +121,9 @@ func TestContainerService(t *testing.T) {
 			require.Equal(t, "redis-module-running (using testcontainers-go)", srv.String())
 
 			require.NoError(t, srv.Start(context.Background()))
+			t.Cleanup(func() {
+				require.NoError(t, srv.Terminate(context.Background()))
+			})
 
 			st, err := srv.State(context.Background())
 			require.NoError(t, err)
