@@ -55,6 +55,8 @@ Start, String, State and Terminate methods.
 // It manages the lifecycle of a [testcontainers.Container] instance, and it can be
 // retrieved from the Fiber app's state calling the [fiber.MustGetService] function with
 // the key returned by the [ContainerService.Key] method.
+//
+// The type parameter T must implement the [testcontainers.Container] interface.
 type ContainerService[T testcontainers.Container] struct
 ```
 
@@ -64,6 +66,8 @@ type ContainerService[T testcontainers.Container] struct
 
 ```go
 // Key returns the key used to identify the service in the Fiber app's state.
+// Consumers should use string constants for service keys to ensure consistency
+// when retrieving services from the Fiber app's state.
 func (c *ContainerService[T]) Key() string
 ```
 
