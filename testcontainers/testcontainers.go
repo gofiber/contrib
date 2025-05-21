@@ -30,6 +30,12 @@ var (
 
 	// ErrEmptyServiceKey is returned when the service key is empty.
 	ErrEmptyServiceKey = errors.New("service key is empty")
+
+	// ErrImageEmpty is returned when the image is empty.
+	ErrImageEmpty = errors.New("image is empty")
+
+	// ErrRunFnNil is returned when the runFn is nil.
+	ErrRunFnNil = errors.New("runFn is nil")
 )
 
 // buildKey builds a key for a container service.
@@ -163,6 +169,14 @@ func AddService[T testcontainers.Container](cfg *fiber.Config, containerConfig C
 
 	if containerConfig.ServiceKey == "" {
 		return nil, ErrEmptyServiceKey
+	}
+
+	if containerConfig.Image == "" {
+		return nil, ErrImageEmpty
+	}
+
+	if containerConfig.RunFn == nil {
+		return nil, ErrRunFnNil
 	}
 
 	k := buildKey(containerConfig.ServiceKey)

@@ -36,6 +36,14 @@ func TestAddService_fromContainerConfig(t *testing.T) {
 		require.Nil(t, srv)
 	})
 
+	t.Run("empty-image", func(t *testing.T) {
+		containerConfig := testcontainers.NewContainerConfig("nginx-generic", "")
+
+		srv, err := testcontainers.AddService(&fiber.Config{}, containerConfig)
+		require.ErrorIs(t, err, testcontainers.ErrImageEmpty)
+		require.Nil(t, srv)
+	})
+
 	t.Run("success", func(t *testing.T) {
 		cfg := fiber.Config{}
 
@@ -66,6 +74,24 @@ func TestAddService_fromModuleConfig(t *testing.T) {
 
 		srv, err := testcontainers.AddService(&fiber.Config{}, moduleConfig)
 		require.ErrorIs(t, err, testcontainers.ErrEmptyServiceKey)
+		require.Nil(t, srv)
+	})
+
+	t.Run("empty-image", func(t *testing.T) {
+		moduleConfig := testcontainers.NewModuleConfig("redis-module", "", redis.Run)
+
+		srv, err := testcontainers.AddService(&fiber.Config{}, moduleConfig)
+		require.ErrorIs(t, err, testcontainers.ErrImageEmpty)
+		require.Nil(t, srv)
+	})
+
+	t.Run("nil-run-fn", func(t *testing.T) {
+		var runFn func(ctx context.Context, img string, opts ...tc.ContainerCustomizer) (tc.Container, error)
+
+		moduleConfig := testcontainers.NewModuleConfig("redis-module", redisAlpineImg, runFn)
+
+		srv, err := testcontainers.AddService(&fiber.Config{}, moduleConfig)
+		require.ErrorIs(t, err, testcontainers.ErrRunFnNil)
 		require.Nil(t, srv)
 	})
 

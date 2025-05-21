@@ -201,6 +201,8 @@ func (c *ContainerService[T]) Terminate(ctx context.Context) error
 | ErrNilConfig | Returned when the config is nil | Ensure config is properly initialized |
 | ErrContainerNotRunning | Returned when the container is not running | Check container state before operations |
 | ErrEmptyServiceKey | Returned when the service key is empty | Provide a non-empty service key |
+| ErrImageEmpty | Returned when the image is empty | Provide a valid image name |
+| ErrRunFnNil | Returned when the runFn is nil | Provide a valid runFn function |
 
 ## Examples
 
