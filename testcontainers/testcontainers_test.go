@@ -96,6 +96,12 @@ func TestContainerService(t *testing.T) {
 			require.NoError(t, err)
 
 			require.Equal(t, "running", st)
+
+			// verify the container has the correct labels
+			inspect, err := srv.Container().Inspect(context.Background())
+			require.NoError(t, err)
+
+			require.Equal(t, "Go Fiber", inspect.Config.Labels["org.testcontainers.golang.framework"])
 		})
 
 		t.Run("error", func(t *testing.T) {

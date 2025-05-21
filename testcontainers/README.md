@@ -67,6 +67,15 @@ type ContainerService[T testcontainers.Container] struct
 func (c *ContainerService[T]) Key() string
 ```
 
+##### Container
+
+```go
+// Container returns the Testcontainers container instance, giving full access to the T type methods.
+// It's useful to access the container's methods, like [testcontainers.Container.MappedPort]
+// or [testcontainers.Container.Inspect].
+func (c *ContainerService[T]) Container() T
+```
+
 ##### Start
 
 ```go

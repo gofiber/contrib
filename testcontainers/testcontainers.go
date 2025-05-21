@@ -9,8 +9,16 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 )
 
-// serviceSuffix is the suffix added to the service key to identify it as a Testcontainers service.
-const serviceSuffix = " (using testcontainers-go)"
+const (
+	// serviceSuffix is the suffix added to the service key to identify it as a Testcontainers service.
+	serviceSuffix = " (using testcontainers-go)"
+
+	// fiberContainerLabel is the label added to the container to identify it as a Fiber app.
+	fiberContainerLabel = "org.testcontainers.golang.framework"
+
+	// fiberContainerLabelValue is the value of the label added to the container to identify it as a Fiber app.
+	fiberContainerLabelValue = "Go Fiber"
+)
 
 var (
 	// ErrNilConfig is returned when the config is nil.
@@ -64,9 +72,20 @@ func (c *ContainerService[T]) Key() string {
 	return c.key
 }
 
+// Container returns the Testcontainers container instance, giving full access to the T type methods.
+// It's useful to access the container's methods, like [testcontainers.Container.MappedPort]
+// or [testcontainers.Container.Inspect].
+func (c *ContainerService[T]) Container() T {
+	return c.ctr
+}
+
 // Start creates and starts the container, calling the [runFn] function with the [img] and [opts] arguments.
 // It implements the [fiber.Service] interface.
 func (c *ContainerService[T]) Start(ctx context.Context) error {
+	c.opts = append(c.opts, testcontainers.WithLabels(map[string]string{
+		fiberContainerLabel: fiberContainerLabelValue,
+	}))
+
 	ctr, err := c.runFn(ctx, c.img, c.opts...)
 	if err != nil {
 		return fmt.Errorf("run container: %w", err)
