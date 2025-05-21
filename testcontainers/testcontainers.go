@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/testcontainers/testcontainers-go"
@@ -34,6 +35,10 @@ var (
 // buildKey builds a key for a container service.
 // This key is used to identify the service in the Fiber app's state.
 func buildKey(key string) string {
+	if strings.HasSuffix(key, serviceSuffix) {
+		return key
+	}
+
 	return key + serviceSuffix
 }
 
