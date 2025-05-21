@@ -19,15 +19,19 @@ const (
 	postgresAlpineImg = "postgres:alpine"
 )
 
-func TestAdd(t *testing.T) {
+func TestAddService_fromContainerConfig(t *testing.T) {
 	t.Run("nil-config", func(t *testing.T) {
-		srv, err := testcontainers.Add(context.Background(), nil, "nginx-generic", nginxAlpineImg)
+		containerConfig := testcontainers.NewContainerConfig("nginx-generic", nginxAlpineImg)
+
+		srv, err := testcontainers.AddService(nil, containerConfig)
 		require.ErrorIs(t, err, testcontainers.ErrNilConfig)
 		require.Nil(t, srv)
 	})
 
 	t.Run("empty-service-key", func(t *testing.T) {
-		srv, err := testcontainers.Add(context.Background(), &fiber.Config{}, "", nginxAlpineImg)
+		containerConfig := testcontainers.NewContainerConfig("", nginxAlpineImg)
+
+		srv, err := testcontainers.AddService(&fiber.Config{}, containerConfig)
 		require.ErrorIs(t, err, testcontainers.ErrEmptyServiceKey)
 		require.Nil(t, srv)
 	})
@@ -35,13 +39,9 @@ func TestAdd(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		cfg := fiber.Config{}
 
-		srv, err := testcontainers.Add(
-			context.Background(),
-			&cfg,
-			"nginx-generic",
-			nginxAlpineImg,
-			tc.WithExposedPorts("80/tcp"),
-		)
+		containerConfig := testcontainers.NewContainerConfig("nginx-generic", nginxAlpineImg, tc.WithExposedPorts("80/tcp"))
+
+		srv, err := testcontainers.AddService(&cfg, containerConfig)
 		require.NoError(t, err)
 		require.Equal(t, "nginx-generic (using testcontainers-go)", srv.Key())
 
@@ -52,15 +52,19 @@ func TestAdd(t *testing.T) {
 	})
 }
 
-func TestAddModule(t *testing.T) {
-	t.Run("nil-config", func(t *testing.T) {
-		srv, err := testcontainers.AddModule(context.Background(), nil, "redis-module", redis.Run, redisAlpineImg)
+func TestAddService_fromModuleConfig(t *testing.T) {
+	t.Run("nil-fiber-config", func(t *testing.T) {
+		moduleConfig := testcontainers.NewModuleConfig("redis-module", redisAlpineImg, redis.Run)
+
+		srv, err := testcontainers.AddService(nil, moduleConfig)
 		require.ErrorIs(t, err, testcontainers.ErrNilConfig)
 		require.Nil(t, srv)
 	})
 
 	t.Run("empty-service-key", func(t *testing.T) {
-		srv, err := testcontainers.AddModule(context.Background(), &fiber.Config{}, "", redis.Run, redisAlpineImg)
+		moduleConfig := testcontainers.NewModuleConfig("", redisAlpineImg, redis.Run)
+
+		srv, err := testcontainers.AddService(&fiber.Config{}, moduleConfig)
 		require.ErrorIs(t, err, testcontainers.ErrEmptyServiceKey)
 		require.Nil(t, srv)
 	})
@@ -68,7 +72,9 @@ func TestAddModule(t *testing.T) {
 	t.Run("add-modules", func(t *testing.T) {
 		cfg := fiber.Config{}
 
-		srv, err := testcontainers.AddModule(context.Background(), &cfg, "redis-module", redis.Run, redisAlpineImg)
+		moduleConfig := testcontainers.NewModuleConfig("redis-module", redisAlpineImg, redis.Run)
+
+		srv, err := testcontainers.AddService(&cfg, moduleConfig)
 		require.NoError(t, err)
 		require.Equal(t, "redis-module (using testcontainers-go)", srv.Key())
 
@@ -84,7 +90,9 @@ func TestContainerService(t *testing.T) {
 		cfg := fiber.Config{}
 
 		t.Run("success", func(t *testing.T) {
-			srv, err := testcontainers.AddModule(context.Background(), &cfg, "redis-module", redis.Run, redisAlpineImg)
+			moduleConfig := testcontainers.NewModuleConfig("redis-module", redisAlpineImg, redis.Run)
+
+			srv, err := testcontainers.AddService(&cfg, moduleConfig)
 			require.NoError(t, err)
 
 			require.NoError(t, srv.Start(context.Background()))
@@ -105,13 +113,9 @@ func TestContainerService(t *testing.T) {
 		})
 
 		t.Run("error", func(t *testing.T) {
-			srv, err := testcontainers.AddModule(
-				context.Background(), &cfg,
-				"redis-module-error",
-				redis.Run,
-				redisAlpineImg,
-				tc.WithWaitStrategy(wait.ForLog("never happens").WithStartupTimeout(time.Second)),
-			)
+			moduleConfig := testcontainers.NewModuleConfig("redis-module-error", redisAlpineImg, redis.Run, tc.WithWaitStrategy(wait.ForLog("never happens").WithStartupTimeout(time.Second)))
+
+			srv, err := testcontainers.AddService(&cfg, moduleConfig)
 			require.NoError(t, err)
 
 			require.Error(t, srv.Start(context.Background()))
@@ -122,7 +126,9 @@ func TestContainerService(t *testing.T) {
 		cfg := fiber.Config{}
 
 		t.Run("running", func(t *testing.T) {
-			srv, err := testcontainers.AddModule(context.Background(), &cfg, "redis-module-running", redis.Run, redisAlpineImg)
+			moduleConfig := testcontainers.NewModuleConfig("redis-module-running", redisAlpineImg, redis.Run)
+
+			srv, err := testcontainers.AddService(&cfg, moduleConfig)
 			require.NoError(t, err)
 			require.Equal(t, "redis-module-running (using testcontainers-go)", srv.String())
 
@@ -137,7 +143,9 @@ func TestContainerService(t *testing.T) {
 		})
 
 		t.Run("not-running", func(t *testing.T) {
-			srv, err := testcontainers.AddModule(context.Background(), &cfg, "redis-module-not-running", redis.Run, redisAlpineImg)
+			moduleConfig := testcontainers.NewModuleConfig("redis-module-not-running", redisAlpineImg, redis.Run)
+
+			srv, err := testcontainers.AddService(&cfg, moduleConfig)
 			require.NoError(t, err)
 			require.Equal(t, "redis-module-not-running (using testcontainers-go)", srv.String())
 
@@ -151,7 +159,9 @@ func TestContainerService(t *testing.T) {
 		cfg := fiber.Config{}
 
 		t.Run("running", func(t *testing.T) {
-			srv, err := testcontainers.AddModule(context.Background(), &cfg, "redis-module", redis.Run, redisAlpineImg)
+			moduleConfig := testcontainers.NewModuleConfig("redis-module", redisAlpineImg, redis.Run)
+
+			srv, err := testcontainers.AddService(&cfg, moduleConfig)
 			require.NoError(t, err)
 
 			// Start the service to be able to terminate it.
@@ -165,7 +175,9 @@ func TestContainerService(t *testing.T) {
 		})
 
 		t.Run("not-running", func(t *testing.T) {
-			srv, err := testcontainers.AddModule(context.Background(), &cfg, "redis-module-not-running", redis.Run, redisAlpineImg)
+			moduleConfig := testcontainers.NewModuleConfig("redis-module-not-running", redisAlpineImg, redis.Run)
+
+			srv, err := testcontainers.AddService(&cfg, moduleConfig)
 			require.NoError(t, err)
 			require.Equal(t, "redis-module-not-running (using testcontainers-go)", srv.String())
 

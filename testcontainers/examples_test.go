@@ -1,7 +1,6 @@
 package testcontainers_test
 
 import (
-	"context"
 	"fmt"
 	"log"
 
@@ -13,10 +12,10 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
-func ExampleAdd() {
+func ExampleAddService_fromContainer() {
 	cfg := &fiber.Config{}
 
-	// Define the base key for the generic container.
+	// Define the base key for the generic service.
 	// The service returned by the [testcontainers.Add] function,
 	// using the [ContainerService.Key] method,
 	// concatenates the base key with the "using testcontainers-go" suffix.
@@ -25,13 +24,9 @@ func ExampleAdd() {
 	)
 
 	// Adding a generic container, directly from the testcontainers-go package.
-	nginxSrv, err := testcontainers.Add(
-		context.Background(),
-		cfg,
-		nginxKey,
-		"nginx:latest",
-		tc.WithExposedPorts("80/tcp"),
-	)
+	containerConfig := testcontainers.NewContainerConfig(nginxKey, "nginx:latest", tc.WithExposedPorts("80/tcp"))
+
+	nginxSrv, err := testcontainers.AddService(cfg, containerConfig)
 	if err != nil {
 		log.Println("error adding nginx generic:", err)
 		return
@@ -53,10 +48,10 @@ func ExampleAdd() {
 	// nginx-generic (using testcontainers-go)
 }
 
-func ExampleAddModule() {
+func ExampleAddService_fromModule() {
 	cfg := &fiber.Config{}
 
-	// Define the base keys for the containers.
+	// Define the base keys for the module services.
 	// The service returned by the [testcontainers.AddModule] function,
 	// using the [ContainerService.Key] method,
 	// concatenates the base key with the "using testcontainers-go" suffix.
@@ -67,13 +62,24 @@ func ExampleAddModule() {
 
 	// Adding containers coming from the testcontainers-go modules,
 	// in this case, a Redis and a Postgres container.
-	redisSrv, err := testcontainers.AddModule(context.Background(), cfg, redisKey, redis.Run, "redis:latest")
+
+	redisModuleConfig := testcontainers.Config[*redis.RedisContainer]{
+		ServiceKey: redisKey,
+		Image:      "redis:latest",
+		RunFn:      redis.Run,
+	}
+	redisSrv, err := testcontainers.AddService(cfg, redisModuleConfig)
 	if err != nil {
 		log.Println("error adding redis module:", err)
 		return
 	}
 
-	postgresSrv, err := testcontainers.AddModule(context.Background(), cfg, postgresKey, postgres.Run, "postgres:latest")
+	postgresModuleConfig := testcontainers.Config[*postgres.PostgresContainer]{
+		ServiceKey: postgresKey,
+		Image:      "postgres:latest",
+		RunFn:      postgres.Run,
+	}
+	postgresSrv, err := testcontainers.AddService(cfg, postgresModuleConfig)
 	if err != nil {
 		log.Println("error adding postgres module:", err)
 		return

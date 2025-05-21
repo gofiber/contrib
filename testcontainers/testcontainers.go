@@ -140,60 +140,36 @@ func (c *ContainerService[T]) Terminate(ctx context.Context) error {
 	return nil
 }
 
-// AddModule adds a Testcontainers module container as a [fiber.Service] for the Fiber app.
+// AddService adds a Testcontainers container as a [fiber.Service] for the Fiber app.
 // It returns a pointer to a [ContainerService[T]] object, which contains the key used to identify
 // the service in the Fiber app's state, and an error if the config is nil.
-// The module should be a function like redis.Run or postgres.Run that returns a container type
+// The container should be a function like redis.Run or postgres.Run that returns a container type
 // which embeds [testcontainers.Container].
-// - The cfg is the Fiber app's configuration.
-// - The serviceKey is the key used to identify the service in the Fiber app's state.
-// - The moduleRunFn is the function to use to run the container. It's usually the Run function from the module, like redis.Run or postgres.Run.
-// - The img is the image to use for the container.
-// - The opts are the functional options to pass to the [testcontainers.Run] function. This argument is optional.
-func AddModule[T testcontainers.Container](
-	ctx context.Context,
-	cfg *fiber.Config,
-	serviceKey string,
-	moduleRunFn func(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (T, error),
-	img string,
-	opts ...testcontainers.ContainerCustomizer,
-) (*ContainerService[T], error) {
+// - The cfg is the Fiber app's configuration, needed to add the service to the Fiber app's state.
+// - The containerConfig is the configuration for the container, where:
+//   - The containerConfig.ServiceKey is the key used to identify the service in the Fiber app's state.
+//   - The containerConfig.RunFn is the function to use to run the container. It's usually the Run function from the module, like redis.Run or postgres.Run.
+//   - The containerConfig.Image is the image to use for the container.
+//   - The containerConfig.Options are the functional options to pass to the [testcontainers.Run] function. This argument is optional.
+func AddService[T testcontainers.Container](cfg *fiber.Config, containerConfig Config[T]) (*ContainerService[T], error) {
 	if cfg == nil {
 		return nil, ErrNilConfig
 	}
 
-	if serviceKey == "" {
+	if containerConfig.ServiceKey == "" {
 		return nil, ErrEmptyServiceKey
 	}
 
-	k := buildKey(serviceKey)
+	k := buildKey(containerConfig.ServiceKey)
 
 	c := &ContainerService[T]{
 		key:   k,
-		img:   img,
-		opts:  opts,
-		runFn: moduleRunFn,
+		img:   containerConfig.Image,
+		opts:  containerConfig.Options,
+		runFn: containerConfig.RunFn,
 	}
 
 	cfg.Services = append(cfg.Services, c)
 
 	return c, nil
-}
-
-// Add adds a Testcontainers container as a [fiber.Service] to the Fiber app,
-// using the [testcontainers.Run] function. It returns a [*ContainerService[*testcontainers.DockerContainer]]
-// representing the service added to the Fiber app, and an error if the config is nil.
-// It's equivalent to calling [AddModule] with the [testcontainers.Run] function.
-// - The cfg is the Fiber app's configuration.
-// - The serviceKey is the key used to identify the service in the Fiber app's state.
-// - The img is the image name to use for the container.
-// - The opts are the functional options to pass to the [testcontainers.Run] function. This argument is optional.
-func Add(
-	ctx context.Context,
-	cfg *fiber.Config,
-	serviceKey string,
-	img string,
-	opts ...testcontainers.ContainerCustomizer,
-) (*ContainerService[*testcontainers.DockerContainer], error) {
-	return AddModule(ctx, cfg, serviceKey, testcontainers.Run, img, opts...)
 }

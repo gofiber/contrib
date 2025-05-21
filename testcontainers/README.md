@@ -16,6 +16,13 @@ Requires Go **1.23** and above
 
 :::
 
+## Common Use Cases
+
+- Local development
+- Integration testing
+- Isolated service testing
+- End-to-end testing
+
 ## Install
 
 :::caution
@@ -31,32 +38,108 @@ go get -u github.com/gofiber/contrib/testcontainers
 
 ## Signature
 
-### Adding a Generic Container
+### NewModuleConfig
 
 ```go
-testcontainers.Add(ctx context.Context, cfg *fiber.Config, serviceKey string, img string, opts ...testcontainers.ContainerCustomizer) (*ContainerService[T], error)
+// NewModuleConfig creates a new container service config for a module.
+//
+// - The serviceKey is the key used to identify the service in the Fiber app's state.
+// - The img is the image name to use for the container.
+// - The runFn is the function to use to run the container. It's usually the Run function from the module, like [redis.Run] or [postgres.Run].
+// - The opts are the functional options to pass to the runFn function. This argument is optional.
+func NewModuleConfig[T testcontainers.Container](
+ serviceKey string,
+ img string,
+ runFn func(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (T, error),
+ opts ...testcontainers.ContainerCustomizer,
+) Config[T] {
 ```
 
-### Adding a Module
+### NewContainerConfig
 
 ```go
-testcontainers.AddModule(ctx context.Context, cfg *fiber.Config, serviceKey string, moduleRunFn func(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (T, error), img string, opts ...testcontainers.ContainerCustomizer) (*ContainerService[T], error)
+// NewContainerConfig creates a new container service config for a generic container type,
+// not created by a Testcontainers module, such as Redis or Postgres. So this function is
+// useful in combination with the [Add] function.
+//
+// - The serviceKey is the key used to identify the service in the Fiber app's state.
+// - The img is the image name to use for the container.
+// - The opts are the functional options to pass to the [testcontainers.Run] function. This argument is optional.
+//
+// This function uses the [testcontainers.Run] function as the runFn function.
+func NewContainerConfig[T *testcontainers.DockerContainer](serviceKey string, img string, opts ...testcontainers.ContainerCustomizer) Config[*testcontainers.DockerContainer]
+```
+
+### AddService
+
+```go
+// AddService adds a Testcontainers container as a [fiber.Service] for the Fiber app.
+// It returns a pointer to a [ContainerService[T]] object, which contains the key used to identify
+// the service in the Fiber app's state, and an error if the config is nil.
+// The container should be a function like redis.Run or postgres.Run that returns a container type
+// which embeds [testcontainers.Container].
+// - The cfg is the Fiber app's configuration, needed to add the service to the Fiber app's state.
+// - The containerConfig is the configuration for the container, where:
+//   - The containerConfig.ServiceKey is the key used to identify the service in the Fiber app's state.
+//   - The containerConfig.RunFn is the function to use to run the container. It's usually the Run function from the module, like redis.Run or postgres.Run.
+//   - The containerConfig.Image is the image to use for the container.
+//   - The containerConfig.Options are the functional options to pass to the [testcontainers.Run] function. This argument is optional.
+func AddService[T testcontainers.Container](cfg *fiber.Config, containerConfig Config[T]) (*ContainerService[T], error) {
 ```
 
 ## Types
 
-### ContainerService
+### Config
 
-The `ContainerService` type is a generic type that embeds a [testcontainers.Container](https://pkg.go.dev/github.com/testcontainers/testcontainers-go#Container) interface, and implements the [fiber.Service] interface, thanks to the
-Start, String, State and Terminate methods.
+The `Config` type is a generic type that is used to configure the container.
+
+| Property    | Type | Description | Default |
+|-------------|------|-------------|---------|
+| ServiceKey  | string | The key used to identify the service in the Fiber app's state. | - |
+| Image      | string | The image name to use for the container. | - |
+| RunFn      | func(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (T, error) | The function to use to run the container. It's usually the Run function from the testcontainers-go module, like redis.Run or postgres.Run, | - |
+| Options    | []testcontainers.ContainerCustomizer | The functional options to pass to the [testcontainers.Run] function. This argument is optional. | - |
 
 ```go
-// ContainerService represents a container that implements the [fiber.Service] interface.
-// It manages the lifecycle of a [testcontainers.Container] instance, and it can be
-// retrieved from the Fiber app's state calling the [fiber.MustGetService] function with
-// the key returned by the [ContainerService.Key] method.
-//
-// The type parameter T must implement the [testcontainers.Container] interface.
+// Config contains the configuration for a container service.
+type Config[T testcontainers.Container] struct {
+ // ServiceKey is the key used to identify the service in the Fiber app's state.
+ ServiceKey string
+
+ // Image is the image name to use for the container.
+ Image string
+
+ // RunFn is the function to use to run the container.
+ // It's usually the Run function from the testcontainers-go module, like redis.Run or postgres.Run,
+ // although it could be the generic [testcontainers.Run] function from the testcontainers-go package.
+ RunFn func(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (T, error)
+
+ // Options are the functional options to pass to the [testcontainers.Run] function. This argument is optional.
+ // You can find the available options in the [testcontainers website].
+ //
+ // [testcontainers website]: https://golang.testcontainers.org/features/creating_container/#customizing-the-container
+ Options []testcontainers.ContainerCustomizer
+}
+```
+
+### ContainerService
+
+The `ContainerService` type is a generic type that embeds a [testcontainers.Container](https://pkg.go.dev/github.com/testcontainers/testcontainers-go#Container) interface,
+and implements the [fiber.Service] interface, thanks to the Start, String, State and Terminate methods. It manages the lifecycle of a `testcontainers.Container` instance,
+and it can be retrieved from the Fiber app's state calling the `fiber.MustGetService` function with the key returned by the `ContainerService.Key` method.
+
+The type parameter `T` must implement the [testcontainers.Container](https://pkg.go.dev/github.com/testcontainers/testcontainers-go#Container) interface,
+as in the Testcontainers Go modules (e.g. [redis.RedisContainer](https://pkg.go.dev/github.com/testcontainers/testcontainers-go/modules/redis#RedisContainer),
+[postgres.PostgresContainer](https://pkg.go.dev/github.com/testcontainers/testcontainers-go/modules/postgres#PostgresContainer), etc.), or in the generic
+[testcontainers.DockerContainer](https://pkg.go.dev/github.com/testcontainers/testcontainers-go#GenericContainer) type, used for custom containers.
+
+:::note
+
+Since `ContainerService` implements the `fiber.Service` interface, container cleanup is handled automatically by the Fiber framework when the application shuts down. There's no need for manual cleanup code.
+
+:::
+
+```go
 type ContainerService[T testcontainers.Container] struct
 ```
 
@@ -111,6 +194,115 @@ func (c *ContainerService[T]) State(ctx context.Context) (string, error)
 func (c *ContainerService[T]) Terminate(ctx context.Context) error
 ```
 
+### Common Errors
+
+| Error | Description | Resolution |
+|-------|-------------|------------|
+| ErrNilConfig | Returned when the config is nil | Ensure config is properly initialized |
+| ErrContainerNotRunning | Returned when the container is not running | Check container state before operations |
+| ErrEmptyServiceKey | Returned when the service key is empty | Provide a non-empty service key |
+
 ## Examples
 
-See the [testable examples](./examples_test.go) for more details.
+You can find more examples in the [testable examples](./examples_test.go).
+
+### Adding a module container using the Testcontainers Go's Redis module
+
+```go
+package main
+
+import (
+ "fmt"
+ "log"
+
+ "github.com/gofiber/fiber/v3"
+
+ "github.com/gofiber/contrib/testcontainers"
+ tc "github.com/testcontainers/testcontainers-go"
+ "github.com/testcontainers/testcontainers-go/modules/redis"
+)
+
+func main() {
+ cfg := &fiber.Config{}
+
+ // Define the base key for the module service.
+ // The service returned by the [testcontainers.AddModule] function,
+ // using the [ContainerService.Key] method,
+ // concatenates the base key with the "using testcontainers-go" suffix.
+ const (
+  redisKey    = "redis-module"
+ )
+
+ // Adding containers coming from the testcontainers-go modules,
+ // in this case, a Redis and a Postgres container.
+
+ redisModuleConfig := testcontainers.Config[*redis.RedisContainer]{
+  ServiceKey: redisKey,
+  Image:      "redis:latest",
+  RunFn:      redis.Run,
+ }
+ redisSrv, err := testcontainers.AddService(cfg, redisModuleConfig)
+ if err != nil {
+  log.Println("error adding redis module:", err)
+  return
+ }
+
+ // Create a new Fiber app, using the provided configuration.
+ app := fiber.New(*cfg)
+
+ // Retrieve all services from the app's state.
+ // This returns a slice of all the services registered in the app's state.
+ srvs := app.State().Services()
+
+ // Retrieve the Redis container from the app's state using the key returned by the [ContainerService.Key] method.
+ redisCtr := fiber.MustGetService[*testcontainers.ContainerService[*redis.RedisContainer]](app.State(), redisSrv.Key())
+
+ // Start the Fiber app.
+    app.Listen(":3000")
+}
+```
+
+### Adding a custom container using the Testcontainers Go package
+
+```go
+package main
+
+import (
+ "fmt"
+ "log"
+
+ "github.com/gofiber/fiber/v3"
+
+ "github.com/gofiber/contrib/testcontainers"
+ tc "github.com/testcontainers/testcontainers-go"
+ "github.com/testcontainers/testcontainers-go/modules/redis"
+)
+
+func main() {
+ cfg := &fiber.Config{}
+
+ // Define the base key for the generic service.
+ // The service returned by the [testcontainers.Add] function,
+ // using the [ContainerService.Key] method,
+ // concatenates the base key with the "using testcontainers-go" suffix.
+ const (
+  nginxKey = "nginx-generic"
+ )
+
+ // Adding a generic container, directly from the testcontainers-go package.
+ containerConfig := testcontainers.NewContainerConfig(nginxKey, "nginx:latest", tc.WithExposedPorts("80/tcp"))
+
+ nginxSrv, err := testcontainers.AddService(cfg, containerConfig)
+ if err != nil {
+  log.Println("error adding nginx generic:", err)
+  return
+ }
+
+ app := fiber.New(*cfg)
+
+ nginxCtr := fiber.MustGetService[*testcontainers.ContainerService[*tc.DockerContainer]](app.State(), nginxSrv.Key())
+
+ // Start the Fiber app.
+    app.Listen(":3000")
+}
+```
