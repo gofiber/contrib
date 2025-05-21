@@ -226,7 +226,7 @@ func main() {
  cfg := &fiber.Config{}
 
  // Define the base key for the module service.
- // The service returned by the [testcontainers.AddModule] function,
+ // The service returned by the [testcontainers.AddService] function,
  // using the [ContainerService.Key] method,
  // concatenates the base key with the "using testcontainers-go" suffix.
  const (
@@ -282,7 +282,7 @@ func main() {
  cfg := &fiber.Config{}
 
  // Define the base key for the generic service.
- // The service returned by the [testcontainers.Add] function,
+ // The service returned by the [testcontainers.AddService] function,
  // using the [ContainerService.Key] method,
  // concatenates the base key with the "using testcontainers-go" suffix.
  const (
