@@ -91,6 +91,11 @@ func (c *ContainerService[T]) Key() string {
 // It's useful to access the container's methods, like [testcontainers.Container.MappedPort]
 // or [testcontainers.Container.Inspect].
 func (c *ContainerService[T]) Container() T {
+	if !c.initialized {
+		var zero T
+		return zero
+	}
+
 	return c.ctr
 }
 
@@ -127,7 +132,7 @@ func (c *ContainerService[T]) State(ctx context.Context) (string, error) {
 
 	st, err := c.ctr.State(ctx)
 	if err != nil {
-		return "", fmt.Errorf("get container state: %w", err)
+		return "", fmt.Errorf("get container state for %s: %w", c.key, err)
 	}
 
 	return st.Status, nil

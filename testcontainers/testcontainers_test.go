@@ -126,6 +126,9 @@ func TestContainerService(t *testing.T) {
 				require.NoError(t, srv.Terminate(context.Background()))
 			})
 
+			ctr := srv.Container()
+			require.NotNil(t, ctr)
+
 			st, err := srv.State(context.Background())
 			require.NoError(t, err)
 
@@ -145,6 +148,9 @@ func TestContainerService(t *testing.T) {
 			require.NoError(t, err)
 
 			require.Error(t, srv.Start(context.Background()))
+
+			ctr := srv.Container()
+			require.Nil(t, ctr)
 		})
 	})
 
