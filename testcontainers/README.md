@@ -84,6 +84,8 @@ func NewContainerConfig[T *testcontainers.DockerContainer](serviceKey string, im
 //   - The containerConfig.RunFn is the function to use to run the container. It's usually the Run function from the module, like redis.Run or postgres.Run.
 //   - The containerConfig.Image is the image to use for the container.
 //   - The containerConfig.Options are the functional options to pass to the [testcontainers.Run] function. This argument is optional.
+//
+// Use [NewModuleConfig] or [NewContainerConfig] helper functions to create valid containerConfig objects.
 func AddService[T testcontainers.Container](cfg *fiber.Config, containerConfig Config[T]) (*ContainerService[T], error) {
 ```
 
