@@ -48,8 +48,8 @@ func NewModuleConfig[T testcontainers.Container](
 }
 
 // NewContainerConfig creates a new container service config for a generic container type,
-// not created by a Testcontainers module, such as Redis or Postgres. So this function is
-// useful in combination with the [Add] function.
+// not created by a Testcontainers module. So this function best used in combination with
+// the [AddService] function to add a custom container to the Fiber app's state.
 //
 // - The serviceKey is the key used to identify the service in the Fiber app's state.
 // - The img is the image name to use for the container.
