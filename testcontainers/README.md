@@ -45,12 +45,12 @@ go get -u github.com/gofiber/contrib/testcontainers
 //
 // - The serviceKey is the key used to identify the service in the Fiber app's state.
 // - The img is the image name to use for the container.
-// - The runFn is the function to use to run the container. It's usually the Run function from the module, like [redis.Run] or [postgres.Run].
-// - The opts are the functional options to pass to the runFn function. This argument is optional.
+// - The run is the function to use to run the container. It's usually the Run function from the module, like [redis.Run] or [postgres.Run].
+// - The opts are the functional options to pass to the run function. This argument is optional.
 func NewModuleConfig[T testcontainers.Container](
  serviceKey string,
  img string,
- runFn func(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (T, error),
+ run func(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (T, error),
  opts ...testcontainers.ContainerCustomizer,
 ) Config[T] {
 ```
@@ -66,7 +66,7 @@ func NewModuleConfig[T testcontainers.Container](
 // - The img is the image name to use for the container.
 // - The opts are the functional options to pass to the [testcontainers.Run] function. This argument is optional.
 //
-// This function uses the [testcontainers.Run] function as the runFn function.
+// This function uses the [testcontainers.Run] function as the run function.
 func NewContainerConfig[T *testcontainers.DockerContainer](serviceKey string, img string, opts ...testcontainers.ContainerCustomizer) Config[*testcontainers.DockerContainer]
 ```
 
@@ -81,7 +81,7 @@ func NewContainerConfig[T *testcontainers.DockerContainer](serviceKey string, im
 // - The cfg is the Fiber app's configuration, needed to add the service to the Fiber app's state.
 // - The containerConfig is the configuration for the container, where:
 //   - The containerConfig.ServiceKey is the key used to identify the service in the Fiber app's state.
-//   - The containerConfig.RunFn is the function to use to run the container. It's usually the Run function from the module, like redis.Run or postgres.Run.
+//   - The containerConfig.Run is the function to use to run the container. It's usually the Run function from the module, like redis.Run or postgres.Run.
 //   - The containerConfig.Image is the image to use for the container.
 //   - The containerConfig.Options are the functional options to pass to the [testcontainers.Run] function. This argument is optional.
 //
@@ -99,7 +99,7 @@ The `Config` type is a generic type that is used to configure the container.
 |-------------|------|-------------|---------|
 | ServiceKey  | string | The key used to identify the service in the Fiber app's state. | - |
 | Image      | string | The image name to use for the container. | - |
-| RunFn      | func(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (T, error) | The function to use to run the container. It's usually the Run function from the testcontainers-go module, like redis.Run or postgres.Run, | - |
+| Run     | func(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (T, error) | The function to use to run the container. It's usually the Run function from the testcontainers-go module, like redis.Run or postgres.Run, | - |
 | Options    | []testcontainers.ContainerCustomizer | The functional options to pass to the [testcontainers.Run] function. This argument is optional. | - |
 
 ```go
@@ -111,10 +111,10 @@ type Config[T testcontainers.Container] struct {
  // Image is the image name to use for the container.
  Image string
 
- // RunFn is the function to use to run the container.
+ // Run is the function to use to run the container.
  // It's usually the Run function from the testcontainers-go module, like redis.Run or postgres.Run,
  // although it could be the generic [testcontainers.Run] function from the testcontainers-go package.
- RunFn func(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (T, error)
+ Run func(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (T, error)
 
  // Options are the functional options to pass to the [testcontainers.Run] function. This argument is optional.
  // You can find the available options in the [testcontainers website].
@@ -168,7 +168,7 @@ func (c *ContainerService[T]) Container() T
 ##### Start
 
 ```go
-// Start creates and starts the container, calling the [runFn] function with the [img] and [opts] arguments.
+// Start creates and starts the container, calling the [run] function with the [img] and [opts] arguments.
 // It implements the [fiber.Service] interface.
 func (c *ContainerService[T]) Start(ctx context.Context) error
 ```
@@ -204,7 +204,7 @@ func (c *ContainerService[T]) Terminate(ctx context.Context) error
 | ErrContainerNotRunning | Returned when the container is not running | Check container state before operations |
 | ErrEmptyServiceKey | Returned when the service key is empty | Provide a non-empty service key |
 | ErrImageEmpty | Returned when the image is empty | Provide a valid image name |
-| ErrRunFnNil | Returned when the runFn is nil | Provide a valid runFn function |
+| ErrRunNil | Returned when the run is nil | Provide a valid run function |
 
 ## Examples
 
@@ -243,7 +243,7 @@ func main() {
  redisModuleConfig := testcontainers.Config[*redis.RedisContainer]{
   ServiceKey: redisKey,
   Image:      "redis:latest",
-  RunFn:      redis.Run,
+  Run:      redis.Run,
  }
  redisSrv, err := testcontainers.AddService(cfg, redisModuleConfig)
  if err != nil {

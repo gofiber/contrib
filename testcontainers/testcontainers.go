@@ -34,8 +34,8 @@ var (
 	// ErrImageEmpty is returned when the image is empty.
 	ErrImageEmpty = errors.New("image is empty")
 
-	// ErrRunFnNil is returned when the runFn is nil.
-	ErrRunFnNil = errors.New("runFn is nil")
+	// ErrRunNil is returned when the run is nil.
+	ErrRunNil = errors.New("run is nil")
 )
 
 // buildKey builds a key for a container service.
@@ -68,7 +68,7 @@ type ContainerService[T testcontainers.Container] struct {
 	// It's used to run the container with a specific image.
 	img string
 
-	// The functional options to pass to the [runFn] function.
+	// The functional options to pass to the [run] function.
 	// It's used to customize the container.
 	opts []testcontainers.ContainerCustomizer
 
@@ -77,7 +77,7 @@ type ContainerService[T testcontainers.Container] struct {
 	// or the Run function from the testcontainers-go package.
 	// It returns a container instance of type T, which embeds [testcontainers.Container],
 	// like [redis.RedisContainer] or [postgres.PostgresContainer].
-	runFn func(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (T, error)
+	run func(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (T, error)
 }
 
 // Key returns the key used to identify the service in the Fiber app's state.
@@ -99,14 +99,14 @@ func (c *ContainerService[T]) Container() T {
 	return c.ctr
 }
 
-// Start creates and starts the container, calling the [runFn] function with the [img] and [opts] arguments.
+// Start creates and starts the container, calling the [run] function with the [img] and [opts] arguments.
 // It implements the [fiber.Service] interface.
 func (c *ContainerService[T]) Start(ctx context.Context) error {
 	c.opts = append(c.opts, testcontainers.WithLabels(map[string]string{
 		fiberContainerLabel: fiberContainerLabelValue,
 	}))
 
-	ctr, err := c.runFn(ctx, c.img, c.opts...)
+	ctr, err := c.run(ctx, c.img, c.opts...)
 	if err != nil {
 		return fmt.Errorf("run container: %w", err)
 	}
@@ -164,7 +164,7 @@ func (c *ContainerService[T]) Terminate(ctx context.Context) error {
 // - The cfg is the Fiber app's configuration, needed to add the service to the Fiber app's state.
 // - The containerConfig is the configuration for the container, where:
 //   - The containerConfig.ServiceKey is the key used to identify the service in the Fiber app's state.
-//   - The containerConfig.RunFn is the function to use to run the container. It's usually the Run function from the module, like redis.Run or postgres.Run.
+//   - The containerConfig.Run is the function to use to run the container. It's usually the Run function from the module, like redis.Run or postgres.Run.
 //   - The containerConfig.Image is the image to use for the container.
 //   - The containerConfig.Options are the functional options to pass to the [testcontainers.Run] function. This argument is optional.
 //
@@ -182,17 +182,17 @@ func AddService[T testcontainers.Container](cfg *fiber.Config, containerConfig C
 		return nil, ErrImageEmpty
 	}
 
-	if containerConfig.RunFn == nil {
-		return nil, ErrRunFnNil
+	if containerConfig.Run == nil {
+		return nil, ErrRunNil
 	}
 
 	k := buildKey(containerConfig.ServiceKey)
 
 	c := &ContainerService[T]{
-		key:   k,
-		img:   containerConfig.Image,
-		opts:  containerConfig.Options,
-		runFn: containerConfig.RunFn,
+		key:  k,
+		img:  containerConfig.Image,
+		opts: containerConfig.Options,
+		run:  containerConfig.Run,
 	}
 
 	cfg.Services = append(cfg.Services, c)

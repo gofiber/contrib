@@ -86,12 +86,12 @@ func TestAddService_fromModuleConfig(t *testing.T) {
 	})
 
 	t.Run("nil-run-fn", func(t *testing.T) {
-		var runFn func(ctx context.Context, img string, opts ...tc.ContainerCustomizer) (tc.Container, error)
+		var run func(ctx context.Context, img string, opts ...tc.ContainerCustomizer) (tc.Container, error)
 
-		moduleConfig := testcontainers.NewModuleConfig("redis-module", redisAlpineImg, runFn)
+		moduleConfig := testcontainers.NewModuleConfig("redis-module", redisAlpineImg, run)
 
 		srv, err := testcontainers.AddService(&fiber.Config{}, moduleConfig)
-		require.ErrorIs(t, err, testcontainers.ErrRunFnNil)
+		require.ErrorIs(t, err, testcontainers.ErrRunNil)
 		require.Nil(t, srv)
 	})
 

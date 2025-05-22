@@ -66,7 +66,7 @@ func ExampleAddService_fromModule() {
 	redisModuleConfig := testcontainers.Config[*redis.RedisContainer]{
 		ServiceKey: redisKey,
 		Image:      "redis:latest",
-		RunFn:      redis.Run,
+		Run:        redis.Run,
 	}
 	redisSrv, err := testcontainers.AddService(cfg, redisModuleConfig)
 	if err != nil {
@@ -77,7 +77,7 @@ func ExampleAddService_fromModule() {
 	postgresModuleConfig := testcontainers.Config[*postgres.PostgresContainer]{
 		ServiceKey: postgresKey,
 		Image:      "postgres:latest",
-		RunFn:      postgres.Run,
+		Run:        postgres.Run,
 	}
 	postgresSrv, err := testcontainers.AddService(cfg, postgresModuleConfig)
 	if err != nil {
