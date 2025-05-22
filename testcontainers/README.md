@@ -262,7 +262,7 @@ func main() {
  redisCtr := fiber.MustGetService[*testcontainers.ContainerService[*redis.RedisContainer]](app.State(), redisSrv.Key())
 
  // Start the Fiber app.
-    app.Listen(":3000")
+ app.Listen(":3000")
 }
 ```
 
@@ -307,6 +307,6 @@ func main() {
  nginxCtr := fiber.MustGetService[*testcontainers.ContainerService[*tc.DockerContainer]](app.State(), nginxSrv.Key())
 
  // Start the Fiber app.
-    app.Listen(":3000")
+ app.Listen(":3000")
 }
 ```
