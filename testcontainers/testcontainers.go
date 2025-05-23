@@ -102,11 +102,16 @@ func (c *ContainerService[T]) Container() T {
 // Start creates and starts the container, calling the [run] function with the [img] and [opts] arguments.
 // It implements the [fiber.Service] interface.
 func (c *ContainerService[T]) Start(ctx context.Context) error {
-	c.opts = append(c.opts, testcontainers.WithLabels(map[string]string{
+	if c.initialized {
+		return fmt.Errorf("container %s already initialized", c.key)
+	}
+
+	opts := append([]testcontainers.ContainerCustomizer{}, c.opts...)
+	opts = append(opts, testcontainers.WithLabels(map[string]string{
 		fiberContainerLabel: fiberContainerLabelValue,
 	}))
 
-	ctr, err := c.run(ctx, c.img, c.opts...)
+	ctr, err := c.run(ctx, c.img, opts...)
 	if err != nil {
 		return fmt.Errorf("run container: %w", err)
 	}

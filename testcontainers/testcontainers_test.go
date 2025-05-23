@@ -152,6 +152,20 @@ func TestContainerService(t *testing.T) {
 			ctr := srv.Container()
 			require.Nil(t, ctr)
 		})
+
+		t.Run("twice-error", func(t *testing.T) {
+			moduleConfig := testcontainers.NewModuleConfig("redis-module-twice-error", redisAlpineImg, redis.Run)
+
+			srv, err := testcontainers.AddService(&cfg, moduleConfig)
+			require.NoError(t, err)
+
+			require.NoError(t, srv.Start(context.Background()))
+			t.Cleanup(func() {
+				require.NoError(t, srv.Terminate(context.Background()))
+			})
+
+			require.Error(t, srv.Start(context.Background()))
+		})
 	})
 
 	t.Run("state", func(t *testing.T) {
