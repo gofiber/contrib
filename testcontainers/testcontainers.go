@@ -135,6 +135,10 @@ func (c *ContainerService[T]) State(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("get container state for %s: %w", c.key, err)
 	}
 
+	if st == nil {
+		return "", fmt.Errorf("container state is nil for %s", c.key)
+	}
+
 	return st.Status, nil
 }
 
