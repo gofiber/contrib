@@ -63,22 +63,14 @@ func ExampleAddService_fromModule() {
 	// Adding containers coming from the testcontainers-go modules,
 	// in this case, a Redis and a Postgres container.
 
-	redisModuleConfig := testcontainers.Config[*redis.RedisContainer]{
-		ServiceKey: redisKey,
-		Image:      "redis:latest",
-		Run:        redis.Run,
-	}
+	redisModuleConfig := testcontainers.NewModuleConfig(redisKey, "redis:latest", redis.Run)
 	redisSrv, err := testcontainers.AddService(cfg, redisModuleConfig)
 	if err != nil {
 		log.Println("error adding redis module:", err)
 		return
 	}
 
-	postgresModuleConfig := testcontainers.Config[*postgres.PostgresContainer]{
-		ServiceKey: postgresKey,
-		Image:      "postgres:latest",
-		Run:        postgres.Run,
-	}
+	postgresModuleConfig := testcontainers.NewModuleConfig(postgresKey, "postgres:latest", postgres.Run)
 	postgresSrv, err := testcontainers.AddService(cfg, postgresModuleConfig)
 	if err != nil {
 		log.Println("error adding postgres module:", err)
