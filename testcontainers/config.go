@@ -3,11 +3,11 @@ package testcontainers
 import (
 	"context"
 
-	"github.com/testcontainers/testcontainers-go"
+	tc "github.com/testcontainers/testcontainers-go"
 )
 
 // Config contains the configuration for a container service.
-type Config[T testcontainers.Container] struct {
+type Config[T tc.Container] struct {
 	// ServiceKey is the key used to identify the service in the Fiber app's state.
 	ServiceKey string
 
@@ -16,14 +16,14 @@ type Config[T testcontainers.Container] struct {
 
 	// Run is the function to use to run the container.
 	// It's usually the Run function from the testcontainers-go module, like redis.Run or postgres.Run,
-	// although it could be the generic [testcontainers.Run] function from the testcontainers-go package.
-	Run func(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (T, error)
+	// although it could be the generic [tc.Run] function from the testcontainers-go package.
+	Run func(ctx context.Context, img string, opts ...tc.ContainerCustomizer) (T, error)
 
-	// Options are the functional options to pass to the [testcontainers.Run] function. This argument is optional.
+	// Options are the functional options to pass to the [tc.Run] function. This argument is optional.
 	// You can find the available options in the [testcontainers website].
 	//
-	// [testcontainers website]: https://golang.testcontainers.org/features/creating_container/#customizing-the-container
-	Options []testcontainers.ContainerCustomizer
+	// [testcontainers website]: https://golang.tc.org/features/creating_container/#customizing-the-container
+	Options []tc.ContainerCustomizer
 }
 
 // NewModuleConfig creates a new container service config for a module.
@@ -32,11 +32,11 @@ type Config[T testcontainers.Container] struct {
 // - The img is the image name to use for the container.
 // - The run is the function to use to run the container. It's usually the Run function from the module, like [redis.Run] or [postgres.Run].
 // - The opts are the functional options to pass to the run function. This argument is optional.
-func NewModuleConfig[T testcontainers.Container](
+func NewModuleConfig[T tc.Container](
 	serviceKey string,
 	img string,
-	run func(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (T, error),
-	opts ...testcontainers.ContainerCustomizer,
+	run func(ctx context.Context, img string, opts ...tc.ContainerCustomizer) (T, error),
+	opts ...tc.ContainerCustomizer,
 ) Config[T] {
 
 	return Config[T]{
@@ -53,9 +53,9 @@ func NewModuleConfig[T testcontainers.Container](
 //
 // - The serviceKey is the key used to identify the service in the Fiber app's state.
 // - The img is the image name to use for the container.
-// - The opts are the functional options to pass to the [testcontainers.Run] function. This argument is optional.
+// - The opts are the functional options to pass to the [tc.Run] function. This argument is optional.
 //
-// This function uses the [testcontainers.Run] function as the run function.
-func NewContainerConfig(serviceKey string, img string, opts ...testcontainers.ContainerCustomizer) Config[*testcontainers.DockerContainer] {
-	return NewModuleConfig(serviceKey, img, testcontainers.Run, opts...)
+// This function uses the [tc.Run] function as the run function.
+func NewContainerConfig(serviceKey string, img string, opts ...tc.ContainerCustomizer) Config[*tc.DockerContainer] {
+	return NewModuleConfig(serviceKey, img, tc.Run, opts...)
 }

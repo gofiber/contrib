@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
-	"github.com/testcontainers/testcontainers-go"
+	tc "github.com/testcontainers/testcontainers-go"
 )
 
 const (
@@ -49,12 +49,12 @@ func buildKey(key string) string {
 }
 
 // ContainerService represents a container that implements the [fiber.Service] interface.
-// It manages the lifecycle of a [testcontainers.Container] instance, and it can be
+// It manages the lifecycle of a [tc.Container] instance, and it can be
 // retrieved from the Fiber app's state calling the [fiber.MustGetService] function with
 // the key returned by the [ContainerService.Key] method.
 //
-// The type parameter T must implement the [testcontainers.Container] interface.
-type ContainerService[T testcontainers.Container] struct {
+// The type parameter T must implement the [tc.Container] interface.
+type ContainerService[T tc.Container] struct {
 	// The container instance, using the generic type T.
 	ctr T
 
@@ -70,14 +70,14 @@ type ContainerService[T testcontainers.Container] struct {
 
 	// The functional options to pass to the [run] function.
 	// It's used to customize the container.
-	opts []testcontainers.ContainerCustomizer
+	opts []tc.ContainerCustomizer
 
 	// The function to use to run the container.
 	// It's usually the Run function from a testcontainers-go module, like redis.Run or postgres.Run,
 	// or the Run function from the testcontainers-go package.
-	// It returns a container instance of type T, which embeds [testcontainers.Container],
+	// It returns a container instance of type T, which embeds [tc.Container],
 	// like [redis.RedisContainer] or [postgres.PostgresContainer].
-	run func(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (T, error)
+	run func(ctx context.Context, img string, opts ...tc.ContainerCustomizer) (T, error)
 }
 
 // Key returns the key used to identify the service in the Fiber app's state.
@@ -88,8 +88,8 @@ func (c *ContainerService[T]) Key() string {
 }
 
 // Container returns the Testcontainers container instance, giving full access to the T type methods.
-// It's useful to access the container's methods, like [testcontainers.Container.MappedPort]
-// or [testcontainers.Container.Inspect].
+// It's useful to access the container's methods, like [tc.Container.MappedPort]
+// or [tc.Container.Inspect].
 func (c *ContainerService[T]) Container() T {
 	if !c.initialized {
 		var zero T
@@ -106,8 +106,8 @@ func (c *ContainerService[T]) Start(ctx context.Context) error {
 		return fmt.Errorf("container %s already initialized", c.key)
 	}
 
-	opts := append([]testcontainers.ContainerCustomizer{}, c.opts...)
-	opts = append(opts, testcontainers.WithLabels(map[string]string{
+	opts := append([]tc.ContainerCustomizer{}, c.opts...)
+	opts = append(opts, tc.WithLabels(map[string]string{
 		fiberContainerLabel: fiberContainerLabelValue,
 	}))
 
@@ -169,16 +169,16 @@ func (c *ContainerService[T]) Terminate(ctx context.Context) error {
 // It returns a pointer to a [ContainerService[T]] object, which contains the key used to identify
 // the service in the Fiber app's state, and an error if the config is nil.
 // The container should be a function like redis.Run or postgres.Run that returns a container type
-// which embeds [testcontainers.Container].
+// which embeds [tc.Container].
 // - The cfg is the Fiber app's configuration, needed to add the service to the Fiber app's state.
 // - The containerConfig is the configuration for the container, where:
 //   - The containerConfig.ServiceKey is the key used to identify the service in the Fiber app's state.
 //   - The containerConfig.Run is the function to use to run the container. It's usually the Run function from the module, like redis.Run or postgres.Run.
 //   - The containerConfig.Image is the image to use for the container.
-//   - The containerConfig.Options are the functional options to pass to the [testcontainers.Run] function. This argument is optional.
+//   - The containerConfig.Options are the functional options to pass to the [tc.Run] function. This argument is optional.
 //
 // Use [NewModuleConfig] or [NewContainerConfig] helper functions to create valid containerConfig objects.
-func AddService[T testcontainers.Container](cfg *fiber.Config, containerConfig Config[T]) (*ContainerService[T], error) {
+func AddService[T tc.Container](cfg *fiber.Config, containerConfig Config[T]) (*ContainerService[T], error) {
 	if cfg == nil {
 		return nil, ErrNilConfig
 	}
