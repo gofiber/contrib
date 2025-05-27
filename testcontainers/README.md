@@ -275,7 +275,6 @@ import (
 
  "github.com/gofiber/contrib/testcontainers"
  tc "github.com/testcontainers/testcontainers-go"
- "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
 func main() {
