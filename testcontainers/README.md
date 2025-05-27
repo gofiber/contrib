@@ -208,7 +208,7 @@ func (c *ContainerService[T]) Terminate(ctx context.Context) error
 
 ## Examples
 
-You can find more examples in the [testable examples](./examples_test.go).
+You can find more examples in the [testable examples](https://github.com/gofiber/contrib/blob/main/testcontainers/examples_test.go).
 
 ### Adding a module container using the Testcontainers Go's Redis module
 
