@@ -99,7 +99,7 @@ The `Config` type is a generic type that is used to configure the container.
 |-------------|------|-------------|---------|
 | ServiceKey  | string | The key used to identify the service in the Fiber app's state. | - |
 | Image      | string | The image name to use for the container. | - |
-| Run     | func(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (T, error) | The function to use to run the container. It's usually the Run function from the testcontainers-go module, like redis.Run or postgres.Run, | - |
+| Run     | func(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (T, error) | The function to use to run the container. It's usually the Run function from the testcontainers-go module, like redis.Run or postgres.Run | - |
 | Options    | []testcontainers.ContainerCustomizer | The functional options to pass to the [testcontainers.Run] function. This argument is optional. | - |
 
 ```go
@@ -176,7 +176,7 @@ func (c *ContainerService[T]) Start(ctx context.Context) error
 ##### String
 
 ```go
-// String returns a human-readable representation of the container's state.
+// String returns the service key, which uniquely identifies the container service.
 // It implements the [fiber.Service] interface.
 func (c *ContainerService[T]) String() string
 ```

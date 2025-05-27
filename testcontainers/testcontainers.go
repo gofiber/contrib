@@ -122,7 +122,7 @@ func (c *ContainerService[T]) Start(ctx context.Context) error {
 	return nil
 }
 
-// String returns a human-readable representation of the container's state.
+// String returns the service key, which uniquely identifies the container service.
 // It implements the [fiber.Service] interface.
 func (c *ContainerService[T]) String() string {
 	return c.key
