@@ -56,6 +56,6 @@ func NewModuleConfig[T testcontainers.Container](
 // - The opts are the functional options to pass to the [testcontainers.Run] function. This argument is optional.
 //
 // This function uses the [testcontainers.Run] function as the run function.
-func NewContainerConfig[T *testcontainers.DockerContainer](serviceKey string, img string, opts ...testcontainers.ContainerCustomizer) Config[*testcontainers.DockerContainer] {
+func NewContainerConfig(serviceKey string, img string, opts ...testcontainers.ContainerCustomizer) Config[*testcontainers.DockerContainer] {
 	return NewModuleConfig(serviceKey, img, testcontainers.Run, opts...)
 }
