@@ -18,5 +18,6 @@ use (
 	./paseto
 	./socketio
 	./swagger
+	./testcontainers
 	./websocket
 )
