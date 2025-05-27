@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/MicahParks/keyfunc/v2"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -21,7 +21,7 @@ var (
 type Config struct {
 	// Filter defines a function to skip middleware.
 	// Optional. Default: nil
-	Filter func(*fiber.Ctx) bool
+	Filter func(fiber.Ctx) bool
 
 	// SuccessHandler defines a function which is executed for a valid token.
 	// Optional. Default: nil
@@ -107,12 +107,12 @@ func makeCfg(config []Config) (cfg Config) {
 		cfg = config[0]
 	}
 	if cfg.SuccessHandler == nil {
-		cfg.SuccessHandler = func(c *fiber.Ctx) error {
+		cfg.SuccessHandler = func(c fiber.Ctx) error {
 			return c.Next()
 		}
 	}
 	if cfg.ErrorHandler == nil {
-		cfg.ErrorHandler = func(c *fiber.Ctx, err error) error {
+		cfg.ErrorHandler = func(c fiber.Ctx, err error) error {
 			if err.Error() == ErrJWTMissingOrMalformed.Error() {
 				return c.Status(fiber.StatusBadRequest).SendString(ErrJWTMissingOrMalformed.Error())
 			}
