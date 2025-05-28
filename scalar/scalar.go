@@ -15,7 +15,7 @@ var embeddedJS []byte
 
 func New(config ...Config) fiber.Handler {
 	// Set default config
-	cfg := ConfigDefault
+	cfg := configDefault
 
 	// Override config if provided
 	if len(config) > 0 {
@@ -23,19 +23,22 @@ func New(config ...Config) fiber.Handler {
 
 		// Set default values
 		if len(cfg.BasePath) == 0 {
-			cfg.BasePath = ConfigDefault.BasePath
+			cfg.BasePath = configDefault.BasePath
 		}
 		if len(cfg.Path) == 0 {
-			cfg.Path = ConfigDefault.Path
+			cfg.Path = configDefault.Path
 		}
 		if len(cfg.Title) == 0 {
-			cfg.Title = ConfigDefault.Title
-		}
-		if len(cfg.ProxyUrl) == 0 {
-			cfg.ProxyUrl = ConfigDefault.ProxyUrl
+			cfg.Title = configDefault.Title
 		}
 		if len(cfg.RawSpecUrl) == 0 {
-			cfg.RawSpecUrl = ConfigDefault.RawSpecUrl
+			cfg.RawSpecUrl = configDefault.RawSpecUrl
+		}
+		if !cfg.ForceOffline {
+			cfg.ForceOffline = configDefault.ForceOffline
+		}
+		if cfg.FallbackCacheAge == 0 {
+			cfg.FallbackCacheAge = configDefault.FallbackCacheAge
 		}
 	}
 
@@ -56,7 +59,7 @@ func New(config ...Config) fiber.Handler {
 
 	html, err := template.New("index.html").Parse(templateHTML)
 	if err != nil {
-		panic(fmt.Errorf("Failed to parse html template:%v", err))
+		panic(fmt.Errorf("failed to parse html template:%v", err))
 	}
 
 	htmlData := struct {
@@ -76,6 +79,7 @@ func New(config ...Config) fiber.Handler {
 
 		// fallback js
 		if ctx.Path() == jsFallbackPath {
+			ctx.Set("Cache-Control", fmt.Sprintf("public, max-age=%d", cfg.FallbackCacheAge))
 			return ctx.Send(embeddedJS)
 		}
 
@@ -86,10 +90,11 @@ func New(config ...Config) fiber.Handler {
 		}
 
 		if ctx.Path() == specURL {
-			return ctx.JSON(rawSpec)
+			ctx.Set("Content-Type", "application/json")
+			return ctx.SendString(rawSpec)
 		}
 
-		if !(ctx.Path() == scalarUIPath || ctx.Path() == specURL) {
+		if ctx.Path() != scalarUIPath && ctx.Path() != specURL {
 			return ctx.Next()
 		}
 

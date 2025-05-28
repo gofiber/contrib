@@ -19,25 +19,28 @@ const templateHTML = `
 
   <body>
     <div id="app"></div>
-
     <script>
-      if (!navigator.onLine) {
+      function loadFallback() {
         var script = document.createElement('script');
         script.src = '{{ .Extra.FallbackUrl }}';
         script.onload = initScalar;
         document.head.appendChild(script);
-      } else {
-        var cdn = document.createElement('script');
-        cdn.src = 'https://cdn.jsdelivr.net/npm/@scalar/api-reference';
-        cdn.onload = initScalar;
-        cdn.onerror = function () {
-          var fallback = document.createElement('script');
-          fallback.src = '{{ .Extra.FallbackUrl }}';
-          fallback.onload = initScalar;
-          document.head.appendChild(fallback);
-        };
-        document.head.appendChild(cdn);
       }
+
+      {{- if .ForceOffline }}
+        // Force offline mode
+        loadFallback();
+      {{- else }}
+        if (!navigator.onLine) {
+          loadFallback();
+        } else {
+          var cdn = document.createElement('script');
+          cdn.src = 'https://cdn.jsdelivr.net/npm/@scalar/api-reference';
+          cdn.onload = initScalar;
+          cdn.onerror = loadFallback;
+          document.head.appendChild(cdn);
+        }
+      {{- end }}
 
       function initScalar() {
         if (typeof Scalar !== 'undefined') {
@@ -47,6 +50,9 @@ const templateHTML = `
             proxyUrl: "{{.ProxyUrl}}",
             {{ end }}
           });
+        } else {
+          console.error("Failed to load Scalar API Reference");
+          document.querySelector('#app').innerHTML = "<p>Something went wrong. Please report this bug at <a href='https://github.com/yokeTH/gofiber-scalar/issues'>https://github.com/yokeTH/gofiber-scalar/issues</a></p>";
         }
       }
     </script>
