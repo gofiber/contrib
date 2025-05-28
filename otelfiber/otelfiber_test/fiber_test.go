@@ -579,3 +579,31 @@ func TestCollectClientIP(t *testing.T) {
 		})
 	}
 }
+
+func TestWithoutMetrics(t *testing.T) {
+	reader := metric.NewManualReader()
+	provider := metric.NewMeterProvider(metric.WithReader(reader))
+
+	port := 8080
+	route := "/foo"
+
+	app := fiber.New()
+	app.Use(
+		otelfiber.Middleware(
+			otelfiber.WithMeterProvider(provider),
+			otelfiber.WithPort(port),
+			otelfiber.WithoutMetrics(true),
+		),
+	)
+	app.Get(route, func(ctx *fiber.Ctx) error {
+		return ctx.SendStatus(http.StatusOK)
+	})
+
+	r := httptest.NewRequest(http.MethodGet, route, nil)
+	_, _ = app.Test(r)
+
+	metrics := metricdata.ResourceMetrics{}
+	err := reader.Collect(context.Background(), &metrics)
+	assert.NoError(t, err)
+	assert.Len(t, metrics.ScopeMetrics, 0, "No metrics should be collected when metrics are disabled")
+}

@@ -184,6 +184,35 @@ func TestJwtFromHeader(t *testing.T) {
 		}
 	})
 
+	t.Run("custom", func(t *testing.T) {
+		for _, test := range hamac {
+			// Arrange
+			app := fiber.New()
+
+			app.Use(jwtware.New(jwtware.Config{
+				SigningKey: jwtware.SigningKey{
+					JWTAlg: test.SigningMethod,
+					Key:    []byte(defaultSigningKey),
+				},
+				TokenLookup: "header:X-Token",
+			}))
+
+			app.Get("/ok", func(c *fiber.Ctx) error {
+				return c.SendString("OK")
+			})
+
+			req := httptest.NewRequest("GET", "/ok", nil)
+			req.Header.Add("x-token", test.Token)
+
+			// Act
+			resp, err := app.Test(req)
+
+			// Assert
+			utils.AssertEqual(t, nil, err)
+			utils.AssertEqual(t, 200, resp.StatusCode)
+		}
+	})
+
 	t.Run("malformed header", func(t *testing.T) {
 		for _, test := range hamac {
 			// Arrange
