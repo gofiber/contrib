@@ -1,0 +1,23 @@
+go 1.23.8
+
+use (
+	./casbin
+	./circuitbreaker
+	./fgprof
+	./fiberi18n
+	./fibernewrelic
+	./fibersentry
+	./fiberzap
+	./fiberzerolog
+	./hcaptcha
+	./jwt
+	./loadshed
+	./monitor
+	./opafiber
+	./otelfiber
+	./paseto
+	./socketio
+	./swagger
+	./testcontainers
+	./websocket
+)

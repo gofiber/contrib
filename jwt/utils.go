@@ -16,6 +16,10 @@ type jwtExtractor func(c *fiber.Ctx) (string, error)
 
 // jwtFromHeader returns a function that extracts token from the request header.
 func jwtFromHeader(header string, authScheme string) func(c *fiber.Ctx) (string, error) {
+	// Enforce the presence of a space between the authentication scheme and the token
+	if authScheme != "" {
+		authScheme = authScheme + " "
+	}
 	return func(c *fiber.Ctx) (string, error) {
 		auth := c.Get(header)
 		l := len(authScheme)

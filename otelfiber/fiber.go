@@ -2,6 +2,7 @@ package otelfiber
 
 import (
 	"context"
+	"github.com/gofiber/contrib/otelfiber/v2/internal"
 	"net/http"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
-	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
@@ -48,29 +49,37 @@ func Middleware(opts ...Option) fiber.Handler {
 		oteltrace.WithInstrumentationVersion(otelcontrib.Version()),
 	)
 
-	if cfg.MeterProvider == nil {
-		cfg.MeterProvider = otel.GetMeterProvider()
-	}
-	meter := cfg.MeterProvider.Meter(
-		instrumentationName,
-		metric.WithInstrumentationVersion(otelcontrib.Version()),
-	)
+	var httpServerDuration metric.Float64Histogram
+	var httpServerRequestSize metric.Int64Histogram
+	var httpServerResponseSize metric.Int64Histogram
+	var httpServerActiveRequests metric.Int64UpDownCounter
 
-	httpServerDuration, err := meter.Float64Histogram(MetricNameHttpServerDuration, metric.WithUnit(UnitMilliseconds), metric.WithDescription("measures the duration inbound HTTP requests"))
-	if err != nil {
-		otel.Handle(err)
-	}
-	httpServerRequestSize, err := meter.Int64Histogram(MetricNameHttpServerRequestSize, metric.WithUnit(UnitBytes), metric.WithDescription("measures the size of HTTP request messages"))
-	if err != nil {
-		otel.Handle(err)
-	}
-	httpServerResponseSize, err := meter.Int64Histogram(MetricNameHttpServerResponseSize, metric.WithUnit(UnitBytes), metric.WithDescription("measures the size of HTTP response messages"))
-	if err != nil {
-		otel.Handle(err)
-	}
-	httpServerActiveRequests, err := meter.Int64UpDownCounter(MetricNameHttpServerActiveRequests, metric.WithUnit(UnitDimensionless), metric.WithDescription("measures the number of concurrent HTTP requests that are currently in-flight"))
-	if err != nil {
-		otel.Handle(err)
+	if !cfg.withoutMetrics {
+		if cfg.MeterProvider == nil {
+			cfg.MeterProvider = otel.GetMeterProvider()
+		}
+		meter := cfg.MeterProvider.Meter(
+			instrumentationName,
+			metric.WithInstrumentationVersion(otelcontrib.Version()),
+		)
+
+		var err error
+		httpServerDuration, err = meter.Float64Histogram(MetricNameHttpServerDuration, metric.WithUnit(UnitMilliseconds), metric.WithDescription("measures the duration inbound HTTP requests"))
+		if err != nil {
+			otel.Handle(err)
+		}
+		httpServerRequestSize, err = meter.Int64Histogram(MetricNameHttpServerRequestSize, metric.WithUnit(UnitBytes), metric.WithDescription("measures the size of HTTP request messages"))
+		if err != nil {
+			otel.Handle(err)
+		}
+		httpServerResponseSize, err = meter.Int64Histogram(MetricNameHttpServerResponseSize, metric.WithUnit(UnitBytes), metric.WithDescription("measures the size of HTTP response messages"))
+		if err != nil {
+			otel.Handle(err)
+		}
+		httpServerActiveRequests, err = meter.Int64UpDownCounter(MetricNameHttpServerActiveRequests, metric.WithUnit(UnitDimensionless), metric.WithDescription("measures the number of concurrent HTTP requests that are currently in-flight"))
+		if err != nil {
+			otel.Handle(err)
+		}
 	}
 
 	if cfg.Propagators == nil {
@@ -92,7 +101,9 @@ func Middleware(opts ...Option) fiber.Handler {
 		start := time.Now()
 
 		requestMetricsAttrs := httpServerMetricAttributesFromRequest(c, cfg)
-		httpServerActiveRequests.Add(savedCtx, 1, metric.WithAttributes(requestMetricsAttrs...))
+		if !cfg.withoutMetrics {
+			httpServerActiveRequests.Add(savedCtx, 1, metric.WithAttributes(requestMetricsAttrs...))
+		}
 
 		responseMetricAttrs := make([]attribute.KeyValue, len(requestMetricsAttrs))
 		copy(responseMetricAttrs, requestMetricsAttrs)
@@ -128,10 +139,10 @@ func Middleware(opts ...Option) fiber.Handler {
 		}
 
 		// extract common attributes from response
-		responseAttrs := append(
-			semconv.HTTPAttributesFromHTTPStatusCode(c.Response().StatusCode()),
+		responseAttrs := []attribute.KeyValue{
+			semconv.HTTPResponseStatusCode(c.Response().StatusCode()),
 			semconv.HTTPRouteKey.String(c.Route().Path), // no need to copy c.Route().Path: route strings should be immutable across app lifecycle
-		)
+		}
 
 		var responseSize int64
 		requestSize := int64(len(c.Request().Body()))
@@ -140,27 +151,23 @@ func Middleware(opts ...Option) fiber.Handler {
 		}
 
 		defer func() {
-			responseMetricAttrs = append(
-				responseMetricAttrs,
-				responseAttrs...)
+			responseMetricAttrs = append(responseMetricAttrs, responseAttrs...)
 
-			httpServerActiveRequests.Add(savedCtx, -1, metric.WithAttributes(requestMetricsAttrs...))
-			httpServerDuration.Record(savedCtx, float64(time.Since(start).Microseconds())/1000, metric.WithAttributes(responseMetricAttrs...))
-			httpServerRequestSize.Record(savedCtx, requestSize, metric.WithAttributes(responseMetricAttrs...))
-			httpServerResponseSize.Record(savedCtx, responseSize, metric.WithAttributes(responseMetricAttrs...))
+			if !cfg.withoutMetrics {
+				httpServerActiveRequests.Add(savedCtx, -1, metric.WithAttributes(requestMetricsAttrs...))
+				httpServerDuration.Record(savedCtx, float64(time.Since(start).Microseconds())/1000, metric.WithAttributes(responseMetricAttrs...))
+				httpServerRequestSize.Record(savedCtx, requestSize, metric.WithAttributes(responseMetricAttrs...))
+				httpServerResponseSize.Record(savedCtx, responseSize, metric.WithAttributes(responseMetricAttrs...))
+			}
 
 			c.SetUserContext(savedCtx)
 			cancel()
 		}()
 
-		span.SetAttributes(
-			append(
-				responseAttrs,
-				semconv.HTTPResponseContentLengthKey.Int64(responseSize),
-			)...)
+		span.SetAttributes(append(responseAttrs, semconv.HTTPResponseBodySizeKey.Int64(responseSize))...)
 		span.SetName(cfg.SpanNameFormatter(c))
 
-		spanStatus, spanMessage := semconv.SpanStatusFromHTTPStatusCodeAndSpanKind(c.Response().StatusCode(), oteltrace.SpanKindServer)
+		spanStatus, spanMessage := internal.SpanStatusFromHTTPStatusCodeAndSpanKind(c.Response().StatusCode(), oteltrace.SpanKindServer)
 		span.SetStatus(spanStatus, spanMessage)
 
 		//Propagate tracing context as headers in outbound response
