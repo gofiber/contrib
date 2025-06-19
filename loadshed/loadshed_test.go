@@ -2,6 +2,7 @@ package loadshed
 
 import (
 	"context"
+	"io"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -97,4 +98,170 @@ func Test_Loadshed_UpperThreshold(t *testing.T) {
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
 	utils.AssertEqual(t, nil, err)
 	utils.AssertEqual(t, fiber.StatusServiceUnavailable, resp.StatusCode)
+}
+
+func Test_Loadshed_CustomOnShed(t *testing.T) {
+	app := fiber.New()
+
+	mockGetter := &MockCPUPercentGetter{MockedPercentage: []float64{96.0}}
+	var cfg Config
+	cfg.Criteria = &CPULoadCriteria{
+		LowerThreshold: 0.90,
+		UpperThreshold: 0.95,
+		Interval:       time.Second,
+		Getter:         mockGetter,
+	}
+	cfg.OnShed = func(c *fiber.Ctx) error {
+		return c.Status(fiber.StatusTooManyRequests).Send([]byte{})
+	}
+
+	app.Use(New(cfg))
+	app.Get("/", ReturnOK)
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusTooManyRequests, resp.StatusCode)
+}
+
+func Test_Loadshed_CustomOnShedWithResponse(t *testing.T) {
+	app := fiber.New()
+
+	mockGetter := &MockCPUPercentGetter{MockedPercentage: []float64{96.0}}
+	var cfg Config
+	cfg.Criteria = &CPULoadCriteria{
+		LowerThreshold: 0.90,
+		UpperThreshold: 0.95,
+		Interval:       time.Second,
+		Getter:         mockGetter,
+	}
+
+	// This OnShed directly sets a response without returning it
+	cfg.OnShed = func(c *fiber.Ctx) error {
+		c.Status(fiber.StatusTooManyRequests)
+		return nil
+	}
+
+	app.Use(New(cfg))
+	app.Get("/", ReturnOK)
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusTooManyRequests, resp.StatusCode)
+}
+
+func Test_Loadshed_CustomOnShedWithNilReturn(t *testing.T) {
+	app := fiber.New()
+
+	mockGetter := &MockCPUPercentGetter{MockedPercentage: []float64{96.0}}
+	var cfg Config
+	cfg.Criteria = &CPULoadCriteria{
+		LowerThreshold: 0.90,
+		UpperThreshold: 0.95,
+		Interval:       time.Second,
+		Getter:         mockGetter,
+	}
+
+	// OnShed returns nil without setting a response
+	cfg.OnShed = func(c *fiber.Ctx) error {
+		return nil
+	}
+
+	app.Use(New(cfg))
+	app.Get("/", ReturnOK)
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
+}
+
+func Test_Loadshed_CustomOnShedWithCustomError(t *testing.T) {
+	app := fiber.New()
+
+	mockGetter := &MockCPUPercentGetter{MockedPercentage: []float64{96.0}}
+	var cfg Config
+	cfg.Criteria = &CPULoadCriteria{
+		LowerThreshold: 0.90,
+		UpperThreshold: 0.95,
+		Interval:       time.Second,
+		Getter:         mockGetter,
+	}
+
+	// OnShed returns a custom error
+	cfg.OnShed = func(c *fiber.Ctx) error {
+		return fiber.NewError(fiber.StatusForbidden, "Custom error message")
+	}
+
+	app.Use(New(cfg))
+	app.Get("/", ReturnOK)
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusForbidden, resp.StatusCode)
+}
+
+func Test_Loadshed_CustomOnShedWithResponseAndCustomError(t *testing.T) {
+	app := fiber.New()
+
+	mockGetter := &MockCPUPercentGetter{MockedPercentage: []float64{96.0}}
+	var cfg Config
+	cfg.Criteria = &CPULoadCriteria{
+		LowerThreshold: 0.90,
+		UpperThreshold: 0.95,
+		Interval:       time.Second,
+		Getter:         mockGetter,
+	}
+
+	// OnShed sets a response and returns a different error
+	// The response should be honored
+	cfg.OnShed = func(c *fiber.Ctx) error {
+		c.
+			Status(fiber.StatusTooManyRequests).
+			SendString("Too many requests")
+
+		return fiber.NewError(
+			fiber.StatusInternalServerError,
+			"Shed happened",
+		)
+	}
+
+	app.Use(New(cfg))
+	app.Get("/", ReturnOK)
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
+	payload, readErr := io.ReadAll(resp.Body)
+	defer resp.Body.Close()
+
+	utils.AssertEqual(t, string(payload), "Shed happened")
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, nil, readErr)
+	utils.AssertEqual(t, fiber.StatusInternalServerError, resp.StatusCode)
+}
+
+func Test_Loadshed_CustomOnShedWithJSON(t *testing.T) {
+	app := fiber.New()
+
+	mockGetter := &MockCPUPercentGetter{MockedPercentage: []float64{96.0}}
+	var cfg Config
+	cfg.Criteria = &CPULoadCriteria{
+		LowerThreshold: 0.90,
+		UpperThreshold: 0.95,
+		Interval:       time.Second,
+		Getter:         mockGetter,
+	}
+
+	// OnShed returns JSON response
+	cfg.OnShed = func(c *fiber.Ctx) error {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error":       "Service is currently unavailable due to high load",
+			"retry_after": 30,
+		})
+	}
+
+	app.Use(New(cfg))
+	app.Get("/", ReturnOK)
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusServiceUnavailable, resp.StatusCode)
+	utils.AssertEqual(t, "application/json", resp.Header.Get("Content-Type"))
 }

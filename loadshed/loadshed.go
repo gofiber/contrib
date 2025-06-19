@@ -12,6 +12,10 @@ type Config struct {
 
 	// Criteria defines the criteria to be used for load shedding.
 	Criteria LoadCriteria
+
+	// OnShed defines a custom handler that will be executed if a request should
+	// be shed
+	OnShed func(c *fiber.Ctx) error
 }
 
 var ConfigDefault = Config{
@@ -45,6 +49,11 @@ func New(config ...Config) fiber.Handler {
 
 		// Shed load if the criteria's ShouldShed method returns true
 		if cfg.Criteria.ShouldShed(metric) {
+			// Call the custom OnShed function
+			if cfg.OnShed != nil {
+				return cfg.OnShed(c)
+			}
+
 			return fiber.NewError(fiber.StatusServiceUnavailable)
 		}
 
