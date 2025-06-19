@@ -14,7 +14,7 @@ type Config struct {
 	Criteria LoadCriteria
 
 	// OnShed defines a custom handler that will be executed if a request should
-	// be shed
+	// be declined
 	OnShed func(c *fiber.Ctx) error
 }
 
