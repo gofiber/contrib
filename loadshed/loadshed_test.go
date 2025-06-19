@@ -212,7 +212,7 @@ func Test_Loadshed_CustomOnShedWithResponseAndCustomError(t *testing.T) {
 	}
 
 	// OnShed sets a response and returns a different error
-	// The response should be honored
+	// The NewError have higher priority since executed last
 	cfg.OnShed = func(c *fiber.Ctx) error {
 		c.
 			Status(fiber.StatusTooManyRequests).
