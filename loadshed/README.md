@@ -143,8 +143,7 @@ LoadCriteria is an interface in the LoadShed middleware that defines the criteri
 - **Thresholds**: Utilizes `LowerThreshold` and `UpperThreshold` values to decide when to start shedding requests.
 - **Proportional Rejection Probability**:
   - **Below `LowerThreshold`**: No requests are rejected, as the system is considered under acceptable load.
-  - **Between `LowerThreshold` and `UpperThreshold`**: The probability of rejecting a request increases as the CPU
-    usage approaches the `UpperThreshold`. This is calculated using the formula:
+  - **Between `LowerThreshold` and `UpperThreshold`**: The probability of rejecting a request increases as the CPU usage approaches the `UpperThreshold`. This is calculated using the formula:
     ```plaintext
     rejectionProbability := (cpuUsage - LowerThreshold*100) / (UpperThreshold - LowerThreshold)
     ```
