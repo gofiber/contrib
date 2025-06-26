@@ -31,10 +31,13 @@ loadshed.New(config ...loadshed.Config) fiber.Handler
 
 To use the LoadShed middleware in your Fiber application, import it and apply it to your Fiber app. Here's an example:
 
+### Basic
+
 ```go
 package main
 
 import (
+  "time"
   "github.com/gofiber/fiber/v2"
   loadshed "github.com/gofiber/contrib/loadshed"
 )
@@ -60,14 +63,60 @@ func main() {
 }
 ```
 
+### With a custom rejection handler
+
+```go
+package main
+
+import (
+  "time"
+  "github.com/gofiber/fiber/v2"
+  loadshed "github.com/gofiber/contrib/loadshed"
+)
+
+func main() {
+  app := fiber.New()
+
+  // Configure and use LoadShed middleware
+  app.Use(loadshed.New(loadshed.Config{
+    Criteria: &loadshed.CPULoadCriteria{
+      LowerThreshold: 0.75, // Set your own lower threshold
+      UpperThreshold: 0.90, // Set your own upper threshold
+      Interval:       10 * time.Second,
+      Getter:         &loadshed.DefaultCPUPercentGetter{},
+    },
+    OnShed: func(ctx *fiber.Ctx) error {
+      if ctx.Method() == fiber.MethodGet {
+        return ctx.
+          Status(fiber.StatusTooManyRequests).
+          Send([]byte{})
+      }
+
+      return ctx.
+        Status(fiber.StatusTooManyRequests).
+        JSON(fiber.Map{
+          "error": "Keep calm",
+        })
+    },
+  }))
+
+  app.Get("/", func(c *fiber.Ctx) error {
+    return c.SendString("Welcome!")
+  })
+
+  app.Listen(":3000")
+}
+```
+
 ## Config
 
 The LoadShed middleware in Fiber offers various configuration options to tailor the load shedding behavior according to the needs of your application.
 
-| Property | Type                    | Description                                          | Default                 |
-| :------- | :---------------------- | :--------------------------------------------------- | :---------------------- |
-| Next     | `func(*fiber.Ctx) bool` | Function to skip this middleware when returned true. | `nil`                   |
-| Criteria | `LoadCriteria`          | Interface for defining load shedding criteria.       | `&CPULoadCriteria{...}` |
+| Property | Type                       | Description                                             | Default                 |
+|:---------|:---------------------------|:--------------------------------------------------------|:------------------------|
+| Next     | `func(*fiber.Ctx) bool`    | Function to skip this middleware when returned true.    | `nil`                   |
+| Criteria | `LoadCriteria`             | Interface for defining load shedding criteria.          | `&CPULoadCriteria{...}` |
+| OnShed   | `func(c *fiber.Ctx) error` | Function to be executed if a request should be declined | `nil`                   |
 
 ## LoadCriteria
 
@@ -80,7 +129,7 @@ LoadCriteria is an interface in the LoadShed middleware that defines the criteri
 #### Properties
 
 | Property       | Type               | Description                                                                                                                           |
-| :------------- | :----------------- | :------------------------------------------------------------------------------------------------------------------------------------ |
+|:---------------|:-------------------|:--------------------------------------------------------------------------------------------------------------------------------------|
 | LowerThreshold | `float64`          | The lower CPU usage threshold as a fraction (0.0 to 1.0). Requests are considered for shedding when CPU usage exceeds this threshold. |
 | UpperThreshold | `float64`          | The upper CPU usage threshold as a fraction (0.0 to 1.0). All requests are shed when CPU usage exceeds this threshold.                |
 | Interval       | `time.Duration`    | The time interval over which the CPU usage is averaged for decision making.                                                           |
@@ -110,10 +159,11 @@ This is the default configuration for `LoadCriteria` in the LoadShed middleware.
 var ConfigDefault = Config{
   Next: nil,
   Criteria: &CPULoadCriteria{
-    LowerThreshold: 0.90,  // 90% CPU usage as the start point for considering shedding
-    UpperThreshold: 0.95,  // 95% CPU usage as the point where all requests are shed
-    Interval:       10 * time.Second,  // CPU usage is averaged over 10 seconds
-    Getter:         &DefaultCPUPercentGetter{},  // Default method for getting CPU usage
-  },
+    LowerThreshold: 0.90, // 90% CPU usage as the start point for considering shedding
+    UpperThreshold: 0.95, // 95% CPU usage as the point where all requests are shed
+    Interval:       10 * time.Second, // CPU usage is averaged over 10 seconds
+    Getter:         &DefaultCPUPercentGetter{}, // Default method for getting CPU usage
+  }, 
+  OnShed: nil,
 }
 ```
