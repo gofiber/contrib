@@ -32,6 +32,7 @@ go get -u github.com/o1egl/paseto
 
 ```go
 pasetoware.New(config ...pasetoware.Config) func(*fiber.Ctx) error
+pasetoware.FromContext(c *fiber.Ctx) interface{}
 ```
 
 ## Config
@@ -45,7 +46,6 @@ pasetoware.New(config ...pasetoware.Config) func(*fiber.Ctx) error
 | SymmetricKey   | `[]byte`                        | Secret key to encrypt token. If present the middleware will generate local tokens.                                                                                                                      | `nil`                           |
 | PrivateKey     | `ed25519.PrivateKey`            | Secret key to sign the tokens. If present (along with its `PublicKey`) the middleware will generate public tokens.                                                                                      | `nil`                           
 | PublicKey      | `crypto.PublicKey`              | Public key to verify the tokens. If present (along with `PrivateKey`) the middleware will generate public tokens.                                                                                       | `nil`                           
-| ContextKey     | `string`                        | Context key to store user information from the token into context.                                                                                                                                      | `"auth-token"`                  |
 | TokenLookup    | `[2]string`                     | TokenLookup is a string slice with size 2, that is used to extract token from the request                                                                                                               | `["header","Authorization"]`    |
 
 ## Instructions
@@ -128,7 +128,7 @@ func accessible(c *fiber.Ctx) error {
 }
 
 func restricted(c *fiber.Ctx) error {
-	payload := c.Locals(pasetoware.DefaultContextKey).(string)
+	payload := pasetoware.FromContext(c).(string)
 	return c.SendString("Welcome " + payload)
 }
 
@@ -242,7 +242,7 @@ func accessible(c *fiber.Ctx) error {
 }
 
 func restricted(c *fiber.Ctx) error {
-	payload := c.Locals(pasetoware.DefaultContextKey).(customPayloadStruct)
+	payload := pasetoware.FromContext(c).(customPayloadStruct)
 	return c.SendString("Welcome " + payload.Name)
 }
 
@@ -350,10 +350,16 @@ func accessible(c *fiber.Ctx) error {
 }
 
 func restricted(c *fiber.Ctx) error {
-	payload := c.Locals(pasetoware.DefaultContextKey).(string)
+	payload := pasetoware.FromContext(c).(string)
 	return c.SendString("Welcome " + payload)
 }
 
+```
+
+#### Get the payload from the context
+
+```go
+payload := pasetoware.FromContext(c).(string)
 ```
 
 #### Test it
