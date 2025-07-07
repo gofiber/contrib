@@ -2,6 +2,8 @@ module github.com/gofiber/contrib/otelfiber/example
 
 go 1.23.0
 
+toolchain go1.24.4
+
 replace github.com/gofiber/contrib/otelfiber/v2 => ../
 
 require (
