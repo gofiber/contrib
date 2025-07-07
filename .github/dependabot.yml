@@ -29,3 +29,9 @@ updates:
           golang-modules:
               patterns:
                   - "golang.org/x/**"
+          opentelemetry-modules:
+              patterns:
+                  - "go.opentelemetry.io/**"
+          fasthttp-websocket-modules:
+              patterns:
+                  - "github.com/fasthttp/websocket/**"
