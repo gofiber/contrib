@@ -12,9 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/utils"
 	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/assert"
+
+	"github.com/gofiber/fiber/v3"
 )
 
 func Test_GetResBody(t *testing.T) {
@@ -28,23 +29,23 @@ func Test_GetResBody(t *testing.T) {
 	app := fiber.New()
 	app.Use(New(Config{
 		Logger: &logger,
-		GetResBody: func(c *fiber.Ctx) []byte {
+		GetResBody: func(c fiber.Ctx) []byte {
 			return []byte(readableResBody)
 		},
 		Fields: []string{FieldResBody},
 	}))
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendString("------this is unreadable resp------")
 	})
 
 	_, err := app.Test(httptest.NewRequest("GET", "/", nil))
-	utils.AssertEqual(t, nil, err)
+	assert.Equal(t, nil, err)
 
 	var logs map[string]any
 	_ = json.Unmarshal(buf.Bytes(), &logs)
 
-	utils.AssertEqual(t, readableResBody, logs[FieldResBody])
+	assert.Equal(t, readableResBody, logs[FieldResBody])
 }
 
 func Test_SkipBody(t *testing.T) {
@@ -55,7 +56,7 @@ func Test_SkipBody(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(New(Config{
-		SkipBody: func(_ *fiber.Ctx) bool {
+		SkipBody: func(_ fiber.Ctx) bool {
 			return true
 		},
 		Logger: &logger,
@@ -64,14 +65,14 @@ func Test_SkipBody(t *testing.T) {
 
 	body := bytes.NewReader([]byte("this is test"))
 	resp, err := app.Test(httptest.NewRequest("GET", "/", body))
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusNotFound, resp.StatusCode)
 
 	var logs map[string]any
 	_ = json.Unmarshal(buf.Bytes(), &logs)
 	_, ok := logs[FieldBody]
 
-	utils.AssertEqual(t, false, ok)
+	assert.Equal(t, false, ok)
 }
 
 func Test_SkipResBody(t *testing.T) {
@@ -82,7 +83,7 @@ func Test_SkipResBody(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(New(Config{
-		SkipResBody: func(_ *fiber.Ctx) bool {
+		SkipResBody: func(_ fiber.Ctx) bool {
 			return true
 		},
 		Logger: &logger,
@@ -91,14 +92,14 @@ func Test_SkipResBody(t *testing.T) {
 
 	body := bytes.NewReader([]byte("this is test"))
 	resp, err := app.Test(httptest.NewRequest("GET", "/", body))
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusNotFound, resp.StatusCode)
 
 	var logs map[string]any
 	_ = json.Unmarshal(buf.Bytes(), &logs)
 	_, ok := logs[FieldResBody]
 
-	utils.AssertEqual(t, false, ok)
+	assert.Equal(t, false, ok)
 }
 
 func Test_Logger(t *testing.T) {
@@ -112,19 +113,19 @@ func Test_Logger(t *testing.T) {
 		Logger: &logger,
 	}))
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return errors.New("some random error")
 	})
 
 	resp, err := app.Test(httptest.NewRequest("GET", "/", nil))
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusInternalServerError, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
 
 	var logs map[string]any
 	_ = json.Unmarshal(buf.Bytes(), &logs)
 
-	utils.AssertEqual(t, "some random error", logs[FieldError])
-	utils.AssertEqual(t, float64(500), logs[FieldStatus])
+	assert.Equal(t, "some random error", logs[FieldError])
+	assert.Equal(t, float64(500), logs[FieldStatus])
 }
 
 func Test_Latency(t *testing.T) {
@@ -138,22 +139,22 @@ func Test_Latency(t *testing.T) {
 		Logger: &logger,
 	}))
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		time.Sleep(100 * time.Millisecond)
 		return c.SendStatus(fiber.StatusOK)
 	})
 
 	resp, err := app.Test(httptest.NewRequest("GET", "/", nil))
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 
 	var logs map[string]any
 	_ = json.Unmarshal(buf.Bytes(), &logs)
 
 	latencyStr, ok := logs[FieldLatency].(string)
-	utils.AssertEqual(t, true, ok)
-	utils.AssertEqual(t, true, strings.Contains(latencyStr, "ms"))
-	utils.AssertEqual(t, float64(200), logs[FieldStatus])
+	assert.Equal(t, true, ok)
+	assert.Equal(t, true, strings.Contains(latencyStr, "ms"))
+	assert.Equal(t, float64(200), logs[FieldStatus])
 }
 
 func Test_Logger_Next(t *testing.T) {
@@ -161,14 +162,14 @@ func Test_Logger_Next(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(New(Config{
-		Next: func(_ *fiber.Ctx) bool {
+		Next: func(_ fiber.Ctx) bool {
 			return true
 		},
 	}))
 
 	resp, err := app.Test(httptest.NewRequest("GET", "/", nil))
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusNotFound, resp.StatusCode)
 }
 
 func Test_Logger_All(t *testing.T) {
@@ -197,14 +198,14 @@ func Test_Logger_All(t *testing.T) {
 		},
 	}))
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		time.Sleep(100 * time.Millisecond)
 		return c.SendStatus(fiber.StatusNotFound)
 	})
 
 	resp, err := app.Test(httptest.NewRequest("GET", "/?foo=bar", nil))
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusNotFound, resp.StatusCode)
 
 	expected := map[string]interface{}{
 		"body":          "",
@@ -215,7 +216,7 @@ func Test_Logger_All(t *testing.T) {
 		"message":       "Client error",
 		"method":        "GET",
 		"route":         "/",
-		"protocol":      "http",
+		"protocol":      "HTTP/1.1",
 		"pid":           float64(os.Getpid()),
 		"queryParams":   "foo=bar",
 		"resBody":       "Not Found",
@@ -227,12 +228,12 @@ func Test_Logger_All(t *testing.T) {
 	_ = json.Unmarshal(buf.Bytes(), &logs)
 
 	for key, value := range expected {
-		utils.AssertEqual(t, value, logs[key])
+		assert.Equal(t, value, logs[key])
 	}
 
 	latencyStr, ok := logs[FieldLatency].(string)
-	utils.AssertEqual(t, true, ok)
-	utils.AssertEqual(t, true, strings.Contains(latencyStr, "ms"))
+	assert.Equal(t, true, ok)
+	assert.Equal(t, true, strings.Contains(latencyStr, "ms"))
 }
 
 func Test_Response_Body(t *testing.T) {
@@ -249,17 +250,17 @@ func Test_Response_Body(t *testing.T) {
 
 	expectedGetResponse := "Sample response body"
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendString(expectedGetResponse)
 	})
 
 	_, err := app.Test(httptest.NewRequest("GET", "/", nil))
-	utils.AssertEqual(t, nil, err)
+	assert.Equal(t, nil, err)
 
 	var logs map[string]any
 	_ = json.Unmarshal(buf.Bytes(), &logs)
 
-	utils.AssertEqual(t, expectedGetResponse, logs[FieldResBody])
+	assert.Equal(t, expectedGetResponse, logs[FieldResBody])
 }
 
 func Test_Request_Id(t *testing.T) {
@@ -276,19 +277,19 @@ func Test_Request_Id(t *testing.T) {
 
 	requestID := "bf985e8e-6a32-42ec-8e50-05a21db8f0e4"
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		c.Response().Header.Set(fiber.HeaderXRequestID, requestID)
 		return c.SendString("hello")
 	})
 
 	resp, err := app.Test(httptest.NewRequest("GET", "/", nil))
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 
 	var logs map[string]any
 	_ = json.Unmarshal(buf.Bytes(), &logs)
 
-	utils.AssertEqual(t, requestID, logs[FieldRequestID])
+	assert.Equal(t, requestID, logs[FieldRequestID])
 }
 
 func Test_Skip_URIs(t *testing.T) {
@@ -303,14 +304,14 @@ func Test_Skip_URIs(t *testing.T) {
 		SkipURIs: []string{"/ignore_logging"},
 	}))
 
-	app.Get("/ignore_logging", func(c *fiber.Ctx) error {
+	app.Get("/ignore_logging", func(c fiber.Ctx) error {
 		return errors.New("no log")
 	})
 
 	resp, err := app.Test(httptest.NewRequest("GET", "/ignore_logging", nil))
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusInternalServerError, resp.StatusCode)
-	utils.AssertEqual(t, 0, buf.Len())
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
+	assert.Equal(t, 0, buf.Len())
 }
 
 func Test_Req_Headers(t *testing.T) {
@@ -325,7 +326,7 @@ func Test_Req_Headers(t *testing.T) {
 		Fields: []string{FieldReqHeaders},
 	}))
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendString("hello")
 	})
 
@@ -334,8 +335,8 @@ func Test_Req_Headers(t *testing.T) {
 	req.Header.Add("baz", "foo")
 
 	resp, err := app.Test(req)
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 
 	expected := map[string]interface{}{
 		"Host":    "example.com",
@@ -348,7 +349,7 @@ func Test_Req_Headers(t *testing.T) {
 	var logs map[string]any
 	_ = json.Unmarshal(buf.Bytes(), &logs)
 
-	utils.AssertEqual(t, expected, logs)
+	assert.Equal(t, expected, logs)
 }
 
 func Test_LoggerLevelsAndMessages(t *testing.T) {
@@ -367,15 +368,15 @@ func Test_LoggerLevelsAndMessages(t *testing.T) {
 		Levels:   levels,
 	}))
 
-	app.Get("/200", func(c *fiber.Ctx) error {
+	app.Get("/200", func(c fiber.Ctx) error {
 		c.Status(fiber.StatusOK)
 		return nil
 	})
-	app.Get("/400", func(c *fiber.Ctx) error {
+	app.Get("/400", func(c fiber.Ctx) error {
 		c.Status(fiber.StatusBadRequest)
 		return nil
 	})
-	app.Get("/500", func(c *fiber.Ctx) error {
+	app.Get("/500", func(c fiber.Ctx) error {
 		c.Status(fiber.StatusInternalServerError)
 		return nil
 	})
@@ -413,14 +414,14 @@ func Test_LoggerLevelsAndMessages(t *testing.T) {
 			buf.Reset()
 			resp, err := app.Test(test.Req)
 
-			utils.AssertEqual(t, nil, err)
-			utils.AssertEqual(t, test.Status, resp.StatusCode)
+			assert.Equal(t, nil, err)
+			assert.Equal(t, test.Status, resp.StatusCode)
 
 			var logs map[string]any
 			_ = json.Unmarshal(buf.Bytes(), &logs)
 
-			utils.AssertEqual(t, test.Level, logs["level"])
-			utils.AssertEqual(t, test.Message, logs["message"])
+			assert.Equal(t, test.Level, logs["level"])
+			assert.Equal(t, test.Message, logs["message"])
 		})
 	}
 }
@@ -432,7 +433,7 @@ func Test_Logger_FromContext(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(New(Config{
-		GetLogger: func(c *fiber.Ctx) zerolog.Logger {
+		GetLogger: func(c fiber.Ctx) zerolog.Logger {
 			return zerolog.New(&buf).
 				With().
 				Str("foo", "bar").
@@ -441,10 +442,10 @@ func Test_Logger_FromContext(t *testing.T) {
 	}))
 
 	_, err := app.Test(httptest.NewRequest("GET", "/", nil))
-	utils.AssertEqual(t, nil, err)
+	assert.Equal(t, nil, err)
 
 	var logs map[string]any
 	_ = json.Unmarshal(buf.Bytes(), &logs)
 
-	utils.AssertEqual(t, "bar", logs["foo"])
+	assert.Equal(t, "bar", logs["foo"])
 }
