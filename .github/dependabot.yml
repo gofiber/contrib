@@ -35,3 +35,24 @@ updates:
           fasthttp-websocket-modules:
               patterns:
                   - "github.com/fasthttp/websocket/**"
+          valyala-utils-modules:
+              patterns:
+                  - "github.com/valyala/bytebufferpool"
+                  - "github.com/valyala/tcplisten"
+          mattn-modules:
+              patterns:
+                  - "github.com/mattn/go-colorable"
+                  - "github.com/mattn/go-isatty"
+                  - "github.com/mattn/go-runewidth"
+          google-modules:
+              patterns:
+                  - "github.com/google/**"
+                  - "google.golang.org/**"
+          testing-modules:
+              patterns:
+                  - "github.com/stretchr/**"
+                  - "github.com/davecgh/go-spew"
+                  - "github.com/pmezard/go-difflib"
+          yaml-modules:
+              patterns:
+                  - "gopkg.in/yaml.*"
