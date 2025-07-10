@@ -1,0 +1,3 @@
+{"level":"ERROR","ts":"2025-07-10T11:59:40.782+0200","caller":"testing/testing.go:1792","func":"testing.tRunner","msg":"this is a warn log"}
+{"level":"ERROR","ts":"2025-07-10T12:02:21.314+0200","caller":"testing/testing.go:1792","func":"testing.tRunner","msg":"this is a warn log"}
+{"level":"ERROR","ts":"2025-07-10T12:03:11.306+0200","caller":"testing/testing.go:1792","func":"testing.tRunner","msg":"this is a warn log"}

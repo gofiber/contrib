@@ -1,6 +1,6 @@
 module github.com/gofiber/contrib/casbin
 
-go 1.18
+go 1.24.4
 
 require (
 	github.com/casbin/casbin/v2 v2.108.0

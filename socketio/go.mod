@@ -1,6 +1,6 @@
 module github.com/gofiber/contrib/socketio
 
-go 1.20
+go 1.24.4
 
 require (
 	github.com/fasthttp/websocket v1.5.10

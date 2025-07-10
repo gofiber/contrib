@@ -1,6 +1,6 @@
 module github.com/gofiber/contrib/fiberzap/v2
 
-go 1.19
+go 1.24.4
 
 require (
 	github.com/gofiber/fiber/v2 v2.52.6

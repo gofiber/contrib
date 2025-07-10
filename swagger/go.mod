@@ -1,6 +1,6 @@
 module github.com/gofiber/contrib/swagger
 
-go 1.18
+go 1.24.4
 
 require (
 	github.com/go-openapi/runtime v0.26.2

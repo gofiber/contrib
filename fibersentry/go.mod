@@ -1,6 +1,6 @@
 module github.com/gofiber/contrib/fibersentry
 
-go 1.18
+go 1.24.4
 
 require (
 	github.com/getsentry/sentry-go v0.29.1
