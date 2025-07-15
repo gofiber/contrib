@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/loadshed
 go 1.20
 
 require (
-	github.com/gofiber/fiber/v2 v2.52.6
+	github.com/gofiber/fiber/v2 v2.52.8
 	github.com/shirou/gopsutil v3.21.11+incompatible
 )
 
