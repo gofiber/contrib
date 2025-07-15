@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/fiberzerolog
 go 1.18
 
 require (
-	github.com/gofiber/fiber/v2 v2.52.6
+	github.com/gofiber/fiber/v2 v2.52.8
 	github.com/rs/zerolog v1.34.0
 )
 
