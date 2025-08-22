@@ -1,0 +1,31 @@
+name: "Test hcaptcha"
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - 'hcaptcha/**'
+  pull_request:
+    paths:
+      - 'hcaptcha/**'
+
+jobs:
+  Tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version:
+          - 1.21.x
+          - 1.22.x
+    steps:
+      - name: Fetch Repository
+        uses: actions/checkout@v5
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '${{ matrix.go-version }}'
+      - name: Run Test
+        working-directory: ./hcaptcha
+        run: go test -v -race ./...

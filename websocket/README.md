@@ -6,9 +6,7 @@ id: websocket
 
 ![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=websocket*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
-![Test](https://github.com/gofiber/contrib/workflows/Tests/badge.svg)
-![Security](https://github.com/gofiber/contrib/workflows/Security/badge.svg)
-![Linter](https://github.com/gofiber/contrib/workflows/Linter/badge.svg)
+![Test](https://github.com/gofiber/contrib/workflows/Test%20websocket/badge.svg)
 
 Based on [Fasthttp WebSocket](https://github.com/fasthttp/websocket) for [Fiber](https://github.com/gofiber/fiber) with available `fiber.Ctx` methods like [Locals](http://docs.gofiber.io/ctx#locals), [Params](http://docs.gofiber.io/ctx#params), [Query](http://docs.gofiber.io/ctx#query) and [Cookies](http://docs.gofiber.io/ctx#cookies).
 
@@ -143,3 +141,11 @@ app.Get("/ws/:id", websocket.New(func(c *websocket.Conn) {}, cfg))
 
 
 ```
+
+## Note for WebSocket subprotocols
+
+The config `Subprotocols` only helps you negotiate subprotocols and sets a `Sec-Websocket-Protocol` header if it has a suitable subprotocol. For more about negotiates process, check the comment for `Subprotocols` in [fasthttp.Upgrader](https://pkg.go.dev/github.com/fasthttp/websocket#Upgrader) .
+
+All connections will be sent to the handler function no matter whether the subprotocol negotiation is successful or not. You can get the selected subprotocol from `conn.Subprotocol()`. 
+
+If a connection includes the `Sec-Websocket-Protocol` header in the request but the protocol negotiation fails, the browser will immediately disconnect the connection after receiving the upgrade response.

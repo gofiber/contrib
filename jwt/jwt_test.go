@@ -1,6 +1,7 @@
 package jwtware_test
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -104,7 +105,7 @@ const (
 `
 )
 
-func TestJwtFromHeader(t *testing.T) {
+func TestJwtTokenProcessorFunc(t *testing.T) {
 	t.Parallel()
 
 	defer func() {
@@ -123,6 +124,10 @@ func TestJwtFromHeader(t *testing.T) {
 				JWTAlg: test.SigningMethod,
 				Key:    []byte(defaultSigningKey),
 			},
+			TokenProcessorFunc: func(token string) (string, error) {
+				decodedToken, err := hex.DecodeString(token)
+				return string(decodedToken), err
+			},
 		}))
 
 		app.Get("/ok", func(c fiber.Ctx) error {
@@ -130,7 +135,7 @@ func TestJwtFromHeader(t *testing.T) {
 		})
 
 		req := httptest.NewRequest("GET", "/ok", nil)
-		req.Header.Add("Authorization", "Bearer "+test.Token)
+		req.Header.Add("Authorization", "Bearer "+hex.EncodeToString([]byte(test.Token)))
 
 		// Act
 		resp, err := app.Test(req)
@@ -139,6 +144,102 @@ func TestJwtFromHeader(t *testing.T) {
 		utils.AssertEqual(t, nil, err)
 		utils.AssertEqual(t, 200, resp.StatusCode)
 	}
+}
+
+func TestJwtFromHeader(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		// Assert
+		if err := recover(); err != nil {
+			t.Fatalf("Middleware should not panic")
+		}
+	}()
+
+	t.Run("regular", func(t *testing.T) {
+		for _, test := range hamac {
+			// Arrange
+			app := fiber.New()
+
+			app.Use(jwtware.New(jwtware.Config{
+				SigningKey: jwtware.SigningKey{
+					JWTAlg: test.SigningMethod,
+					Key:    []byte(defaultSigningKey),
+				},
+			}))
+
+			app.Get("/ok", func(c *fiber.Ctx) error {
+				return c.SendString("OK")
+			})
+
+			req := httptest.NewRequest("GET", "/ok", nil)
+			req.Header.Add("Authorization", "Bearer "+test.Token)
+
+			// Act
+			resp, err := app.Test(req)
+
+			// Assert
+			utils.AssertEqual(t, nil, err)
+			utils.AssertEqual(t, 200, resp.StatusCode)
+		}
+	})
+
+	t.Run("custom", func(t *testing.T) {
+		for _, test := range hamac {
+			// Arrange
+			app := fiber.New()
+
+			app.Use(jwtware.New(jwtware.Config{
+				SigningKey: jwtware.SigningKey{
+					JWTAlg: test.SigningMethod,
+					Key:    []byte(defaultSigningKey),
+				},
+				TokenLookup: "header:X-Token",
+			}))
+
+			app.Get("/ok", func(c *fiber.Ctx) error {
+				return c.SendString("OK")
+			})
+
+			req := httptest.NewRequest("GET", "/ok", nil)
+			req.Header.Add("x-token", test.Token)
+
+			// Act
+			resp, err := app.Test(req)
+
+			// Assert
+			utils.AssertEqual(t, nil, err)
+			utils.AssertEqual(t, 200, resp.StatusCode)
+		}
+	})
+
+	t.Run("malformed header", func(t *testing.T) {
+		for _, test := range hamac {
+			// Arrange
+			app := fiber.New()
+
+			app.Use(jwtware.New(jwtware.Config{
+				SigningKey: jwtware.SigningKey{
+					JWTAlg: test.SigningMethod,
+					Key:    []byte(defaultSigningKey),
+				},
+			}))
+
+			app.Get("/ok", func(c *fiber.Ctx) error {
+				return c.SendString("OK")
+			})
+
+			req := httptest.NewRequest("GET", "/ok", nil)
+			req.Header.Add("Authorization", "Bearer"+test.Token)
+
+			// Act
+			resp, err := app.Test(req)
+
+			// Assert
+			utils.AssertEqual(t, nil, err)
+			utils.AssertEqual(t, 400, resp.StatusCode)
+		}
+	})
 }
 
 func TestJwtFromCookie(t *testing.T) {

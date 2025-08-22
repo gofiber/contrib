@@ -40,6 +40,14 @@ func New(config ...Config) fiber.Handler {
 		if err != nil {
 			return cfg.ErrorHandler(c, err)
 		}
+
+		if cfg.TokenProcessorFunc != nil {
+			auth, err = cfg.TokenProcessorFunc(auth)
+			if err != nil {
+				return cfg.ErrorHandler(c, err)
+			}
+		}
+
 		var token *jwt.Token
 
 		if _, ok := cfg.Claims.(jwt.MapClaims); ok {

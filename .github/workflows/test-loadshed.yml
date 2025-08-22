@@ -1,0 +1,33 @@
+name: "Test Loadshed"
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - "loadshed/**"
+  pull_request:
+    paths:
+      - "loadshed/**"
+
+jobs:
+  Tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version:
+          - 1.18.x
+          - 1.19.x
+          - 1.20.x
+          - 1.21.x
+    steps:
+      - name: Fetch Repository
+        uses: actions/checkout@v5
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "${{ matrix.go-version }}"
+      - name: Run Test
+        working-directory: ./loadshed
+        run: go test -v -race ./...
