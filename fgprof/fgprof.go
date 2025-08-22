@@ -2,8 +2,8 @@ package fgprof
 
 import (
 	"github.com/felixge/fgprof"
-	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/adaptor"
+	"github.com/gofiber/fiber/v3"
 )
 
 func New(conf ...Config) fiber.Handler {
@@ -15,7 +15,7 @@ func New(conf ...Config) fiber.Handler {
 	var fgprofHandler = adaptor.HTTPHandler(fgprof.Handler())
 
 	// Return new handler
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		// Don't execute middleware if Next returns true
 		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()

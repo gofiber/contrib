@@ -21,12 +21,12 @@ func NewPayload(userToken string, duration time.Duration) (*paseto.JSONToken, er
 	}
 	timeNow := time.Now()
 	payload := &paseto.JSONToken{
-		Audience:   pasetoTokenAudience,
-		Jti:        tokenID.String(),
-		Subject:    pasetoTokenSubject,
-		IssuedAt:   timeNow,
-		Expiration: timeNow.Add(duration),
-		NotBefore:  timeNow,
+		Audience:    pasetoTokenAudience,
+		Jti:         tokenID.String(),
+		Subject:     pasetoTokenSubject,
+		IssuedAt:    timeNow,
+		IdleTimeout: timeNow.Add(duration),
+		NotBefore:   timeNow,
 	}
 
 	payload.Set(pasetoTokenField, userToken)

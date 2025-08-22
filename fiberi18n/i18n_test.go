@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/utils"
+	"github.com/gofiber/fiber/v3"
 	"github.com/nicksnyder/go-i18n/v2/i18n"
 	"golang.org/x/text/language"
 )
@@ -16,10 +16,10 @@ import (
 func newServer() *fiber.App {
 	app := fiber.New()
 	app.Use(New())
-	app.Get("/", func(ctx *fiber.Ctx) error {
+	app.Get("/", func(ctx fiber.Ctx) error {
 		return ctx.SendString(MustLocalize(ctx, "welcome"))
 	})
-	app.Get("/:name", func(ctx *fiber.Ctx) error {
+	app.Get("/:name", func(ctx fiber.Ctx) error {
 		return ctx.SendString(MustLocalize(ctx, &i18n.LocalizeConfig{
 			MessageID: "welcomeWithName",
 			TemplateData: map[string]string{
@@ -36,7 +36,7 @@ func makeRequest(lang language.Tag, name string, app *fiber.App) (*http.Response
 	path := "/" + name
 	req, _ := http.NewRequestWithContext(context.Background(), "GET", path, nil)
 	if lang != language.Und {
-		req.Header.Add("Accept-Language", lang.String())
+		req.Header.Add([]string{"Accept-Language"}, lang.String())
 	}
 	req.Method = "GET"
 	req.RequestURI = path
@@ -172,13 +172,13 @@ func TestLocalize(t *testing.T) {
 	t.Parallel()
 	app := fiber.New()
 	app.Use(New())
-	app.Get("/", func(ctx *fiber.Ctx) error {
+	app.Get("/", func(ctx fiber.Ctx) error {
 		localize, err := Localize(ctx, "welcome?")
 		utils.AssertEqual(t, "", localize)
 		return fiber.NewError(500, err.Error())
 	})
 
-	app.Get("/:name", func(ctx *fiber.Ctx) error {
+	app.Get("/:name", func(ctx fiber.Ctx) error {
 		name := ctx.Params("name")
 		localize, err := Localize(ctx, &i18n.LocalizeConfig{
 			MessageID: "welcomeWithName",
@@ -208,10 +208,10 @@ func TestLocalize(t *testing.T) {
 func Test_defaultLangHandler(t *testing.T) {
 	app := fiber.New()
 	app.Use(New())
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendString(defaultLangHandler(nil, language.English.String()))
 	})
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return c.SendString(defaultLangHandler(c, language.English.String()))
 	})
 	t.Parallel()

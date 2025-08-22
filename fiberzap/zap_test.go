@@ -11,8 +11,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/utils"
+	"github.com/gofiber/fiber/v3"
 	"github.com/valyala/fasthttp"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -32,13 +32,13 @@ func Test_GetResBody(t *testing.T) {
 
 	app.Use(New(Config{
 		Logger: logger,
-		GetResBody: func(c *fiber.Ctx) []byte {
+		GetResBody: func(c fiber.Ctx) []byte {
 			return []byte(readableResBody)
 		},
 		Fields: []string{"resBody"},
 	}))
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendString("------this is unreadable resp------")
 	})
 
@@ -53,7 +53,7 @@ func Test_SkipBody(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(New(Config{
-		SkipBody: func(_ *fiber.Ctx) bool {
+		SkipBody: func(_ fiber.Ctx) bool {
 			return true
 		},
 		Logger: logger,
@@ -75,7 +75,7 @@ func Test_SkipResBody(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(New(Config{
-		SkipResBody: func(_ *fiber.Ctx) bool {
+		SkipResBody: func(_ fiber.Ctx) bool {
 			return true
 		},
 		Logger: logger,
@@ -101,7 +101,7 @@ func Test_Logger(t *testing.T) {
 		Fields: []string{"pid", "latency", "error"},
 	}))
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return errors.New("some random error")
 	})
 
@@ -115,7 +115,7 @@ func Test_Logger(t *testing.T) {
 func Test_Logger_Next(t *testing.T) {
 	app := fiber.New()
 	app.Use(New(Config{
-		Next: func(_ *fiber.Ctx) bool {
+		Next: func(_ fiber.Ctx) bool {
 			return true
 		},
 	}))
@@ -185,11 +185,11 @@ func Test_Response_Body(t *testing.T) {
 		Fields: []string{"resBody"},
 	}))
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendString("Sample response body")
 	})
 
-	app.Post("/test", func(c *fiber.Ctx) error {
+	app.Post("/test", func(c fiber.Ctx) error {
 		return c.Send([]byte("Post in test"))
 	})
 
@@ -217,7 +217,7 @@ func Test_Logger_AppendUint(t *testing.T) {
 		Fields: []string{"bytesReceived", "bytesSent", "status"},
 	}))
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendString("hello")
 	})
 
@@ -238,7 +238,7 @@ func Test_Logger_Data_Race(t *testing.T) {
 		Fields: []string{"bytesReceived", "bytesSent", "status"},
 	}))
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendString("hello")
 	})
 
@@ -266,7 +266,7 @@ func Benchmark_Logger(b *testing.B) {
 	app := fiber.New()
 
 	app.Use(New())
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendString("Hello, World!")
 	})
 
@@ -296,8 +296,8 @@ func Test_Request_Id(t *testing.T) {
 		Fields: []string{"requestId"},
 	}))
 
-	app.Get("/", func(c *fiber.Ctx) error {
-		c.Response().Header.Add(fiber.HeaderXRequestID, "bf985e8e-6a32-42ec-8e50-05a21db8f0e4")
+	app.Get("/", func(c fiber.Ctx) error {
+		c.Response().Header.Add([]string{fiber.HeaderXRequestID}, "bf985e8e-6a32-42ec-8e50-05a21db8f0e4")
 		return c.SendString("hello")
 	})
 
@@ -317,7 +317,7 @@ func Test_Skip_URIs(t *testing.T) {
 		SkipURIs: []string{"/ignore_logging"},
 	}))
 
-	app.Get("/ignore_logging", func(c *fiber.Ctx) error {
+	app.Get("/ignore_logging", func(c fiber.Ctx) error {
 		return errors.New("no log")
 	})
 
@@ -337,7 +337,7 @@ func Test_Req_Headers(t *testing.T) {
 		Fields: []string{"reqHeaders"},
 	}))
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendString("hello")
 	})
 
@@ -348,8 +348,8 @@ func Test_Req_Headers(t *testing.T) {
 	}
 
 	req := httptest.NewRequest("GET", "/", nil)
-	req.Header.Add("foo", "bar")
-	req.Header.Add("baz", "foo")
+	req.Header.Add([]string{"foo"}, "bar")
+	req.Header.Add([]string{"baz"}, "foo")
 	resp, err := app.Test(req)
 	utils.AssertEqual(t, nil, err)
 	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
@@ -369,15 +369,15 @@ func Test_LoggerLevelsAndMessages(t *testing.T) {
 		Levels:   levels,
 	}))
 
-	app.Get("/200", func(c *fiber.Ctx) error {
+	app.Get("/200", func(c fiber.Ctx) error {
 		c.Status(fiber.StatusOK)
 		return nil
 	})
-	app.Get("/400", func(c *fiber.Ctx) error {
+	app.Get("/400", func(c fiber.Ctx) error {
 		c.Status(fiber.StatusBadRequest)
 		return nil
 	})
-	app.Get("/500", func(c *fiber.Ctx) error {
+	app.Get("/500", func(c fiber.Ctx) error {
 		c.Status(fiber.StatusInternalServerError)
 		return nil
 	})
@@ -412,15 +412,15 @@ func Test_LoggerLevelsAndMessagesSingle(t *testing.T) {
 		Levels:   levels,
 	}))
 
-	app.Get("/200", func(c *fiber.Ctx) error {
+	app.Get("/200", func(c fiber.Ctx) error {
 		c.Status(fiber.StatusOK)
 		return nil
 	})
-	app.Get("/400", func(c *fiber.Ctx) error {
+	app.Get("/400", func(c fiber.Ctx) error {
 		c.Status(fiber.StatusBadRequest)
 		return nil
 	})
-	app.Get("/500", func(c *fiber.Ctx) error {
+	app.Get("/500", func(c fiber.Ctx) error {
 		c.Status(fiber.StatusInternalServerError)
 		return nil
 	})
@@ -450,12 +450,12 @@ func Test_Fields_Func(t *testing.T) {
 	app.Use(New(Config{
 		Logger: logger,
 		Fields: []string{"protocol", "pid", "body", "ip", "host", "url", "route", "method", "resBody", "queryParams", "bytesReceived", "bytesSent"},
-		FieldsFunc: func(c *fiber.Ctx) []zap.Field {
+		FieldsFunc: func(c fiber.Ctx) []zap.Field {
 			return []zap.Field{zap.String("test.custom.field", "test")}
 		},
 	}))
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendString("hello")
 	})
 

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/utils"
+	"github.com/gofiber/fiber/v3"
 )
 
 type MockCPUPercentGetter struct {
@@ -19,7 +19,7 @@ func (m *MockCPUPercentGetter) PercentWithContext(_ context.Context, _ time.Dura
 	return m.MockedPercentage, nil
 }
 
-func ReturnOK(c *fiber.Ctx) error {
+func ReturnOK(c fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusOK)
 }
 
@@ -111,7 +111,7 @@ func Test_Loadshed_CustomOnShed(t *testing.T) {
 		Interval:       time.Second,
 		Getter:         mockGetter,
 	}
-	cfg.OnShed = func(c *fiber.Ctx) error {
+	cfg.OnShed = func(c fiber.Ctx) error {
 		return c.Status(fiber.StatusTooManyRequests).Send([]byte{})
 	}
 
@@ -136,7 +136,7 @@ func Test_Loadshed_CustomOnShedWithResponse(t *testing.T) {
 	}
 
 	// This OnShed directly sets a response without returning it
-	cfg.OnShed = func(c *fiber.Ctx) error {
+	cfg.OnShed = func(c fiber.Ctx) error {
 		c.Status(fiber.StatusTooManyRequests)
 		return nil
 	}
@@ -162,7 +162,7 @@ func Test_Loadshed_CustomOnShedWithNilReturn(t *testing.T) {
 	}
 
 	// OnShed returns nil without setting a response
-	cfg.OnShed = func(c *fiber.Ctx) error {
+	cfg.OnShed = func(c fiber.Ctx) error {
 		return nil
 	}
 
@@ -187,7 +187,7 @@ func Test_Loadshed_CustomOnShedWithCustomError(t *testing.T) {
 	}
 
 	// OnShed returns a custom error
-	cfg.OnShed = func(c *fiber.Ctx) error {
+	cfg.OnShed = func(c fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusForbidden, "Custom error message")
 	}
 
@@ -213,7 +213,7 @@ func Test_Loadshed_CustomOnShedWithResponseAndCustomError(t *testing.T) {
 
 	// OnShed sets a response and returns a different error
 	// The NewError have higher priority since executed last
-	cfg.OnShed = func(c *fiber.Ctx) error {
+	cfg.OnShed = func(c fiber.Ctx) error {
 		c.
 			Status(fiber.StatusTooManyRequests).
 			SendString("Too many requests")
@@ -250,7 +250,7 @@ func Test_Loadshed_CustomOnShedWithJSON(t *testing.T) {
 	}
 
 	// OnShed returns JSON response
-	cfg.OnShed = func(c *fiber.Ctx) error {
+	cfg.OnShed = func(c fiber.Ctx) error {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
 			"error":       "Service is currently unavailable due to high load",
 			"retry_after": 30,

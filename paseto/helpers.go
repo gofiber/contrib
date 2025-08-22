@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/o1egl/paseto"
 )
 
@@ -34,7 +34,7 @@ var (
 	pasetoObject            = paseto.NewV2()
 )
 
-type acquireToken func(c *fiber.Ctx, key string) string
+type acquireToken func(c fiber.Ctx, key string) string
 
 // PayloadValidator Function that receives the decrypted payload and returns an interface and an error
 // that's a result of validation logic
@@ -44,19 +44,19 @@ type PayloadValidator func(decrypted []byte) (interface{}, error)
 type PayloadCreator func(key []byte, dataInfo string, duration time.Duration, purpose TokenPurpose) (string, error)
 
 // Acquire Token methods
-func acquireFromHeader(c *fiber.Ctx, key string) string {
+func acquireFromHeader(c fiber.Ctx, key string) string {
 	return c.Get(key)
 }
 
-func acquireFromQuery(c *fiber.Ctx, key string) string {
+func acquireFromQuery(c fiber.Ctx, key string) string {
 	return c.Query(key)
 }
 
-func acquireFromParams(c *fiber.Ctx, key string) string {
+func acquireFromParams(c fiber.Ctx, key string) string {
 	return c.Params(key)
 }
 
-func acquireFromCookie(c *fiber.Ctx, key string) string {
+func acquireFromCookie(c fiber.Ctx, key string) string {
 	return c.Cookies(key)
 }
 

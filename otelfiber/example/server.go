@@ -7,7 +7,7 @@ import (
 
 	"go.opentelemetry.io/otel/sdk/resource"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 
 	"github.com/gofiber/contrib/otelfiber"
 	"go.opentelemetry.io/otel"
@@ -34,19 +34,19 @@ func main() {
 	app := fiber.New()
 
 	// customise span name
-	//app.Use(otelfiber.Middleware(otelfiber.WithSpanNameFormatter(func(ctx *fiber.Ctx) string {
+	//app.Use(otelfiber.Middleware(otelfiber.WithSpanNameFormatter(func(ctx fiber.Ctx) string {
 	//	return fmt.Sprintf("%s - %s", ctx.Method(), ctx.Route().Path)
 	//})))
 
 	app.Use(otelfiber.Middleware())
 
-	app.Get("/error", func(ctx *fiber.Ctx) error {
+	app.Get("/error", func(ctx fiber.Ctx) error {
 		return errors.New("abc")
 	})
 
-	app.Get("/users/:id", func(c *fiber.Ctx) error {
+	app.Get("/users/:id", func(c fiber.Ctx) error {
 		id := c.Params("id")
-		name := getUser(c.UserContext(), id)
+		name := getUser(c, id)
 		return c.JSON(fiber.Map{"id": id, name: name})
 	})
 

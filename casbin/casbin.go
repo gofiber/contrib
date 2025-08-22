@@ -3,7 +3,7 @@ package casbin
 import (
 	"fmt"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // Middleware ...
@@ -28,7 +28,7 @@ func New(config ...Config) *Middleware {
 func (m *Middleware) RequiresPermissions(permissions []string, opts ...Option) fiber.Handler {
 	options := optionsDefault(opts...)
 
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		if len(permissions) == 0 {
 			return c.Next()
 		}
@@ -69,7 +69,7 @@ func (m *Middleware) RequiresPermissions(permissions []string, opts ...Option) f
 // subject has the required permissions according to predefined Casbin policies.
 // This method uses http Path and Method as object and action.
 func (m *Middleware) RoutePermission() fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		sub := m.config.Lookup(c)
 		if len(sub) == 0 {
 			return m.config.Unauthorized(c)
@@ -90,7 +90,7 @@ func (m *Middleware) RoutePermission() fiber.Handler {
 func (m *Middleware) RequiresRoles(roles []string, opts ...Option) fiber.Handler {
 	options := optionsDefault(opts...)
 
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		if len(roles) == 0 {
 			return c.Next()
 		}

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/utils"
+	"github.com/gofiber/fiber/v3"
 )
 
 const (
@@ -73,7 +73,7 @@ func getPrivateKey() ed25519.PrivateKey {
 }
 
 func assertErrorHandler(t *testing.T, toAssert error) fiber.ErrorHandler {
-	return func(ctx *fiber.Ctx, err error) error {
+	return func(ctx fiber.Ctx, err error) error {
 		utils.AssertEqual(t, toAssert, err)
 		utils.AssertEqual(t, true, errors.Is(err, toAssert))
 		return defaultErrorHandler(ctx, err)
@@ -190,7 +190,7 @@ func Test_PASETO_LocalToken_Next(t *testing.T) {
 	app := fiber.New()
 	app.Use(New(Config{
 		SymmetricKey: []byte(symmetricKey),
-		Next: func(_ *fiber.Ctx) bool {
+		Next: func(_ fiber.Ctx) bool {
 			return true
 		},
 	}))
@@ -209,7 +209,7 @@ func Test_PASETO_PublicToken_Next(t *testing.T) {
 	app.Use(New(Config{
 		PrivateKey: privateKey,
 		PublicKey:  privateKey.Public(),
-		Next: func(_ *fiber.Ctx) bool {
+		Next: func(_ fiber.Ctx) bool {
 			return true
 		},
 	}))
@@ -228,7 +228,7 @@ func Test_PASETO_LocalTokenDecrypt(t *testing.T) {
 		SymmetricKey: []byte(symmetricKey),
 		ContextKey:   DefaultContextKey,
 	}))
-	app.Get("/", func(ctx *fiber.Ctx) error {
+	app.Get("/", func(ctx fiber.Ctx) error {
 		utils.AssertEqual(t, testMessage, ctx.Locals(DefaultContextKey))
 		return nil
 	})
@@ -251,7 +251,7 @@ func Test_PASETO_PublicTokenVerify(t *testing.T) {
 		PublicKey:  privateKey.Public(),
 		ContextKey: DefaultContextKey,
 	}))
-	app.Get("/", func(ctx *fiber.Ctx) error {
+	app.Get("/", func(ctx fiber.Ctx) error {
 		utils.AssertEqual(t, testMessage, ctx.Locals(DefaultContextKey))
 		return nil
 	})
@@ -270,7 +270,7 @@ func Test_PASETO_LocalToken_IncorrectBearerToken(t *testing.T) {
 		SymmetricKey: []byte(symmetricKey),
 		ContextKey:   DefaultContextKey,
 		TokenPrefix:  "Gopher",
-		ErrorHandler: func(ctx *fiber.Ctx, err error) error {
+		ErrorHandler: func(ctx fiber.Ctx, err error) error {
 			if errors.Is(err, ErrIncorrectTokenPrefix) {
 				return ctx.SendStatus(fiber.StatusUpgradeRequired)
 			}
@@ -292,7 +292,7 @@ func Test_PASETO_PublicToken_IncorrectBearerToken(t *testing.T) {
 		PrivateKey:  privateKey,
 		PublicKey:   privateKey.Public(),
 		TokenPrefix: "Gopher",
-		ErrorHandler: func(ctx *fiber.Ctx, err error) error {
+		ErrorHandler: func(ctx fiber.Ctx, err error) error {
 			if errors.Is(err, ErrIncorrectTokenPrefix) {
 				return ctx.SendStatus(fiber.StatusUpgradeRequired)
 			}
@@ -356,7 +356,7 @@ func Test_PASETO_LocalToken_CustomValidate(t *testing.T) {
 		},
 	}))
 
-	app.Get("/", func(ctx *fiber.Ctx) error {
+	app.Get("/", func(ctx fiber.Ctx) error {
 		utils.AssertEqual(t, testMessage, ctx.Locals(DefaultContextKey))
 		return nil
 	})
@@ -393,7 +393,7 @@ func Test_PASETO_PublicToken_CustomValidate(t *testing.T) {
 		},
 	}))
 
-	app.Get("/", func(ctx *fiber.Ctx) error {
+	app.Get("/", func(ctx fiber.Ctx) error {
 		utils.AssertEqual(t, testMessage, ctx.Locals(DefaultContextKey))
 		return nil
 	})

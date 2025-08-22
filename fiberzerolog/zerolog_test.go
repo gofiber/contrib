@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/requestid"
 	"github.com/gofiber/fiber/v2/utils"
+	"github.com/gofiber/fiber/v3"
 	"github.com/rs/zerolog"
 )
 
@@ -29,13 +29,13 @@ func Test_GetResBody(t *testing.T) {
 	app := fiber.New()
 	app.Use(New(Config{
 		Logger: &logger,
-		GetResBody: func(c *fiber.Ctx) []byte {
+		GetResBody: func(c fiber.Ctx) []byte {
 			return []byte(readableResBody)
 		},
 		Fields: []string{FieldResBody},
 	}))
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendString("------this is unreadable resp------")
 	})
 
@@ -56,7 +56,7 @@ func Test_SkipBody(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(New(Config{
-		SkipBody: func(_ *fiber.Ctx) bool {
+		SkipBody: func(_ fiber.Ctx) bool {
 			return true
 		},
 		Logger: &logger,
@@ -83,7 +83,7 @@ func Test_SkipResBody(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(New(Config{
-		SkipResBody: func(_ *fiber.Ctx) bool {
+		SkipResBody: func(_ fiber.Ctx) bool {
 			return true
 		},
 		Logger: &logger,
@@ -113,7 +113,7 @@ func Test_Logger(t *testing.T) {
 		Logger: &logger,
 	}))
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return errors.New("some random error")
 	})
 
@@ -139,7 +139,7 @@ func Test_Latency(t *testing.T) {
 		Logger: &logger,
 	}))
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		time.Sleep(100 * time.Millisecond)
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -162,7 +162,7 @@ func Test_Logger_Next(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(New(Config{
-		Next: func(_ *fiber.Ctx) bool {
+		Next: func(_ fiber.Ctx) bool {
 			return true
 		},
 	}))
@@ -198,7 +198,7 @@ func Test_Logger_All(t *testing.T) {
 		},
 	}))
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		time.Sleep(100 * time.Millisecond)
 		return c.SendStatus(fiber.StatusNotFound)
 	})
@@ -250,7 +250,7 @@ func Test_Response_Body(t *testing.T) {
 
 	expectedGetResponse := "Sample response body"
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendString(expectedGetResponse)
 	})
 
@@ -277,7 +277,7 @@ func Test_Request_Id(t *testing.T) {
 
 	requestID := "bf985e8e-6a32-42ec-8e50-05a21db8f0e4"
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		c.Response().Header.Set(fiber.HeaderXRequestID, requestID)
 		return c.SendString("hello")
 	})
@@ -304,7 +304,7 @@ func Test_Skip_URIs(t *testing.T) {
 		SkipURIs: []string{"/ignore_logging"},
 	}))
 
-	app.Get("/ignore_logging", func(c *fiber.Ctx) error {
+	app.Get("/ignore_logging", func(c fiber.Ctx) error {
 		return errors.New("no log")
 	})
 
@@ -326,13 +326,13 @@ func Test_Req_Headers(t *testing.T) {
 		Fields: []string{FieldReqHeaders},
 	}))
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendString("hello")
 	})
 
 	req := httptest.NewRequest("GET", "/", nil)
-	req.Header.Add("foo", "bar")
-	req.Header.Add("baz", "foo")
+	req.Header.Add([]string{"foo"}, "bar")
+	req.Header.Add([]string{"baz"}, "foo")
 
 	resp, err := app.Test(req)
 	utils.AssertEqual(t, nil, err)
@@ -365,13 +365,13 @@ func Test_Req_Headers_WrapHeaders(t *testing.T) {
 		WrapHeaders: true,
 	}))
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendString("hello")
 	})
 
 	req := httptest.NewRequest("GET", "/", nil)
-	req.Header.Add("foo", "bar")
-	req.Header.Add("baz", "foo")
+	req.Header.Add([]string{"foo"}, "bar")
+	req.Header.Add([]string{"baz"}, "foo")
 
 	resp, err := app.Test(req)
 	utils.AssertEqual(t, nil, err)
@@ -405,7 +405,7 @@ func Test_Res_Headers(t *testing.T) {
 		Fields: []string{FieldResHeaders},
 	}))
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		c.Set("foo", "bar")
 		c.Set("baz", "foo")
 		return c.SendString("hello")
@@ -444,7 +444,7 @@ func Test_Res_Headers_WrapHeaders(t *testing.T) {
 		WrapHeaders: true,
 	}))
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		c.Set("foo", "bar")
 		c.Set("baz", "foo")
 		return c.SendString("hello")
@@ -495,14 +495,14 @@ func Test_FieldsSnakeCase(t *testing.T) {
 		WrapHeaders:     true,
 	}))
 
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		c.Set("Foo", "bar")
 		return c.SendString("hello")
 	})
 
 	req := httptest.NewRequest("GET", "/?param=value", nil)
-	req.Header.Add("X-Request-ID", "uuid")
-	req.Header.Add("Baz", "foo")
+	req.Header.Add([]string{"X-Request-ID"}, "uuid")
+	req.Header.Add([]string{"Baz"}, "foo")
 
 	resp, err := app.Test(req)
 	utils.AssertEqual(t, nil, err)
@@ -550,15 +550,15 @@ func Test_LoggerLevelsAndMessages(t *testing.T) {
 		Levels:   levels,
 	}))
 
-	app.Get("/200", func(c *fiber.Ctx) error {
+	app.Get("/200", func(c fiber.Ctx) error {
 		c.Status(fiber.StatusOK)
 		return nil
 	})
-	app.Get("/400", func(c *fiber.Ctx) error {
+	app.Get("/400", func(c fiber.Ctx) error {
 		c.Status(fiber.StatusBadRequest)
 		return nil
 	})
-	app.Get("/500", func(c *fiber.Ctx) error {
+	app.Get("/500", func(c fiber.Ctx) error {
 		c.Status(fiber.StatusInternalServerError)
 		return nil
 	})
@@ -615,7 +615,7 @@ func Test_Logger_FromContext(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(New(Config{
-		GetLogger: func(c *fiber.Ctx) zerolog.Logger {
+		GetLogger: func(c fiber.Ctx) zerolog.Logger {
 			return zerolog.New(&buf).
 				With().
 				Str("foo", "bar").

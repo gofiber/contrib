@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/utils"
+	"github.com/gofiber/fiber/v3"
 	"github.com/nicksnyder/go-i18n/v2/i18n"
 	"golang.org/x/text/language"
 )
@@ -25,10 +25,10 @@ func newEmbedServer() *fiber.App {
 		RootPath:         "./example/localizeJSON/",
 		FormatBundleFile: "json",
 	}))
-	app.Get("/", func(ctx *fiber.Ctx) error {
+	app.Get("/", func(ctx fiber.Ctx) error {
 		return ctx.SendString(MustLocalize(ctx, "welcome"))
 	})
-	app.Get("/:name", func(ctx *fiber.Ctx) error {
+	app.Get("/:name", func(ctx fiber.Ctx) error {
 		return ctx.SendString(MustLocalize(ctx, &i18n.LocalizeConfig{
 			MessageID: "welcomeWithName",
 			TemplateData: map[string]string{
@@ -44,7 +44,7 @@ var embedApp = newEmbedServer()
 func request(lang language.Tag, name string) (*http.Response, error) {
 	path := "/" + name
 	req, _ := http.NewRequestWithContext(context.Background(), "GET", path, nil)
-	req.Header.Add("Accept-Language", lang.String())
+	req.Header.Add([]string{"Accept-Language"}, lang.String())
 	req.Method = "GET"
 	req.RequestURI = path
 	resp, err := embedApp.Test(req)

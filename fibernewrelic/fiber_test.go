@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/newrelic/go-agent/v3/newrelic"
 	"github.com/stretchr/testify/assert"
 )
@@ -57,12 +57,12 @@ func TestNewrelicAppConfig(t *testing.T) {
 
 			app.Use(New(cfg))
 
-			app.Get("/", func(ctx *fiber.Ctx) error {
+			app.Get("/", func(ctx fiber.Ctx) error {
 				return ctx.SendStatus(200)
 			})
 
 			r := httptest.NewRequest(http.MethodGet, "/", nil)
-			resp, _ := app.Test(r, -1)
+			resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
 		})
 
@@ -86,12 +86,12 @@ func TestNewrelicAppConfig(t *testing.T) {
 
 			app.Use(New(cfg))
 
-			app.Get("/", func(ctx *fiber.Ctx) error {
+			app.Get("/", func(ctx fiber.Ctx) error {
 				return ctx.SendStatus(200)
 			})
 
 			r := httptest.NewRequest("GET", "/", nil)
-			resp, _ := app.Test(r, -1)
+			resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 			assert.Equal(t, 200, resp.StatusCode)
 		})
 
@@ -106,12 +106,12 @@ func TestNewrelicAppConfig(t *testing.T) {
 			}
 			app.Use(New(cfg))
 
-			app.Get("/", func(ctx *fiber.Ctx) error {
+			app.Get("/", func(ctx fiber.Ctx) error {
 				return ctx.SendStatus(200)
 			})
 
 			r := httptest.NewRequest("GET", "/invalid-url", nil)
-			resp, _ := app.Test(r, -1)
+			resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 			assert.Equal(t, 404, resp.StatusCode)
 		})
 
@@ -126,12 +126,12 @@ func TestNewrelicAppConfig(t *testing.T) {
 			}
 			app.Use(New(cfg))
 
-			app.Get("/", func(ctx *fiber.Ctx) error {
+			app.Get("/", func(ctx fiber.Ctx) error {
 				return ctx.SendStatus(200)
 			})
 
 			r := httptest.NewRequest("GET", "/", nil)
-			resp, _ := app.Test(r, -1)
+			resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 			assert.Equal(t, 200, resp.StatusCode)
 		})
 
@@ -146,12 +146,12 @@ func TestNewrelicAppConfig(t *testing.T) {
 			}
 			app.Use(New(cfg))
 
-			app.Get("/", func(ctx *fiber.Ctx) error {
+			app.Get("/", func(ctx fiber.Ctx) error {
 				return ctx.SendStatus(200)
 			})
 
 			r := httptest.NewRequest("GET", "/", nil)
-			resp, _ := app.Test(r, -1)
+			resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 			assert.Equal(t, 200, resp.StatusCode)
 		})
 
@@ -166,12 +166,12 @@ func TestNewrelicAppConfig(t *testing.T) {
 			}
 			app.Use(New(cfg))
 
-			app.Get("/", func(ctx *fiber.Ctx) error {
+			app.Get("/", func(ctx fiber.Ctx) error {
 				return ctx.SendStatus(200)
 			})
 
 			r := httptest.NewRequest("GET", "/", nil)
-			resp, _ := app.Test(r, -1)
+			resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 			assert.Equal(t, 200, resp.StatusCode)
 		})
 
@@ -190,7 +190,7 @@ func TestNewrelicAppConfig(t *testing.T) {
 			}
 			app.Use(New(cfg))
 
-			app.Get("/", func(ctx *fiber.Ctx) error {
+			app.Get("/", func(ctx fiber.Ctx) error {
 				return ctx.SendStatus(200)
 			})
 
@@ -198,7 +198,7 @@ func TestNewrelicAppConfig(t *testing.T) {
 			assert.NotNil(t, newrelicApp)
 
 			r := httptest.NewRequest("GET", "/", nil)
-			resp, _ := app.Test(r, -1)
+			resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 			assert.Equal(t, 200, resp.StatusCode)
 		})
 
@@ -214,7 +214,7 @@ func TestNewrelicAppConfig(t *testing.T) {
 				}
 				app.Use(New(cfg))
 
-				app.Get("/", func(ctx *fiber.Ctx) error {
+				app.Get("/", func(ctx fiber.Ctx) error {
 					return ctx.SendStatus(200)
 				})
 
@@ -222,7 +222,7 @@ func TestNewrelicAppConfig(t *testing.T) {
 				assert.Nil(t, newrelicApp)
 
 				r := httptest.NewRequest("GET", "/", nil)
-				resp, _ := app.Test(r, -1)
+				resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 				assert.Equal(t, 200, resp.StatusCode)
 			})
 		})
@@ -237,10 +237,10 @@ func TestNewrelicAppConfig(t *testing.T) {
 			Enabled: true,
 		}))
 
-		app.Get("/", func(ctx *fiber.Ctx) error { return errors.New("system error") })
+		app.Get("/", func(ctx fiber.Ctx) error { return errors.New("system error") })
 
 		// when
-		resp, err := app.Test(httptest.NewRequest("GET", "/", nil), -1)
+		resp, err := app.Test(httptest.NewRequest("GET", "/", nil), fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 		assert.NoError(t, err)
 		assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 	})
@@ -252,7 +252,7 @@ func TestNewrelicAppConfig(t *testing.T) {
 			errorStatusCodeHandlerCalled = false
 		)
 
-		errorStatusCodeHandler := func(c *fiber.Ctx, err error) int {
+		errorStatusCodeHandler := func(c fiber.Ctx, err error) int {
 			errorStatusCodeHandlerCalled = true
 			return http.StatusInternalServerError
 		}
@@ -264,10 +264,10 @@ func TestNewrelicAppConfig(t *testing.T) {
 			ErrorStatusCodeHandler: errorStatusCodeHandler,
 		}))
 
-		app.Get("/", func(ctx *fiber.Ctx) error { return errors.New("system error") })
+		app.Get("/", func(ctx fiber.Ctx) error { return errors.New("system error") })
 
 		// when
-		resp, err := app.Test(httptest.NewRequest("GET", "/", nil), -1)
+		resp, err := app.Test(httptest.NewRequest("GET", "/", nil), fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 		assert.NoError(t, err)
 		assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 		assert.True(t, errorStatusCodeHandlerCalled)
@@ -281,7 +281,7 @@ func TestNewrelicAppConfig(t *testing.T) {
 				License: "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
 				AppName: "",
 				Enabled: true,
-				Next: func(c *fiber.Ctx) bool {
+				Next: func(c fiber.Ctx) bool {
 					return c.OriginalURL() == "/jump"
 				},
 			}
@@ -296,12 +296,12 @@ func TestNewrelicAppConfig(t *testing.T) {
 
 			app.Use(New(cfg))
 
-			app.Get("/jump", func(ctx *fiber.Ctx) error {
+			app.Get("/jump", func(ctx fiber.Ctx) error {
 				return ctx.SendStatus(200)
 			})
 
 			r := httptest.NewRequest("GET", "/jump", nil)
-			resp, _ := app.Test(r, -1)
+			resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 			assert.Equal(t, 200, resp.StatusCode)
 		})
 
@@ -313,7 +313,7 @@ func TestNewrelicAppConfig(t *testing.T) {
 				License: "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
 				AppName: "",
 				Enabled: true,
-				Next: func(c *fiber.Ctx) bool {
+				Next: func(c fiber.Ctx) bool {
 					return c.OriginalURL() == "/jump"
 				},
 			}
@@ -328,12 +328,12 @@ func TestNewrelicAppConfig(t *testing.T) {
 
 			app.Use(New(cfg))
 
-			app.Get("/", func(ctx *fiber.Ctx) error {
+			app.Get("/", func(ctx fiber.Ctx) error {
 				return ctx.SendStatus(200)
 			})
 
 			r := httptest.NewRequest("GET", "/", nil)
-			resp, _ := app.Test(r, -1)
+			resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 			assert.Equal(t, 200, resp.StatusCode)
 		})
 }
@@ -362,14 +362,14 @@ func TestDefaultErrorStatusCodeHandler(t *testing.T) {
 			Enabled: true,
 		}))
 
-		app.Get("/", func(ctx *fiber.Ctx) error {
+		app.Get("/", func(ctx fiber.Ctx) error {
 			err := ctx.SendStatus(http.StatusNotFound)
 			assert.Equal(t, http.StatusNotFound, DefaultErrorStatusCodeHandler(ctx, err))
 			return err
 		})
 
 		// when
-		resp, err := app.Test(httptest.NewRequest("GET", "/", nil), -1)
+		resp, err := app.Test(httptest.NewRequest("GET", "/", nil), fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 		assert.NoError(t, err)
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 	})
@@ -384,7 +384,7 @@ func TestFromContext(t *testing.T) {
 	}
 	app := fiber.New()
 	app.Use(New(cfg))
-	app.Get("/foo", func(ctx *fiber.Ctx) error {
+	app.Get("/foo", func(ctx fiber.Ctx) error {
 		tx := FromContext(ctx)
 
 		if tx.Name() != "GET /foo" {
@@ -400,7 +400,7 @@ func TestFromContext(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/foo", http.NoBody)
 
 	// when
-	res, err := app.Test(req, -1)
+	res, err := app.Test(req, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 
 	// then
 	assert.Nil(t, err)

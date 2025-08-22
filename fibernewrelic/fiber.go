@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/newrelic/go-agent/v3/newrelic"
 )
 
@@ -24,10 +24,10 @@ type Config struct {
 	Application *newrelic.Application
 	// ErrorStatusCodeHandler is executed when an error is returned from handler
 	// Optional. Default: DefaultErrorStatusCodeHandler
-	ErrorStatusCodeHandler func(c *fiber.Ctx, err error) int
+	ErrorStatusCodeHandler func(c fiber.Ctx, err error) int
 	// Next defines a function to skip this middleware when returned true.
 	// Optional. Default: nil
-	Next func(c *fiber.Ctx) bool
+	Next func(c fiber.Ctx) bool
 }
 
 var ConfigDefault = Config{
@@ -69,7 +69,7 @@ func New(cfg Config) fiber.Handler {
 		}
 	}
 
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
 		}
@@ -96,10 +96,10 @@ func New(cfg Config) fiber.Handler {
 			},
 		})
 
-		c.SetUserContext(newrelic.NewContext(c.UserContext(), txn))
+		// TODO: SetUserContext was removed, please migrate manually: c.SetUserContext(newrelic.NewContext(c, txn))
 
 		handlerErr := c.Next()
-		statusCode := c.Context().Response.StatusCode()
+		statusCode := c.RequestCtx().Response.StatusCode()
 
 		if handlerErr != nil {
 			statusCode = cfg.ErrorStatusCodeHandler(c, handlerErr)
@@ -114,11 +114,11 @@ func New(cfg Config) fiber.Handler {
 
 // FromContext returns the Transaction from the context if present, and nil
 // otherwise.
-func FromContext(c *fiber.Ctx) *newrelic.Transaction {
-	return newrelic.FromContext(c.UserContext())
+func FromContext(c fiber.Ctx) *newrelic.Transaction {
+	return newrelic.FromContext(c)
 }
 
-func createTransactionName(c *fiber.Ctx) string {
+func createTransactionName(c fiber.Ctx) string {
 	return fmt.Sprintf("%s %s", c.Request().Header.Method(), c.Request().URI().Path())
 }
 
@@ -134,10 +134,10 @@ func transport(schema string) newrelic.TransportType {
 	return newrelic.TransportUnknown
 }
 
-func DefaultErrorStatusCodeHandler(c *fiber.Ctx, err error) int {
+func DefaultErrorStatusCodeHandler(c fiber.Ctx, err error) int {
 	if fiberErr, ok := err.(*fiber.Error); ok {
 		return fiberErr.Code
 	}
 
-	return c.Context().Response.StatusCode()
+	return c.RequestCtx().Response.StatusCode()
 }

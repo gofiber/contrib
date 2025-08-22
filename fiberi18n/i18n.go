@@ -6,7 +6,7 @@ import (
 	"path"
 	"sync"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/nicksnyder/go-i18n/v2/i18n"
 )
 
@@ -23,7 +23,7 @@ func New(config ...*Config) fiber.Handler {
 	cfg.loadMessages()
 	cfg.initLocalizerMap()
 
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
 		}
@@ -81,7 +81,7 @@ MustLocalize get the i18n message without error handling
 				},
 		})
 */
-func MustLocalize(ctx *fiber.Ctx, params interface{}) string {
+func MustLocalize(ctx fiber.Ctx, params interface{}) string {
 	message, err := Localize(ctx, params)
 	if err != nil {
 		panic(err)
@@ -102,7 +102,7 @@ Localize get the i18n message
 				},
 		})
 */
-func Localize(ctx *fiber.Ctx, params interface{}) (string, error) {
+func Localize(ctx fiber.Ctx, params interface{}) (string, error) {
 	local := ctx.Locals(localsKey)
 	if local == nil {
 		return "", fmt.Errorf("i18n.Localize error: %v", "Config is nil")

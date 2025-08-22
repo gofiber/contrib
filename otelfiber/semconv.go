@@ -4,8 +4,8 @@ import (
 	"encoding/base64"
 	"strings"
 
-	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/utils"
+	"github.com/gofiber/fiber/v3"
 	"go.opentelemetry.io/otel/attribute"
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 )
@@ -16,7 +16,7 @@ var (
 	http10VersionAttr    = semconv.NetworkProtocolVersion("1.0")
 )
 
-func httpServerMetricAttributesFromRequest(c *fiber.Ctx, cfg config) []attribute.KeyValue {
+func httpServerMetricAttributesFromRequest(c fiber.Ctx, cfg config) []attribute.KeyValue {
 	protocolAttributes := httpNetworkProtocolAttributes(c)
 	attrs := []attribute.KeyValue{
 		semconv.URLScheme(utils.CopyString(c.Protocol())),
@@ -36,7 +36,7 @@ func httpServerMetricAttributesFromRequest(c *fiber.Ctx, cfg config) []attribute
 	return attrs
 }
 
-func httpServerTraceAttributesFromRequest(c *fiber.Ctx, cfg config) []attribute.KeyValue {
+func httpServerTraceAttributesFromRequest(c fiber.Ctx, cfg config) []attribute.KeyValue {
 	protocolAttributes := httpNetworkProtocolAttributes(c)
 	attrs := []attribute.KeyValue{
 		// utils.CopyString: we need to copy the string as fasthttp strings are by default
@@ -76,7 +76,7 @@ func httpServerTraceAttributesFromRequest(c *fiber.Ctx, cfg config) []attribute.
 	return attrs
 }
 
-func httpNetworkProtocolAttributes(c *fiber.Ctx) []attribute.KeyValue {
+func httpNetworkProtocolAttributes(c fiber.Ctx) []attribute.KeyValue {
 	httpProtocolAttributes := []attribute.KeyValue{httpProtocolNameAttr}
 	if c.Request().Header.IsHTTP11() {
 		return append(httpProtocolAttributes, http11VersionAttr)

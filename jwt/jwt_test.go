@@ -135,7 +135,7 @@ func TestJwtTokenProcessorFunc(t *testing.T) {
 		})
 
 		req := httptest.NewRequest("GET", "/ok", nil)
-		req.Header.Add("Authorization", "Bearer "+hex.EncodeToString([]byte(test.Token)))
+		req.Header.Add([]string{"Authorization"}, "Bearer "+hex.EncodeToString([]byte(test.Token)))
 
 		// Act
 		resp, err := app.Test(req)
@@ -168,12 +168,12 @@ func TestJwtFromHeader(t *testing.T) {
 				},
 			}))
 
-			app.Get("/ok", func(c *fiber.Ctx) error {
+			app.Get("/ok", func(c fiber.Ctx) error {
 				return c.SendString("OK")
 			})
 
 			req := httptest.NewRequest("GET", "/ok", nil)
-			req.Header.Add("Authorization", "Bearer "+test.Token)
+			req.Header.Add([]string{"Authorization"}, "Bearer "+test.Token)
 
 			// Act
 			resp, err := app.Test(req)
@@ -197,12 +197,12 @@ func TestJwtFromHeader(t *testing.T) {
 				TokenLookup: "header:X-Token",
 			}))
 
-			app.Get("/ok", func(c *fiber.Ctx) error {
+			app.Get("/ok", func(c fiber.Ctx) error {
 				return c.SendString("OK")
 			})
 
 			req := httptest.NewRequest("GET", "/ok", nil)
-			req.Header.Add("x-token", test.Token)
+			req.Header.Add([]string{"x-token"}, test.Token)
 
 			// Act
 			resp, err := app.Test(req)
@@ -225,12 +225,12 @@ func TestJwtFromHeader(t *testing.T) {
 				},
 			}))
 
-			app.Get("/ok", func(c *fiber.Ctx) error {
+			app.Get("/ok", func(c fiber.Ctx) error {
 				return c.SendString("OK")
 			})
 
 			req := httptest.NewRequest("GET", "/ok", nil)
-			req.Header.Add("Authorization", "Bearer"+test.Token)
+			req.Header.Add([]string{"Authorization"}, "Bearer"+test.Token)
 
 			// Act
 			resp, err := app.Test(req)
@@ -328,7 +328,7 @@ func TestJwkFromServer(t *testing.T) {
 		})
 
 		req := httptest.NewRequest("GET", "/ok", nil)
-		req.Header.Add("Authorization", "Bearer "+test.Token)
+		req.Header.Add([]string{"Authorization"}, "Bearer "+test.Token)
 
 		// Act
 		resp, err := app.Test(req)
@@ -389,7 +389,7 @@ func TestJwkFromServers(t *testing.T) {
 		})
 
 		req := httptest.NewRequest("GET", "/ok", nil)
-		req.Header.Add("Authorization", "Bearer "+test.Token)
+		req.Header.Add([]string{"Authorization"}, "Bearer "+test.Token)
 
 		// Act
 		resp, err := app.Test(req)
@@ -423,7 +423,7 @@ func TestCustomKeyfunc(t *testing.T) {
 	})
 
 	req := httptest.NewRequest("GET", "/ok", nil)
-	req.Header.Add("Authorization", "Bearer "+test.Token)
+	req.Header.Add([]string{"Authorization"}, "Bearer "+test.Token)
 
 	// Act
 	resp, err := app.Test(req)
@@ -481,7 +481,7 @@ func TestMultiKeys(t *testing.T) {
 
 	for _, tokenStr := range testTokens {
 		req := httptest.NewRequest("GET", "/ok", nil)
-		req.Header.Add("Authorization", "Bearer "+tokenStr)
+		req.Header.Add([]string{"Authorization"}, "Bearer "+tokenStr)
 
 		// Act
 		resp, err := app.Test(req)
