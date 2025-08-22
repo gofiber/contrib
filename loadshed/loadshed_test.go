@@ -2,13 +2,14 @@ package loadshed
 
 import (
 	"context"
+	"github.com/stretchr/testify/assert"
 	"io"
 	"net/http/httptest"
 	"testing"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/utils"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
 )
 
 type MockCPUPercentGetter struct {
@@ -19,7 +20,7 @@ func (m *MockCPUPercentGetter) PercentWithContext(_ context.Context, _ time.Dura
 	return m.MockedPercentage, nil
 }
 
-func ReturnOK(c *fiber.Ctx) error {
+func ReturnOK(c fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusOK)
 }
 
@@ -38,7 +39,7 @@ func Test_Loadshed_LowerThreshold(t *testing.T) {
 	app.Get("/", ReturnOK)
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
-	utils.AssertEqual(t, nil, err)
+	assert.Equal(t, nil, err)
 
 	status := resp.StatusCode
 	if status != fiber.StatusOK && status != fiber.StatusServiceUnavailable {
@@ -66,7 +67,7 @@ func Test_Loadshed_MiddleValue(t *testing.T) {
 
 	for i := 0; i < iterations; i++ {
 		resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
-		utils.AssertEqual(t, nil, err)
+		assert.Equal(t, nil, err)
 
 		if resp.StatusCode == fiber.StatusServiceUnavailable {
 			rejectedCount++
@@ -96,8 +97,8 @@ func Test_Loadshed_UpperThreshold(t *testing.T) {
 	app.Get("/", ReturnOK)
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusServiceUnavailable, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
 }
 
 func Test_Loadshed_CustomOnShed(t *testing.T) {
@@ -111,7 +112,7 @@ func Test_Loadshed_CustomOnShed(t *testing.T) {
 		Interval:       time.Second,
 		Getter:         mockGetter,
 	}
-	cfg.OnShed = func(c *fiber.Ctx) error {
+	cfg.OnShed = func(c fiber.Ctx) error {
 		return c.Status(fiber.StatusTooManyRequests).Send([]byte{})
 	}
 
@@ -119,8 +120,8 @@ func Test_Loadshed_CustomOnShed(t *testing.T) {
 	app.Get("/", ReturnOK)
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusTooManyRequests, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusTooManyRequests, resp.StatusCode)
 }
 
 func Test_Loadshed_CustomOnShedWithResponse(t *testing.T) {
@@ -136,7 +137,7 @@ func Test_Loadshed_CustomOnShedWithResponse(t *testing.T) {
 	}
 
 	// This OnShed directly sets a response without returning it
-	cfg.OnShed = func(c *fiber.Ctx) error {
+	cfg.OnShed = func(c fiber.Ctx) error {
 		c.Status(fiber.StatusTooManyRequests)
 		return nil
 	}
@@ -145,8 +146,8 @@ func Test_Loadshed_CustomOnShedWithResponse(t *testing.T) {
 	app.Get("/", ReturnOK)
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusTooManyRequests, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusTooManyRequests, resp.StatusCode)
 }
 
 func Test_Loadshed_CustomOnShedWithNilReturn(t *testing.T) {
@@ -162,7 +163,7 @@ func Test_Loadshed_CustomOnShedWithNilReturn(t *testing.T) {
 	}
 
 	// OnShed returns nil without setting a response
-	cfg.OnShed = func(c *fiber.Ctx) error {
+	cfg.OnShed = func(c fiber.Ctx) error {
 		return nil
 	}
 
@@ -170,8 +171,8 @@ func Test_Loadshed_CustomOnShedWithNilReturn(t *testing.T) {
 	app.Get("/", ReturnOK)
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 }
 
 func Test_Loadshed_CustomOnShedWithCustomError(t *testing.T) {
@@ -187,7 +188,7 @@ func Test_Loadshed_CustomOnShedWithCustomError(t *testing.T) {
 	}
 
 	// OnShed returns a custom error
-	cfg.OnShed = func(c *fiber.Ctx) error {
+	cfg.OnShed = func(c fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusForbidden, "Custom error message")
 	}
 
@@ -195,8 +196,8 @@ func Test_Loadshed_CustomOnShedWithCustomError(t *testing.T) {
 	app.Get("/", ReturnOK)
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusForbidden, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusForbidden, resp.StatusCode)
 }
 
 func Test_Loadshed_CustomOnShedWithResponseAndCustomError(t *testing.T) {
@@ -213,7 +214,7 @@ func Test_Loadshed_CustomOnShedWithResponseAndCustomError(t *testing.T) {
 
 	// OnShed sets a response and returns a different error
 	// The NewError have higher priority since executed last
-	cfg.OnShed = func(c *fiber.Ctx) error {
+	cfg.OnShed = func(c fiber.Ctx) error {
 		c.
 			Status(fiber.StatusTooManyRequests).
 			SendString("Too many requests")
@@ -231,10 +232,10 @@ func Test_Loadshed_CustomOnShedWithResponseAndCustomError(t *testing.T) {
 	payload, readErr := io.ReadAll(resp.Body)
 	defer resp.Body.Close()
 
-	utils.AssertEqual(t, string(payload), "Shed happened")
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, nil, readErr)
-	utils.AssertEqual(t, fiber.StatusInternalServerError, resp.StatusCode)
+	assert.Equal(t, string(payload), "Shed happened")
+	assert.Equal(t, nil, err)
+	assert.Equal(t, nil, readErr)
+	assert.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
 }
 
 func Test_Loadshed_CustomOnShedWithJSON(t *testing.T) {
@@ -250,7 +251,7 @@ func Test_Loadshed_CustomOnShedWithJSON(t *testing.T) {
 	}
 
 	// OnShed returns JSON response
-	cfg.OnShed = func(c *fiber.Ctx) error {
+	cfg.OnShed = func(c fiber.Ctx) error {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
 			"error":       "Service is currently unavailable due to high load",
 			"retry_after": 30,
@@ -261,7 +262,7 @@ func Test_Loadshed_CustomOnShedWithJSON(t *testing.T) {
 	app.Get("/", ReturnOK)
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusServiceUnavailable, resp.StatusCode)
-	utils.AssertEqual(t, "application/json", resp.Header.Get("Content-Type"))
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
+	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
 }

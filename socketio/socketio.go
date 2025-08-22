@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/gofiber/contrib/websocket"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 )
 
@@ -235,7 +235,7 @@ var listeners = safeListeners{
 	list: make(map[string][]eventCallback),
 }
 
-func New(callback func(kws *Websocket), config ...websocket.Config) func(*fiber.Ctx) error {
+func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.Ctx) error {
 	return websocket.New(func(c *websocket.Conn) {
 		kws := &Websocket{
 			Conn: c,

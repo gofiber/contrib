@@ -3,8 +3,8 @@ package opafiber
 import (
 	"bytes"
 	"errors"
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/utils"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
 	"github.com/stretchr/testify/assert"
 	"io"
 	"net/http/httptest"
@@ -36,12 +36,12 @@ default allow := false
 	}
 	app.Use(New(cfg))
 
-	app.Get("/", func(ctx *fiber.Ctx) error {
+	app.Get("/", func(ctx fiber.Ctx) error {
 		return ctx.SendStatus(200)
 	})
 
 	r := httptest.NewRequest("GET", "/", nil)
-	resp, _ := app.Test(r, -1)
+	resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 
 	assert.Equal(t, 400, resp.StatusCode)
 
@@ -68,12 +68,12 @@ default allow := false
 	}
 	app.Use(New(cfg))
 
-	app.Get("/", func(ctx *fiber.Ctx) error {
+	app.Get("/", func(ctx fiber.Ctx) error {
 		return ctx.SendStatus(200)
 	})
 
 	r := httptest.NewRequest("GET", "/", nil)
-	resp, _ := app.Test(r, -1)
+	resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 
 	assert.Equal(t, 401, resp.StatusCode)
 
@@ -102,12 +102,12 @@ allow {
 	}
 	app.Use(New(cfg))
 
-	app.Get("/", func(ctx *fiber.Ctx) error {
+	app.Get("/", func(ctx fiber.Ctx) error {
 		return ctx.SendStatus(200)
 	})
 
 	r := httptest.NewRequest("POST", "/", nil)
-	resp, _ := app.Test(r, -1)
+	resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 
 	assert.Equal(t, fiber.StatusMethodNotAllowed, resp.StatusCode)
 
@@ -136,12 +136,12 @@ allow {
 	}
 	app.Use(New(cfg))
 
-	app.Post("/path", func(ctx *fiber.Ctx) error {
+	app.Post("/path", func(ctx fiber.Ctx) error {
 		return ctx.SendStatus(200)
 	})
 
 	r := httptest.NewRequest("POST", "/path", nil)
-	resp, _ := app.Test(r, -1)
+	resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 
 	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 
@@ -173,12 +173,12 @@ allow {
 	}
 	app.Use(New(cfg))
 
-	app.Get("/test", func(ctx *fiber.Ctx) error {
+	app.Get("/test", func(ctx fiber.Ctx) error {
 		return ctx.SendStatus(200)
 	})
 
 	r := httptest.NewRequest("GET", "/test?testKey=testVal", nil)
-	resp, _ := app.Test(r, -1)
+	resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 
 	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 
@@ -211,13 +211,13 @@ allow {
 	}
 	app.Use(New(cfg))
 
-	app.Get("/headers", func(ctx *fiber.Ctx) error {
+	app.Get("/headers", func(ctx fiber.Ctx) error {
 		return ctx.SendStatus(200)
 	})
 
 	r := httptest.NewRequest("GET", "/headers", nil)
 	r.Header.Set("testHeaderKey", "testHeaderVal")
-	resp, _ := app.Test(r, -1)
+	resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 
 	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 
@@ -244,7 +244,7 @@ allow {
 		IncludeQueryString:    true,
 		DeniedStatusCode:      fiber.StatusBadRequest,
 		DeniedResponseMessage: "bad request",
-		InputCreationMethod: func(c *fiber.Ctx) (map[string]interface{}, error) {
+		InputCreationMethod: func(c fiber.Ctx) (map[string]interface{}, error) {
 			return map[string]interface{}{
 				"custom": "test",
 			}, nil
@@ -252,12 +252,12 @@ allow {
 	}
 	app.Use(New(cfg))
 
-	app.Get("/headers", func(ctx *fiber.Ctx) error {
+	app.Get("/headers", func(ctx fiber.Ctx) error {
 		return ctx.SendStatus(200)
 	})
 
 	r := httptest.NewRequest("GET", "/headers", nil)
-	resp, _ := app.Test(r, -1)
+	resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 
 	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 
@@ -284,18 +284,18 @@ allow {
 		IncludeQueryString:    true,
 		DeniedStatusCode:      fiber.StatusBadRequest,
 		DeniedResponseMessage: "bad request",
-		InputCreationMethod: func(c *fiber.Ctx) (map[string]interface{}, error) {
+		InputCreationMethod: func(c fiber.Ctx) (map[string]interface{}, error) {
 			return nil, errors.New("test error")
 		},
 	}
 	app.Use(New(cfg))
 
-	app.Get("/headers", func(ctx *fiber.Ctx) error {
+	app.Get("/headers", func(ctx fiber.Ctx) error {
 		return ctx.SendStatus(200)
 	})
 
 	r := httptest.NewRequest("GET", "/headers", nil)
-	resp, _ := app.Test(r, -1)
+	resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 
 	assert.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
 

@@ -3,14 +3,15 @@ package jwtware_test
 import (
 	"encoding/hex"
 	"fmt"
+	"github.com/stretchr/testify/assert"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/gofiber/fiber/v2/utils"
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
 	"github.com/golang-jwt/jwt/v5"
 
 	jwtware "github.com/gofiber/contrib/jwt"
@@ -141,8 +142,8 @@ func TestJwtTokenProcessorFunc(t *testing.T) {
 		resp, err := app.Test(req)
 
 		// Assert
-		utils.AssertEqual(t, nil, err)
-		utils.AssertEqual(t, 200, resp.StatusCode)
+		assert.Equal(t, nil, err)
+		assert.Equal(t, 200, resp.StatusCode)
 	}
 }
 
@@ -168,7 +169,7 @@ func TestJwtFromHeader(t *testing.T) {
 				},
 			}))
 
-			app.Get("/ok", func(c *fiber.Ctx) error {
+			app.Get("/ok", func(c fiber.Ctx) error {
 				return c.SendString("OK")
 			})
 
@@ -179,8 +180,8 @@ func TestJwtFromHeader(t *testing.T) {
 			resp, err := app.Test(req)
 
 			// Assert
-			utils.AssertEqual(t, nil, err)
-			utils.AssertEqual(t, 200, resp.StatusCode)
+			assert.Equal(t, nil, err)
+			assert.Equal(t, 200, resp.StatusCode)
 		}
 	})
 
@@ -197,7 +198,7 @@ func TestJwtFromHeader(t *testing.T) {
 				TokenLookup: "header:X-Token",
 			}))
 
-			app.Get("/ok", func(c *fiber.Ctx) error {
+			app.Get("/ok", func(c fiber.Ctx) error {
 				return c.SendString("OK")
 			})
 
@@ -208,8 +209,8 @@ func TestJwtFromHeader(t *testing.T) {
 			resp, err := app.Test(req)
 
 			// Assert
-			utils.AssertEqual(t, nil, err)
-			utils.AssertEqual(t, 200, resp.StatusCode)
+			assert.Equal(t, nil, err)
+			assert.Equal(t, 200, resp.StatusCode)
 		}
 	})
 
@@ -225,7 +226,7 @@ func TestJwtFromHeader(t *testing.T) {
 				},
 			}))
 
-			app.Get("/ok", func(c *fiber.Ctx) error {
+			app.Get("/ok", func(c fiber.Ctx) error {
 				return c.SendString("OK")
 			})
 
@@ -236,8 +237,8 @@ func TestJwtFromHeader(t *testing.T) {
 			resp, err := app.Test(req)
 
 			// Assert
-			utils.AssertEqual(t, nil, err)
-			utils.AssertEqual(t, 400, resp.StatusCode)
+			assert.Equal(t, nil, err)
+			assert.Equal(t, 400, resp.StatusCode)
 		}
 	})
 }
@@ -279,8 +280,8 @@ func TestJwtFromCookie(t *testing.T) {
 		resp, err := app.Test(req)
 
 		// Assert
-		utils.AssertEqual(t, nil, err)
-		utils.AssertEqual(t, 200, resp.StatusCode)
+		assert.Equal(t, nil, err)
+		assert.Equal(t, 200, resp.StatusCode)
 	}
 }
 
@@ -334,8 +335,8 @@ func TestJwkFromServer(t *testing.T) {
 		resp, err := app.Test(req)
 
 		// Assert
-		utils.AssertEqual(t, nil, err)
-		utils.AssertEqual(t, 200, resp.StatusCode)
+		assert.Equal(t, nil, err)
+		assert.Equal(t, 200, resp.StatusCode)
 	}
 }
 
@@ -395,8 +396,8 @@ func TestJwkFromServers(t *testing.T) {
 		resp, err := app.Test(req)
 
 		// Assert
-		utils.AssertEqual(t, nil, err)
-		utils.AssertEqual(t, 200, resp.StatusCode)
+		assert.Equal(t, nil, err)
+		assert.Equal(t, 200, resp.StatusCode)
 	}
 }
 
@@ -429,8 +430,8 @@ func TestCustomKeyfunc(t *testing.T) {
 	resp, err := app.Test(req)
 
 	// Assert
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, 200, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, 200, resp.StatusCode)
 }
 
 func TestMultiKeys(t *testing.T) {
@@ -487,8 +488,8 @@ func TestMultiKeys(t *testing.T) {
 		resp, err := app.Test(req)
 
 		// Assert
-		utils.AssertEqual(t, nil, err)
-		utils.AssertEqual(t, 200, resp.StatusCode)
+		assert.Equal(t, nil, err)
+		assert.Equal(t, 200, resp.StatusCode)
 	}
 }
 

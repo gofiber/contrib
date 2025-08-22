@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/o1egl/paseto"
 	"golang.org/x/crypto/chacha20poly1305"
 )
@@ -17,7 +17,7 @@ import (
 type Config struct {
 	// Filter defines a function to skip middleware.
 	// Optional. Default: nil
-	Next func(*fiber.Ctx) bool
+	Next func(fiber.Ctx) bool
 
 	// SuccessHandler defines a function which is executed for a valid token.
 	// Optional. Default: c.Next()
@@ -83,7 +83,7 @@ var ConfigDefault = Config{
 	TokenLookup:    [2]string{LookupHeader, fiber.HeaderAuthorization},
 }
 
-func defaultErrorHandler(c *fiber.Ctx, err error) error {
+func defaultErrorHandler(c fiber.Ctx, err error) error {
 	// default to badRequest if error is ErrMissingToken or any paseto decryption error
 	errorStatus := fiber.StatusBadRequest
 	if errors.Is(err, ErrDataUnmarshal) || errors.Is(err, ErrExpiredToken) {
@@ -127,7 +127,7 @@ func configDefault(authConfigs ...Config) Config {
 	}
 
 	if config.SuccessHandler == nil {
-		config.SuccessHandler = func(c *fiber.Ctx) error {
+		config.SuccessHandler = func(c fiber.Ctx) error {
 			return c.Next()
 		}
 	}

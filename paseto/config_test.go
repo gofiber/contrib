@@ -1,29 +1,30 @@
 package pasetoware
 
 import (
+	"github.com/stretchr/testify/assert"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/utils"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
 )
 
 func assertRecoveryPanic(t *testing.T) {
 	err := recover()
-	utils.AssertEqual(t, true, err != nil)
+	assert.Equal(t, true, err != nil)
 }
 
 func Test_Config_No_SymmetricKey(t *testing.T) {
 	defer assertRecoveryPanic(t)
 	config := configDefault()
 
-	utils.AssertEqual(t, "", config.SymmetricKey)
+	assert.Equal(t, "", config.SymmetricKey)
 }
 
 func Test_Config_Invalid_SymmetricKey(t *testing.T) {
 	defer assertRecoveryPanic(t)
 	config := configDefault()
 
-	utils.AssertEqual(t, symmetricKey+symmetricKey, config.SymmetricKey)
+	assert.Equal(t, symmetricKey+symmetricKey, config.SymmetricKey)
 }
 
 func Test_ConfigDefault(t *testing.T) {
@@ -31,11 +32,11 @@ func Test_ConfigDefault(t *testing.T) {
 		SymmetricKey: []byte(symmetricKey),
 	})
 
-	utils.AssertEqual(t, LookupHeader, config.TokenLookup[0])
-	utils.AssertEqual(t, fiber.HeaderAuthorization, config.TokenLookup[1])
+	assert.Equal(t, LookupHeader, config.TokenLookup[0])
+	assert.Equal(t, fiber.HeaderAuthorization, config.TokenLookup[1])
 
-	utils.AssertEqual(t, DefaultContextKey, config.ContextKey)
-	utils.AssertEqual(t, true, config.Validate != nil)
+	assert.Equal(t, DefaultContextKey, config.ContextKey)
+	assert.Equal(t, true, config.Validate != nil)
 }
 
 func Test_ConfigCustomLookup(t *testing.T) {
@@ -43,13 +44,13 @@ func Test_ConfigCustomLookup(t *testing.T) {
 		SymmetricKey: []byte(symmetricKey),
 		TokenLookup:  [2]string{"", "Custom-Header"},
 	})
-	utils.AssertEqual(t, LookupHeader, config.TokenLookup[0])
-	utils.AssertEqual(t, "Custom-Header", config.TokenLookup[1])
+	assert.Equal(t, LookupHeader, config.TokenLookup[0])
+	assert.Equal(t, "Custom-Header", config.TokenLookup[1])
 
 	config = configDefault(Config{
 		SymmetricKey: []byte(symmetricKey),
 		TokenLookup:  [2]string{LookupParam},
 	})
-	utils.AssertEqual(t, LookupParam, config.TokenLookup[0])
-	utils.AssertEqual(t, fiber.HeaderAuthorization, config.TokenLookup[1])
+	assert.Equal(t, LookupParam, config.TokenLookup[0])
+	assert.Equal(t, fiber.HeaderAuthorization, config.TokenLookup[1])
 }
