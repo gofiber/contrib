@@ -10,14 +10,14 @@ id: fiberi18n
 
 [go-i18n](https://github.com/nicksnyder/go-i18n) support for Fiber.
 
-**Note: Requires Go 1.18 and above**
+**Note: Requires Go 1.25 and above**
 
 ## Install
 
-This middleware supports Fiber v2.
+This middleware supports Fiber v3.
 
 ```
-go get -u github.com/gofiber/fiber/v2
+go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/fiberi18n/v2
 ```
 
@@ -51,7 +51,7 @@ import (
 	"log"
 
 	"github.com/gofiber/contrib/fiberi18n/v2"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/nicksnyder/go-i18n/v2/i18n"
 	"golang.org/x/text/language"
 )
