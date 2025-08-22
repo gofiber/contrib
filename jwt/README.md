@@ -19,7 +19,7 @@ Special thanks and credits to [Echo](https://echo.labstack.com/middleware/jwt)
 
 ## Install
 
-This middleware supports Fiber v1 & v2, install accordingly.
+This middleware supports Fiber v3.
 
 ```bash
 go get -u github.com/gofiber/fiber/v3
