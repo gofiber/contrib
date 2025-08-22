@@ -10,12 +10,12 @@ id: fibernewrelic
 
 [NewRelic](https://github.com/newrelic/go-agent) support for Fiber.
 
-**Note: Requires Go 1.18 and above**
+**Note: Requires Go 1.25 and above**
 
 ## Install
 
 ```
-go get -u github.com/gofiber/fiber/v2
+go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/fibernewrelic
 ```
 
@@ -44,7 +44,7 @@ fibernewrelic.New(config fibernewrelic.Config) fiber.Handler
 package main
 
 import (
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/contrib/fibernewrelic"
 )
 
@@ -73,7 +73,7 @@ func main() {
 package main
 
 import (
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/contrib/fibernewrelic"
 	"github.com/newrelic/go-agent/v3/newrelic"
 )

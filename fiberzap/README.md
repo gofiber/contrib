@@ -10,14 +10,14 @@ id: fiberzap
 
 [Zap](https://github.com/uber-go/zap) logging support for Fiber.
 
-**Note: Requires Go 1.19 and above**
+**Note: Requires Go 1.25 and above**
 
 ## Install
 
-This middleware supports Fiber v2.
+This middleware supports Fiber v3.
 
 ```
-go get -u github.com/gofiber/fiber/v2
+go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/fiberzap/v2
 go get -u go.uber.org/zap
 ```
@@ -49,7 +49,7 @@ package main
 import (
     "log"
 
-    "github.com/gofiber/fiber/v2"
+    "github.com/gofiber/fiber/v3"
     "github.com/gofiber/contrib/fiberzap/v2"
     "go.uber.org/zap"
 )
@@ -96,8 +96,8 @@ package main
 import (
 	"context"
 	"github.com/gofiber/contrib/fiberzap/v2"
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/log"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/log"
 )
 
 func main() {

@@ -15,14 +15,14 @@ For missing token, it returns "400 - Bad Request" error.
 
 Special thanks and credits to [Echo](https://echo.labstack.com/middleware/jwt)
 
-**Note: Requires Go 1.19 and above**
+**Note: Requires Go 1.25 and above**
 
 ## Install
 
 This middleware supports Fiber v1 & v2, install accordingly.
 
 ```bash
-go get -u github.com/gofiber/fiber/v2
+go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/jwt
 go get -u github.com/golang-jwt/jwt/v5
 ```
@@ -58,7 +58,7 @@ package main
 import (
  "time"
 
- "github.com/gofiber/fiber/v2"
+ "github.com/gofiber/fiber/v3"
 
  jwtware "github.com/gofiber/contrib/jwt"
  "github.com/golang-jwt/jwt/v5"
@@ -164,7 +164,7 @@ import (
  "log"
  "time"
 
- "github.com/gofiber/fiber/v2"
+ "github.com/gofiber/fiber/v3"
 
  "github.com/golang-jwt/jwt/v5"
 
@@ -275,7 +275,7 @@ package main
 
 import (
  "fmt"
-  "github.com/gofiber/fiber/v2"
+  "github.com/gofiber/fiber/v3"
 
   jwtware "github.com/gofiber/contrib/jwt"
   "github.com/golang-jwt/jwt/v5"
