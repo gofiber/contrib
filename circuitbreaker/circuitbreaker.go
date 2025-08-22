@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // State represents the state of the circuit breaker
@@ -30,11 +30,11 @@ type Config struct {
 	// Maximum concurrent requests allowed in half-open state
 	HalfOpenMaxConcurrent int
 	// Custom failure detector function (return true if response should count as failure)
-	IsFailure func(c *fiber.Ctx, err error) bool
+	IsFailure func(c fiber.Ctx, err error) bool
 	// Callbacks for state transitions
-	OnOpen     func(*fiber.Ctx) error // Called when circuit opens
-	OnHalfOpen func(*fiber.Ctx) error // Called when circuit transitions to half-open
-	OnClose    func(*fiber.Ctx) error // Called when circuit closes
+	OnOpen     func(fiber.Ctx) error // Called when circuit opens
+	OnHalfOpen func(fiber.Ctx) error // Called when circuit transitions to half-open
+	OnClose    func(fiber.Ctx) error // Called when circuit closes
 }
 
 // DefaultConfig provides sensible defaults for the circuit breaker
@@ -43,20 +43,20 @@ var DefaultConfig = Config{
 	Timeout:               5 * time.Second,
 	SuccessThreshold:      1,
 	HalfOpenMaxConcurrent: 1,
-	IsFailure: func(c *fiber.Ctx, err error) bool {
+	IsFailure: func(c fiber.Ctx, err error) bool {
 		return err != nil || c.Response().StatusCode() >= http.StatusInternalServerError
 	},
-	OnOpen: func(c *fiber.Ctx) error {
+	OnOpen: func(c fiber.Ctx) error {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
 			"error": "service unavailable",
 		})
 	},
-	OnHalfOpen: func(c *fiber.Ctx) error {
+	OnHalfOpen: func(c fiber.Ctx) error {
 		return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
 			"error": "service under recovery",
 		})
 	},
-	OnClose: func(c *fiber.Ctx) error {
+	OnClose: func(c fiber.Ctx) error {
 		return c.Next()
 	},
 }
@@ -353,7 +353,7 @@ func (cb *CircuitBreaker) GetStateStats() fiber.Map {
 
 // HealthHandler returns a Fiber handler for checking circuit breaker status
 func (cb *CircuitBreaker) HealthHandler() fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		state := cb.GetState()
 
 		data := fiber.Map{
@@ -371,7 +371,7 @@ func (cb *CircuitBreaker) HealthHandler() fiber.Handler {
 
 // Middleware wraps the fiber handler with circuit breaker logic
 func Middleware(cb *CircuitBreaker) fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		allowed, state := cb.AllowRequest()
 
 		if !allowed {

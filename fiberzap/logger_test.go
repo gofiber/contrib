@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gofiber/fiber/v2/log"
+	"github.com/gofiber/fiber/v3/log"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"

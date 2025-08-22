@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
 )
 
@@ -171,15 +171,15 @@ func TestCircuitBreakerCallbacks(t *testing.T) {
 		Timeout:               1 * time.Millisecond, // Short timeout for quick tests
 		SuccessThreshold:      1,
 		HalfOpenMaxConcurrent: 1,
-		OnOpen: func(c *fiber.Ctx) error {
+		OnOpen: func(c fiber.Ctx) error {
 			openCalled = true
 			return c.SendStatus(fiber.StatusServiceUnavailable)
 		},
-		OnHalfOpen: func(c *fiber.Ctx) error {
+		OnHalfOpen: func(c fiber.Ctx) error {
 			halfOpenCalled = true
 			return c.SendStatus(fiber.StatusTooManyRequests)
 		},
-		OnClose: func(c *fiber.Ctx) error {
+		OnClose: func(c fiber.Ctx) error {
 			closedCalled = true
 			return c.Next()
 		},
@@ -189,7 +189,7 @@ func TestCircuitBreakerCallbacks(t *testing.T) {
 
 	app.Use(Middleware(cb))
 
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return c.SendString("OK")
 	})
 
@@ -258,7 +258,7 @@ func TestMiddleware(t *testing.T) {
 		FailureThreshold: 2,
 		Timeout:          5 * time.Second,
 		SuccessThreshold: 2,
-		IsFailure: func(c *fiber.Ctx, err error) bool {
+		IsFailure: func(c fiber.Ctx, err error) bool {
 			// Count as failure if status >= 400 or has error
 			return err != nil || c.Response().StatusCode() >= 400
 		},
@@ -268,22 +268,22 @@ func TestMiddleware(t *testing.T) {
 	app.Use(Middleware(cb))
 
 	// Success handler
-	app.Get("/success", func(c *fiber.Ctx) error {
+	app.Get("/success", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
 	// Client error handler - 400 series
-	app.Get("/client-error", func(c *fiber.Ctx) error {
+	app.Get("/client-error", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusBadRequest)
 	})
 
 	// Server error handler - 500 series
-	app.Get("/server-error", func(c *fiber.Ctx) error {
+	app.Get("/server-error", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusInternalServerError)
 	})
 
 	// Error handler
-	app.Get("/error", func(c *fiber.Ctx) error {
+	app.Get("/error", func(c fiber.Ctx) error {
 		return customErr
 	})
 
@@ -427,7 +427,7 @@ func TestCustomFailureDetection(t *testing.T) {
 
 	cb := New(Config{
 		FailureThreshold: 1,
-		IsFailure: func(c *fiber.Ctx, err error) bool {
+		IsFailure: func(c fiber.Ctx, err error) bool {
 			// Custom logic: mark as failure only if our flag is set
 			return customFailureDetection
 		},
@@ -436,7 +436,7 @@ func TestCustomFailureDetection(t *testing.T) {
 	app := fiber.New()
 	app.Use(Middleware(cb))
 
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
@@ -444,7 +444,7 @@ func TestCustomFailureDetection(t *testing.T) {
 		customFailureDetection = false
 
 		// Even 500 status should be success with our custom logic
-		app.Get("/server-error", func(c *fiber.Ctx) error {
+		app.Get("/server-error", func(c fiber.Ctx) error {
 			c.Status(500)
 			return nil
 		})

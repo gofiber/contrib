@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	fiberlog "github.com/gofiber/fiber/v2/log"
+	fiberlog "github.com/gofiber/fiber/v3/log"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
