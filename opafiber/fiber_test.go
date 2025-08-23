@@ -3,12 +3,13 @@ package opafiber
 import (
 	"bytes"
 	"errors"
-	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/utils/v2"
-	"github.com/stretchr/testify/assert"
 	"io"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestPanicWhenRegoQueryEmpty(t *testing.T) {

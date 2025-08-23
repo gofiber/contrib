@@ -93,7 +93,7 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 	if cfg.RecoverHandler == nil {
 		cfg.RecoverHandler = defaultRecover
 	}
-	upgrader := websocket.FastHTTPUpgrader{
+	var upgrader = websocket.FastHTTPUpgrader{
 		HandshakeTimeout:  cfg.HandshakeTimeout,
 		Subprotocols:      cfg.Subprotocols,
 		ReadBufferSize:    cfg.ReadBufferSize,
@@ -120,7 +120,6 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 
 		conn := acquireConn()
 		// locals
-
 		c.RequestCtx().VisitUserValues(func(key []byte, value interface{}) {
 			conn.locals[string(key)] = value
 		})

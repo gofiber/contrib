@@ -1,11 +1,11 @@
 package pasetoware
 
 import (
-	"github.com/stretchr/testify/assert"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/utils/v2"
 )
 
 func assertRecoveryPanic(t *testing.T) {

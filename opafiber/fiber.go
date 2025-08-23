@@ -3,10 +3,11 @@ package opafiber
 import (
 	"context"
 	"fmt"
+	"io"
+
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/utils/v2"
 	"github.com/open-policy-agent/opa/rego"
-	"io"
 )
 
 type InputCreationFunc func(c fiber.Ctx) (map[string]interface{}, error)

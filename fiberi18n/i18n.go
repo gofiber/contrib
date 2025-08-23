@@ -2,9 +2,10 @@ package fiberi18n
 
 import (
 	"fmt"
-	"github.com/gofiber/fiber/v3/log"
 	"path"
 	"sync"
+
+	"github.com/gofiber/fiber/v3/log"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/nicksnyder/go-i18n/v2/i18n"

@@ -2,14 +2,14 @@ package loadshed
 
 import (
 	"context"
-	"github.com/stretchr/testify/assert"
 	"io"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/utils/v2"
 )
 
 type MockCPUPercentGetter struct {

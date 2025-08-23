@@ -1,12 +1,13 @@
 package fgprof
 
 import (
-	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/utils/v2"
-	"github.com/stretchr/testify/assert"
 	"io"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+
+	"github.com/gofiber/fiber/v3"
 )
 
 // go test -run Test_Non_Fgprof_Path

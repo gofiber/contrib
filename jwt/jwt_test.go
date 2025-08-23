@@ -3,15 +3,15 @@ package jwtware_test
 import (
 	"encoding/hex"
 	"fmt"
-	"github.com/stretchr/testify/assert"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/utils/v2"
 	"github.com/golang-jwt/jwt/v5"
 
 	jwtware "github.com/gofiber/contrib/jwt"

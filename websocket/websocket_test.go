@@ -12,10 +12,10 @@ import (
 
 func TestWebSocketMiddlewareDefaultConfig(t *testing.T) {
 	app := setupTestApp(Config{}, nil)
-	defer func() { assert.NoError(t, app.Shutdown()) }()
+	defer app.Shutdown()
 
 	conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
-	defer func() { assert.NoError(t, conn.Close()) }()
+	defer conn.Close()
 	assert.NoError(t, err)
 	assert.Equal(t, 101, resp.StatusCode)
 	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
@@ -31,12 +31,12 @@ func TestWebSocketMiddlewareConfigOrigin(t *testing.T) {
 		app := setupTestApp(Config{
 			Origins: []string{"*"},
 		}, nil)
-		defer func() { assert.NoError(t, app.Shutdown()) }()
+		defer app.Shutdown()
 
 		conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", http.Header{
 			"Origin": []string{"http://localhost:3000"},
 		})
-		defer func() { assert.NoError(t, conn.Close()) }()
+		defer conn.Close()
 		assert.NoError(t, err)
 		assert.Equal(t, fiber.StatusSwitchingProtocols, resp.StatusCode)
 		assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
@@ -51,11 +51,11 @@ func TestWebSocketMiddlewareConfigOrigin(t *testing.T) {
 		app := setupTestApp(Config{
 			Origins: []string{"http://localhost:3000"},
 		}, nil)
-		defer func() { assert.NoError(t, app.Shutdown()) }()
+		defer app.Shutdown()
 		conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", http.Header{
 			"Origin": []string{"http://localhost:3000"},
 		})
-		defer func() { assert.NoError(t, conn.Close()) }()
+		defer conn.Close()
 		assert.NoError(t, err)
 		assert.Equal(t, fiber.StatusSwitchingProtocols, resp.StatusCode)
 		assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
@@ -70,11 +70,11 @@ func TestWebSocketMiddlewareConfigOrigin(t *testing.T) {
 		app := setupTestApp(Config{
 			Origins: []string{"http://localhost:3000"},
 		}, nil)
-		defer func() { assert.NoError(t, app.Shutdown()) }()
+		defer app.Shutdown()
 		conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", http.Header{
 			"Origin": []string{"http://localhost:5000"},
 		})
-
+		defer conn.Close()
 		assert.Equal(t, err.Error(), "websocket: bad handshake")
 		assert.Equal(t, fiber.StatusUpgradeRequired, resp.StatusCode)
 		assert.Equal(t, "", resp.Header.Get("Upgrade"))
@@ -88,10 +88,10 @@ func TestWebSocketMiddlewareBufferSize(t *testing.T) {
 		Origins:         []string{"*"},
 		WriteBufferSize: 10,
 	}, nil)
-	defer func() { assert.NoError(t, app.Shutdown()) }()
+	defer app.Shutdown()
 
 	conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
-	defer func() { assert.NoError(t, conn.Close()) }()
+	defer conn.Close()
 	assert.NoError(t, err)
 	assert.Equal(t, 101, resp.StatusCode)
 	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
@@ -112,14 +112,14 @@ func TestWebSocketConnParams(t *testing.T) {
 		assert.Equal(t, "value2", param2)
 		assert.Equal(t, "default", paramDefault)
 
-		assert.NoError(t, c.WriteJSON(fiber.Map{
+		c.WriteJSON(fiber.Map{
 			"message": "hello websocket",
-		}))
+		})
 	})
-	defer func() { assert.NoError(t, app.Shutdown()) }()
+	defer app.Shutdown()
 
 	conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message/value1/value2", nil)
-	defer func() { assert.NoError(t, conn.Close()) }()
+	defer conn.Close()
 	assert.NoError(t, err)
 	assert.Equal(t, 101, resp.StatusCode)
 	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
@@ -140,14 +140,14 @@ func TestWebSocketConnQuery(t *testing.T) {
 		assert.Equal(t, "value2", query2)
 		assert.Equal(t, "default", queryDefault)
 
-		assert.NoError(t, c.WriteJSON(fiber.Map{
+		c.WriteJSON(fiber.Map{
 			"message": "hello websocket",
-		}))
+		})
 	})
-	defer func() { assert.NoError(t, app.Shutdown()) }()
+	defer app.Shutdown()
 
 	conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message?query1=value1&query2=value2", nil)
-	defer func() { assert.NoError(t, conn.Close()) }()
+	defer conn.Close()
 	assert.NoError(t, err)
 	assert.Equal(t, 101, resp.StatusCode)
 	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
@@ -168,17 +168,17 @@ func TestWebSocketConnHeaders(t *testing.T) {
 		assert.Equal(t, "value2", header2)
 		assert.Equal(t, "valueDefault", headerDefault)
 
-		assert.NoError(t, c.WriteJSON(fiber.Map{
+		c.WriteJSON(fiber.Map{
 			"message": "hello websocket",
-		}))
+		})
 	})
-	defer func() { assert.NoError(t, app.Shutdown()) }()
+	defer app.Shutdown()
 
 	conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", http.Header{
 		"header1": []string{"value1"},
 		"header2": []string{"value2"},
 	})
-	defer func() { assert.NoError(t, conn.Close()) }()
+	defer conn.Close()
 	assert.NoError(t, err)
 	assert.Equal(t, 101, resp.StatusCode)
 	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
@@ -199,18 +199,18 @@ func TestWebSocketConnCookies(t *testing.T) {
 		assert.Equal(t, "value2", cookie2)
 		assert.Equal(t, "valueDefault", cookieDefault)
 
-		assert.NoError(t, c.WriteJSON(fiber.Map{
+		c.WriteJSON(fiber.Map{
 			"message": "hello websocket",
-		}))
+		})
 	})
-	defer func() { assert.NoError(t, app.Shutdown()) }()
+	defer app.Shutdown()
 
 	conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", http.Header{
 		"header1": []string{"value1"},
 		"header2": []string{"value2"},
 		"Cookie":  []string{"Cookie1=value1; Cookie2=value2"},
 	})
-	defer func() { assert.NoError(t, conn.Close()) }()
+	defer conn.Close()
 	assert.NoError(t, err)
 	assert.Equal(t, 101, resp.StatusCode)
 	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
@@ -229,14 +229,14 @@ func TestWebSocketConnLocals(t *testing.T) {
 		assert.Equal(t, "value1", local1)
 		assert.Equal(t, "value2", local2)
 
-		assert.NoError(t, c.WriteJSON(fiber.Map{
+		c.WriteJSON(fiber.Map{
 			"message": "hello websocket",
-		}))
+		})
 	})
-	defer func() { assert.NoError(t, app.Shutdown()) }()
+	defer app.Shutdown()
 
 	conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
-	defer func() { assert.NoError(t, conn.Close()) }()
+	defer conn.Close()
 	assert.NoError(t, err)
 	assert.Equal(t, 101, resp.StatusCode)
 	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
@@ -253,14 +253,14 @@ func TestWebSocketConnIP(t *testing.T) {
 
 		assert.Equal(t, "127.0.0.1", ip)
 
-		assert.NoError(t, c.WriteJSON(fiber.Map{
+		c.WriteJSON(fiber.Map{
 			"message": "hello websocket",
-		}))
+		})
 	})
-	defer func() { assert.NoError(t, app.Shutdown()) }()
+	defer app.Shutdown()
 
 	conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
-	defer func() { assert.NoError(t, conn.Close()) }()
+	defer conn.Close()
 	assert.NoError(t, err)
 	assert.Equal(t, 101, resp.StatusCode)
 	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
@@ -283,7 +283,7 @@ func setupTestApp(cfg Config, h func(c *Conn)) *fiber.App {
 		handler = New(h, cfg)
 	}
 
-	app := fiber.New()
+	app := fiber.New(fiber.Config{})
 
 	app.Use("/ws", func(c fiber.Ctx) error {
 		if IsWebSocketUpgrade(c) {
@@ -349,10 +349,10 @@ func TestWebsocketRecoverDefaultHandlerShouldNotPanic(t *testing.T) {
 			"message": "hello websocket",
 		})
 	})
-	defer func() { assert.NoError(t, app.Shutdown()) }()
+	defer app.Shutdown()
 
 	conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
-	defer func() { assert.NoError(t, conn.Close()) }()
+	defer conn.Close()
 	assert.NoError(t, err)
 	assert.Equal(t, 101, resp.StatusCode)
 	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
@@ -367,7 +367,7 @@ func TestWebsocketRecoverCustomHandlerShouldNotPanic(t *testing.T) {
 	app := setupTestApp(Config{
 		RecoverHandler: func(conn *Conn) {
 			if err := recover(); err != nil {
-				assert.NoError(t, conn.WriteJSON(fiber.Map{"customError": "error occurred"}))
+				conn.WriteJSON(fiber.Map{"customError": "error occurred"})
 			}
 		},
 	}, func(c *Conn) {
@@ -377,10 +377,10 @@ func TestWebsocketRecoverCustomHandlerShouldNotPanic(t *testing.T) {
 			"message": "hello websocket",
 		})
 	})
-	defer func() { assert.NoError(t, app.Shutdown()) }()
+	defer app.Shutdown()
 
 	conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
-	defer func() { assert.NoError(t, conn.Close()) }()
+	defer conn.Close()
 	assert.NoError(t, err)
 	assert.Equal(t, 101, resp.StatusCode)
 	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))

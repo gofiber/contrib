@@ -2,9 +2,10 @@ package fibernewrelic
 
 import (
 	"fmt"
-	"github.com/gofiber/utils/v2"
 	"net/url"
 	"strings"
+
+	"github.com/gofiber/utils/v2"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/newrelic/go-agent/v3/newrelic"

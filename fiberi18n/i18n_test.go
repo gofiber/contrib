@@ -2,14 +2,14 @@ package fiberi18n
 
 import (
 	"context"
-	"github.com/stretchr/testify/assert"
 	"io"
 	"net/http"
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/utils/v2"
 	"github.com/nicksnyder/go-i18n/v2/i18n"
 	"golang.org/x/text/language"
 )
