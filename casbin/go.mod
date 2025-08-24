@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/casbin/casbin/v2 v2.120.0
-	github.com/gofiber/fiber/v3 v3.0.0-beta.5.0.20250823172527-323d2c85c4a1
+	github.com/gofiber/fiber/v3 v3.0.0-beta.5
 )
 
 require (
@@ -12,7 +12,7 @@ require (
 	github.com/bmatcuk/doublestar/v4 v4.6.1 // indirect
 	github.com/casbin/govaluate v1.3.0 // indirect
 	github.com/gofiber/schema v1.6.0 // indirect
-	github.com/gofiber/utils/v2 v2.0.0-rc.1 // indirect
+	github.com/gofiber/utils/v2 v2.0.0-beta.13 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect

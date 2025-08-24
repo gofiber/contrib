@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/otelfiber/v2
 go 1.25.0
 
 require (
-	github.com/gofiber/fiber/v3 v3.0.0-beta.5.0.20250823172527-323d2c85c4a1
+	github.com/gofiber/fiber/v3 v3.0.0-beta.5
 	github.com/gofiber/utils/v2 v2.0.0-rc.1
 	github.com/stretchr/testify v1.10.0
 	go.opentelemetry.io/contrib v1.20.0

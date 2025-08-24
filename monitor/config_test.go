@@ -21,7 +21,7 @@ func Test_Config_Default(t *testing.T) {
 		assert.Equal(t, defaultChartJSURL, cfg.ChartJSURL)
 		assert.Equal(t, defaultCustomHead, cfg.CustomHead)
 		assert.Equal(t, false, cfg.APIOnly)
-		assert.IsType(t, (func(*fiber.Ctx) bool)(nil), cfg.Next)
+		assert.IsType(t, (func(fiber.Ctx) bool)(nil), cfg.Next)
 		assert.Equal(t, newIndex(viewBag{defaultTitle, defaultRefresh, defaultFontURL, defaultChartJSURL, defaultCustomHead}), cfg.index)
 	})
 
@@ -38,7 +38,7 @@ func Test_Config_Default(t *testing.T) {
 		assert.Equal(t, defaultChartJSURL, cfg.ChartJSURL)
 		assert.Equal(t, defaultCustomHead, cfg.CustomHead)
 		assert.Equal(t, false, cfg.APIOnly)
-		assert.IsType(t, (func(*fiber.Ctx) bool)(nil), cfg.Next)
+		assert.IsType(t, (func(fiber.Ctx) bool)(nil), cfg.Next)
 		assert.Equal(t, newIndex(viewBag{title, defaultRefresh, defaultFontURL, defaultChartJSURL, defaultCustomHead}), cfg.index)
 	})
 
@@ -54,7 +54,7 @@ func Test_Config_Default(t *testing.T) {
 		assert.Equal(t, defaultChartJSURL, cfg.ChartJSURL)
 		assert.Equal(t, defaultCustomHead, cfg.CustomHead)
 		assert.Equal(t, false, cfg.APIOnly)
-		assert.IsType(t, (func(*fiber.Ctx) bool)(nil), cfg.Next)
+		assert.IsType(t, (func(fiber.Ctx) bool)(nil), cfg.Next)
 		assert.Equal(t, newIndex(viewBag{defaultTitle, minRefresh, defaultFontURL, defaultChartJSURL, defaultCustomHead}), cfg.index)
 	})
 
@@ -71,7 +71,7 @@ func Test_Config_Default(t *testing.T) {
 		assert.Equal(t, defaultChartJSURL, cfg.ChartJSURL)
 		assert.Equal(t, defaultCustomHead, cfg.CustomHead)
 		assert.Equal(t, false, cfg.APIOnly)
-		assert.IsType(t, (func(*fiber.Ctx) bool)(nil), cfg.Next)
+		assert.IsType(t, (func(fiber.Ctx) bool)(nil), cfg.Next)
 		assert.Equal(t, newIndex(viewBag{defaultTitle, refresh, defaultFontURL, defaultChartJSURL, defaultCustomHead}), cfg.index)
 	})
 
@@ -88,7 +88,7 @@ func Test_Config_Default(t *testing.T) {
 		assert.Equal(t, defaultChartJSURL, cfg.ChartJSURL)
 		assert.Equal(t, defaultCustomHead, cfg.CustomHead)
 		assert.Equal(t, false, cfg.APIOnly)
-		assert.IsType(t, (func(*fiber.Ctx) bool)(nil), cfg.Next)
+		assert.IsType(t, (func(fiber.Ctx) bool)(nil), cfg.Next)
 		assert.Equal(t, newIndex(viewBag{defaultTitle, defaultRefresh, fontURL, defaultChartJSURL, defaultCustomHead}), cfg.index)
 	})
 
@@ -105,7 +105,7 @@ func Test_Config_Default(t *testing.T) {
 		assert.Equal(t, chartURL, cfg.ChartJSURL)
 		assert.Equal(t, defaultCustomHead, cfg.CustomHead)
 		assert.Equal(t, false, cfg.APIOnly)
-		assert.IsType(t, (func(*fiber.Ctx) bool)(nil), cfg.Next)
+		assert.IsType(t, (func(fiber.Ctx) bool)(nil), cfg.Next)
 		assert.Equal(t, newIndex(viewBag{defaultTitle, defaultRefresh, defaultFontURL, chartURL, defaultCustomHead}), cfg.index)
 	})
 
@@ -122,7 +122,7 @@ func Test_Config_Default(t *testing.T) {
 		assert.Equal(t, defaultChartJSURL, cfg.ChartJSURL)
 		assert.Equal(t, head, cfg.CustomHead)
 		assert.Equal(t, false, cfg.APIOnly)
-		assert.IsType(t, (func(*fiber.Ctx) bool)(nil), cfg.Next)
+		assert.IsType(t, (func(fiber.Ctx) bool)(nil), cfg.Next)
 		assert.Equal(t, newIndex(viewBag{defaultTitle, defaultRefresh, defaultFontURL, defaultChartJSURL, head}), cfg.index)
 	})
 
@@ -138,13 +138,13 @@ func Test_Config_Default(t *testing.T) {
 		assert.Equal(t, defaultChartJSURL, cfg.ChartJSURL)
 		assert.Equal(t, defaultCustomHead, cfg.CustomHead)
 		assert.Equal(t, true, cfg.APIOnly)
-		assert.IsType(t, (func(*fiber.Ctx) bool)(nil), cfg.Next)
+		assert.IsType(t, (func(fiber.Ctx) bool)(nil), cfg.Next)
 		assert.Equal(t, newIndex(viewBag{defaultTitle, defaultRefresh, defaultFontURL, defaultChartJSURL, defaultCustomHead}), cfg.index)
 	})
 
 	t.Run("set next", func(t *testing.T) {
 		t.Parallel()
-		f := func(c *fiber.Ctx) bool {
+		f := func(c fiber.Ctx) bool {
 			return true
 		}
 		cfg := configDefault(Config{

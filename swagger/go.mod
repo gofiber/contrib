@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/go-openapi/runtime v0.26.2
-	github.com/gofiber/fiber/v3 v3.0.0-beta.5.0.20250823172527-323d2c85c4a1
+	github.com/gofiber/fiber/v3 v3.0.0-beta.5
 	github.com/stretchr/testify v1.10.0
 	gopkg.in/yaml.v2 v2.4.0
 )
@@ -23,7 +23,7 @@ require (
 	github.com/go-openapi/swag v0.22.4 // indirect
 	github.com/go-openapi/validate v0.22.3 // indirect
 	github.com/gofiber/schema v1.6.0 // indirect
-	github.com/gofiber/utils/v2 v2.0.0-rc.1 // indirect
+	github.com/gofiber/utils/v2 v2.0.0-beta.13 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
