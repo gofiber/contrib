@@ -18,7 +18,7 @@ This middleware supports Fiber v3.
 
 ```sh
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/fiberzerolog
+go get -u github.com/gofiber/contrib/v3/fiberzerolog/v2
 go get -u github.com/rs/zerolog/log
 ```
 
@@ -50,7 +50,7 @@ package main
 
 import (
     "github.com/gofiber/fiber/v3"
-    "github.com/gofiber/contrib/fiberzerolog"
+    "github.com/gofiber/contrib/v3/fiberzerolog/v2"
     "github.com/rs/zerolog"
 )
 

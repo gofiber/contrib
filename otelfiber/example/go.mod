@@ -1,11 +1,11 @@
-module github.com/gofiber/contrib/otelfiber/example
+module github.com/gofiber/contrib/v3/otelfiber/v3/example
 
 go 1.25.0
 
-replace github.com/gofiber/contrib/otelfiber => ../
+replace github.com/gofiber/contrib/v3/otelfiber/v3 => ../
 
 require (
-	github.com/gofiber/contrib/otelfiber v1.0.9
+	github.com/gofiber/contrib/v3/otelfiber/v3 v1.0.9
 	github.com/gofiber/fiber/v3 v3.0.0-beta.5.0.20250823172527-323d2c85c4a1
 	go.opentelemetry.io/otel v1.37.0
 	go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.37.0
@@ -17,7 +17,7 @@ require (
 	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/gofiber/contrib/otelfiber/v2 v2.2.3 // indirect
+	github.com/gofiber/contrib/v3/otelfiber/v3 v2.2.3 // indirect
 	github.com/gofiber/schema v1.6.0 // indirect
 	github.com/gofiber/utils/v2 v2.0.0-rc.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect

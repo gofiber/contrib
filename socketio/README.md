@@ -16,7 +16,7 @@ WebSocket wrapper for [Fiber](https://github.com/gofiber/fiber) with events supp
 
 ```
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/socketio
+go get -u github.com/gofiber/contrib/v3/socketio/v2
 ```
 
 ## Signatures
@@ -65,8 +65,8 @@ import (
     "fmt"
     "log"
 
-    "github.com/gofiber/contrib/socketio"
-    "github.com/gofiber/contrib/websocket"
+    "github.com/gofiber/contrib/v3/socketio/v2"
+    "github.com/gofiber/contrib/v3/websocket/v2"
     "github.com/gofiber/fiber/v3"
 )
 

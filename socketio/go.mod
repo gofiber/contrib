@@ -1,10 +1,10 @@
-module github.com/gofiber/contrib/socketio
+module github.com/gofiber/contrib/v3/socketio/v2
 
 go 1.25.0
 
 require (
 	github.com/fasthttp/websocket v1.5.10
-	github.com/gofiber/contrib/websocket v1.3.4
+	github.com/gofiber/contrib/v3/websocket/v2 v2.0.0
 	github.com/gofiber/fiber/v3 v3.0.0-beta.5.0.20250823172527-323d2c85c4a1
 	github.com/google/uuid v1.6.0
 	github.com/stretchr/testify v1.10.0
@@ -34,3 +34,5 @@ require (
 	golang.org/x/text v0.28.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/gofiber/contrib/v3/websocket/v2 => ../websocket

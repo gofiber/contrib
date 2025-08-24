@@ -18,7 +18,7 @@ This middleware supports Fiber v3.
 
 ```
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/fiberi18n/v2
+go get -u github.com/gofiber/contrib/v3/fiberi18n/v3
 ```
 
 ## Signature
@@ -50,7 +50,7 @@ package main
 import (
 	"log"
 
-	"github.com/gofiber/contrib/fiberi18n/v2"
+	"github.com/gofiber/contrib/v3/fiberi18n/v3"
 	"github.com/gofiber/fiber/v3"
 	"github.com/nicksnyder/go-i18n/v2/i18n"
 	"golang.org/x/text/language"

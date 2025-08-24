@@ -9,7 +9,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 
-	"github.com/gofiber/contrib/otelfiber"
+	"github.com/gofiber/contrib/v3/otelfiber/v3"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	stdout "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"

@@ -22,7 +22,7 @@ This middleware supports Fiber v3.
 
 ```
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/paseto
+go get -u github.com/gofiber/contrib/v3/paseto/v2
 go get -u github.com/o1egl/paseto
 ```
 
@@ -73,7 +73,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/o1egl/paseto"
 
-	pasetoware "github.com/gofiber/contrib/paseto"
+	pasetoware "github.com/gofiber/contrib/v3/paseto/v2"
 )
 
 const secretSymmetricKey = "symmetric-secret-key (size = 32)"
@@ -171,7 +171,7 @@ import (
 
 	"github.com/o1egl/paseto"
 
-	pasetoware "github.com/gofiber/contrib/paseto"
+	pasetoware "github.com/gofiber/contrib/v3/paseto/v2"
 )
 
 const secretSymmetricKey = "symmetric-secret-key (size = 32)"
@@ -286,7 +286,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 
-	pasetoware "github.com/gofiber/contrib/paseto"
+	pasetoware "github.com/gofiber/contrib/v3/paseto/v2"
 )
 
 const privateKeySeed = "e9c67fe2433aa4110caf029eba70df2c822cad226b6300ead3dcae443ac3810f"
