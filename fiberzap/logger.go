@@ -11,7 +11,7 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-var _ fiberlog.AllLogger = (*LoggerConfig)(nil)
+var _ fiberlog.AllLogger[*zap.Logger] = (*LoggerConfig)(nil)
 
 type LoggerConfig struct {
 	// CoreConfigs allows users to configure Encoder, WriteSyncer, LevelEnabler configuration items provided by zapcore
