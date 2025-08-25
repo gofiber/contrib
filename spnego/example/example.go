@@ -1,10 +1,11 @@
-package spnego
+package example
 
 import (
 	"fmt"
 	"time"
 
-	"github.com/gofiber/contrib/spnego/config"
+	"github.com/gofiber/contrib/spnego"
+	"github.com/gofiber/contrib/spnego/utils"
 	v3 "github.com/gofiber/contrib/spnego/v3"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/log"
@@ -12,11 +13,27 @@ import (
 
 func ExampleNewSpnegoKrb5AuthenticateMiddleware() {
 	app := fiber.New()
-	keytabLookup, err := config.NewKeytabFileLookupFunc("/keytabFile/one.keytab", "/keytabFile/two.keyta")
+	// create mock keytab file
+	// you must use a real keytab file
+	_, clean, err := utils.NewMockKeytab(
+		utils.WithPrincipal("HTTP/sso1.example.com"),
+		utils.WithRealm("EXAMPLE.LOCAL"),
+		utils.WithFilename("./temp-sso1.keytab"),
+		utils.WithPairs(utils.EncryptTypePair{
+			Version:     2,
+			EncryptType: 18,
+			CreateTime:  time.Now(),
+		}),
+	)
+	if err != nil {
+		log.Fatalf("create mock keytab error: %v", err)
+	}
+	defer clean()
+	keytabLookup, err := spnego.NewKeytabFileLookupFunc("./temp-sso1.keytab")
 	if err != nil {
 		panic(fmt.Errorf("create keytab lookup function failed: %w", err))
 	}
-	authMiddleware, err := v3.NewSpnegoKrb5AuthenticateMiddleware(&config.Config{
+	authMiddleware, err := v3.NewSpnegoKrb5AuthenticateMiddleware(spnego.Config{
 		KeytabLookup: keytabLookup,
 	})
 	if err != nil {
@@ -27,7 +44,7 @@ func ExampleNewSpnegoKrb5AuthenticateMiddleware() {
 
 	// Access authenticated identity
 	app.Get("/protected/resource", func(c fiber.Ctx) error {
-		identity, ok := v3.GetAuthenticatedIdentityFromContext(c)
+		identity, ok := spnego.GetAuthenticatedIdentityFromContext(c)
 		if !ok {
 			return c.Status(fiber.StatusUnauthorized).SendString("Unauthorized")
 		}
