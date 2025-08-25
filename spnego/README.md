@@ -1,8 +1,16 @@
+---
+id: spnego
+---
+
 # SPNEGO Kerberos Authentication Middleware for Fiber
 
-[中文版本](README.zh-CN.md)
+![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=spnego*)
+[![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
+![Test](https://github.com/gofiber/contrib/workflows/Test%20spnego/badge.svg)
 
-This middleware provides SPNEGO (Simple and Protected GSSAPI Negotiation Mechanism) authentication for Fiber applications, enabling Kerberos authentication for HTTP requests.
+This middleware provides SPNEGO (Simple and Protected GSSAPI Negotiation Mechanism) authentication for [Fiber](https://github.com/gofiber/fiber) applications, enabling Kerberos authentication for HTTP requests and inspired by [gokrb5](https://github.com/jcmturner/gokrb5)
+
+[中文版本](README.zh-CN.md)
 
 ## Features
 
@@ -37,37 +45,33 @@ go get github.com/gofiber/contrib/spnego/v2
 package main
 
 import (
-    flog "github.com/gofiber/fiber/v3/log"
     "fmt"
+    "time"
 
-    "github.com/jcmturner/gokrb5/v8/keytab"
+    "github.com/gofiber/contrib/spnego"
+    "github.com/gofiber/contrib/spnego/utils"
+    v3 "github.com/gofiber/contrib/spnego/v3"
     "github.com/gofiber/fiber/v3"
-    "github.com/gofiber/contrib/spnego/v3"
+    "github.com/gofiber/fiber/v3/log"
 )
 
 func main() {
     app := fiber.New()
-
+    
     // Create a configuration with a keytab lookup function
-    cfg := &spnego.Config{
-        // Use a function to look up keytab from files
-        KeytabLookup: func() (*keytab.Keytab, error) {
-            // Implement your keytab lookup logic here
-            // This could be from files, database, or other sources
-            kt, err := spnego.NewKeytabFileLookupFunc("/path/to/keytab/file.keytab")
-            if err != nil {
-                return nil, err
-            }
-            return kt()
-        },
-        // Optional: Set a custom logger
-        Log: flog.DefaultLogger().Logger().(*log.Logger),
-    }
-
-    // Create the middleware
-    authMiddleware, err := v3.NewSpnegoKrb5AuthenticateMiddleware(cfg)
+    // For testing, you can create a mock keytab file using utils.NewMockKeytab
+    // In production, use a real keytab file
+    keytabLookup, err := spnego.NewKeytabFileLookupFunc("/path/to/keytab/file.keytab")
     if err != nil {
-        flog.Fatalf("Failed to create middleware: %v", err)
+        log.Fatalf("Failed to create keytab lookup function: %v", err)
+    }
+    
+    // Create the middleware
+    authMiddleware, err := v3.NewSpnegoKrb5AuthenticateMiddleware(spnego.Config{
+		KeytabLookup: keytabLookup,
+    })
+    if err != nil {
+        log.Fatalf("Failed to create middleware: %v", err)
     }
 
     // Apply the middleware to protected routes
@@ -75,7 +79,7 @@ func main() {
 
     // Access authenticated identity
     app.Get("/protected/resource", func(c fiber.Ctx) error {
-        identity, ok := v3.GetAuthenticatedIdentityFromContext(c)
+        identity, ok := spnego.GetAuthenticatedIdentityFromContext(c)
         if !ok {
             return c.Status(fiber.StatusUnauthorized).SendString("Unauthorized")
         }
@@ -96,32 +100,29 @@ import (
     "log"
     "os"
 
-    "github.com/jcmturner/gokrb5/v8/keytab"
+    "github.com/gofiber/contrib/spnego"
+    "github.com/gofiber/contrib/spnego/utils"
+    v2 "github.com/gofiber/contrib/spnego/v2"
     "github.com/gofiber/fiber/v2"
-    "github.com/gofiber/contrib/spnego/v2"
 )
 
 func main() {
     app := fiber.New()
-
+    
     // Create a configuration with a keytab lookup function
-    cfg := &spnego.Config{
-        // Use a function to look up keytab from files
-        KeytabLookup: func() (*keytab.Keytab, error) {
-            // Implement your keytab lookup logic here
-            // This could be from files, database, or other sources
-            kt, err := spnego.NewKeytabFileLookupFunc("/path/to/keytab/file.keytab")
-            if err != nil {
-                return nil, err
-            }
-            return kt()
-        },
+    // For testing, you can create a mock keytab file using utils.NewMockKeytab
+    // In production, use a real keytab file
+    keytabLookup, err := spnego.NewKeytabFileLookupFunc("/path/to/keytab/file.keytab")
+    if err != nil {
+        log.Fatalf("Failed to create keytab lookup function: %v", err)
+    }
+    
+    // Create the middleware
+    authMiddleware, err := v2.NewSpnegoKrb5AuthenticateMiddleware(spnego.Config{
+        KeytabLookup: keytabLookup,
         // Optional: Set a custom logger
         Log: log.New(os.Stderr, "", log.LstdFlags|log.Lshortfile|log.Lmicroseconds),
-    }
-
-    // Create the middleware
-    authMiddleware, err := v2.NewSpnegoKrb5AuthenticateMiddleware(cfg)
+    })
     if err != nil {
         log.Fatalf("Failed to create middleware: %v", err)
     }
@@ -131,7 +132,7 @@ func main() {
 
     // Access authenticated identity
     app.Get("/protected/resource", func(c *fiber.Ctx) error {
-        identity, ok := v2.GetAuthenticatedIdentityFromContext(c)
+        identity, ok := spnego.GetAuthenticatedIdentityFromContext(c)
         if !ok {
             return c.Status(fiber.StatusUnauthorized).SendString("Unauthorized")
         }
@@ -164,7 +165,7 @@ func remoteKeytabLookup() (*keytab.Keytab, error) {
 
 ## API Reference
 
-### `NewSpnegoKrb5AuthenticateMiddleware(cfg *Config) (fiber.Handler, error)`
+### `NewSpnegoKrb5AuthenticateMiddleware(cfg spnego.Config) (fiber.Handler, error)`
 
 Creates a new SPNEGO authentication middleware.
 
@@ -194,4 +195,4 @@ The `Config` struct supports the following fields:
 
 - Ensure your Kerberos infrastructure is properly configured
 - The middleware handles the SPNEGO negotiation process
-- Authenticated identities are stored in the Fiber context using `config.ContextKeyOfIdentity`
+- Authenticated identities are stored in the Fiber context using `spnego.contextKeyOfIdentity`
