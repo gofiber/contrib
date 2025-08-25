@@ -37,38 +37,33 @@
 package main
 
 import (
-    flog "github.com/gofiber/fiber/v3/log"
     "fmt"
-    "log"
+    "time"
 
-    "github.com/jcmturner/gokrb5/v8/keytab"
+    "github.com/gofiber/contrib/spnego"
+    "github.com/gofiber/contrib/spnego/utils"
+    v3 "github.com/gofiber/contrib/spnego/v3"
     "github.com/gofiber/fiber/v3"
-    "github.com/gofiber/contrib/spnego/v3"
+    "github.com/gofiber/fiber/v3/log"
 )
 
 func main() {
     app := fiber.New()
-
+    
     // 创建带有keytab查找函数的配置
-    cfg := &v3.Config{
-        // 使用函数从文件查找keytab
-        KeytabLookup: func() (*keytab.Keytab, error) {
-            // 在此实现您的keytab查找逻辑
-            // 可以从文件、数据库或其他来源获取
-            kt, err := v3.NewKeytabFileLookupFunc("/path/to/keytab/file.keytab")
-            if err != nil {
-                return nil, err
-            }
-            return kt()
-        },
-        // 可选：设置自定义日志器
-        Log: flog.DefaultLogger().Logger().(*log.Logger),
-    }
-
-    // 创建中间件
-    authMiddleware, err := v3.NewSpnegoKrb5AuthenticateMiddleware(cfg)
+    // 测试环境下，您可以使用utils.NewMockKeytab创建模拟keytab文件
+    // 生产环境下，请使用真实的keytab文件
+    keytabLookup, err := spnego.NewKeytabFileLookupFunc("/path/to/keytab/file.keytab")
     if err != nil {
-        flog.Fatalf("创建中间件失败: %v", err)
+        log.Fatalf("创建keytab查找函数失败: %v", err)
+    }
+    
+    // 创建中间件
+    authMiddleware, err := v3.NewSpnegoKrb5AuthenticateMiddleware(spnego.Config{
+        KeytabLookup: keytabLookup,
+    })
+    if err != nil {
+        log.Fatalf("创建中间件失败: %v", err)
     }
 
     // 将中间件应用于受保护的路由
@@ -76,7 +71,7 @@ func main() {
 
     // 访问认证身份
     app.Get("/protected/resource", func(c fiber.Ctx) error {
-        identity, ok := v3.GetAuthenticatedIdentityFromContext(c)
+        identity, ok := spnego.GetAuthenticatedIdentityFromContext(c)
         if !ok {
             return c.Status(fiber.StatusUnauthorized).SendString("未授权")
         }
@@ -97,32 +92,29 @@ import (
     "log"
     "os"
 
-    "github.com/jcmturner/gokrb5/v8/keytab"
+    "github.com/gofiber/contrib/spnego"
+    "github.com/gofiber/contrib/spnego/utils"
+    v2 "github.com/gofiber/contrib/spnego/v2"
     "github.com/gofiber/fiber/v2"
-    "github.com/gofiber/contrib/spnego/v2"
 )
 
 func main() {
     app := fiber.New()
-
+    
     // 创建带有keytab查找函数的配置
-    cfg := &v2.Config{
-        // 使用函数从文件查找keytab
-        KeytabLookup: func() (*keytab.Keytab, error) {
-            // 在此实现您的keytab查找逻辑
-            // 可以从文件、数据库或其他来源获取
-            kt, err := v2.NewKeytabFileLookupFunc("/path/to/keytab/file.keytab")
-            if err != nil {
-                return nil, err
-            }
-            return kt()
-        },
+    // 测试环境下，您可以使用utils.NewMockKeytab创建模拟keytab文件
+    // 生产环境下，请使用真实的keytab文件
+    keytabLookup, err := spnego.NewKeytabFileLookupFunc("/path/to/keytab/file.keytab")
+    if err != nil {
+        log.Fatalf("创建keytab查找函数失败: %v", err)
+    }
+    
+    // 创建中间件
+    authMiddleware, err := v2.NewSpnegoKrb5AuthenticateMiddleware(spnego.Config{
+        KeytabLookup: keytabLookup,
         // 可选：设置自定义日志器
         Log: log.New(os.Stderr, "", log.LstdFlags|log.Lshortfile|log.Lmicroseconds),
-    }
-
-    // 创建中间件
-    authMiddleware, err := v2.NewSpnegoKrb5AuthenticateMiddleware(cfg)
+    })
     if err != nil {
         log.Fatalf("创建中间件失败: %v", err)
     }
@@ -132,7 +124,7 @@ func main() {
 
     // 访问认证身份
     app.Get("/protected/resource", func(c *fiber.Ctx) error {
-        identity, ok := v2.GetAuthenticatedIdentityFromContext(c)
+        identity, ok := spnego.GetAuthenticatedIdentityFromContext(c)
         if !ok {
             return c.Status(fiber.StatusUnauthorized).SendString("未授权")
         }
@@ -141,31 +133,30 @@ func main() {
 
     app.Listen(":3000")
 }
-```
 
 ## 动态Keytab查找
 
-该中间件设计具有可扩展性，允许从静态文件以外的各种来源检索keytab：
+中间件的设计考虑了扩展性，允许从静态文件以外的各种来源检索keytab：
 
 ```go
 // 示例：从数据库检索keytab
 func dbKeytabLookup() (*keytab.Keytab, error) {
-    // 此处实现数据库查找逻辑
+    // 您的数据库查找逻辑
     // ...
     return keytabFromDatabase, nil
 }
 
 // 示例：从远程服务检索keytab
 func remoteKeytabLookup() (*keytab.Keytab, error) {
-    // 此处实现远程服务调用逻辑
+    // 您的远程服务调用逻辑
     // ...
     return keytabFromRemote, nil
 }
 ```
 
-## API 参考
+## API参考
 
-### `NewSpnegoKrb5AuthenticateMiddleware(cfg *Config) (fiber.Handler, error)`
+### `NewSpnegoKrb5AuthenticateMiddleware(cfg spnego.Config) (fiber.Handler, error)`
 
 创建一个新的SPNEGO认证中间件。
 
@@ -175,14 +166,14 @@ func remoteKeytabLookup() (*keytab.Keytab, error) {
 
 ### `NewKeytabFileLookupFunc(keytabFiles ...string) (KeytabLookupFunc, error)`
 
-创建一个加载keytab文件的KeytabLookupFunc。
+创建一个加载keytab文件的新KeytabLookupFunc。
 
 ## 配置
 
 `Config`结构体支持以下字段：
 
-- `KeytabLookup`: 检索keytab的函数（必需）
-- `Log`: 用于中间件日志记录的日志器（可选，默认为Fiber的默认日志器）
+- `KeytabLookup`：检索keytab的函数（必需）
+- `Log`：用于中间件日志记录的日志器（可选，默认为Fiber的默认日志器）
 
 ## 要求
 
@@ -195,4 +186,5 @@ func remoteKeytabLookup() (*keytab.Keytab, error) {
 
 - 确保您的Kerberos基础设施已正确配置
 - 中间件处理SPNEGO协商过程
-- 已认证的身份使用`contextKeyOfIdentity`存储在Fiber上下文中
+- 已认证的身份使用`spnego.contextKeyOfIdentity`存储在Fiber上下文中
+```
