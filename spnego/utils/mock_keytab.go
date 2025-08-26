@@ -140,6 +140,7 @@ func NewMockKeytab(opts ...MockOption) (*keytab.Keytab, func(), error) {
 			_ = defaultFileOperator.Remove(opt.Filename)
 		}
 		if _, err = kt.Write(file); err != nil {
+			file.Close()
 			clean()
 			return nil, nil, fmt.Errorf("error writing to file: %w", err)
 		}
