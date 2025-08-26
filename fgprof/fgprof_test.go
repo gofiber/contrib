@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 
@@ -54,7 +55,7 @@ func Test_Fgprof_Path(t *testing.T) {
 	app.Use(New())
 
 	// Default fgprof interval is 30 seconds
-	resp, err := app.Test(httptest.NewRequest("GET", "/debug/fgprof?seconds=1", nil), fiber.TestConfig{Timeout: 1500})
+	resp, err := app.Test(httptest.NewRequest("GET", "/debug/fgprof?seconds=1", nil), fiber.TestConfig{Timeout: 1500 * time.Millisecond})
 	assert.Equal(t, nil, err)
 	assert.Equal(t, 200, resp.StatusCode)
 }
@@ -70,11 +71,11 @@ func Test_Fgprof_Path_WithPrefix(t *testing.T) {
 	})
 
 	// Non fgprof prefix path
-	resp, err := app.Test(httptest.NewRequest("GET", "/prefix/debug/fgprof?seconds=1", nil), fiber.TestConfig{Timeout: 1500})
+	resp, err := app.Test(httptest.NewRequest("GET", "/prefix/debug/fgprof?seconds=1", nil), fiber.TestConfig{Timeout: 1500 * time.Millisecond})
 	assert.Equal(t, nil, err)
 	assert.Equal(t, 404, resp.StatusCode)
 	// Fgprof prefix path
-	resp, err = app.Test(httptest.NewRequest("GET", "/test/debug/fgprof?seconds=1", nil), fiber.TestConfig{Timeout: 1500})
+	resp, err = app.Test(httptest.NewRequest("GET", "/test/debug/fgprof?seconds=1", nil), fiber.TestConfig{Timeout: 1500 * time.Millisecond})
 	assert.Equal(t, nil, err)
 	assert.Equal(t, 200, resp.StatusCode)
 }

@@ -4,8 +4,8 @@ go 1.25.0
 
 require (
 	github.com/felixge/fgprof v0.9.5
-	github.com/gofiber/fiber/v3 v3.0.0-beta.5.0.20250824113156-64a711307367
-	github.com/stretchr/testify v1.10.0
+	github.com/gofiber/fiber/v3 v3.0.0-rc.1
+	github.com/stretchr/testify v1.11.0
 )
 
 require (
@@ -13,7 +13,7 @@ require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/gofiber/schema v1.6.0 // indirect
 	github.com/gofiber/utils/v2 v2.0.0-rc.1 // indirect
-	github.com/google/pprof v0.0.0-20240227163752-401108e1b7e7 // indirect
+	github.com/google/pprof v0.0.0-20250820193118-f64d9cf942d6 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
