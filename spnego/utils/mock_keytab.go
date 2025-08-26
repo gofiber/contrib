@@ -132,7 +132,7 @@ func NewMockKeytab(opts ...MockOption) (*keytab.Keytab, func(), error) {
 	}
 	var clean = func() {}
 	if len(opt.Filename) > 0 {
-		file, err := defaultFileOperator.OpenFile(opt.Filename, os.O_RDWR|os.O_CREATE, 0o666)
+		file, err := defaultFileOperator.OpenFile(opt.Filename, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o666)
 		if err != nil {
 			return nil, nil, fmt.Errorf("error opening file: %w", err)
 		}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path"
 	"testing"
 	"time"
 
@@ -41,10 +42,12 @@ func TestNewSpnegoKrb5AuthenticateMiddleware(t *testing.T) {
 	})
 	t.Run("test for keytab lookup function is set", func(t *testing.T) {
 		tm := time.Now()
+		filename1 := path.Join(t.TempDir(), "temp-sso1.keytab")
+		filename2 := path.Join(t.TempDir(), "temp-sso2.keytab")
 		_, clean1, err1 := utils.NewMockKeytab(
 			utils.WithPrincipal("HTTP/sso1.example.com"),
 			utils.WithRealm("EXAMPLE.LOCAL"),
-			utils.WithFilename("./temp-sso1.keytab"),
+			utils.WithFilename(filename1),
 			utils.WithPairs(utils.EncryptTypePair{
 				Version:     2,
 				EncryptType: 18,
@@ -56,7 +59,7 @@ func TestNewSpnegoKrb5AuthenticateMiddleware(t *testing.T) {
 		_, clean2, err2 := utils.NewMockKeytab(
 			utils.WithPrincipal("HTTP/sso2.example.com"),
 			utils.WithRealm("EXAMPLE.LOCAL"),
-			utils.WithFilename("./temp-sso2.keytab"),
+			utils.WithFilename(filename2),
 			utils.WithPairs(utils.EncryptTypePair{
 				Version:     2,
 				EncryptType: 18,
@@ -65,7 +68,7 @@ func TestNewSpnegoKrb5AuthenticateMiddleware(t *testing.T) {
 		)
 		require.NoError(t, err2)
 		t.Cleanup(clean2)
-		lookupFunc, err := spnego.NewKeytabFileLookupFunc("./temp-sso1.keytab", "./temp-sso2.keytab")
+		lookupFunc, err := spnego.NewKeytabFileLookupFunc(filename1, filename2)
 		require.NoError(t, err)
 		middleware, err := NewSpnegoKrb5AuthenticateMiddleware(spnego.Config{
 			KeytabLookup: lookupFunc,
