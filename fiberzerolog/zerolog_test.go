@@ -217,7 +217,7 @@ func Test_Logger_All(t *testing.T) {
 		"message":       "Client error",
 		"method":        "GET",
 		"route":         "/",
-		"protocol":      "http",
+		"protocol":      "HTTP/1.1",
 		"pid":           float64(os.Getpid()),
 		"queryParams":   "foo=bar",
 		"resBody":       "Not Found",

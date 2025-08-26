@@ -4,9 +4,9 @@ go 1.25.0
 
 require (
 	github.com/MicahParks/keyfunc/v2 v2.1.0
-	github.com/gofiber/fiber/v3 v3.0.0-beta.5.0.20250824113156-64a711307367
-	github.com/golang-jwt/jwt/v5 v5.2.2
-	github.com/stretchr/testify v1.10.0
+	github.com/gofiber/fiber/v3 v3.0.0-rc.1
+	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/stretchr/testify v1.11.0
 )
 
 require (

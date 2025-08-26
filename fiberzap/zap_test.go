@@ -147,12 +147,12 @@ func Test_Logger_All(t *testing.T) {
 		"url":           "/?foo=bar",
 		"method":        "GET",
 		"route":         "/",
-		"protocol":      "http",
+		"protocol":      "HTTP/1.1",
 		"pid":           strconv.Itoa(os.Getpid()),
 		"queryParams":   "foo=bar",
-		"resBody":       "Cannot GET /",
+		"resBody":       "Not Found",
 		"bytesReceived": int64(0),
-		"bytesSent":     int64(12),
+		"bytesSent":     int64(9),
 	}
 
 	assert.Equal(t, expected, logs.All()[0].ContextMap())
@@ -472,7 +472,7 @@ func Test_Fields_Func(t *testing.T) {
 		"url":               "/",
 		"method":            "GET",
 		"route":             "/",
-		"protocol":          "http",
+		"protocol":          "HTTP/1.1",
 		"pid":               strconv.Itoa(os.Getpid()),
 		"queryParams":       "",
 		"resBody":           "hello",

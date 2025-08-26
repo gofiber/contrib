@@ -78,6 +78,9 @@ func New(cfg Config) fiber.Handler {
 		txn := app.StartTransaction(createTransactionName(c))
 		defer txn.End()
 
+		// Store transaction for retrieval via FromContext
+		c.Locals("newrelic_txn", txn)
+
 		var (
 			host   = utils.CopyString(c.Hostname())
 			method = utils.CopyString(c.Method())
@@ -97,8 +100,6 @@ func New(cfg Config) fiber.Handler {
 			},
 		})
 
-		// TODO: SetUserContext was removed, please migrate manually: c.SetUserContext(newrelic.NewContext(c, txn))
-
 		handlerErr := c.Next()
 		statusCode := c.RequestCtx().Response.StatusCode()
 
@@ -116,7 +117,10 @@ func New(cfg Config) fiber.Handler {
 // FromContext returns the Transaction from the context if present, and nil
 // otherwise.
 func FromContext(c fiber.Ctx) *newrelic.Transaction {
-	return newrelic.FromContext(c)
+	if txn, ok := c.Locals("newrelic_txn").(*newrelic.Transaction); ok {
+		return txn
+	}
+	return nil
 }
 
 func createTransactionName(c fiber.Ctx) string {

@@ -79,6 +79,7 @@ var ConfigDefault = Config{
 	ErrorHandler:   nil,
 	Validate:       nil,
 	SymmetricKey:   nil,
+	ContextKey:     DefaultContextKey,
 	TokenLookup:    [2]string{LookupHeader, fiber.HeaderAuthorization},
 }
 
