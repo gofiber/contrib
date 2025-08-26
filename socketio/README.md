@@ -12,6 +12,8 @@ WebSocket wrapper for [Fiber](https://github.com/gofiber/fiber) with events supp
 
 **Note: Requires Go 1.25 and above**
 
+This middleware supports Fiber v3.
+
 ## Install
 
 ```

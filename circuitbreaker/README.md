@@ -10,6 +10,8 @@ id: circuitbreaker
 
 A **Circuit Breaker** is a software design pattern used to prevent system failures when a service is experiencing high failures or slow responses. It helps improve system resilience by **stopping requests** to an unhealthy service and **allowing recovery** once it stabilizes.
 
+This middleware supports Fiber v3.
+
 ## How It Works
 
 1. **Closed State:**  

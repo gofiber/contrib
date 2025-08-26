@@ -27,7 +27,7 @@ Requires Go **1.25** and above
 
 :::caution
 
-This Service Implementation only supports Fiber **v3**.
+This Service Implementation only supports Fiber v3.
 
 :::
 

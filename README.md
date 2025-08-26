@@ -13,6 +13,14 @@ sidebar_position: 1
 
 Repository for third party middlewares and service implementations, with dependencies.
 
+All modules in this branch target Fiber v3 and live under the
+`github.com/gofiber/contrib/v3` module namespace. Each middleware or service also
+bumps its own major version, for example:
+
+```bash
+go get -u github.com/gofiber/contrib/v3/fibernewrelic/v2
+```
+
 </div>
 
 ## 📑 Middleware Implementations

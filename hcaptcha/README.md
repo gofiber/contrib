@@ -20,7 +20,7 @@ Requires Go **1.25** and above
 
 :::caution
 
-This middleware only supports Fiber **v3**.
+This middleware only supports Fiber v3.
 
 :::
 

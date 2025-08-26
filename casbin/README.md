@@ -10,6 +10,8 @@ id: casbin
 
 Casbin middleware for Fiber.
 
+This middleware supports Fiber v3.
+
 **Note: Requires Go 1.25 and above**
 
 ## Install

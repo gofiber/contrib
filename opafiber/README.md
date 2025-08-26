@@ -10,6 +10,8 @@ id: opafiber
 
 [Open Policy Agent](https://github.com/open-policy-agent/opa) support for Fiber.
 
+This middleware supports Fiber v3.
+
 **Note: Requires Go 1.25 and above**
 
 ## Install
