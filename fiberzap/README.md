@@ -32,14 +32,14 @@ fiberzap.New(config ...fiberzap.Config) fiber.Handler
 
 | Property   | Type                       | Description                                                                                                                                                                    | Default                                                                     |
 | :--------- | :------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------- |
-| Next       | `func(*Ctx) bool`          | Define a function to skip this middleware when returned true                                                                                                                   | `nil`                                                                       |
+| Next       | `func(fiber.Ctx) bool`     | Define a function to skip this middleware when returned true                                                                                           | `nil`                                         |
 | Logger     | `*zap.Logger`              | Add custom zap logger.                                                                                                                                                         | `zap.NewDevelopment()`                                                      |
 | Fields     | `[]string`                 | Add fields what you want see.                                                                                                                                                  | `[]string{"latency", "status", "method", "url"}`                            |
 | FieldsFunc | `[]zap.Field`              | Define a function to add custom fields.                                                                                                                                        | `nil`                                                                       |
 | Messages   | `[]string`                 | Custom response messages.                                                                                                                                                      | `[]string{"Server error", "Client error", "Success"}`                       |
 | Levels     | `[]zapcore.Level`          | Custom response levels.                                                                                                                                                        | `[]zapcore.Level{zapcore.ErrorLevel, zapcore.WarnLevel, zapcore.InfoLevel}` |
 | SkipURIs   | `[]string`                 | Skip logging these URI.                                                                                                                                                        | `[]string{}`                                                                |
-| GetResBody | func(c \*fiber.Ctx) []byte | Define a function to get response body when return non-nil.<br />eg: When use compress middleware, resBody is unreadable. you can set GetResBody func to get readable resBody. | `nil`                                                                       |
+| GetResBody | func(c fiber.Ctx) []byte | Define a function to get response body when return non-nil.<br />eg: When use compress middleware, resBody is unreadable. you can set GetResBody func to get readable resBody. | `nil`                                        |
 
 ### Example
 
@@ -63,7 +63,7 @@ func main() {
         Logger: logger,
     }))
 
-    app.Get("/", func (c *fiber.Ctx) error {
+    app.Get("/", func (c fiber.Ctx) error {
         return c.SendString("Hello, World!")
     })
 
@@ -108,12 +108,12 @@ func main() {
     log.SetLogger(logger)
     defer logger.Sync()
 
-    app.Use(func(c *fiber.Ctx) error {
+    app.Use(func(c fiber.Ctx) error {
         ctx := context.WithValue(c.UserContext(), "request_id", "123")
         c.SetUserContext(ctx)
         return c.Next()
     })
-    app.Get("/", func(c *fiber.Ctx) error {
+    app.Get("/", func(c fiber.Ctx) error {
         log.WithContext(c.UserContext()).Info("Hello, World!")
         return c.SendString("Hello, World!")
     })

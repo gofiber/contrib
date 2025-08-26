@@ -27,7 +27,7 @@ go get -u github.com/gofiber/contrib/v3/socketio/v2
 // Initialize new socketio in the callback this will
 // execute a callback that expects kws *Websocket Object
 // and optional config websocket.Config
-func New(callback func(kws *Websocket), config ...websocket.Config) func(*fiber.Ctx) error
+func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.Ctx) error
 ```
 
 ```go
@@ -89,7 +89,7 @@ func main() {
     app := fiber.New()
 
     // Setup the middleware to retrieve the data sent in first GET request
-    app.Use(func(c *fiber.Ctx) error {
+    app.Use(func(c fiber.Ctx) error {
         // IsWebSocketUpgrade returns true if the client
         // requested upgrade to the WebSocket protocol.
         if websocket.IsWebSocketUpgrade(c) {

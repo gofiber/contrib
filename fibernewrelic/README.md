@@ -36,8 +36,8 @@ fibernewrelic.New(config fibernewrelic.Config) fiber.Handler
 | Enabled                | `bool`           | Enable/Disable New Relic                                    | `false`                         |
 | ~~TransportType~~      | ~~`string`~~     | ~~Can be HTTP or HTTPS~~ (Deprecated)                       | ~~`"HTTP"`~~                    |
 | Application            | `Application`    | Existing New Relic App                                      | `nil`                           |
-| ErrorStatusCodeHandler | `func(c *fiber.Ctx, err error) int`    | If you want to change newrelic status code, you can use it. | `DefaultErrorStatusCodeHandler` |
-| Next                   | `func(c *fiber.Ctx) bool`    | Next defines a function to skip this middleware when returned true.                                                           | `nil`                           |
+| ErrorStatusCodeHandler | `func(c fiber.Ctx, err error) int`    | If you want to change newrelic status code, you can use it. | `DefaultErrorStatusCodeHandler` |
+| Next                   | `func(c fiber.Ctx) bool`    | Next defines a function to skip this middleware when returned true.                                                           | `nil`                           |
 
 
 ## Usage
@@ -53,7 +53,7 @@ import (
 func main() {
 	app := fiber.New()
 
-	app.Get("/", func(ctx *fiber.Ctx) error {
+	app.Get("/", func(ctx fiber.Ctx) error {
 		return ctx.SendStatus(200)
 	})
 
@@ -89,11 +89,11 @@ func main() {
 
 	app := fiber.New()
 
-	app.Get("/", func(ctx *fiber.Ctx) error {
+	app.Get("/", func(ctx fiber.Ctx) error {
 		return ctx.SendStatus(200)
 	})
 	
-	app.Get("/foo", func(ctx *fiber.Ctx) error {
+	app.Get("/foo", func(ctx fiber.Ctx) error {
 		txn := newrelic.FromContext(ctx)
 		segment := txn.StartSegment("foo segment")
 		defer segment.End()

@@ -55,7 +55,7 @@ func main() {
     },
   }))
 
-  app.Get("/", func(c *fiber.Ctx) error {
+  app.Get("/", func(c fiber.Ctx) error {
     return c.SendString("Welcome!")
   })
 
@@ -85,7 +85,7 @@ func main() {
       Interval:       10 * time.Second,
       Getter:         &loadshed.DefaultCPUPercentGetter{},
     },
-    OnShed: func(ctx *fiber.Ctx) error {
+    OnShed: func(ctx fiber.Ctx) error {
       if ctx.Method() == fiber.MethodGet {
         return ctx.
           Status(fiber.StatusTooManyRequests).
@@ -100,7 +100,7 @@ func main() {
     },
   }))
 
-  app.Get("/", func(c *fiber.Ctx) error {
+  app.Get("/", func(c fiber.Ctx) error {
     return c.SendString("Welcome!")
   })
 
@@ -114,9 +114,9 @@ The LoadShed middleware in Fiber offers various configuration options to tailor 
 
 | Property | Type                       | Description                                             | Default                 |
 |:---------|:---------------------------|:--------------------------------------------------------|:------------------------|
-| Next     | `func(*fiber.Ctx) bool`    | Function to skip this middleware when returned true.    | `nil`                   |
+| Next     | `func(fiber.Ctx) bool`    | Function to skip this middleware when returned true.    | `nil`                   |
 | Criteria | `LoadCriteria`             | Interface for defining load shedding criteria.          | `&CPULoadCriteria{...}` |
-| OnShed   | `func(c *fiber.Ctx) error` | Function to be executed if a request should be declined | `nil`                   |
+| OnShed   | `func(c fiber.Ctx) error` | Function to be executed if a request should be declined | `nil`                   |
 
 ## LoadCriteria
 

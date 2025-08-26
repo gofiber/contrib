@@ -30,14 +30,14 @@ go get -u github.com/golang-jwt/jwt/v5
 ## Signature
 
 ```go
-jwtware.New(config ...jwtware.Config) func(*fiber.Ctx) error
+jwtware.New(config ...jwtware.Config) func(fiber.Ctx) error
 ```
 
 ## Config
 
 | Property           | Type                                 | Description                                                                                                                                                                                                                                                            | Default                      |
 |--------------------|--------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------|
-| Filter             | `func(*fiber.Ctx) bool`              | Function to skip middleware execution for specific requests. Optional.                                                                                                                                                                                                 | `nil`                        |
+| Filter             | `func(fiber.Ctx) bool`              | Function to skip middleware execution for specific requests. Optional.                                                                                                                                                                                                 | `nil`                        |
 | SuccessHandler     | `fiber.Handler`                      | Handler executed when a token is successfully validated. Optional.                                                                                                                                                                                                     | `nil`                        |
 | ErrorHandler       | `fiber.ErrorHandler`                 | Handler executed when token validation fails. Allows customization of JWT error responses. Optional.                                                                                                                                                                   | `401 Invalid or expired JWT` |
 | SigningKey         | `SigningKey`                         | Primary key used to validate tokens. Used as a fallback if SigningKeys is empty. At least one of KeyFunc, JWKSetURLs, SigningKeys, or SigningKey is required.                                                                                                          | `nil`                        |
@@ -84,7 +84,7 @@ func main() {
  app.Listen(":3000")
 }
 
-func login(c *fiber.Ctx) error {
+func login(c fiber.Ctx) error {
  user := c.FormValue("user")
  pass := c.FormValue("pass")
 
@@ -112,11 +112,11 @@ func login(c *fiber.Ctx) error {
  return c.JSON(fiber.Map{"token": t})
 }
 
-func accessible(c *fiber.Ctx) error {
+func accessible(c fiber.Ctx) error {
  return c.SendString("Accessible")
 }
 
-func restricted(c *fiber.Ctx) error {
+func restricted(c fiber.Ctx) error {
  user := c.Locals("user").(*jwt.Token)
  claims := user.Claims.(jwt.MapClaims)
  name := claims["name"].(string)
@@ -209,7 +209,7 @@ func main() {
  app.Listen(":3000")
 }
 
-func login(c *fiber.Ctx) error {
+func login(c fiber.Ctx) error {
  user := c.FormValue("user")
  pass := c.FormValue("pass")
 
@@ -238,11 +238,11 @@ func login(c *fiber.Ctx) error {
  return c.JSON(fiber.Map{"token": t})
 }
 
-func accessible(c *fiber.Ctx) error {
+func accessible(c fiber.Ctx) error {
  return c.SendString("Accessible")
 }
 
-func restricted(c *fiber.Ctx) error {
+func restricted(c fiber.Ctx) error {
  user := c.Locals("user").(*jwt.Token)
  claims := user.Claims.(jwt.MapClaims)
  name := claims["name"].(string)
@@ -288,7 +288,7 @@ func main() {
   KeyFunc: customKeyFunc(),
  }))
 
- app.Get("/ok", func(c *fiber.Ctx) error {
+ app.Get("/ok", func(c fiber.Ctx) error {
   return c.SendString("OK")
  })
 }
