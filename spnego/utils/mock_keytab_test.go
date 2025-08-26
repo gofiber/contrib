@@ -2,6 +2,7 @@ package utils
 
 import (
 	"os"
+	"path"
 	"testing"
 	"time"
 
@@ -67,7 +68,11 @@ func TestNewMockKeytab(t *testing.T) {
 		require.Equal(t, 3, kv)
 	})
 	t.Run("test file open failed", func(t *testing.T) {
+		prevFileOperator := defaultFileOperator
 		defaultFileOperator = mockFileOperator{flag: 0x01}
+		t.Cleanup(func() {
+			defaultFileOperator = prevFileOperator
+		})
 		_, _, err := NewMockKeytab(
 			WithPrincipal("HTTP/sso.example.com"),
 			WithRealm("TEST.LOCAL"),
@@ -82,7 +87,11 @@ func TestNewMockKeytab(t *testing.T) {
 		require.NoFileExists(t, "./temp.keytab")
 	})
 	t.Run("test file write failed", func(t *testing.T) {
+		prevFileOperator := defaultFileOperator
 		defaultFileOperator = mockFileOperator{flag: 0x02}
+		t.Cleanup(func() {
+			defaultFileOperator = prevFileOperator
+		})
 		_, _, err := NewMockKeytab(
 			WithPrincipal("HTTP/sso.example.com"),
 			WithRealm("TEST.LOCAL"),
@@ -97,7 +106,7 @@ func TestNewMockKeytab(t *testing.T) {
 		require.NoFileExists(t, "./temp.keytab")
 	})
 	t.Run("test file created", func(t *testing.T) {
-		defaultFileOperator = myFileOperator{}
+		filename := path.Join(t.TempDir(), "temp.keytab")
 		tm := time.Now()
 		_, clean, err := NewMockKeytab(
 			WithPrincipal("HTTP/sso.example.com"),
@@ -107,12 +116,12 @@ func TestNewMockKeytab(t *testing.T) {
 				EncryptType: 18,
 				CreateTime:  tm,
 			}),
-			WithFilename("./temp.keytab"),
+			WithFilename(filename),
 		)
 		require.NoError(t, err)
 		t.Cleanup(clean)
-		require.FileExists(t, "./temp.keytab")
-		kt, err := keytab.Load("./temp.keytab")
+		require.FileExists(t, filename)
+		kt, err := keytab.Load(filename)
 		require.NoError(t, err)
 		_, kv, err := kt.GetEncryptionKey(types.NewPrincipalName(1, "HTTP/sso.example.com"), "TEST.LOCAL", 3, 18)
 		require.NoError(t, err)
