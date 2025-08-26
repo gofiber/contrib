@@ -31,14 +31,15 @@ casbin.New(config ...casbin.Config) *casbin.Middleware
 
 ## Config
 
-| Property      | Type                      | Description                              | Default                                                             |
-|:--------------|:--------------------------|:-----------------------------------------|:--------------------------------------------------------------------|
-| ModelFilePath | `string`                  | Model file path                          | `"./model.conf"`                                                    |
-| PolicyAdapter | `persist.Adapter`         | Database adapter for policies            | `./policy.csv`                                                      |
-| Enforcer      | `*casbin.Enforcer`        | Custom casbin enforcer                   | `Middleware generated enforcer using ModelFilePath & PolicyAdapter` |
-| Lookup        | `func(*fiber.Ctx) string` | Look up for current subject              | `""`                                                                |
-| Unauthorized  | `func(*fiber.Ctx) error`  | Response body for unauthorized responses | `Unauthorized`                                                      |
-| Forbidden     | `func(*fiber.Ctx) error`  | Response body for forbidden responses    | `Forbidden`                                                         |
+| Property      | Type                     | Description                              | Default |
+|:--------------|:-------------------------|:-----------------------------------------|:-----------------------------------------------|
+| ModelFilePath | `string`                 | Model file path                          | `"./model.conf"` |
+| PolicyAdapter | `persist.Adapter`        | Database adapter for policies            | `fileadapter.NewAdapter("./policy.csv")` |
+| Enforcer      | `*casbin.Enforcer`       | Custom casbin enforcer                   | Middleware generated enforcer using ModelFilePath & PolicyAdapter |
+| Lookup        | `func(fiber.Ctx) string` | Look up for current subject              | `func(c fiber.Ctx) string { return "" }` |
+| Unauthorized  | `fiber.Handler`          | Response body for unauthorized responses | `func(c fiber.Ctx) error { return c.SendStatus(fiber.StatusUnauthorized) }` |
+| Forbidden     | `fiber.Handler`          | Response body for forbidden responses    | `func(c fiber.Ctx) error { return c.SendStatus(fiber.StatusForbidden) }` |
+
 
 ### Examples
 - [Gorm Adapter](https://github.com/svcg/-fiber_casbin_demo)
@@ -62,21 +63,21 @@ func main() {
   authz := casbin.New(casbin.Config{
       ModelFilePath: "path/to/rbac_model.conf",
       PolicyAdapter: xormadapter.NewAdapter("mysql", "root:@tcp(127.0.0.1:3306)/"),
-      Lookup: func(c *fiber.Ctx) string {
+      Lookup: func(c fiber.Ctx) string {
           // fetch authenticated user subject
       },
   })
 
   app.Post("/blog",
       authz.RequiresPermissions([]string{"blog:create"}, casbin.WithValidationRule(casbin.MatchAllRule)),
-      func(c *fiber.Ctx) error {
+      func(c fiber.Ctx) error {
         // your handler
       },
   )
   
   app.Delete("/blog/:id",
     authz.RequiresPermissions([]string{"blog:create", "blog:delete"}, casbin.WithValidationRule(casbin.AtLeastOneRule)),
-    func(c *fiber.Ctx) error {
+    func(c fiber.Ctx) error {
       // your handler
     },
   )
@@ -103,7 +104,7 @@ func main() {
   authz := casbin.New(casbin.Config{
       ModelFilePath: "path/to/rbac_model.conf",
       PolicyAdapter: xormadapter.NewAdapter("mysql", "root:@tcp(127.0.0.1:3306)/"),
-      Lookup: func(c *fiber.Ctx) string {
+      Lookup: func(c fiber.Ctx) string {
           // fetch authenticated user subject
       },
   })
@@ -111,7 +112,7 @@ func main() {
   // check permission with Method and Path
   app.Post("/blog",
     authz.RoutePermission(),
-    func(c *fiber.Ctx) error {
+    func(c fiber.Ctx) error {
       // your handler
     },
   )
@@ -138,14 +139,14 @@ func main() {
   authz := casbin.New(casbin.Config{
       ModelFilePath: "path/to/rbac_model.conf",
       PolicyAdapter: xormadapter.NewAdapter("mysql", "root:@tcp(127.0.0.1:3306)/"),
-      Lookup: func(c *fiber.Ctx) string {
+      Lookup: func(c fiber.Ctx) string {
           // fetch authenticated user subject
       },
   })
   
   app.Put("/blog/:id",
     authz.RequiresRoles([]string{"admin"}),
-    func(c *fiber.Ctx) error {
+    func(c fiber.Ctx) error {
       // your handler
     },
   )
