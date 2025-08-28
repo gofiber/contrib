@@ -1,6 +1,6 @@
 module github.com/gofiber/contrib/fibersentry
 
-go 1.18
+go 1.23.0
 
 require (
 	github.com/getsentry/sentry-go v0.29.1
@@ -26,5 +26,5 @@ require (
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/tcplisten v1.0.0 // indirect
 	golang.org/x/sys v0.28.0 // indirect
-	golang.org/x/text v0.14.0 // indirect
+	golang.org/x/text v0.28.0 // indirect
 )
