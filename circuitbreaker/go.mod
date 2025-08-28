@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/circuitbreaker
 go 1.23.0
 
 require (
-	github.com/gofiber/fiber/v2 v2.52.6
+	github.com/gofiber/fiber/v2 v2.52.9
 	github.com/stretchr/testify v1.11.1
 )
 
