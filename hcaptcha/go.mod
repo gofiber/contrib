@@ -4,7 +4,7 @@ go 1.23.0
 
 require (
 	github.com/gofiber/fiber/v3 v3.0.0-beta.3
-	github.com/stretchr/testify v1.10.0
+	github.com/stretchr/testify v1.11.1
 	github.com/valyala/fasthttp v1.63.0
 )
 
