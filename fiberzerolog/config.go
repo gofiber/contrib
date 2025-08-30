@@ -4,7 +4,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/rs/zerolog"
 )
 
@@ -31,6 +31,15 @@ const (
 	FieldRequestID     = "requestId"
 	FieldError         = "error"
 	FieldReqHeaders    = "reqHeaders"
+	FieldResHeaders    = "resHeaders"
+
+	fieldResBody_       = "res_body"
+	fieldQueryParams_   = "query_params"
+	fieldBytesReceived_ = "bytes_received"
+	fieldBytesSent_     = "bytes_sent"
+	fieldRequestID_     = "request_id"
+	fieldReqHeaders_    = "req_headers"
+	fieldResHeaders_    = "res_headers"
 )
 
 // Config defines the config for middleware.
@@ -38,23 +47,23 @@ type Config struct {
 	// Next defines a function to skip this middleware when returned true.
 	//
 	// Optional. Default: nil
-	Next func(c *fiber.Ctx) bool
+	Next func(c fiber.Ctx) bool
 
 	// SkipBody defines a function to skip log  "body" field when returned true.
 	//
 	// Optional. Default: nil
-	SkipBody func(c *fiber.Ctx) bool
+	SkipBody func(c fiber.Ctx) bool
 
 	// SkipResBody defines a function to skip log  "resBody" field when returned true.
 	//
 	// Optional. Default: nil
-	SkipResBody func(c *fiber.Ctx) bool
+	SkipResBody func(c fiber.Ctx) bool
 
 	// GetResBody defines a function to get ResBody.
 	//  eg: when use compress middleware, resBody is unreadable. you can set GetResBody func to get readable resBody.
 	//
 	// Optional. Default: nil
-	GetResBody func(c *fiber.Ctx) []byte
+	GetResBody func(c fiber.Ctx) []byte
 
 	// Skip logging for these uri
 	//
@@ -72,12 +81,26 @@ type Config struct {
 	// GetLogger will override Logger.
 	//
 	// Optional. Default: nil
-	GetLogger func(c *fiber.Ctx) zerolog.Logger
+	GetLogger func(c fiber.Ctx) zerolog.Logger
 
 	// Add fields what you want see.
 	//
 	// Optional. Default: {"ip", "latency", "status", "method", "url", "error"}
 	Fields []string
+
+	// Wrap headers to dictionary.
+	// If false: {"method":"POST", "header-key":"header value"}
+	// If true: {"method":"POST", "reqHeaders": {"header-key":"header value"}}
+	//
+	// Optional. Default: false
+	WrapHeaders bool
+
+	// Use snake case for fields: FieldResBody, FieldQueryParams, FieldBytesReceived, FieldBytesSent, FieldRequestId, FieldReqHeaders, FieldResHeaders.
+	// If false: {"method":"POST", "resBody":"v", "queryParams":"v"}
+	// If true: {"method":"POST", "res_body":"v", "query_params":"v"}
+	//
+	// Optional. Default: false
+	FieldsSnakeCase bool
 
 	// Custom response messages.
 	// Response codes >= 500 will be logged with Messages[0].
@@ -100,7 +123,7 @@ type Config struct {
 	Levels []zerolog.Level
 }
 
-func (c *Config) loggerCtx(fc *fiber.Ctx) zerolog.Context {
+func (c *Config) loggerCtx(fc fiber.Ctx) zerolog.Context {
 	if c.GetLogger != nil {
 		return c.GetLogger(fc).With()
 	}
@@ -108,67 +131,108 @@ func (c *Config) loggerCtx(fc *fiber.Ctx) zerolog.Context {
 	return c.Logger.With()
 }
 
-func (c *Config) logger(fc *fiber.Ctx, latency time.Duration, err error) zerolog.Logger {
+func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.Logger {
 	zc := c.loggerCtx(fc)
 
 	for _, field := range c.Fields {
 		switch field {
 		case FieldReferer:
-			zc = zc.Str(FieldReferer, fc.Get(fiber.HeaderReferer))
+			zc = zc.Str(field, fc.Get(fiber.HeaderReferer))
 		case FieldProtocol:
-			zc = zc.Str(FieldProtocol, fc.Protocol())
+			zc = zc.Str(field, fc.Protocol())
 		case FieldPID:
-			zc = zc.Int(FieldPID, os.Getpid())
+			zc = zc.Int(field, os.Getpid())
 		case FieldPort:
-			zc = zc.Str(FieldPort, fc.Port())
+			zc = zc.Str(field, fc.Port())
 		case FieldIP:
-			zc = zc.Str(FieldIP, fc.IP())
+			zc = zc.Str(field, fc.IP())
 		case FieldIPs:
-			zc = zc.Str(FieldIPs, fc.Get(fiber.HeaderXForwardedFor))
+			zc = zc.Str(field, fc.Get(fiber.HeaderXForwardedFor))
 		case FieldHost:
-			zc = zc.Str(FieldHost, fc.Hostname())
+			zc = zc.Str(field, fc.Hostname())
 		case FieldPath:
-			zc = zc.Str(FieldPath, fc.Path())
+			zc = zc.Str(field, fc.Path())
 		case FieldURL:
-			zc = zc.Str(FieldURL, fc.OriginalURL())
+			zc = zc.Str(field, fc.OriginalURL())
 		case FieldUserAgent:
-			zc = zc.Str(FieldUserAgent, fc.Get(fiber.HeaderUserAgent))
+			zc = zc.Str(field, fc.Get(fiber.HeaderUserAgent))
 		case FieldLatency:
-			zc = zc.Str(FieldLatency, latency.String())
+			zc = zc.Str(field, latency.String())
 		case FieldStatus:
-			zc = zc.Int(FieldStatus, fc.Response().StatusCode())
+			zc = zc.Int(field, fc.Response().StatusCode())
 		case FieldResBody:
+			if c.FieldsSnakeCase {
+				field = fieldResBody_
+			}
 			if c.SkipResBody == nil || !c.SkipResBody(fc) {
 				if c.GetResBody == nil {
-					zc = zc.Bytes(FieldResBody, fc.Response().Body())
+					zc = zc.Bytes(field, fc.Response().Body())
 				} else {
-					zc = zc.Bytes(FieldResBody, c.GetResBody(fc))
+					zc = zc.Bytes(field, c.GetResBody(fc))
 				}
 			}
 		case FieldQueryParams:
-			zc = zc.Stringer(FieldQueryParams, fc.Request().URI().QueryArgs())
+			if c.FieldsSnakeCase {
+				field = fieldQueryParams_
+			}
+			zc = zc.Stringer(field, fc.Request().URI().QueryArgs())
 		case FieldBody:
 			if c.SkipBody == nil || !c.SkipBody(fc) {
-				zc = zc.Bytes(FieldBody, fc.Body())
+				zc = zc.Bytes(field, fc.Body())
 			}
 		case FieldBytesReceived:
-			zc = zc.Int(FieldBytesReceived, len(fc.Request().Body()))
+			if c.FieldsSnakeCase {
+				field = fieldBytesReceived_
+			}
+			zc = zc.Int(field, len(fc.Request().Body()))
 		case FieldBytesSent:
-			zc = zc.Int(FieldBytesSent, len(fc.Response().Body()))
+			if c.FieldsSnakeCase {
+				field = fieldBytesSent_
+			}
+			zc = zc.Int(field, len(fc.Response().Body()))
 		case FieldRoute:
-			zc = zc.Str(FieldRoute, fc.Route().Path)
+			zc = zc.Str(field, fc.Route().Path)
 		case FieldMethod:
-			zc = zc.Str(FieldMethod, fc.Method())
+			zc = zc.Str(field, fc.Method())
 		case FieldRequestID:
-			zc = zc.Str(FieldRequestID, fc.GetRespHeader(fiber.HeaderXRequestID))
+			if c.FieldsSnakeCase {
+				field = fieldRequestID_
+			}
+			zc = zc.Str(field, fc.GetRespHeader(fiber.HeaderXRequestID))
 		case FieldError:
 			if err != nil {
 				zc = zc.Err(err)
 			}
 		case FieldReqHeaders:
-			fc.Request().Header.VisitAll(func(k, v []byte) {
-				zc = zc.Bytes(string(k), v)
-			})
+			if c.FieldsSnakeCase {
+				field = fieldReqHeaders_
+			}
+			if c.WrapHeaders {
+				dict := zerolog.Dict()
+				fc.Request().Header.VisitAll(func(k, v []byte) {
+					dict.Bytes(string(k), v)
+				})
+				zc = zc.Dict(field, dict)
+			} else {
+				fc.Request().Header.VisitAll(func(k, v []byte) {
+					zc = zc.Bytes(string(k), v)
+				})
+			}
+		case FieldResHeaders:
+			if c.FieldsSnakeCase {
+				field = fieldResHeaders_
+			}
+			if c.WrapHeaders {
+				dict := zerolog.Dict()
+				fc.Response().Header.VisitAll(func(k, v []byte) {
+					dict.Bytes(string(k), v)
+				})
+				zc = zc.Dict(field, dict)
+			} else {
+				fc.Response().Header.VisitAll(func(k, v []byte) {
+					zc = zc.Bytes(string(k), v)
+				})
+			}
 		}
 	}
 

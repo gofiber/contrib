@@ -1,94 +1,58 @@
 # https://help.github.com/github/administering-a-repository/configuration-options-for-dependency-updates
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file#directories
 
 version: 2
 updates:
-    -   package-ecosystem: "github-actions"
-        directory: "/"
-        schedule:
-            interval: "daily"
-        labels:
-            - "🤖 Dependencies"
-    -   package-ecosystem: "gomod"
-        directory: "/paseto/" # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/fiberzap/" # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/otelfiber/" # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/otelfiber/example/" # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/swagger/" # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/casbin/" # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/fibernewrelic/" # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/opafiber/" # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/fiberi18n"  # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/fiberzerolog"  # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/jwt"  # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/websocket"  # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    -   package-ecosystem: "gomod"
-        directory: "/fibersentry"  # Location of package manifests
-        labels:
-            - "🤖 Dependencies"
-        schedule:
-            interval: "daily"
-    - package-ecosystem: "gomod"
-      directory: "/fgprof"  # Location of package manifests
+    - package-ecosystem: "github-actions"
+      open-pull-requests-limit: 30
+      directory: "/"
       labels:
           - "🤖 Dependencies"
       schedule:
           interval: "daily"
+    - package-ecosystem: "gomod"
+      open-pull-requests-limit: 30
+      directories:
+          - "**/*"
+      labels:
+          - "🤖 Dependencies"
+      schedule:
+          interval: "daily"
+      groups:
+          fiber-modules:
+              patterns:
+                  - "github.com/gofiber/fiber/**"
+          fasthttp-modules:
+              patterns:
+                  - "github.com/valyala/fasthttp"
+                  - "github.com/valyala/fasthttp/**"
+          golang-modules:
+              patterns:
+                  - "golang.org/x/**"
+          opentelemetry-modules:
+              patterns:
+                  - "go.opentelemetry.io/**"
+          fasthttp-websocket-modules:
+              patterns:
+                  - "github.com/fasthttp/websocket/**"
+          valyala-utils-modules:
+              patterns:
+                  - "github.com/valyala/bytebufferpool"
+                  - "github.com/valyala/tcplisten"
+          mattn-modules:
+              patterns:
+                  - "github.com/mattn/go-colorable"
+                  - "github.com/mattn/go-isatty"
+                  - "github.com/mattn/go-runewidth"
+          google-modules:
+              patterns:
+                  - "github.com/google/**"
+                  - "google.golang.org/**"
+          testing-modules:
+              patterns:
+                  - "github.com/stretchr/**"
+                  - "github.com/davecgh/go-spew"
+                  - "github.com/pmezard/go-difflib"
+          yaml-modules:
+              patterns:
+                  - "gopkg.in/yaml.*"

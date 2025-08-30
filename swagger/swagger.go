@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	"github.com/go-openapi/runtime/middleware"
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/adaptor"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/adaptor"
 	"gopkg.in/yaml.v2"
 )
 
@@ -20,7 +20,7 @@ type Config struct {
 	// Next defines a function to skip this middleware when returned true.
 	//
 	// Optional. Default: nil
-	Next func(c *fiber.Ctx) bool
+	Next func(c fiber.Ctx) bool
 
 	// BasePath for the UI path
 	//
@@ -31,6 +31,12 @@ type Config struct {
 	//
 	// Optional. Default: ./swagger.json
 	FilePath string
+
+	// FileContent for the content of the swagger.json or swagger.yaml file.
+	// If provided, FilePath will not be read.
+	//
+	// Optional. Default: nil
+	FileContent []byte
 
 	// Path combines with BasePath for the full UI path
 	//
@@ -46,6 +52,19 @@ type Config struct {
 	//
 	// Optional. Default: 3600 (1 hour)
 	CacheAge int
+
+	// The three components needed to embed swagger-ui
+
+	// SwaggerURL points to the js that generates the SwaggerUI site.
+	//
+	// Defaults to: https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js
+	SwaggerURL string
+
+	SwaggerPresetURL string
+	SwaggerStylesURL string
+
+	Favicon32 string
+	Favicon16 string
 }
 
 // ConfigDefault is the default config
@@ -85,16 +104,20 @@ func New(config ...Config) fiber.Handler {
 		}
 	}
 
-	// Verify Swagger file exists
-	if _, err := os.Stat(cfg.FilePath); os.IsNotExist(err) {
-		panic(fmt.Errorf("%s file does not exist", cfg.FilePath))
-	}
+	rawSpec := cfg.FileContent
+	if len(rawSpec) == 0 {
+		// Verify Swagger file exists
+		_, err := os.Stat(cfg.FilePath)
+		if os.IsNotExist(err) {
+			panic(fmt.Errorf("%s file does not exist", cfg.FilePath))
+		}
 
-	// Read Swagger Spec into memory
-	rawSpec, err := os.ReadFile(cfg.FilePath)
-	if err != nil {
-		log.Fatalf("Failed to read provided Swagger file (%s): %v", cfg.FilePath, err.Error())
-		panic(err)
+		// Read Swagger Spec into memory
+		rawSpec, err = os.ReadFile(cfg.FilePath)
+		if err != nil {
+			log.Fatalf("Failed to read provided Swagger file (%s): %v", cfg.FilePath, err.Error())
+			panic(err)
+		}
 	}
 
 	// Validate we have valid JSON or YAML
@@ -105,6 +128,9 @@ func New(config ...Config) fiber.Handler {
 
 	if errJSON != nil && errYAML != nil {
 		log.Fatalf("Failed to parse the Swagger spec as JSON or YAML: JSON error: %s, YAML error: %s", errJSON, errYAML)
+		if len(cfg.FileContent) != 0 {
+			panic(fmt.Errorf("Invalid Swagger spec: %s", string(rawSpec)))
+		}
 		panic(fmt.Errorf("Invalid Swagger spec file: %s", cfg.FilePath))
 	}
 
@@ -143,11 +169,27 @@ func New(config ...Config) fiber.Handler {
 		Title:    cfg.Title,
 	}
 
+	if cfg.SwaggerURL != "" {
+		swaggerUIOpts.SwaggerURL = cfg.SwaggerURL
+	}
+	if cfg.SwaggerPresetURL != "" {
+		swaggerUIOpts.SwaggerPresetURL = cfg.SwaggerPresetURL
+	}
+	if cfg.SwaggerStylesURL != "" {
+		swaggerUIOpts.SwaggerStylesURL = cfg.SwaggerStylesURL
+	}
+	if cfg.Favicon32 != "" {
+		swaggerUIOpts.Favicon32 = cfg.Favicon32
+	}
+	if cfg.Favicon16 != "" {
+		swaggerUIOpts.Favicon16 = cfg.Favicon16
+	}
+
 	// Create UI middleware
 	middlewareHandler := adaptor.HTTPHandler(middleware.SwaggerUI(swaggerUIOpts, swaggerSpecHandler))
 
 	// Return new handler
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		// Don't execute middleware if Next returns true
 		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()

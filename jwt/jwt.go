@@ -8,7 +8,7 @@ package jwtware
 import (
 	"reflect"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -32,7 +32,7 @@ func New(config ...Config) fiber.Handler {
 	extractors := cfg.getExtractors()
 
 	// Return middleware handler
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		// Filter request to skip middleware
 		if cfg.Filter != nil && cfg.Filter(c) {
 			return c.Next()
@@ -49,6 +49,14 @@ func New(config ...Config) fiber.Handler {
 		if err != nil {
 			return cfg.ErrorHandler(c, err)
 		}
+
+		if cfg.TokenProcessorFunc != nil {
+			auth, err = cfg.TokenProcessorFunc(auth)
+			if err != nil {
+				return cfg.ErrorHandler(c, err)
+			}
+		}
+
 		var token *jwt.Token
 
 		if _, ok := cfg.Claims.(jwt.MapClaims); ok {

@@ -6,9 +6,7 @@ id: paseto
 
 ![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=paseto*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
-![Test](https://github.com/gofiber/contrib/workflows/Tests/badge.svg)
-![Security](https://github.com/gofiber/contrib/workflows/Security/badge.svg)
-![Linter](https://github.com/gofiber/contrib/workflows/Linter/badge.svg)
+![Test](https://github.com/gofiber/contrib/workflows/Test%20paseto/badge.svg)
 
 PASETO returns a Web Token (PASETO) auth middleware.
 
@@ -16,14 +14,14 @@ PASETO returns a Web Token (PASETO) auth middleware.
 - For invalid token, it returns "401 - Unauthorized" error.
 - For missing token, it returns "400 - BadRequest" error.
 
-**Note: Requires Go 1.18 and above**
+**Note: Requires Go 1.25 and above**
 
 ## Install
 
-This middleware supports Fiber v2.
+This middleware supports Fiber v3.
 
 ```
-go get -u github.com/gofiber/fiber/v2
+go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/paseto
 go get -u github.com/o1egl/paseto
 ```
@@ -72,7 +70,7 @@ package main
 import (
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/o1egl/paseto"
 
 	pasetoware "github.com/gofiber/contrib/paseto"
@@ -286,7 +284,7 @@ import (
 	"encoding/hex"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 
 	pasetoware "github.com/gofiber/contrib/paseto"
 )

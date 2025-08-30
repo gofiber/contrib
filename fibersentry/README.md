@@ -6,20 +6,18 @@ id: fibersentry
 
 ![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=fibersentry*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
-![Test](https://github.com/gofiber/contrib/workflows/Tests/badge.svg)
-![Security](https://github.com/gofiber/contrib/workflows/Security/badge.svg)
-![Linter](https://github.com/gofiber/contrib/workflows/Linter/badge.svg)
+![Test](https://github.com/gofiber/contrib/workflows/Test%20fibersentry/badge.svg)
 
 [Sentry](https://sentry.io/) support for Fiber.
 
-**Note: Requires Go 1.18 and above**
+**Note: Requires Go 1.25 and above**
 
 ## Install
 
-This middleware supports Fiber v2.
+This middleware supports Fiber v3.
 
 ```
-go get -u github.com/gofiber/fiber/v2
+go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/fibersentry
 go get -u github.com/getsentry/sentry-go
 ```
@@ -33,7 +31,7 @@ fibersentry.New(config ...fibersentry.Config) fiber.Handler
 ## Config
 
 | Property        | Type            | Description                                                                                                                                                                                                                                                          | Default           |
-|:----------------|:----------------|:---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|:------------------|
+| :-------------- | :-------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------- |
 | Repanic         | `bool`          | Repanic configures whether Sentry should repanic after recovery. Set to true, if [Recover](https://github.com/gofiber/fiber/tree/master/middleware/recover) middleware is used.                                                                                      | `false`           |
 | WaitForDelivery | `bool`          | WaitForDelivery configures whether you want to block the request before moving forward with the response. If [Recover](https://github.com/gofiber/fiber/tree/master/middleware/recover) middleware is used, it's safe to either skip this option or set it to false. | `false`           |
 | Timeout         | `time.Duration` | Timeout for the event delivery requests.                                                                                                                                                                                                                             | `time.Second * 2` |
@@ -41,10 +39,10 @@ fibersentry.New(config ...fibersentry.Config) fiber.Handler
 ## Usage
 
 `fibersentry` attaches an instance of `*sentry.Hub` (https://godoc.org/github.com/getsentry/sentry-go#Hub) to the request's context, which makes it available throughout the rest of the request's lifetime.
-You can access it by using the `fibersentry.GetHubFromContext()` method on the context itself in any of your proceeding middleware and routes.
-And it should be used instead of the global `sentry.CaptureMessage`, `sentry.CaptureException`, or any other calls, as it keeps the separation of data between the requests.
+You can access it by using the `fibersentry.GetHubFromContext()` or `fibersentry.MustGetHubFromContext()` method on the context itself in any of your proceeding middleware and routes.
+Keep in mind that `*sentry.Hub` should be used instead of the global `sentry.CaptureMessage`, `sentry.CaptureException`, or any other calls, as it keeps the separation of data between the requests.
 
-**Keep in mind that `*sentry.Hub` won't be available in middleware attached before to `fibersentry`!**
+- **Keep in mind that `*sentry.Hub` won't be available in middleware attached before `fibersentry`. In this case, `GetHubFromContext()` returns nil, and `MustGetHubFromContext()` will panic.**
 
 ```go
 package main
@@ -55,8 +53,8 @@ import (
 
 	"github.com/getsentry/sentry-go"
 	"github.com/gofiber/contrib/fibersentry"
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/utils"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/utils"
 )
 
 func main() {

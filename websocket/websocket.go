@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/fasthttp/websocket"
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/utils"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
 	"github.com/valyala/fasthttp"
 )
 
@@ -23,7 +23,7 @@ import (
 type Config struct {
 	// Filter defines a function to skip middleware.
 	// Optional. Default: nil
-	Filter func(*fiber.Ctx) bool
+	Filter func(fiber.Ctx) bool
 
 	// HandshakeTimeout specifies the duration for the handshake to complete.
 	HandshakeTimeout time.Duration
@@ -113,14 +113,14 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 			return false
 		},
 	}
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		if cfg.Filter != nil && !cfg.Filter(c) {
 			return c.Next()
 		}
 
 		conn := acquireConn()
 		// locals
-		c.Context().VisitUserValues(func(key []byte, value interface{}) {
+		c.RequestCtx().VisitUserValues(func(key []byte, value interface{}) {
 			conn.locals[string(key)] = value
 		})
 
@@ -131,24 +131,24 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		}
 
 		// queries
-		c.Context().QueryArgs().VisitAll(func(key, value []byte) {
+		c.RequestCtx().QueryArgs().VisitAll(func(key, value []byte) {
 			conn.queries[string(key)] = string(value)
 		})
 
 		// cookies
-		c.Context().Request.Header.VisitAllCookie(func(key, value []byte) {
+		c.RequestCtx().Request.Header.VisitAllCookie(func(key, value []byte) {
 			conn.cookies[string(key)] = string(value)
 		})
 
 		// headers
-		c.Context().Request.Header.VisitAll(func(key, value []byte) {
+		c.RequestCtx().Request.Header.VisitAll(func(key, value []byte) {
 			conn.headers[string(key)] = string(value)
 		})
 
 		// ip address
 		conn.ip = c.IP()
 
-		if err := upgrader.Upgrade(c.Context(), func(fconn *websocket.Conn) {
+		if err := upgrader.Upgrade(c.RequestCtx(), func(fconn *websocket.Conn) {
 			conn.Conn = fconn
 			defer releaseConn(conn)
 			defer cfg.RecoverHandler(conn)
@@ -330,8 +330,8 @@ func IsUnexpectedCloseError(err error, expectedCodes ...int) bool {
 
 // IsWebSocketUpgrade returns true if the client requested upgrade to the
 // WebSocket protocol.
-func IsWebSocketUpgrade(c *fiber.Ctx) bool {
-	return websocket.FastHTTPIsWebSocketUpgrade(c.Context())
+func IsWebSocketUpgrade(c fiber.Ctx) bool {
+	return websocket.FastHTTPIsWebSocketUpgrade(c.RequestCtx())
 }
 
 // JoinMessages concatenates received messages to create a single io.Reader.

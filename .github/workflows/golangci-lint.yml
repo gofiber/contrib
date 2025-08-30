@@ -1,49 +1,71 @@
 name: Golangci Lint Check
 
 on:
-    push:
-        branches:
-            - "master"
-            - "main"
-        paths-ignore:
-            - "**.md"
-            - LICENSE
-            - ".github/ISSUE_TEMPLATE/*.yml"
-            - ".github/dependabot.yml"
-    pull_request:
-        branches:
-            - "*"
-        paths-ignore:
-            - "**.md"
-            - LICENSE
-            - ".github/ISSUE_TEMPLATE/*.yml"
-            - ".github/dependabot.yml"
+  push:
+    branches:
+      - "master"
+      - "main"
+    paths-ignore:
+      - "**.md"
+      - LICENSE
+      - ".github/ISSUE_TEMPLATE/*.yml"
+      - ".github/dependabot.yml"
+  pull_request:
+    branches:
+      - "*"
+    paths-ignore:
+      - "**.md"
+      - LICENSE
+      - ".github/ISSUE_TEMPLATE/*.yml"
+      - ".github/dependabot.yml"
 
 jobs:
-    golangci-lint:
-        runs-on: ubuntu-latest
-        steps:
-            - name: Fetch Repository
-              uses: actions/checkout@v4
+  changes:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
-            - name: Set up Go
-              uses: actions/setup-go@v5
-              with:
-                  go-version: '1.x'
+      - name: Generate filters
+        id: filter-setup
+        run: |
+          filters=$(find . -maxdepth 1 -type d ! -path ./.git ! -path . -exec basename {} \; | grep -v '^\.' | awk '{printf "%s: \"%s/**\"\n", $1, $1}')
+          echo "filters<<EOF" >> $GITHUB_OUTPUT
+          echo "$filters" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        shell: bash
 
-            - name: Install golangci-lint
-              run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.55.2
+      - name: Filter changes
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: ${{ steps.filter-setup.outputs.filters }}
+    outputs:
+      packages: ${{ steps.filter.outputs.changes || '[]' }}
 
-            - name: Get directories to lint
-              run: |
-                  REPO_ROOT=$(pwd)
-                  go list -f '{{.Dir}}' -m > dirs.txt
-                  sed -i "s|${REPO_ROOT}/||" dirs.txt
-                  cat dirs.txt
-
-            - name: Run golangci-lint for each directory
-              run: |
-                  while IFS= read -r dir; do
-                    echo "Linting directory $dir"
-                    (cd "$dir" && golangci-lint run --tests=false)
-                  done < dirs.txt
+  lint:
+    needs: changes
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package: ${{ fromJSON(needs.changes.outputs.packages || '[]') }}
+    if: ${{ needs.changes.outputs.packages != '[]' }}
+    steps:
+      - name: Fetch Repository
+        uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+            # NOTE: Keep this in sync with the version from go.mod
+            go-version: "1.25.x"
+            cache: false
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          args: "--tests=false --timeout=5m"
+          working-directory: ${{ matrix.package }}
+            # NOTE: Keep this in sync with the version from .golangci.yml
+          version: v1.64.7
+            # NOTE(ldez): temporary workaround
+          install-mode: goinstall

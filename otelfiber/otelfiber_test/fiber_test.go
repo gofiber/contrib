@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/gofiber/contrib/otelfiber/v2"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	otelcontrib "go.opentelemetry.io/contrib"
@@ -24,7 +24,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
@@ -37,7 +37,7 @@ func TestChildSpanFromGlobalTracer(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(otelfiber.Middleware())
-	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
+	app.Get("/user/:id", func(ctx fiber.Ctx) error {
 		return ctx.SendStatus(http.StatusNoContent)
 	})
 
@@ -54,7 +54,7 @@ func TestChildSpanFromCustomTracer(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(otelfiber.Middleware(otelfiber.WithTracerProvider(provider)))
-	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
+	app.Get("/user/:id", func(ctx fiber.Ctx) error {
 		return ctx.SendStatus(http.StatusNoContent)
 	})
 
@@ -70,11 +70,11 @@ func TestSkipWithNext(t *testing.T) {
 	otel.SetTracerProvider(provider)
 
 	app := fiber.New()
-	app.Use(otelfiber.Middleware(otelfiber.WithNext(func(c *fiber.Ctx) bool {
+	app.Use(otelfiber.Middleware(otelfiber.WithNext(func(c fiber.Ctx) bool {
 		return c.Path() == "/health"
 	})))
 
-	app.Get("/health", func(ctx *fiber.Ctx) error {
+	app.Get("/health", func(ctx fiber.Ctx) error {
 		return ctx.SendStatus(http.StatusNoContent)
 	})
 
@@ -88,21 +88,18 @@ func TestTrace200(t *testing.T) {
 	sr := tracetest.NewSpanRecorder()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 	otel.SetTracerProvider(provider)
-	serverName := "foobar"
 
 	app := fiber.New()
 	app.Use(
-		otelfiber.Middleware(
-			otelfiber.WithTracerProvider(provider),
-			otelfiber.WithServerName(serverName),
-		),
+		otelfiber.Middleware(otelfiber.WithTracerProvider(provider)),
 	)
-	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
+	app.Get("/user/:id", func(ctx fiber.Ctx) error {
 		id := ctx.Params("id")
 		return ctx.SendString(id)
 	})
 
-	resp, _ := app.Test(httptest.NewRequest("GET", "/user/123", nil), 3000)
+	r := httptest.NewRequest("GET", "/user/123", nil)
+	resp, _ := app.Test(r, fiber.TestConfig{Timeout: 3000})
 
 	// do and verify the request
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -116,10 +113,10 @@ func TestTrace200(t *testing.T) {
 
 	assert.Equal(t, "/user/:id", span.Name())
 	assert.Equal(t, oteltrace.SpanKindServer, span.SpanKind())
-	assert.Contains(t, attr, attribute.String("http.server_name", serverName))
-	assert.Contains(t, attr, attribute.Int("http.status_code", http.StatusOK))
-	assert.Contains(t, attr, attribute.String("http.method", "GET"))
-	assert.Contains(t, attr, attribute.String("http.target", "/user/123"))
+	assert.Contains(t, attr, attribute.String("server.address", r.Host))
+	assert.Contains(t, attr, attribute.Int("http.response.status_code", http.StatusOK))
+	assert.Contains(t, attr, attribute.String("http.request.method", "GET"))
+	assert.Contains(t, attr, attribute.String("url.path", "/user/123"))
 	assert.Contains(t, attr, attribute.String("http.route", "/user/:id"))
 }
 
@@ -132,7 +129,7 @@ func TestError(t *testing.T) {
 	app := fiber.New()
 	app.Use(otelfiber.Middleware(otelfiber.WithTracerProvider(provider)))
 	// configure a handler that returns an error and 5xx status code
-	app.Get("/server_err", func(ctx *fiber.Ctx) error {
+	app.Get("/server_err", func(ctx fiber.Ctx) error {
 		return errors.New("oh no")
 	})
 	resp, _ := app.Test(httptest.NewRequest("GET", "/server_err", nil))
@@ -145,7 +142,7 @@ func TestError(t *testing.T) {
 	attr := span.Attributes()
 
 	assert.Equal(t, "/server_err", span.Name())
-	assert.Contains(t, attr, attribute.Int("http.status_code", http.StatusInternalServerError))
+	assert.Contains(t, attr, attribute.Int("http.response.status_code", http.StatusInternalServerError))
 	assert.Equal(t, attribute.StringValue("oh no"), span.Events()[0].Attributes[1].Value)
 	// server errors set the status
 	assert.Equal(t, codes.Error, span.Status().Code)
@@ -154,13 +151,13 @@ func TestError(t *testing.T) {
 func TestErrorOnlyHandledOnce(t *testing.T) {
 	timesHandlingError := 0
 	app := fiber.New(fiber.Config{
-		ErrorHandler: func(ctx *fiber.Ctx, err error) error {
+		ErrorHandler: func(ctx fiber.Ctx, err error) error {
 			timesHandlingError++
 			return fiber.NewError(http.StatusInternalServerError, err.Error())
 		},
 	})
 	app.Use(otelfiber.Middleware())
-	app.Get("/", func(ctx *fiber.Ctx) error {
+	app.Get("/", func(ctx fiber.Ctx) error {
 		return errors.New("mock error")
 	})
 	_, _ = app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
@@ -172,9 +169,9 @@ func TestGetSpanNotInstrumented(t *testing.T) {
 	var gotSpan oteltrace.Span
 
 	app := fiber.New()
-	app.Get("/ping", func(ctx *fiber.Ctx) error {
+	app.Get("/ping", func(ctx fiber.Ctx) error {
 		// Assert we don't have a span on the context.
-		gotSpan = oteltrace.SpanFromContext(ctx.UserContext())
+		gotSpan = oteltrace.SpanFromContext(ctx)
 		return ctx.SendString("ok")
 	})
 	resp, _ := app.Test(httptest.NewRequest("GET", "/ping", nil))
@@ -198,7 +195,7 @@ func TestPropagationWithGlobalPropagators(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(otelfiber.Middleware(otelfiber.WithTracerProvider(provider)))
-	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
+	app.Get("/user/:id", func(ctx fiber.Ctx) error {
 		return ctx.SendStatus(http.StatusNoContent)
 	})
 
@@ -227,7 +224,7 @@ func TestPropagationWithCustomPropagators(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(otelfiber.Middleware(otelfiber.WithTracerProvider(provider), otelfiber.WithPropagators(b3)))
-	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
+	app.Get("/user/:id", func(ctx fiber.Ctx) error {
 		return ctx.SendStatus(http.StatusNoContent)
 	})
 
@@ -280,7 +277,6 @@ func TestMetric(t *testing.T) {
 	reader := metric.NewManualReader()
 	provider := metric.NewMeterProvider(metric.WithReader(reader))
 
-	serverName := "foobar"
 	port := 8080
 	route := "/foo"
 
@@ -289,10 +285,9 @@ func TestMetric(t *testing.T) {
 		otelfiber.Middleware(
 			otelfiber.WithMeterProvider(provider),
 			otelfiber.WithPort(port),
-			otelfiber.WithServerName(serverName),
 		),
 	)
-	app.Get(route, func(ctx *fiber.Ctx) error {
+	app.Get(route, func(ctx fiber.Ctx) error {
 		return ctx.SendStatus(http.StatusOK)
 	})
 
@@ -305,17 +300,17 @@ func TestMetric(t *testing.T) {
 	assert.Len(t, metrics.ScopeMetrics, 1)
 
 	requestAttrs := []attribute.KeyValue{
-		semconv.HTTPFlavorKey.String(fmt.Sprintf("1.%d", r.ProtoMinor)),
-		semconv.HTTPMethodKey.String(http.MethodGet),
-		semconv.HTTPSchemeHTTP,
-		semconv.NetHostNameKey.String(r.Host),
-		semconv.NetHostPortKey.Int(port),
-		semconv.HTTPServerNameKey.String(serverName),
+		semconv.NetworkProtocolName("http"),
+		semconv.NetworkProtocolVersion(fmt.Sprintf("1.%d", r.ProtoMinor)),
+		semconv.URLScheme("http"),
+		semconv.HTTPRequestMethodKey.String(http.MethodGet),
+		semconv.ServerAddress(r.Host),
+		semconv.ServerPort(port),
 	}
-	responseAttrs := append(
-		semconv.HTTPAttributesFromHTTPStatusCode(200),
+	responseAttrs := []attribute.KeyValue{
+		semconv.HTTPResponseStatusCode(200),
 		semconv.HTTPRouteKey.String(route),
-	)
+	}
 
 	assertScopeMetrics(t, metrics.ScopeMetrics[0], route, requestAttrs, append(requestAttrs, responseAttrs...))
 }
@@ -413,7 +408,7 @@ func TestCustomAttributes(t *testing.T) {
 	app.Use(
 		otelfiber.Middleware(
 			otelfiber.WithTracerProvider(provider),
-			otelfiber.WithCustomAttributes(func(ctx *fiber.Ctx) []attribute.KeyValue {
+			otelfiber.WithCustomAttributes(func(ctx fiber.Ctx) []attribute.KeyValue {
 				return []attribute.KeyValue{
 					attribute.Key("http.query_params").String(ctx.Request().URI().QueryArgs().String()),
 				}
@@ -421,12 +416,12 @@ func TestCustomAttributes(t *testing.T) {
 		),
 	)
 
-	app.Get("/user/:id", func(ctx *fiber.Ctx) error {
+	app.Get("/user/:id", func(ctx fiber.Ctx) error {
 		id := ctx.Params("id")
 		return ctx.SendString(id)
 	})
 
-	resp, _ := app.Test(httptest.NewRequest("GET", "/user/123?foo=bar", nil), 3000)
+	resp, _ := app.Test(httptest.NewRequest("GET", "/user/123?foo=bar", nil), fiber.TestConfig{Timeout: 3000})
 
 	// do and verify the request
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -440,9 +435,175 @@ func TestCustomAttributes(t *testing.T) {
 
 	assert.Equal(t, "/user/:id", span.Name())
 	assert.Equal(t, oteltrace.SpanKindServer, span.SpanKind())
-	assert.Contains(t, attr, attribute.Int("http.status_code", http.StatusOK))
-	assert.Contains(t, attr, attribute.String("http.method", "GET"))
-	assert.Contains(t, attr, attribute.String("http.target", "/user/123?foo=bar"))
+	assert.Contains(t, attr, attribute.Int("http.response.status_code", http.StatusOK))
+	assert.Contains(t, attr, attribute.String("http.request.method", "GET"))
+	assert.Contains(t, attr, attribute.String("url.path", "/user/123"))
 	assert.Contains(t, attr, attribute.String("http.route", "/user/:id"))
-	assert.Contains(t, attr, attribute.String("http.query_params", "foo=bar"))
+	assert.Contains(t, attr, semconv.URLQuery("foo=bar"))
+}
+
+func TestCustomMetricAttributes(t *testing.T) {
+	reader := metric.NewManualReader()
+	provider := metric.NewMeterProvider(metric.WithReader(reader))
+
+	port := 8080
+	route := "/foo"
+
+	app := fiber.New()
+	app.Use(
+		otelfiber.Middleware(
+			otelfiber.WithMeterProvider(provider),
+			otelfiber.WithPort(port),
+			otelfiber.WithCustomMetricAttributes(func(ctx fiber.Ctx) []attribute.KeyValue {
+				return []attribute.KeyValue{semconv.URLQuery(ctx.Request().URI().QueryArgs().String())}
+			}),
+		),
+	)
+
+	app.Get(route, func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(http.StatusOK)
+	})
+
+	r := httptest.NewRequest(http.MethodGet, "/foo?foo=bar", nil)
+	resp, _ := app.Test(r)
+
+	// do and verify the request
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	metrics := metricdata.ResourceMetrics{}
+	err := reader.Collect(context.Background(), &metrics)
+	assert.NoError(t, err)
+	assert.Len(t, metrics.ScopeMetrics, 1)
+
+	requestAttrs := []attribute.KeyValue{
+		semconv.NetworkProtocolName("http"),
+		semconv.NetworkProtocolVersion(fmt.Sprintf("1.%d", r.ProtoMinor)),
+		semconv.HTTPRequestMethodKey.String(http.MethodGet),
+		semconv.URLSchemeKey.String("http"),
+		semconv.ServerAddress(r.Host),
+		semconv.ServerPort(port),
+		semconv.URLQuery("foo=bar"),
+	}
+	responseAttrs := []attribute.KeyValue{
+		semconv.HTTPResponseStatusCode(200),
+		semconv.HTTPRouteKey.String(route),
+	}
+
+	assertScopeMetrics(t, metrics.ScopeMetrics[0], route, requestAttrs, append(requestAttrs, responseAttrs...))
+}
+
+func TestOutboundTracingPropagation(t *testing.T) {
+	sr := new(tracetest.SpanRecorder)
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+
+	app := fiber.New()
+	app.Use(otelfiber.Middleware(
+		otelfiber.WithTracerProvider(provider),
+		otelfiber.WithPropagators(b3prop.New(b3prop.WithInjectEncoding(b3prop.B3MultipleHeader))),
+	))
+	app.Get("/foo", func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(http.StatusNoContent)
+	})
+
+	resp, _ := app.Test(httptest.NewRequest("GET", "/foo", nil), fiber.TestConfig{Timeout: 3000})
+
+	assert.Equal(t, "1", resp.Header.Get("X-B3-Sampled"))
+	assert.NotEmpty(t, resp.Header.Get("X-B3-SpanId"))
+	assert.NotEmpty(t, resp.Header.Get("X-B3-TraceId"))
+
+}
+
+func TestOutboundTracingPropagationWithInboundContext(t *testing.T) {
+	const spanId = "619907d88b766fb8"
+	const traceId = "813dd2766ff711bf02b60e9883014964"
+
+	sr := new(tracetest.SpanRecorder)
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+
+	app := fiber.New()
+	app.Use(otelfiber.Middleware(
+		otelfiber.WithTracerProvider(provider),
+		otelfiber.WithPropagators(b3prop.New(b3prop.WithInjectEncoding(b3prop.B3MultipleHeader))),
+	))
+	app.Get("/foo", func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest("GET", "/foo", nil)
+
+	req.Header.Set("X-B3-SpanId", spanId)
+	req.Header.Set("X-B3-TraceId", traceId)
+	req.Header.Set("X-B3-Sampled", "1")
+
+	resp, _ := app.Test(req, fiber.TestConfig{Timeout: 3000})
+
+	assert.NotEmpty(t, resp.Header.Get("X-B3-SpanId"))
+	assert.Equal(t, traceId, resp.Header.Get("X-B3-TraceId"))
+	assert.Equal(t, "1", resp.Header.Get("X-B3-Sampled"))
+}
+
+func TestCollectClientIP(t *testing.T) {
+	t.Parallel()
+
+	for _, enabled := range []bool{true, false} {
+		enabled := enabled
+		t.Run(fmt.Sprintf("enabled=%t", enabled), func(t *testing.T) {
+			t.Parallel()
+
+			sr := tracetest.NewSpanRecorder()
+			provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+			otel.SetTracerProvider(provider)
+
+			app := fiber.New()
+			app.Use(otelfiber.Middleware(
+				otelfiber.WithTracerProvider(provider),
+				otelfiber.WithCollectClientIP(enabled),
+			))
+			app.Get("/foo", func(ctx fiber.Ctx) error {
+				return ctx.SendStatus(http.StatusNoContent)
+			})
+
+			req := httptest.NewRequest("GET", "/foo", nil)
+			_, _ = app.Test(req)
+
+			spans := sr.Ended()
+			require.Len(t, spans, 1)
+
+			span := spans[0]
+			attrs := span.Attributes()
+			if enabled {
+				assert.Contains(t, attrs, attribute.String("client.address", "0.0.0.0"))
+			} else {
+				assert.NotContains(t, attrs, attribute.String("client.address", "0.0.0.0"))
+			}
+		})
+	}
+}
+
+func TestWithoutMetrics(t *testing.T) {
+	reader := metric.NewManualReader()
+	provider := metric.NewMeterProvider(metric.WithReader(reader))
+
+	port := 8080
+	route := "/foo"
+
+	app := fiber.New()
+	app.Use(
+		otelfiber.Middleware(
+			otelfiber.WithMeterProvider(provider),
+			otelfiber.WithPort(port),
+			otelfiber.WithoutMetrics(true),
+		),
+	)
+	app.Get(route, func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(http.StatusOK)
+	})
+
+	r := httptest.NewRequest(http.MethodGet, route, nil)
+	_, _ = app.Test(r)
+
+	metrics := metricdata.ResourceMetrics{}
+	err := reader.Collect(context.Background(), &metrics)
+	assert.NoError(t, err)
+	assert.Len(t, metrics.ScopeMetrics, 0, "No metrics should be collected when metrics are disabled")
 }

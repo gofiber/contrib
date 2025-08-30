@@ -1,12 +1,12 @@
 package fiberzap
 
 import (
-    "os"
-    "strconv"
-    "sync"
-    "time"
+	"os"
+	"strconv"
+	"sync"
+	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"go.uber.org/zap"
 )
 
@@ -34,7 +34,7 @@ func New(config ...Config) fiber.Handler {
 	}
 
 	// Return new handler
-	return func(c *fiber.Ctx) (err error) {
+	return func(c fiber.Ctx) (err error) {
 		// Don't execute middleware if Next returns true
 		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()

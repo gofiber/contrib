@@ -10,8 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/utils"
+	"github.com/stretchr/testify/assert"
+
+	"github.com/gofiber/fiber/v3"
 )
 
 const (
@@ -73,9 +74,9 @@ func getPrivateKey() ed25519.PrivateKey {
 }
 
 func assertErrorHandler(t *testing.T, toAssert error) fiber.ErrorHandler {
-	return func(ctx *fiber.Ctx, err error) error {
-		utils.AssertEqual(t, toAssert, err)
-		utils.AssertEqual(t, true, errors.Is(err, toAssert))
+	return func(ctx fiber.Ctx, err error) error {
+		assert.Equal(t, toAssert, err)
+		assert.Equal(t, true, errors.Is(err, toAssert))
 		return defaultErrorHandler(ctx, err)
 	}
 }
@@ -89,7 +90,7 @@ func Test_PASETO_LocalToken_MissingToken(t *testing.T) {
 	request := httptest.NewRequest("GET", "/", nil)
 	resp, err := app.Test(request)
 	if err == nil {
-		utils.AssertEqual(t, fiber.StatusBadRequest, resp.StatusCode)
+		assert.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
 	}
 }
 
@@ -106,9 +107,9 @@ func Test_PASETO_PublicToken_MissingToken(t *testing.T) {
 	request := httptest.NewRequest("GET", "/", nil)
 	resp, err := app.Test(request)
 
-	utils.AssertEqual(t, nil, err)
+	assert.Equal(t, nil, err)
 
-	utils.AssertEqual(t, fiber.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
 }
 
 func Test_PASETO_LocalToken_ErrDataUnmarshal(t *testing.T) {
@@ -121,8 +122,8 @@ func Test_PASETO_LocalToken_ErrDataUnmarshal(t *testing.T) {
 	if err == nil {
 		var resp *http.Response
 		resp, err = app.Test(request)
-		utils.AssertEqual(t, nil, err)
-		utils.AssertEqual(t, fiber.StatusUnauthorized, resp.StatusCode)
+		assert.Equal(t, nil, err)
+		assert.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
 	}
 }
 
@@ -137,12 +138,12 @@ func Test_PASETO_PublicToken_ErrDataUnmarshal(t *testing.T) {
 
 	request, err := generateTokenRequest("/", createCustomToken, durationTest, PurposePublic)
 
-	utils.AssertEqual(t, nil, err)
+	assert.Equal(t, nil, err)
 
 	var resp *http.Response
 	resp, err = app.Test(request)
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusUnauthorized, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
 }
 
 func Test_PASETO_LocalToken_ErrTokenExpired(t *testing.T) {
@@ -155,8 +156,8 @@ func Test_PASETO_LocalToken_ErrTokenExpired(t *testing.T) {
 	if err == nil {
 		var resp *http.Response
 		resp, err = app.Test(request)
-		utils.AssertEqual(t, nil, err)
-		utils.AssertEqual(t, fiber.StatusUnauthorized, resp.StatusCode)
+		assert.Equal(t, nil, err)
+		assert.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
 	}
 }
 
@@ -172,19 +173,19 @@ func Test_PASETO_PublicToken_ErrTokenExpired(t *testing.T) {
 
 	request, err := generateTokenRequest("/", CreateToken, time.Nanosecond*-10, PurposePublic)
 
-	utils.AssertEqual(t, nil, err)
+	assert.Equal(t, nil, err)
 
 	var resp *http.Response
 	resp, err = app.Test(request)
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusUnauthorized, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
 }
 
 func Test_PASETO_LocalToken_Next(t *testing.T) {
 	app := fiber.New()
 	app.Use(New(Config{
 		SymmetricKey: []byte(symmetricKey),
-		Next: func(_ *fiber.Ctx) bool {
+		Next: func(_ fiber.Ctx) bool {
 			return true
 		},
 	}))
@@ -192,8 +193,8 @@ func Test_PASETO_LocalToken_Next(t *testing.T) {
 	request := httptest.NewRequest("GET", "/", nil)
 	request.Header.Set(fiber.HeaderAuthorization, invalidToken)
 	resp, err := app.Test(request)
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusNotFound, resp.StatusCode)
 }
 
 func Test_PASETO_PublicToken_Next(t *testing.T) {
@@ -203,7 +204,7 @@ func Test_PASETO_PublicToken_Next(t *testing.T) {
 	app.Use(New(Config{
 		PrivateKey: privateKey,
 		PublicKey:  privateKey.Public(),
-		Next: func(_ *fiber.Ctx) bool {
+		Next: func(_ fiber.Ctx) bool {
 			return true
 		},
 	}))
@@ -212,8 +213,8 @@ func Test_PASETO_PublicToken_Next(t *testing.T) {
 	request.Header.Set(fiber.HeaderAuthorization, invalidToken)
 	resp, err := app.Test(request)
 
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusNotFound, resp.StatusCode)
 }
 
 func Test_PASETO_LocalTokenDecrypt(t *testing.T) {
@@ -222,15 +223,15 @@ func Test_PASETO_LocalTokenDecrypt(t *testing.T) {
 		SymmetricKey: []byte(symmetricKey),
 	}))
 	app.Get("/", func(ctx *fiber.Ctx) error {
-		utils.AssertEqual(t, testMessage, FromContext(ctx))
+		assert.Equal(t, testMessage, FromContext(ctx))
 		return nil
 	})
 	request, err := generateTokenRequest("/", CreateToken, durationTest, PurposeLocal)
 	if err == nil {
 		var resp *http.Response
 		resp, err = app.Test(request)
-		utils.AssertEqual(t, nil, err)
-		utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
+		assert.Equal(t, nil, err)
+		assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 	}
 }
 
@@ -243,17 +244,17 @@ func Test_PASETO_PublicTokenVerify(t *testing.T) {
 		PrivateKey: privateKey,
 		PublicKey:  privateKey.Public(),
 	}))
-	app.Get("/", func(ctx *fiber.Ctx) error {
-		utils.AssertEqual(t, testMessage, FromContext(ctx))
+	app.Get("/", func(ctx fiber.Ctx) error {
+		assert.Equal(t, testMessage, FromContext(&ctx))
 		return nil
 	})
 	request, err := generateTokenRequest("/", CreateToken, durationTest, PurposePublic)
-	utils.AssertEqual(t, nil, err)
+	assert.Equal(t, nil, err)
 
 	var resp *http.Response
 	resp, err = app.Test(request)
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 }
 
 func Test_PASETO_LocalToken_IncorrectBearerToken(t *testing.T) {
@@ -261,7 +262,7 @@ func Test_PASETO_LocalToken_IncorrectBearerToken(t *testing.T) {
 	app.Use(New(Config{
 		SymmetricKey: []byte(symmetricKey),
 		TokenPrefix:  "Gopher",
-		ErrorHandler: func(ctx *fiber.Ctx, err error) error {
+		ErrorHandler: func(ctx fiber.Ctx, err error) error {
 			if errors.Is(err, ErrIncorrectTokenPrefix) {
 				return ctx.SendStatus(fiber.StatusUpgradeRequired)
 			}
@@ -271,8 +272,8 @@ func Test_PASETO_LocalToken_IncorrectBearerToken(t *testing.T) {
 	request := httptest.NewRequest("GET", "/", nil)
 	request.Header.Set(fiber.HeaderAuthorization, "Bearer "+invalidToken)
 	resp, err := app.Test(request)
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusUpgradeRequired, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusUpgradeRequired, resp.StatusCode)
 }
 
 func Test_PASETO_PublicToken_IncorrectBearerToken(t *testing.T) {
@@ -283,7 +284,7 @@ func Test_PASETO_PublicToken_IncorrectBearerToken(t *testing.T) {
 		PrivateKey:  privateKey,
 		PublicKey:   privateKey.Public(),
 		TokenPrefix: "Gopher",
-		ErrorHandler: func(ctx *fiber.Ctx, err error) error {
+		ErrorHandler: func(ctx fiber.Ctx, err error) error {
 			if errors.Is(err, ErrIncorrectTokenPrefix) {
 				return ctx.SendStatus(fiber.StatusUpgradeRequired)
 			}
@@ -295,8 +296,8 @@ func Test_PASETO_PublicToken_IncorrectBearerToken(t *testing.T) {
 	request.Header.Set(fiber.HeaderAuthorization, "Bearer "+invalidToken)
 	resp, err := app.Test(request)
 
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusUpgradeRequired, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusUpgradeRequired, resp.StatusCode)
 }
 
 func Test_PASETO_LocalToken_InvalidToken(t *testing.T) {
@@ -307,8 +308,8 @@ func Test_PASETO_LocalToken_InvalidToken(t *testing.T) {
 	request := httptest.NewRequest("GET", "/", nil)
 	request.Header.Set(fiber.HeaderAuthorization, invalidToken)
 	resp, err := app.Test(request)
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
 }
 
 func Test_PASETO_PublicToken_InvalidToken(t *testing.T) {
@@ -324,8 +325,8 @@ func Test_PASETO_PublicToken_InvalidToken(t *testing.T) {
 	request.Header.Set(fiber.HeaderAuthorization, invalidToken)
 	resp, err := app.Test(request)
 
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
 }
 
 func Test_PASETO_LocalToken_CustomValidate(t *testing.T) {
@@ -346,7 +347,7 @@ func Test_PASETO_LocalToken_CustomValidate(t *testing.T) {
 	}))
 
 	app.Get("/", func(ctx *fiber.Ctx) error {
-		utils.AssertEqual(t, testMessage, FromContext(ctx))
+		assert.Equal(t, testMessage, FromContext(ctx))
 		return nil
 	})
 
@@ -358,8 +359,8 @@ func Test_PASETO_LocalToken_CustomValidate(t *testing.T) {
 	request := httptest.NewRequest("GET", "/", nil)
 	request.Header.Set(fiber.HeaderAuthorization, token)
 	resp, err := app.Test(request)
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 }
 
 func Test_PASETO_PublicToken_CustomValidate(t *testing.T) {
@@ -383,7 +384,7 @@ func Test_PASETO_PublicToken_CustomValidate(t *testing.T) {
 	}))
 
 	app.Get("/", func(ctx *fiber.Ctx) error {
-		utils.AssertEqual(t, testMessage, FromContext(ctx))
+		assert.Equal(t, testMessage, FromContext(ctx))
 		return nil
 	})
 
@@ -397,6 +398,6 @@ func Test_PASETO_PublicToken_CustomValidate(t *testing.T) {
 	request.Header.Set(fiber.HeaderAuthorization, token)
 	resp, err := app.Test(request)
 
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 }

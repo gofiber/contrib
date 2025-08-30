@@ -6,18 +6,16 @@ id: opafiber
 
 ![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=opafiber*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
-![Test](https://github.com/gofiber/contrib/workflows/Tests/badge.svg)
-![Security](https://github.com/gofiber/contrib/workflows/Security/badge.svg)
-![Linter](https://github.com/gofiber/contrib/workflows/Linter/badge.svg)
+![Test](https://github.com/gofiber/contrib/workflows/Test%20opafiber/badge.svg)
 
 [Open Policy Agent](https://github.com/open-policy-agent/opa) support for Fiber.
 
-**Note: Requires Go 1.19 and above**
+**Note: Requires Go 1.25 and above**
 
 ## Install
 
 ```
-go get -u github.com/gofiber/fiber/v2
+go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/opafiber/v2
 ```
 
@@ -68,7 +66,7 @@ OPA Fiber middleware sends the following example data to the policy engine as in
 package main
 
 import (
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/contrib/opafiber/v2"
 )
 

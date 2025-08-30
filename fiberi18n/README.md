@@ -6,20 +6,18 @@ id: fiberi18n
 
 ![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=fiberi18n*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
-![Test](https://github.com/gofiber/contrib/workflows/Tests/badge.svg)
-![Security](https://github.com/gofiber/contrib/workflows/Security/badge.svg)
-![Linter](https://github.com/gofiber/contrib/workflows/Linter/badge.svg)
+![Test](https://github.com/gofiber/contrib/workflows/Test%20fiberi18n/badge.svg)
 
 [go-i18n](https://github.com/nicksnyder/go-i18n) support for Fiber.
 
-**Note: Requires Go 1.18 and above**
+**Note: Requires Go 1.25 and above**
 
 ## Install
 
-This middleware supports Fiber v2.
+This middleware supports Fiber v3.
 
 ```
-go get -u github.com/gofiber/fiber/v2
+go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/fiberi18n/v2
 ```
 
@@ -53,7 +51,7 @@ import (
 	"log"
 
 	"github.com/gofiber/contrib/fiberi18n/v2"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/nicksnyder/go-i18n/v2/i18n"
 	"golang.org/x/text/language"
 )

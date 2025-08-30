@@ -3,13 +3,14 @@ package opafiber
 import (
 	"context"
 	"fmt"
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/utils"
-	"github.com/open-policy-agent/opa/rego"
 	"io"
+
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
+	"github.com/open-policy-agent/opa/rego"
 )
 
-type InputCreationFunc func(c *fiber.Ctx) (map[string]interface{}, error)
+type InputCreationFunc func(c fiber.Ctx) (map[string]interface{}, error)
 
 type Config struct {
 	RegoPolicy            io.Reader
@@ -37,7 +38,7 @@ func New(cfg Config) fiber.Handler {
 	if err != nil {
 		panic(fmt.Sprint("rego policy error: %w", err))
 	}
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		input, err := cfg.InputCreationMethod(c)
 		if err != nil {
 			c.Response().SetStatusCode(fiber.StatusInternalServerError)
@@ -95,7 +96,7 @@ func (c *Config) fillAndValidate() error {
 	return nil
 }
 
-func defaultInput(ctx *fiber.Ctx) (map[string]interface{}, error) {
+func defaultInput(ctx fiber.Ctx) (map[string]interface{}, error) {
 	input := map[string]interface{}{
 		"method": ctx.Method(),
 		"path":   ctx.Path(),

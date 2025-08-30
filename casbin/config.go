@@ -4,7 +4,7 @@ import (
 	"github.com/casbin/casbin/v2"
 	"github.com/casbin/casbin/v2/persist"
 	fileadapter "github.com/casbin/casbin/v2/persist/file-adapter"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // Config holds the configuration for the middleware
@@ -23,24 +23,24 @@ type Config struct {
 
 	// Lookup is a function that is used to look up current subject.
 	// An empty string is considered as unauthenticated user.
-	// Optional. Default: func(c *fiber.Ctx) string { return "" }
-	Lookup func(*fiber.Ctx) string
+	// Optional. Default: func(c fiber.Ctx) string { return "" }
+	Lookup func(fiber.Ctx) string
 
 	// Unauthorized defines the response body for unauthorized responses.
-	// Optional. Default: func(c *fiber.Ctx) error { return c.SendStatus(401) }
+	// Optional. Default: func(c fiber.Ctx) error { return c.SendStatus(401) }
 	Unauthorized fiber.Handler
 
 	// Forbidden defines the response body for forbidden responses.
-	// Optional. Default: func(c *fiber.Ctx) error { return c.SendStatus(403) }
+	// Optional. Default: func(c fiber.Ctx) error { return c.SendStatus(403) }
 	Forbidden fiber.Handler
 }
 
 var ConfigDefault = Config{
 	ModelFilePath: "./model.conf",
 	PolicyAdapter: fileadapter.NewAdapter("./policy.csv"),
-	Lookup:        func(c *fiber.Ctx) string { return "" },
-	Unauthorized:  func(c *fiber.Ctx) error { return c.SendStatus(fiber.StatusUnauthorized) },
-	Forbidden:     func(c *fiber.Ctx) error { return c.SendStatus(fiber.StatusForbidden) },
+	Lookup:        func(c fiber.Ctx) string { return "" },
+	Unauthorized:  func(c fiber.Ctx) error { return c.SendStatus(fiber.StatusUnauthorized) },
+	Forbidden:     func(c fiber.Ctx) error { return c.SendStatus(fiber.StatusForbidden) },
 }
 
 // Helper function to set default values

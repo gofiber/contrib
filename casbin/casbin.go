@@ -3,7 +3,7 @@ package casbin
 import (
 	"fmt"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // Middleware ...
@@ -15,7 +15,7 @@ type Middleware struct {
 func New(config ...Config) *Middleware {
 	cfg, err := configDefault(config...)
 	if err != nil {
-		panic(fmt.Errorf("Fiber: casbin middleware error -> %w", err))
+		panic(fmt.Errorf("fiber: casbin middleware error -> %w", err))
 	}
 
 	return &Middleware{
@@ -28,7 +28,7 @@ func New(config ...Config) *Middleware {
 func (m *Middleware) RequiresPermissions(permissions []string, opts ...Option) fiber.Handler {
 	options := optionsDefault(opts...)
 
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		if len(permissions) == 0 {
 			return c.Next()
 		}
@@ -38,7 +38,8 @@ func (m *Middleware) RequiresPermissions(permissions []string, opts ...Option) f
 			return m.config.Unauthorized(c)
 		}
 
-		if options.ValidationRule == MatchAllRule {
+		switch options.ValidationRule {
+		case MatchAllRule:
 			for _, permission := range permissions {
 				vals := append([]string{sub}, options.PermissionParser(permission)...)
 				if ok, err := m.config.Enforcer.Enforce(stringSliceToInterfaceSlice(vals)...); err != nil {
@@ -48,7 +49,7 @@ func (m *Middleware) RequiresPermissions(permissions []string, opts ...Option) f
 				}
 			}
 			return c.Next()
-		} else if options.ValidationRule == AtLeastOneRule {
+		case AtLeastOneRule:
 			for _, permission := range permissions {
 				vals := append([]string{sub}, options.PermissionParser(permission)...)
 				if ok, err := m.config.Enforcer.Enforce(stringSliceToInterfaceSlice(vals)...); err != nil {
@@ -68,7 +69,7 @@ func (m *Middleware) RequiresPermissions(permissions []string, opts ...Option) f
 // subject has the required permissions according to predefined Casbin policies.
 // This method uses http Path and Method as object and action.
 func (m *Middleware) RoutePermission() fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		sub := m.config.Lookup(c)
 		if len(sub) == 0 {
 			return m.config.Unauthorized(c)
@@ -89,7 +90,7 @@ func (m *Middleware) RoutePermission() fiber.Handler {
 func (m *Middleware) RequiresRoles(roles []string, opts ...Option) fiber.Handler {
 	options := optionsDefault(opts...)
 
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		if len(roles) == 0 {
 			return c.Next()
 		}
@@ -104,14 +105,15 @@ func (m *Middleware) RequiresRoles(roles []string, opts ...Option) fiber.Handler
 			return c.SendStatus(fiber.StatusInternalServerError)
 		}
 
-		if options.ValidationRule == MatchAllRule {
+		switch options.ValidationRule {
+		case MatchAllRule:
 			for _, role := range roles {
 				if !containsString(userRoles, role) {
 					return m.config.Forbidden(c)
 				}
 			}
 			return c.Next()
-		} else if options.ValidationRule == AtLeastOneRule {
+		case AtLeastOneRule:
 			for _, role := range roles {
 				if containsString(userRoles, role) {
 					return c.Next()
