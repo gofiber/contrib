@@ -525,7 +525,7 @@ func TestFromContext(t *testing.T) {
 			},
 		}))
 
-		app.Get("/ok", func(c *fiber.Ctx) error {
+		app.Get("/ok", func(c fiber.Ctx) error {
 			token := jwtware.FromContext(c)
 			if token == nil {
 				return c.SendStatus(fiber.StatusUnauthorized)
@@ -540,7 +540,7 @@ func TestFromContext(t *testing.T) {
 		resp, err := app.Test(req)
 
 		// Assert
-		utils.AssertEqual(t, nil, err)
-		utils.AssertEqual(t, 200, resp.StatusCode)
+		assert.NoError(t, err)
+		assert.Equal(t, 200, resp.StatusCode)
 	}
 }

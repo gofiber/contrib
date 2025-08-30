@@ -77,6 +77,6 @@ func New(config ...Config) fiber.Handler {
 
 // FromContext returns the token from the context.
 // If there is no token, nil is returned.
-func FromContext(c *fiber.Ctx) *jwt.Token {
+func FromContext(c fiber.Ctx) *jwt.Token {
 	return c.Locals(tokenKey).(*jwt.Token)
 }
