@@ -357,7 +357,12 @@ func restricted(c fiber.Ctx) error {
 #### Get the payload from the context
 
 ```go
-payload := pasetoware.FromContext(c).(string)
+payloadFromCtx := pasetoware.FromContext(c)  
+if payloadFromCtx == nil {  
+    // Handle case where token is not in context, e.g. by returning an error  
+    return  
+}  
+payload := payloadFromCtx.(string)  
 ```
 
 #### Test it

@@ -18,7 +18,7 @@ type contextKey int
 
 // The following contextKey values are defined to store values in context.
 const (
-	tokenKey contextKey = 0
+	tokenKey contextKey = iota
 )
 
 var (

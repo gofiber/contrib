@@ -12,7 +12,7 @@ type contextKey int
 
 // The following contextKey values are defined to store values in context.
 const (
-	payloadKey contextKey = 0
+	payloadKey contextKey = iota
 )
 
 // New PASETO middleware, returns a handler that takes a token in selected lookup param and in case token is valid
