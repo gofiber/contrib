@@ -66,6 +66,6 @@ func New(authConfigs ...Config) fiber.Handler {
 }
 
 // FromContext returns the payload from the context.
-func FromContext(c *fiber.Ctx) interface{} {
+func FromContext(c fiber.Ctx) interface{} {
 	return c.Locals(payloadKey)
 }

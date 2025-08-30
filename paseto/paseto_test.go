@@ -222,7 +222,7 @@ func Test_PASETO_LocalTokenDecrypt(t *testing.T) {
 	app.Use(New(Config{
 		SymmetricKey: []byte(symmetricKey),
 	}))
-	app.Get("/", func(ctx *fiber.Ctx) error {
+	app.Get("/", func(ctx fiber.Ctx) error {
 		assert.Equal(t, testMessage, FromContext(ctx))
 		return nil
 	})
@@ -245,7 +245,7 @@ func Test_PASETO_PublicTokenVerify(t *testing.T) {
 		PublicKey:  privateKey.Public(),
 	}))
 	app.Get("/", func(ctx fiber.Ctx) error {
-		assert.Equal(t, testMessage, FromContext(&ctx))
+		assert.Equal(t, testMessage, FromContext(ctx))
 		return nil
 	})
 	request, err := generateTokenRequest("/", CreateToken, durationTest, PurposePublic)
@@ -346,7 +346,7 @@ func Test_PASETO_LocalToken_CustomValidate(t *testing.T) {
 		},
 	}))
 
-	app.Get("/", func(ctx *fiber.Ctx) error {
+	app.Get("/", func(ctx fiber.Ctx) error {
 		assert.Equal(t, testMessage, FromContext(ctx))
 		return nil
 	})
@@ -383,7 +383,7 @@ func Test_PASETO_PublicToken_CustomValidate(t *testing.T) {
 		},
 	}))
 
-	app.Get("/", func(ctx *fiber.Ctx) error {
+	app.Get("/", func(ctx fiber.Ctx) error {
 		assert.Equal(t, testMessage, FromContext(ctx))
 		return nil
 	})
