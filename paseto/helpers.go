@@ -5,7 +5,6 @@ import (
 	"errors"
 	"time"
 
-	"github.com/gofiber/fiber/v3"
 	"github.com/o1egl/paseto"
 )
 
@@ -27,8 +26,6 @@ var (
 	ErrDataUnmarshal = errors.New("can't unmarshal token data to Payload type")
 	pasetoObject     = paseto.NewV2()
 )
-
-type acquireToken func(c fiber.Ctx, key string) string
 
 // PayloadValidator Function that receives the decrypted payload and returns an interface and an error
 // that's a result of validation logic

@@ -6,6 +6,8 @@
 package jwtware
 
 import (
+	"reflect"
+
 	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -42,7 +44,18 @@ func New(config ...Config) fiber.Handler {
 		}
 
 		var token *jwt.Token
-		token, err = jwt.ParseWithClaims(auth, cfg.Claims, cfg.KeyFunc)
+		if _, ok := cfg.Claims.(jwt.MapClaims); ok {
+			token, err = jwt.Parse(auth, cfg.KeyFunc)
+		} else {
+			// Create a new instance of the claims type using reflection
+			claimsType := reflect.TypeOf(cfg.Claims)
+			claimsValue := reflect.New(claimsType.Elem()).Interface()
+			claims, ok := claimsValue.(jwt.Claims)
+			if !ok {
+				return cfg.ErrorHandler(c, fiber.NewError(fiber.StatusInternalServerError, "claims type does not implement jwt.Claims"))
+			}
+			token, err = jwt.ParseWithClaims(auth, claims, cfg.KeyFunc)
+		}
 		if err == nil && token.Valid {
 			// Store user information from token into context.
 			c.Locals(tokenKey, token)
