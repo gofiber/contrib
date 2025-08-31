@@ -118,7 +118,7 @@ func accessible(c fiber.Ctx) error {
 }
 
 func restricted(c fiber.Ctx) error {
-	user := c.Locals("user").(*jwt.Token)
+	user := jwtware.FromContext(c)
 	claims := user.Claims.(jwt.MapClaims)
 	name := claims["name"].(string)
 	return c.SendString("Welcome " + name)
