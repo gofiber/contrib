@@ -123,7 +123,7 @@ func Test_Monitor_JSON(t *testing.T) {
 	resp, err := app.Test(req)
 	assert.Equal(t, nil, err)
 	assert.Equal(t, 200, resp.StatusCode)
-	assert.Equal(t, fiber.MIMEApplicationJSON, resp.Header.Get(fiber.HeaderContentType))
+	assert.Equal(t, fiber.MIMEApplicationJSONCharsetUTF8, resp.Header.Get(fiber.HeaderContentType))
 
 	b, err := io.ReadAll(resp.Body)
 	assert.Equal(t, nil, err)
@@ -189,7 +189,7 @@ func Test_Monitor_APIOnly(t *testing.T) {
 	resp, err := app.Test(req)
 	assert.Equal(t, nil, err)
 	assert.Equal(t, 200, resp.StatusCode)
-	assert.Equal(t, fiber.MIMEApplicationJSON, resp.Header.Get(fiber.HeaderContentType))
+	assert.Equal(t, fiber.MIMEApplicationJSONCharsetUTF8, resp.Header.Get(fiber.HeaderContentType))
 
 	b, err := io.ReadAll(resp.Body)
 	assert.Equal(t, nil, err)
