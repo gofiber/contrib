@@ -114,7 +114,7 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		},
 	}
 	return func(c fiber.Ctx) error {
-		if cfg.Next != nil && !cfg.Next(c) {
+		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
 		}
 
