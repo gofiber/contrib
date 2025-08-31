@@ -43,12 +43,8 @@ jwtware.FromContext(c fiber.Ctx) *jwt.Token
 | ErrorHandler   | `func(fiber.Ctx, error) error` | ErrorHandler defines a function which is executed for an invalid token.                                                                                 | `401 Invalid or expired JWT` |
 | SigningKey     | `interface{}`                   | Signing key to validate token. Used as fallback if SigningKeys has length 0.                                                                            | `nil`                        |
 | SigningKeys    | `map[string]interface{}`        | Map of signing keys to validate token with kid field usage.                                                                                             | `nil`                        |
-| ContextKey     | `string`                        | Context key to store user information from the token into context.                                                                                      | `"user"`                     |
-| Claims         | `jwt.Claim`                     | Claims are extendable claims data defining token content.                                                                                               | `jwt.MapClaims{}`            |
-| TokenLookup    | `string`                        | TokenLookup is a string in the form of `<source>:<name>` that is used                                                                                   | `"header:Authorization"`     |
-| AuthScheme     | `string`                        | AuthScheme to be used in the Authorization header. The default value (`"Bearer"`) will only be used in conjuction with the default `TokenLookup` value. | `"Bearer"`                   |
-| KeyFunc        | `func() jwt.Keyfunc`            | KeyFunc defines a user-defined function that supplies the public key for a token validation.                                                            | `jwtKeyFunc`                 |
-| JWKSetURLs     | `[]string`                      | A slice of unique JSON Web Key (JWK) Set URLs to used to parse JWTs.                                                                                    | `nil`                        |
+| Claims         | `jwt.Claims`                    | Claims are extendable claims data defining token content.                                                                                               | `jwt.MapClaims{}`            |
+| TokenLookup    | `string`                        | TokenLookup is a string in the form of `<source>:<name>` that is used                                                                                   | `
 
 
 ## HS256 Example
