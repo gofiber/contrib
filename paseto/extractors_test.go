@@ -204,3 +204,166 @@ func Test_Extractor_FromAuthHeader_EdgeCases(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "token", token)
 }
+
+// go test -run Test_Extractor_Chain_Introspection
+func Test_Extractor_Chain_Introspection(t *testing.T) {
+	t.Parallel()
+
+	// Test chain introspection
+	extractor1 := FromHeader("X-Token")
+	extractor2 := FromQuery("token")
+	extractor3 := FromCookie("auth")
+
+	chainExtractor := Chain(extractor1, extractor2, extractor3)
+
+	// Verify chain metadata
+	require.Equal(t, SourceHeader, chainExtractor.Source)
+	require.Equal(t, "X-Token", chainExtractor.Key)
+	require.Len(t, chainExtractor.Chain, 3)
+
+	// Verify individual extractors in chain
+	require.Equal(t, SourceHeader, chainExtractor.Chain[0].Source)
+	require.Equal(t, "X-Token", chainExtractor.Chain[0].Key)
+	require.Equal(t, SourceQuery, chainExtractor.Chain[1].Source)
+	require.Equal(t, "token", chainExtractor.Chain[1].Key)
+	require.Equal(t, SourceCookie, chainExtractor.Chain[2].Source)
+	require.Equal(t, "auth", chainExtractor.Chain[2].Key)
+}
+
+// go test -run Test_Extractor_Custom
+func Test_Extractor_Custom(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+
+	// Custom extractor that extracts from a custom header
+	customExtractor := Extractor{
+		Extract: func(c fiber.Ctx) (string, error) {
+			token := c.Get("X-Custom-Auth")
+			if token == "" {
+				return "", ErrMissingToken
+			}
+			return token, nil
+		},
+		Key:    "X-Custom-Auth",
+		Source: SourceCustom,
+	}
+
+	ctx := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(ctx)
+	ctx.Request().Header.Set("X-Custom-Auth", "custom-token")
+
+	token, err := customExtractor.Extract(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "custom-token", token)
+}
+
+// go test -run Test_Extractor_Chain_Error_Propagation
+func Test_Extractor_Chain_Error_Propagation(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+
+	// Create extractors that return different errors
+	errorExtractor1 := Extractor{
+		Extract: func(_ fiber.Ctx) (string, error) {
+			return "", fiber.NewError(fiber.StatusBadRequest, "First error")
+		},
+		Key:    "error1",
+		Source: SourceCustom,
+	}
+
+	errorExtractor2 := Extractor{
+		Extract: func(_ fiber.Ctx) (string, error) {
+			return "", fiber.NewError(fiber.StatusUnauthorized, "Second error")
+		},
+		Key:    "error2",
+		Source: SourceCustom,
+	}
+
+	chainExtractor := Chain(errorExtractor1, errorExtractor2)
+
+	ctx := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(ctx)
+
+	token, err := chainExtractor.Extract(ctx)
+	require.Empty(t, token)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "Second error") // Should return the last error
+}
+
+// go test -run Test_Extractor_Chain_With_Success
+func Test_Extractor_Chain_With_Success(t *testing.T) {
+	t.Parallel()
+
+	// First extractor fails, second succeeds
+	failingExtractor := Extractor{
+		Extract: func(_ fiber.Ctx) (string, error) {
+			return "", ErrMissingToken
+		},
+		Key:    "fail",
+		Source: SourceCustom,
+	}
+
+	successExtractor := Extractor{
+		Extract: func(_ fiber.Ctx) (string, error) {
+			return "success-token", nil
+		},
+		Key:    "success",
+		Source: SourceCustom,
+	}
+
+	chainExtractor := Chain(failingExtractor, successExtractor)
+
+	app := fiber.New()
+	ctx := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(ctx)
+
+	token, err := chainExtractor.Extract(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "success-token", token)
+}
+
+// go test -run Test_Extractor_FromAuthHeader_CustomScheme
+func Test_Extractor_FromAuthHeader_CustomScheme(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+
+	// Test with custom auth scheme
+	ctx := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(ctx)
+	ctx.Request().Header.Set(fiber.HeaderAuthorization, "CustomScheme my-token")
+
+	extractor := FromAuthHeader("CustomScheme")
+	token, err := extractor.Extract(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "my-token", token)
+
+	// Verify metadata
+	require.Equal(t, SourceAuthHeader, extractor.Source)
+	require.Equal(t, fiber.HeaderAuthorization, extractor.Key)
+	require.Equal(t, "CustomScheme", extractor.AuthScheme)
+}
+
+// go test -run Test_Extractor_FromAuthHeader_NoScheme
+func Test_Extractor_FromAuthHeader_NoScheme(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+
+	// Test with no auth scheme (empty string)
+	ctx := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(ctx)
+	ctx.Request().Header.Set(fiber.HeaderAuthorization, "just-the-token")
+
+	extractor := FromAuthHeader("") // No scheme
+	token, err := extractor.Extract(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "just-the-token", token)
+
+	// Verify metadata
+	require.Equal(t, SourceAuthHeader, extractor.Source)
+	require.Equal(t, fiber.HeaderAuthorization, extractor.Key)
+	require.Equal(t, "", extractor.AuthScheme)
+}

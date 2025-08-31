@@ -389,3 +389,170 @@ func Test_PASETO_PublicToken_CustomValidate(t *testing.T) {
 	assert.Equal(t, nil, err)
 	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 }
+
+func Test_PASETO_CustomErrorHandler(t *testing.T) {
+	app := fiber.New()
+
+	customErrorCalled := false
+	app.Use(New(Config{
+		SymmetricKey: []byte(symmetricKey),
+		ErrorHandler: func(ctx fiber.Ctx, err error) error {
+			customErrorCalled = true
+			return ctx.Status(fiber.StatusTeapot).SendString("Custom PASETO Error: " + err.Error())
+		},
+	}))
+
+	app.Get("/protected", func(ctx fiber.Ctx) error {
+		return ctx.SendString("OK")
+	})
+
+	request := httptest.NewRequest("GET", "/protected", nil)
+	request.Header.Set(fiber.HeaderAuthorization, "Bearer "+invalidToken)
+	resp, err := app.Test(request)
+
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusTeapot, resp.StatusCode)
+	assert.True(t, customErrorCalled)
+}
+
+func Test_PASETO_CustomSuccessHandler(t *testing.T) {
+	app := fiber.New()
+
+	customSuccessCalled := false
+	app.Use(New(Config{
+		SymmetricKey: []byte(symmetricKey),
+		SuccessHandler: func(ctx fiber.Ctx) error {
+			customSuccessCalled = true
+			ctx.Locals("custom", "paseto-success")
+			return ctx.Next()
+		},
+	}))
+
+	app.Get("/protected", func(ctx fiber.Ctx) error {
+		if ctx.Locals("custom") == "paseto-success" {
+			return ctx.SendString("Custom Success Handler Worked")
+		}
+		return ctx.SendString("OK")
+	})
+
+	request, err := generateTokenRequest("/protected", CreateToken, durationTest, PurposeLocal)
+	assert.Equal(t, nil, err)
+
+	resp, err := app.Test(request)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+	assert.True(t, customSuccessCalled)
+}
+
+func Test_PASETO_InvalidSymmetricKey(t *testing.T) {
+	defer func() {
+		err := recover()
+		assert.NotNil(t, err)
+	}()
+
+	app := fiber.New()
+	app.Use(New(Config{
+		SymmetricKey: []byte("invalid-key-length"), // Wrong length
+	}))
+
+	app.Get("/protected", func(ctx fiber.Ctx) error {
+		return ctx.SendString("OK")
+	})
+}
+
+func Test_PASETO_MissingPublicKey(t *testing.T) {
+	defer func() {
+		err := recover()
+		assert.NotNil(t, err)
+	}()
+
+	privateKey := getPrivateKey()
+	app := fiber.New()
+	app.Use(New(Config{
+		PrivateKey: privateKey,
+		// Missing PublicKey
+	}))
+
+	app.Get("/protected", func(ctx fiber.Ctx) error {
+		return ctx.SendString("OK")
+	})
+}
+
+func Test_PASETO_MissingPrivateKey(t *testing.T) {
+	defer func() {
+		err := recover()
+		assert.NotNil(t, err)
+	}()
+
+	app := fiber.New()
+	app.Use(New(Config{
+		PublicKey: getPrivateKey().Public(),
+		// Missing PrivateKey
+	}))
+
+	app.Get("/protected", func(ctx fiber.Ctx) error {
+		return ctx.SendString("OK")
+	})
+}
+
+func Test_PASETO_BothKeysProvided(t *testing.T) {
+	defer func() {
+		err := recover()
+		assert.NotNil(t, err)
+	}()
+
+	privateKey := getPrivateKey()
+	app := fiber.New()
+	app.Use(New(Config{
+		SymmetricKey: []byte(symmetricKey),
+		PrivateKey:   privateKey,
+		PublicKey:    privateKey.Public(),
+	}))
+
+	app.Get("/protected", func(ctx fiber.Ctx) error {
+		return ctx.SendString("OK")
+	})
+}
+
+func Test_PASETO_FromContextWithoutToken(t *testing.T) {
+	app := fiber.New()
+
+	app.Get("/no-token", func(ctx fiber.Ctx) error {
+		payload := FromContext(ctx)
+		if payload == nil {
+			return ctx.SendString("No payload as expected")
+		}
+		return ctx.SendString("Unexpected payload")
+	})
+
+	request := httptest.NewRequest("GET", "/no-token", nil)
+	resp, err := app.Test(request)
+
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+}
+
+func Test_PASETO_CustomValidateError(t *testing.T) {
+	app := fiber.New()
+
+	app.Use(New(Config{
+		SymmetricKey: []byte(symmetricKey),
+		Validate: func(data []byte) (interface{}, error) {
+			return nil, fiber.NewError(fiber.StatusForbidden, "Custom validation failed")
+		},
+		ErrorHandler: func(ctx fiber.Ctx, err error) error {
+			return ctx.Status(fiber.StatusForbidden).SendString("Validation failed")
+		},
+	}))
+
+	app.Get("/protected", func(ctx fiber.Ctx) error {
+		return ctx.SendString("OK")
+	})
+
+	request, err := generateTokenRequest("/protected", CreateToken, durationTest, PurposeLocal)
+	assert.Equal(t, nil, err)
+
+	resp, err := app.Test(request)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusForbidden, resp.StatusCode)
+}
