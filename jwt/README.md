@@ -41,12 +41,11 @@ jwtware.FromContext(c fiber.Ctx) *jwt.Token
 | Filter         | `func(fiber.Ctx) bool`         | Defines a function to skip middleware                                                                                                                   | `nil`                        |
 | SuccessHandler | `func(fiber.Ctx) error`        | SuccessHandler defines a function which is executed for a valid token.                                                                                  | `nil`                        |
 | ErrorHandler   | `func(fiber.Ctx, error) error` | ErrorHandler defines a function which is executed for an invalid token.                                                                                 | `401 Invalid or expired JWT` |
-| SigningKey     | `interface{}`                   | Signing key to validate token. Used as fallback if SigningKeys has length 0.                                                                            | `nil`                        |
-| SigningKeys    | `map[string]interface{}`        | Map of signing keys to validate token with kid field usage.                                                                                             | `nil`                        |
-| ContextKey     | `string`                        | Context key to store user information from the token into context.                                                                                      | `"user"`                     |
+| SigningKey     | `SigningKey`                     | Signing key to validate token. Used as fallback if SigningKeys is empty.                                                                            | `nil`                        |
+| SigningKeys    | `map[string]SigningKey`         | Map of signing keys to validate token with kid field usage.                                                                                             | `nil`                        |
 | Claims         | `jwt.Claim`                     | Claims are extendable claims data defining token content.                                                                                               | `jwt.MapClaims{}`            |
-| TokenLookup    | `string`                        | TokenLookup is a string in the form of `<source>:<name>` that is used                                                                                   | `"header:Authorization"`     |
-| AuthScheme     | `string`                        | AuthScheme to be used in the Authorization header. The default value (`"Bearer"`) will only be used in conjuction with the default `TokenLookup` value. | `"Bearer"`                   |
+| Extractor      | `Extractor`                     | Extractor defines a function to extract the token from the request.                                                                                     | `FromAuthHeader("Authorization", "Bearer")` |
+| TokenProcessorFunc | `func(token string) (string, error)` | TokenProcessorFunc processes the token extracted using the Extractor.                                                                                   | `nil`                        |
 | KeyFunc        | `func() jwt.Keyfunc`            | KeyFunc defines a user-defined function that supplies the public key for a token validation.                                                            | `jwtKeyFunc`                 |
 | JWKSetURLs     | `[]string`                      | A slice of unique JSON Web Key (JWK) Set URLs to used to parse JWTs.                                                                                    | `nil`                        |
 
@@ -118,12 +117,40 @@ func accessible(c fiber.Ctx) error {
 }
 
 func restricted(c fiber.Ctx) error {
-	user := c.Locals("user").(*jwt.Token)
+	user := jwtware.FromContext(c)
 	claims := user.Claims.(jwt.MapClaims)
 	name := claims["name"].(string)
 	return c.SendString("Welcome " + name)
 }
 
+```
+
+## Custom Extractor Example
+
+```go
+package main
+
+import (
+ "github.com/gofiber/fiber/v3"
+
+ jwtware "github.com/gofiber/contrib/jwt"
+)
+
+func main() {
+ app := fiber.New()
+
+ // JWT Middleware with custom extractor from cookie
+ app.Use(jwtware.New(jwtware.Config{
+  SigningKey: jwtware.SigningKey{Key: []byte("secret")},
+  Extractor:  jwtware.FromCookie("token"),
+ }))
+
+ app.Get("/protected", func(c fiber.Ctx) error {
+  return c.SendString("Protected route")
+ })
+
+ app.Listen(":3000")
+}
 ```
 
 ## HS256 Test
@@ -244,7 +271,7 @@ func accessible(c fiber.Ctx) error {
 }
 
 func restricted(c fiber.Ctx) error {
-	user := c.Locals("user").(*jwt.Token)
+	user := jwtware.FromContext(c)
 	claims := user.Claims.(jwt.MapClaims)
 	name := claims["name"].(string)
 	return c.SendString("Welcome " + name)

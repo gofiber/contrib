@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"github.com/MicahParks/keyfunc/v2"
@@ -45,23 +44,13 @@ type Config struct {
 	// Optional. Default value jwt.MapClaims
 	Claims jwt.Claims
 
-	// TokenLookup specifies how to extract the token from the request.
-	// Format: "<source>:<name>"
-	// Optional. Default: "header:Authorization".
-	// Possible values:
-	// - "header:<name>"
-	// - "query:<name>"
-	// - "param:<name>"
-	// - "cookie:<name>"
-	TokenLookup string
+	// Extractor defines a function to extract the token from the request.
+	// Optional. Default: FromAuthHeader("Authorization", "Bearer").
+	Extractor Extractor
 
-	// TokenProcessorFunc processes the token extracted using TokenLookup.
+	// TokenProcessorFunc processes the token extracted using the Extractor.
 	// Optional. Default: nil
 	TokenProcessorFunc func(token string) (string, error)
-
-	// AuthScheme specifies the scheme used in the Authorization header.
-	// Optional. Default: "Bearer".
-	AuthScheme string
 
 	// KeyFunc provides the public key for JWT verification.
 	// It handles algorithm verification and key selection.
@@ -105,7 +94,7 @@ func makeCfg(config []Config) (cfg Config) {
 	}
 	if cfg.ErrorHandler == nil {
 		cfg.ErrorHandler = func(c fiber.Ctx, err error) error {
-			if err.Error() == ErrJWTMissingOrMalformed.Error() {
+			if errors.Is(err, ErrJWTMissingOrMalformed) {
 				return c.Status(fiber.StatusBadRequest).SendString(ErrJWTMissingOrMalformed.Error())
 			}
 			return c.Status(fiber.StatusUnauthorized).SendString("Invalid or expired JWT")
@@ -117,12 +106,8 @@ func makeCfg(config []Config) (cfg Config) {
 	if cfg.Claims == nil {
 		cfg.Claims = jwt.MapClaims{}
 	}
-	if cfg.TokenLookup == "" {
-		cfg.TokenLookup = defaultTokenLookup
-		// set AuthScheme as "Bearer" only if TokenLookup is set to default.
-		if cfg.AuthScheme == "" {
-			cfg.AuthScheme = "Bearer"
-		}
+	if cfg.Extractor.Extract == nil {
+		cfg.Extractor = FromAuthHeader(fiber.HeaderAuthorization, "Bearer")
 	}
 
 	if cfg.KeyFunc == nil {
@@ -180,29 +165,6 @@ func keyfuncOptions(givenKeys map[string]keyfunc.GivenKey) keyfunc.Options {
 		RefreshTimeout:    time.Second * 10,
 		RefreshUnknownKID: true,
 	}
-}
-
-// getExtractors function will create a slice of functions which will be used
-// for token sarch  and will perform extraction of the value
-func (cfg *Config) getExtractors() []jwtExtractor {
-	// Initialize
-	extractors := make([]jwtExtractor, 0)
-	rootParts := strings.Split(cfg.TokenLookup, ",")
-	for _, rootPart := range rootParts {
-		parts := strings.Split(strings.TrimSpace(rootPart), ":")
-
-		switch parts[0] {
-		case "header":
-			extractors = append(extractors, jwtFromHeader(parts[1], cfg.AuthScheme))
-		case "query":
-			extractors = append(extractors, jwtFromQuery(parts[1]))
-		case "param":
-			extractors = append(extractors, jwtFromParam(parts[1]))
-		case "cookie":
-			extractors = append(extractors, jwtFromCookie(parts[1]))
-		}
-	}
-	return extractors
 }
 
 func signingKeyFunc(key SigningKey) jwt.Keyfunc {

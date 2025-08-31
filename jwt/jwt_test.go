@@ -195,7 +195,7 @@ func TestJwtFromHeader(t *testing.T) {
 					JWTAlg: test.SigningMethod,
 					Key:    []byte(defaultSigningKey),
 				},
-				TokenLookup: "header:X-Token",
+				Extractor: jwtware.FromHeader("X-Token"),
 			}))
 
 			app.Get("/ok", func(c fiber.Ctx) error {
@@ -262,7 +262,7 @@ func TestJwtFromCookie(t *testing.T) {
 				JWTAlg: test.SigningMethod,
 				Key:    []byte(defaultSigningKey),
 			},
-			TokenLookup: "cookie:Token",
+			Extractor: jwtware.FromCookie("Token"),
 		}))
 
 		app.Get("/ok", func(c fiber.Ctx) error {

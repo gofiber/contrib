@@ -2,6 +2,8 @@ package jwtware
 
 import (
 	"testing"
+
+	"github.com/gofiber/fiber/v3"
 )
 
 func TestPanicOnMissingConfiguration(t *testing.T) {
@@ -44,15 +46,18 @@ func TestDefaultConfiguration(t *testing.T) {
 		t.Fatalf("Default claims should not be 'nil'")
 	}
 
-	if cfg.TokenLookup != defaultTokenLookup {
-		t.Fatalf("Default token lookup should be '%v'", defaultTokenLookup)
+	if cfg.Extractor.Source != SourceAuthHeader {
+		t.Fatalf("Default extractor source should be '%v'", SourceAuthHeader)
 	}
-	if cfg.AuthScheme != "Bearer" {
+	if cfg.Extractor.Key != fiber.HeaderAuthorization {
+		t.Fatalf("Default extractor key should be '%v'", fiber.HeaderAuthorization)
+	}
+	if cfg.Extractor.AuthScheme != "Bearer" {
 		t.Fatalf("Default auth scheme should be 'Bearer'")
 	}
 }
 
-func TestExtractorsInitialization(t *testing.T) {
+func TestCustomExtractor(t *testing.T) {
 	t.Parallel()
 
 	defer func() {
@@ -63,46 +68,19 @@ func TestExtractorsInitialization(t *testing.T) {
 	}()
 
 	// Arrange
-	cfg := Config{
-		SigningKey:  SigningKey{Key: []byte("")},
-		TokenLookup: defaultTokenLookup + ",query:token,param:token,cookie:token,something:something",
-	}
+	extractor := FromHeader("X-Auth-Token")
+	config := append(make([]Config, 0), Config{
+		SigningKey: SigningKey{Key: []byte("")},
+		Extractor:  extractor,
+	})
 
 	// Act
-	extractors := cfg.getExtractors()
+	cfg := makeCfg(config)
 
-	// Assert
-	if len(extractors) != 4 {
-		t.Fatalf("Extractors should not be created for invalid lookups")
+	if cfg.Extractor.Source != extractor.Source {
+		t.Fatalf("Extractor source should be the custom one")
 	}
-	if cfg.AuthScheme != "" {
-		t.Fatal("AuthScheme should be \"\"")
-	}
-}
-
-func TestCustomTokenLookup(t *testing.T) {
-	t.Parallel()
-
-	defer func() {
-		// Assert
-		if err := recover(); err != nil {
-			t.Fatalf("Middleware should not panic")
-		}
-	}()
-
-	// Arrange
-	lookup := `header:X-Auth`
-	scheme := "Token"
-	cfg := Config{
-		SigningKey:  SigningKey{Key: []byte("")},
-		TokenLookup: lookup,
-		AuthScheme:  scheme,
-	}
-
-	if cfg.TokenLookup != lookup {
-		t.Fatalf("TokenLookup should be %s", lookup)
-	}
-	if cfg.AuthScheme != scheme {
-		t.Fatalf("AuthScheme should be %s", scheme)
+	if cfg.Extractor.Key != extractor.Key {
+		t.Fatalf("Extractor key should be the custom one")
 	}
 }
