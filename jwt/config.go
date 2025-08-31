@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"time"
 
 	"github.com/MicahParks/keyfunc/v2"
@@ -98,11 +99,28 @@ func makeCfg(config []Config) (cfg Config) {
 			if errors.Is(err, ErrMissingToken) {
 				return c.Status(fiber.StatusBadRequest).SendString(ErrMissingToken.Error())
 			}
+			if e, ok := err.(*fiber.Error); ok {
+				return c.Status(e.Code).SendString(e.Message)
+			}
 			return c.Status(fiber.StatusUnauthorized).SendString("Invalid or expired JWT")
 		}
 	}
 	if cfg.SigningKey.Key == nil && len(cfg.SigningKeys) == 0 && len(cfg.JWKSetURLs) == 0 && cfg.KeyFunc == nil {
 		panic("Fiber: JWT middleware configuration: At least one of the following is required: KeyFunc, JWKSetURLs, SigningKeys, or SigningKey.")
+	}
+	if len(cfg.SigningKeys) > 0 {
+		for _, key := range cfg.SigningKeys {
+			if key.Key == nil {
+				panic("Fiber: JWT middleware configuration: SigningKey.Key cannot be nil")
+			}
+		}
+	}
+	if len(cfg.JWKSetURLs) > 0 {
+		for _, u := range cfg.JWKSetURLs {
+			if _, err := url.Parse(u); err != nil {
+				panic("Fiber: JWT middleware configuration: Invalid JWK Set URL: " + u)
+			}
+		}
 	}
 	if cfg.Claims == nil {
 		cfg.Claims = jwt.MapClaims{}
