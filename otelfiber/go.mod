@@ -9,6 +9,7 @@ require (
 	go.opentelemetry.io/contrib v1.20.0
 	go.opentelemetry.io/contrib/propagators/b3 v1.20.0
 	go.opentelemetry.io/otel v1.19.0
+	go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.19.0
 	go.opentelemetry.io/otel/metric v1.19.0
 	go.opentelemetry.io/otel/sdk v1.19.0
 	go.opentelemetry.io/otel/sdk/metric v0.41.0
