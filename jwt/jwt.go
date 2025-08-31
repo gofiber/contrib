@@ -47,13 +47,8 @@ func New(config ...Config) fiber.Handler {
 		if _, ok := cfg.Claims.(jwt.MapClaims); ok {
 			token, err = jwt.Parse(auth, cfg.KeyFunc)
 		} else {
-			// Create a new instance of the claims type using reflection
-			claimsType := reflect.TypeOf(cfg.Claims)
-			claimsValue := reflect.New(claimsType.Elem()).Interface()
-			claims, ok := claimsValue.(jwt.Claims)
-			if !ok {
-				return cfg.ErrorHandler(c, fiber.NewError(fiber.StatusInternalServerError, "claims type does not implement jwt.Claims"))
-			}
+			t := reflect.ValueOf(cfg.Claims).Type().Elem()
+			claims := reflect.New(t).Interface().(jwt.Claims)
 			token, err = jwt.ParseWithClaims(auth, claims, cfg.KeyFunc)
 		}
 		if err == nil && token.Valid {
