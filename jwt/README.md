@@ -38,7 +38,7 @@ jwtware.FromContext(c fiber.Ctx) *jwt.Token
 
 | Property       | Type                            | Description                                                                                                                                             | Default                      |
 |:---------------|:--------------------------------|:--------------------------------------------------------------------------------------------------------------------------------------------------------|:-----------------------------|
-| Filter         | `func(fiber.Ctx) bool`         | Defines a function to skip middleware                                                                                                                   | `nil`                        |
+| Next           | `func(fiber.Ctx) bool`         | Defines a function to skip middleware when returned true                                                                                             | `nil`                        |
 | SuccessHandler | `func(fiber.Ctx) error`        | SuccessHandler defines a function which is executed for a valid token.                                                                                  | `nil`                        |
 | ErrorHandler   | `func(fiber.Ctx, error) error` | ErrorHandler defines a function which is executed for an invalid token.                                                                                 | `401 Invalid or expired JWT` |
 | SigningKey     | `SigningKey`                     | Signing key to validate token. Used as fallback if SigningKeys is empty.                                                                            | `nil`                        |

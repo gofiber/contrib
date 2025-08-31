@@ -32,8 +32,8 @@ func Test_ConfigDefault(t *testing.T) {
 		SymmetricKey: []byte(symmetricKey),
 	})
 
-	assert.Equal(t, LookupHeader, config.TokenLookup[0])
-	assert.Equal(t, fiber.HeaderAuthorization, config.TokenLookup[1])
+	assert.Equal(t, SourceAuthHeader, config.Extractor.Source)
+	assert.Equal(t, fiber.HeaderAuthorization, config.Extractor.Key)
 
 	assert.NotNil(t, config.Validate)
 }
@@ -41,15 +41,15 @@ func Test_ConfigDefault(t *testing.T) {
 func Test_ConfigCustomLookup(t *testing.T) {
 	config := configDefault(Config{
 		SymmetricKey: []byte(symmetricKey),
-		TokenLookup:  [2]string{"", "Custom-Header"},
+		Extractor:    FromHeader("Custom-Header"),
 	})
-	assert.Equal(t, LookupHeader, config.TokenLookup[0])
-	assert.Equal(t, "Custom-Header", config.TokenLookup[1])
+	assert.Equal(t, SourceHeader, config.Extractor.Source)
+	assert.Equal(t, "Custom-Header", config.Extractor.Key)
 
 	config = configDefault(Config{
 		SymmetricKey: []byte(symmetricKey),
-		TokenLookup:  [2]string{LookupParam},
+		Extractor:    FromQuery("token"),
 	})
-	assert.Equal(t, LookupParam, config.TokenLookup[0])
-	assert.Equal(t, fiber.HeaderAuthorization, config.TokenLookup[1])
+	assert.Equal(t, SourceQuery, config.Extractor.Source)
+	assert.Equal(t, "token", config.Extractor.Key)
 }

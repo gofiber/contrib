@@ -21,9 +21,9 @@ import (
 
 // Config ...
 type Config struct {
-	// Filter defines a function to skip middleware.
+	// Next defines a function to skip this middleware when returned true.
 	// Optional. Default: nil
-	Filter func(fiber.Ctx) bool
+	Next func(fiber.Ctx) bool
 
 	// HandshakeTimeout specifies the duration for the handshake to complete.
 	HandshakeTimeout time.Duration
@@ -114,7 +114,7 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		},
 	}
 	return func(c fiber.Ctx) error {
-		if cfg.Filter != nil && !cfg.Filter(c) {
+		if cfg.Next != nil && !cfg.Next(c) {
 			return c.Next()
 		}
 

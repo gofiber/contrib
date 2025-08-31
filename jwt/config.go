@@ -18,9 +18,10 @@ var (
 
 // Config defines the config for JWT middleware
 type Config struct {
-	// Filter is a function to skip middleware execution for specific requests.
+	// Next defines a function to skip this middleware when returned true.
+	//
 	// Optional. Default: nil
-	Filter func(fiber.Ctx) bool
+	Next func(fiber.Ctx) bool
 
 	// SuccessHandler is executed when a token is successfully validated.
 	// Optional. Default: nil
@@ -94,8 +95,8 @@ func makeCfg(config []Config) (cfg Config) {
 	}
 	if cfg.ErrorHandler == nil {
 		cfg.ErrorHandler = func(c fiber.Ctx, err error) error {
-			if errors.Is(err, ErrJWTMissingOrMalformed) {
-				return c.Status(fiber.StatusBadRequest).SendString(ErrJWTMissingOrMalformed.Error())
+			if errors.Is(err, ErrMissingToken) {
+				return c.Status(fiber.StatusBadRequest).SendString(ErrMissingToken.Error())
 			}
 			return c.Status(fiber.StatusUnauthorized).SendString("Invalid or expired JWT")
 		}
@@ -107,7 +108,7 @@ func makeCfg(config []Config) (cfg Config) {
 		cfg.Claims = jwt.MapClaims{}
 	}
 	if cfg.Extractor.Extract == nil {
-		cfg.Extractor = FromAuthHeader(fiber.HeaderAuthorization, "Bearer")
+		cfg.Extractor = FromAuthHeader("Bearer")
 	}
 
 	if cfg.KeyFunc == nil {

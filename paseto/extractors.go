@@ -1,7 +1,6 @@
-package jwtware
+package pasetoware
 
 import (
-	"errors"
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
@@ -34,71 +33,58 @@ const (
 	SourceCustom
 )
 
-// ErrMissingToken is returned when the token is missing or malformed.
-var ErrMissingToken = errors.New("missing or malformed JWT")
-
 // Extractor defines a token extraction method with metadata.
 type Extractor struct {
 	Extract    func(fiber.Ctx) (string, error)
 	Key        string      // The parameter/header name used for extraction
 	Source     Source      // The type of source being extracted from
-	AuthScheme string      // The auth scheme used, e.g., "Bearer"
+	AuthScheme string      // The authentication scheme (e.g., "Bearer")
 	Chain      []Extractor // For chained extractors, stores all extractors in the chain
 }
 
-// FromAuthHeader extracts a token from the Authorization header with an optional prefix.
-// This is a convenience function for the common case of extracting from the Authorization header.
+// FromHeader creates an Extractor that retrieves a token from a specified HTTP header in the request.
 //
 // Parameters:
-//   - authScheme: The auth scheme to strip from the header value (e.g., "Bearer"). If empty, no prefix is stripped.
+//   - header: The name of the HTTP header from which to extract the token.
 //
 // Returns:
 //
-//	An Extractor that attempts to retrieve the token from the Authorization header.
-func FromAuthHeader(authScheme string) Extractor {
+//	An Extractor that attempts to retrieve the token from the specified HTTP header. If the
+//	header is not present or does not contain a token, it returns ErrMissingToken.
+func FromHeader(header string) Extractor {
 	return Extractor{
 		Extract: func(c fiber.Ctx) (string, error) {
-			authHeader := c.Get(fiber.HeaderAuthorization)
-			if authHeader == "" {
-				return "", ErrMissingToken
-			}
-
-			if authScheme != "" {
-				schemeLen := len(authScheme)
-				if len(authHeader) > schemeLen+1 && strings.EqualFold(authHeader[:schemeLen], authScheme) && authHeader[schemeLen] == ' ' {
-					return strings.TrimSpace(authHeader[schemeLen+1:]), nil
-				}
-				return "", ErrMissingToken
-			}
-
-			return strings.TrimSpace(authHeader), nil
-		},
-		Key:        fiber.HeaderAuthorization,
-		Source:     SourceAuthHeader,
-		AuthScheme: authScheme,
-	}
-}
-
-// FromCookie creates an Extractor that retrieves a token from a specified cookie in the request.
-//
-// Parameters:
-//   - key: The name of the cookie from which to extract the token.
-//
-// Returns:
-//
-//	An Extractor that attempts to retrieve the token from the specified cookie. If the cookie
-//	is not present or does not contain a token, it returns ErrMissingToken.
-func FromCookie(key string) Extractor {
-	return Extractor{
-		Extract: func(c fiber.Ctx) (string, error) {
-			token := c.Cookies(key)
+			token := c.Get(header)
 			if token == "" {
 				return "", ErrMissingToken
 			}
 			return token, nil
 		},
-		Key:    key,
-		Source: SourceCookie,
+		Key:    header,
+		Source: SourceHeader,
+	}
+}
+
+// FromQuery creates an Extractor that retrieves a token from a specified query parameter in the request.
+//
+// Parameters:
+//   - param: The name of the query parameter from which to extract the token.
+//
+// Returns:
+//
+//	An Extractor that attempts to retrieve the token from the specified query parameter. If the
+//	parameter is not present or does not contain a token, it returns ErrMissingToken.
+func FromQuery(param string) Extractor {
+	return Extractor{
+		Extract: func(c fiber.Ctx) (string, error) {
+			token := fiber.Query[string](c, param)
+			if token == "" {
+				return "", ErrMissingToken
+			}
+			return token, nil
+		},
+		Key:    param,
+		Source: SourceQuery,
 	}
 }
 
@@ -125,6 +111,29 @@ func FromParam(param string) Extractor {
 	}
 }
 
+// FromCookie creates an Extractor that retrieves a token from a specified cookie in the request.
+//
+// Parameters:
+//   - key: The name of the cookie from which to extract the token.
+//
+// Returns:
+//
+//	An Extractor that attempts to retrieve the token from the specified cookie. If the cookie
+//	is not present or does not contain a token, it returns ErrMissingToken.
+func FromCookie(key string) Extractor {
+	return Extractor{
+		Extract: func(c fiber.Ctx) (string, error) {
+			token := c.Cookies(key)
+			if token == "" {
+				return "", ErrMissingToken
+			}
+			return token, nil
+		},
+		Key:    key,
+		Source: SourceCookie,
+	}
+}
+
 // FromForm creates an Extractor that retrieves a token from a specified form field in the request.
 //
 // Parameters:
@@ -148,49 +157,36 @@ func FromForm(param string) Extractor {
 	}
 }
 
-// FromHeader creates an Extractor that retrieves a token from a specified HTTP header in the request.
+// FromAuthHeader extracts a token from the Authorization header with an optional prefix.
+// This is a convenience function for the common case of extracting from the Authorization header.
 //
 // Parameters:
-//   - param: The name of the HTTP header from which to extract the token.
+//   - authScheme: The auth scheme to strip from the header value (e.g., "Bearer"). If empty, no prefix is stripped.
 //
 // Returns:
 //
-//	An Extractor that attempts to retrieve the token from the specified HTTP header. If the
-//	header is not present or does not contain a token, it returns ErrMissingToken.
-func FromHeader(param string) Extractor {
+//	An Extractor that attempts to retrieve the token from the Authorization header.
+func FromAuthHeader(authScheme string) Extractor {
 	return Extractor{
 		Extract: func(c fiber.Ctx) (string, error) {
-			token := c.Get(param)
-			if token == "" {
+			authHeader := c.Get(fiber.HeaderAuthorization)
+			if authHeader == "" {
 				return "", ErrMissingToken
 			}
-			return token, nil
-		},
-		Key:    param,
-		Source: SourceHeader,
-	}
-}
 
-// FromQuery creates an Extractor that retrieves a token from a specified query parameter in the request.
-//
-// Parameters:
-//   - param: The name of the query parameter from which to extract the token.
-//
-// Returns:
-//
-//	An Extractor that attempts to retrieve the token from the specified query parameter. If the
-//	parameter is not present or does not contain a token, it returns ErrMissingToken.
-func FromQuery(param string) Extractor {
-	return Extractor{
-		Extract: func(c fiber.Ctx) (string, error) {
-			token := fiber.Query[string](c, param)
-			if token == "" {
+			if authScheme != "" {
+				authSchemeLen := len(authScheme)
+				if len(authHeader) > authSchemeLen+1 && strings.EqualFold(authHeader[:authSchemeLen], authScheme) && authHeader[authSchemeLen] == ' ' {
+					return strings.TrimSpace(authHeader[authSchemeLen+1:]), nil
+				}
 				return "", ErrMissingToken
 			}
-			return token, nil
+
+			return strings.TrimSpace(authHeader), nil
 		},
-		Key:    param,
-		Source: SourceQuery,
+		Key:        fiber.HeaderAuthorization,
+		Source:     SourceAuthHeader,
+		AuthScheme: authScheme,
 	}
 }
 

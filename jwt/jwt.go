@@ -26,7 +26,7 @@ func New(config ...Config) fiber.Handler {
 	// Return middleware handler
 	return func(c fiber.Ctx) error {
 		// Filter request to skip middleware
-		if cfg.Filter != nil && cfg.Filter(c) {
+		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
 		}
 		auth, err := cfg.Extractor.Extract(c)

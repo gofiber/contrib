@@ -63,7 +63,7 @@ func generateTokenRequest(
 		return nil, err
 	}
 	request := httptest.NewRequest("GET", targetRoute, nil)
-	request.Header.Set(fiber.HeaderAuthorization, token)
+	request.Header.Set(fiber.HeaderAuthorization, "Bearer "+token)
 	return request, nil
 }
 
@@ -191,7 +191,7 @@ func Test_PASETO_LocalToken_Next(t *testing.T) {
 	}))
 
 	request := httptest.NewRequest("GET", "/", nil)
-	request.Header.Set(fiber.HeaderAuthorization, invalidToken)
+	request.Header.Set(fiber.HeaderAuthorization, "Bearer "+invalidToken)
 	resp, err := app.Test(request)
 	assert.Equal(t, nil, err)
 	assert.Equal(t, fiber.StatusNotFound, resp.StatusCode)
@@ -210,7 +210,7 @@ func Test_PASETO_PublicToken_Next(t *testing.T) {
 	}))
 
 	request := httptest.NewRequest("GET", "/", nil)
-	request.Header.Set(fiber.HeaderAuthorization, invalidToken)
+	request.Header.Set(fiber.HeaderAuthorization, "Bearer "+invalidToken)
 	resp, err := app.Test(request)
 
 	assert.Equal(t, nil, err)
@@ -261,19 +261,13 @@ func Test_PASETO_LocalToken_IncorrectBearerToken(t *testing.T) {
 	app := fiber.New()
 	app.Use(New(Config{
 		SymmetricKey: []byte(symmetricKey),
-		TokenPrefix:  "Gopher",
-		ErrorHandler: func(ctx fiber.Ctx, err error) error {
-			if errors.Is(err, ErrIncorrectTokenPrefix) {
-				return ctx.SendStatus(fiber.StatusUpgradeRequired)
-			}
-			return ctx.SendStatus(fiber.StatusBadRequest)
-		},
+		Extractor:    FromAuthHeader("Gopher"),
 	}))
 	request := httptest.NewRequest("GET", "/", nil)
 	request.Header.Set(fiber.HeaderAuthorization, "Bearer "+invalidToken)
 	resp, err := app.Test(request)
 	assert.Equal(t, nil, err)
-	assert.Equal(t, fiber.StatusUpgradeRequired, resp.StatusCode)
+	assert.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
 }
 
 func Test_PASETO_PublicToken_IncorrectBearerToken(t *testing.T) {
@@ -281,15 +275,9 @@ func Test_PASETO_PublicToken_IncorrectBearerToken(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(New(Config{
-		PrivateKey:  privateKey,
-		PublicKey:   privateKey.Public(),
-		TokenPrefix: "Gopher",
-		ErrorHandler: func(ctx fiber.Ctx, err error) error {
-			if errors.Is(err, ErrIncorrectTokenPrefix) {
-				return ctx.SendStatus(fiber.StatusUpgradeRequired)
-			}
-			return ctx.SendStatus(fiber.StatusBadRequest)
-		},
+		PrivateKey: privateKey,
+		PublicKey:  privateKey.Public(),
+		Extractor:  FromAuthHeader("Gopher"),
 	}))
 
 	request := httptest.NewRequest("GET", "/", nil)
@@ -297,7 +285,7 @@ func Test_PASETO_PublicToken_IncorrectBearerToken(t *testing.T) {
 	resp, err := app.Test(request)
 
 	assert.Equal(t, nil, err)
-	assert.Equal(t, fiber.StatusUpgradeRequired, resp.StatusCode)
+	assert.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
 }
 
 func Test_PASETO_LocalToken_InvalidToken(t *testing.T) {
@@ -306,7 +294,7 @@ func Test_PASETO_LocalToken_InvalidToken(t *testing.T) {
 		SymmetricKey: []byte(symmetricKey),
 	}))
 	request := httptest.NewRequest("GET", "/", nil)
-	request.Header.Set(fiber.HeaderAuthorization, invalidToken)
+	request.Header.Set(fiber.HeaderAuthorization, "Bearer "+invalidToken)
 	resp, err := app.Test(request)
 	assert.Equal(t, nil, err)
 	assert.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
@@ -322,7 +310,7 @@ func Test_PASETO_PublicToken_InvalidToken(t *testing.T) {
 	}))
 
 	request := httptest.NewRequest("GET", "/", nil)
-	request.Header.Set(fiber.HeaderAuthorization, invalidToken)
+	request.Header.Set(fiber.HeaderAuthorization, "Bearer "+invalidToken)
 	resp, err := app.Test(request)
 
 	assert.Equal(t, nil, err)
@@ -357,7 +345,7 @@ func Test_PASETO_LocalToken_CustomValidate(t *testing.T) {
 		CreatedAt:      time.Now(),
 	}, nil)
 	request := httptest.NewRequest("GET", "/", nil)
-	request.Header.Set(fiber.HeaderAuthorization, token)
+	request.Header.Set(fiber.HeaderAuthorization, "Bearer "+token)
 	resp, err := app.Test(request)
 	assert.Equal(t, nil, err)
 	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
@@ -395,7 +383,7 @@ func Test_PASETO_PublicToken_CustomValidate(t *testing.T) {
 	}, nil)
 
 	request := httptest.NewRequest("GET", "/", nil)
-	request.Header.Set(fiber.HeaderAuthorization, token)
+	request.Header.Set(fiber.HeaderAuthorization, "Bearer "+token)
 	resp, err := app.Test(request)
 
 	assert.Equal(t, nil, err)

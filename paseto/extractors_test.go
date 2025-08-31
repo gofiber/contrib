@@ -1,4 +1,4 @@
-package jwtware
+package pasetoware
 
 import (
 	"context"
@@ -172,4 +172,35 @@ func Test_Extractor_Chain(t *testing.T) {
 	token, err = Chain(dummyExtractor).Extract(ctx)
 	require.Empty(t, token)
 	require.Equal(t, ErrMissingToken, err)
+}
+
+// go test -run Test_Extractor_FromAuthHeader_EdgeCases
+func Test_Extractor_FromAuthHeader_EdgeCases(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+
+	// Test case: Authorization header exists but doesn't match the expected scheme
+	ctx := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(ctx)
+	ctx.Request().Header.Set(fiber.HeaderAuthorization, "Basic dXNlcjpwYXNz") // Basic auth instead of Bearer
+	token, err := FromAuthHeader("Bearer").Extract(ctx)
+	require.Empty(t, token)
+	require.Equal(t, ErrMissingToken, err)
+
+	// Test case: Authorization header exists but has wrong format
+	ctx = app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(ctx)
+	ctx.Request().Header.Set(fiber.HeaderAuthorization, "Bearertoken") // Missing space after Bearer
+	token, err = FromAuthHeader("Bearer").Extract(ctx)
+	require.Empty(t, token)
+	require.Equal(t, ErrMissingToken, err)
+
+	// Test case: Authorization header exists but scheme doesn't match case-insensitively
+	ctx = app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(ctx)
+	ctx.Request().Header.Set(fiber.HeaderAuthorization, "bearer token") // lowercase bearer
+	token, err = FromAuthHeader("Bearer").Extract(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "token", token)
 }

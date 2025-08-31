@@ -28,7 +28,7 @@ func New(handler func(*websocket.Conn), config ...websocket.Config) fiber.Handle
 
 | Property            | Type                         | Description                                                                                                                   | Default                |
 |:--------------------|:-----------------------------|:------------------------------------------------------------------------------------------------------------------------------|:-----------------------|
-| Filter              | `func(fiber.Ctx) bool`       | Defines a function to skip middleware.                                                                                        | `nil`                  |
+| Next                 | `func(fiber.Ctx) bool`       | Defines a function to skip this middleware when returned true.                                                                 | `nil`                  |
 | HandshakeTimeout    | `time.Duration`              | HandshakeTimeout specifies the duration for the handshake to complete.                                                       | `0` (No timeout)       |
 | Subprotocols        | `[]string`                   | Subprotocols specifies the client's requested subprotocols.                                                                   | `nil`                  |
 | Origins             | `[]string`                   | Allowed Origins based on the Origin header. If empty, everything is allowed.                                                  | `nil`                  |
