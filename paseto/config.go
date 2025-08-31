@@ -51,10 +51,6 @@ type Config struct {
 	// Required if SymmetricKey is not set
 	PublicKey crypto.PublicKey
 
-	// ContextKey to store user information from the token into context.
-	// Optional. Default: DefaultContextKey.
-	ContextKey string
-
 	// TokenLookup is a string slice with size 2, that is used to extract token from the request.
 	// Optional. Default value ["header","Authorization"].
 	// Possible values:
@@ -137,10 +133,6 @@ func configDefault(authConfigs ...Config) Config {
 
 	if config.Validate == nil {
 		config.Validate = defaultValidateFunc
-	}
-
-	if config.ContextKey == "" {
-		config.ContextKey = ConfigDefault.ContextKey
 	}
 
 	if config.TokenLookup[0] == "" {

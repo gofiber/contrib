@@ -503,3 +503,44 @@ func customKeyfunc() jwt.Keyfunc {
 		return []byte(defaultSigningKey), nil
 	}
 }
+
+func TestFromContext(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		// Assert
+		if err := recover(); err != nil {
+			t.Fatalf("Middleware should not panic")
+		}
+	}()
+
+	for _, test := range hamac {
+		// Arrange
+		app := fiber.New()
+
+		app.Use(jwtware.New(jwtware.Config{
+			SigningKey: jwtware.SigningKey{
+				JWTAlg: test.SigningMethod,
+				Key:    []byte(defaultSigningKey),
+			},
+		}))
+
+		app.Get("/ok", func(c fiber.Ctx) error {
+			token := jwtware.FromContext(c)
+			if token == nil {
+				return c.SendStatus(fiber.StatusUnauthorized)
+			}
+			return c.SendString("OK")
+		})
+
+		req := httptest.NewRequest("GET", "/ok", nil)
+		req.Header.Add("Authorization", "Bearer "+test.Token)
+
+		// Act
+		resp, err := app.Test(req)
+
+		// Assert
+		assert.NoError(t, err)
+		assert.Equal(t, 200, resp.StatusCode)
+	}
+}

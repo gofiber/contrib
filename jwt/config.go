@@ -41,12 +41,8 @@ type Config struct {
 	// At least one of the following is required: KeyFunc, JWKSetURLs, SigningKeys, or SigningKey.
 	SigningKeys map[string]SigningKey
 
-	// ContextKey specifies the key used to store user information in the context.
-	// Optional. Default: "user".
-	ContextKey string
-
-	// Claims defines the structure of token claims.
-	// Optional. Default: jwt.MapClaims
+	// Claims are extendable claims data defining token content.
+	// Optional. Default value jwt.MapClaims
 	Claims jwt.Claims
 
 	// TokenLookup specifies how to extract the token from the request.
@@ -117,9 +113,6 @@ func makeCfg(config []Config) (cfg Config) {
 	}
 	if cfg.SigningKey.Key == nil && len(cfg.SigningKeys) == 0 && len(cfg.JWKSetURLs) == 0 && cfg.KeyFunc == nil {
 		panic("Fiber: JWT middleware configuration: At least one of the following is required: KeyFunc, JWKSetURLs, SigningKeys, or SigningKey.")
-	}
-	if cfg.ContextKey == "" {
-		cfg.ContextKey = "user"
 	}
 	if cfg.Claims == nil {
 		cfg.Claims = jwt.MapClaims{}

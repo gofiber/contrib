@@ -35,8 +35,7 @@ func Test_ConfigDefault(t *testing.T) {
 	assert.Equal(t, LookupHeader, config.TokenLookup[0])
 	assert.Equal(t, fiber.HeaderAuthorization, config.TokenLookup[1])
 
-	assert.Equal(t, DefaultContextKey, config.ContextKey)
-	assert.Equal(t, true, config.Validate != nil)
+	assert.NotNil(t, config.Validate)
 }
 
 func Test_ConfigCustomLookup(t *testing.T) {
