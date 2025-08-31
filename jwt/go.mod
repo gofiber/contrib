@@ -7,7 +7,6 @@ require (
 	github.com/gofiber/fiber/v3 v3.0.0-rc.1
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/stretchr/testify v1.11.0
-	github.com/valyala/fasthttp v1.65.0
 )
 
 require (
