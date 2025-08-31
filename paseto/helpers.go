@@ -8,11 +8,6 @@ import (
 	"github.com/o1egl/paseto"
 )
 
-const (
-	// DefaultContextKey is the Default key used by this middleware to store decrypted token
-	DefaultContextKey = "auth-token"
-)
-
 type TokenPurpose int
 
 const (
