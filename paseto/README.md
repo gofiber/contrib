@@ -271,8 +271,6 @@ func restricted(c fiber.Ctx) error {
 package main
 
 import (
-	"time"
-
 	"github.com/gofiber/fiber/v3"
 
 	pasetoware "github.com/gofiber/contrib/paseto"
@@ -303,8 +301,6 @@ func main() {
 package main
 
 import (
-	"time"
-
 	"github.com/gofiber/fiber/v3"
 
 	pasetoware "github.com/gofiber/contrib/paseto"

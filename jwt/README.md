@@ -36,19 +36,18 @@ jwtware.FromContext(c fiber.Ctx) *jwt.Token
 
 ## Config
 
-| Property       | Type                            | Description                                                                                                                                             | Default                      |
-|:---------------|:--------------------------------|:--------------------------------------------------------------------------------------------------------------------------------------------------------|:-----------------------------|
-| Next           | `func(fiber.Ctx) bool`         | Defines a function to skip middleware when returned true                                                                                             | `nil`                        |
-| SuccessHandler | `func(fiber.Ctx) error`        | SuccessHandler defines a function which is executed for a valid token.                                                                                  | `nil`                        |
-| ErrorHandler   | `func(fiber.Ctx, error) error` | ErrorHandler defines a function which is executed for an invalid token.                                                                                 | `401 Invalid or expired JWT` |
-| SigningKey     | `SigningKey`                     | Signing key to validate token. Used as fallback if SigningKeys is empty.                                                                            | `nil`                        |
-| SigningKeys    | `map[string]SigningKey`         | Map of signing keys to validate token with kid field usage.                                                                                             | `nil`                        |
-| Claims         | `jwt.Claims`                    | Claims are extendable claims data defining token content.                                                                                               | `jwt.MapClaims{}`            |
-| Extractor      | `Extractor`                     | Extractor defines a function to extract the token from the request.                                                                                     | `FromAuthHeader("Bearer")` |
-| TokenProcessorFunc | `func(token string) (string, error)` | TokenProcessorFunc processes the token extracted using the Extractor.                                                                                   | `nil`                        |
-| KeyFunc        | `func() jwt.Keyfunc`            | KeyFunc defines a user-defined function that supplies the public key for a token validation.                                                            | `jwtKeyFunc`                 |
-| JWKSetURLs     | `[]string`                      | A slice of unique JSON Web Key (JWK) Set URLs to used to parse JWTs.                                                                                    | `nil`                        |
-
+| Property           | Type                                 | Description                                                                                                  | Default                      |
+|:-------------------|:-------------------------------------|:-------------------------------------------------------------------------------------------------------------|:-----------------------------|
+| Next               | `func(fiber.Ctx) bool`               | Defines a function to skip this middleware when it returns true                                              | `nil`                        |
+| SuccessHandler     | `func(fiber.Ctx) error`              | SuccessHandler defines a function which is executed for a valid token.                                       | `nil`                        |
+| ErrorHandler       | `func(fiber.Ctx, error) error`       | ErrorHandler defines a function which is executed for an invalid token.                                      | `401 Invalid or expired JWT` |
+| SigningKey         | `SigningKey`                         | Signing key used to validate the token. Used as a fallback if `SigningKeys` is empty.                        | `nil`                        |
+| SigningKeys        | `map[string]SigningKey`              | Map of signing keys used to validate tokens via the `kid` header.                                            | `nil`                        |
+| Claims             | `jwt.Claims`                         | Claims are extendable claims data defining token content.                                                    | `jwt.MapClaims{}`            |
+| Extractor          | `Extractor`                          | Function used to extract the token from the request.                                                         | `FromAuthHeader("Bearer")`   |
+| TokenProcessorFunc | `func(token string) (string, error)` | TokenProcessorFunc processes the token extracted using the Extractor.                                        | `nil`                        |
+| KeyFunc            | `jwt.Keyfunc`                        | User-defined function that supplies the public key for token validation.                                     | `nil` (uses internal default)|
+| JWKSetURLs         | `[]string`                           | List of JSON Web Key (JWK) Set URLs used to obtain signing keys for parsing JWTs.                            | `nil`                        |
 
 ## HS256 Example
 
