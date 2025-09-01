@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gofiber/contrib/v3/websocket/v2"
+	"github.com/gofiber/contrib/v3/websocket/v1"
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 )

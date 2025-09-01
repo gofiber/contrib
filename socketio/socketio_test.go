@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/fasthttp/websocket"
-	fws "github.com/gofiber/contrib/v3/websocket/v2"
+	fws "github.com/gofiber/contrib/v3/websocket/v1"
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/mock"

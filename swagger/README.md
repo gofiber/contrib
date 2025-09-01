@@ -32,7 +32,7 @@ go mod init github.com/<user>/<repo>
 ```
 And then install the swagger middleware:
 ```bash
-go get github.com/gofiber/contrib/v3/swagger/v2
+go get github.com/gofiber/contrib/v3/swagger/v1
 ```
 
 ### Examples
@@ -40,7 +40,7 @@ Import the middleware package
 ```go
 import (
   "github.com/gofiber/fiber/v3"
-  "github.com/gofiber/contrib/v3/swagger/v2"
+  "github.com/gofiber/contrib/v3/swagger/v1"
 )
 ```
 

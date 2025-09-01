@@ -19,7 +19,7 @@ Can be found on [OpenTelemetry Registry](https://opentelemetry.io/registry/instr
 This middleware supports Fiber v3.
 
 ```
-go get -u github.com/gofiber/contrib/v3/otelfiber/v3
+go get -u github.com/gofiber/contrib/v3/otelfiber/v1
 ```
 
 ## Signature
@@ -63,7 +63,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 
-	"github.com/gofiber/contrib/v3/otelfiber/v3"
+	"github.com/gofiber/contrib/v3/otelfiber/v1"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	stdout "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"

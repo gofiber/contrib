@@ -1,4 +1,4 @@
-module github.com/gofiber/contrib/v3/fibersentry/v2
+module github.com/gofiber/contrib/v3/fibersentry/v1
 
 go 1.25.0
 

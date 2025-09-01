@@ -1,4 +1,4 @@
-module github.com/gofiber/contrib/v3/fiberzerolog/v2
+module github.com/gofiber/contrib/v3/fiberzerolog/v1
 
 go 1.25.0
 

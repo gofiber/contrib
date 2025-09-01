@@ -18,7 +18,7 @@ This middleware supports Fiber v3.
 
 ```
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/v3/fibernewrelic/v2
+go get -u github.com/gofiber/contrib/v3/fibernewrelic/v1
 ```
 
 ## Signature
@@ -47,7 +47,7 @@ package main
 
 import (
 	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/contrib/v3/fibernewrelic/v2"
+	"github.com/gofiber/contrib/v3/fibernewrelic/v1"
 )
 
 func main() {
@@ -76,7 +76,7 @@ package main
 
 import (
 	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/contrib/v3/fibernewrelic/v2"
+	"github.com/gofiber/contrib/v3/fibernewrelic/v1"
 	"github.com/newrelic/go-agent/v3/newrelic"
 )
 

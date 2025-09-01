@@ -18,7 +18,7 @@ This middleware supports Fiber v3
 
 ```
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/v3/loadshed/v2
+go get -u github.com/gofiber/contrib/v3/loadshed/v1
 ```
 
 ## Signatures
@@ -39,7 +39,7 @@ package main
 import (
   "time"
   "github.com/gofiber/fiber/v3"
-  loadshed "github.com/gofiber/contrib/v3/loadshed/v2"
+  loadshed "github.com/gofiber/contrib/v3/loadshed/v1"
 )
 
 func main() {
@@ -71,7 +71,7 @@ package main
 import (
   "time"
   "github.com/gofiber/fiber/v3"
-  loadshed "github.com/gofiber/contrib/v3/loadshed/v2"
+  loadshed "github.com/gofiber/contrib/v3/loadshed/v1"
 )
 
 func main() {

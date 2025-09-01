@@ -38,7 +38,7 @@ This middleware supports Fiber v3.
 
 ```bash
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/v3/circuitbreaker/v2
+go get -u github.com/gofiber/contrib/v3/circuitbreaker/v1
 ```
 
 ## Signature
@@ -75,7 +75,7 @@ package main
 
 import (
 	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/contrib/v3/circuitbreaker/v2"
+	"github.com/gofiber/contrib/v3/circuitbreaker/v1"
 )
 
 func main() {
