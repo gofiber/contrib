@@ -37,7 +37,7 @@ pasetoware.FromContext(c fiber.Ctx) interface{}
 
 | Property       | Type                            | Description                                                                                                                                                                                             | Default                         |
 |:---------------|:--------------------------------|:--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|:--------------------------------|
-| Next           | `func(fiber.Ctx) bool`          | Defines a function to skip the middleware when it returns true.                                                                                                                                         | `nil`                           |
+| Next           | `func(fiber.Ctx) bool`          | Defines a function to skip this middleware when it returns true.                                                                                                                                        | `nil`                           |
 | SuccessHandler | `func(fiber.Ctx) error`         | SuccessHandler defines a function which is executed for a valid token.                                                                                                                                  | `c.Next()`                      |
 | ErrorHandler   | `func(fiber.Ctx, error) error`  | ErrorHandler defines a function which is executed for an invalid token.                                                                                                                                 | `401 Invalid or expired PASETO` |
 | Validate       | `PayloadValidator`              | Defines a function to validate if payload is valid. Optional. In case payload used is created using `CreateToken` function. If token is created using another function, this function must be provided. | `nil`                           |
@@ -50,13 +50,24 @@ pasetoware.FromContext(c fiber.Ctx) interface{}
 
 PASETO middleware provides several built-in extractors for different token sources:
 
-- `FromAuthHeader(prefix string)` - Extracts token from Authorization header with optional prefix
-- `FromHeader(header string)` - Extracts token from any HTTP header
+- `FromAuthHeader(prefix string)` - Extracts token from the Authorization header using the given scheme prefix (e.g., "Bearer"). **This is the recommended and most secure method.**
+- `FromHeader(header string)` - Extracts token from the specified HTTP header
 - `FromQuery(param string)` - Extracts token from URL query parameters
 - `FromParam(param string)` - Extracts token from URL path parameters
 - `FromCookie(key string)` - Extracts token from cookies
 - `FromForm(param string)` - Extracts token from form data
 - `Chain(extractors ...Extractor)` - Tries multiple extractors in order until one succeeds
+
+### Security Considerations
+
+⚠️ **Security Warning**: When choosing an extractor, consider the security implications:
+
+- **URL-based extractors** (`FromQuery`, `FromParam`): Tokens can leak through server logs, browser referrer headers, proxy logs, and browser history. Use only for development or when security is not a primary concern.
+- **Form-based extractors** (`FromForm`): Similar risks to URL extractors, especially if forms are submitted via GET requests.
+- **Header-based extractors** (`FromAuthHeader`, `FromHeader`): Most secure as headers are not typically logged or exposed in referrers.
+- **Cookie-based extractors** (`FromCookie`): Secure for web applications but requires proper cookie security settings (HttpOnly, Secure, SameSite).
+
+**Recommendation**: Use `FromAuthHeader("Bearer")` (the default) for production applications unless you have specific requirements that necessitate alternative extractors.
 
 ## Migration from TokenPrefix
 

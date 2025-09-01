@@ -6,6 +6,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPanicOnMissingConfiguration(t *testing.T) {
@@ -28,13 +29,6 @@ func TestPanicOnMissingConfiguration(t *testing.T) {
 func TestDefaultConfiguration(t *testing.T) {
 	t.Parallel()
 
-	defer func() {
-		// Assert
-		if err := recover(); err != nil {
-			t.Fatalf("Middleware should not panic")
-		}
-	}()
-
 	// Arrange
 	config := append(make([]Config, 0), Config{
 		SigningKey: SigningKey{Key: []byte("")},
@@ -44,30 +38,14 @@ func TestDefaultConfiguration(t *testing.T) {
 	cfg := makeCfg(config)
 
 	// Assert
-	if cfg.Claims == nil {
-		t.Fatalf("Default claims should not be 'nil'")
-	}
-
-	if cfg.Extractor.Source != SourceAuthHeader {
-		t.Fatalf("Default extractor source should be '%v'", SourceAuthHeader)
-	}
-	if cfg.Extractor.Key != fiber.HeaderAuthorization {
-		t.Fatalf("Default extractor key should be '%v'", fiber.HeaderAuthorization)
-	}
-	if cfg.Extractor.AuthScheme != "Bearer" {
-		t.Fatalf("Default auth scheme should be 'Bearer'")
-	}
+	require.NotNil(t, cfg.Claims, "Default claims should not be 'nil'")
+	require.Equal(t, SourceAuthHeader, cfg.Extractor.Source, "Default extractor source should be '%v'", SourceAuthHeader)
+	require.Equal(t, fiber.HeaderAuthorization, cfg.Extractor.Key, "Default extractor key should be '%v'", fiber.HeaderAuthorization)
+	require.Equal(t, "Bearer", cfg.Extractor.AuthScheme, "Default auth scheme should be 'Bearer'")
 }
 
 func TestCustomExtractor(t *testing.T) {
 	t.Parallel()
-
-	defer func() {
-		// Assert
-		if err := recover(); err != nil {
-			t.Fatalf("Middleware should not panic")
-		}
-	}()
 
 	// Arrange
 	extractor := FromHeader("X-Auth-Token")
@@ -79,82 +57,41 @@ func TestCustomExtractor(t *testing.T) {
 	// Act
 	cfg := makeCfg(config)
 
-	if cfg.Extractor.Source != extractor.Source {
-		t.Fatalf("Extractor source should be the custom one")
-	}
-	if cfg.Extractor.Key != extractor.Key {
-		t.Fatalf("Extractor key should be the custom one")
-	}
+	// Assert
+	require.Equal(t, extractor.Source, cfg.Extractor.Source, "Extractor source should be the custom one")
+	require.Equal(t, extractor.Key, cfg.Extractor.Key, "Extractor key should be the custom one")
+	require.Equal(t, "", cfg.Extractor.AuthScheme, "AuthScheme should be empty for non-Authorization extractors")
 }
 
 func TestPanicOnInvalidSigningKey(t *testing.T) {
 	t.Parallel()
-
-	defer func() {
-		// Assert
-		if err := recover(); err == nil {
-			t.Fatalf("Middleware should panic on invalid signing key")
-		}
-	}()
-
-	// Arrange
 	config := append(make([]Config, 0), Config{
 		SigningKey: SigningKey{Key: nil}, // Invalid key
 	})
-
-	// Act
-	makeCfg(config)
+	require.Panics(t, func() { makeCfg(config) })
 }
 
 func TestPanicOnInvalidSigningKeys(t *testing.T) {
 	t.Parallel()
-
-	defer func() {
-		// Assert
-		if err := recover(); err == nil {
-			t.Fatalf("Middleware should panic on invalid signing keys")
-		}
-	}()
-
-	// Arrange
 	config := append(make([]Config, 0), Config{
 		SigningKeys: map[string]SigningKey{
 			"key1": {Key: nil}, // Invalid key
 		},
 	})
-
-	// Act
-	makeCfg(config)
+	require.Panics(t, func() { makeCfg(config) })
 }
 
 func TestPanicOnInvalidJWKSetURLs(t *testing.T) {
 	t.Parallel()
-
-	defer func() {
-		// Assert
-		if err := recover(); err == nil {
-			t.Fatalf("Middleware should panic on invalid JWK Set URLs")
-		}
-	}()
-
 	// Arrange
 	config := append(make([]Config, 0), Config{
 		JWKSetURLs: []string{"invalid-url"}, // This would cause panic in keyfunc
 	})
-
-	// Act
-	makeCfg(config)
+	require.Panics(t, func() { makeCfg(config) })
 }
 
 func TestCustomClaims(t *testing.T) {
 	t.Parallel()
-
-	defer func() {
-		// Assert
-		if err := recover(); err != nil {
-			t.Fatalf("Middleware should not panic")
-		}
-	}()
 
 	// Arrange
 	customClaims := jwt.MapClaims{"custom": "claims"}
@@ -167,21 +104,15 @@ func TestCustomClaims(t *testing.T) {
 	cfg := makeCfg(config)
 
 	// Assert
-	if cfg.Claims == nil {
-		t.Fatalf("Custom claims should be preserved")
-	}
+	require.NotNil(t, cfg.Claims, "Custom claims should be preserved")
 
 	// Check if it's the same map by checking a key
-	if claimsMap, ok := cfg.Claims.(jwt.MapClaims); ok {
-		if claimsMap["custom"] != "claims" {
-			t.Fatalf("Custom claims content should be preserved")
-		}
-	} else {
-		t.Fatalf("Claims should be MapClaims")
-	}
+	claimsMap, ok := cfg.Claims.(jwt.MapClaims)
+	require.True(t, ok, "Claims should be MapClaims")
+	require.Equal(t, "claims", claimsMap["custom"], "Custom claims content should be preserved")
 }
 
-func TestTokenProcessorFuncPanic(t *testing.T) {
+func TestTokenProcessorFunc_Configured(t *testing.T) {
 	t.Parallel()
 
 	// Arrange
@@ -196,7 +127,9 @@ func TestTokenProcessorFuncPanic(t *testing.T) {
 	cfg := makeCfg(config)
 
 	// Assert
-	if cfg.TokenProcessorFunc == nil {
-		t.Fatalf("TokenProcessorFunc should be set")
-	}
+	require.NotNil(t, cfg.TokenProcessorFunc, "TokenProcessorFunc should be set")
+
+	// Exercise the processor
+	_, err := cfg.TokenProcessorFunc("dummy")
+	require.Error(t, err, "TokenProcessorFunc should return error")
 }

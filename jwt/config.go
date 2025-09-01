@@ -47,7 +47,7 @@ type Config struct {
 	Claims jwt.Claims
 
 	// Extractor defines a function to extract the token from the request.
-	// Optional. Default: FromAuthHeader("Authorization", "Bearer").
+	// Optional. Default: FromAuthHeader("Bearer").
 	Extractor Extractor
 
 	// TokenProcessorFunc processes the token extracted using the Extractor.

@@ -47,6 +47,7 @@ func createCustomToken(key []byte, dataInfo string, duration time.Duration, purp
 
 func generateTokenRequest(
 	targetRoute string, tokenGenerator PayloadCreator, duration time.Duration, purpose TokenPurpose,
+	schemes ...string,
 ) (*http.Request, error) {
 	var token string
 	var err error
@@ -63,7 +64,11 @@ func generateTokenRequest(
 		return nil, err
 	}
 	request := httptest.NewRequest("GET", targetRoute, nil)
-	request.Header.Set(fiber.HeaderAuthorization, "Bearer "+token)
+	scheme := "Bearer"
+	if len(schemes) > 0 && schemes[0] != "" {
+		scheme = schemes[0]
+	}
+	request.Header.Set(fiber.HeaderAuthorization, scheme+" "+token)
 	return request, nil
 }
 
@@ -74,6 +79,7 @@ func getPrivateKey() ed25519.PrivateKey {
 }
 
 func assertErrorHandler(t *testing.T, toAssert error) fiber.ErrorHandler {
+	t.Helper()
 	return func(ctx fiber.Ctx, err error) error {
 		assert.Equal(t, toAssert, err)
 		assert.Equal(t, true, errors.Is(err, toAssert))

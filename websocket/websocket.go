@@ -21,7 +21,7 @@ import (
 
 // Config ...
 type Config struct {
-	// Next defines a function to skip this middleware when returned true.
+	// Next defines a function to skip this middleware when it returns true.
 	// Optional. Default: nil
 	Next func(fiber.Ctx) bool
 

@@ -3,6 +3,7 @@ package jwtware_test
 import (
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -203,7 +204,7 @@ func TestJwtFromHeader(t *testing.T) {
 			})
 
 			req := httptest.NewRequest("GET", "/ok", nil)
-			req.Header.Add("x-token", test.Token)
+			req.Header.Set("X-Token", test.Token)
 
 			// Act
 			resp, err := app.Test(req)
@@ -573,6 +574,8 @@ func TestCustomErrorHandler(t *testing.T) {
 	// Assert
 	assert.NoError(t, err)
 	assert.Equal(t, fiber.StatusTeapot, resp.StatusCode)
+	b, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(b), "Custom Error:")
 	assert.True(t, customErrorCalled)
 }
 
@@ -608,6 +611,8 @@ func TestCustomSuccessHandler(t *testing.T) {
 	// Assert
 	assert.NoError(t, err)
 	assert.Equal(t, 200, resp.StatusCode)
+	b, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "Custom Success Handler Worked", string(b))
 	assert.True(t, customSuccessCalled)
 }
 
@@ -638,6 +643,8 @@ func TestNextFunction(t *testing.T) {
 	resp, err := app.Test(req)
 	assert.NoError(t, err)
 	assert.Equal(t, 200, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "Skipped JWT", string(body))
 
 	// Test not skipping JWT (should fail without token)
 	req2 := httptest.NewRequest("GET", "/protected", nil)
@@ -649,26 +656,12 @@ func TestNextFunction(t *testing.T) {
 func TestInvalidSigningKey(t *testing.T) {
 	t.Parallel()
 
-	defer func() {
-		// Assert
-		if err := recover(); err == nil {
-			t.Fatalf("Middleware should panic on invalid signing key")
-		}
-	}()
-
-	// Arrange
-	app := fiber.New()
-
-	app.Use(jwtware.New(jwtware.Config{
-		SigningKey: jwtware.SigningKey{Key: nil}, // Invalid key
-	}))
-
-	app.Get("/protected", func(c fiber.Ctx) error {
-		return c.SendString("OK")
-	})
-
-	req := httptest.NewRequest("GET", "/protected", nil)
-	_, _ = app.Test(req)
+	assert.Panics(t, func() {
+		app := fiber.New()
+		app.Use(jwtware.New(jwtware.Config{
+			SigningKey: jwtware.SigningKey{Key: nil}, // Invalid key
+		}))
+	}, "Middleware should panic on invalid signing key")
 }
 
 func TestFromContextWithoutToken(t *testing.T) {

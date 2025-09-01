@@ -53,7 +53,7 @@ type Config struct {
 	PublicKey crypto.PublicKey
 
 	// Extractor defines a function to extract the token from the request.
-	// Optional. Default: FromAuthHeader("").
+	// Optional. Default: FromAuthHeader("Bearer").
 	Extractor Extractor
 }
 

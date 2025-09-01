@@ -83,6 +83,7 @@ func Test_Extractors(t *testing.T) {
 	ctx := app.AcquireCtx(&fasthttp.RequestCtx{})
 	defer app.ReleaseCtx(ctx)
 	ctx.Request().Header.SetContentType(fiber.MIMEApplicationForm)
+	ctx.Request().Header.SetMethod(fiber.MethodPost)
 	ctx.Request().SetBodyString("token=token_from_form")
 	token, err := FromForm("token").Extract(ctx)
 	require.NoError(t, err)
@@ -290,6 +291,9 @@ func Test_Extractor_Chain_Error_Propagation(t *testing.T) {
 	require.Empty(t, token)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "Second error") // Should return the last error
+	var fe *fiber.Error
+	require.ErrorAs(t, err, &fe)
+	require.Equal(t, fiber.StatusUnauthorized, fe.Code)
 }
 
 // go test -run Test_Extractor_Chain_With_Success

@@ -54,7 +54,7 @@ type Extractor struct {
 func FromHeader(header string) Extractor {
 	return Extractor{
 		Extract: func(c fiber.Ctx) (string, error) {
-			token := c.Get(header)
+			token := strings.TrimSpace(c.Get(header))
 			if token == "" {
 				return "", ErrMissingToken
 			}
@@ -67,6 +67,14 @@ func FromHeader(header string) Extractor {
 
 // FromQuery creates an Extractor that retrieves a token from a specified query parameter in the request.
 //
+// SECURITY WARNING: Extracting tokens from URL query parameters can leak sensitive information through:
+// - Server logs and access logs
+// - Browser referrer headers
+// - Proxy and intermediary logs
+// - Browser history and bookmarks
+// - Network monitoring tools
+// Consider using FromAuthHeader or FromCookie for better security.
+//
 // Parameters:
 //   - param: The name of the query parameter from which to extract the token.
 //
@@ -77,7 +85,7 @@ func FromHeader(header string) Extractor {
 func FromQuery(param string) Extractor {
 	return Extractor{
 		Extract: func(c fiber.Ctx) (string, error) {
-			token := fiber.Query[string](c, param)
+			token := strings.TrimSpace(c.Query(param))
 			if token == "" {
 				return "", ErrMissingToken
 			}
@@ -90,6 +98,13 @@ func FromQuery(param string) Extractor {
 
 // FromParam creates an Extractor that retrieves a token from a specified URL parameter in the request.
 //
+// SECURITY WARNING: Extracting tokens from URL parameters can leak sensitive information through:
+// - Server logs and access logs
+// - Browser referrer headers
+// - Proxy and intermediary logs
+// - Browser history
+// Consider using FromAuthHeader or FromCookie for better security.
+//
 // Parameters:
 //   - param: The name of the URL parameter from which to extract the token.
 //
@@ -100,7 +115,7 @@ func FromQuery(param string) Extractor {
 func FromParam(param string) Extractor {
 	return Extractor{
 		Extract: func(c fiber.Ctx) (string, error) {
-			token := c.Params(param)
+			token := strings.TrimSpace(c.Params(param))
 			if token == "" {
 				return "", ErrMissingToken
 			}
@@ -123,7 +138,7 @@ func FromParam(param string) Extractor {
 func FromCookie(key string) Extractor {
 	return Extractor{
 		Extract: func(c fiber.Ctx) (string, error) {
-			token := c.Cookies(key)
+			token := strings.TrimSpace(c.Cookies(key))
 			if token == "" {
 				return "", ErrMissingToken
 			}
@@ -136,6 +151,12 @@ func FromCookie(key string) Extractor {
 
 // FromForm creates an Extractor that retrieves a token from a specified form field in the request.
 //
+// SECURITY WARNING: Extracting tokens from form data can leak sensitive information through:
+// - Server logs and access logs
+// - Browser referrer headers (if form is submitted via GET)
+// - Proxy and intermediary logs
+// Consider using FromAuthHeader or FromCookie for better security.
+//
 // Parameters:
 //   - param: The name of the form field from which to extract the token.
 //
@@ -146,7 +167,7 @@ func FromCookie(key string) Extractor {
 func FromForm(param string) Extractor {
 	return Extractor{
 		Extract: func(c fiber.Ctx) (string, error) {
-			token := c.FormValue(param)
+			token := strings.TrimSpace(c.FormValue(param))
 			if token == "" {
 				return "", ErrMissingToken
 			}
@@ -175,9 +196,9 @@ func FromAuthHeader(authScheme string) Extractor {
 			}
 
 			if authScheme != "" {
-				authSchemeLen := len(authScheme)
-				if len(authHeader) > authSchemeLen+1 && strings.EqualFold(authHeader[:authSchemeLen], authScheme) && authHeader[authSchemeLen] == ' ' {
-					return strings.TrimSpace(authHeader[authSchemeLen+1:]), nil
+				parts := strings.Fields(authHeader)
+				if len(parts) >= 2 && strings.EqualFold(parts[0], authScheme) {
+					return parts[1], nil
 				}
 				return "", ErrMissingToken
 			}
@@ -239,6 +260,6 @@ func Chain(extractors ...Extractor) Extractor {
 		},
 		Source: primarySource,
 		Key:    primaryKey,
-		Chain:  extractors, // Store the full chain for introspection
+		Chain:  append([]Extractor(nil), extractors...), // Defensive copy for introspection
 	}
 }

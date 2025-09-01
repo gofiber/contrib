@@ -49,6 +49,29 @@ jwtware.FromContext(c fiber.Ctx) *jwt.Token
 | KeyFunc            | `jwt.Keyfunc`                        | User-defined function that supplies the public key for token validation.                                     | `nil` (uses internal default)|
 | JWKSetURLs         | `[]string`                           | List of JSON Web Key (JWK) Set URLs used to obtain signing keys for parsing JWTs.                            | `nil`                        |
 
+## Available Extractors
+
+JWT middleware provides several built-in extractors for different token sources:
+
+- `FromAuthHeader(prefix string)` - Extracts token from the Authorization header using the given scheme prefix (e.g., "Bearer"). **This is the recommended and most secure method.**
+- `FromHeader(header string)` - Extracts token from the specified HTTP header
+- `FromQuery(param string)` - Extracts token from URL query parameters
+- `FromParam(param string)` - Extracts token from URL path parameters
+- `FromCookie(key string)` - Extracts token from cookies
+- `FromForm(param string)` - Extracts token from form data
+- `Chain(extractors ...Extractor)` - Tries multiple extractors in order until one succeeds
+
+### Security Considerations
+
+⚠️ **Security Warning**: When choosing an extractor, consider the security implications:
+
+- **URL-based extractors** (`FromQuery`, `FromParam`): Tokens can leak through server logs, browser referrer headers, proxy logs, and browser history. Use only for development or when security is not a primary concern.
+- **Form-based extractors** (`FromForm`): Similar risks to URL extractors, especially if forms are submitted via GET requests.
+- **Header-based extractors** (`FromAuthHeader`, `FromHeader`): Most secure as headers are not typically logged or exposed in referrers.
+- **Cookie-based extractors** (`FromCookie`): Secure for web applications but requires proper cookie security settings (HttpOnly, Secure, SameSite).
+
+**Recommendation**: Use `FromAuthHeader("Bearer")` (the default) for production applications unless you have specific requirements that necessitate alternative extractors.
+
 ## HS256 Example
 
 ```go
