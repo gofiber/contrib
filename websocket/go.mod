@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/fasthttp/websocket v1.5.8
-	github.com/gofiber/fiber/v3 v3.0.0-beta.5.0.20250824113156-64a711307367
+	github.com/gofiber/fiber/v3 v3.0.0-rc.1
 	github.com/gofiber/utils/v2 v2.0.0-rc.1
 	github.com/stretchr/testify v1.11.1
 	github.com/valyala/fasthttp v1.65.0
