@@ -3,13 +3,13 @@ module github.com/gofiber/contrib/testcontainers
 go 1.25.0
 
 require (
-	github.com/gofiber/fiber/v3 v3.0.0-beta.5.0.20250824113156-64a711307367
+	github.com/gofiber/fiber/v3 v3.0.0-rc.1
 	github.com/testcontainers/testcontainers-go v0.38.0
 )
 
 // Test-time dependencies
 require (
-	github.com/stretchr/testify v1.10.0
+	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.38.0
 	github.com/testcontainers/testcontainers-go/modules/redis v0.38.0
 )
