@@ -4,7 +4,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 var (
@@ -12,15 +12,15 @@ var (
 	ErrJWTMissingOrMalformed = errors.New("missing or malformed JWT")
 )
 
-type jwtExtractor func(c *fiber.Ctx) (string, error)
+type jwtExtractor func(c fiber.Ctx) (string, error)
 
 // jwtFromHeader returns a function that extracts token from the request header.
-func jwtFromHeader(header string, authScheme string) func(c *fiber.Ctx) (string, error) {
+func jwtFromHeader(header string, authScheme string) func(c fiber.Ctx) (string, error) {
 	// Enforce the presence of a space between the authentication scheme and the token
 	if authScheme != "" {
 		authScheme = authScheme + " "
 	}
-	return func(c *fiber.Ctx) (string, error) {
+	return func(c fiber.Ctx) (string, error) {
 		auth := c.Get(header)
 		l := len(authScheme)
 		if len(auth) > l+1 && strings.EqualFold(auth[:l], authScheme) {
@@ -31,8 +31,8 @@ func jwtFromHeader(header string, authScheme string) func(c *fiber.Ctx) (string,
 }
 
 // jwtFromQuery returns a function that extracts token from the query string.
-func jwtFromQuery(param string) func(c *fiber.Ctx) (string, error) {
-	return func(c *fiber.Ctx) (string, error) {
+func jwtFromQuery(param string) func(c fiber.Ctx) (string, error) {
+	return func(c fiber.Ctx) (string, error) {
 		token := c.Query(param)
 		if token == "" {
 			return "", ErrJWTMissingOrMalformed
@@ -42,8 +42,8 @@ func jwtFromQuery(param string) func(c *fiber.Ctx) (string, error) {
 }
 
 // jwtFromParam returns a function that extracts token from the url param string.
-func jwtFromParam(param string) func(c *fiber.Ctx) (string, error) {
-	return func(c *fiber.Ctx) (string, error) {
+func jwtFromParam(param string) func(c fiber.Ctx) (string, error) {
+	return func(c fiber.Ctx) (string, error) {
 		token := c.Params(param)
 		if token == "" {
 			return "", ErrJWTMissingOrMalformed
@@ -53,8 +53,8 @@ func jwtFromParam(param string) func(c *fiber.Ctx) (string, error) {
 }
 
 // jwtFromCookie returns a function that extracts token from the named cookie.
-func jwtFromCookie(name string) func(c *fiber.Ctx) (string, error) {
-	return func(c *fiber.Ctx) (string, error) {
+func jwtFromCookie(name string) func(c fiber.Ctx) (string, error) {
+	return func(c fiber.Ctx) (string, error) {
 		token := c.Cookies(name)
 		if token == "" {
 			return "", ErrJWTMissingOrMalformed

@@ -10,16 +10,16 @@ id: fgprof
 
 [fgprof](https://github.com/felixge/fgprof) support for Fiber.
 
-**Note: Requires Go 1.19 and above**
+**Note: Requires Go 1.25 and above**
 
 ## Install
 
-This middleware supports Fiber v2.
+This middleware supports Fiber v3.
 
 Using fgprof to profiling your Fiber app.
 
 ```
-go get -u github.com/gofiber/fiber/v2
+go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/fgprof
 ```
 
@@ -39,7 +39,7 @@ import (
 	"log"
 
 	"github.com/gofiber/contrib/fgprof"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 func main() {

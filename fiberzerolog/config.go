@@ -4,7 +4,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/rs/zerolog"
 )
 
@@ -47,23 +47,23 @@ type Config struct {
 	// Next defines a function to skip this middleware when returned true.
 	//
 	// Optional. Default: nil
-	Next func(c *fiber.Ctx) bool
+	Next func(c fiber.Ctx) bool
 
 	// SkipBody defines a function to skip log  "body" field when returned true.
 	//
 	// Optional. Default: nil
-	SkipBody func(c *fiber.Ctx) bool
+	SkipBody func(c fiber.Ctx) bool
 
 	// SkipResBody defines a function to skip log  "resBody" field when returned true.
 	//
 	// Optional. Default: nil
-	SkipResBody func(c *fiber.Ctx) bool
+	SkipResBody func(c fiber.Ctx) bool
 
 	// GetResBody defines a function to get ResBody.
 	//  eg: when use compress middleware, resBody is unreadable. you can set GetResBody func to get readable resBody.
 	//
 	// Optional. Default: nil
-	GetResBody func(c *fiber.Ctx) []byte
+	GetResBody func(c fiber.Ctx) []byte
 
 	// Skip logging for these uri
 	//
@@ -81,7 +81,7 @@ type Config struct {
 	// GetLogger will override Logger.
 	//
 	// Optional. Default: nil
-	GetLogger func(c *fiber.Ctx) zerolog.Logger
+	GetLogger func(c fiber.Ctx) zerolog.Logger
 
 	// Add fields what you want see.
 	//
@@ -123,7 +123,7 @@ type Config struct {
 	Levels []zerolog.Level
 }
 
-func (c *Config) loggerCtx(fc *fiber.Ctx) zerolog.Context {
+func (c *Config) loggerCtx(fc fiber.Ctx) zerolog.Context {
 	if c.GetLogger != nil {
 		return c.GetLogger(fc).With()
 	}
@@ -131,7 +131,7 @@ func (c *Config) loggerCtx(fc *fiber.Ctx) zerolog.Context {
 	return c.Logger.With()
 }
 
-func (c *Config) logger(fc *fiber.Ctx, latency time.Duration, err error) zerolog.Logger {
+func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.Logger {
 	zc := c.loggerCtx(fc)
 
 	for _, field := range c.Fields {

@@ -10,13 +10,13 @@ import (
 
 	"github.com/casbin/casbin/v2/model"
 	"github.com/casbin/casbin/v2/persist"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 var (
-	subjectAlice = func(c *fiber.Ctx) string { return "alice" }
-	subjectBob   = func(c *fiber.Ctx) string { return "bob" }
-	subjectEmpty = func(c *fiber.Ctx) string { return "" }
+	subjectAlice = func(c fiber.Ctx) string { return "alice" }
+	subjectBob   = func(c fiber.Ctx) string { return "bob" }
+	subjectEmpty = func(c fiber.Ctx) string { return "" }
 )
 
 const (
@@ -121,7 +121,7 @@ func Test_RequiresPermission(t *testing.T) {
 
 	testCases := []struct {
 		desc        string
-		lookup      func(*fiber.Ctx) string
+		lookup      func(fiber.Ctx) string
 		permissions []string
 		opts        []Option
 		statusCode  int
@@ -201,7 +201,7 @@ func Test_RequiresPermission(t *testing.T) {
 
 		app.Post("/blog",
 			authz.RequiresPermissions(tC.permissions, tC.opts...),
-			func(c *fiber.Ctx) error {
+			func(c fiber.Ctx) error {
 				return c.SendStatus(fiber.StatusOK)
 			},
 		)
@@ -232,7 +232,7 @@ func Test_RequiresRoles(t *testing.T) {
 
 	testCases := []struct {
 		desc       string
-		lookup     func(*fiber.Ctx) string
+		lookup     func(fiber.Ctx) string
 		roles      []string
 		opts       []Option
 		statusCode int
@@ -312,7 +312,7 @@ func Test_RequiresRoles(t *testing.T) {
 
 		app.Post("/blog",
 			authz.RequiresRoles(tC.roles, tC.opts...),
-			func(c *fiber.Ctx) error {
+			func(c fiber.Ctx) error {
 				return c.SendStatus(fiber.StatusOK)
 			},
 		)
@@ -396,7 +396,7 @@ func Test_RoutePermission(t *testing.T) {
 
 	authz := New(Config{
 		Enforcer: enf,
-		Lookup: func(c *fiber.Ctx) string {
+		Lookup: func(c fiber.Ctx) string {
 			return c.Get("x-subject")
 		},
 	})
@@ -404,22 +404,22 @@ func Test_RoutePermission(t *testing.T) {
 	app.Use(authz.RoutePermission())
 
 	app.Post("/blog",
-		func(c *fiber.Ctx) error {
+		func(c fiber.Ctx) error {
 			return c.SendStatus(fiber.StatusOK)
 		},
 	)
 	app.Put("/blog/:id",
-		func(c *fiber.Ctx) error {
+		func(c fiber.Ctx) error {
 			return c.SendStatus(fiber.StatusOK)
 		},
 	)
 	app.Delete("/blog/:id",
-		func(c *fiber.Ctx) error {
+		func(c fiber.Ctx) error {
 			return c.SendStatus(fiber.StatusOK)
 		},
 	)
 	app.Post("/comment",
-		func(c *fiber.Ctx) error {
+		func(c fiber.Ctx) error {
 			return c.SendStatus(fiber.StatusOK)
 		},
 	)

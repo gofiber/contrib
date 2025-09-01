@@ -3,7 +3,16 @@ package pasetoware
 import (
 	"strings"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
+)
+
+// The contextKey type is unexported to prevent collisions with context keys defined in
+// other packages.
+type contextKey int
+
+// The following contextKey values are defined to store values in context.
+const (
+	payloadKey contextKey = iota
 )
 
 // New PASETO middleware, returns a handler that takes a token in selected lookup param and in case token is valid
@@ -14,7 +23,7 @@ func New(authConfigs ...Config) fiber.Handler {
 	extractor := getExtractor(config.TokenLookup[0])
 
 	// Return middleware handler
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		token := extractor(c, config.TokenLookup[1])
 		// Filter request to skip middleware
 		if config.Next != nil && config.Next(c) {
@@ -47,11 +56,16 @@ func New(authConfigs ...Config) fiber.Handler {
 		payload, err := config.Validate(outData)
 		if err == nil {
 			// Store user information from token into context.
-			c.Locals(config.ContextKey, payload)
+			c.Locals(payloadKey, payload)
 
 			return config.SuccessHandler(c)
 		}
 
 		return config.ErrorHandler(c, err)
 	}
+}
+
+// FromContext returns the payload from the context.
+func FromContext(c fiber.Ctx) interface{} {
+	return c.Locals(payloadKey)
 }

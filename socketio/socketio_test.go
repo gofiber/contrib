@@ -10,7 +10,7 @@ import (
 
 	"github.com/fasthttp/websocket"
 	fws "github.com/gofiber/contrib/websocket"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -97,9 +97,7 @@ func TestParallelConnections(t *testing.T) {
 	pool.reset()
 
 	// create test server
-	cfg := fiber.Config{
-		DisableStartupMessage: true,
-	}
+	cfg := fiber.Config{}
 	app := fiber.New(cfg)
 	ln := fasthttputil.NewInmemoryListener()
 	wg := sync.WaitGroup{}
@@ -352,7 +350,7 @@ func createWS() *Websocket {
 	return kws
 }
 
-func upgradeMiddleware(c *fiber.Ctx) error {
+func upgradeMiddleware(c fiber.Ctx) error {
 	// IsWebSocketUpgrade returns true if the client
 	// requested upgrade to the WebSocket protocol.
 	if fws.IsWebSocketUpgrade(c) {

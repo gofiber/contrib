@@ -12,7 +12,7 @@ A [Testcontainers](https://golang.testcontainers.org/) Service Implementation fo
 
 :::note
 
-Requires Go **1.23** and above
+Requires Go **1.25** and above
 
 :::
 

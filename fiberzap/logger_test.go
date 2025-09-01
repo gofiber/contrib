@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gofiber/fiber/v2/log"
+	"github.com/gofiber/fiber/v3/log"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -231,7 +231,7 @@ func BenchmarkWithExtraKeys(b *testing.B) {
 func TestCustomField(t *testing.T) {
 	buf := new(bytes.Buffer)
 	logger := NewLogger()
-	log.SetLogger(logger)
+	log.SetLogger[any](logger)
 	log.SetOutput(buf)
 	log.Infow("", "test", "custom")
 	var logStructMap map[string]interface{}

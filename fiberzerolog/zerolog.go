@@ -3,7 +3,7 @@ package fiberzerolog
 import (
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/rs/zerolog"
 )
 
@@ -19,7 +19,7 @@ func New(config ...Config) fiber.Handler {
 	}
 
 	// Return new handler
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		// Don't execute middleware if Next returns true
 		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
@@ -73,7 +73,7 @@ func New(config ...Config) fiber.Handler {
 		message := cfg.Messages[messageIndex]
 
 		logger := cfg.logger(c, latency, chainErr)
-		ctx := c.UserContext()
+		ctx := c
 
 		switch level {
 		case zerolog.DebugLevel:

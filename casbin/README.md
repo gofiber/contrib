@@ -10,11 +10,11 @@ id: casbin
 
 Casbin middleware for Fiber.
 
-**Note: Requires Go 1.18 and above**
+**Note: Requires Go 1.25 and above**
 
 ## Install
 ```
-go get -u github.com/gofiber/fiber/v2
+go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/casbin
 ```
 choose an adapter from [here](https://casbin.org/docs/adapters)
@@ -48,7 +48,7 @@ casbin.New(config ...casbin.Config) *casbin.Middleware
 package main
 
 import (
-  "github.com/gofiber/fiber/v2"
+  "github.com/gofiber/fiber/v3"
   "github.com/gofiber/contrib/casbin"
   _ "github.com/go-sql-driver/mysql"
   "github.com/casbin/xorm-adapter/v2"
@@ -89,7 +89,7 @@ func main() {
 package main
 
 import (
-  "github.com/gofiber/fiber/v2"
+  "github.com/gofiber/fiber/v3"
   "github.com/gofiber/contrib/casbin"
   _ "github.com/go-sql-driver/mysql"
   "github.com/casbin/xorm-adapter/v2"
@@ -124,7 +124,7 @@ func main() {
 package main
 
 import (
-  "github.com/gofiber/fiber/v2"
+  "github.com/gofiber/fiber/v3"
   "github.com/gofiber/contrib/casbin"
   _ "github.com/go-sql-driver/mysql"
   "github.com/casbin/xorm-adapter/v2"
