@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/fibersentry
 go 1.25.0
 
 require (
-	github.com/getsentry/sentry-go v0.29.1
+	github.com/getsentry/sentry-go v0.35.1
 	github.com/gofiber/fiber/v3 v3.0.0-rc.1
 	github.com/gofiber/utils/v2 v2.0.0-rc.1
 )
@@ -11,6 +11,7 @@ require (
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/gofiber/schema v1.6.0 // indirect
+	github.com/kr/text v0.2.0 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/tinylib/msgp v1.3.0 // indirect
