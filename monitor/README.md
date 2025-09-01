@@ -18,7 +18,7 @@ This middleware supports Fiber v3.
 
 ```
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/monitor
+go get -u github.com/gofiber/contrib/v3/monitor/v2
 ```
 
 ### Signature
@@ -34,7 +34,7 @@ monitor.New(config ...monitor.Config) fiber.Handler
 | Title      | `string`                  | Metrics page title.                                                                  | `Fiber Monitor`                                                             |
 | Refresh    | `time.Duration`           | Refresh period.                                                                      | `3 seconds`                                                                 |
 | APIOnly    | `bool`                    | Whether the service should expose only the montioring API.                           | `false`                                                                     |
-| Next       | `func(c *fiber.Ctx) bool` | Define a function to add custom fields.                                              | `nil`                                                                       |
+| Next       | `func(c fiber.Ctx) bool` | Define a function to add custom fields.                                              | `nil`                                                                       |
 | CustomHead | `string`                  | Custom HTML code to Head Section(Before End).                                        | `empty`                                                                     |
 | FontURL    | `string`                  | FontURL for specilt font resource path or URL. also you can use relative path.       | `https://fonts.googleapis.com/css2?family=Roboto:wght@400;900&display=swap` |
 | ChartJsURL | `string`                  | ChartJsURL for specilt chartjs library, path or URL, also you can use relative path. | `https://cdn.jsdelivr.net/npm/chart.js@2.9/dist/Chart.bundle.min.js`        |
@@ -48,7 +48,7 @@ import (
     "log"
 
     "github.com/gofiber/fiber/v3"
-    "github.com/gofiber/contrib/monitor"
+    "github.com/gofiber/contrib/v3/monitor/v2"
 )
 
 func main() {

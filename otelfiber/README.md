@@ -19,7 +19,7 @@ Can be found on [OpenTelemetry Registry](https://opentelemetry.io/registry/instr
 This middleware supports Fiber v3.
 
 ```
-go get -u github.com/gofiber/contrib/otelfiber/v2
+go get -u github.com/gofiber/contrib/v3/otelfiber/v3
 ```
 
 ## Signature
@@ -34,15 +34,15 @@ You can configure the middleware using functional parameters
 
 | Function                | Argument Type                            | Description                                                                      | Default                                                             |
 | :------------------------ | :-------------------------------- | :--------------------------------------------------------------------------------- | :-------------------------------------------------------------------- |
-| `WithNext`                    | `func(*fiber.Ctx) bool`         | Define a function to skip this middleware when returned true .| nil                                                                 |
+| `WithNext`                    | `func(fiber.Ctx) bool`         | Define a function to skip this middleware when returned true .| nil                                                                 |
 | `WithTracerProvider`          | `oteltrace.TracerProvider`      | Specifies a tracer provider to use for creating a tracer.                         | nil - the global tracer provider is used                                   |
 | `WithMeterProvider`           | `otelmetric.MeterProvider`      | Specifies a meter provider to use for reporting.                                     | nil - the global meter provider is used                                                             |
 | `WithPort`                    | `int`                          | Specifies the value to use when setting the `net.host.port` attribute on metrics/spans.                            | Defaults to (`80` for `http`, `443` for `https`)              |
 | `WithPropagators`             | `propagation.TextMapPropagator` | Specifies propagators to use for extracting information from the HTTP requests.                     | If none are specified, global ones will be used                                                               |
 | (❌ **Removed**) `WithServerName`             | `string`                       | This option was removed because the `http.server_name` attribute is deprecated and no longer supported by semi-conventions after version `v1.12.0`.  With version `v1.21.0` it is `server.address` and this attribute is set with `hostname` information as recommended in the open-telemetry documentation.                                            | -                                                                   |
-| `WithSpanNameFormatter`       | `func(*fiber.Ctx) string`       | Takes a function that will be called on every request and the returned string will become the span Name.                                   | Default formatter returns the route pathRaw |
-| `WithCustomAttributes`        | `func(*fiber.Ctx) []attribute.KeyValue` | Define a function to add custom attributes to the span.                  | nil                                                                 |
-| `WithCustomMetricAttributes`  | `func(*fiber.Ctx) []attribute.KeyValue` | Define a function to add custom attributes to the metrics.               | nil                                                                 |
+| `WithSpanNameFormatter`       | `func(fiber.Ctx) string`       | Takes a function that will be called on every request and the returned string will become the span Name.                                   | Default formatter returns the route pathRaw |
+| `WithCustomAttributes`        | `func(fiber.Ctx) []attribute.KeyValue` | Define a function to add custom attributes to the span.                  | nil                                                                 |
+| `WithCustomMetricAttributes`  | `func(fiber.Ctx) []attribute.KeyValue` | Define a function to add custom attributes to the metrics.               | nil                                                                 |
 | `WithCollectClientIP`         | `bool` | Specifies whether to collect the client's IP address from the request. | true |
 
 ## Usage
@@ -63,7 +63,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 
-	"github.com/gofiber/contrib/otelfiber"
+	"github.com/gofiber/contrib/v3/otelfiber/v3"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	stdout "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
@@ -89,11 +89,11 @@ func main() {
 
 	app.Use(otelfiber.Middleware())
 
-	app.Get("/error", func(ctx *fiber.Ctx) error {
+	app.Get("/error", func(ctx fiber.Ctx) error {
 		return errors.New("abc")
 	})
 
-	app.Get("/users/:id", func(c *fiber.Ctx) error {
+	app.Get("/users/:id", func(c fiber.Ctx) error {
 		id := c.Params("id")
 		name := getUser(c.UserContext(), id)
 		return c.JSON(fiber.Map{"id": id, name: name})

@@ -18,7 +18,7 @@ This middleware supports Fiber v3.
 
 ```sh
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/fiberzerolog
+go get -u github.com/gofiber/contrib/v3/fiberzerolog/v2
 go get -u github.com/rs/zerolog/log
 ```
 
@@ -32,16 +32,16 @@ fiberzerolog.New(config ...fiberzerolog.Config) fiber.Handler
 
 | Property      | Type                           | Description                                                                                                                                                                                                                                                                                 | Default                                                                     |
 |:--------------|:-------------------------------|:--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|:----------------------------------------------------------------------------|
-| Next          | `func(*Ctx) bool`              | Define a function to skip this middleware when returned true                                                                                                                                                                                                                                | `nil`                                                                       |
+| Next          | `func(Ctx) bool`              | Define a function to skip this middleware when returned true                                                                                                                                                                                                                                | `nil`                                                                       |
 | Logger        | `*zerolog.Logger`               | Add custom zerolog logger.                                                                                                                                                                                                                                                                  | `zerolog.New(os.Stderr).With().Timestamp().Logger()`                                                      |
-| GetLogger        | `func(*fiber.Ctx) zerolog.Logger`           | Get custom zerolog logger, if it's defined the returned logger will replace the `Logger` value.                                                                                                                                                                                             | `nil`                                                      |
+| GetLogger        | `func(fiber.Ctx) zerolog.Logger`           | Get custom zerolog logger, if it's defined the returned logger will replace the `Logger` value.                                                                                                                                                                                             | `nil`                                                      |
 | Fields        | `[]string`                     | Add fields what you want see.                                                                                                                                                                                                                                                               | `[]string{"latency", "status", "method", "url", "error"}`                            |
 | WrapHeaders   | bool                           | Wrap headers to dictionary.<br />If false: `{"method":"POST", "header-key":"header value"}`<br />If true: `{"method":"POST", "reqHeaders": {"header-key":"header value"}}`                                                                                                                  | `false` |
 | FieldsSnakeCase   | bool                       | Use snake case for fields: FieldResBody, FieldQueryParams, FieldBytesReceived, FieldBytesSent, FieldRequestId, FieldReqHeaders, FieldResHeaders.<br />If false: `{"method":"POST", "resBody":"v", "queryParams":"v"}`<br />If true: `{"method":"POST", "res_body":"v", "query_params":"v"}` | `false` |
 | Messages      | `[]string`                     | Custom response messages.                                                                                                                                                                                                                                                                   | `[]string{"Server error", "Client error", "Success"}`                       |
 | Levels        | `[]zerolog.Level`              | Custom response levels.                                                                                                                                                                                                                                                                     | `[]zerolog.Level{zerolog.ErrorLevel, zerolog.WarnLevel, zerolog.InfoLevel}` |
 | SkipURIs      | `[]string`                     | Skip logging these URI.                                                                                                                                                                                                                                                                     | `[]string{}`                                                                |
-| GetResBody    | func(c *fiber.Ctx) []byte      | Define a function to get response body when return non-nil.<br />eg: When use compress middleware, resBody is unreadable. you can set GetResBody func to get readable resBody.                                                                                                              | `nil` |
+| GetResBody    | func(c fiber.Ctx) []byte      | Define a function to get response body when return non-nil.<br />eg: When use compress middleware, resBody is unreadable. you can set GetResBody func to get readable resBody.                                                                                                              | `nil` |
 
 ## Example
 
@@ -50,7 +50,7 @@ package main
 
 import (
     "github.com/gofiber/fiber/v3"
-    "github.com/gofiber/contrib/fiberzerolog"
+    "github.com/gofiber/contrib/v3/fiberzerolog/v2"
     "github.com/rs/zerolog"
 )
 
@@ -62,7 +62,7 @@ func main() {
         Logger: &logger,
     }))
 
-    app.Get("/", func (c *fiber.Ctx) error {
+    app.Get("/", func (c fiber.Ctx) error {
         return c.SendString("Hello, World!")
     })
 

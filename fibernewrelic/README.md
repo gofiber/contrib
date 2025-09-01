@@ -12,11 +12,13 @@ id: fibernewrelic
 
 **Note: Requires Go 1.25 and above**
 
+This middleware supports Fiber v3.
+
 ## Install
 
 ```
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/fibernewrelic
+go get -u github.com/gofiber/contrib/v3/fibernewrelic/v2
 ```
 
 ## Signature
@@ -34,8 +36,8 @@ fibernewrelic.New(config fibernewrelic.Config) fiber.Handler
 | Enabled                | `bool`           | Enable/Disable New Relic                                    | `false`                         |
 | ~~TransportType~~      | ~~`string`~~     | ~~Can be HTTP or HTTPS~~ (Deprecated)                       | ~~`"HTTP"`~~                    |
 | Application            | `Application`    | Existing New Relic App                                      | `nil`                           |
-| ErrorStatusCodeHandler | `func(c *fiber.Ctx, err error) int`    | If you want to change newrelic status code, you can use it. | `DefaultErrorStatusCodeHandler` |
-| Next                   | `func(c *fiber.Ctx) bool`    | Next defines a function to skip this middleware when returned true.                                                           | `nil`                           |
+| ErrorStatusCodeHandler | `func(c fiber.Ctx, err error) int`    | If you want to change newrelic status code, you can use it. | `DefaultErrorStatusCodeHandler` |
+| Next                   | `func(c fiber.Ctx) bool`    | Next defines a function to skip this middleware when returned true.                                                           | `nil`                           |
 
 
 ## Usage
@@ -45,13 +47,13 @@ package main
 
 import (
 	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/contrib/fibernewrelic"
+	"github.com/gofiber/contrib/v3/fibernewrelic/v2"
 )
 
 func main() {
 	app := fiber.New()
 
-	app.Get("/", func(ctx *fiber.Ctx) error {
+	app.Get("/", func(ctx fiber.Ctx) error {
 		return ctx.SendStatus(200)
 	})
 
@@ -74,7 +76,7 @@ package main
 
 import (
 	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/contrib/fibernewrelic"
+	"github.com/gofiber/contrib/v3/fibernewrelic/v2"
 	"github.com/newrelic/go-agent/v3/newrelic"
 )
 
@@ -87,11 +89,11 @@ func main() {
 
 	app := fiber.New()
 
-	app.Get("/", func(ctx *fiber.Ctx) error {
+	app.Get("/", func(ctx fiber.Ctx) error {
 		return ctx.SendStatus(200)
 	})
 	
-	app.Get("/foo", func(ctx *fiber.Ctx) error {
+	app.Get("/foo", func(ctx fiber.Ctx) error {
 		txn := newrelic.FromContext(ctx)
 		segment := txn.StartSegment("foo segment")
 		defer segment.End()

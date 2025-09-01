@@ -23,6 +23,8 @@ Requires Go **1.25** and above
 - Isolated service testing
 - End-to-end testing
 
+This middleware supports Fiber v3.
+
 ## Install
 
 :::caution
@@ -33,7 +35,7 @@ This Service Implementation only supports Fiber **v3**.
 
 ```shell
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/testcontainers
+go get -u github.com/gofiber/contrib/v3/testcontainers/v2
 ```
 
 ## Signature
@@ -221,7 +223,7 @@ import (
 
  "github.com/gofiber/fiber/v3"
 
- "github.com/gofiber/contrib/testcontainers"
+ "github.com/gofiber/contrib/v3/testcontainers/v2"
  tc "github.com/testcontainers/testcontainers-go"
  "github.com/testcontainers/testcontainers-go/modules/redis"
 )
@@ -273,7 +275,7 @@ import (
 
  "github.com/gofiber/fiber/v3"
 
- "github.com/gofiber/contrib/testcontainers"
+ "github.com/gofiber/contrib/v3/testcontainers/v2"
  tc "github.com/testcontainers/testcontainers-go"
 )
 

@@ -1,4 +1,4 @@
-module github.com/gofiber/contrib/fiberzap/v2
+module github.com/gofiber/contrib/v3/fiberzap/v3
 
 go 1.25.0
 
