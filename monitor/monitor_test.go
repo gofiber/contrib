@@ -166,7 +166,7 @@ func Test_Monitor_Next(t *testing.T) {
 	app := fiber.New()
 
 	app.Use("/", New(Config{
-		Next: func(_ *fiber.Ctx) bool {
+		Next: func(_ fiber.Ctx) bool {
 			return true
 		},
 	}))

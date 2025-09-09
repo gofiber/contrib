@@ -8,8 +8,17 @@ package jwtware
 import (
 	"reflect"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
+)
+
+// The contextKey type is unexported to prevent collisions with context keys defined in
+// other packages.
+type contextKey int
+
+// The following contextKey values are defined to store values in context.
+const (
+	tokenKey contextKey = iota
 )
 
 var (
@@ -23,7 +32,7 @@ func New(config ...Config) fiber.Handler {
 	extractors := cfg.getExtractors()
 
 	// Return middleware handler
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		// Filter request to skip middleware
 		if cfg.Filter != nil && cfg.Filter(c) {
 			return c.Next()
@@ -59,9 +68,16 @@ func New(config ...Config) fiber.Handler {
 		}
 		if err == nil && token.Valid {
 			// Store user information from token into context.
-			c.Locals(cfg.ContextKey, token)
+			c.Locals(tokenKey, token)
 			return cfg.SuccessHandler(c)
 		}
 		return cfg.ErrorHandler(c, err)
 	}
+}
+
+// FromContext returns the token from the context.
+// If there is no token, nil is returned.
+func FromContext(c fiber.Ctx) *jwt.Token {
+	token, _ := c.Locals(tokenKey).(*jwt.Token)
+	return token
 }

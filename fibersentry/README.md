@@ -10,14 +10,14 @@ id: fibersentry
 
 [Sentry](https://sentry.io/) support for Fiber.
 
-**Note: Requires Go 1.18 and above**
+**Note: Requires Go 1.25 and above**
 
 ## Install
 
-This middleware supports Fiber v2.
+This middleware supports Fiber v3.
 
 ```
-go get -u github.com/gofiber/fiber/v2
+go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/fibersentry
 go get -u github.com/getsentry/sentry-go
 ```
@@ -53,8 +53,8 @@ import (
 
 	"github.com/getsentry/sentry-go"
 	"github.com/gofiber/contrib/fibersentry"
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/utils"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/utils"
 )
 
 func main() {

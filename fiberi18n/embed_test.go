@@ -8,8 +8,9 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/utils"
+	"github.com/stretchr/testify/assert"
+
+	"github.com/gofiber/fiber/v3"
 	"github.com/nicksnyder/go-i18n/v2/i18n"
 	"golang.org/x/text/language"
 )
@@ -25,10 +26,10 @@ func newEmbedServer() *fiber.App {
 		RootPath:         "./example/localizeJSON/",
 		FormatBundleFile: "json",
 	}))
-	app.Get("/", func(ctx *fiber.Ctx) error {
+	app.Get("/", func(ctx fiber.Ctx) error {
 		return ctx.SendString(MustLocalize(ctx, "welcome"))
 	})
-	app.Get("/:name", func(ctx *fiber.Ctx) error {
+	app.Get("/:name", func(ctx fiber.Ctx) error {
 		return ctx.SendString(MustLocalize(ctx, &i18n.LocalizeConfig{
 			MessageID: "welcomeWithName",
 			TemplateData: map[string]string{
@@ -90,10 +91,10 @@ func TestEmbedLoader_LoadMessage(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := request(tt.args.lang, tt.args.name)
-			utils.AssertEqual(t, err, nil)
+			assert.Equal(t, err, nil)
 			body, err := io.ReadAll(got.Body)
-			utils.AssertEqual(t, err, nil)
-			utils.AssertEqual(t, tt.want, string(body))
+			assert.Equal(t, err, nil)
+			assert.Equal(t, tt.want, string(body))
 		})
 	}
 }

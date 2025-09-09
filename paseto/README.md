@@ -14,14 +14,14 @@ PASETO returns a Web Token (PASETO) auth middleware.
 - For invalid token, it returns "401 - Unauthorized" error.
 - For missing token, it returns "400 - BadRequest" error.
 
-**Note: Requires Go 1.18 and above**
+**Note: Requires Go 1.25 and above**
 
 ## Install
 
-This middleware supports Fiber v2.
+This middleware supports Fiber v3.
 
 ```
-go get -u github.com/gofiber/fiber/v2
+go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/paseto
 go get -u github.com/o1egl/paseto
 ```
@@ -29,7 +29,8 @@ go get -u github.com/o1egl/paseto
 ## Signature
 
 ```go
-pasetoware.New(config ...pasetoware.Config) func(*fiber.Ctx) error
+pasetoware.New(config ...pasetoware.Config) func(fiber.Ctx) error
+pasetoware.FromContext(c fiber.Ctx) interface{}
 ```
 
 ## Config
@@ -37,13 +38,12 @@ pasetoware.New(config ...pasetoware.Config) func(*fiber.Ctx) error
 | Property       | Type                            | Description                                                                                                                                                                                             | Default                         |
 |:---------------|:--------------------------------|:--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|:--------------------------------|
 | Next           | `func(*Ctx) bool`               | Defines a function to skip middleware                                                                                                                                                                   | `nil`                           |
-| SuccessHandler | `func(*fiber.Ctx) error`        | SuccessHandler defines a function which is executed for a valid token.                                                                                                                                  | `c.Next()`                      |
-| ErrorHandler   | `func(*fiber.Ctx, error) error` | ErrorHandler defines a function which is executed for an invalid token.                                                                                                                                 | `401 Invalid or expired PASETO` |
+| SuccessHandler | `func(fiber.Ctx) error`        | SuccessHandler defines a function which is executed for a valid token.                                                                                                                                  | `c.Next()`                      |
+| ErrorHandler   | `func(fiber.Ctx, error) error` | ErrorHandler defines a function which is executed for an invalid token.                                                                                                                                 | `401 Invalid or expired PASETO` |
 | Validate       | `PayloadValidator`              | Defines a function to validate if payload is valid. Optional. In case payload used is created using `CreateToken` function. If token is created using another function, this function must be provided. | `nil`                           |
 | SymmetricKey   | `[]byte`                        | Secret key to encrypt token. If present the middleware will generate local tokens.                                                                                                                      | `nil`                           |
 | PrivateKey     | `ed25519.PrivateKey`            | Secret key to sign the tokens. If present (along with its `PublicKey`) the middleware will generate public tokens.                                                                                      | `nil`                           
 | PublicKey      | `crypto.PublicKey`              | Public key to verify the tokens. If present (along with `PrivateKey`) the middleware will generate public tokens.                                                                                       | `nil`                           
-| ContextKey     | `string`                        | Context key to store user information from the token into context.                                                                                                                                      | `"auth-token"`                  |
 | TokenLookup    | `[2]string`                     | TokenLookup is a string slice with size 2, that is used to extract token from the request                                                                                                               | `["header","Authorization"]`    |
 
 ## Instructions
@@ -70,7 +70,7 @@ package main
 import (
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/o1egl/paseto"
 
 	pasetoware "github.com/gofiber/contrib/paseto"
@@ -103,7 +103,7 @@ func main() {
 	}
 }
 
-func login(c *fiber.Ctx) error {
+func login(c fiber.Ctx) error {
 	user := c.FormValue("user")
 	pass := c.FormValue("pass")
 
@@ -121,12 +121,12 @@ func login(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"token": encryptedToken})
 }
 
-func accessible(c *fiber.Ctx) error {
+func accessible(c fiber.Ctx) error {
 	return c.SendString("Accessible")
 }
 
-func restricted(c *fiber.Ctx) error {
-	payload := c.Locals(pasetoware.DefaultContextKey).(string)
+func restricted(c fiber.Ctx) error {
+	payload := pasetoware.FromContext(c).(string)
 	return c.SendString("Welcome " + payload)
 }
 
@@ -211,7 +211,7 @@ func main() {
 	}
 }
 
-func login(c *fiber.Ctx) error {
+func login(c fiber.Ctx) error {
 	user := c.FormValue("user")
 	pass := c.FormValue("pass")
 
@@ -235,12 +235,12 @@ func login(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"token": encryptedToken})
 }
 
-func accessible(c *fiber.Ctx) error {
+func accessible(c fiber.Ctx) error {
 	return c.SendString("Accessible")
 }
 
-func restricted(c *fiber.Ctx) error {
-	payload := c.Locals(pasetoware.DefaultContextKey).(customPayloadStruct)
+func restricted(c fiber.Ctx) error {
+	payload := pasetoware.FromContext(c).(customPayloadStruct)
 	return c.SendString("Welcome " + payload.Name)
 }
 
@@ -284,7 +284,7 @@ import (
 	"encoding/hex"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 
 	pasetoware "github.com/gofiber/contrib/paseto"
 )
@@ -325,7 +325,7 @@ func main() {
 	}
 }
 
-func login(c *fiber.Ctx) error {
+func login(c fiber.Ctx) error {
 	user := c.FormValue("user")
 	pass := c.FormValue("pass")
 
@@ -343,15 +343,26 @@ func login(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"token": encryptedToken})
 }
 
-func accessible(c *fiber.Ctx) error {
+func accessible(c fiber.Ctx) error {
 	return c.SendString("Accessible")
 }
 
-func restricted(c *fiber.Ctx) error {
-	payload := c.Locals(pasetoware.DefaultContextKey).(string)
+func restricted(c fiber.Ctx) error {
+	payload := pasetoware.FromContext(c).(string)
 	return c.SendString("Welcome " + payload)
 }
 
+```
+
+#### Get the payload from the context
+
+```go
+payloadFromCtx := pasetoware.FromContext(c)  
+if payloadFromCtx == nil {  
+    // Handle case where token is not in context, e.g. by returning an error  
+    return  
+}  
+payload := payloadFromCtx.(string)  
 ```
 
 #### Test it

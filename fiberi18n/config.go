@@ -4,8 +4,8 @@ import (
 	"os"
 	"sync"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/utils"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
 	"github.com/nicksnyder/go-i18n/v2/i18n"
 	"golang.org/x/text/language"
 	"gopkg.in/yaml.v2"
@@ -15,7 +15,7 @@ type Config struct {
 	// Next defines a function to skip this middleware when returned true.
 	//
 	// Optional. Default: nil
-	Next func(c *fiber.Ctx) bool
+	Next func(c fiber.Ctx) bool
 
 	// RootPath is i18n template folder path
 	//
@@ -47,10 +47,10 @@ type Config struct {
 	// Optional. Default: yaml.Unmarshal
 	UnmarshalFunc i18n.UnmarshalFunc
 
-	// LangHandler is used to get the kind of language handled by *fiber.Ctx and defaultLang
+	// LangHandler is used to get the kind of language handled by fiber.Ctx and defaultLang
 	//
 	// Optional. Default: The language type is retrieved from the request header: `Accept-Language` or query param : `lang`
-	LangHandler func(ctx *fiber.Ctx, defaultLang string) string
+	LangHandler func(ctx fiber.Ctx, defaultLang string) string
 
 	bundle       *i18n.Bundle
 	localizerMap *sync.Map
@@ -78,7 +78,7 @@ var ConfigDefault = &Config{
 	LangHandler:      defaultLangHandler,
 }
 
-func defaultLangHandler(c *fiber.Ctx, defaultLang string) string {
+func defaultLangHandler(c fiber.Ctx, defaultLang string) string {
 	if c == nil || c.Request() == nil {
 		return defaultLang
 	}

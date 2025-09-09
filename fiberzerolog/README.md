@@ -10,14 +10,14 @@ id: fiberzerolog
 
 [Zerolog](https://zerolog.io/) logging support for Fiber.
 
-**Note: Requires Go 1.18 and above**
+**Note: Requires Go 1.25 and above**
 
 ## Install
 
-This middleware supports Fiber v2.
+This middleware supports Fiber v3.
 
 ```sh
-go get -u github.com/gofiber/fiber/v2
+go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/fiberzerolog
 go get -u github.com/rs/zerolog/log
 ```
@@ -49,7 +49,7 @@ fiberzerolog.New(config ...fiberzerolog.Config) fiber.Handler
 package main
 
 import (
-    "github.com/gofiber/fiber/v2"
+    "github.com/gofiber/fiber/v3"
     "github.com/gofiber/contrib/fiberzerolog"
     "github.com/rs/zerolog"
 )

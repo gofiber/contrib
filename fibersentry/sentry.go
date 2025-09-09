@@ -4,9 +4,9 @@ import (
 	"context"
 
 	"github.com/getsentry/sentry-go"
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/adaptor"
-	"github.com/gofiber/fiber/v2/utils"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/adaptor"
+	"github.com/gofiber/utils/v2"
 )
 
 // New creates a new middleware handler
@@ -15,7 +15,7 @@ func New(config ...Config) fiber.Handler {
 	cfg := configDefault(config...)
 
 	// Return new handler
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		// Convert fiber request to http request
 		r, err := adaptor.ConvertRequest(c, true)
 		if err != nil {
@@ -52,11 +52,11 @@ func New(config ...Config) fiber.Handler {
 	}
 }
 
-func MustGetHubFromContext(ctx *fiber.Ctx) *sentry.Hub {
+func MustGetHubFromContext(ctx fiber.Ctx) *sentry.Hub {
 	return ctx.Locals(hubKey).(*sentry.Hub)
 }
 
-func GetHubFromContext(ctx *fiber.Ctx) *sentry.Hub {
+func GetHubFromContext(ctx fiber.Ctx) *sentry.Hub {
 	hub, ok := ctx.Locals(hubKey).(*sentry.Hub)
 	if !ok {
 		return nil

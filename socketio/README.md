@@ -10,12 +10,12 @@ id: socketio
 
 WebSocket wrapper for [Fiber](https://github.com/gofiber/fiber) with events support and inspired by [Socket.io](https://github.com/socketio/socket.io)
 
-**Note: Requires Go 1.20 and above**
+**Note: Requires Go 1.25 and above**
 
 ## Install
 
 ```
-go get -u github.com/gofiber/fiber/v2
+go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/socketio
 ```
 
@@ -67,7 +67,7 @@ import (
 
     "github.com/gofiber/contrib/socketio"
     "github.com/gofiber/contrib/websocket"
-    "github.com/gofiber/fiber/v2"
+    "github.com/gofiber/fiber/v3"
 )
 
 // MessageObject Basic chat message object

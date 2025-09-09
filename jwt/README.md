@@ -9,20 +9,20 @@ id: jwt
 ![Test](https://github.com/gofiber/contrib/workflows/Test%20jwt/badge.svg)
 
 JWT returns a JSON Web Token (JWT) auth middleware.
-For valid token, it sets the user in Ctx.Locals and calls next handler.
+For valid token, it sets the token in Ctx.Locals and calls next handler.
 For invalid token, it returns "401 - Unauthorized" error.
 For missing token, it returns "400 - Bad Request" error.
 
 Special thanks and credits to [Echo](https://echo.labstack.com/middleware/jwt)
 
-**Note: Requires Go 1.19 and above**
+**Note: Requires Go 1.25 and above**
 
 ## Install
 
-This middleware supports Fiber v1 & v2, install accordingly.
+This middleware supports Fiber v3, install accordingly.
 
 ```bash
-go get -u github.com/gofiber/fiber/v2
+go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/jwt
 go get -u github.com/golang-jwt/jwt/v5
 ```
@@ -30,25 +30,22 @@ go get -u github.com/golang-jwt/jwt/v5
 ## Signature
 
 ```go
-jwtware.New(config ...jwtware.Config) func(*fiber.Ctx) error
+jwtware.New(config ...jwtware.Config) func(fiber.Ctx) error
+jwtware.FromContext(c fiber.Ctx) *jwt.Token
 ```
 
 ## Config
 
-| Property           | Type                                 | Description                                                                                                                                                                                                                                                            | Default                      |
-|--------------------|--------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------|
-| Filter             | `func(*fiber.Ctx) bool`              | Function to skip middleware execution for specific requests. Optional.                                                                                                                                                                                                 | `nil`                        |
-| SuccessHandler     | `fiber.Handler`                      | Handler executed when a token is successfully validated. Optional.                                                                                                                                                                                                     | `nil`                        |
-| ErrorHandler       | `fiber.ErrorHandler`                 | Handler executed when token validation fails. Allows customization of JWT error responses. Optional.                                                                                                                                                                   | `401 Invalid or expired JWT` |
-| SigningKey         | `SigningKey`                         | Primary key used to validate tokens. Used as a fallback if SigningKeys is empty. At least one of KeyFunc, JWKSetURLs, SigningKeys, or SigningKey is required.                                                                                                          | `nil`                        |
-| SigningKeys        | `map[string]SigningKey`              | Map of keys used to validate tokens with the "kid" field. At least one of KeyFunc, JWKSetURLs, SigningKeys, or SigningKey is required.                                                                                                                                 | `nil`                        |
-| ContextKey         | `string`                             | Key used to store user information in the context. Optional.                                                                                                                                                                                                           | `"user"`                     |
-| Claims             | `jwt.Claims`                         | Defines the structure of token claims. Extendable for custom claims data. Optional.                                                                                                                                                                                    | `jwt.MapClaims{}`            |
-| TokenLookup        | `string`                             | Specifies how to extract the token from the request. Format: `"<source>:<name>"` (e.g., `"header:Authorization"`, `"query:token"`, `"param:token"`, `"cookie:token"`). Optional.                                                                                                 | `"header:Authorization"`     |
-| TokenProcessorFunc | `func(token string) (string, error)` | Processes the token extracted using `TokenLookup`. Optional.                                                                                                                                                                                                           | `nil`                        |
-| AuthScheme         | `string`                             | Scheme used in the Authorization header. Only used with the default TokenLookup. Optional.                                                                                                                                                                             | `"Bearer"`                   |
-| KeyFunc            | `func() jwt.Keyfunc`                 | Provides the public key for JWT verification, handling algorithm verification and key selection. At least one of KeyFunc, JWKSetURLs, SigningKeys, or SigningKey is required.                                                                                          | `jwtKeyFunc`                 |
-| JWKSetURLs         | `[]string`                           | List of URLs containing JSON Web Key Sets (JWKS) for signature verification. HTTPS is recommended. The "kid" field is mandatory in both the JWT header and the JWKS. Default behavior includes hourly refresh, auto-refresh on new "kid", rate limiting, and timeouts. | `nil`                        |
+| Property       | Type                            | Description                                                                                                                                             | Default                      |
+|:---------------|:--------------------------------|:--------------------------------------------------------------------------------------------------------------------------------------------------------|:-----------------------------|
+| Filter         | `func(fiber.Ctx) bool`         | Defines a function to skip middleware                                                                                                                   | `nil`                        |
+| SuccessHandler | `func(fiber.Ctx) error`        | SuccessHandler defines a function which is executed for a valid token.                                                                                  | `nil`                        |
+| ErrorHandler   | `func(fiber.Ctx, error) error` | ErrorHandler defines a function which is executed for an invalid token.                                                                                 | `401 Invalid or expired JWT` |
+| SigningKey     | `interface{}`                   | Signing key to validate token. Used as fallback if SigningKeys has length 0.                                                                            | `nil`                        |
+| SigningKeys    | `map[string]interface{}`        | Map of signing keys to validate token with kid field usage.                                                                                             | `nil`                        |
+| Claims         | `jwt.Claims`                    | Claims are extendable claims data defining token content.                                                                                               | `jwt.MapClaims{}`            |
+| TokenLookup    | `string`                        | TokenLookup is a string in the form of `<source>:<name>` that is used                                                                                   | `
+
 
 ## HS256 Example
 
@@ -58,7 +55,7 @@ package main
 import (
  "time"
 
- "github.com/gofiber/fiber/v2"
+ "github.com/gofiber/fiber/v3"
 
  jwtware "github.com/gofiber/contrib/jwt"
  "github.com/golang-jwt/jwt/v5"
@@ -84,7 +81,7 @@ func main() {
  app.Listen(":3000")
 }
 
-func login(c *fiber.Ctx) error {
+func login(c fiber.Ctx) error {
  user := c.FormValue("user")
  pass := c.FormValue("pass")
 
@@ -112,15 +109,15 @@ func login(c *fiber.Ctx) error {
  return c.JSON(fiber.Map{"token": t})
 }
 
-func accessible(c *fiber.Ctx) error {
+func accessible(c fiber.Ctx) error {
  return c.SendString("Accessible")
 }
 
-func restricted(c *fiber.Ctx) error {
- user := c.Locals("user").(*jwt.Token)
- claims := user.Claims.(jwt.MapClaims)
- name := claims["name"].(string)
- return c.SendString("Welcome " + name)
+func restricted(c fiber.Ctx) error {
+	user := jwtware.FromContext(c)
+	claims := user.Claims.(jwt.MapClaims)
+	name := claims["name"].(string)
+	return c.SendString("Welcome " + name)
 }
 
 ```
@@ -164,7 +161,7 @@ import (
  "log"
  "time"
 
- "github.com/gofiber/fiber/v2"
+ "github.com/gofiber/fiber/v3"
 
  "github.com/golang-jwt/jwt/v5"
 
@@ -209,7 +206,7 @@ func main() {
  app.Listen(":3000")
 }
 
-func login(c *fiber.Ctx) error {
+func login(c fiber.Ctx) error {
  user := c.FormValue("user")
  pass := c.FormValue("pass")
 
@@ -238,15 +235,15 @@ func login(c *fiber.Ctx) error {
  return c.JSON(fiber.Map{"token": t})
 }
 
-func accessible(c *fiber.Ctx) error {
+func accessible(c fiber.Ctx) error {
  return c.SendString("Accessible")
 }
 
-func restricted(c *fiber.Ctx) error {
- user := c.Locals("user").(*jwt.Token)
- claims := user.Claims.(jwt.MapClaims)
- name := claims["name"].(string)
- return c.SendString("Welcome " + name)
+func restricted(c fiber.Ctx) error {
+	user := jwtware.FromContext(c)
+	claims := user.Claims.(jwt.MapClaims)
+	name := claims["name"].(string)
+	return c.SendString("Welcome " + name)
 }
 ```
 
@@ -275,7 +272,7 @@ package main
 
 import (
  "fmt"
-  "github.com/gofiber/fiber/v2"
+  "github.com/gofiber/fiber/v3"
 
   jwtware "github.com/gofiber/contrib/jwt"
   "github.com/golang-jwt/jwt/v5"
@@ -288,7 +285,7 @@ func main() {
   KeyFunc: customKeyFunc(),
  }))
 
- app.Get("/ok", func(c *fiber.Ctx) error {
+ app.Get("/ok", func(c fiber.Ctx) error {
   return c.SendString("OK")
  })
 }

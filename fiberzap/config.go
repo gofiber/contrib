@@ -1,7 +1,7 @@
 package fiberzap
 
 import (
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -11,23 +11,23 @@ type Config struct {
 	// Next defines a function to skip this middleware when returned true.
 	//
 	// Optional. Default: nil
-	Next func(c *fiber.Ctx) bool
+	Next func(c fiber.Ctx) bool
 
 	// SkipBody defines a function to skip log  "body" field when returned true.
 	//
 	// Optional. Default: nil
-	SkipBody func(c *fiber.Ctx) bool
+	SkipBody func(c fiber.Ctx) bool
 
 	// SkipResBody defines a function to skip log  "resBody" field when returned true.
 	//
 	// Optional. Default: nil
-	SkipResBody func(c *fiber.Ctx) bool
+	SkipResBody func(c fiber.Ctx) bool
 
 	// GetResBody defines a function to get ResBody.
 	//  eg: when use compress middleware, resBody is unreadable. you can set GetResBody func to get readable resBody.
 	//
 	// Optional. Default: nil
-	GetResBody func(c *fiber.Ctx) []byte
+	GetResBody func(c fiber.Ctx) []byte
 
 	// Skip logging for these uri
 	//
@@ -47,7 +47,7 @@ type Config struct {
 	// FieldsFunc defines a function to return custom zap fields to append to the log.
 	//
 	// Optional. Default: nil
-	FieldsFunc func(c *fiber.Ctx) []zap.Field
+	FieldsFunc func(c fiber.Ctx) []zap.Field
 
 	// Custom response messages.
 	// Response codes >= 500 will be logged with Messages[0].

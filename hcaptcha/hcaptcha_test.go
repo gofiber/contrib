@@ -1,11 +1,12 @@
 package hcaptcha
 
 import (
-	"github.com/gofiber/fiber/v3"
-	"github.com/stretchr/testify/assert"
 	"io"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/gofiber/fiber/v3"
+	"github.com/stretchr/testify/assert"
 )
 
 const (
@@ -31,7 +32,7 @@ func TestHCaptcha(t *testing.T) {
 	req := httptest.NewRequest("GET", "/hcaptcha?token="+TestResponseToken, nil)
 	req.Header.Set("Content-Type", "application/json")
 
-	res, err := app.Test(req, -1)
+	res, err := app.Test(req, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 	defer res.Body.Close()
 
 	if err != nil {

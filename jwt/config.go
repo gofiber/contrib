@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/MicahParks/keyfunc/v2"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -21,7 +21,7 @@ var (
 type Config struct {
 	// Filter is a function to skip middleware execution for specific requests.
 	// Optional. Default: nil
-	Filter func(*fiber.Ctx) bool
+	Filter func(fiber.Ctx) bool
 
 	// SuccessHandler is executed when a token is successfully validated.
 	// Optional. Default: nil
@@ -41,12 +41,8 @@ type Config struct {
 	// At least one of the following is required: KeyFunc, JWKSetURLs, SigningKeys, or SigningKey.
 	SigningKeys map[string]SigningKey
 
-	// ContextKey specifies the key used to store user information in the context.
-	// Optional. Default: "user".
-	ContextKey string
-
-	// Claims defines the structure of token claims.
-	// Optional. Default: jwt.MapClaims
+	// Claims are extendable claims data defining token content.
+	// Optional. Default value jwt.MapClaims
 	Claims jwt.Claims
 
 	// TokenLookup specifies how to extract the token from the request.
@@ -103,12 +99,12 @@ func makeCfg(config []Config) (cfg Config) {
 		cfg = config[0]
 	}
 	if cfg.SuccessHandler == nil {
-		cfg.SuccessHandler = func(c *fiber.Ctx) error {
+		cfg.SuccessHandler = func(c fiber.Ctx) error {
 			return c.Next()
 		}
 	}
 	if cfg.ErrorHandler == nil {
-		cfg.ErrorHandler = func(c *fiber.Ctx, err error) error {
+		cfg.ErrorHandler = func(c fiber.Ctx, err error) error {
 			if err.Error() == ErrJWTMissingOrMalformed.Error() {
 				return c.Status(fiber.StatusBadRequest).SendString(ErrJWTMissingOrMalformed.Error())
 			}
@@ -117,9 +113,6 @@ func makeCfg(config []Config) (cfg Config) {
 	}
 	if cfg.SigningKey.Key == nil && len(cfg.SigningKeys) == 0 && len(cfg.JWKSetURLs) == 0 && cfg.KeyFunc == nil {
 		panic("Fiber: JWT middleware configuration: At least one of the following is required: KeyFunc, JWKSetURLs, SigningKeys, or SigningKey.")
-	}
-	if cfg.ContextKey == "" {
-		cfg.ContextKey = "user"
 	}
 	if cfg.Claims == nil {
 		cfg.Claims = jwt.MapClaims{}
