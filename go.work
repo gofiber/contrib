@@ -16,7 +16,6 @@ use (
 	./opafiber
 	./otelfiber
 	./paseto
-	./socketio
 	./swagger
 	./testcontainers
 	./websocket
