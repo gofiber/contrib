@@ -40,7 +40,7 @@ func TestDefaultConfiguration(t *testing.T) {
 
 	// Assert
 	require.NotNil(t, cfg.Claims, "Default claims should not be 'nil'")
-	require.Equal(t, SourceAuthHeader, cfg.Extractor.Source, "Default extractor source should be '%v'", SourceAuthHeader)
+	require.Equal(t, extractors.SourceAuthHeader, cfg.Extractor.Source, "Default extractor source should be '%v'", extractors.SourceAuthHeader)
 	require.Equal(t, fiber.HeaderAuthorization, cfg.Extractor.Key, "Default extractor key should be '%v'", fiber.HeaderAuthorization)
 	require.Equal(t, "Bearer", cfg.Extractor.AuthScheme, "Default auth scheme should be 'Bearer'")
 }
