@@ -1,9 +1,10 @@
 package pasetoware
 
 import (
-	"strings"
+	"errors"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/extractors"
 )
 
 // The contextKey type is unexported to prevent collisions with context keys defined in
@@ -20,25 +21,20 @@ const (
 func New(authConfigs ...Config) fiber.Handler {
 	// Set default authConfig
 	config := configDefault(authConfigs...)
-	extractor := getExtractor(config.TokenLookup[0])
 
 	// Return middleware handler
 	return func(c fiber.Ctx) error {
-		token := extractor(c, config.TokenLookup[1])
 		// Filter request to skip middleware
 		if config.Next != nil && config.Next(c) {
 			return c.Next()
 		}
-		if len(token) <= 0 {
-			return config.ErrorHandler(c, ErrMissingToken)
-		}
 
-		if len(config.TokenPrefix) > 0 {
-			if strings.HasPrefix(token, config.TokenPrefix) {
-				token = strings.TrimPrefix(token, config.TokenPrefix+" ")
-			} else {
-				return config.ErrorHandler(c, ErrIncorrectTokenPrefix)
+		token, err := config.Extractor.Extract(c)
+		if err != nil {
+			if errors.Is(err, extractors.ErrNotFound) {
+				return config.ErrorHandler(c, ErrMissingToken)
 			}
+			return config.ErrorHandler(c, err)
 		}
 
 		var outData []byte

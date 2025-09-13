@@ -3,6 +3,7 @@ package jwtware_test
 import (
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/extractors"
 	"github.com/golang-jwt/jwt/v5"
 
 	jwtware "github.com/gofiber/contrib/jwt"
@@ -195,7 +197,7 @@ func TestJwtFromHeader(t *testing.T) {
 					JWTAlg: test.SigningMethod,
 					Key:    []byte(defaultSigningKey),
 				},
-				TokenLookup: "header:X-Token",
+				Extractor: extractors.FromHeader("X-Token"),
 			}))
 
 			app.Get("/ok", func(c fiber.Ctx) error {
@@ -203,7 +205,7 @@ func TestJwtFromHeader(t *testing.T) {
 			})
 
 			req := httptest.NewRequest("GET", "/ok", nil)
-			req.Header.Add("x-token", test.Token)
+			req.Header.Set("X-Token", test.Token)
 
 			// Act
 			resp, err := app.Test(req)
@@ -262,7 +264,7 @@ func TestJwtFromCookie(t *testing.T) {
 				JWTAlg: test.SigningMethod,
 				Key:    []byte(defaultSigningKey),
 			},
-			TokenLookup: "cookie:Token",
+			Extractor: extractors.FromCookie("Token"),
 		}))
 
 		app.Get("/ok", func(c fiber.Ctx) error {
@@ -543,4 +545,199 @@ func TestFromContext(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, 200, resp.StatusCode)
 	}
+}
+
+func TestCustomErrorHandler(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	app := fiber.New()
+
+	customErrorCalled := false
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{Key: []byte(defaultSigningKey)},
+		ErrorHandler: func(c fiber.Ctx, err error) error {
+			customErrorCalled = true
+			return c.Status(fiber.StatusTeapot).SendString("Custom Error: " + err.Error())
+		},
+	}))
+
+	app.Get("/protected", func(c fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+
+	req := httptest.NewRequest("GET", "/protected", nil)
+	req.Header.Add("Authorization", "Bearer invalid.token.here")
+
+	// Act
+	resp, err := app.Test(req)
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Equal(t, fiber.StatusTeapot, resp.StatusCode)
+	b, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(b), "Custom Error:")
+	assert.True(t, customErrorCalled)
+}
+
+func TestCustomSuccessHandler(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	app := fiber.New()
+
+	customSuccessCalled := false
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{Key: []byte(defaultSigningKey)},
+		SuccessHandler: func(c fiber.Ctx) error {
+			customSuccessCalled = true
+			c.Locals("custom", "success")
+			return c.Next()
+		},
+	}))
+
+	app.Get("/protected", func(c fiber.Ctx) error {
+		if c.Locals("custom") == "success" {
+			return c.SendString("Custom Success Handler Worked")
+		}
+		return c.SendString("OK")
+	})
+
+	req := httptest.NewRequest("GET", "/protected", nil)
+	req.Header.Add("Authorization", "Bearer "+hamac[0].Token)
+
+	// Act
+	resp, err := app.Test(req)
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Equal(t, 200, resp.StatusCode)
+	b, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "Custom Success Handler Worked", string(b))
+	assert.True(t, customSuccessCalled)
+}
+
+func TestNextFunction(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	app := fiber.New()
+
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{Key: []byte(defaultSigningKey)},
+		Next: func(c fiber.Ctx) bool {
+			return c.Get("Skip-JWT") == "true"
+		},
+	}))
+
+	app.Get("/protected", func(c fiber.Ctx) error {
+		return c.SendString("Should not reach here")
+	})
+
+	app.Get("/skipped", func(c fiber.Ctx) error {
+		return c.SendString("Skipped JWT")
+	})
+
+	// Test skipping JWT
+	req := httptest.NewRequest("GET", "/skipped", nil)
+	req.Header.Add("Skip-JWT", "true")
+	resp, err := app.Test(req)
+	assert.NoError(t, err)
+	assert.Equal(t, 200, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "Skipped JWT", string(body))
+
+	// Test not skipping JWT (should fail without token)
+	req2 := httptest.NewRequest("GET", "/protected", nil)
+	resp2, err2 := app.Test(req2)
+	assert.NoError(t, err2)
+	assert.Equal(t, 400, resp2.StatusCode)
+}
+
+func TestInvalidSigningKey(t *testing.T) {
+	t.Parallel()
+
+	assert.Panics(t, func() {
+		app := fiber.New()
+		app.Use(jwtware.New(jwtware.Config{
+			SigningKey: jwtware.SigningKey{Key: nil}, // Invalid key
+		}))
+	}, "Middleware should panic on invalid signing key")
+}
+
+func TestFromContextWithoutToken(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	app := fiber.New()
+
+	app.Get("/no-jwt", func(c fiber.Ctx) error {
+		token := jwtware.FromContext(c)
+		if token == nil {
+			return c.SendString("No token as expected")
+		}
+		return c.SendString("Unexpected token")
+	})
+
+	req := httptest.NewRequest("GET", "/no-jwt", nil)
+
+	// Act
+	resp, err := app.Test(req)
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Equal(t, 200, resp.StatusCode)
+}
+
+func TestMalformedToken(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	app := fiber.New()
+
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{Key: []byte(defaultSigningKey)},
+	}))
+
+	app.Get("/protected", func(c fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+
+	req := httptest.NewRequest("GET", "/protected", nil)
+	req.Header.Add("Authorization", "Bearer not.a.jwt.token")
+
+	// Act
+	resp, err := app.Test(req)
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Equal(t, 401, resp.StatusCode)
+}
+
+func TestTokenProcessorFuncError(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	app := fiber.New()
+
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{Key: []byte(defaultSigningKey)},
+		TokenProcessorFunc: func(token string) (string, error) {
+			return "", fiber.NewError(fiber.StatusBadRequest, "Token processing failed")
+		},
+	}))
+
+	app.Get("/protected", func(c fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+
+	req := httptest.NewRequest("GET", "/protected", nil)
+	req.Header.Add("Authorization", "Bearer "+hamac[0].Token)
+
+	// Act
+	resp, err := app.Test(req)
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Equal(t, 400, resp.StatusCode)
 }

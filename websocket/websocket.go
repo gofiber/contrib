@@ -21,9 +21,9 @@ import (
 
 // Config ...
 type Config struct {
-	// Filter defines a function to skip middleware.
+	// Next defines a function to skip this middleware when it returns true.
 	// Optional. Default: nil
-	Filter func(fiber.Ctx) bool
+	Next func(fiber.Ctx) bool
 
 	// HandshakeTimeout specifies the duration for the handshake to complete.
 	HandshakeTimeout time.Duration
@@ -114,7 +114,7 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		},
 	}
 	return func(c fiber.Ctx) error {
-		if cfg.Filter != nil && !cfg.Filter(c) {
+		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
 		}
 
@@ -131,19 +131,22 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		}
 
 		// queries
-		c.RequestCtx().QueryArgs().VisitAll(func(key, value []byte) {
+		queries := c.RequestCtx().QueryArgs().All()
+		for key, value := range queries {
 			conn.queries[string(key)] = string(value)
-		})
+		}
 
 		// cookies
-		c.RequestCtx().Request.Header.VisitAllCookie(func(key, value []byte) {
+		cookies := c.RequestCtx().Request.Header.Cookies()
+		for key, value := range cookies {
 			conn.cookies[string(key)] = string(value)
-		})
+		}
 
 		// headers
-		c.RequestCtx().Request.Header.VisitAll(func(key, value []byte) {
-			conn.headers[string(key)] = string(value)
-		})
+		headers := c.RequestCtx().Request.Header.All()
+		for key, values := range headers {
+			conn.headers[string(key)] = string(values)
+		}
 
 		// ip address
 		conn.ip = c.IP()
