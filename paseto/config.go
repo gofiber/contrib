@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/extractors"
 	"github.com/o1egl/paseto"
 	"golang.org/x/crypto/chacha20poly1305"
 )
@@ -54,7 +55,7 @@ type Config struct {
 
 	// Extractor defines a function to extract the token from the request.
 	// Optional. Default: FromAuthHeader("Bearer").
-	Extractor Extractor
+	Extractor extractors.Extractor
 }
 
 // ConfigDefault is the default config
@@ -63,7 +64,7 @@ var ConfigDefault = Config{
 	ErrorHandler:   nil,
 	Validate:       nil,
 	SymmetricKey:   nil,
-	Extractor:      FromAuthHeader("Bearer"),
+	Extractor:      extractors.FromAuthHeader("Bearer"),
 }
 
 func defaultErrorHandler(c fiber.Ctx, err error) error {
@@ -120,7 +121,7 @@ func configDefault(authConfigs ...Config) Config {
 	}
 
 	if config.Extractor.Extract == nil {
-		config.Extractor = FromAuthHeader("Bearer")
+		config.Extractor = extractors.FromAuthHeader("Bearer")
 	}
 
 	if config.SymmetricKey != nil {

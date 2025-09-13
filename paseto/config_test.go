@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/extractors"
 )
 
 func assertRecoveryPanic(t *testing.T) {
@@ -32,7 +33,7 @@ func Test_ConfigDefault(t *testing.T) {
 		SymmetricKey: []byte(symmetricKey),
 	})
 
-	assert.Equal(t, SourceAuthHeader, config.Extractor.Source)
+	assert.Equal(t, extractors.SourceAuthHeader, config.Extractor.Source)
 	assert.Equal(t, fiber.HeaderAuthorization, config.Extractor.Key)
 	assert.Equal(t, "Bearer", config.Extractor.AuthScheme)
 	assert.Empty(t, config.Extractor.Chain)
@@ -43,17 +44,17 @@ func Test_ConfigDefault(t *testing.T) {
 func Test_ConfigCustomLookup(t *testing.T) {
 	config := configDefault(Config{
 		SymmetricKey: []byte(symmetricKey),
-		Extractor:    FromHeader("Custom-Header"),
+		Extractor:    extractors.FromHeader("Custom-Header"),
 	})
-	assert.Equal(t, SourceHeader, config.Extractor.Source)
+	assert.Equal(t, extractors.SourceHeader, config.Extractor.Source)
 	assert.Equal(t, "Custom-Header", config.Extractor.Key)
 	assert.Equal(t, "", config.Extractor.AuthScheme)
 
 	config = configDefault(Config{
 		SymmetricKey: []byte(symmetricKey),
-		Extractor:    FromQuery("token"),
+		Extractor:    extractors.FromQuery("token"),
 	})
-	assert.Equal(t, SourceQuery, config.Extractor.Source)
+	assert.Equal(t, extractors.SourceQuery, config.Extractor.Source)
 	assert.Equal(t, "token", config.Extractor.Key)
 	assert.Equal(t, "", config.Extractor.AuthScheme)
 }

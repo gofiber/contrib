@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/extractors"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/require"
 )
@@ -48,7 +49,7 @@ func TestCustomExtractor(t *testing.T) {
 	t.Parallel()
 
 	// Arrange
-	extractor := FromHeader("X-Auth-Token")
+	extractor := extractors.FromHeader("X-Auth-Token")
 	config := append(make([]Config, 0), Config{
 		SigningKey: SigningKey{Key: []byte("")},
 		Extractor:  extractor,

@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/extractors"
 )
 
 const (
@@ -267,7 +268,7 @@ func Test_PASETO_LocalToken_IncorrectBearerToken(t *testing.T) {
 	app := fiber.New()
 	app.Use(New(Config{
 		SymmetricKey: []byte(symmetricKey),
-		Extractor:    FromAuthHeader("Gopher"),
+		Extractor:    extractors.FromAuthHeader("Gopher"),
 	}))
 	request := httptest.NewRequest("GET", "/", nil)
 	request.Header.Set(fiber.HeaderAuthorization, "Bearer "+invalidToken)
@@ -283,7 +284,7 @@ func Test_PASETO_PublicToken_IncorrectBearerToken(t *testing.T) {
 	app.Use(New(Config{
 		PrivateKey: privateKey,
 		PublicKey:  privateKey.Public(),
-		Extractor:  FromAuthHeader("Gopher"),
+		Extractor:  extractors.FromAuthHeader("Gopher"),
 	}))
 
 	request := httptest.NewRequest("GET", "/", nil)

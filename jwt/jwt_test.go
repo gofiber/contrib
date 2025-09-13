@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/extractors"
 	"github.com/golang-jwt/jwt/v5"
 
 	jwtware "github.com/gofiber/contrib/jwt"
@@ -196,7 +197,7 @@ func TestJwtFromHeader(t *testing.T) {
 					JWTAlg: test.SigningMethod,
 					Key:    []byte(defaultSigningKey),
 				},
-				Extractor: jwtware.FromHeader("X-Token"),
+				Extractor: extractors.FromHeader("X-Token"),
 			}))
 
 			app.Get("/ok", func(c fiber.Ctx) error {
@@ -263,7 +264,7 @@ func TestJwtFromCookie(t *testing.T) {
 				JWTAlg: test.SigningMethod,
 				Key:    []byte(defaultSigningKey),
 			},
-			Extractor: jwtware.FromCookie("Token"),
+			Extractor: extractors.FromCookie("Token"),
 		}))
 
 		app.Get("/ok", func(c fiber.Ctx) error {

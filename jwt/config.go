@@ -9,12 +9,16 @@ import (
 
 	"github.com/MicahParks/keyfunc/v2"
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/extractors"
 	"github.com/golang-jwt/jwt/v5"
 )
 
 var (
 	// ErrJWTAlg is returned when the JWT header did not contain the expected algorithm.
 	ErrJWTAlg = errors.New("the JWT header did not contain the expected algorithm")
+
+	// ErrMissingToken is returned when no JWT token is found in the request.
+	ErrMissingToken = errors.New("missing or malformed JWT")
 )
 
 // Config defines the config for JWT middleware
@@ -48,7 +52,7 @@ type Config struct {
 
 	// Extractor defines a function to extract the token from the request.
 	// Optional. Default: FromAuthHeader("Bearer").
-	Extractor Extractor
+	Extractor extractors.Extractor
 
 	// TokenProcessorFunc processes the token extracted using the Extractor.
 	// Optional. Default: nil
@@ -96,7 +100,7 @@ func makeCfg(config []Config) (cfg Config) {
 	}
 	if cfg.ErrorHandler == nil {
 		cfg.ErrorHandler = func(c fiber.Ctx, err error) error {
-			if errors.Is(err, ErrMissingToken) {
+			if errors.Is(err, extractors.ErrNotFound) {
 				return c.Status(fiber.StatusBadRequest).SendString(ErrMissingToken.Error())
 			}
 			if e, ok := err.(*fiber.Error); ok {
@@ -126,7 +130,7 @@ func makeCfg(config []Config) (cfg Config) {
 		cfg.Claims = jwt.MapClaims{}
 	}
 	if cfg.Extractor.Extract == nil {
-		cfg.Extractor = FromAuthHeader("Bearer")
+		cfg.Extractor = extractors.FromAuthHeader("Bearer")
 	}
 
 	if cfg.KeyFunc == nil {

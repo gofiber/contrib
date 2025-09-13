@@ -1,7 +1,10 @@
 package pasetoware
 
 import (
+	"errors"
+
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/extractors"
 )
 
 // The contextKey type is unexported to prevent collisions with context keys defined in
@@ -28,6 +31,9 @@ func New(authConfigs ...Config) fiber.Handler {
 
 		token, err := config.Extractor.Extract(c)
 		if err != nil {
+			if errors.Is(err, extractors.ErrNotFound) {
+				return config.ErrorHandler(c, ErrMissingToken)
+			}
 			return config.ErrorHandler(c, err)
 		}
 
