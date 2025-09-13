@@ -51,15 +51,23 @@ jwtware.FromContext(c fiber.Ctx) *jwt.Token
 
 ## Available Extractors
 
-JWT middleware provides several built-in extractors for different token sources:
+JWT middleware uses the shared Fiber extractors (github.com/gofiber/fiber/v3/extractors) and provides several helpers for different token sources. Import them with:
 
-- `FromAuthHeader(prefix string)` - Extracts token from the Authorization header using the given scheme prefix (e.g., "Bearer"). **This is the recommended and most secure method.**
-- `FromHeader(header string)` - Extracts token from the specified HTTP header
-- `FromQuery(param string)` - Extracts token from URL query parameters
-- `FromParam(param string)` - Extracts token from URL path parameters
-- `FromCookie(key string)` - Extracts token from cookies
-- `FromForm(param string)` - Extracts token from form data
-- `Chain(extractors ...Extractor)` - Tries multiple extractors in order until one succeeds
+```go
+import "github.com/gofiber/fiber/v3/extractors"
+```
+
+For an overview and additional examples, see the Fiber Extractors guide:
+
+- https://docs.gofiber.io/guide/extractors
+
+- `extractors.FromAuthHeader(prefix string)` - Extracts token from the Authorization header using the given scheme prefix (e.g., "Bearer"). **This is the recommended and most secure method.**
+- `extractors.FromHeader(header string)` - Extracts token from the specified HTTP header
+- `extractors.FromQuery(param string)` - Extracts token from URL query parameters
+- `extractors.FromParam(param string)` - Extracts token from URL path parameters
+- `extractors.FromCookie(key string)` - Extracts token from cookies
+- `extractors.FromForm(param string)` - Extracts token from form data
+- `extractors.Chain(extrs ...extractors.Extractor)` - Tries multiple extractors in order until one succeeds
 
 ### Security Considerations
 
@@ -81,6 +89,7 @@ import (
  "time"
 
  "github.com/gofiber/fiber/v3"
+ "github.com/gofiber/fiber/v3/extractors"
 
  jwtware "github.com/gofiber/contrib/jwt"
  "github.com/golang-jwt/jwt/v5"
@@ -98,6 +107,7 @@ func main() {
  // JWT Middleware
  app.Use(jwtware.New(jwtware.Config{
   SigningKey: jwtware.SigningKey{Key: []byte("secret")},
+  Extractor:  extractors.FromAuthHeader("Bearer"),
  }))
 
  // Restricted Routes
@@ -164,7 +174,7 @@ func main() {
  // JWT Middleware with custom extractor from cookie
  app.Use(jwtware.New(jwtware.Config{
   SigningKey: jwtware.SigningKey{Key: []byte("secret")},
-  Extractor:  jwtware.FromCookie("token"),
+  Extractor:  extractors.FromCookie("token"),
  }))
 
  app.Get("/protected", func(c fiber.Ctx) error {
@@ -251,6 +261,7 @@ func main() {
    JWTAlg: jwtware.RS256,
    Key:    privateKey.Public(),
   },
+  Extractor: extractors.FromAuthHeader("Bearer"),
  }))
 
  // Restricted Routes
@@ -335,7 +346,8 @@ func main() {
  app := fiber.New()
 
  app.Use(jwtware.New(jwtware.Config{
-  KeyFunc: customKeyFunc(),
+  KeyFunc:   customKeyFunc(),
+  Extractor: extractors.FromAuthHeader("Bearer"),
  }))
 
  app.Get("/ok", func(c fiber.Ctx) error {

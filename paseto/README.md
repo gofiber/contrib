@@ -48,15 +48,25 @@ pasetoware.FromContext(c fiber.Ctx) interface{}
 
 ## Available Extractors
 
-PASETO middleware provides several built-in extractors for different token sources:
+PASETO middleware uses the shared Fiber extractors (github.com/gofiber/fiber/v3/extractors) and provides several helpers for different token sources:
 
-- `FromAuthHeader(prefix string)` - Extracts token from the Authorization header using the given scheme prefix (e.g., "Bearer"). **This is the recommended and most secure method.**
-- `FromHeader(header string)` - Extracts token from the specified HTTP header
-- `FromQuery(param string)` - Extracts token from URL query parameters
-- `FromParam(param string)` - Extracts token from URL path parameters
-- `FromCookie(key string)` - Extracts token from cookies
-- `FromForm(param string)` - Extracts token from form data
-- `Chain(extractors ...Extractor)` - Tries multiple extractors in order until one succeeds
+Import them like this:
+
+```go
+import "github.com/gofiber/fiber/v3/extractors"
+```
+
+For an overview and additional examples, see the Fiber Extractors guide:
+
+- https://docs.gofiber.io/guide/extractors
+
+- `extractors.FromAuthHeader(prefix string)` - Extracts token from the Authorization header using the given scheme prefix (e.g., "Bearer"). **This is the recommended and most secure method.**
+- `extractors.FromHeader(header string)` - Extracts token from the specified HTTP header
+- `extractors.FromQuery(param string)` - Extracts token from URL query parameters
+- `extractors.FromParam(param string)` - Extracts token from URL path parameters
+- `extractors.FromCookie(key string)` - Extracts token from cookies
+- `extractors.FromForm(param string)` - Extracts token from form data
+- `extractors.Chain(extrs ...extractors.Extractor)` - Tries multiple extractors in order until one succeeds
 
 ### Security Considerations
 
@@ -71,19 +81,19 @@ PASETO middleware provides several built-in extractors for different token sourc
 
 ## Migration from TokenPrefix
 
-If you were previously using `TokenPrefix`, you can now use `FromAuthHeader` with the prefix:
+If you were previously using `TokenPrefix`, you can now use `extractors.FromAuthHeader` with the prefix:
 
 ```go
 // Old way
 pasetoware.New(pasetoware.Config{
-    SymmetricKey: []byte("secret"),
-    TokenPrefix:  "Bearer",
+	SymmetricKey: []byte("secret"),
+	TokenPrefix:  "Bearer",
 })
 
 // New way
 pasetoware.New(pasetoware.Config{
-    SymmetricKey: []byte("secret"),
-    Extractor:    pasetoware.FromAuthHeader("Bearer"),
+	SymmetricKey: []byte("secret"),
+	Extractor:    extractors.FromAuthHeader("Bearer"),
 })
 ```
 
@@ -101,6 +111,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/extractors"
 	"github.com/o1egl/paseto"
 
 	pasetoware "github.com/gofiber/contrib/paseto"
@@ -121,7 +132,7 @@ func main() {
 	// Paseto Middleware with local (encrypted) token
 	apiGroup := app.Group("api", pasetoware.New(pasetoware.Config{
 		SymmetricKey: []byte(secretSymmetricKey),
-		Extractor:    pasetoware.FromAuthHeader("Bearer"),
+		Extractor:    extractors.FromAuthHeader("Bearer"),
 	}))
 
 	// Restricted Routes
@@ -199,6 +210,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/gofiber/fiber/v3/extractors"
 	"github.com/o1egl/paseto"
 
 	pasetoware "github.com/gofiber/contrib/paseto"
@@ -224,7 +236,7 @@ func main() {
 	// Paseto Middleware with local (encrypted) token
 	apiGroup := app.Group("api", pasetoware.New(pasetoware.Config{
 		SymmetricKey: []byte(secretSymmetricKey),
-		Extractor:    pasetoware.FromAuthHeader("Bearer"),
+		Extractor:    extractors.FromAuthHeader("Bearer"),
 		Validate: func(decrypted []byte) (any, error) {
 			var payload customPayloadStruct
 			err := json.Unmarshal(decrypted, &payload)
@@ -283,6 +295,7 @@ package main
 
 import (
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/extractors"
 
 	pasetoware "github.com/gofiber/contrib/paseto"
 )
@@ -295,7 +308,7 @@ func main() {
 	// Paseto Middleware with custom extractor from cookie
 	app.Use(pasetoware.New(pasetoware.Config{
 		SymmetricKey: []byte(secretSymmetricKey),
-		Extractor:    pasetoware.FromCookie("token"),
+		Extractor:    extractors.FromCookie("token"),
 	}))
 
 	app.Get("/protected", func(c fiber.Ctx) error {
@@ -313,6 +326,7 @@ package main
 
 import (
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/extractors"
 
 	pasetoware "github.com/gofiber/contrib/paseto"
 )
@@ -325,7 +339,7 @@ func main() {
 	// Paseto Middleware with custom extractor from query parameter
 	app.Use(pasetoware.New(pasetoware.Config{
 		SymmetricKey: []byte(secretSymmetricKey),
-		Extractor:    pasetoware.FromQuery("token"),
+		Extractor:    extractors.FromQuery("token"),
 	}))
 
 	app.Get("/protected", func(c fiber.Ctx) error {
@@ -347,6 +361,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/extractors"
 
 	pasetoware "github.com/gofiber/contrib/paseto"
 )
@@ -373,7 +388,7 @@ func main() {
 
 	// Paseto Middleware with public (signed) token
 	apiGroup := app.Group("api", pasetoware.New(pasetoware.Config{
-		Extractor:  pasetoware.FromAuthHeader("Bearer"),
+		Extractor:  extractors.FromAuthHeader("Bearer"),
 		PrivateKey: privateKey,
 		PublicKey:  privateKey.Public(),
 	}))
