@@ -19,6 +19,8 @@ type Config struct {
 	// SiteVerifyURL is the endpoint URL where the program should verify the given token
 	// default value is: "https://api.hcaptcha.com/siteverify"
 	SiteVerifyURL string
+	// ValidateFunc allows custom validation logic based on the HCaptcha validation result and the context
+	ValidateFunc func(success bool, c fiber.Ctx) error
 }
 
 // DefaultResponseKeyFunc is the default function to get the HCaptcha token from the request body
