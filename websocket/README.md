@@ -116,8 +116,8 @@ app.Get("/ws/:id", websocket.New(func(c *websocket.Conn) {}))
 
 ## Note with recover middleware
 
-For internal implementation reasons, currently recover middleware is not work with websocket middleware, please use `config.RecoverHandler` to add recover handler to websocket endpoints.
-By default, config `RecoverHandler` is recovers from panic and writes stack trace to stderr, also returns a response that contains panic message in **error** field.
+For internal implementation reasons, currently recover middleware does not work with websocket middleware, please use `config.RecoverHandler` to add recover handler to websocket endpoints.
+By default, config `RecoverHandler` recovers from panic and writes stack trace to stderr, also returns a response that contains panic message in **error** field.
 
 
 ```go
