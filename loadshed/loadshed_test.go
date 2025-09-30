@@ -264,5 +264,5 @@ func Test_Loadshed_CustomOnShedWithJSON(t *testing.T) {
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
 	assert.Equal(t, nil, err)
 	assert.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
-	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+	assert.Equal(t, fiber.MIMEApplicationJSONCharsetUTF8, resp.Header.Get("Content-Type"))
 }
