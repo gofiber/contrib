@@ -121,8 +121,12 @@ func makeCfg(config []Config) (cfg Config) {
 	}
 	if len(cfg.JWKSetURLs) > 0 {
 		for _, u := range cfg.JWKSetURLs {
-			if _, err := url.Parse(u); err != nil {
-				panic("Fiber: JWT middleware configuration: Invalid JWK Set URL: " + u)
+			parsed, err := url.Parse(u)
+			if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+				panic("Fiber: JWT middleware configuration: Invalid JWK Set URL (must be absolute http/https): " + u)
+			}
+			if parsed.Scheme != "https" && parsed.Scheme != "http" {
+				panic("Fiber: JWT middleware configuration: Unsupported JWK Set URL scheme: " + parsed.Scheme)
 			}
 		}
 	}

@@ -39,7 +39,7 @@ jwtware.FromContext(c fiber.Ctx) *jwt.Token
 | Property           | Type                                 | Description                                                                                                  | Default                      |
 |:-------------------|:-------------------------------------|:-------------------------------------------------------------------------------------------------------------|:-----------------------------|
 | Next               | `func(fiber.Ctx) bool`               | Defines a function to skip this middleware when it returns true                                              | `nil`                        |
-| SuccessHandler     | `func(fiber.Ctx) error`              | SuccessHandler defines a function which is executed for a valid token.                                       | `nil`                        |
+| SuccessHandler     | `func(fiber.Ctx) error`              | Executed when a token is valid.                                                                               | `c.Next()`                   |
 | ErrorHandler       | `func(fiber.Ctx, error) error`       | ErrorHandler defines a function which is executed for an invalid token.                                      | `401 Invalid or expired JWT` |
 | SigningKey         | `SigningKey`                         | Signing key used to validate the token. Used as a fallback if `SigningKeys` is empty.                        | `nil`                        |
 | SigningKeys        | `map[string]SigningKey`              | Map of signing keys used to validate tokens via the `kid` header.                                            | `nil`                        |
@@ -157,7 +157,7 @@ func restricted(c fiber.Ctx) error {
 
 ```
 
-## Custom Extractor Example
+## Cookie Extractor Example
 
 ```go
 package main

@@ -134,3 +134,11 @@ func TestTokenProcessorFunc_Configured(t *testing.T) {
 	_, err := cfg.TokenProcessorFunc("dummy")
 	require.Error(t, err, "TokenProcessorFunc should return error")
 }
+
+func TestPanicOnUnsupportedJWKSetURLScheme(t *testing.T) {
+	t.Parallel()
+	config := append(make([]Config, 0), Config{
+		JWKSetURLs: []string{"ftp://example.com"}, // Unsupported scheme
+	})
+	require.Panics(t, func() { makeCfg(config) })
+}

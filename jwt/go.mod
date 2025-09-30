@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/MicahParks/keyfunc/v2 v2.1.0
-	github.com/gofiber/fiber/v3 v3.0.0-rc.1.0.20250913162552-aedffa1a91b7
+	github.com/gofiber/fiber/v3 v3.0.0-rc.2
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/stretchr/testify v1.11.1
 )
@@ -22,7 +22,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/tinylib/msgp v1.4.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
-	github.com/valyala/fasthttp v1.65.0 // indirect
+	github.com/valyala/fasthttp v1.66.0 // indirect
 	golang.org/x/crypto v0.42.0 // indirect
 	golang.org/x/net v0.44.0 // indirect
 	golang.org/x/sys v0.36.0 // indirect
