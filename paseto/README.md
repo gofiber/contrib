@@ -288,7 +288,7 @@ func restricted(c fiber.Ctx) error {
 
 ```
 
-### Custom Extractor
+### Cookie Extractor Example
 
 ```go
 package main
@@ -305,7 +305,7 @@ const secretSymmetricKey = "symmetric-secret-key (size = 32)"
 func main() {
 	app := fiber.New()
 
-	// Paseto Middleware with custom extractor from cookie
+	// Paseto Middleware with cookie extractor
 	app.Use(pasetoware.New(pasetoware.Config{
 		SymmetricKey: []byte(secretSymmetricKey),
 		Extractor:    extractors.FromCookie("token"),
@@ -319,7 +319,7 @@ func main() {
 }
 ```
 
-### Custom Extractor from Query Parameter
+### Query Extractor Example
 
 ```go
 package main
@@ -336,7 +336,7 @@ const secretSymmetricKey = "symmetric-secret-key (size = 32)"
 func main() {
 	app := fiber.New()
 
-	// Paseto Middleware with custom extractor from query parameter
+	// Paseto Middleware with query extractor
 	app.Use(pasetoware.New(pasetoware.Config{
 		SymmetricKey: []byte(secretSymmetricKey),
 		Extractor:    extractors.FromQuery("token"),

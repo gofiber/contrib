@@ -171,7 +171,7 @@ import (
 func main() {
  app := fiber.New()
 
- // JWT Middleware with custom extractor from cookie
+ // JWT Middleware with cookie extractor
  app.Use(jwtware.New(jwtware.Config{
   SigningKey: jwtware.SigningKey{Key: []byte("secret")},
   Extractor:  extractors.FromCookie("token"),
