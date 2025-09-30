@@ -36,7 +36,7 @@ func New(handler func(*websocket.Conn), config ...websocket.Config) fiber.Handle
 | WriteBufferSize     | `int`                        | WriteBufferSize specifies the I/O buffer size in bytes for outgoing messages.                                                 | `0` (Use default size) |
 | WriteBufferPool     | `websocket.BufferPool`       | WriteBufferPool is a pool of buffers for write operations.                                                                    | `nil`                  |
 | EnableCompression   | `bool`                       | EnableCompression specifies if the client should attempt to negotiate per message compression (RFC 7692).                     | `false`                |
-| RecoverHandler      | `func(*websocket.Conn) void` | RecoverHandler is a panic handler function that recovers from panics.                                                         | `defaultRecover`       |
+| RecoverHandler      | `func(*websocket.Conn)`      | RecoverHandler is a panic handler function that recovers from panics.                                                         | `defaultRecover`       |
 
 
 ## Example
