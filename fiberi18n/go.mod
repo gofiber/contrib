@@ -6,7 +6,7 @@ require (
 	github.com/gofiber/fiber/v3 v3.0.0-rc.1
 	github.com/gofiber/utils/v2 v2.0.0-rc.1
 	github.com/nicksnyder/go-i18n/v2 v2.4.1
-	github.com/stretchr/testify v1.11.0
+	github.com/stretchr/testify v1.11.1
 	golang.org/x/text v0.28.0
 	gopkg.in/yaml.v2 v2.4.0
 )
