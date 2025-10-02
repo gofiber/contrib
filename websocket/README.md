@@ -28,15 +28,15 @@ func New(handler func(*websocket.Conn), config ...websocket.Config) fiber.Handle
 
 | Property            | Type                         | Description                                                                                                                   | Default                |
 |:--------------------|:-----------------------------|:------------------------------------------------------------------------------------------------------------------------------|:-----------------------|
-| Filter              | `func(fiber.Ctx) bool`       | Defines a function to skip middleware.                                                                                        | `nil`                  |
-| HandshakeTimeout    | `time.Duration`              | HandshakeTimeout specifies the duration for the handshake to complete.                                                       | `0` (No timeout)       |
+| Next                | `func(fiber.Ctx) bool`       | Defines a function to skip this middleware when it returns true.                                                              | `nil`                  |
+| HandshakeTimeout    | `time.Duration`              | HandshakeTimeout specifies the duration for the handshake to complete.                                                        | `0` (No timeout)       |
 | Subprotocols        | `[]string`                   | Subprotocols specifies the client's requested subprotocols.                                                                   | `nil`                  |
 | Origins             | `[]string`                   | Allowed Origins based on the Origin header. If empty, everything is allowed.                                                  | `nil`                  |
 | ReadBufferSize      | `int`                        | ReadBufferSize specifies the I/O buffer size in bytes for incoming messages.                                                  | `0` (Use default size) |
 | WriteBufferSize     | `int`                        | WriteBufferSize specifies the I/O buffer size in bytes for outgoing messages.                                                 | `0` (Use default size) |
-| WriteBufferPool     | `websocket.BufferPool`       | WriteBufferPool is a pool of buffers for write operations.                                                                     | `nil`                  |
+| WriteBufferPool     | `websocket.BufferPool`       | WriteBufferPool is a pool of buffers for write operations.                                                                    | `nil`                  |
 | EnableCompression   | `bool`                       | EnableCompression specifies if the client should attempt to negotiate per message compression (RFC 7692).                     | `false`                |
-| RecoverHandler      | `func(*websocket.Conn) void` | RecoverHandler is a panic handler function that recovers from panics.                                                         | `defaultRecover`       |
+| RecoverHandler      | `func(*websocket.Conn)`      | RecoverHandler is a panic handler function that recovers from panics.                                                         | `defaultRecover`       |
 
 
 ## Example

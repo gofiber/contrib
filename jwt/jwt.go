@@ -21,31 +21,17 @@ const (
 	tokenKey contextKey = iota
 )
 
-var (
-	defaultTokenLookup = "header:" + fiber.HeaderAuthorization
-)
-
 // New ...
 func New(config ...Config) fiber.Handler {
 	cfg := makeCfg(config)
 
-	extractors := cfg.getExtractors()
-
 	// Return middleware handler
 	return func(c fiber.Ctx) error {
 		// Filter request to skip middleware
-		if cfg.Filter != nil && cfg.Filter(c) {
+		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
 		}
-		var auth string
-		var err error
-
-		for _, extractor := range extractors {
-			auth, err = extractor(c)
-			if auth != "" && err == nil {
-				break
-			}
-		}
+		auth, err := cfg.Extractor.Extract(c)
 		if err != nil {
 			return cfg.ErrorHandler(c, err)
 		}
@@ -58,7 +44,6 @@ func New(config ...Config) fiber.Handler {
 		}
 
 		var token *jwt.Token
-
 		if _, ok := cfg.Claims.(jwt.MapClaims); ok {
 			token, err = jwt.Parse(auth, cfg.KeyFunc)
 		} else {
@@ -78,6 +63,9 @@ func New(config ...Config) fiber.Handler {
 // FromContext returns the token from the context.
 // If there is no token, nil is returned.
 func FromContext(c fiber.Ctx) *jwt.Token {
-	token, _ := c.Locals(tokenKey).(*jwt.Token)
+	token, ok := c.Locals(tokenKey).(*jwt.Token)
+	if !ok {
+		return nil
+	}
 	return token
 }

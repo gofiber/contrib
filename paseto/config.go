@@ -9,13 +9,15 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/extractors"
 	"github.com/o1egl/paseto"
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
 // Config defines the config for PASETO middleware
 type Config struct {
-	// Filter defines a function to skip middleware.
+	// Next defines a function to skip this middleware when returned true.
+	//
 	// Optional. Default: nil
 	Next func(fiber.Ctx) bool
 
@@ -51,31 +53,18 @@ type Config struct {
 	// Required if SymmetricKey is not set
 	PublicKey crypto.PublicKey
 
-	// TokenLookup is a string slice with size 2, that is used to extract token from the request.
-	// Optional. Default value ["header","Authorization"].
-	// Possible values:
-	// - ["header","<name>"]
-	// - ["query","<name>"]
-	// - ["param","<name>"]
-	// - ["cookie","<name>"]
-	TokenLookup [2]string
-
-	// TokenPrefix is a string that holds the prefix for the token lookup.
-	// Generally it'cs used the "Bearer" prefix.
-	//
-	// Optional. Default value ""
-	// Recommended value: "Bearer"
-	TokenPrefix string
+	// Extractor defines a function to extract the token from the request.
+	// Optional. Default: FromAuthHeader("Bearer").
+	Extractor extractors.Extractor
 }
 
 // ConfigDefault is the default config
 var ConfigDefault = Config{
-	Next:           nil,
 	SuccessHandler: nil,
 	ErrorHandler:   nil,
 	Validate:       nil,
 	SymmetricKey:   nil,
-	TokenLookup:    [2]string{LookupHeader, fiber.HeaderAuthorization},
+	Extractor:      extractors.FromAuthHeader("Bearer"),
 }
 
 func defaultErrorHandler(c fiber.Ctx, err error) error {
@@ -117,10 +106,6 @@ func configDefault(authConfigs ...Config) Config {
 	}
 
 	// Set default values
-	if config.Next == nil {
-		config.Next = ConfigDefault.Next
-	}
-
 	if config.SuccessHandler == nil {
 		config.SuccessHandler = func(c fiber.Ctx) error {
 			return c.Next()
@@ -135,11 +120,8 @@ func configDefault(authConfigs ...Config) Config {
 		config.Validate = defaultValidateFunc
 	}
 
-	if config.TokenLookup[0] == "" {
-		config.TokenLookup[0] = ConfigDefault.TokenLookup[0]
-	}
-	if config.TokenLookup[1] == "" {
-		config.TokenLookup[1] = ConfigDefault.TokenLookup[1]
+	if config.Extractor.Extract == nil {
+		config.Extractor = extractors.FromAuthHeader("Bearer")
 	}
 
 	if config.SymmetricKey != nil {

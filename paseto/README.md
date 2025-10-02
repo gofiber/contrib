@@ -37,25 +37,65 @@ pasetoware.FromContext(c fiber.Ctx) interface{}
 
 | Property       | Type                            | Description                                                                                                                                                                                             | Default                         |
 |:---------------|:--------------------------------|:--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|:--------------------------------|
-| Next           | `func(*Ctx) bool`               | Defines a function to skip middleware                                                                                                                                                                   | `nil`                           |
-| SuccessHandler | `func(fiber.Ctx) error`        | SuccessHandler defines a function which is executed for a valid token.                                                                                                                                  | `c.Next()`                      |
-| ErrorHandler   | `func(fiber.Ctx, error) error` | ErrorHandler defines a function which is executed for an invalid token.                                                                                                                                 | `401 Invalid or expired PASETO` |
+| Next           | `func(fiber.Ctx) bool`          | Defines a function to skip this middleware when it returns true.                                                                                                                                        | `nil`                           |
+| SuccessHandler | `func(fiber.Ctx) error`         | SuccessHandler defines a function which is executed for a valid token.                                                                                                                                  | `c.Next()`                      |
+| ErrorHandler   | `func(fiber.Ctx, error) error`  | ErrorHandler defines a function which is executed for an invalid token.                                                                                                                                 | `401 Invalid or expired PASETO` |
 | Validate       | `PayloadValidator`              | Defines a function to validate if payload is valid. Optional. In case payload used is created using `CreateToken` function. If token is created using another function, this function must be provided. | `nil`                           |
 | SymmetricKey   | `[]byte`                        | Secret key to encrypt token. If present the middleware will generate local tokens.                                                                                                                      | `nil`                           |
-| PrivateKey     | `ed25519.PrivateKey`            | Secret key to sign the tokens. If present (along with its `PublicKey`) the middleware will generate public tokens.                                                                                      | `nil`                           
-| PublicKey      | `crypto.PublicKey`              | Public key to verify the tokens. If present (along with `PrivateKey`) the middleware will generate public tokens.                                                                                       | `nil`                           
-| TokenLookup    | `[2]string`                     | TokenLookup is a string slice with size 2, that is used to extract token from the request                                                                                                               | `["header","Authorization"]`    |
+| PrivateKey     | `ed25519.PrivateKey`            | Secret key to sign the tokens. If present (along with its `PublicKey`) the middleware will generate public tokens.                                                                                      | `nil`                           |  
+| PublicKey      | `crypto.PublicKey`              | Public key to verify the tokens. If present (along with `PrivateKey`) the middleware will generate public tokens.                                                                                       | `nil`                           |  
+| Extractor      | `Extractor`                     | Extractor defines a function to extract the token from the request.                                                                                                                                     | `FromAuthHeader("Bearer")`      |
 
-## Instructions
+## Available Extractors
 
-When using this middleware, and creating a token for authentication, you can use the function pasetoware.CreateToken,
-that will create a token, encrypt or sign it and returns the PASETO token.
+PASETO middleware uses the shared Fiber extractors (github.com/gofiber/fiber/v3/extractors) and provides several helpers for different token sources:
 
-Passing a `SymmetricKey` in the Config results in a local (encrypted) token, while passing a `PublicKey`
-and `PrivateKey` results in a public (signed) token.
+Import them like this:
 
-In case you want to use your own data structure, is needed to provide the `Validate` function in `paseware.Config`, that
-will return the data stored in the token, and a error.
+```go
+import "github.com/gofiber/fiber/v3/extractors"
+```
+
+For an overview and additional examples, see the Fiber Extractors guide:
+
+- https://docs.gofiber.io/guide/extractors
+
+- `extractors.FromAuthHeader(prefix string)` - Extracts token from the Authorization header using the given scheme prefix (e.g., "Bearer"). **This is the recommended and most secure method.**
+- `extractors.FromHeader(header string)` - Extracts token from the specified HTTP header
+- `extractors.FromQuery(param string)` - Extracts token from URL query parameters
+- `extractors.FromParam(param string)` - Extracts token from URL path parameters
+- `extractors.FromCookie(key string)` - Extracts token from cookies
+- `extractors.FromForm(param string)` - Extracts token from form data
+- `extractors.Chain(extrs ...extractors.Extractor)` - Tries multiple extractors in order until one succeeds
+
+### Security Considerations
+
+⚠️ **Security Warning**: When choosing an extractor, consider the security implications:
+
+- **URL-based extractors** (`FromQuery`, `FromParam`): Tokens can leak through server logs, browser referrer headers, proxy logs, and browser history. Use only for development or when security is not a primary concern.
+- **Form-based extractors** (`FromForm`): Similar risks to URL extractors, especially if forms are submitted via GET requests.
+- **Header-based extractors** (`FromAuthHeader`, `FromHeader`): Most secure as headers are not typically logged or exposed in referrers.
+- **Cookie-based extractors** (`FromCookie`): Secure for web applications but requires proper cookie security settings (HttpOnly, Secure, SameSite).
+
+**Recommendation**: Use `FromAuthHeader("Bearer")` (the default) for production applications unless you have specific requirements that necessitate alternative extractors.
+
+## Migration from TokenPrefix
+
+If you were previously using `TokenPrefix`, you can now use `extractors.FromAuthHeader` with the prefix:
+
+```go
+// Old way
+pasetoware.New(pasetoware.Config{
+	SymmetricKey: []byte("secret"),
+	TokenPrefix:  "Bearer",
+})
+
+// New way
+pasetoware.New(pasetoware.Config{
+	SymmetricKey: []byte("secret"),
+	Extractor:    extractors.FromAuthHeader("Bearer"),
+})
+```
 
 ## Examples
 
@@ -71,6 +111,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/extractors"
 	"github.com/o1egl/paseto"
 
 	pasetoware "github.com/gofiber/contrib/paseto"
@@ -91,7 +132,7 @@ func main() {
 	// Paseto Middleware with local (encrypted) token
 	apiGroup := app.Group("api", pasetoware.New(pasetoware.Config{
 		SymmetricKey: []byte(secretSymmetricKey),
-		TokenPrefix:  "Bearer",
+		Extractor:    extractors.FromAuthHeader("Bearer"),
 	}))
 
 	// Restricted Routes
@@ -169,6 +210,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/gofiber/fiber/v3/extractors"
 	"github.com/o1egl/paseto"
 
 	pasetoware "github.com/gofiber/contrib/paseto"
@@ -194,7 +236,7 @@ func main() {
 	// Paseto Middleware with local (encrypted) token
 	apiGroup := app.Group("api", pasetoware.New(pasetoware.Config{
 		SymmetricKey: []byte(secretSymmetricKey),
-		TokenPrefix:  "Bearer",
+		Extractor:    extractors.FromAuthHeader("Bearer"),
 		Validate: func(decrypted []byte) (any, error) {
 			var payload customPayloadStruct
 			err := json.Unmarshal(decrypted, &payload)
@@ -246,32 +288,66 @@ func restricted(c fiber.Ctx) error {
 
 ```
 
-#### Test it
+### Cookie Extractor Example
 
-_Login using username and password to retrieve a token._
+```go
+package main
 
-```
-curl --data "user=john&pass=doe" http://localhost:8088/login
-```
+import (
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/extractors"
 
-_Response_
+	pasetoware "github.com/gofiber/contrib/paseto"
+)
 
-```json
-{
-  "token": "v2.local.OSnDEMUndq8JpRdCD8yX-mr-Z0-Mi85Jw0ftxseiNLCbRc44Mxl5dnn-SV9Qew1n9Y44wXZwm_FG279cILJk7lYc_B_IoMCRBudJE7qMgctkD9UBM-ZRZgCX9ekJh3S1Oo6Erp7bO-omPra5.bnVsbA"
+const secretSymmetricKey = "symmetric-secret-key (size = 32)"
+
+func main() {
+	app := fiber.New()
+
+	// Paseto Middleware with cookie extractor
+	app.Use(pasetoware.New(pasetoware.Config{
+		SymmetricKey: []byte(secretSymmetricKey),
+		Extractor:    extractors.FromCookie("token"),
+	}))
+
+	app.Get("/protected", func(c fiber.Ctx) error {
+		return c.SendString("Protected route")
+	})
+
+	app.Listen(":8080")
 }
 ```
 
-_Request a restricted resource using the token in Authorization request header._
+### Query Extractor Example
 
-```
-curl localhost:8088/api/restricted -H "Authorization: Bearer v2.local.OSnDEMUndq8JpRdCD8yX-mr-Z0-Mi85Jw0ftxseiNLCbRc44Mxl5dnn-SV9Qew1n9Y44wXZwm_FG279cILJk7lYc_B_IoMCRBudJE7qMgctkD9UBM-ZRZgCX9ekJh3S1Oo6Erp7bO-omPra5.bnVsbA"
-```
+```go
+package main
 
-_Response_
+import (
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/extractors"
 
-```
-Welcome John Doe
+	pasetoware "github.com/gofiber/contrib/paseto"
+)
+
+const secretSymmetricKey = "symmetric-secret-key (size = 32)"
+
+func main() {
+	app := fiber.New()
+
+	// Paseto Middleware with query extractor
+	app.Use(pasetoware.New(pasetoware.Config{
+		SymmetricKey: []byte(secretSymmetricKey),
+		Extractor:    extractors.FromQuery("token"),
+	}))
+
+	app.Get("/protected", func(c fiber.Ctx) error {
+		return c.SendString("Protected route")
+	})
+
+	app.Listen(":8080")
+}
 ```
 
 ### PublicPrivate Key
@@ -285,6 +361,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/extractors"
 
 	pasetoware "github.com/gofiber/contrib/paseto"
 )
@@ -309,11 +386,11 @@ func main() {
 	// Unauthenticated route
 	app.Get("/", accessible)
 
-	// Paseto Middleware with local (encrypted) token
+	// Paseto Middleware with public (signed) token
 	apiGroup := app.Group("api", pasetoware.New(pasetoware.Config{
-		TokenPrefix: "Bearer",
-		PrivateKey:  privateKey,
-		PublicKey:   privateKey.Public(),
+		Extractor:  extractors.FromAuthHeader("Bearer"),
+		PrivateKey: privateKey,
+		PublicKey:  privateKey.Public(),
 	}))
 
 	// Restricted Routes

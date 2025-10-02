@@ -4,24 +4,29 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strings"
+	"net/url"
 	"time"
 
 	"github.com/MicahParks/keyfunc/v2"
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/extractors"
 	"github.com/golang-jwt/jwt/v5"
 )
 
 var (
 	// ErrJWTAlg is returned when the JWT header did not contain the expected algorithm.
 	ErrJWTAlg = errors.New("the JWT header did not contain the expected algorithm")
+
+	// ErrMissingToken is returned when no JWT token is found in the request.
+	ErrMissingToken = errors.New("missing or malformed JWT")
 )
 
 // Config defines the config for JWT middleware
 type Config struct {
-	// Filter is a function to skip middleware execution for specific requests.
+	// Next defines a function to skip this middleware when returned true.
+	//
 	// Optional. Default: nil
-	Filter func(fiber.Ctx) bool
+	Next func(fiber.Ctx) bool
 
 	// SuccessHandler is executed when a token is successfully validated.
 	// Optional. Default: nil
@@ -45,23 +50,13 @@ type Config struct {
 	// Optional. Default value jwt.MapClaims
 	Claims jwt.Claims
 
-	// TokenLookup specifies how to extract the token from the request.
-	// Format: "<source>:<name>"
-	// Optional. Default: "header:Authorization".
-	// Possible values:
-	// - "header:<name>"
-	// - "query:<name>"
-	// - "param:<name>"
-	// - "cookie:<name>"
-	TokenLookup string
+	// Extractor defines a function to extract the token from the request.
+	// Optional. Default: FromAuthHeader("Bearer").
+	Extractor extractors.Extractor
 
-	// TokenProcessorFunc processes the token extracted using TokenLookup.
+	// TokenProcessorFunc processes the token extracted using the Extractor.
 	// Optional. Default: nil
 	TokenProcessorFunc func(token string) (string, error)
-
-	// AuthScheme specifies the scheme used in the Authorization header.
-	// Optional. Default: "Bearer".
-	AuthScheme string
 
 	// KeyFunc provides the public key for JWT verification.
 	// It handles algorithm verification and key selection.
@@ -105,8 +100,11 @@ func makeCfg(config []Config) (cfg Config) {
 	}
 	if cfg.ErrorHandler == nil {
 		cfg.ErrorHandler = func(c fiber.Ctx, err error) error {
-			if err.Error() == ErrJWTMissingOrMalformed.Error() {
-				return c.Status(fiber.StatusBadRequest).SendString(ErrJWTMissingOrMalformed.Error())
+			if errors.Is(err, extractors.ErrNotFound) {
+				return c.Status(fiber.StatusBadRequest).SendString(ErrMissingToken.Error())
+			}
+			if e, ok := err.(*fiber.Error); ok {
+				return c.Status(e.Code).SendString(e.Message)
 			}
 			return c.Status(fiber.StatusUnauthorized).SendString("Invalid or expired JWT")
 		}
@@ -114,15 +112,29 @@ func makeCfg(config []Config) (cfg Config) {
 	if cfg.SigningKey.Key == nil && len(cfg.SigningKeys) == 0 && len(cfg.JWKSetURLs) == 0 && cfg.KeyFunc == nil {
 		panic("Fiber: JWT middleware configuration: At least one of the following is required: KeyFunc, JWKSetURLs, SigningKeys, or SigningKey.")
 	}
+	if len(cfg.SigningKeys) > 0 {
+		for _, key := range cfg.SigningKeys {
+			if key.Key == nil {
+				panic("Fiber: JWT middleware configuration: SigningKey.Key cannot be nil")
+			}
+		}
+	}
+	if len(cfg.JWKSetURLs) > 0 {
+		for _, u := range cfg.JWKSetURLs {
+			parsed, err := url.Parse(u)
+			if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+				panic("Fiber: JWT middleware configuration: Invalid JWK Set URL (must be absolute http/https): " + u)
+			}
+			if parsed.Scheme != "https" && parsed.Scheme != "http" {
+				panic("Fiber: JWT middleware configuration: Unsupported JWK Set URL scheme: " + parsed.Scheme)
+			}
+		}
+	}
 	if cfg.Claims == nil {
 		cfg.Claims = jwt.MapClaims{}
 	}
-	if cfg.TokenLookup == "" {
-		cfg.TokenLookup = defaultTokenLookup
-		// set AuthScheme as "Bearer" only if TokenLookup is set to default.
-		if cfg.AuthScheme == "" {
-			cfg.AuthScheme = "Bearer"
-		}
+	if cfg.Extractor.Extract == nil {
+		cfg.Extractor = extractors.FromAuthHeader("Bearer")
 	}
 
 	if cfg.KeyFunc == nil {
@@ -180,29 +192,6 @@ func keyfuncOptions(givenKeys map[string]keyfunc.GivenKey) keyfunc.Options {
 		RefreshTimeout:    time.Second * 10,
 		RefreshUnknownKID: true,
 	}
-}
-
-// getExtractors function will create a slice of functions which will be used
-// for token sarch  and will perform extraction of the value
-func (cfg *Config) getExtractors() []jwtExtractor {
-	// Initialize
-	extractors := make([]jwtExtractor, 0)
-	rootParts := strings.Split(cfg.TokenLookup, ",")
-	for _, rootPart := range rootParts {
-		parts := strings.Split(strings.TrimSpace(rootPart), ":")
-
-		switch parts[0] {
-		case "header":
-			extractors = append(extractors, jwtFromHeader(parts[1], cfg.AuthScheme))
-		case "query":
-			extractors = append(extractors, jwtFromQuery(parts[1]))
-		case "param":
-			extractors = append(extractors, jwtFromParam(parts[1]))
-		case "cookie":
-			extractors = append(extractors, jwtFromCookie(parts[1]))
-		}
-	}
-	return extractors
 }
 
 func signingKeyFunc(key SigningKey) jwt.Keyfunc {
