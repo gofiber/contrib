@@ -41,7 +41,7 @@ fiberzerolog.New(config ...fiberzerolog.Config) fiber.Handler
 | Messages      | `[]string`                     | Custom response messages.                                                                                                                                                                                                                                                                   | `[]string{"Server error", "Client error", "Success"}`                       |
 | Levels        | `[]zerolog.Level`              | Custom response levels.                                                                                                                                                                                                                                                                     | `[]zerolog.Level{zerolog.ErrorLevel, zerolog.WarnLevel, zerolog.InfoLevel}` |
 | SkipURIs      | `[]string`                     | Skip logging these URI.                                                                                                                                                                                                                                                                     | `[]string{}`                                                                |
-| GetResBody    | func(c fiber.Ctx) []byte      | Define a function to get response body when return non-nil.<br />eg: When use compress middleware, resBody is unreadable. you can set GetResBody func to get readable resBody.                                                                                                              | `nil` |
+| GetResBody    | `func(c fiber.Ctx) []byte`      | Define a function to get response body when return non-nil.<br />eg: When use compress middleware, resBody is unreadable. you can set GetResBody func to get readable resBody.                                                                                                              | `nil` |
 
 ## Example
 
@@ -62,7 +62,7 @@ func main() {
         Logger: &logger,
     }))
 
-    app.Get("/", func (c fiber.Ctx) error {
+    app.Get("/", func(c fiber.Ctx) error {
         return c.SendString("Hello, World!")
     })
 

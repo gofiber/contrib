@@ -39,7 +39,7 @@ fiberzap.New(config ...fiberzap.Config) fiber.Handler
 | Messages   | `[]string`                 | Custom response messages.                                                                                                                                                      | `[]string{"Server error", "Client error", "Success"}`                       |
 | Levels     | `[]zapcore.Level`          | Custom response levels.                                                                                                                                                        | `[]zapcore.Level{zapcore.ErrorLevel, zapcore.WarnLevel, zapcore.InfoLevel}` |
 | SkipURIs   | `[]string`                 | Skip logging these URI.                                                                                                                                                        | `[]string{}`                                                                |
-| GetResBody | func(c \fiber.Ctx) []byte | Define a function to get response body when return non-nil.<br />eg: When use compress middleware, resBody is unreadable. you can set GetResBody func to get readable resBody. | `nil`                                                                       |
+| GetResBody | `func(c fiber.Ctx) []byte` | Define a function to get response body when return non-nil.<br />eg: When use compress middleware, resBody is unreadable. you can set GetResBody func to get readable resBody. | `nil`                                                                       |
 
 ### Example
 
@@ -63,7 +63,7 @@ func main() {
         Logger: logger,
     }))
 
-    app.Get("/", func (c fiber.Ctx) error {
+    app.Get("/", func(c fiber.Ctx) error {
         return c.SendString("Hello, World!")
     })
 
@@ -94,10 +94,10 @@ fiberzap.NewLogger(config ...fiberzap.LoggerConfig) *fiberzap.LoggerConfig
 package main
 
 import (
-	"context"
-	"github.com/gofiber/contrib/v3/fiberzap/v1"
-	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/fiber/v3/log"
+    "context"
+    "github.com/gofiber/contrib/v3/fiberzap/v1"
+    "github.com/gofiber/fiber/v3"
+    "github.com/gofiber/fiber/v3/log"
 )
 
 func main() {
