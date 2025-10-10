@@ -163,7 +163,7 @@ func Middleware(opts ...Option) fiber.Handler {
 				httpServerResponseSize.Record(savedCtx, responseSize, metric.WithAttributes(responseMetricAttrs...))
 			}
 
-			// TODO: SetUserContext was removed, please migrate manually: c.SetContext(savedCtx)
+			c.SetContext(savedCtx)
 			cancel()
 		}()
 
