@@ -110,9 +110,11 @@ func Middleware(opts ...Option) fiber.Handler {
 		copy(responseMetricAttrs, requestMetricsAttrs)
 
 		reqHeader := make(http.Header)
-		c.Request().Header.VisitAll(func(k, v []byte) {
-			reqHeader.Add(string(k), string(v))
-		})
+		for header, values := range c.GetReqHeaders() {
+			for _, value := range values {
+				reqHeader.Add(header, value)
+			}
+		}
 
 		ctx := cfg.Propagators.Extract(savedCtx, propagation.HeaderCarrier(reqHeader))
 

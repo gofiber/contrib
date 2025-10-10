@@ -209,14 +209,18 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 			}
 			if c.WrapHeaders {
 				dict := zerolog.Dict()
-				fc.Request().Header.VisitAll(func(k, v []byte) {
-					dict.Bytes(string(k), v)
-				})
+				for header, values := range fc.GetReqHeaders() {
+					for _, value := range values {
+						dict.Bytes(header, []byte(value))
+					}
+				}
 				zc = zc.Dict(field, dict)
 			} else {
-				fc.Request().Header.VisitAll(func(k, v []byte) {
-					zc = zc.Bytes(string(k), v)
-				})
+				for header, values := range fc.GetReqHeaders() {
+					for _, value := range values {
+						zc = zc.Bytes(header, []byte(value))
+					}
+				}
 			}
 		case FieldResHeaders:
 			if c.FieldsSnakeCase {
@@ -224,14 +228,18 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 			}
 			if c.WrapHeaders {
 				dict := zerolog.Dict()
-				fc.Response().Header.VisitAll(func(k, v []byte) {
-					dict.Bytes(string(k), v)
-				})
+				for header, values := range fc.GetRespHeaders() {
+					for _, value := range values {
+						dict.Bytes(header, []byte(value))
+					}
+				}
 				zc = zc.Dict(field, dict)
 			} else {
-				fc.Response().Header.VisitAll(func(k, v []byte) {
-					zc = zc.Bytes(string(k), v)
-				})
+				for header, values := range fc.GetRespHeaders() {
+					for _, value := range values {
+						zc = zc.Bytes(header, []byte(value))
+					}
+				}
 			}
 		}
 	}
