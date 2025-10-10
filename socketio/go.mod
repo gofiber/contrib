@@ -2,12 +2,9 @@ module github.com/gofiber/contrib/v3/socketio/v1
 
 go 1.25.0
 
-replace github.com/gofiber/contrib/v3/websocket => ../websocket
-
 require (
-	github.com/fasthttp/websocket v1.5.12
-	github.com/gofiber/contrib/v3/websocket v1.0.0
-	github.com/gofiber/fiber/v3 v3.0.0-rc.2
+        github.com/fasthttp/websocket v1.5.12
+        github.com/gofiber/fiber/v3 v3.0.0-rc.2
 	github.com/google/uuid v1.6.0
 	github.com/stretchr/testify v1.11.1
 	github.com/valyala/fasthttp v1.66.0
