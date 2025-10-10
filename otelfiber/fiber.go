@@ -129,7 +129,7 @@ func Middleware(opts ...Option) fiber.Handler {
 		defer span.End()
 
 		// pass the span through userContext
-		// TODO: SetUserContext was removed, please migrate manually: c.SetUserContext(ctx)
+		c.SetContext(ctx)
 
 		// serve the request to the next middleware
 		if err := c.Next(); err != nil {
@@ -161,7 +161,7 @@ func Middleware(opts ...Option) fiber.Handler {
 				httpServerResponseSize.Record(savedCtx, responseSize, metric.WithAttributes(responseMetricAttrs...))
 			}
 
-			// TODO: SetUserContext was removed, please migrate manually: c.SetUserContext(savedCtx)
+			// TODO: SetUserContext was removed, please migrate manually: c.SetContext(savedCtx)
 			cancel()
 		}()
 

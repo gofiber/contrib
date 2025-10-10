@@ -97,7 +97,7 @@ func New(cfg Config) fiber.Handler {
 			},
 		})
 
-		// TODO: SetUserContext was removed, please migrate manually: c.SetUserContext(newrelic.NewContext(c, txn))
+		c.SetContext(newrelic.NewContext(c.Context(), txn))
 
 		handlerErr := c.Next()
 		statusCode := c.RequestCtx().Response.StatusCode()
