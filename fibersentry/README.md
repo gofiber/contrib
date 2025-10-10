@@ -18,7 +18,7 @@ This middleware supports Fiber v3.
 
 ```
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/fibersentry
+go get -u github.com/gofiber/contrib/v3/fibersentry/v1
 go get -u github.com/getsentry/sentry-go
 ```
 
@@ -52,7 +52,7 @@ import (
 	"log"
 
 	"github.com/getsentry/sentry-go"
-	"github.com/gofiber/contrib/fibersentry"
+	"github.com/gofiber/contrib/v3/fibersentry/v1"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/utils"
 )
@@ -62,7 +62,7 @@ func main() {
 		Dsn: "",
 		BeforeSend: func(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
 			if hint.Context != nil {
-				if c, ok := hint.Context.Value(sentry.RequestContextKey).(*fiber.Ctx); ok {
+				if c, ok := hint.Context.Value(sentry.RequestContextKey).(fiber.Ctx); ok {
 					// You have access to the original Context if it panicked
 					fmt.Println(utils.ImmutableString(c.Hostname()))
 				}
@@ -81,18 +81,18 @@ func main() {
 		WaitForDelivery: true,
 	}))
 
-	enhanceSentryEvent := func(c *fiber.Ctx) error {
+	enhanceSentryEvent := func(c fiber.Ctx) error {
 		if hub := fibersentry.GetHubFromContext(c); hub != nil {
 			hub.Scope().SetTag("someRandomTag", "maybeYouNeedIt")
 		}
 		return c.Next()
 	}
 
-	app.All("/foo", enhanceSentryEvent, func(c *fiber.Ctx) error {
+	app.All("/foo", enhanceSentryEvent, func(c fiber.Ctx) error {
 		panic("y tho")
 	})
 
-	app.All("/", func(c *fiber.Ctx) error {
+	app.All("/", func(c fiber.Ctx) error {
 		if hub := fibersentry.GetHubFromContext(c); hub != nil {
 			hub.WithScope(func(scope *sentry.Scope) {
 				scope.SetExtra("unwantedQuery", "someQueryDataMaybe")
@@ -113,7 +113,7 @@ sentry.Init(sentry.ClientOptions{
 	Dsn: "your-public-dsn",
 	BeforeSend: func(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
 		if hint.Context != nil {
-			if c, ok := hint.Context.Value(sentry.RequestContextKey).(*fiber.Ctx); ok {
+			if c, ok := hint.Context.Value(sentry.RequestContextKey).(fiber.Ctx); ok {
 				// You have access to the original Context if it panicked
 				fmt.Println(c.Hostname())
 			}

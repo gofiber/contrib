@@ -32,7 +32,7 @@ go mod init github.com/<user>/<repo>
 ```
 And then install the swagger middleware:
 ```bash
-go get github.com/gofiber/contrib/swagger
+go get github.com/gofiber/contrib/v3/swagger/v1
 ```
 
 ### Examples
@@ -40,7 +40,7 @@ Import the middleware package
 ```go
 import (
   "github.com/gofiber/fiber/v3"
-  "github.com/gofiber/contrib/swagger"
+  "github.com/gofiber/contrib/v3/swagger/v1"
 )
 ```
 
@@ -101,7 +101,7 @@ type Config struct {
 	// Next defines a function to skip this middleware when returned true.
 	//
 	// Optional. Default: nil
-	Next func(c *fiber.Ctx) bool
+	Next func(c fiber.Ctx) bool
 
 	// BasePath for the UI path
 	//
@@ -147,3 +147,6 @@ var ConfigDefault = Config{
 	CacheAge: 3600, // Default to 1 hour
 }
 ```
+
+**Compatible with Fiber v3.**
+

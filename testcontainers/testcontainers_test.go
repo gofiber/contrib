@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gofiber/contrib/testcontainers"
+	"github.com/gofiber/contrib/v3/testcontainers/v1"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
 	tc "github.com/testcontainers/testcontainers-go"

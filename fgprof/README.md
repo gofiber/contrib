@@ -20,14 +20,14 @@ Using fgprof to profiling your Fiber app.
 
 ```
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/fgprof
+go get -u github.com/gofiber/contrib/v3/fgprof/v1
 ```
 
 ## Config
 
 | Property | Type                      | Description                                                                                                                                      | Default |
 |----------|---------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|---------|
-| Next     | `func(c *fiber.Ctx) bool` | A function to skip this middleware when returned `true`.                                                                                         | `nil`   |
+| Next     | `func(c fiber.Ctx) bool` | A function to skip this middleware when returned `true`.                                                                                         | `nil`   |
 | Prefix   | `string`.                 | Prefix defines a URL prefix added before "/debug/fgprof". Note that it should start with (but not end with) a slash. Example: "/federated-fiber" | `""`    |
 
 ## Example
@@ -38,14 +38,14 @@ package main
 import (
 	"log"
 
-	"github.com/gofiber/contrib/fgprof"
+	"github.com/gofiber/contrib/v3/fgprof/v1"
 	"github.com/gofiber/fiber/v3"
 )
 
 func main() {
 	app := fiber.New()
 	app.Use(fgprof.New())
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendString("OK")
 	})
 	log.Fatal(app.Listen(":3000"))

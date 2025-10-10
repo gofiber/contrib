@@ -7,8 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
-	"github.com/gofiber/contrib/otelfiber/v2"
+	"github.com/gofiber/contrib/v3/otelfiber/v1"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,7 +29,7 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
-const instrumentationName = "github.com/gofiber/contrib/otelfiber"
+const instrumentationName = "github.com/gofiber/contrib/v3/otelfiber"
 
 func TestChildSpanFromGlobalTracer(t *testing.T) {
 	sr := tracetest.NewSpanRecorder()
@@ -41,7 +42,9 @@ func TestChildSpanFromGlobalTracer(t *testing.T) {
 		return ctx.SendStatus(http.StatusNoContent)
 	})
 
-	_, _ = app.Test(httptest.NewRequest("GET", "/user/123", nil))
+	resp, err := app.Test(httptest.NewRequest("GET", "/user/123", nil))
+	require.NoError(t, err)
+	require.NotNil(t, resp)
 
 	spans := sr.Ended()
 	require.Len(t, spans, 1)
@@ -58,7 +61,9 @@ func TestChildSpanFromCustomTracer(t *testing.T) {
 		return ctx.SendStatus(http.StatusNoContent)
 	})
 
-	_, _ = app.Test(httptest.NewRequest("GET", "/user/123", nil))
+	resp, err := app.Test(httptest.NewRequest("GET", "/user/123", nil))
+	require.NoError(t, err)
+	require.NotNil(t, resp)
 
 	spans := sr.Ended()
 	require.Len(t, spans, 1)
@@ -78,7 +83,9 @@ func TestSkipWithNext(t *testing.T) {
 		return ctx.SendStatus(http.StatusNoContent)
 	})
 
-	_, _ = app.Test(httptest.NewRequest("GET", "/health", nil))
+	resp, err := app.Test(httptest.NewRequest("GET", "/health", nil))
+	require.NoError(t, err)
+	require.NotNil(t, resp)
 
 	spans := sr.Ended()
 	require.Len(t, spans, 0)
@@ -99,7 +106,9 @@ func TestTrace200(t *testing.T) {
 	})
 
 	r := httptest.NewRequest("GET", "/user/123", nil)
-	resp, _ := app.Test(r, fiber.TestConfig{Timeout: 3000})
+	resp, err := app.Test(r, fiber.TestConfig{Timeout: 3 * time.Second})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
 
 	// do and verify the request
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -132,7 +141,9 @@ func TestError(t *testing.T) {
 	app.Get("/server_err", func(ctx fiber.Ctx) error {
 		return errors.New("oh no")
 	})
-	resp, _ := app.Test(httptest.NewRequest("GET", "/server_err", nil))
+	resp, err := app.Test(httptest.NewRequest("GET", "/server_err", nil))
+	require.NoError(t, err)
+	require.NotNil(t, resp)
 	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 
 	// verify the errors and status are correct
@@ -160,7 +171,9 @@ func TestErrorOnlyHandledOnce(t *testing.T) {
 	app.Get("/", func(ctx fiber.Ctx) error {
 		return errors.New("mock error")
 	})
-	_, _ = app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+	require.NoError(t, err)
+	require.NotNil(t, resp)
 
 	assert.Equal(t, 1, timesHandlingError)
 }
@@ -174,7 +187,9 @@ func TestGetSpanNotInstrumented(t *testing.T) {
 		gotSpan = oteltrace.SpanFromContext(ctx)
 		return ctx.SendString("ok")
 	})
-	resp, _ := app.Test(httptest.NewRequest("GET", "/ping", nil))
+	resp, err := app.Test(httptest.NewRequest("GET", "/ping", nil))
+	require.NoError(t, err)
+	require.NotNil(t, resp)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	ok := !gotSpan.SpanContext().IsValid()
@@ -199,7 +214,9 @@ func TestPropagationWithGlobalPropagators(t *testing.T) {
 		return ctx.SendStatus(http.StatusNoContent)
 	})
 
-	_, _ = app.Test(r)
+	resp, err := app.Test(r)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
 
 	spans := sr.Ended()
 	require.Len(t, spans, 1)
@@ -228,7 +245,9 @@ func TestPropagationWithCustomPropagators(t *testing.T) {
 		return ctx.SendStatus(http.StatusNoContent)
 	})
 
-	_, _ = app.Test(r)
+	resp, err := app.Test(r)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
 
 	spans := sr.Ended()
 	require.Len(t, spans, 1)
@@ -292,10 +311,12 @@ func TestMetric(t *testing.T) {
 	})
 
 	r := httptest.NewRequest(http.MethodGet, route, nil)
-	_, _ = app.Test(r)
+	resp, err := app.Test(r)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
 
 	metrics := metricdata.ResourceMetrics{}
-	err := reader.Collect(context.Background(), &metrics)
+	err = reader.Collect(context.Background(), &metrics)
 	assert.NoError(t, err)
 	assert.Len(t, metrics.ScopeMetrics, 1)
 
@@ -421,7 +442,9 @@ func TestCustomAttributes(t *testing.T) {
 		return ctx.SendString(id)
 	})
 
-	resp, _ := app.Test(httptest.NewRequest("GET", "/user/123?foo=bar", nil), fiber.TestConfig{Timeout: 3000})
+	resp, err := app.Test(httptest.NewRequest("GET", "/user/123?foo=bar", nil), fiber.TestConfig{Timeout: 3 * time.Second})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
 
 	// do and verify the request
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -465,13 +488,15 @@ func TestCustomMetricAttributes(t *testing.T) {
 	})
 
 	r := httptest.NewRequest(http.MethodGet, "/foo?foo=bar", nil)
-	resp, _ := app.Test(r)
+	resp, err := app.Test(r)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
 
 	// do and verify the request
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	metrics := metricdata.ResourceMetrics{}
-	err := reader.Collect(context.Background(), &metrics)
+	err = reader.Collect(context.Background(), &metrics)
 	assert.NoError(t, err)
 	assert.Len(t, metrics.ScopeMetrics, 1)
 
@@ -505,7 +530,9 @@ func TestOutboundTracingPropagation(t *testing.T) {
 		return ctx.SendStatus(http.StatusNoContent)
 	})
 
-	resp, _ := app.Test(httptest.NewRequest("GET", "/foo", nil), fiber.TestConfig{Timeout: 3000})
+	resp, err := app.Test(httptest.NewRequest("GET", "/foo", nil), fiber.TestConfig{Timeout: 3 * time.Second})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
 
 	assert.Equal(t, "1", resp.Header.Get("X-B3-Sampled"))
 	assert.NotEmpty(t, resp.Header.Get("X-B3-SpanId"))
@@ -535,7 +562,9 @@ func TestOutboundTracingPropagationWithInboundContext(t *testing.T) {
 	req.Header.Set("X-B3-TraceId", traceId)
 	req.Header.Set("X-B3-Sampled", "1")
 
-	resp, _ := app.Test(req, fiber.TestConfig{Timeout: 3000})
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 3 * time.Second})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
 
 	assert.NotEmpty(t, resp.Header.Get("X-B3-SpanId"))
 	assert.Equal(t, traceId, resp.Header.Get("X-B3-TraceId"))
@@ -564,7 +593,9 @@ func TestCollectClientIP(t *testing.T) {
 			})
 
 			req := httptest.NewRequest("GET", "/foo", nil)
-			_, _ = app.Test(req)
+			resp, err := app.Test(req)
+			require.NoError(t, err)
+			require.NotNil(t, resp)
 
 			spans := sr.Ended()
 			require.Len(t, spans, 1)
@@ -600,10 +631,12 @@ func TestWithoutMetrics(t *testing.T) {
 	})
 
 	r := httptest.NewRequest(http.MethodGet, route, nil)
-	_, _ = app.Test(r)
+	resp, err := app.Test(r)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
 
 	metrics := metricdata.ResourceMetrics{}
-	err := reader.Collect(context.Background(), &metrics)
+	err = reader.Collect(context.Background(), &metrics)
 	assert.NoError(t, err)
 	assert.Len(t, metrics.ScopeMetrics, 0, "No metrics should be collected when metrics are disabled")
 }

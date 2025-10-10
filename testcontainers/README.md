@@ -16,6 +16,9 @@ Requires Go **1.25** and above
 
 :::
 
+**Compatible with Fiber v3.**
+
+
 ## Common Use Cases
 
 - Local development
@@ -33,7 +36,7 @@ This Service Implementation only supports Fiber **v3**.
 
 ```shell
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/testcontainers
+go get -u github.com/gofiber/contrib/v3/testcontainers/v1
 ```
 
 ## Signature
@@ -221,7 +224,7 @@ import (
 
  "github.com/gofiber/fiber/v3"
 
- "github.com/gofiber/contrib/testcontainers"
+ "github.com/gofiber/contrib/v3/testcontainers/v1"
  tc "github.com/testcontainers/testcontainers-go"
  "github.com/testcontainers/testcontainers-go/modules/redis"
 )
@@ -273,7 +276,7 @@ import (
 
  "github.com/gofiber/fiber/v3"
 
- "github.com/gofiber/contrib/testcontainers"
+ "github.com/gofiber/contrib/v3/testcontainers/v1"
  tc "github.com/testcontainers/testcontainers-go"
 )
 

@@ -3,4 +3,4 @@
 //
 // Currently, only the routing of a received message can be instrumented. To do
 // so, use the Middleware function.
-package otelfiber // import" github.com/gofiber/contrib/otelfiber"
+package otelfiber // import" github.com/gofiber/contrib/v3/otelfiber/v1"

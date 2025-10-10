@@ -1,6 +1,6 @@
-name-template: '{{FOLDER}} - v$RESOLVED_VERSION'
-tag-template: '{{FOLDER}}/v$RESOLVED_VERSION'
-tag-prefix: {{FOLDER}}/v
+name-template: 'v3/{{FOLDER}}/v1 - v$RESOLVED_VERSION'
+tag-template: 'v3/{{FOLDER}}/v$RESOLVED_VERSION'
+tag-prefix: v3/{{FOLDER}}/v
 include-paths:
   - {{FOLDER}}
 categories:
@@ -43,8 +43,10 @@ version-resolver:
             - '🧹 Updates'
     default: patch
 template: |
+    Package path: `github.com/gofiber/contrib/v3/{{FOLDER}}/v1`
+
     $CHANGES
 
-    **Full Changelog**: https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...{{FOLDER}}/v$RESOLVED_VERSION
+    **Full Changelog**: https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v3/{{FOLDER}}/v$RESOLVED_VERSION
 
     Thank you $CONTRIBUTORS for making this update possible.
