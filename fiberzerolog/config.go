@@ -210,16 +210,30 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 			if c.WrapHeaders {
 				dict := zerolog.Dict()
 				for header, values := range fc.GetReqHeaders() {
-					for _, value := range values {
-						dict.Bytes(header, []byte(value))
+					if len(values) == 0 {
+						continue
 					}
+
+					if len(values) == 1 {
+						dict.Str(header, values[0])
+						continue
+					}
+
+					dict.Strs(header, values)
 				}
 				zc = zc.Dict(field, dict)
 			} else {
 				for header, values := range fc.GetReqHeaders() {
-					for _, value := range values {
-						zc = zc.Bytes(header, []byte(value))
+					if len(values) == 0 {
+						continue
 					}
+
+					if len(values) == 1 {
+						zc = zc.Str(header, values[0])
+						continue
+					}
+
+					zc = zc.Strs(header, values)
 				}
 			}
 		case FieldResHeaders:
@@ -229,16 +243,30 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 			if c.WrapHeaders {
 				dict := zerolog.Dict()
 				for header, values := range fc.GetRespHeaders() {
-					for _, value := range values {
-						dict.Bytes(header, []byte(value))
+					if len(values) == 0 {
+						continue
 					}
+
+					if len(values) == 1 {
+						dict.Str(header, values[0])
+						continue
+					}
+
+					dict.Strs(header, values)
 				}
 				zc = zc.Dict(field, dict)
 			} else {
 				for header, values := range fc.GetRespHeaders() {
-					for _, value := range values {
-						zc = zc.Bytes(header, []byte(value))
+					if len(values) == 0 {
+						continue
 					}
+
+					if len(values) == 1 {
+						zc = zc.Str(header, values[0])
+						continue
+					}
+
+					zc = zc.Strs(header, values)
 				}
 			}
 		}

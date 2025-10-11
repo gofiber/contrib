@@ -172,9 +172,16 @@ func New(config ...Config) fiber.Handler {
 				}
 			case "reqHeaders":
 				for header, values := range c.GetReqHeaders() {
-					for _, value := range values {
-						fields = append(fields, zap.ByteString(header, []byte(value)))
+					if len(values) == 0 {
+						continue
 					}
+
+					if len(values) == 1 {
+						fields = append(fields, zap.String(header, values[0]))
+						continue
+					}
+
+					fields = append(fields, zap.Strings(header, values))
 				}
 			}
 		}
