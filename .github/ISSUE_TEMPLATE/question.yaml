@@ -31,7 +31,7 @@ body:
       value: |
         package main
 
-        import "github.com/gofiber/contrib/v3/%package%/v1"
+        import "github.com/gofiber/contrib/v3/%package%"
 
         func main() {
           // Steps to reproduce

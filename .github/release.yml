@@ -30,4 +30,4 @@ changelog:
 
     $CHANGES
 
-    > ℹ️ All modules now use the Fiber v3 import path scheme `github.com/gofiber/contrib/v3/<module>/v1`.
+    > ℹ️ All modules now use the Fiber v3 import path scheme `github.com/gofiber/contrib/v3/<module>`.
