@@ -713,7 +713,7 @@ func TestHealthHandler(t *testing.T) {
 		resp, err := app.Test(req)
 
 		require.NoError(t, err)
-		require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+		require.Equal(t, "application/json; charset=utf-8", resp.Header.Get("Content-Type"))
 	})
 
 	// Clean up

@@ -171,9 +171,18 @@ func New(config ...Config) fiber.Handler {
 					fields = append(fields, zap.String("error", chainErr.Error()))
 				}
 			case "reqHeaders":
-				c.Request().Header.VisitAll(func(k, v []byte) {
-					fields = append(fields, zap.ByteString(string(k), v))
-				})
+				for header, values := range c.GetReqHeaders() {
+					if len(values) == 0 {
+						continue
+					}
+
+					if len(values) == 1 {
+						fields = append(fields, zap.String(header, values[0]))
+						continue
+					}
+
+					fields = append(fields, zap.Strings(header, values))
+				}
 			}
 		}
 
