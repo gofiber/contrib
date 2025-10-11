@@ -1,4 +1,4 @@
-module github.com/gofiber/contrib/v3/otelfiber/v1
+module github.com/gofiber/contrib/v3/otelfiber
 
 go 1.25.0
 

@@ -1,4 +1,4 @@
-module github.com/gofiber/contrib/v3/opafiber/v1
+module github.com/gofiber/contrib/v3/opafiber
 
 go 1.25.0
 

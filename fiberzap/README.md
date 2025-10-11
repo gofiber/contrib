@@ -18,7 +18,7 @@ This middleware supports Fiber v3.
 
 ```
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/v3/fiberzap/v1
+go get -u github.com/gofiber/contrib/v3/fiberzap
 go get -u go.uber.org/zap
 ```
 
@@ -50,7 +50,7 @@ import (
     "log"
 
     "github.com/gofiber/fiber/v3"
-    "github.com/gofiber/contrib/v3/fiberzap/v1"
+    "github.com/gofiber/contrib/v3/fiberzap"
     "go.uber.org/zap"
 )
 
@@ -95,7 +95,7 @@ package main
 
 import (
     "context"
-    "github.com/gofiber/contrib/v3/fiberzap/v1"
+    "github.com/gofiber/contrib/v3/fiberzap"
     "github.com/gofiber/fiber/v3"
     "github.com/gofiber/fiber/v3/log"
 )

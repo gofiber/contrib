@@ -1,4 +1,4 @@
-module github.com/gofiber/contrib/v3/circuitbreaker/v1
+module github.com/gofiber/contrib/v3/circuitbreaker
 
 go 1.25.0
 

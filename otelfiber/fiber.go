@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/gofiber/contrib/v3/otelfiber/v1/internal"
+	"github.com/gofiber/contrib/v3/otelfiber/internal"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/utils/v2"

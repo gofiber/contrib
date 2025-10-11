@@ -18,7 +18,7 @@ This middleware supports Fiber v3.
 
 ```
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/v3/fibersentry/v1
+go get -u github.com/gofiber/contrib/v3/fibersentry
 go get -u github.com/getsentry/sentry-go
 ```
 
@@ -52,7 +52,7 @@ import (
 	"log"
 
 	"github.com/getsentry/sentry-go"
-	"github.com/gofiber/contrib/v3/fibersentry/v1"
+	"github.com/gofiber/contrib/v3/fibersentry"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/utils"
 )

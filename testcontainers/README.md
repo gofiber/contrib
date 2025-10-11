@@ -36,7 +36,7 @@ This Service Implementation only supports Fiber **v3**.
 
 ```shell
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/v3/testcontainers/v1
+go get -u github.com/gofiber/contrib/v3/testcontainers
 ```
 
 ## Signature
@@ -224,7 +224,7 @@ import (
 
  "github.com/gofiber/fiber/v3"
 
- "github.com/gofiber/contrib/v3/testcontainers/v1"
+ "github.com/gofiber/contrib/v3/testcontainers"
  tc "github.com/testcontainers/testcontainers-go"
  "github.com/testcontainers/testcontainers-go/modules/redis"
 )
@@ -276,7 +276,7 @@ import (
 
  "github.com/gofiber/fiber/v3"
 
- "github.com/gofiber/contrib/v3/testcontainers/v1"
+ "github.com/gofiber/contrib/v3/testcontainers"
  tc "github.com/testcontainers/testcontainers-go"
 )
 
