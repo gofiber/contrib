@@ -57,9 +57,9 @@ circuitbreaker.New(config ...circuitbreaker.Config) *circuitbreaker.Middleware
 | SuccessThreshold | `int` | Number of successful requests required to close the circuit | `5` |
 | HalfOpenMaxConcurrent | `int` | Max concurrent requests in half-open state | `1` |
 | IsFailure | `func(error) bool` | Custom function to determine if an error is a failure | `Status >= 500` |
-| OnOpen | `func(fiber.Ctx)` | Callback function when the circuit is opened | `503 response` |
-| OnClose | `func(fiber.Ctx)` | Callback function when the circuit is closed | `Continue request` |
-| OnHalfOpen | `func(fiber.Ctx)` | Callback function when the circuit is half-open | `429 response` |
+| OnOpen | `func(fiber.Ctx) error` | Callback function when the circuit is opened | `503 response` |
+| OnClose | `func(fiber.Ctx) error` | Callback function when the circuit is closed | `Continue request` |
+| OnHalfOpen | `func(fiber.Ctx) error` | Callback function when the circuit is half-open | `429 response` |
 
 ## Circuit Breaker Usage in Fiber (Example)
 
@@ -75,43 +75,43 @@ A **global** Circuit Breaker protects all routes.
 package main
 
 import (
-	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/contrib/v3/circuitbreaker"
+    "github.com/gofiber/fiber/v3"
+    "github.com/gofiber/contrib/v3/circuitbreaker"
 )
 
 func main() {
-	app := fiber.New()
-	
-	// Create a new Circuit Breaker with custom configuration
-	cb := circuitbreaker.New(circuitbreaker.Config{
-		FailureThreshold: 3,               // Max failures before opening the circuit
-		Timeout:          5 * time.Second, // Wait time before retrying
-		SuccessThreshold: 2,               // Required successes to move back to closed state
-	})
+    app := fiber.New()
+    
+    // Create a new Circuit Breaker with custom configuration
+    cb := circuitbreaker.New(circuitbreaker.Config{
+        FailureThreshold: 3,               // Max failures before opening the circuit
+        Timeout:          5 * time.Second, // Wait time before retrying
+        SuccessThreshold: 2,               // Required successes to move back to closed state
+    })
 
-	// Apply Circuit Breaker to ALL routes
-	app.Use(circuitbreaker.Middleware(cb))
+    // Apply Circuit Breaker to ALL routes
+    app.Use(circuitbreaker.Middleware(cb))
 
-	// Sample Route
-	app.Get("/", func(c fiber.Ctx) error {
-		return c.SendString("Hello, world!")
-	})
+    // Sample Route
+    app.Get("/", func(c fiber.Ctx) error {
+        return c.SendString("Hello, world!")
+    })
 
-	// Optional: Expose health check endpoint
-	app.Get("/health/circuit", cb.HealthHandler())
+    // Optional: Expose health check endpoint
+    app.Get("/health/circuit", cb.HealthHandler())
 
-	// Optional: Expose metrics about the circuit breaker:
-	app.Get("/metrics/circuit", func(c fiber.Ctx) error {
-  		return c.JSON(cb.GetStateStats())
-	})
+    // Optional: Expose metrics about the circuit breaker:
+    app.Get("/metrics/circuit", func(c fiber.Ctx) error {
+          return c.JSON(cb.GetStateStats())
+    })
 
-	app.Listen(":3000")
+    app.Listen(":3000")
 
-	// In your application shutdown logic
-	app.Shutdown(func() {
-		// Make sure to stop the circuit breaker when your application shuts down:
-		cb.Stop()
-	})
+    // In your application shutdown logic
+    app.Shutdown(func() {
+        // Make sure to stop the circuit breaker when your application shuts down:
+        cb.Stop()
+    })
 }
 ```
 
@@ -121,7 +121,7 @@ Apply the Circuit Breaker **only to specific routes**.
 
 ```go
 app.Get("/protected", circuitbreaker.Middleware(cb), func(c fiber.Ctx) error {
-	return c.SendString("Protected service running")
+    return c.SendString("Protected service running")
 })
 ```
 Apply the Circuit Breaker **only to specific routes groups**.
@@ -141,25 +141,25 @@ Customize the response when the circuit **opens**.
 
 ```go
 cb := circuitbreaker.New(circuitbreaker.Config{
-	FailureThreshold: 3,
-	Timeout:   10 * time.Second,
-	OnOpen: func(c fiber.Ctx) error {
-		return c.Status(fiber.StatusServiceUnavailable).
-			JSON(fiber.Map{"error": "Circuit Open: Service unavailable"})
-	},
-	OnHalfOpen: func(c fiber.Ctx) error {
-		return c.Status(fiber.StatusTooManyRequests).
-			JSON(fiber.Map{"error": "Circuit Half-Open: Retrying service"})
-	},
-	OnClose: func(c fiber.Ctx) error {
-		return c.Status(fiber.StatusOK).
-			JSON(fiber.Map{"message": "Circuit Closed: Service recovered"})
-	},
+    FailureThreshold: 3,
+    Timeout:   10 * time.Second,
+    OnOpen: func(c fiber.Ctx) error {
+        return c.Status(fiber.StatusServiceUnavailable).
+            JSON(fiber.Map{"error": "Circuit Open: Service unavailable"})
+    },
+    OnHalfOpen: func(c fiber.Ctx) error {
+        return c.Status(fiber.StatusTooManyRequests).
+            JSON(fiber.Map{"error": "Circuit Half-Open: Retrying service"})
+    },
+    OnClose: func(c fiber.Ctx) error {
+        return c.Status(fiber.StatusOK).
+            JSON(fiber.Map{"message": "Circuit Closed: Service recovered"})
+    },
 })
 
 // Apply to a specific route
 app.Get("/custom", circuitbreaker.Middleware(cb), func(c fiber.Ctx) error {
-	return c.SendString("This service is protected by a Circuit Breaker")
+    return c.SendString("This service is protected by a Circuit Breaker")
 })
 ```
 
@@ -172,12 +172,12 @@ Use a Circuit Breaker **when calling an external API.**
 ```go
 
 app.Get("/external-api", circuitbreaker.Middleware(cb), func(c fiber.Ctx) error {
-	// Simulating an external API call
-	resp, err := fiber.Get("https://example.com/api")
-	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "External API failed")
-	}
-	return c.SendString(resp.Body())
+    // Simulating an external API call
+    resp, err := fiber.Get("https://example.com/api")
+    if err != nil {
+        return fiber.NewError(fiber.StatusInternalServerError, "External API failed")
+    }
+    return c.SendString(resp.Body())
 })
 ```
 
@@ -189,15 +189,15 @@ Use a **semaphore-based** approach to **limit concurrent requests.**
 
 ```go
 cb := circuitbreaker.New(circuitbreaker.Config{
-	FailureThreshold:  3,
-	Timeout:           5 * time.Second,
-	SuccessThreshold:  2,
-	HalfOpenSemaphore: make(chan struct{}, 2), // Allow only 2 concurrent requests
+    FailureThreshold:  3,
+    Timeout:           5 * time.Second,
+    SuccessThreshold:  2,
+    HalfOpenSemaphore: make(chan struct{}, 2), // Allow only 2 concurrent requests
 })
 
 app.Get("/half-open-limit", circuitbreaker.Middleware(cb), func(c fiber.Ctx) error {
-	time.Sleep(2 * time.Second) // Simulating slow response
-	return c.SendString("Half-Open: Limited concurrent requests")
+    time.Sleep(2 * time.Second) // Simulating slow response
+    return c.SendString("Half-Open: Limited concurrent requests")
 })
 ```
 
@@ -209,13 +209,13 @@ Integrate **Prometheus metrics** and **structured logging**.
 
 ```go
 cb := circuitbreaker.New(circuitbreaker.Config{
-	FailureThreshold: 5,
-	Timeout:   10 * time.Second,
-	OnOpen: func(c fiber.Ctx) error {
-		log.Println("Circuit Breaker Opened!")
-		prometheus.Inc("circuit_breaker_open_count")
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Service Down"})
-	},
+    FailureThreshold: 5,
+    Timeout:   10 * time.Second,
+    OnOpen: func(c fiber.Ctx) error {
+        log.Println("Circuit Breaker Opened!")
+        prometheus.Inc("circuit_breaker_open_count")
+        return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Service Down"})
+    },
 })
 ```
 
@@ -231,11 +231,11 @@ dbCB := circuitbreaker.New(circuitbreaker.Config{FailureThreshold: 5, Timeout: 1
 apiCB := circuitbreaker.New(circuitbreaker.Config{FailureThreshold: 3, Timeout: 5 * time.Second})
 
 app.Get("/db-service", circuitbreaker.Middleware(dbCB), func(c fiber.Ctx) error {
-	return c.SendString("DB service request")
+    return c.SendString("DB service request")
 })
 
 app.Get("/api-service", circuitbreaker.Middleware(apiCB), func(c fiber.Ctx) error {
-	return c.SendString("External API service request")
+    return c.SendString("External API service request")
 })
 ```
 

@@ -16,7 +16,7 @@ id: fiberzap
 
 This middleware supports Fiber v3.
 
-```
+```sh
 go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/v3/fiberzap
 go get -u go.uber.org/zap
@@ -32,7 +32,7 @@ fiberzap.New(config ...fiberzap.Config) fiber.Handler
 
 | Property   | Type                       | Description                                                                                                                                                                    | Default                                                                     |
 | :--------- | :------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------- |
-| Next       | `func(*Ctx) bool`          | Define a function to skip this middleware when returned true                                                                                                                   | `nil`                                                                       |
+| Next       | `func(fiber.Ctx) bool`          | Define a function to skip this middleware when returned true                                                                                                                   | `nil`                                                                       |
 | Logger     | `*zap.Logger`              | Add custom zap logger.                                                                                                                                                         | `zap.NewDevelopment()`                                                      |
 | Fields     | `[]string`                 | Add fields what you want see.                                                                                                                                                  | `[]string{"latency", "status", "method", "url"}`                            |
 | FieldsFunc | `[]zap.Field`              | Define a function to add custom fields.                                                                                                                                        | `nil`                                                                       |

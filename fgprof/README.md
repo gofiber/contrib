@@ -18,7 +18,7 @@ This middleware supports Fiber v3.
 
 Using fgprof to profiling your Fiber app.
 
-```
+```sh
 go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/v3/fgprof
 ```
@@ -36,19 +36,19 @@ go get -u github.com/gofiber/contrib/v3/fgprof
 package main
 
 import (
-	"log"
+    "log"
 
-	"github.com/gofiber/contrib/v3/fgprof"
-	"github.com/gofiber/fiber/v3"
+    "github.com/gofiber/contrib/v3/fgprof"
+    "github.com/gofiber/fiber/v3"
 )
 
 func main() {
-	app := fiber.New()
-	app.Use(fgprof.New())
-	app.Get("/", func(c fiber.Ctx) error {
-		return c.SendString("OK")
-	})
-	log.Fatal(app.Listen(":3000"))
+    app := fiber.New()
+    app.Use(fgprof.New())
+    app.Get("/", func(c fiber.Ctx) error {
+        return c.SendString("OK")
+    })
+    log.Fatal(app.Listen(":3000"))
 }
 ```
 

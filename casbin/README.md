@@ -15,12 +15,12 @@ Casbin middleware for Fiber.
 **Note: Requires Go 1.25 and above**
 
 ## Install
-```
+```sh
 go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/v3/casbin
 ```
 choose an adapter from [here](https://casbin.org/docs/adapters)
-```
+```sh
 go get -u github.com/casbin/xorm-adapter
 ```
 

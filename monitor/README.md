@@ -16,7 +16,7 @@ Monitor middleware for [Fiber](https://github.com/gofiber/fiber) that reports se
 
 This middleware supports Fiber v3.
 
-```
+```sh
 go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/v3/monitor
 ```
@@ -71,12 +71,12 @@ func main() {
 
 ```go
 var ConfigDefault = Config{
-	Title:      defaultTitle,
-	Refresh:    defaultRefresh,
-	FontURL:    defaultFontURL,
-	ChartJsURL: defaultChartJSURL,
-	CustomHead: defaultCustomHead,
-	APIOnly:    false,
-	Next:       nil,
+    Title:      defaultTitle,
+    Refresh:    defaultRefresh,
+    FontURL:    defaultFontURL,
+    ChartJsURL: defaultChartJSURL,
+    CustomHead: defaultCustomHead,
+    APIOnly:    false,
+    Next:       nil,
 }
 ```

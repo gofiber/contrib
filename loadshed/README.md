@@ -16,7 +16,7 @@ The LoadShed middleware for [Fiber](https://github.com/gofiber/fiber) is designe
 
 This middleware supports Fiber v3
 
-```
+```sh
 go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/v3/loadshed
 ```
@@ -144,9 +144,9 @@ LoadCriteria is an interface in the LoadShed middleware that defines the criteri
 - **Proportional Rejection Probability**:
   - **Below `LowerThreshold`**: No requests are rejected, as the system is considered under acceptable load.
   - **Between `LowerThreshold` and `UpperThreshold`**: The probability of rejecting a request increases as the CPU usage approaches the `UpperThreshold`. This is calculated using the formula:
-    ```plaintext
+```plaintext
     rejectionProbability := (cpuUsage - LowerThreshold*100) / (UpperThreshold - LowerThreshold)
-    ```
+```
   - **Above `UpperThreshold`**: All requests are rejected to prevent system overload.
 
 This mechanism ensures that the system can adaptively manage its load, maintaining stability and performance under varying traffic conditions.

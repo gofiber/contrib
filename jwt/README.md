@@ -149,10 +149,10 @@ func accessible(c fiber.Ctx) error {
 }
 
 func restricted(c fiber.Ctx) error {
-	user := jwtware.FromContext(c)
-	claims := user.Claims.(jwt.MapClaims)
-	name := claims["name"].(string)
-	return c.SendString("Welcome " + name)
+    user := jwtware.FromContext(c)
+    claims := user.Claims.(jwt.MapClaims)
+    name := claims["name"].(string)
+    return c.SendString("Welcome " + name)
 }
 
 ```
@@ -304,10 +304,10 @@ func accessible(c fiber.Ctx) error {
 }
 
 func restricted(c fiber.Ctx) error {
-	user := jwtware.FromContext(c)
-	claims := user.Claims.(jwt.MapClaims)
-	name := claims["name"].(string)
-	return c.SendString("Welcome " + name)
+    user := jwtware.FromContext(c)
+    claims := user.Claims.(jwt.MapClaims)
+    name := claims["name"].(string)
+    return c.SendString("Welcome " + name)
 }
 ```
 

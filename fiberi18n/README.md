@@ -16,7 +16,7 @@ id: fiberi18n
 
 This middleware supports Fiber v3.
 
-```
+```sh
 go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/v3/fiberi18n
 ```
@@ -48,39 +48,39 @@ go get -u github.com/gofiber/contrib/v3/fiberi18n
 package main
 
 import (
-	"log"
+    "log"
 
-	"github.com/gofiber/contrib/v3/fiberi18n"
-	"github.com/gofiber/fiber/v3"
-	"github.com/nicksnyder/go-i18n/v2/i18n"
-	"golang.org/x/text/language"
+    "github.com/gofiber/contrib/v3/fiberi18n"
+    "github.com/gofiber/fiber/v3"
+    "github.com/nicksnyder/go-i18n/v2/i18n"
+    "golang.org/x/text/language"
 )
 
 func main() {
-	app := fiber.New()
-	app.Use(
-		fiberi18n.New(&fiberi18n.Config{
-			RootPath:        "./example/localize",
-			AcceptLanguages: []language.Tag{language.Chinese, language.English},
-			DefaultLanguage: language.Chinese,
-		}),
-	)
-	app.Get("/", func(c fiber.Ctx) error {
-		localize, err := fiberi18n.Localize(c, "welcome")
-		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).SendString(err.Error())
-		}
-		return c.SendString(localize)
-	})
-	app.Get("/:name", func(ctx fiber.Ctx) error {
-		return ctx.SendString(fiberi18n.MustLocalize(ctx, &i18n.LocalizeConfig{
-			MessageID: "welcomeWithName",
-			TemplateData: map[string]string{
-				"name": ctx.Params("name"),
-			},
-		}))
-	})
-	log.Fatal(app.Listen(":3000"))
+    app := fiber.New()
+    app.Use(
+        fiberi18n.New(&fiberi18n.Config{
+            RootPath:        "./example/localize",
+            AcceptLanguages: []language.Tag{language.Chinese, language.English},
+            DefaultLanguage: language.Chinese,
+        }),
+    )
+    app.Get("/", func(c fiber.Ctx) error {
+        localize, err := fiberi18n.Localize(c, "welcome")
+        if err != nil {
+            return c.Status(fiber.StatusInternalServerError).SendString(err.Error())
+        }
+        return c.SendString(localize)
+    })
+    app.Get("/:name", func(ctx fiber.Ctx) error {
+        return ctx.SendString(fiberi18n.MustLocalize(ctx, &i18n.LocalizeConfig{
+            MessageID: "welcomeWithName",
+            TemplateData: map[string]string{
+                "name": ctx.Params("name"),
+            },
+        }))
+    })
+    log.Fatal(app.Listen(":3000"))
 }
 ```
 

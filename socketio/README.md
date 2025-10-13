@@ -17,7 +17,7 @@ WebSocket wrapper for [Fiber](https://github.com/gofiber/fiber) with events supp
 
 ## Install
 
-```
+```sh
 go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/v3/socketio
 ```
