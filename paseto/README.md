@@ -112,7 +112,6 @@ import (
 
     "github.com/gofiber/fiber/v3"
     "github.com/gofiber/fiber/v3/extractors"
-    "github.com/o1egl/paseto"
 
     pasetoware "github.com/gofiber/contrib/v3/paseto"
 )
@@ -185,14 +184,14 @@ _Response_
 
 ```json
 {
-  "token": "v2.local.eY7o9YAJ7Uqyo0JdyfHXKVARj3HgBhqIHckPgNIJOU6u489CXYL6bpOXbEtTB_nNM7nTFpcRVi7YAtJToxbxkkraHmE39pqjnBgkca-URgE-jhZGuhGu7ablmK-8tVoe5iY8mQqWFuJHAznTASUHh4AG55AMUcIALi6pEG28lAgVfw2azvnvbg4JOVZnjutcOVswd-ErsAuGtuEZkTmX7BfaLaO9ZvEX9cHahYPajuRjwU2TQrcpqITg-eYMNA1NuO8OVdnGf0mkUk6ElJUTZqhx4CSSylNXr7IlOwzTbUotEDAQTcNP7IRZI3VfpnRgnmtnZ5s.bnVsbAY"
+  "token": "<local-token>"
 }
 ```
 
 _Request a restricted resource using the token in Authorization request header._
 
 ```sh
-curl localhost:8088/api/restricted -H "Authorization: Bearer v2.local.eY7o9YAJ7Uqyo0JdyfHXKVARj3HgBhqIHckPgNIJOU6u489CXYL6bpOXbEtTB_nNM7nTFpcRVi7YAtJToxbxkkraHmE39pqjnBgkca-URgE-jhZGuhGu7ablmK-8tVoe5iY8mQqWFuJHAznTASUHh4AG55AMUcIALi6pEG28lAgVfw2azvnvbg4JOVZnjutcOVswd-ErsAuGtuEZkTmX7BfaLaO9ZvEX9cHahYPajuRjwU2TQrcpqITg-eYMNA1NuO8OVdnGf0mkUk6ElJUTZqhx4CSSylNXr7IlOwzTbUotEDAQTcNP7IRZI3VfpnRgnmtnZ5s.bnVsbA"
+curl localhost:8088/api/restricted -H "Authorization: Bearer <local-token>"
 ```
 
 _Response_
@@ -210,6 +209,7 @@ import (
     "encoding/json"
     "time"
 
+    "github.com/gofiber/fiber/v3"
     "github.com/gofiber/fiber/v3/extractors"
     "github.com/o1egl/paseto"
 
@@ -411,13 +411,13 @@ func login(c fiber.Ctx) error {
         return c.SendStatus(fiber.StatusUnauthorized)
     }
 
-    // Create token and encrypt it
-    encryptedToken, err := pasetoware.CreateToken(privateKey, user, 12*time.Hour, pasetoware.PurposePublic)
+    // Create token and sign it
+    signedToken, err := pasetoware.CreateToken(privateKey, user, 12*time.Hour, pasetoware.PurposePublic)
     if err != nil {
         return c.SendStatus(fiber.StatusInternalServerError)
     }
 
-    return c.JSON(fiber.Map{"token": encryptedToken})
+    return c.JSON(fiber.Map{"token": signedToken})
 }
 
 func accessible(c fiber.Ctx) error {
@@ -454,14 +454,14 @@ _Response_
 
 ```json
 {
-  "token": "v2.public.eyJhdWQiOiJnb2ZpYmVyLmdvcGhlcnMiLCJkYXRhIjoiam9obiIsImV4cCI6IjIwMjMtMDctMTNUMDg6NDk6MzctMDM6MDAiLCJpYXQiOiIyMDIzLTA3LTEyVDIwOjQ5OjM3LTAzOjAwIiwianRpIjoiMjIzYjM0MjQtNWNkZS00NDFhLWJiZWEtZjBjYWFhYTdiYWFlIiwibmJmIjoiMjAyMy0wNy0xMlQyMDo0OTozNy0wMzowMCIsInN1YiI6InVzZXItdG9rZW4ifWiqK_yg0eJbIs2hnup4NuBYg7v4lxh33zEhEljsH7QUaZXAdtbCPK7cN-NSfSxrw68owwgo-dOlPrD7lc5M_AU.bnVsbA"
+  "token": "<public-token>"
 }
 ```
 
 _Request a restricted resource using the token in Authorization request header._
 
 ```sh
-curl localhost:8088/api/restricted -H "Authorization: Bearer v2.public.eyJhdWQiOiJnb2ZpYmVyLmdvcGhlcnMiLCJkYXRhIjoiam9obiIsImV4cCI6IjIwMjMtMDctMTNUMDg6NDk6MzctMDM6MDAiLCJpYXQiOiIyMDIzLTA3LTEyVDIwOjQ5OjM3LTAzOjAwIiwianRpIjoiMjIzYjM0MjQtNWNkZS00NDFhLWJiZWEtZjBjYWFhYTdiYWFlIiwibmJmIjoiMjAyMy0wNy0xMlQyMDo0OTozNy0wMzowMCIsInN1YiI6InVzZXItdG9rZW4ifWiqK_yg0eJbIs2hnup4NuBYg7v4lxh33zEhEljsH7QUaZXAdtbCPK7cN-NSfSxrw68owwgo-dOlPrD7lc5M_AU.bnVsbA"
+curl localhost:8088/api/restricted -H "Authorization: Bearer <public-token>"
 ```
 
 _Response_

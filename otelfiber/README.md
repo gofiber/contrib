@@ -96,7 +96,7 @@ func main() {
     app.Get("/users/:id", func(c fiber.Ctx) error {
         id := c.Params("id")
         name := getUser(c.UserContext(), id)
-        return c.JSON(fiber.Map{"id": id, name: name})
+        return c.JSON(fiber.Map{"id": id, "name": name})
     })
 
     log.Fatal(app.Listen(":3000"))

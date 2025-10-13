@@ -69,6 +69,8 @@ OPA Fiber middleware sends the following example data to the policy engine as in
 package main
 
 import (
+    "bytes"
+
     "github.com/gofiber/fiber/v3"
     "github.com/gofiber/contrib/v3/opafiber"
 )
@@ -92,7 +94,7 @@ allow {
         DeniedStatusCode:      fiber.StatusForbidden,
         DeniedResponseMessage: "status forbidden",
         IncludeHeaders:        []string{"Authorization"},
-        InputCreationMethod:   func (ctx fiber.Ctx) (map[string]interface{}, error) {
+        InputCreationMethod:   func(ctx fiber.Ctx) (map[string]interface{}, error) {
             return map[string]interface{}{
                 "method": ctx.Method(),
                 "path": ctx.Path(),
