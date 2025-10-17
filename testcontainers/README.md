@@ -16,6 +16,9 @@ Requires Go **1.25** and above
 
 :::
 
+**Compatible with Fiber v3.**
+
+
 ## Common Use Cases
 
 - Local development

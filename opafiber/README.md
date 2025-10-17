@@ -12,11 +12,14 @@ id: opafiber
 
 **Note: Requires Go 1.25 and above**
 
+**Compatible with Fiber v3.**
+
+
 ## Install
 
-```
+```sh
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/opafiber/v2
+go get -u github.com/gofiber/contrib/opafiber/v3
 ```
 
 ## Signature
@@ -36,12 +39,12 @@ opafiber.New(config opafiber.Config) fiber.Handler
 | DeniedStatusCode      | `int`               | Http status code to return when policy denies request        | `400`                                                               |
 | DeniedResponseMessage | `string`            | Http response body text to return when policy denies request | `""`                                                                |
 | IncludeHeaders        | `[]string`          | Include headers as input to rego policy                      | -                                                                   |
-| InputCreationMethod   | `InputCreationFunc` | Use your own function to provide input for OPA               | `func defaultInput(ctx *fiber.Ctx) (map[string]interface{}, error)` |
+| InputCreationMethod   | `InputCreationFunc` | Use your own function to provide input for OPA               | `func defaultInput(ctx fiber.Ctx) (map[string]interface{}, error)` |
 
 ## Types
 
 ```go
-type InputCreationFunc func(c *fiber.Ctx) (map[string]interface{}, error)
+type InputCreationFunc func(c fiber.Ctx) (map[string]interface{}, error)
 ```
 
 ## Usage
@@ -66,42 +69,44 @@ OPA Fiber middleware sends the following example data to the policy engine as in
 package main
 
 import (
-	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/contrib/opafiber/v2"
+    "bytes"
+
+    "github.com/gofiber/fiber/v3"
+    "github.com/gofiber/contrib/opafiber/v3"
 )
 
 func main() {
-	app := fiber.New()
-	module := `
+    app := fiber.New()
+    module := `
 package example.authz
 
 default allow := false
 
 allow {
-	input.method == "GET"
+    input.method == "GET"
 }
 `
 
-	cfg := opafiber.Config{
-		RegoQuery:             "data.example.authz.allow",
-		RegoPolicy:            bytes.NewBufferString(module),
-		IncludeQueryString:    true,
-		DeniedStatusCode:      fiber.StatusForbidden,
-		DeniedResponseMessage: "status forbidden",
-		IncludeHeaders:        []string{"Authorization"},
-		InputCreationMethod:   func (ctx *fiber.Ctx) (map[string]interface{}, error) {
+    cfg := opafiber.Config{
+        RegoQuery:             "data.example.authz.allow",
+        RegoPolicy:            bytes.NewBufferString(module),
+        IncludeQueryString:    true,
+        DeniedStatusCode:      fiber.StatusForbidden,
+        DeniedResponseMessage: "status forbidden",
+        IncludeHeaders:        []string{"Authorization"},
+        InputCreationMethod:   func(ctx fiber.Ctx) (map[string]interface{}, error) {
             return map[string]interface{}{
                 "method": ctx.Method(),
                 "path": ctx.Path(),
             }, nil
         },
-	}
-	app.Use(opafiber.New(cfg))
+    }
+    app.Use(opafiber.New(cfg))
 
-	app.Get("/", func(ctx *fiber.Ctx) error {
-		return ctx.SendStatus(200)
-	})
+    app.Get("/", func(ctx fiber.Ctx) error {
+        return ctx.SendStatus(200)
+    })
 
-	app.Listen(":8080")
+    app.Listen(":8080")
 }
 ```

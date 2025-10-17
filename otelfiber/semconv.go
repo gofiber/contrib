@@ -19,7 +19,7 @@ var (
 func httpServerMetricAttributesFromRequest(c fiber.Ctx, cfg config) []attribute.KeyValue {
 	protocolAttributes := httpNetworkProtocolAttributes(c)
 	attrs := []attribute.KeyValue{
-		semconv.URLScheme(utils.CopyString(c.Protocol())),
+		semconv.URLScheme(requestScheme(c)),
 		semconv.ServerAddress(utils.CopyString(c.Hostname())),
 		semconv.HTTPRequestMethodKey.String(utils.CopyString(c.Method())),
 	}
@@ -43,7 +43,7 @@ func httpServerTraceAttributesFromRequest(c fiber.Ctx, cfg config) []attribute.K
 		// mutable so it will be unsafe to use in this middleware as it might be used after
 		// the handler returns.
 		semconv.HTTPRequestMethodKey.String(utils.CopyString(c.Method())),
-		semconv.URLScheme(utils.CopyString(c.Protocol())),
+		semconv.URLScheme(requestScheme(c)),
 		semconv.HTTPRequestBodySize(c.Request().Header.ContentLength()),
 		semconv.URLPath(string(utils.CopyBytes(c.Request().URI().Path()))),
 		semconv.URLQuery(c.Request().URI().QueryArgs().String()),
@@ -82,6 +82,15 @@ func httpNetworkProtocolAttributes(c fiber.Ctx) []attribute.KeyValue {
 		return append(httpProtocolAttributes, http11VersionAttr)
 	}
 	return append(httpProtocolAttributes, http10VersionAttr)
+}
+
+func requestScheme(c fiber.Ctx) string {
+	scheme := c.Request().URI().Scheme()
+	if len(scheme) == 0 {
+		return "http"
+	}
+
+	return utils.CopyString(string(scheme))
 }
 
 func HasBasicAuth(auth string) (string, bool) {

@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/gofiber/contrib/otelfiber/v2/internal"
+	"github.com/gofiber/contrib/otelfiber/v3/internal"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/utils/v2"
@@ -20,7 +20,7 @@ import (
 
 const (
 	tracerKey           = "gofiber-contrib-tracer-fiber"
-	instrumentationName = "github.com/gofiber/contrib/otelfiber"
+	instrumentationName = "github.com/gofiber/contrib/otelfiber/v3"
 
 	MetricNameHttpServerDuration       = "http.server.duration"
 	MetricNameHttpServerRequestSize    = "http.server.request.size"
@@ -110,9 +110,11 @@ func Middleware(opts ...Option) fiber.Handler {
 		copy(responseMetricAttrs, requestMetricsAttrs)
 
 		reqHeader := make(http.Header)
-		c.Request().Header.VisitAll(func(k, v []byte) {
-			reqHeader.Add(string(k), string(v))
-		})
+		for header, values := range c.GetReqHeaders() {
+			for _, value := range values {
+				reqHeader.Add(header, value)
+			}
+		}
 
 		ctx := cfg.Propagators.Extract(savedCtx, propagation.HeaderCarrier(reqHeader))
 
@@ -161,7 +163,7 @@ func Middleware(opts ...Option) fiber.Handler {
 				httpServerResponseSize.Record(savedCtx, responseSize, metric.WithAttributes(responseMetricAttrs...))
 			}
 
-			// TODO: SetUserContext was removed, please migrate manually: c.SetContext(savedCtx)
+			c.SetContext(savedCtx)
 			cancel()
 		}()
 
@@ -173,7 +175,7 @@ func Middleware(opts ...Option) fiber.Handler {
 
 		//Propagate tracing context as headers in outbound response
 		tracingHeaders := make(propagation.HeaderCarrier)
-		cfg.Propagators.Inject(c, tracingHeaders)
+		cfg.Propagators.Inject(c.Context(), tracingHeaders)
 		for _, headerKey := range tracingHeaders.Keys() {
 			c.Set(headerKey, tracingHeaders.Get(headerKey))
 		}

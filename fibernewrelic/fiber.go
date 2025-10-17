@@ -116,7 +116,7 @@ func New(cfg Config) fiber.Handler {
 // FromContext returns the Transaction from the context if present, and nil
 // otherwise.
 func FromContext(c fiber.Ctx) *newrelic.Transaction {
-	return newrelic.FromContext(c)
+	return newrelic.FromContext(c.Context())
 }
 
 func createTransactionName(c fiber.Ctx) string {

@@ -60,7 +60,8 @@ body:
       value: |
         package main
 
-        import "github.com/gofiber/contrib/%package%"
+        // Replace <MAJOR> with the module's current major version (omit the `/v<MAJOR>` suffix entirely for v1 modules).
+        import "github.com/gofiber/contrib/%package%/v<MAJOR>"
 
         func main() {
           // Steps to reproduce

@@ -12,11 +12,14 @@ WebSocket wrapper for [Fiber](https://github.com/gofiber/fiber) with events supp
 
 **Note: Requires Go 1.25 and above**
 
+**Compatible with Fiber v3.**
+
+
 ## Install
 
-```
+```sh
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/socketio
+go get -u github.com/gofiber/contrib/socketio/v2
 ```
 
 ## Signatures
@@ -25,7 +28,7 @@ go get -u github.com/gofiber/contrib/socketio
 // Initialize new socketio in the callback this will
 // execute a callback that expects kws *Websocket Object
 // and optional config websocket.Config
-func New(callback func(kws *Websocket), config ...websocket.Config) func(*fiber.Ctx) error
+func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.Ctx) error
 ```
 
 ```go
@@ -65,8 +68,8 @@ import (
     "fmt"
     "log"
 
-    "github.com/gofiber/contrib/socketio"
-    "github.com/gofiber/contrib/websocket"
+    "github.com/gofiber/contrib/socketio/v2"
+    "github.com/gofiber/contrib/websocket/v2"
     "github.com/gofiber/fiber/v3"
 )
 
@@ -87,7 +90,7 @@ func main() {
     app := fiber.New()
 
     // Setup the middleware to retrieve the data sent in first GET request
-    app.Use(func(c *fiber.Ctx) error {
+    app.Use(func(c fiber.Ctx) error {
         // IsWebSocketUpgrade returns true if the client
         // requested upgrade to the WebSocket protocol.
         if websocket.IsWebSocketUpgrade(c) {

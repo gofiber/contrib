@@ -16,6 +16,9 @@ Requires Go **1.25** and above
 
 :::
 
+**Compatible with Fiber v3.**
+
+
 ## Install
 
 :::caution
@@ -65,17 +68,17 @@ func main() {
         // Must set the secret key
         SecretKey: TestSecretKey,
     })
-	
+    
     app.Get("/api/", func(c fiber.Ctx) error {
         return c.JSON(fiber.Map{
             "hcaptcha_site_key": TestSiteKey,
         })
     })
-	
+    
     app.Post("/api/robots-excluded", func(c fiber.Ctx) error {
         return c.SendString("You are not a robot")
     }, captcha)
-	
+    
     log.Fatal(app.Listen(":3000"))
 }
 ```
