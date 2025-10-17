@@ -1,4 +1,4 @@
-module github.com/gofiber/contrib/fgprof/v3
+module github.com/gofiber/contrib/fgprof/v2
 
 go 1.25.0
 

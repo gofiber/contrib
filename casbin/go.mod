@@ -1,4 +1,4 @@
-module github.com/gofiber/contrib/casbin/v3
+module github.com/gofiber/contrib/casbin/v2
 
 go 1.25.0
 

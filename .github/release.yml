@@ -30,4 +30,4 @@ changelog:
 
     $CHANGES
 
-    > ℹ️ All modules now use the Fiber v3 import path scheme `github.com/gofiber/contrib/<module>/v3`.
+    > ℹ️ Each module now increments its Go module major version for Fiber v3 support. Import it via `github.com/gofiber/contrib/<module>/vN`, replacing `vN` with the new major (for example, `v2` or `v3`).

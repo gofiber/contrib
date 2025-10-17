@@ -1,4 +1,4 @@
-module github.com/gofiber/contrib/loadshed/v3
+module github.com/gofiber/contrib/loadshed/v2
 
 go 1.25.0
 

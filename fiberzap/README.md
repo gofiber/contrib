@@ -14,7 +14,7 @@ id: fiberzap
 
 ## Install
 
-This middleware supports Fiber v3.
+**Compatible with Fiber v3.**
 
 ```sh
 go get -u github.com/gofiber/fiber/v3

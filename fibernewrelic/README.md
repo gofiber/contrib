@@ -19,7 +19,7 @@ id: fibernewrelic
 
 ```sh
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/fibernewrelic/v3
+go get -u github.com/gofiber/contrib/fibernewrelic/v2
 ```
 
 ## Signature
@@ -48,7 +48,7 @@ package main
 
 import (
     "github.com/gofiber/fiber/v3"
-    "github.com/gofiber/contrib/fibernewrelic/v3"
+    "github.com/gofiber/contrib/fibernewrelic/v2"
 )
 
 func main() {
@@ -77,7 +77,7 @@ package main
 
 import (
     "github.com/gofiber/fiber/v3"
-    "github.com/gofiber/contrib/fibernewrelic/v3"
+    "github.com/gofiber/contrib/fibernewrelic/v2"
     "github.com/newrelic/go-agent/v3/newrelic"
 )
 

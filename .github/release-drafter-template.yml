@@ -1,4 +1,4 @@
-name-template: '{{FOLDER}} v3 - v$RESOLVED_VERSION'
+name-template: '{{FOLDER}} v$RESOLVED_VERSION'
 tag-template: '{{FOLDER}}/v$RESOLVED_VERSION'
 tag-prefix: {{FOLDER}}/v
 include-paths:
@@ -43,7 +43,8 @@ version-resolver:
             - '🧹 Updates'
     default: patch
 template: |
-    Package path: `github.com/gofiber/contrib/{{FOLDER}}/v3`
+    Package path: `github.com/gofiber/contrib/{{FOLDER}}/v<MAJOR>`
+    _(replace `<MAJOR>` with the major component of this release, e.g. `v2` or `v3`)_
 
     $CHANGES
 

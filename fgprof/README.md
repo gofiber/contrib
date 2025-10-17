@@ -14,13 +14,13 @@ id: fgprof
 
 ## Install
 
-This middleware supports Fiber v3.
+**Compatible with Fiber v3.**
 
 Using fgprof to profiling your Fiber app.
 
 ```sh
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/fgprof/v3
+go get -u github.com/gofiber/contrib/fgprof/v2
 ```
 
 ## Config
@@ -38,7 +38,7 @@ package main
 import (
     "log"
 
-    "github.com/gofiber/contrib/fgprof/v3"
+    "github.com/gofiber/contrib/fgprof/v2"
     "github.com/gofiber/fiber/v3"
 )
 

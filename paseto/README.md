@@ -18,11 +18,11 @@ PASETO returns a Web Token (PASETO) auth middleware.
 
 ## Install
 
-This middleware supports Fiber v3.
+**Compatible with Fiber v3.**
 
 ```sh
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/paseto/v3
+go get -u github.com/gofiber/contrib/paseto/v2
 go get -u github.com/o1egl/paseto
 ```
 
@@ -113,7 +113,7 @@ import (
     "github.com/gofiber/fiber/v3"
     "github.com/gofiber/fiber/v3/extractors"
 
-    pasetoware "github.com/gofiber/contrib/paseto/v3"
+    pasetoware "github.com/gofiber/contrib/paseto/v2"
 )
 
 const secretSymmetricKey = "symmetric-secret-key (size = 32)"
@@ -213,7 +213,7 @@ import (
     "github.com/gofiber/fiber/v3/extractors"
     "github.com/o1egl/paseto"
 
-    pasetoware "github.com/gofiber/contrib/paseto/v3"
+    pasetoware "github.com/gofiber/contrib/paseto/v2"
 )
 
 const secretSymmetricKey = "symmetric-secret-key (size = 32)"
@@ -297,7 +297,7 @@ import (
     "github.com/gofiber/fiber/v3"
     "github.com/gofiber/fiber/v3/extractors"
 
-    pasetoware "github.com/gofiber/contrib/paseto/v3"
+    pasetoware "github.com/gofiber/contrib/paseto/v2"
 )
 
 const secretSymmetricKey = "symmetric-secret-key (size = 32)"
@@ -328,7 +328,7 @@ import (
     "github.com/gofiber/fiber/v3"
     "github.com/gofiber/fiber/v3/extractors"
 
-    pasetoware "github.com/gofiber/contrib/paseto/v3"
+    pasetoware "github.com/gofiber/contrib/paseto/v2"
 )
 
 const secretSymmetricKey = "symmetric-secret-key (size = 32)"
@@ -363,7 +363,7 @@ import (
     "github.com/gofiber/fiber/v3"
     "github.com/gofiber/fiber/v3/extractors"
 
-    pasetoware "github.com/gofiber/contrib/paseto/v3"
+    pasetoware "github.com/gofiber/contrib/paseto/v2"
 )
 
 const privateKeySeed = "e9c67fe2433aa4110caf029eba70df2c822cad226b6300ead3dcae443ac3810f"

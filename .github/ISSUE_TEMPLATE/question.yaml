@@ -31,7 +31,8 @@ body:
       value: |
         package main
 
-        import "github.com/gofiber/contrib/%package%/v3"
+        // Replace <MAJOR> with the module's current major version (for example, v2 or v3).
+        import "github.com/gofiber/contrib/%package%/v<MAJOR>"
 
         func main() {
           // Steps to reproduce

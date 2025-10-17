@@ -1,4 +1,4 @@
-module github.com/gofiber/contrib/fibernewrelic/v3
+module github.com/gofiber/contrib/fibernewrelic/v2
 
 go 1.25.0
 

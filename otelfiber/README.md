@@ -16,7 +16,7 @@ Can be found on [OpenTelemetry Registry](https://opentelemetry.io/registry/instr
 
 ## Install
 
-This middleware supports Fiber v3.
+**Compatible with Fiber v3.**
 
 ```sh
 go get -u github.com/gofiber/contrib/otelfiber/v3

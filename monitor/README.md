@@ -14,11 +14,11 @@ Monitor middleware for [Fiber](https://github.com/gofiber/fiber) that reports se
 
 ## Install
 
-This middleware supports Fiber v3.
+**Compatible with Fiber v3.**
 
 ```sh
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/monitor/v3
+go get -u github.com/gofiber/contrib/monitor/v2
 ```
 
 ### Signature
@@ -48,7 +48,7 @@ import (
     "log"
 
     "github.com/gofiber/fiber/v3"
-    "github.com/gofiber/contrib/monitor/v3"
+    "github.com/gofiber/contrib/monitor/v2"
 )
 
 func main() {
