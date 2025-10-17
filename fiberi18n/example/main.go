@@ -3,7 +3,7 @@ package main
 import (
 	"log"
 
-	"github.com/gofiber/contrib/v3/fiberi18n"
+	"github.com/gofiber/contrib/fiberi18n/v3"
 	"github.com/gofiber/fiber/v3"
 	"github.com/nicksnyder/go-i18n/v2/i18n"
 	"golang.org/x/text/language"

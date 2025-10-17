@@ -29,7 +29,7 @@ This middleware only supports Fiber **v3**.
 
 ```shell
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/v3/hcaptcha
+go get -u github.com/gofiber/contrib/hcaptcha/v3
 ```
 
 ## Signature
@@ -52,7 +52,7 @@ hcaptcha.New(config hcaptcha.Config) fiber.Handler
 package main
 
 import (
-    "github.com/gofiber/contrib/v3/hcaptcha"
+    "github.com/gofiber/contrib/hcaptcha/v3"
     "github.com/gofiber/fiber/v3"
     "log"
 )

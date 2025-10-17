@@ -19,7 +19,7 @@ id: opafiber
 
 ```sh
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/v3/opafiber
+go get -u github.com/gofiber/contrib/opafiber/v3
 ```
 
 ## Signature
@@ -72,7 +72,7 @@ import (
     "bytes"
 
     "github.com/gofiber/fiber/v3"
-    "github.com/gofiber/contrib/v3/opafiber"
+    "github.com/gofiber/contrib/opafiber/v3"
 )
 
 func main() {

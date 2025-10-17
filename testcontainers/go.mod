@@ -1,4 +1,4 @@
-module github.com/gofiber/contrib/v3/testcontainers
+module github.com/gofiber/contrib/testcontainers/v3
 
 go 1.25.0
 

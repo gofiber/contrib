@@ -23,7 +23,7 @@ This middleware supports Fiber v3, install accordingly.
 
 ```bash
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/v3/jwt
+go get -u github.com/gofiber/contrib/jwt/v3
 go get -u github.com/golang-jwt/jwt/v5
 ```
 
@@ -91,7 +91,7 @@ import (
  "github.com/gofiber/fiber/v3"
  "github.com/gofiber/fiber/v3/extractors"
 
- jwtware "github.com/gofiber/contrib/v3/jwt"
+ jwtware "github.com/gofiber/contrib/jwt/v3"
  "github.com/golang-jwt/jwt/v5"
 )
 
@@ -165,7 +165,7 @@ package main
 import (
  "github.com/gofiber/fiber/v3"
 
- jwtware "github.com/gofiber/contrib/v3/jwt"
+ jwtware "github.com/gofiber/contrib/jwt/v3"
 )
 
 func main() {
@@ -228,7 +228,7 @@ import (
 
  "github.com/golang-jwt/jwt/v5"
 
- jwtware "github.com/gofiber/contrib/v3/jwt"
+ jwtware "github.com/gofiber/contrib/jwt/v3"
 )
 
 var (
@@ -338,7 +338,7 @@ import (
  "fmt"
   "github.com/gofiber/fiber/v3"
 
-  jwtware "github.com/gofiber/contrib/v3/jwt"
+  jwtware "github.com/gofiber/contrib/jwt/v3"
   "github.com/golang-jwt/jwt/v5"
 )
 

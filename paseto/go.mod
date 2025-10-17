@@ -1,4 +1,4 @@
-module github.com/gofiber/contrib/v3/paseto
+module github.com/gofiber/contrib/paseto/v3
 
 go 1.25.0
 

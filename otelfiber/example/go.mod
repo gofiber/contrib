@@ -1,11 +1,11 @@
-module github.com/gofiber/contrib/otelfiber/example
+module github.com/gofiber/contrib/otelfiber/v3/example
 
 go 1.25.0
 
-replace github.com/gofiber/contrib/v3/otelfiber => ../
+replace github.com/gofiber/contrib/otelfiber/v3 => ../
 
 require (
-	github.com/gofiber/contrib/v3/otelfiber v1.0.0
+	github.com/gofiber/contrib/otelfiber/v3 v1.0.0
 	github.com/gofiber/fiber/v3 v3.0.0-rc.2
 	go.opentelemetry.io/otel v1.37.0
 	go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.37.0

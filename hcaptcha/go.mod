@@ -1,4 +1,4 @@
-module github.com/gofiber/contrib/v3/hcaptcha
+module github.com/gofiber/contrib/hcaptcha/v3
 
 go 1.25.0
 

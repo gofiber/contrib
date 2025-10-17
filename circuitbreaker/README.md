@@ -39,7 +39,7 @@ A **Circuit Breaker** is a software design pattern used to prevent system failur
 
 ```bash
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/v3/circuitbreaker
+go get -u github.com/gofiber/contrib/circuitbreaker/v3
 ```
 
 ## Signature
@@ -76,7 +76,7 @@ package main
 
 import (
     "github.com/gofiber/fiber/v3"
-    "github.com/gofiber/contrib/v3/circuitbreaker"
+    "github.com/gofiber/contrib/circuitbreaker/v3"
 )
 
 func main() {

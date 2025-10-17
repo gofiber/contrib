@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/gofiber/contrib/v3/otelfiber/internal"
+	"github.com/gofiber/contrib/otelfiber/v3/internal"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/utils/v2"
@@ -20,7 +20,7 @@ import (
 
 const (
 	tracerKey           = "gofiber-contrib-tracer-fiber"
-	instrumentationName = "github.com/gofiber/contrib/v3/otelfiber"
+	instrumentationName = "github.com/gofiber/contrib/otelfiber/v3"
 
 	MetricNameHttpServerDuration       = "http.server.duration"
 	MetricNameHttpServerRequestSize    = "http.server.request.size"

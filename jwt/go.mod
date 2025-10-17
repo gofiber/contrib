@@ -1,4 +1,4 @@
-module github.com/gofiber/contrib/v3/jwt
+module github.com/gofiber/contrib/jwt/v3
 
 go 1.25.0
 

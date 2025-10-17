@@ -1,4 +1,4 @@
-module github.com/gofiber/contrib/v3/monitor
+module github.com/gofiber/contrib/monitor/v3
 
 go 1.25.0
 

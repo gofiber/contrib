@@ -1,4 +1,4 @@
-module github.com/gofiber/contrib/v3/websocket
+module github.com/gofiber/contrib/websocket/v3
 
 go 1.25.0
 
