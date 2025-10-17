@@ -76,7 +76,7 @@ func New(config ...Config) fiber.Handler {
 	//nolint:errcheck // Ignore the type-assertion errors
 	return func(c fiber.Ctx) error {
 		// Don't execute middleware if Next returns true
-		if cfg.Next != nil && cfg.Next(&c) {
+		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
 		}
 

@@ -344,10 +344,6 @@ func TestWebSocketFormatCloseMessage(t *testing.T) {
 func TestWebsocketRecoverDefaultHandlerShouldNotPanic(t *testing.T) {
 	app := setupTestApp(Config{}, func(c *Conn) {
 		panic("test panic")
-
-		c.WriteJSON(fiber.Map{
-			"message": "hello websocket",
-		})
 	})
 	defer app.Shutdown()
 
@@ -372,10 +368,6 @@ func TestWebsocketRecoverCustomHandlerShouldNotPanic(t *testing.T) {
 		},
 	}, func(c *Conn) {
 		panic("test panic")
-
-		c.WriteJSON(fiber.Map{
-			"message": "hello websocket",
-		})
 	})
 	defer app.Shutdown()
 

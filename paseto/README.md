@@ -18,11 +18,11 @@ PASETO returns a Web Token (PASETO) auth middleware.
 
 ## Install
 
-This middleware supports Fiber v3.
+**Compatible with Fiber v3.**
 
-```
+```sh
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/paseto
+go get -u github.com/gofiber/contrib/paseto/v2
 go get -u github.com/o1egl/paseto
 ```
 
@@ -86,14 +86,14 @@ If you were previously using `TokenPrefix`, you can now use `extractors.FromAuth
 ```go
 // Old way
 pasetoware.New(pasetoware.Config{
-	SymmetricKey: []byte("secret"),
-	TokenPrefix:  "Bearer",
+    SymmetricKey: []byte("secret"),
+    TokenPrefix:  "Bearer",
 })
 
 // New way
 pasetoware.New(pasetoware.Config{
-	SymmetricKey: []byte("secret"),
-	Extractor:    extractors.FromAuthHeader("Bearer"),
+    SymmetricKey: []byte("secret"),
+    Extractor:    extractors.FromAuthHeader("Bearer"),
 })
 ```
 
@@ -108,67 +108,66 @@ that doesn't show here, please take a look at the test file.
 package main
 
 import (
-	"time"
+    "time"
 
-	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/fiber/v3/extractors"
-	"github.com/o1egl/paseto"
+    "github.com/gofiber/fiber/v3"
+    "github.com/gofiber/fiber/v3/extractors"
 
-	pasetoware "github.com/gofiber/contrib/paseto"
+    pasetoware "github.com/gofiber/contrib/paseto/v2"
 )
 
 const secretSymmetricKey = "symmetric-secret-key (size = 32)"
 
 func main() {
 
-	app := fiber.New()
+    app := fiber.New()
 
-	// Login route
-	app.Post("/login", login)
+    // Login route
+    app.Post("/login", login)
 
-	// Unauthenticated route
-	app.Get("/", accessible)
+    // Unauthenticated route
+    app.Get("/", accessible)
 
-	// Paseto Middleware with local (encrypted) token
-	apiGroup := app.Group("api", pasetoware.New(pasetoware.Config{
-		SymmetricKey: []byte(secretSymmetricKey),
-		Extractor:    extractors.FromAuthHeader("Bearer"),
-	}))
+    // Paseto Middleware with local (encrypted) token
+    apiGroup := app.Group("api", pasetoware.New(pasetoware.Config{
+        SymmetricKey: []byte(secretSymmetricKey),
+        Extractor:    extractors.FromAuthHeader("Bearer"),
+    }))
 
-	// Restricted Routes
-	apiGroup.Get("/restricted", restricted)
+    // Restricted Routes
+    apiGroup.Get("/restricted", restricted)
 
-	err := app.Listen(":8088")
-	if err != nil {
-		return
-	}
+    err := app.Listen(":8088")
+    if err != nil {
+        return
+    }
 }
 
 func login(c fiber.Ctx) error {
-	user := c.FormValue("user")
-	pass := c.FormValue("pass")
+    user := c.FormValue("user")
+    pass := c.FormValue("pass")
 
-	// Throws Unauthorized error
-	if user != "john" || pass != "doe" {
-		return c.SendStatus(fiber.StatusUnauthorized)
-	}
+    // Throws Unauthorized error
+    if user != "john" || pass != "doe" {
+        return c.SendStatus(fiber.StatusUnauthorized)
+    }
 
-	// Create token and encrypt it
-	encryptedToken, err := pasetoware.CreateToken([]byte(secretSymmetricKey), user, 12*time.Hour, pasetoware.PurposeLocal)
-	if err != nil {
-		return c.SendStatus(fiber.StatusInternalServerError)
-	}
+    // Create token and encrypt it
+    encryptedToken, err := pasetoware.CreateToken([]byte(secretSymmetricKey), user, 12*time.Hour, pasetoware.PurposeLocal)
+    if err != nil {
+        return c.SendStatus(fiber.StatusInternalServerError)
+    }
 
-	return c.JSON(fiber.Map{"token": encryptedToken})
+    return c.JSON(fiber.Map{"token": encryptedToken})
 }
 
 func accessible(c fiber.Ctx) error {
-	return c.SendString("Accessible")
+    return c.SendString("Accessible")
 }
 
 func restricted(c fiber.Ctx) error {
-	payload := pasetoware.FromContext(c).(string)
-	return c.SendString("Welcome " + payload)
+    payload := pasetoware.FromContext(c).(string)
+    return c.SendString("Welcome " + payload)
 }
 
 ```
@@ -177,7 +176,7 @@ func restricted(c fiber.Ctx) error {
 
 _Login using username and password to retrieve a token._
 
-```
+```sh
 curl --data "user=john&pass=doe" http://localhost:8088/login
 ```
 
@@ -185,19 +184,19 @@ _Response_
 
 ```json
 {
-  "token": "v2.local.eY7o9YAJ7Uqyo0JdyfHXKVARj3HgBhqIHckPgNIJOU6u489CXYL6bpOXbEtTB_nNM7nTFpcRVi7YAtJToxbxkkraHmE39pqjnBgkca-URgE-jhZGuhGu7ablmK-8tVoe5iY8mQqWFuJHAznTASUHh4AG55AMUcIALi6pEG28lAgVfw2azvnvbg4JOVZnjutcOVswd-ErsAuGtuEZkTmX7BfaLaO9ZvEX9cHahYPajuRjwU2TQrcpqITg-eYMNA1NuO8OVdnGf0mkUk6ElJUTZqhx4CSSylNXr7IlOwzTbUotEDAQTcNP7IRZI3VfpnRgnmtnZ5s.bnVsbAY"
+  "token": "<local-token>"
 }
 ```
 
 _Request a restricted resource using the token in Authorization request header._
 
-```
-curl localhost:8088/api/restricted -H "Authorization: Bearer v2.local.eY7o9YAJ7Uqyo0JdyfHXKVARj3HgBhqIHckPgNIJOU6u489CXYL6bpOXbEtTB_nNM7nTFpcRVi7YAtJToxbxkkraHmE39pqjnBgkca-URgE-jhZGuhGu7ablmK-8tVoe5iY8mQqWFuJHAznTASUHh4AG55AMUcIALi6pEG28lAgVfw2azvnvbg4JOVZnjutcOVswd-ErsAuGtuEZkTmX7BfaLaO9ZvEX9cHahYPajuRjwU2TQrcpqITg-eYMNA1NuO8OVdnGf0mkUk6ElJUTZqhx4CSSylNXr7IlOwzTbUotEDAQTcNP7IRZI3VfpnRgnmtnZ5s.bnVsbA"
+```sh
+curl localhost:8088/api/restricted -H "Authorization: Bearer <local-token>"
 ```
 
 _Response_
 
-```
+```text
 Welcome john
 ```
 
@@ -207,83 +206,84 @@ Welcome john
 package main
 
 import (
-	"encoding/json"
-	"time"
+    "encoding/json"
+    "time"
 
-	"github.com/gofiber/fiber/v3/extractors"
-	"github.com/o1egl/paseto"
+    "github.com/gofiber/fiber/v3"
+    "github.com/gofiber/fiber/v3/extractors"
+    "github.com/o1egl/paseto"
 
-	pasetoware "github.com/gofiber/contrib/paseto"
+    pasetoware "github.com/gofiber/contrib/paseto/v2"
 )
 
 const secretSymmetricKey = "symmetric-secret-key (size = 32)"
 
 type customPayloadStruct struct {
-	Name      string    `json:"name"`
-	ExpiresAt time.Time `json:"expiresAt"`
+    Name      string    `json:"name"`
+    ExpiresAt time.Time `json:"expiresAt"`
 }
 
 func main() {
 
-	app := fiber.New()
+    app := fiber.New()
 
-	// Login route
-	app.Post("/login", login)
+    // Login route
+    app.Post("/login", login)
 
-	// Unauthenticated route
-	app.Get("/", accessible)
+    // Unauthenticated route
+    app.Get("/", accessible)
 
-	// Paseto Middleware with local (encrypted) token
-	apiGroup := app.Group("api", pasetoware.New(pasetoware.Config{
-		SymmetricKey: []byte(secretSymmetricKey),
-		Extractor:    extractors.FromAuthHeader("Bearer"),
-		Validate: func(decrypted []byte) (any, error) {
-			var payload customPayloadStruct
-			err := json.Unmarshal(decrypted, &payload)
-			return payload, err
-		},
-	}))
+    // Paseto Middleware with local (encrypted) token
+    apiGroup := app.Group("api", pasetoware.New(pasetoware.Config{
+        SymmetricKey: []byte(secretSymmetricKey),
+        Extractor:    extractors.FromAuthHeader("Bearer"),
+        Validate: func(decrypted []byte) (any, error) {
+            var payload customPayloadStruct
+            err := json.Unmarshal(decrypted, &payload)
+            return payload, err
+        },
+    }))
 
-	// Restricted Routes
-	apiGroup.Get("/restricted", restricted)
+    // Restricted Routes
+    apiGroup.Get("/restricted", restricted)
 
-	err := app.Listen(":8088")
-	if err != nil {
-		return
-	}
+    err := app.Listen(":8088")
+    if err != nil {
+        return
+    }
 }
 
 func login(c fiber.Ctx) error {
-	user := c.FormValue("user")
-	pass := c.FormValue("pass")
+    user := c.FormValue("user")
+    pass := c.FormValue("pass")
 
-	// Throws Unauthorized error
-	if user != "john" || pass != "doe" {
-		return c.SendStatus(fiber.StatusUnauthorized)
-	}
+    // Throws Unauthorized error
+    if user != "john" || pass != "doe" {
+        return c.SendStatus(fiber.StatusUnauthorized)
+    }
 
-	// Create the payload
-	payload := customPayloadStruct{
-		Name:      "John Doe",
-		ExpiresAt: time.Now().Add(12 * time.Hour),
-	}
+    // Create the payload
+    payload := customPayloadStruct{
+        Name:      "John Doe",
+        ExpiresAt: time.Now().Add(12 * time.Hour),
+    }
 
-	// Create token and encrypt it
-	encryptedToken, err := paseto.NewV2().Encrypt([]byte(secretSymmetricKey), payload, nil)
-	if err != nil {
-		return c.SendStatus(fiber.StatusInternalServerError)
-	}
+    // Create token and encrypt it
+    encryptedToken, err := paseto.NewV2().Encrypt([]byte(secretSymmetricKey), payload, nil)
+    if err != nil {
+        return c.SendStatus(fiber.StatusInternalServerError)
+    }
 
-	return c.JSON(fiber.Map{"token": encryptedToken})
+    return c.JSON(fiber.Map{"token": encryptedToken})
 }
 
 func accessible(c fiber.Ctx) error {
-	return c.SendString("Accessible")
+    return c.SendString("Accessible")
 }
 
 func restricted(c fiber.Ctx) error {
-	payload := pasetoware.FromContext(c).(customPayloadStruct)
-	return c.SendString("Welcome " + payload.Name)
+    payload := pasetoware.FromContext(c).(customPayloadStruct)
+    return c.SendString("Welcome " + payload.Name)
 }
 
 ```
@@ -294,28 +294,28 @@ func restricted(c fiber.Ctx) error {
 package main
 
 import (
-	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/fiber/v3/extractors"
+    "github.com/gofiber/fiber/v3"
+    "github.com/gofiber/fiber/v3/extractors"
 
-	pasetoware "github.com/gofiber/contrib/paseto"
+    pasetoware "github.com/gofiber/contrib/paseto/v2"
 )
 
 const secretSymmetricKey = "symmetric-secret-key (size = 32)"
 
 func main() {
-	app := fiber.New()
+    app := fiber.New()
 
-	// Paseto Middleware with cookie extractor
-	app.Use(pasetoware.New(pasetoware.Config{
-		SymmetricKey: []byte(secretSymmetricKey),
-		Extractor:    extractors.FromCookie("token"),
-	}))
+    // Paseto Middleware with cookie extractor
+    app.Use(pasetoware.New(pasetoware.Config{
+        SymmetricKey: []byte(secretSymmetricKey),
+        Extractor:    extractors.FromCookie("token"),
+    }))
 
-	app.Get("/protected", func(c fiber.Ctx) error {
-		return c.SendString("Protected route")
-	})
+    app.Get("/protected", func(c fiber.Ctx) error {
+        return c.SendString("Protected route")
+    })
 
-	app.Listen(":8080")
+    app.Listen(":8080")
 }
 ```
 
@@ -325,28 +325,28 @@ func main() {
 package main
 
 import (
-	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/fiber/v3/extractors"
+    "github.com/gofiber/fiber/v3"
+    "github.com/gofiber/fiber/v3/extractors"
 
-	pasetoware "github.com/gofiber/contrib/paseto"
+    pasetoware "github.com/gofiber/contrib/paseto/v2"
 )
 
 const secretSymmetricKey = "symmetric-secret-key (size = 32)"
 
 func main() {
-	app := fiber.New()
+    app := fiber.New()
 
-	// Paseto Middleware with query extractor
-	app.Use(pasetoware.New(pasetoware.Config{
-		SymmetricKey: []byte(secretSymmetricKey),
-		Extractor:    extractors.FromQuery("token"),
-	}))
+    // Paseto Middleware with query extractor
+    app.Use(pasetoware.New(pasetoware.Config{
+        SymmetricKey: []byte(secretSymmetricKey),
+        Extractor:    extractors.FromQuery("token"),
+    }))
 
-	app.Get("/protected", func(c fiber.Ctx) error {
-		return c.SendString("Protected route")
-	})
+    app.Get("/protected", func(c fiber.Ctx) error {
+        return c.SendString("Protected route")
+    })
 
-	app.Listen(":8080")
+    app.Listen(":8080")
 }
 ```
 
@@ -356,14 +356,14 @@ func main() {
 package main
 
 import (
-	"crypto/ed25519"
-	"encoding/hex"
-	"time"
+    "crypto/ed25519"
+    "encoding/hex"
+    "time"
 
-	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/fiber/v3/extractors"
+    "github.com/gofiber/fiber/v3"
+    "github.com/gofiber/fiber/v3/extractors"
 
-	pasetoware "github.com/gofiber/contrib/paseto"
+    pasetoware "github.com/gofiber/contrib/paseto/v2"
 )
 
 const privateKeySeed = "e9c67fe2433aa4110caf029eba70df2c822cad226b6300ead3dcae443ac3810f"
@@ -372,61 +372,61 @@ var seed, _ = hex.DecodeString(privateKeySeed)
 var privateKey = ed25519.NewKeyFromSeed(seed)
 
 type customPayloadStruct struct {
-	Name      string    `json:"name"`
-	ExpiresAt time.Time `json:"expiresAt"`
+    Name      string    `json:"name"`
+    ExpiresAt time.Time `json:"expiresAt"`
 }
 
 func main() {
 
-	app := fiber.New()
+    app := fiber.New()
 
-	// Login route
-	app.Post("/login", login)
+    // Login route
+    app.Post("/login", login)
 
-	// Unauthenticated route
-	app.Get("/", accessible)
+    // Unauthenticated route
+    app.Get("/", accessible)
 
-	// Paseto Middleware with public (signed) token
-	apiGroup := app.Group("api", pasetoware.New(pasetoware.Config{
-		Extractor:  extractors.FromAuthHeader("Bearer"),
-		PrivateKey: privateKey,
-		PublicKey:  privateKey.Public(),
-	}))
+    // Paseto Middleware with public (signed) token
+    apiGroup := app.Group("api", pasetoware.New(pasetoware.Config{
+        Extractor:  extractors.FromAuthHeader("Bearer"),
+        PrivateKey: privateKey,
+        PublicKey:  privateKey.Public(),
+    }))
 
-	// Restricted Routes
-	apiGroup.Get("/restricted", restricted)
+    // Restricted Routes
+    apiGroup.Get("/restricted", restricted)
 
-	err := app.Listen(":8088")
-	if err != nil {
-		return
-	}
+    err := app.Listen(":8088")
+    if err != nil {
+        return
+    }
 }
 
 func login(c fiber.Ctx) error {
-	user := c.FormValue("user")
-	pass := c.FormValue("pass")
+    user := c.FormValue("user")
+    pass := c.FormValue("pass")
 
-	// Throws Unauthorized error
-	if user != "john" || pass != "doe" {
-		return c.SendStatus(fiber.StatusUnauthorized)
-	}
+    // Throws Unauthorized error
+    if user != "john" || pass != "doe" {
+        return c.SendStatus(fiber.StatusUnauthorized)
+    }
 
-	// Create token and encrypt it
-	encryptedToken, err := pasetoware.CreateToken(privateKey, user, 12*time.Hour, pasetoware.PurposePublic)
-	if err != nil {
-		return c.SendStatus(fiber.StatusInternalServerError)
-	}
+    // Create token and sign it
+    signedToken, err := pasetoware.CreateToken(privateKey, user, 12*time.Hour, pasetoware.PurposePublic)
+    if err != nil {
+        return c.SendStatus(fiber.StatusInternalServerError)
+    }
 
-	return c.JSON(fiber.Map{"token": encryptedToken})
+    return c.JSON(fiber.Map{"token": signedToken})
 }
 
 func accessible(c fiber.Ctx) error {
-	return c.SendString("Accessible")
+    return c.SendString("Accessible")
 }
 
 func restricted(c fiber.Ctx) error {
-	payload := pasetoware.FromContext(c).(string)
-	return c.SendString("Welcome " + payload)
+    payload := pasetoware.FromContext(c).(string)
+    return c.SendString("Welcome " + payload)
 }
 
 ```
@@ -446,7 +446,7 @@ payload := payloadFromCtx.(string)
 
 _Login using username and password to retrieve a token._
 
-```
+```sh
 curl --data "user=john&pass=doe" http://localhost:8088/login
 ```
 
@@ -454,18 +454,18 @@ _Response_
 
 ```json
 {
-  "token": "v2.public.eyJhdWQiOiJnb2ZpYmVyLmdvcGhlcnMiLCJkYXRhIjoiam9obiIsImV4cCI6IjIwMjMtMDctMTNUMDg6NDk6MzctMDM6MDAiLCJpYXQiOiIyMDIzLTA3LTEyVDIwOjQ5OjM3LTAzOjAwIiwianRpIjoiMjIzYjM0MjQtNWNkZS00NDFhLWJiZWEtZjBjYWFhYTdiYWFlIiwibmJmIjoiMjAyMy0wNy0xMlQyMDo0OTozNy0wMzowMCIsInN1YiI6InVzZXItdG9rZW4ifWiqK_yg0eJbIs2hnup4NuBYg7v4lxh33zEhEljsH7QUaZXAdtbCPK7cN-NSfSxrw68owwgo-dOlPrD7lc5M_AU.bnVsbA"
+  "token": "<public-token>"
 }
 ```
 
 _Request a restricted resource using the token in Authorization request header._
 
-```
-curl localhost:8088/api/restricted -H "Authorization: Bearer v2.public.eyJhdWQiOiJnb2ZpYmVyLmdvcGhlcnMiLCJkYXRhIjoiam9obiIsImV4cCI6IjIwMjMtMDctMTNUMDg6NDk6MzctMDM6MDAiLCJpYXQiOiIyMDIzLTA3LTEyVDIwOjQ5OjM3LTAzOjAwIiwianRpIjoiMjIzYjM0MjQtNWNkZS00NDFhLWJiZWEtZjBjYWFhYTdiYWFlIiwibmJmIjoiMjAyMy0wNy0xMlQyMDo0OTozNy0wMzowMCIsInN1YiI6InVzZXItdG9rZW4ifWiqK_yg0eJbIs2hnup4NuBYg7v4lxh33zEhEljsH7QUaZXAdtbCPK7cN-NSfSxrw68owwgo-dOlPrD7lc5M_AU.bnVsbA"
+```sh
+curl localhost:8088/api/restricted -H "Authorization: Bearer <public-token>"
 ```
 
 _Response_
 
-```
+```text
 Welcome John Doe
 ```

@@ -1,4 +1,4 @@
-module github.com/gofiber/contrib/fiberi18n/v2
+module github.com/gofiber/contrib/fiberi18n/v3
 
 go 1.25.0
 

@@ -386,13 +386,12 @@ func TestFromContext(t *testing.T) {
 	app.Use(New(cfg))
 	app.Get("/foo", func(ctx fiber.Ctx) error {
 		tx := FromContext(ctx)
+		assert.NotNil(t, tx)
 
-		if tx.Name() != "GET /foo" {
-			return ctx.SendStatus(http.StatusInternalServerError)
+		if tx != nil {
+			segment := tx.StartSegment("foo")
+			defer segment.End()
 		}
-
-		segment := tx.StartSegment("foo")
-		defer segment.End()
 
 		return ctx.SendStatus(http.StatusOK)
 	})

@@ -19,11 +19,11 @@ Special thanks and credits to [Echo](https://echo.labstack.com/middleware/jwt)
 
 ## Install
 
-This middleware supports Fiber v3, install accordingly.
+**Compatible with Fiber v3.**
 
 ```bash
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/jwt
+go get -u github.com/gofiber/contrib/jwt/v2
 go get -u github.com/golang-jwt/jwt/v5
 ```
 
@@ -91,7 +91,7 @@ import (
  "github.com/gofiber/fiber/v3"
  "github.com/gofiber/fiber/v3/extractors"
 
- jwtware "github.com/gofiber/contrib/jwt"
+ jwtware "github.com/gofiber/contrib/jwt/v2"
  "github.com/golang-jwt/jwt/v5"
 )
 
@@ -149,10 +149,10 @@ func accessible(c fiber.Ctx) error {
 }
 
 func restricted(c fiber.Ctx) error {
-	user := jwtware.FromContext(c)
-	claims := user.Claims.(jwt.MapClaims)
-	name := claims["name"].(string)
-	return c.SendString("Welcome " + name)
+    user := jwtware.FromContext(c)
+    claims := user.Claims.(jwt.MapClaims)
+    name := claims["name"].(string)
+    return c.SendString("Welcome " + name)
 }
 
 ```
@@ -165,7 +165,7 @@ package main
 import (
  "github.com/gofiber/fiber/v3"
 
- jwtware "github.com/gofiber/contrib/jwt"
+ jwtware "github.com/gofiber/contrib/jwt/v2"
 )
 
 func main() {
@@ -228,7 +228,7 @@ import (
 
  "github.com/golang-jwt/jwt/v5"
 
- jwtware "github.com/gofiber/contrib/jwt"
+ jwtware "github.com/gofiber/contrib/jwt/v2"
 )
 
 var (
@@ -304,10 +304,10 @@ func accessible(c fiber.Ctx) error {
 }
 
 func restricted(c fiber.Ctx) error {
-	user := jwtware.FromContext(c)
-	claims := user.Claims.(jwt.MapClaims)
-	name := claims["name"].(string)
-	return c.SendString("Welcome " + name)
+    user := jwtware.FromContext(c)
+    claims := user.Claims.(jwt.MapClaims)
+    name := claims["name"].(string)
+    return c.SendString("Welcome " + name)
 }
 ```
 
@@ -338,7 +338,7 @@ import (
  "fmt"
   "github.com/gofiber/fiber/v3"
 
-  jwtware "github.com/gofiber/contrib/jwt"
+  jwtware "github.com/gofiber/contrib/jwt/v2"
   "github.com/golang-jwt/jwt/v5"
 )
 

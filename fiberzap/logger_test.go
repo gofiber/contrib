@@ -231,7 +231,7 @@ func BenchmarkWithExtraKeys(b *testing.B) {
 func TestCustomField(t *testing.T) {
 	buf := new(bytes.Buffer)
 	logger := NewLogger()
-	log.SetLogger[any](logger)
+	log.SetLogger[*zap.Logger](logger)
 	log.SetOutput(buf)
 	log.Infow("", "test", "custom")
 	var logStructMap map[string]interface{}
