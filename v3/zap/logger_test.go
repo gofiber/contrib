@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -182,7 +183,9 @@ func TestWithContextCaller(t *testing.T) {
 	err := json.Unmarshal(buf.Bytes(), &logStructMap)
 	assert.Nil(t, err)
 	value := logStructMap["caller"]
-	assert.Equal(t, value, "zap/logger_test.go:180")
+	caller, ok := value.(string)
+	assert.True(t, ok)
+	assert.Regexp(t, regexp.MustCompile(`zap/logger_test.go:\d+`), caller)
 }
 
 // TestWithExtraKeys test WithExtraKeys option

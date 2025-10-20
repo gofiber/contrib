@@ -62,7 +62,7 @@ func main() {
         Dsn: "",
         BeforeSend: func(event *sdk.Event, hint *sdk.EventHint) *sdk.Event {
             if hint.Context != nil {
-                if c, ok := hint.Context.Value(fiberSentry.RequestContextKey).(fiber.Ctx); ok {
+                if c, ok := hint.Context.Value(sdk.RequestContextKey).(fiber.Ctx); ok {
                     // You have access to the original Context if it panicked
                     fmt.Println(utils.ImmutableString(c.Hostname()))
                 }
@@ -94,7 +94,7 @@ func main() {
 
     app.All("/", func(c fiber.Ctx) error {
         if hub := fiberSentry.GetHubFromContext(c); hub != nil {
-            hub.WithScope(func(scope *sentry.Scope) {
+            hub.WithScope(func(scope *sdk.Scope) {
                 scope.SetExtra("unwantedQuery", "someQueryDataMaybe")
                 hub.CaptureMessage("User provided unwanted query string, but we recovered just fine")
             })
@@ -109,11 +109,18 @@ func main() {
 ## Accessing Context in `BeforeSend` callback
 
 ```go
-sentry.Init(sentry.ClientOptions{
+import (
+    "fmt"
+
+    "github.com/gofiber/fiber/v3"
+    sdk "github.com/getsentry/sentry-go"
+)
+
+sdk.Init(sdk.ClientOptions{
     Dsn: "your-public-dsn",
-    BeforeSend: func(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
+    BeforeSend: func(event *sdk.Event, hint *sdk.EventHint) *sdk.Event {
         if hint.Context != nil {
-            if c, ok := hint.Context.Value(sentry.RequestContextKey).(fiber.Ctx); ok {
+            if c, ok := hint.Context.Value(sdk.RequestContextKey).(fiber.Ctx); ok {
                 // You have access to the original Context if it panicked
                 fmt.Println(c.Hostname())
             }

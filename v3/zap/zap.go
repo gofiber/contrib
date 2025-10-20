@@ -3,6 +3,7 @@ package zap
 import (
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -176,12 +177,14 @@ func New(config ...Config) fiber.Handler {
 						continue
 					}
 
-					if len(values) == 1 {
-						fields = append(fields, zap.String(header, values[0]))
+					sanitized := sanitizeHeaderValues(header, values)
+
+					if len(sanitized) == 1 {
+						fields = append(fields, zap.String(header, sanitized[0]))
 						continue
 					}
 
-					fields = append(fields, zap.Strings(header, values))
+					fields = append(fields, zap.Strings(header, sanitized))
 				}
 			}
 		}
@@ -200,4 +203,29 @@ func contains(needle string, slice []string) bool {
 	}
 
 	return false
+}
+
+var sensitiveRequestHeaders = map[string]struct{}{
+	"authorization":       {},
+	"proxy-authorization": {},
+	"cookie":              {},
+	"x-api-key":           {},
+	"x-auth-token":        {},
+}
+
+func sanitizeHeaderValues(header string, values []string) []string {
+	if len(values) == 0 {
+		return values
+	}
+
+	if _, ok := sensitiveRequestHeaders[strings.ToLower(header)]; !ok {
+		return values
+	}
+
+	sanitized := make([]string, len(values))
+	for i := range sanitized {
+		sanitized[i] = "[REDACTED]"
+	}
+
+	return sanitized
 }
