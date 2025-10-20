@@ -6,10 +6,10 @@ on:
       - master
       - main
     paths:
-      - 'hcaptcha/**'
+      - 'v3/hcaptcha/**'
   pull_request:
     paths:
-      - 'hcaptcha/**'
+      - 'v3/hcaptcha/**'
 
 jobs:
   Tests:
@@ -26,5 +26,5 @@ jobs:
         with:
           go-version: '${{ matrix.go-version }}'
       - name: Run Test
-        working-directory: ./hcaptcha
+        working-directory: ./v3/hcaptcha
         run: go test -v -race ./...

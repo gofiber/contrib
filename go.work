@@ -1,23 +1,23 @@
 go 1.25.0
 
 use (
-	./casbin
-	./circuitbreaker
-	./fgprof
-	./fiberi18n
-	./fibernewrelic
-	./fibersentry
-	./fiberzap
-	./fiberzerolog
-	./hcaptcha
-	./jwt
-	./loadshed
-	./monitor
-	./opafiber
-	./otelfiber
-	./paseto
-	./socketio
-	./swagger
-	./testcontainers
-	./websocket
+./v3/casbin
+./v3/circuitbreaker
+./v3/fgprof
+./v3/fiberi18n
+./v3/fibernewrelic
+./v3/fibersentry
+./v3/fiberzap
+./v3/fiberzerolog
+./v3/hcaptcha
+./v3/jwt
+./v3/loadshed
+./v3/monitor
+./v3/opafiber
+./v3/otelfiber
+./v3/paseto
+./v3/socketio
+./v3/swagger
+./v3/testcontainers
+./v3/websocket
 )

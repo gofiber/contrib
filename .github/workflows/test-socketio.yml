@@ -26,5 +26,5 @@ jobs:
         with:
           go-version: "${{ matrix.go-version }}"
       - name: Run Test
-        working-directory: ./socketio
+        working-directory: ./v3/socketio
         run: go test -v -race ./...

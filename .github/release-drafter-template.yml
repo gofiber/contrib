@@ -2,7 +2,7 @@ name-template: '{{FOLDER}} - v$RESOLVED_VERSION'
 tag-template: '{{FOLDER}}/v$RESOLVED_VERSION'
 tag-prefix: {{FOLDER}}/v
 include-paths:
-  - {{FOLDER}}
+  - v3/{{FOLDER}}
 categories:
     - title: '❗ Breaking Changes'
       labels:

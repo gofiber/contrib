@@ -6,10 +6,10 @@ on:
       - master
       - main
     paths:
-      - 'fiberzerolog/**'
+      - 'v3/fiberzerolog/**'
   pull_request:
     paths:
-      - 'fiberzerolog/**'
+      - 'v3/fiberzerolog/**'
 
 jobs:
   Tests:
@@ -26,5 +26,5 @@ jobs:
         with:
           go-version: '${{ matrix.go-version }}'
       - name: Run Test
-        working-directory: ./fiberzerolog
+        working-directory: ./v3/fiberzerolog
         run: go test -v -race ./...

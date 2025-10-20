@@ -6,10 +6,10 @@ on:
       - master
       - main
     paths:
-      - 'monitor/**'
+      - 'v3/monitor/**'
   pull_request:
     paths:
-      - 'monitor/**'
+      - 'v3/monitor/**'
 
 jobs:
   Tests:
@@ -26,5 +26,5 @@ jobs:
         with:
           go-version: '${{ matrix.go-version }}'
       - name: Run Test
-        working-directory: ./monitor
+        working-directory: ./v3/monitor
         run: go test -v -race ./...

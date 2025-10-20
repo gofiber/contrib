@@ -6,10 +6,10 @@ on:
       - master
       - main
     paths:
-      - 'opafiber/**'
+      - 'v3/opafiber/**'
   pull_request:
     paths:
-      - 'opafiber/**'
+      - 'v3/opafiber/**'
 
 jobs:
   Tests:
@@ -26,5 +26,5 @@ jobs:
         with:
           go-version: '${{ matrix.go-version }}'
       - name: Run Test
-        working-directory: ./opafiber
+        working-directory: ./v3/opafiber
         run: go test -v -race ./...

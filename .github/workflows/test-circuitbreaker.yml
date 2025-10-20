@@ -6,10 +6,10 @@ on:
       - master
       - main
     paths:
-      - 'circuitbreaker/**'
+      - 'v3/circuitbreaker/**'
   pull_request:
     paths:
-      - 'circuitbreaker/**'
+      - 'v3/circuitbreaker/**'
       - '.github/workflows/**'
 
 jobs:
@@ -27,5 +27,5 @@ jobs:
         with:
           go-version: '${{ matrix.go-version }}'
       - name: Run Test
-        working-directory: ./circuitbreaker
+        working-directory: ./v3/circuitbreaker
         run: go test -v -race ./...

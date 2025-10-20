@@ -6,10 +6,10 @@ on:
       - master
       - main
     paths:
-      - 'fibersentry/**'
+      - 'v3/fibersentry/**'
   pull_request:
     paths:
-      - 'fibersentry/**'
+      - 'v3/fibersentry/**'
 
 jobs:
   Tests:
@@ -26,5 +26,5 @@ jobs:
         with:
           go-version: '${{ matrix.go-version }}'
       - name: Run Test
-        working-directory: ./fibersentry
+        working-directory: ./v3/fibersentry
         run: go test -v -race ./...

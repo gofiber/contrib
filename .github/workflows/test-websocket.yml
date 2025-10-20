@@ -6,10 +6,10 @@ on:
       - master
       - main
     paths:
-      - 'websocket/**'
+      - 'v3/websocket/**'
   pull_request:
     paths:
-      - 'websocket/**'
+      - 'v3/websocket/**'
 
 jobs:
   Tests:
@@ -26,5 +26,5 @@ jobs:
         with:
           go-version: '${{ matrix.go-version }}'
       - name: Run Test
-        working-directory: ./websocket
+        working-directory: ./v3/websocket
         run: go test -v -race ./...

@@ -6,10 +6,10 @@ on:
       - master
       - main
     paths:
-      - 'paseto/**'
+      - 'v3/paseto/**'
   pull_request:
     paths:
-      - 'paseto/**'
+      - 'v3/paseto/**'
 
 jobs:
   Tests:
@@ -26,5 +26,5 @@ jobs:
         with:
           go-version: '${{ matrix.go-version }}'
       - name: Run Test
-        working-directory: ./paseto
+        working-directory: ./v3/paseto
         run: go test -v -race ./...

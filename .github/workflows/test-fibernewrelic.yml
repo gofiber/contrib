@@ -6,10 +6,10 @@ on:
       - master
       - main
     paths:
-      - 'fibernewrelic/**'
+      - 'v3/fibernewrelic/**'
   pull_request:
     paths:
-      - 'fibernewrelic/**'
+      - 'v3/fibernewrelic/**'
 
 jobs:
   Tests:
@@ -26,5 +26,5 @@ jobs:
         with:
           go-version: '${{ matrix.go-version }}'
       - name: Run Test
-        working-directory: ./fibernewrelic
+        working-directory: ./v3/fibernewrelic
         run: go test -v -race ./...

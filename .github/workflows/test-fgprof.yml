@@ -6,10 +6,10 @@ on:
       - master
       - main
     paths:
-      - 'fgprof/**'
+      - 'v3/fgprof/**'
   pull_request:
     paths:
-      - 'fgprof/**'
+      - 'v3/fgprof/**'
 
 jobs:
   Tests:
@@ -26,5 +26,5 @@ jobs:
         with:
           go-version: '${{ matrix.go-version }}'
       - name: Run Test
-        working-directory: ./fgprof
+        working-directory: ./v3/fgprof
         run: go test -v -race ./...

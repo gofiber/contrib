@@ -6,10 +6,10 @@ on:
       - master
       - main
     paths:
-      - 'fiberi18n/**'
+      - 'v3/fiberi18n/**'
   pull_request:
     paths:
-      - 'fiberi18n/**'
+      - 'v3/fiberi18n/**'
 
 jobs:
   Tests:
@@ -26,5 +26,5 @@ jobs:
         with:
           go-version: '${{ matrix.go-version }}'
       - name: Run Test
-        working-directory: ./fiberi18n
+        working-directory: ./v3/fiberi18n
         run: go test -v -race ./...
