@@ -1,0 +1,30 @@
+name: "Test sentry"
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - 'v3/sentry/**'
+  pull_request:
+    paths:
+      - 'v3/sentry/**'
+
+jobs:
+  Tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version:
+          - 1.25.x
+    steps:
+      - name: Fetch Repository
+        uses: actions/checkout@v5
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '${{ matrix.go-version }}'
+      - name: Run Test
+        working-directory: ./v3/sentry
+        run: go test -v -race ./...
