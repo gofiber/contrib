@@ -12,7 +12,6 @@ id: otel
 
 This package is listed on the [OpenTelemetry Registry](https://opentelemetry.io/registry/instrumentation-go-fiber/).
 
-**Note: Requires Go 1.25 and above**
 
 **Compatible with Fiber v3.**
 

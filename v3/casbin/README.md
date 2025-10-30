@@ -12,8 +12,6 @@ Casbin middleware for Fiber.
 
 **Compatible with Fiber v3.**
 
-**Note: Requires Go 1.25 and above**
-
 ## Go version support
 
 We only support the latest two versions of Go. Visit [https://go.dev/doc/devel/release](https://go.dev/doc/devel/release) for more information.

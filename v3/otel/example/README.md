@@ -11,7 +11,6 @@ An HTTP server using gofiber fiber and instrumentation. The server has a
 These instructions expect you have
 [docker-compose](https://docs.docker.com/compose/) installed.
 
-**Note: Requires Go 1.25 and above**
 
 **Compatible with Fiber v3.**
 

@@ -14,7 +14,6 @@ PASETO returns a Web Token (PASETO) auth middleware.
 - For invalid token, it returns "401 - Unauthorized" error.
 - For missing token, it returns "400 - BadRequest" error.
 
-**Note: Requires Go 1.25 and above**
 
 **Compatible with Fiber v3.**
 

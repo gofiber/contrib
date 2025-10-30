@@ -10,7 +10,6 @@ id: fgprof
 
 [fgprof](https://github.com/felixge/fgprof) support for Fiber.
 
-**Note: Requires Go 1.25 and above**
 
 **Compatible with Fiber v3.**
 

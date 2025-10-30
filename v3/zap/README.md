@@ -10,7 +10,6 @@ id: zap
 
 [Zap](https://github.com/uber-go/zap) logging support for Fiber.
 
-**Note: Requires Go 1.25 and above**
 
 **Compatible with Fiber v3.**
 

@@ -10,7 +10,6 @@ id: opa
 
 [Open Policy Agent](https://github.com/open-policy-agent/opa) support for Fiber.
 
-**Note: Requires Go 1.25 and above**
 
 **Compatible with Fiber v3.**
 

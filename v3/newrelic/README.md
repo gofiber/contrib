@@ -10,7 +10,6 @@ id: newrelic
 
 [New Relic](https://github.com/newrelic/go-agent) support for Fiber.
 
-**Note: Requires Go 1.25 and above**
 
 **Compatible with Fiber v3.**
 

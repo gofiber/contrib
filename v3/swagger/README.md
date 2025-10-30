@@ -11,7 +11,6 @@ title: Swagger
 
 Swagger middleware for [Fiber](https://github.com/gofiber/fiber). The middleware handles Swagger UI.
 
-**Note: Requires Go 1.25 and above**
 
 **Compatible with Fiber v3.**
 

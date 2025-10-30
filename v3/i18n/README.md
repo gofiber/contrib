@@ -10,7 +10,6 @@ id: i18n
 
 [go-i18n](https://github.com/nicksnyder/go-i18n) support for Fiber.
 
-**Note: Requires Go 1.25 and above**
 
 **Compatible with Fiber v3.**
 
