@@ -5,6 +5,7 @@ on:
         branches:
             - master
             - main
+    workflow_dispatch:
 
 jobs:
     changes:
@@ -12,7 +13,7 @@ jobs:
         permissions:
             pull-requests: read
         outputs:
-            packages: ${{ steps.filter.outputs.changes || '[]' }}
+            packages: ${{ github.event_name == 'workflow_dispatch' && steps.filter-setup.outputs.packages || steps.filter.outputs.changes || '[]' }}
         steps:
             - name: Checkout repository
               uses: actions/checkout@v5
@@ -23,9 +24,11 @@ jobs:
               run: |
                   shopt -s nullglob
                   packages=(v3/*/)
+                  package_names=()
 
                   if (( ${#packages[@]} == 0 )); then
                       echo "filters={}" >> "$GITHUB_OUTPUT"
+                      echo "packages=[]" >> "$GITHUB_OUTPUT"
                       exit 0
                   fi
 
@@ -35,13 +38,23 @@ jobs:
                           pkg=${pkg#v3/}
                           pkg=${pkg%/}
                           printf "'%s': 'v3/%s/**'\n" "$pkg" "$pkg"
+                          package_names+=("$pkg")
                       done
                       echo "EOF"
                   } >> "$GITHUB_OUTPUT"
 
+                  if (( ${#package_names[@]} > 0 )); then
+                      printf -v joined '"%s",' "${package_names[@]}"
+                      joined=${joined%,}
+                      echo "packages=[${joined}]" >> "$GITHUB_OUTPUT"
+                  else
+                      echo "packages=[]" >> "$GITHUB_OUTPUT"
+                  fi
+
             - name: Filter changes
               id: filter
               uses: dorny/paths-filter@v3
+              if: github.event_name != 'workflow_dispatch'
               with:
                   filters: ${{ steps.filter-setup.outputs.filters }}
 
