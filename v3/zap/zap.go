@@ -3,7 +3,6 @@ package zap
 import (
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
