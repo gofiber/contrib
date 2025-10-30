@@ -12,11 +12,14 @@ id: otel
 
 This package is listed on the [OpenTelemetry Registry](https://opentelemetry.io/registry/instrumentation-go-fiber/).
 
-**Note: Requires Go 1.25 and above**
-
-## Install
 
 **Compatible with Fiber v3.**
+
+## Go version support
+
+We only support the latest two versions of Go. Visit [https://go.dev/doc/devel/release](https://go.dev/doc/devel/release) for more information.
+
+## Install
 
 ```sh
 go get -u github.com/gofiber/contrib/v3/otel
@@ -30,7 +33,6 @@ otel.Middleware(opts ...otel.Option) fiber.Handler
 
 ## Config
 You can configure the middleware using functional parameters
-
 
 | Function                | Argument Type                            | Description                                                                      | Default                                                             |
 | :------------------------ | :-------------------------------- | :--------------------------------------------------------------------------------- | :-------------------------------------------------------------------- |

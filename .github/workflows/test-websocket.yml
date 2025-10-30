@@ -6,10 +6,12 @@ on:
       - master
       - main
     paths:
-      - 'v3/websocket/**'
+      - 'v3/websocket/**/*.go'
+      - 'v3/websocket/go.mod'
   pull_request:
     paths:
-      - 'v3/websocket/**'
+      - 'v3/websocket/**/*.go'
+      - 'v3/websocket/go.mod'
 
 jobs:
   Tests:

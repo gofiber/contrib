@@ -10,11 +10,14 @@ id: loadshed
 
 The LoadShed middleware for [Fiber](https://github.com/gofiber/fiber) is designed to help manage server load by shedding requests based on certain load criteria.
 
-**Note: Requires Go 1.25 and above**
-
-## Install
 
 **Compatible with Fiber v3.**
+
+## Go version support
+
+We only support the latest two versions of Go. Visit [https://go.dev/doc/devel/release](https://go.dev/doc/devel/release) for more information.
+
+## Install
 
 ```sh
 go get -u github.com/gofiber/fiber/v3

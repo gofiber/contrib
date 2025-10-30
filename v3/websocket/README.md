@@ -10,10 +10,12 @@ id: websocket
 
 Based on [Fasthttp WebSocket](https://github.com/fasthttp/websocket) for [Fiber](https://github.com/gofiber/fiber) with available `fiber.Ctx` methods like [Locals](http://docs.gofiber.io/ctx#locals), [Params](http://docs.gofiber.io/ctx#params), [Query](http://docs.gofiber.io/ctx#query) and [Cookies](http://docs.gofiber.io/ctx#cookies).
 
-**Note: Requires Go 1.25 and above**
 
 **Compatible with Fiber v3.**
 
+## Go version support
+
+We only support the latest two versions of Go. Visit [https://go.dev/doc/devel/release](https://go.dev/doc/devel/release) for more information.
 
 ## Install
 
@@ -40,7 +42,6 @@ func New(handler func(*websocket.Conn), config ...websocket.Config) fiber.Handle
 | WriteBufferPool     | `websocket.BufferPool`       | WriteBufferPool is a pool of buffers for write operations.                                                                    | `nil`                  |
 | EnableCompression   | `bool`                       | EnableCompression specifies if the client should attempt to negotiate per message compression (RFC 7692).                     | `false`                |
 | RecoverHandler      | `func(*websocket.Conn)`      | RecoverHandler is a panic handler function that recovers from panics.                                                         | `defaultRecover`       |
-
 
 ## Example
 
@@ -122,7 +123,6 @@ app.Get("/ws/:id", websocket.New(func(c *websocket.Conn) {}))
 For internal implementation reasons, currently recover middleware does not work with websocket middleware, please use `config.RecoverHandler` to add recover handler to websocket endpoints.
 By default, config `RecoverHandler` recovers from panic and writes stack trace to stderr, also returns a response that contains panic message in **error** field.
 
-
 ```go
 app := fiber.New()
 
@@ -141,7 +141,6 @@ cfg := Config{
 }
 
 app.Get("/ws/:id", websocket.New(func(c *websocket.Conn) {}, cfg))
-
 
 ```
 

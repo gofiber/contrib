@@ -6,10 +6,12 @@ on:
       - master
       - main
     paths:
-      - 'v3/sentry/**'
+      - 'v3/sentry/**/*.go'
+      - 'v3/sentry/go.mod'
   pull_request:
     paths:
-      - 'v3/sentry/**'
+      - 'v3/sentry/**/*.go'
+      - 'v3/sentry/go.mod'
 
 jobs:
   Tests:

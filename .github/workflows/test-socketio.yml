@@ -6,10 +6,12 @@ on:
       - master
       - main
     paths:
-      - "socketio/**"
+      - 'v3/socketio/**/*.go'
+      - 'v3/socketio/go.mod'
   pull_request:
     paths:
-      - "socketio/**"
+      - 'v3/socketio/**/*.go'
+      - 'v3/socketio/go.mod'
 
 jobs:
   Tests:

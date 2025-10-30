@@ -18,6 +18,9 @@ Requires Go **1.25** and above
 
 **Compatible with Fiber v3.**
 
+## Go version support
+
+We only support the latest two versions of Go. Visit [https://go.dev/doc/devel/release](https://go.dev/doc/devel/release) for more information.
 
 ## Common Use Cases
 

@@ -6,10 +6,12 @@ on:
       - master
       - main
     paths:
-      - 'v3/swagger/**'
+      - 'v3/swagger/**/*.go'
+      - 'v3/swagger/go.mod'
   pull_request:
     paths:
-      - 'v3/swagger/**'
+      - 'v3/swagger/**/*.go'
+      - 'v3/swagger/go.mod'
 
 jobs:
   Tests:

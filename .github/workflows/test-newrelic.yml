@@ -6,10 +6,12 @@ on:
       - master
       - main
     paths:
-      - 'v3/newrelic/**'
+      - 'v3/newrelic/**/*.go'
+      - 'v3/newrelic/go.mod'
   pull_request:
     paths:
-      - 'v3/newrelic/**'
+      - 'v3/newrelic/**/*.go'
+      - 'v3/newrelic/go.mod'
 
 jobs:
   Tests:

@@ -11,6 +11,13 @@ An HTTP server using gofiber fiber and instrumentation. The server has a
 These instructions expect you have
 [docker-compose](https://docs.docker.com/compose/) installed.
 
+
+**Compatible with Fiber v3.**
+
+## Go version support
+
+We only support the latest two versions of Go. Visit [https://go.dev/doc/devel/release](https://go.dev/doc/devel/release) for more information.
+
 Bring up the `fiber-server` and `fiber-client` services to run the
 example:
 
@@ -30,3 +37,4 @@ Shut down the services when you are finished with the example:
 ```sh
 docker-compose down
 ```
+

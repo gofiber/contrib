@@ -6,10 +6,12 @@ on:
       - master
       - main
     paths:
-      - 'v3/paseto/**'
+      - 'v3/paseto/**/*.go'
+      - 'v3/paseto/go.mod'
   pull_request:
     paths:
-      - 'v3/paseto/**'
+      - 'v3/paseto/**/*.go'
+      - 'v3/paseto/go.mod'
 
 jobs:
   Tests:

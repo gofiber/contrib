@@ -6,10 +6,12 @@ on:
       - master
       - main
     paths:
-      - 'v3/casbin/**'
+      - 'v3/casbin/**/*.go'
+      - 'v3/casbin/go.mod'
   pull_request:
     paths:
-      - 'v3/casbin/**'
+      - 'v3/casbin/**/*.go'
+      - 'v3/casbin/go.mod'
 
 jobs:
   Tests:
