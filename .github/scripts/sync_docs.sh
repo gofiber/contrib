@@ -6,28 +6,7 @@ AUTHOR_EMAIL=${AUTHOR_EMAIL:-github-actions[bot]@users.noreply.github.com}
 AUTHOR_USERNAME=${AUTHOR_USERNAME:-github-actions[bot]}
 VERSION_FILE=${VERSION_FILE:-contrib_versions.json}
 SOURCE_DIR=${SOURCE_DIR:-v3}
-TARGET_DIR=${TARGET_DIR:-${REPO_DIR:-}}
 DESTINATION_DIR=${DESTINATION_DIR:-}
-SYNC_FLATTEN_SOURCE_DIR=${SYNC_FLATTEN_SOURCE_DIR:-true}
-
-is_truthy() {
-    case "$1" in
-        1|true|TRUE|True|yes|YES|Yes|on|ON|On)
-            return 0
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-if [[ -z "${DESTINATION_DIR}" ]]; then
-    if [[ -z "${TARGET_DIR}" ]]; then
-        echo "DESTINATION_DIR or TARGET_DIR (or REPO_DIR) environment variable is required" >&2
-        exit 1
-    fi
-    DESTINATION_DIR="fiber-docs/docs/${TARGET_DIR}"
-fi
 COMMIT_URL=${COMMIT_URL:-https://github.com/gofiber/contrib}
 DOCUSAURUS_COMMAND=${DOCUSAURUS_COMMAND:-npm run docusaurus -- docs:version:contrib}
 
@@ -48,12 +27,7 @@ if [[ "${EVENT}" == "push" ]]; then
     rsync_source="${SOURCE_DIR}/"
     rsync_destination="${destination}/"
 
-    if ! is_truthy "${SYNC_FLATTEN_SOURCE_DIR}"; then
-        rsync_destination="${destination}/${SOURCE_DIR}/"
-    fi
-
     mkdir -p "${rsync_destination}"
-
     rsync -a --delete --prune-empty-dirs \
         --include '*/' \
         --include '*.md' \

@@ -35,5 +35,5 @@ jobs:
                   EVENT: ${{ github.event_name }}
                   TAG_NAME: ${{ github.ref_name }}
                   TOKEN: ${{ secrets.DOC_SYNC_TOKEN }}
-                  REPO_DIR: contrib
-                  SYNC_FLATTEN_SOURCE_DIR: "true"
+                  SOURCE_DIR: v3
+                  DESTINATION_DIR: contrib
