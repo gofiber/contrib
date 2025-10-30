@@ -8,6 +8,18 @@ VERSION_FILE=${VERSION_FILE:-contrib_versions.json}
 SOURCE_DIR=${SOURCE_DIR:-v3}
 TARGET_DIR=${TARGET_DIR:-${REPO_DIR:-}}
 DESTINATION_DIR=${DESTINATION_DIR:-}
+SYNC_FLATTEN_SOURCE_DIR=${SYNC_FLATTEN_SOURCE_DIR:-true}
+
+is_truthy() {
+    case "$1" in
+        1|true|TRUE|True|yes|YES|Yes|on|ON|On)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
 
 if [[ -z "${DESTINATION_DIR}" ]]; then
     if [[ -z "${TARGET_DIR}" ]]; then
@@ -33,12 +45,20 @@ if [[ "${EVENT}" == "push" ]]; then
     latest_commit=$(git rev-parse --short HEAD)
     destination="${DESTINATION_DIR}"
 
-    mkdir -p "${destination}"
-    rsync -a --delete \
+    rsync_source="${SOURCE_DIR}/"
+    rsync_destination="${destination}/"
+
+    if ! is_truthy "${SYNC_FLATTEN_SOURCE_DIR}"; then
+        rsync_destination="${destination}/${SOURCE_DIR}/"
+    fi
+
+    mkdir -p "${rsync_destination}"
+
+    rsync -a --delete --prune-empty-dirs \
         --include '*/' \
         --include '*.md' \
         --exclude '*' \
-        "${SOURCE_DIR}/" "${destination}/"
+        "${rsync_source}" "${rsync_destination}"
 
 elif [[ "${EVENT}" == "release" ]]; then
     if [[ -z "${TAG_NAME}" ]]; then
