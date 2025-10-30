@@ -37,4 +37,4 @@ jobs:
                   TAG_NAME: ${{ github.ref_name }}
                   TOKEN: ${{ secrets.DOC_SYNC_TOKEN }}
                   SOURCE_DIR: v3
-                  DESTINATION_DIR: contrib
+                  DESTINATION_DIR: docs/contrib
