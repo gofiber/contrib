@@ -14,6 +14,9 @@ id: newrelic
 
 **Compatible with Fiber v3.**
 
+## Go version support
+
+We only support the latest two versions of Go. Visit [https://go.dev/doc/devel/release](https://go.dev/doc/devel/release) for more information.
 
 ## Install
 
@@ -39,7 +42,6 @@ newrelic.New(config newrelic.Config) fiber.Handler
 | Application            | `Application`    | Existing New Relic App                                      | `nil`                           |
 | ErrorStatusCodeHandler | `func(c fiber.Ctx, err error) int`    | If you want to change newrelic status code, you can use it. | `DefaultErrorStatusCodeHandler` |
 | Next                   | `func(c fiber.Ctx) bool`    | Next defines a function to skip this middleware when returned true.                                                           | `nil`                           |
-
 
 ## Usage
 
