@@ -6,10 +6,10 @@ on:
       - master
       - main
     paths:
-      - 'jwt/**'
+      - 'v3/jwt/**'
   pull_request:
     paths:
-      - 'jwt/**'
+      - 'v3/jwt/**'
 
 jobs:
   Tests:
@@ -26,5 +26,5 @@ jobs:
         with:
           go-version: '${{ matrix.go-version }}'
       - name: Run Test
-        working-directory: ./jwt
+        working-directory: ./v3/jwt
         run: go test -v -race ./...

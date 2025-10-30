@@ -26,5 +26,5 @@ jobs:
         with:
           go-version: "${{ matrix.go-version }}"
       - name: Run Test
-        working-directory: ./loadshed
+        working-directory: ./v3/loadshed
         run: go test -v -race ./...

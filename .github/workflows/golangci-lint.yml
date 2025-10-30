@@ -31,7 +31,7 @@ jobs:
       - name: Generate filters
         id: filter-setup
         run: |
-          filters=$(find . -maxdepth 1 -type d ! -path ./.git ! -path . -exec basename {} \; | grep -v '^\.' | awk '{printf "%s: \"%s/**\"\n", $1, $1}')
+          filters=$(find v3 -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort | awk '{printf "%s: \"v3/%s/**\"\n", $1, $1}')
           echo "filters<<EOF" >> $GITHUB_OUTPUT
           echo "$filters" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
@@ -64,7 +64,7 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           args: "--tests=false --timeout=5m"
-          working-directory: ${{ matrix.package }}
+          working-directory: ./v3/${{ matrix.package }}
             # NOTE: Keep this in sync with the version from .golangci.yml
           version: v1.64.7
             # NOTE(ldez): temporary workaround

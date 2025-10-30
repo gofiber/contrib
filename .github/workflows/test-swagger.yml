@@ -6,10 +6,10 @@ on:
       - master
       - main
     paths:
-      - 'swagger/**'
+      - 'v3/swagger/**'
   pull_request:
     paths:
-      - 'swagger/**'
+      - 'v3/swagger/**'
 
 jobs:
   Tests:
@@ -26,5 +26,5 @@ jobs:
         with:
           go-version: '${{ matrix.go-version }}'
       - name: Run Test
-        working-directory: ./swagger
+        working-directory: ./v3/swagger
         run: go test -v -race ./...

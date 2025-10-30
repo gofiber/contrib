@@ -6,10 +6,10 @@ on:
       - master
       - main
     paths:
-      - 'casbin/**'
+      - 'v3/casbin/**'
   pull_request:
     paths:
-      - 'casbin/**'
+      - 'v3/casbin/**'
 
 jobs:
   Tests:
@@ -26,5 +26,5 @@ jobs:
         with:
           go-version: '${{ matrix.go-version }}'
       - name: Run Test
-        working-directory: ./casbin
+        working-directory: ./v3/casbin
         run: go test -v -race ./...
