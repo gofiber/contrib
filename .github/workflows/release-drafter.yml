@@ -13,7 +13,7 @@ jobs:
         permissions:
             pull-requests: read
         outputs:
-            packages: ${{ github.event_name == 'workflow_dispatch' && steps.filter-setup.outputs.packages || steps.filter.outputs.changes || '[]' }}
+            packages: ${{ github.event_name == 'workflow_dispatch' && steps.filter-setup.outputs.packages || steps.map-packages.outputs.packages || '[]' }}
         steps:
             - name: Checkout repository
               uses: actions/checkout@v5
@@ -35,10 +35,11 @@ jobs:
                   {
                       echo "filters<<EOF"
                       for pkg in "${packages[@]}"; do
-                          pkg=${pkg#v3/}
-                          pkg=${pkg%/}
-                          printf "'%s': 'v3/%s/**'\n" "$pkg" "$pkg"
-                          package_names+=("$pkg")
+                          name=${pkg#v3/}
+                          name=${name%/}
+                          path=${pkg%/}
+                          printf "'%s': '%s/**'\n" "$name" "$path"
+                          package_names+=("$path")
                       done
                       echo "EOF"
                   } >> "$GITHUB_OUTPUT"
@@ -58,6 +59,21 @@ jobs:
               with:
                   filters: ${{ steps.filter-setup.outputs.filters }}
 
+            - name: Map package paths
+              id: map-packages
+              if: github.event_name != 'workflow_dispatch'
+              env:
+                  FILTER_PACKAGES: ${{ steps.filter.outputs.changes || '[]' }}
+              run: |
+                  python3 - <<'PY' >> "$GITHUB_OUTPUT"
+                  import json
+                  import os
+
+                  packages = json.loads(os.environ["FILTER_PACKAGES"])
+                  paths = [f"v3/{name}" for name in packages]
+                  print(f"packages={json.dumps(paths)}")
+                  PY
+
     release-drafter:
         needs: changes
         runs-on: ubuntu-latest
@@ -76,7 +92,7 @@ jobs:
               id: generate-config
               run: |
                   package="${{ matrix.package }}"
-                  directory="v3/${package}"
+                  directory="$package"
                   {
                       echo "config<<EOF"
                       sed -e "s|{{PACKAGE}}|$package|g" -e "s|{{DIRECTORY}}|$directory|g" .github/release-drafter-template.yml
