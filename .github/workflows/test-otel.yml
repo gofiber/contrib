@@ -6,10 +6,12 @@ on:
       - master
       - main
     paths:
-      - 'v3/otel/**'
+      - 'v3/otel/**/*.go'
+      - 'v3/otel/go.mod'
   pull_request:
     paths:
-      - 'v3/otel/**'
+      - 'v3/otel/**/*.go'
+      - 'v3/otel/go.mod'
 
 jobs:
   Tests:

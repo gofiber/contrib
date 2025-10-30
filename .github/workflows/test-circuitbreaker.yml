@@ -6,11 +6,12 @@ on:
       - master
       - main
     paths:
-      - 'v3/circuitbreaker/**'
+      - 'v3/circuitbreaker/**/*.go'
+      - 'v3/circuitbreaker/go.mod'
   pull_request:
     paths:
-      - 'v3/circuitbreaker/**'
-      - '.github/workflows/**'
+      - 'v3/circuitbreaker/**/*.go'
+      - 'v3/circuitbreaker/go.mod'
 
 jobs:
   Tests:

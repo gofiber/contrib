@@ -6,10 +6,12 @@ on:
       - master
       - main
     paths:
-      - 'v3/zap/**'
+      - 'v3/zap/**/*.go'
+      - 'v3/zap/go.mod'
   pull_request:
     paths:
-      - 'v3/zap/**'
+      - 'v3/zap/**/*.go'
+      - 'v3/zap/go.mod'
 
 jobs:
   Tests:
