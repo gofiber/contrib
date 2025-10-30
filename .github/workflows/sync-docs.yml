@@ -35,4 +35,4 @@ jobs:
                   EVENT: ${{ github.event_name }}
                   TAG_NAME: ${{ github.ref_name }}
                   TOKEN: ${{ secrets.DOC_SYNC_TOKEN }}
-                  REPO_DIR: contrib/v3
+                  REPO_DIR: contrib

@@ -6,7 +6,16 @@ AUTHOR_EMAIL=${AUTHOR_EMAIL:-github-actions[bot]@users.noreply.github.com}
 AUTHOR_USERNAME=${AUTHOR_USERNAME:-github-actions[bot]}
 VERSION_FILE=${VERSION_FILE:-contrib_versions.json}
 SOURCE_DIR=${SOURCE_DIR:-v3}
-TARGET_DIR=${REPO_DIR:?REPO_DIR environment variable is required}
+TARGET_DIR=${TARGET_DIR:-${REPO_DIR:-}}
+DESTINATION_DIR=${DESTINATION_DIR:-}
+
+if [[ -z "${DESTINATION_DIR}" ]]; then
+    if [[ -z "${TARGET_DIR}" ]]; then
+        echo "DESTINATION_DIR or TARGET_DIR (or REPO_DIR) environment variable is required" >&2
+        exit 1
+    fi
+    DESTINATION_DIR="fiber-docs/docs/${TARGET_DIR}"
+fi
 COMMIT_URL=${COMMIT_URL:-https://github.com/gofiber/contrib}
 DOCUSAURUS_COMMAND=${DOCUSAURUS_COMMAND:-npm run docusaurus -- docs:version:contrib}
 
@@ -22,7 +31,7 @@ git clone "https://${TOKEN}@${REPO_URL}" fiber-docs
 
 if [[ "${EVENT}" == "push" ]]; then
     latest_commit=$(git rev-parse --short HEAD)
-    destination="fiber-docs/docs/${TARGET_DIR}"
+    destination="${DESTINATION_DIR}"
 
     mkdir -p "${destination}"
     rsync -a --delete \
