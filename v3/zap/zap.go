@@ -174,9 +174,6 @@ func New(config ...Config) fiber.Handler {
 				}
 			case "reqHeaders":
 				for header, values := range c.GetReqHeaders() {
-					if shouldRedactHeader(header) {
-						values = []string{"[REDACTED]"}
-					}
 					if len(values) == 0 {
 						continue
 					}
@@ -209,17 +206,6 @@ func contains(needle string, slice []string) bool {
 	return false
 }
 
-// shouldRedactHeader returns true for headers commonly containing secrets/PII.
-func shouldRedactHeader(h string) bool {
-	switch utils.ToLower(h) {
-	case "authorization", "proxy-authorization", "cookie", "set-cookie",
-		"x-api-key", "x-apikey", "api-key", "x-auth-token":
-		return true
-	default:
-		return false
-	}
-}
-
 var sensitiveRequestHeaders = map[string]struct{}{
 	"authorization":       {},
 	"proxy-authorization": {},
@@ -233,7 +219,7 @@ func sanitizeHeaderValues(header string, values []string) []string {
 		return values
 	}
 
-	if _, ok := sensitiveRequestHeaders[strings.ToLower(header)]; !ok {
+	if _, ok := sensitiveRequestHeaders[utils.ToLower(header)]; !ok {
 		return values
 	}
 
