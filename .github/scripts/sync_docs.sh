@@ -45,9 +45,10 @@ if [[ "${EVENT}" == "push" ]]; then
     destination="${DESTINATION_DIR}"
 
     rsync_source="${SOURCE_DIR}/"
-    rsync_destination="${destination}/"
+    # Ensure we copy into the cloned fiber-docs directory so commits/push operate on the right repo
+    rsync_destination="fiber-docs/${destination}/"
 
-    log "Preparing to sync files from '${rsync_source}' to 'fiber-docs/${rsync_destination}'"
+    log "Preparing to sync files from '${rsync_source}' to '${rsync_destination}'"
 
     mkdir -p "${rsync_destination}"
     log "Running rsync (verbose) to copy markdown files..."
