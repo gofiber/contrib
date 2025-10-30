@@ -19,7 +19,6 @@ jobs:
             - name: Checkout
               uses: actions/checkout@v5
               with:
-                  ref: ${{ github.event.pull_request.head.sha }}
                   fetch-depth: 2
 
             - name: Setup Node.js environment
@@ -36,3 +35,4 @@ jobs:
                   EVENT: ${{ github.event_name }}
                   TAG_NAME: ${{ github.ref_name }}
                   TOKEN: ${{ secrets.DOC_SYNC_TOKEN }}
+                  REPO_DIR: contrib/v3

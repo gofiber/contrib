@@ -3,6 +3,8 @@ title: 👋 Welcome
 sidebar_position: 1
 ---
 
+> 📦 The canonical copy of this README lives in [v3/README.md](./v3/README.md).
+
 <div align="center">
   <img height="125" alt="Fiber" src="https://raw.githubusercontent.com/gofiber/contrib/master/.github/logo-dark.svg#gh-dark-mode-only" />
   <img height="125" alt="Fiber" src="https://raw.githubusercontent.com/gofiber/contrib/master/.github/logo.svg#gh-light-mode-only" />

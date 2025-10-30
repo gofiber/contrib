@@ -1,50 +1,50 @@
-name-template: '{{FOLDER}} - v$RESOLVED_VERSION'
-tag-template: '{{FOLDER}}/v$RESOLVED_VERSION'
-tag-prefix: {{FOLDER}}/v
+name-template: '{{PACKAGE}} - v$RESOLVED_VERSION'
+tag-template: '{{PACKAGE}}/v$RESOLVED_VERSION'
+tag-prefix: {{PACKAGE}}/v
 include-paths:
-  - {{FOLDER}}
+  - {{DIRECTORY}}/**
 categories:
-    - title: '❗ Breaking Changes'
-      labels:
-          - '❗ BreakingChange'
-    - title: '🚀 New'
-      labels:
-          - '✏️ Feature'
-    - title: '🧹 Updates'
-      labels:
-          - '🧹 Updates'
-          - '🤖 Dependencies'
-    - title: '🐛 Fixes'
-      labels:
-          - '☢️ Bug'
-    - title: '📚 Documentation'
-      labels:
-          - '📒 Documentation'
+  - title: '❗ Breaking Changes'
+    labels:
+      - '❗ BreakingChange'
+  - title: '🚀 New'
+    labels:
+      - '✏️ Feature'
+  - title: '🧹 Updates'
+    labels:
+      - '🧹 Updates'
+      - '🤖 Dependencies'
+  - title: '🐛 Fixes'
+    labels:
+      - '☢️ Bug'
+  - title: '📚 Documentation'
+    labels:
+      - '📒 Documentation'
 change-template: '- $TITLE (#$NUMBER)'
-change-title-escapes: '\<*_&' # You can add # and @ to disable mentions, and add ` to disable code blocks.
+change-title-escapes: '\\<*_&'
 exclude-contributors:
-    - dependabot
-    - dependabot[bot]
+  - dependabot
+  - dependabot[bot]
 version-resolver:
-    major:
-        labels:
-            - 'major'
-            - '❗ BreakingChange'
-    minor:
-        labels:
-            - 'minor'
-            - '✏️ Feature'
-    patch:
-        labels:
-            - 'patch'
-            - '📒 Documentation'
-            - '☢️ Bug'
-            - '🤖 Dependencies'
-            - '🧹 Updates'
-    default: patch
+  major:
+    labels:
+      - 'major'
+      - '❗ BreakingChange'
+  minor:
+    labels:
+      - 'minor'
+      - '✏️ Feature'
+  patch:
+    labels:
+      - 'patch'
+      - '📒 Documentation'
+      - '☢️ Bug'
+      - '🤖 Dependencies'
+      - '🧹 Updates'
+  default: patch
 template: |
-    $CHANGES
+  $CHANGES
 
-    **Full Changelog**: https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...{{FOLDER}}/v$RESOLVED_VERSION
+  **Full Changelog**: https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...{{PACKAGE}}/v$RESOLVED_VERSION
 
-    Thank you $CONTRIBUTORS for making this update possible.
+  Thank you $CONTRIBUTORS for making this update possible.
