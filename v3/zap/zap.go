@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
 	"go.uber.org/zap"
 )
 
@@ -173,6 +174,9 @@ func New(config ...Config) fiber.Handler {
 				}
 			case "reqHeaders":
 				for header, values := range c.GetReqHeaders() {
+					if shouldRedactHeader(header) {
+						values = []string{"[REDACTED]"}
+					}
 					if len(values) == 0 {
 						continue
 					}
@@ -203,6 +207,17 @@ func contains(needle string, slice []string) bool {
 	}
 
 	return false
+}
+
+// shouldRedactHeader returns true for headers commonly containing secrets/PII.
+func shouldRedactHeader(h string) bool {
+	switch utils.ToLower(h) {
+	case "authorization", "proxy-authorization", "cookie", "set-cookie",
+		"x-api-key", "x-apikey", "api-key", "x-auth-token":
+		return true
+	default:
+		return false
+	}
 }
 
 var sensitiveRequestHeaders = map[string]struct{}{
