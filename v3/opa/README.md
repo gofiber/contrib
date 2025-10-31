@@ -84,7 +84,7 @@ package example.authz
 
 default allow := false
 
-allow {
+allow if {
     input.method == "GET"
 }
 `
