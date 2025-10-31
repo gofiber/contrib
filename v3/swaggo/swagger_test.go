@@ -1,4 +1,4 @@
-package swaggerdocgen
+package swaggo
 
 import (
 	"mime"

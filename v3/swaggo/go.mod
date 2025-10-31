@@ -1,4 +1,4 @@
-module github.com/gofiber/contrib/v3/swaggerdocgen
+module github.com/gofiber/contrib/v3/swaggo
 
 go 1.25.0
 

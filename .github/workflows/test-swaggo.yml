@@ -1,4 +1,4 @@
-name: "Test swaggerdocgen"
+name: "Test swaggo"
 
 on:
   push:
@@ -6,14 +6,14 @@ on:
       - master
       - main
     paths:
-      - 'v3/swaggerdocgen/**/*.go'
-      - 'v3/swaggerdocgen/go.mod'
-      - 'v3/swaggerdocgen/go.sum'
+      - 'v3/swaggo/**/*.go'
+      - 'v3/swaggo/go.mod'
+      - 'v3/swaggo/go.sum'
   pull_request:
     paths:
-      - 'v3/swaggerdocgen/**/*.go'
-      - 'v3/swaggerdocgen/go.mod'
-      - 'v3/swaggerdocgen/go.sum'
+      - 'v3/swaggo/**/*.go'
+      - 'v3/swaggo/go.mod'
+      - 'v3/swaggo/go.sum'
 
 jobs:
   Tests:
@@ -30,5 +30,5 @@ jobs:
         with:
           go-version: '${{ matrix.go-version }}'
       - name: Run Test
-        working-directory: ./v3/swaggerdocgen
+        working-directory: ./v3/swaggo
         run: go test -v -race ./...
