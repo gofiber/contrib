@@ -12,11 +12,6 @@ import (
 )
 
 type Config struct {
-	// Next defines a function to skip this middleware when returned true.
-	//
-	// Optional. Default: nil
-	Next func(c fiber.Ctx) bool
-
 	// RootPath is i18n template folder path
 	//
 	// Default: ./example/localize
@@ -54,7 +49,6 @@ type Config struct {
 
 	bundle       *i18n.Bundle
 	localizerMap *sync.Map
-	mu           sync.Mutex
 }
 
 type Loader interface {
@@ -68,7 +62,6 @@ func (f LoaderFunc) LoadMessage(path string) ([]byte, error) {
 }
 
 var ConfigDefault = &Config{
-	Next:             nil,
 	RootPath:         "./example/localize",
 	DefaultLanguage:  language.English,
 	AcceptLanguages:  []language.Tag{language.Chinese, language.English},
@@ -82,30 +75,29 @@ func defaultLangHandler(c fiber.Ctx, defaultLang string) string {
 	if c == nil || c.Request() == nil {
 		return defaultLang
 	}
-	var lang string
-	lang = utils.CopyString(c.Query("lang"))
-	if lang != "" {
-		return lang
+	if lang := c.Query("lang"); lang != "" {
+		return utils.CopyString(lang)
 	}
-	lang = utils.CopyString(c.Get("Accept-Language"))
-	if lang != "" {
-		return lang
+	if lang := c.Get("Accept-Language"); lang != "" {
+		return utils.CopyString(lang)
 	}
 
 	return defaultLang
 }
 
 func configDefault(config ...*Config) *Config {
-	// Return default config if nothing provided
-	if len(config) == 0 {
-		return ConfigDefault
-	}
+	var cfg *Config
 
-	// Override default config
-	cfg := config[0]
-
-	if cfg.Next == nil {
-		cfg.Next = ConfigDefault.Next
+	switch {
+	case len(config) == 0 || config[0] == nil:
+		copyCfg := *ConfigDefault
+		// ensure mutable fields are not shared with defaults
+		if copyCfg.AcceptLanguages != nil {
+			copyCfg.AcceptLanguages = append([]language.Tag(nil), copyCfg.AcceptLanguages...)
+		}
+		cfg = &copyCfg
+	default:
+		cfg = config[0]
 	}
 
 	if cfg.RootPath == "" {
@@ -116,24 +108,20 @@ func configDefault(config ...*Config) *Config {
 		cfg.DefaultLanguage = ConfigDefault.DefaultLanguage
 	}
 
-	if cfg.UnmarshalFunc == nil {
-		cfg.UnmarshalFunc = ConfigDefault.UnmarshalFunc
-	}
-
 	if cfg.FormatBundleFile == "" {
 		cfg.FormatBundleFile = ConfigDefault.FormatBundleFile
 	}
 
+	if cfg.UnmarshalFunc == nil {
+		cfg.UnmarshalFunc = ConfigDefault.UnmarshalFunc
+	}
+
 	if cfg.AcceptLanguages == nil {
-		cfg.AcceptLanguages = ConfigDefault.AcceptLanguages
+		cfg.AcceptLanguages = append([]language.Tag(nil), ConfigDefault.AcceptLanguages...)
 	}
 
 	if cfg.Loader == nil {
 		cfg.Loader = ConfigDefault.Loader
-	}
-
-	if cfg.UnmarshalFunc == nil {
-		cfg.UnmarshalFunc = ConfigDefault.UnmarshalFunc
 	}
 
 	if cfg.LangHandler == nil {
