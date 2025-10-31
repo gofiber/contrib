@@ -61,9 +61,11 @@ jobs:
             go-version: "1.25.x"
             cache: false
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
           args: "--tests=false --timeout=5m"
           working-directory: ./v3/${{ matrix.package }}
             # NOTE: Keep this in sync with the version from .golangci.yml
           version: v2.6.0
+            # NOTE(ldez): temporary workaround
+          install-mode: goinstall
