@@ -66,11 +66,11 @@ type Config struct {
 
 func defaultRecover(c *Conn) {
 	if err := recover(); err != nil {
-		_, _ = os.Stderr.WriteString(fmt.Sprintf("panic: %v\n%s\n", err, debug.Stack())) //nolint:errcheck // This will never fail
-		if err := c.WriteJSON(fiber.Map{"error": err}); err != nil {
-			_, _ = os.Stderr.WriteString(fmt.Sprintf("could not write error response: %v\n", err))
-		}
-	}
+                _, _ = fmt.Fprintf(os.Stderr, "panic: %v\n%s\n", err, debug.Stack()) //nolint:errcheck // This will never fail
+                if err := c.WriteJSON(fiber.Map{"error": err}); err != nil {
+                        _, _ = fmt.Fprintf(os.Stderr, "could not write error response: %v\n", err)
+                }
+        }
 }
 
 // New returns a new `handler func(*Conn)` that upgrades a client to the
