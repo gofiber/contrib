@@ -1,15 +1,15 @@
 ---
-id: swagger
-title: Swagger
+id: swaggerui
+title: Swagger UI Middleware
 ---
 
-# Swagger
+# Swagger UI Middleware
 
-![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=swagger*)
+![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=swaggerui*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
-![Test](https://github.com/gofiber/contrib/workflows/Test%20swagger/badge.svg)
+![Test](https://github.com/gofiber/contrib/workflows/Test%20swaggerui/badge.svg)
 
-Swagger middleware for [Fiber](https://github.com/gofiber/fiber). The middleware handles Swagger UI.
+Swagger UI middleware for [Fiber](https://github.com/gofiber/fiber). This handler serves pre-generated Swagger/OpenAPI specs via the swagger-ui package.
 
 
 **Compatible with Fiber v3.**
@@ -27,7 +27,7 @@ We only support the latest two versions of Go. Visit [https://go.dev/doc/devel/r
 
 ### Signatures
 ```go
-func New(config ...swagger.Config) fiber.Handler
+func New(config ...swaggerui.Config) fiber.Handler
 ```
 
 ### Installation
@@ -35,9 +35,9 @@ Swagger is tested on the latests [Go versions](https://golang.org/dl/) with supp
 ```bash
 go mod init github.com/<user>/<repo>
 ```
-And then install the swagger middleware:
+And then install the Swagger UI middleware:
 ```bash
-go get github.com/gofiber/contrib/v3/swagger
+go get github.com/gofiber/contrib/v3/swaggerui
 ```
 
 ### Examples
@@ -45,30 +45,30 @@ Import the middleware package
 ```go
 import (
   "github.com/gofiber/fiber/v3"
-  "github.com/gofiber/contrib/v3/swagger"
+  "github.com/gofiber/contrib/v3/swaggerui"
 )
 ```
 
 Using the default config:
 ```go
-app.Use(swagger.New())
+app.Use(swaggerui.New())
 ```
 
 Using a custom config:
 ```go
-cfg := swagger.Config{
+cfg := swaggerui.Config{
     BasePath: "/",
     FilePath: "./docs/swagger.json",
     Path:     "swagger",
     Title:    "Swagger API Docs",
 }
 
-app.Use(swagger.New(cfg))
+app.Use(swaggerui.New(cfg))
 ```
 
 Use program data for Swagger content:
 ```go
-cfg := swagger.Config{
+cfg := swaggerui.Config{
     BasePath:    "/",
     FilePath:    "./docs/swagger.json",
     FileContent: mySwaggerByteSlice,
@@ -76,7 +76,7 @@ cfg := swagger.Config{
     Title:       "Swagger API Docs",
 }
 
-app.Use(swagger.New(cfg))
+app.Use(swaggerui.New(cfg))
 ```
 
 Using multiple instances of Swagger:
@@ -84,7 +84,7 @@ Using multiple instances of Swagger:
 // Create Swagger middleware for v1
 //
 // Swagger will be available at: /api/v1/docs
-app.Use(swagger.New(swagger.Config{
+app.Use(swaggerui.New(swaggerui.Config{
     BasePath: "/api/v1/",
     FilePath: "./docs/v1/swagger.json",
     Path:     "docs",
@@ -93,7 +93,7 @@ app.Use(swagger.New(swagger.Config{
 // Create Swagger middleware for v2
 //
 // Swagger will be available at: /api/v2/docs
-app.Use(swagger.New(swagger.Config{
+app.Use(swaggerui.New(swaggerui.Config{
     BasePath: "/api/v2/",
     FilePath: "./docs/v2/swagger.json",
     Path:     "docs",

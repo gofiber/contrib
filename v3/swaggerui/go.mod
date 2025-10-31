@@ -1,4 +1,4 @@
-module github.com/gofiber/contrib/v3/swagger
+module github.com/gofiber/contrib/v3/swaggerui
 
 go 1.25.0
 

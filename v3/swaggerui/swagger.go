@@ -1,4 +1,4 @@
-package swagger
+package swaggerui
 
 import (
 	"encoding/json"
