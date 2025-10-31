@@ -220,7 +220,7 @@ type OAuthConfig struct {
 	ClientId string `json:"clientId,omitempty"`
 
 	// Never use this parameter in your production environment.
-	// It exposes cruicial security information. This feature is intended for dev/test environments only.
+	// It exposes crucial security information. This feature is intended for dev/test environments only.
 	// Secret of the client sent to the OAuth2 provider.
 	// default: ""
 	ClientSecret string `json:"clientSecret,omitempty"`
@@ -247,7 +247,7 @@ type OAuthConfig struct {
 	// default: false
 	UseBasicAuthenticationWithAccessCodeGrant bool `json:"useBasicAuthenticationWithAccessCodeGrant,omitempty"`
 
-	// Only applies to authorizatonCode flows.
+	// Only applies to authorizationCode flows.
 	// Proof Key for Code Exchange brings enhanced security for OAuth public clients.
 	// default: false
 	UsePkceWithAuthorizationCodeGrant bool `json:"usePkceWithAuthorizationCodeGrant,omitempty"`

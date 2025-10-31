@@ -52,7 +52,7 @@ func New(config ...Config) fiber.Handler {
 			cfgCopy.URL = path.Join(prefix, defaultDocURL)
 		}
 
-		p := c.Path(utils.CopyString(c.Params("*")))
+		p := utils.CopyString(c.Params("*"))
 
 		switch p {
 		case defaultIndex:
@@ -123,11 +123,7 @@ func getForwardedPrefix(c fiber.Ctx) string {
 			endIndex--
 		}
 
-		if endIndex != len(rawPrefix) {
-			prefix += rawPrefix[:endIndex]
-		} else {
-			prefix += rawPrefix
-		}
+		prefix += rawPrefix[:endIndex]
 	}
 
 	return prefix

@@ -33,7 +33,7 @@ func New(config ...Config) fiber.Handler
 ```
 
 ### Installation
-Swagger Doc Generator is tested on the latest [Go versions](https://golang.org/dl/) with support for modules. Make sure to initialize one first if you have not done that yet:
+Swagger Doc Generator is tested on the latest [Go versions](https://go.dev/dl/) with support for modules. Make sure to initialize one first if you have not done that yet:
 ```bash
 go mod init github.com/<user>/<repo>
 ```
