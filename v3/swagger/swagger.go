@@ -196,7 +196,7 @@ func New(config ...Config) fiber.Handler {
 		}
 
 		// Only respond to requests to SwaggerUI and SpecURL (swagger.json)
-		if !(c.Path() == swaggerUIPath || c.Path() == specURL) {
+                if c.Path() != swaggerUIPath && c.Path() != specURL {
 			return c.Next()
 		}
 

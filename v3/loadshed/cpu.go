@@ -47,6 +47,6 @@ type CPUPercentGetter interface {
 
 type DefaultCPUPercentGetter struct{}
 
-func (_ *DefaultCPUPercentGetter) PercentWithContext(ctx context.Context, interval time.Duration, percpu bool) ([]float64, error) {
+func (*DefaultCPUPercentGetter) PercentWithContext(ctx context.Context, interval time.Duration, percpu bool) ([]float64, error) {
 	return cpu.PercentWithContext(ctx, interval, percpu)
 }
