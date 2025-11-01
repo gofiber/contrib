@@ -80,7 +80,12 @@ func New(config ...Config) fiber.Handler {
 				}
 				return err
 			}
-			defer file.Close()
+			defer func() {
+				cerr := file.Close()
+				if cerr != nil && err == nil {
+					err = cerr
+				}
+			}()
 
 			info, err := file.Stat()
 			if err != nil {
