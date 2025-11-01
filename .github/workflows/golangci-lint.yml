@@ -42,8 +42,23 @@ jobs:
         uses: dorny/paths-filter@v3
         with:
           filters: ${{ steps.filter-setup.outputs.filters }}
+
+      - name: Set packages
+        id: set-packages
+        run: |
+          # If this is a push to master or main, build a JSON array of all packages.
+          # Otherwise, use the filtered list of changed packages.
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            packages=$(find v3 -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort | awk 'BEGIN{first=1; printf "["} {if(!first) printf ","; printf "\"%s\"", $0; first=0} END{printf "]"}')
+          else
+            packages='${{ steps.filter.outputs.changes }}'
+          fi
+          echo "packages<<EOF" >> $GITHUB_OUTPUT
+          echo "$packages" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        shell: bash
     outputs:
-      packages: ${{ steps.filter.outputs.changes || '[]' }}
+      packages: ${{ steps.set-packages.outputs.packages }}
 
   lint:
     needs: changes

@@ -15,7 +15,8 @@ use (
 ./v3/paseto
 ./v3/sentry
 ./v3/socketio
-./v3/swagger
+    ./v3/swaggo
+./v3/swaggerui
 ./v3/testcontainers
 ./v3/websocket
 ./v3/zap
