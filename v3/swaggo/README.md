@@ -140,5 +140,5 @@ var ConfigDefault = Config{
 }
 ```
 
-> Refer to [`config.go`](./config.go) for a complete list of options and documentation strings.
+> Refer to `config.go` for a complete list of options and documentation strings.
 
