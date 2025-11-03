@@ -47,8 +47,8 @@ github.com/rogpeppe/go-internal v1.14.1 h1:UQB4HGPB6osV0SQTLymcB4TgvyWu6ZyliaW0t
 github.com/rogpeppe/go-internal v1.14.1/go.mod h1:MaRKkUm5W0goXpeCfT7UZI6fk/L7L7so1lCWt35ZSgc=
 github.com/shamaton/msgpack/v2 v2.3.1 h1:R3QNLIGA/tbdczNMZ5PCRxrXvy+fnzsIaHG4kKMgWYo=
 github.com/shamaton/msgpack/v2 v2.3.1/go.mod h1:6khjYnkx73f7VQU7wjcFS9DFjs+59naVWJv1TB7qdOI=
-github.com/shirou/gopsutil/v4 v4.25.9 h1:JImNpf6gCVhKgZhtaAHJ0serfFGtlfIlSC08eaKdTrU=
-github.com/shirou/gopsutil/v4 v4.25.9/go.mod h1:gxIxoC+7nQRwUl/xNhutXlD8lq+jxTgpIkEf3rADHL8=
+github.com/shirou/gopsutil/v4 v4.25.10 h1:at8lk/5T1OgtuCp+AwrDofFRjnvosn0nkN2OLQ6g8tA=
+github.com/shirou/gopsutil/v4 v4.25.10/go.mod h1:+kSwyC8DRUD9XXEHCAFjK+0nuArFJM0lva+StQAcskM=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/tinylib/msgp v1.5.0 h1:GWnqAE54wmnlFazjq2+vgr736Akg58iiHImh+kPY2pc=
