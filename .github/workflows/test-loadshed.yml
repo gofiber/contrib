@@ -6,10 +6,12 @@ on:
       - master
       - main
     paths:
-      - "loadshed/**"
+      - 'v3/loadshed/**/*.go'
+      - 'v3/loadshed/go.mod'
   pull_request:
     paths:
-      - "loadshed/**"
+      - 'v3/loadshed/**/*.go'
+      - 'v3/loadshed/go.mod'
 
 jobs:
   Tests:
@@ -22,9 +24,9 @@ jobs:
       - name: Fetch Repository
         uses: actions/checkout@v5
       - name: Install Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "${{ matrix.go-version }}"
       - name: Run Test
-        working-directory: ./loadshed
+        working-directory: ./v3/loadshed
         run: go test -v -race ./...

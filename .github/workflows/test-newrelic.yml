@@ -1,0 +1,32 @@
+name: "Test newrelic"
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - 'v3/newrelic/**/*.go'
+      - 'v3/newrelic/go.mod'
+  pull_request:
+    paths:
+      - 'v3/newrelic/**/*.go'
+      - 'v3/newrelic/go.mod'
+
+jobs:
+  Tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version:
+          - 1.25.x
+    steps:
+      - name: Fetch Repository
+        uses: actions/checkout@v5
+      - name: Install Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '${{ matrix.go-version }}'
+      - name: Run Test
+        working-directory: ./v3/newrelic
+        run: go test -v -race ./...

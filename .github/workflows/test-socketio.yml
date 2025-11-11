@@ -6,10 +6,12 @@ on:
       - master
       - main
     paths:
-      - "socketio/**"
+      - 'v3/socketio/**/*.go'
+      - 'v3/socketio/go.mod'
   pull_request:
     paths:
-      - "socketio/**"
+      - 'v3/socketio/**/*.go'
+      - 'v3/socketio/go.mod'
 
 jobs:
   Tests:
@@ -22,9 +24,9 @@ jobs:
       - name: Fetch Repository
         uses: actions/checkout@v5
       - name: Install Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "${{ matrix.go-version }}"
       - name: Run Test
-        working-directory: ./socketio
+        working-directory: ./v3/socketio
         run: go test -v -race ./...

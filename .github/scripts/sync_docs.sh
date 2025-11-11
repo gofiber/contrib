@@ -1,85 +1,120 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
-# Some env variables
-BRANCH="main"
-REPO_URL="github.com/gofiber/docs.git"
-AUTHOR_EMAIL="github-actions[bot]@users.noreply.github.com"
-AUTHOR_USERNAME="github-actions[bot]"
-VERSION_FILE="contrib_versions.json"
-REPO_DIR="contrib"
-COMMIT_URL="https://github.com/gofiber/contrib"
-DOCUSAURUS_COMMAND="npm run docusaurus -- docs:version:contrib"
+REPO_URL=${REPO_URL:-github.com/gofiber/docs.git}
+AUTHOR_EMAIL=${AUTHOR_EMAIL:-github-actions[bot]@users.noreply.github.com}
+AUTHOR_USERNAME=${AUTHOR_USERNAME:-github-actions[bot]}
+VERSION_FILE=${VERSION_FILE:-contrib_versions.json}
+SOURCE_DIR=${SOURCE_DIR:-v3}
+DESTINATION_DIR=${DESTINATION_DIR:-}
+COMMIT_URL=${COMMIT_URL:-https://github.com/gofiber/contrib}
+DOCUSAURUS_COMMAND=${DOCUSAURUS_COMMAND:-npm run docusaurus -- docs:version:contrib}
 
-# Set commit author
+TOKEN=${TOKEN:?TOKEN environment variable is required}
+EVENT=${EVENT:?EVENT environment variable is required}
+TAG_NAME=${TAG_NAME:-}
+
+# Add a small logging helper and an error trap
+log() {
+    printf '%s %s\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "$*"
+}
+
+trap 'log "ERROR: script failed at line ${LINENO}"' ERR
+
+log "Starting sync_docs.sh"
+log "Event: ${EVENT}"
+log "Source: ${SOURCE_DIR}"
+log "Destination: ${DESTINATION_DIR:-(none)}"
+log "Repo: ${REPO_URL}"
+log "Version file: ${VERSION_FILE}"
+if [[ -n "${TAG_NAME:-}" ]]; then
+    log "Tag name: ${TAG_NAME}"
+fi
+
+# Configure git author
+log "Configuring git author: ${AUTHOR_USERNAME} <${AUTHOR_EMAIL}>"
 git config --global user.email "${AUTHOR_EMAIL}"
 git config --global user.name "${AUTHOR_USERNAME}"
 
-git clone https://${TOKEN}@${REPO_URL} fiber-docs
+log "Cloning docs repository: https://${REPO_URL}"
+git clone "https://${TOKEN}@${REPO_URL}" fiber-docs
+log "Clone finished: fiber-docs directory created"
 
-# Handle push event
-if [ "$EVENT" == "push" ]; then
-  latest_commit=$(git rev-parse --short HEAD)
+if [[ "${EVENT}" == "push" ]]; then
+    latest_commit=$(git rev-parse --short HEAD)
+    destination="${DESTINATION_DIR}"
 
-  for f in $(find . -type f -name "*.md" -not -path "./fiber-docs/*"); do
-    log_output=$(git log --oneline "${BRANCH}" HEAD~1..HEAD --name-status -- "${f}")
+    rsync_source="${SOURCE_DIR}/"
+    # Ensure we copy into the cloned fiber-docs directory so commits/push operate on the right repo
+    rsync_destination="fiber-docs/${destination}/"
 
-    if [[ $log_output != "" || ! -f "fiber-docs/docs/${REPO_DIR}/$f" ]]; then
-      mkdir -p fiber-docs/docs/${REPO_DIR}/$(dirname $f)
-      cp "${f}" fiber-docs/docs/${REPO_DIR}/$f
+    log "Preparing to sync files from '${rsync_source}' to '${rsync_destination}'"
+
+    mkdir -p "${rsync_destination}"
+    log "Running rsync (verbose) to copy markdown files..."
+    rsync -av --delete --prune-empty-dirs \
+        --include '*/' \
+        --include '*.md' \
+        --exclude '*' \
+        "${rsync_source}" "${rsync_destination}"
+    log "rsync completed"
+
+elif [[ "${EVENT}" == "release" ]]; then
+    if [[ -z "${TAG_NAME}" ]]; then
+        echo "TAG_NAME must be provided for release events" >&2
+        exit 1
     fi
-  done
 
-# Handle release event
-elif [ "$EVENT" == "release" ]; then
-  # Extract package name from tag
-  package_name="${TAG_NAME%/*}"
-  major_version="${TAG_NAME#*/}"
-  major_version="${major_version%%.*}"
+    log "Handling release event for tag: ${TAG_NAME}"
 
-  # Form new version name
-  new_version="${package_name}_${major_version}.x.x"
+    package_name="${TAG_NAME%/*}"
+    major_version="${TAG_NAME#*/}"
+    major_version="${major_version%%.*}"
+    new_version="${package_name}_${major_version}.x.x"
 
-  cd fiber-docs/ || true
-  npm ci
+    log "Computed new version identifier for docs: ${new_version}"
 
-  # Check if contrib_versions.json exists and modify it if required
-  if [[ -f $VERSION_FILE ]]; then
-    jq --arg new_version "$new_version" 'del(.[] | select(. == $new_version))' $VERSION_FILE > temp.json && mv temp.json $VERSION_FILE
-  fi
+    pushd fiber-docs >/dev/null
+    log "Running npm ci in fiber-docs"
+    npm ci
 
-  # Run docusaurus versioning command
-  $DOCUSAURUS_COMMAND "${new_version}"
+    if [[ -f ${VERSION_FILE} ]]; then
+        log "Removing existing entry ${new_version} from ${VERSION_FILE} (if present)"
+        jq --arg version "${new_version}" 'del(.[] | select(. == $version))' "${VERSION_FILE}" > "${VERSION_FILE}.tmp"
+        mv "${VERSION_FILE}.tmp" "${VERSION_FILE}"
+    fi
 
-  if [[ -f $VERSION_FILE ]]; then
-    jq 'sort | reverse' ${VERSION_FILE} > temp.json && mv temp.json ${VERSION_FILE}
-  fi
+    log "Running Docusaurus command to add version: ${DOCUSAURUS_COMMAND} ${new_version}"
+    ${DOCUSAURUS_COMMAND} "${new_version}"
+
+    if [[ -f ${VERSION_FILE} ]]; then
+        log "Sorting ${VERSION_FILE}"
+        jq 'sort | reverse' "${VERSION_FILE}" > "${VERSION_FILE}.tmp"
+        mv "${VERSION_FILE}.tmp" "${VERSION_FILE}"
+    fi
+    popd >/dev/null
+    log "Release handling completed"
 fi
 
-# Push changes
-cd fiber-docs/ || true
-git add .
-if [[ $EVENT == "push" ]]; then
-    git commit -m "Add docs from ${COMMIT_URL}/commit/${latest_commit}"
-elif [[ $EVENT == "release" ]]; then
-    git commit -m "Sync docs for release ${COMMIT_URL}/releases/tag/${TAG_NAME}"
+pushd fiber-docs >/dev/null
+log "Checking for changes in fiber-docs"
+if git status --porcelain | grep -q .; then
+    log "Changes detected - staging files"
+    git add .
+    if [[ "${EVENT}" == "push" ]]; then
+        log "Committing changes for push event"
+        git commit -m "Add docs from ${COMMIT_URL}/commit/${latest_commit}"
+    else
+        log "Committing changes for release event"
+        git commit -m "Sync docs for release ${COMMIT_URL}/releases/tag/${TAG_NAME}"
+    fi
+
+    log "Pushing changes to ${REPO_URL}"
+    git push "https://${TOKEN}@${REPO_URL}"
+    log "Push completed successfully"
+else
+    log "No documentation changes to push. Exiting."
 fi
+popd >/dev/null
 
-MAX_RETRIES=5
-DELAY=5
-retry=0
-
-while ((retry < MAX_RETRIES))
-do
-    git push https://${TOKEN}@${REPO_URL} && break
-    retry=$((retry + 1))
-    git pull --rebase
-    sleep $DELAY
-done
-
-if ((retry == MAX_RETRIES))
-then
-    echo "Failed to push after $MAX_RETRIES attempts. Exiting with 1."
-    exit 1
-fi
-
+log "sync_docs.sh finished"

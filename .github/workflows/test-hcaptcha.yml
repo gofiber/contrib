@@ -6,10 +6,12 @@ on:
       - master
       - main
     paths:
-      - 'hcaptcha/**'
+      - 'v3/hcaptcha/**/*.go'
+      - 'v3/hcaptcha/go.mod'
   pull_request:
     paths:
-      - 'hcaptcha/**'
+      - 'v3/hcaptcha/**/*.go'
+      - 'v3/hcaptcha/go.mod'
 
 jobs:
   Tests:
@@ -22,9 +24,9 @@ jobs:
       - name: Fetch Repository
         uses: actions/checkout@v5
       - name: Install Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '${{ matrix.go-version }}'
       - name: Run Test
-        working-directory: ./hcaptcha
+        working-directory: ./v3/hcaptcha
         run: go test -v -race ./...

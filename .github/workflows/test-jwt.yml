@@ -6,10 +6,12 @@ on:
       - master
       - main
     paths:
-      - 'jwt/**'
+      - 'v3/jwt/**/*.go'
+      - 'v3/jwt/go.mod'
   pull_request:
     paths:
-      - 'jwt/**'
+      - 'v3/jwt/**/*.go'
+      - 'v3/jwt/go.mod'
 
 jobs:
   Tests:
@@ -22,9 +24,9 @@ jobs:
       - name: Fetch Repository
         uses: actions/checkout@v5
       - name: Install Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '${{ matrix.go-version }}'
       - name: Run Test
-        working-directory: ./jwt
+        working-directory: ./v3/jwt
         run: go test -v -race ./...

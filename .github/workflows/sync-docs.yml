@@ -7,6 +7,16 @@ on:
             - main
         paths:
             - '**/*.md'
+    workflow_dispatch:
+        inputs:
+            mode:
+                description: 'Trigger mode: choose "push" to run the push flow or "release" to run the release flow'
+                required: true
+                default: 'push'
+            tag_name:
+                description: 'Tag name to use for release mode (optional when triggering manually)'
+                required: false
+                default: ''
     release:
         types: [published]
         branches:
@@ -19,11 +29,10 @@ jobs:
             - name: Checkout
               uses: actions/checkout@v5
               with:
-                  ref: ${{ github.event.pull_request.head.sha }}
                   fetch-depth: 2
 
             - name: Setup Node.js environment
-              uses: actions/setup-node@v4
+              uses: actions/setup-node@v6
               with:
                   node-version: '18'
 
@@ -33,6 +42,9 @@ jobs:
             - name: Sync docs
               run: ./.github/scripts/sync_docs.sh
               env:
-                  EVENT: ${{ github.event_name }}
-                  TAG_NAME: ${{ github.ref_name }}
+                  # If manually triggered, use the provided inputs; otherwise keep the event-driven values
+                  EVENT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode || github.event_name }}
+                  TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}
                   TOKEN: ${{ secrets.DOC_SYNC_TOKEN }}
+                  SOURCE_DIR: 'v3'
+                  DESTINATION_DIR: 'docs/contrib'
