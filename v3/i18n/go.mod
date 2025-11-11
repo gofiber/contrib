@@ -7,7 +7,7 @@ require (
 	github.com/gofiber/utils/v2 v2.0.0-rc.2
 	github.com/nicksnyder/go-i18n/v2 v2.6.0
 	github.com/stretchr/testify v1.11.1
-	golang.org/x/text v0.30.0
+	golang.org/x/text v0.31.0
 	gopkg.in/yaml.v2 v2.4.0
 )
 
@@ -24,8 +24,8 @@ require (
 	github.com/tinylib/msgp v1.5.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.68.0 // indirect
-	golang.org/x/crypto v0.43.0 // indirect
+	golang.org/x/crypto v0.44.0 // indirect
 	golang.org/x/net v0.46.0 // indirect
-	golang.org/x/sys v0.37.0 // indirect
+	golang.org/x/sys v0.38.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
