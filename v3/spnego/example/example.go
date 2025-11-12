@@ -4,9 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/gofiber/contrib/spnego"
-	"github.com/gofiber/contrib/spnego/utils"
-	v3 "github.com/gofiber/contrib/spnego/v3"
+	"github.com/gofiber/contrib/v3/spnego"
+	"github.com/gofiber/contrib/v3/spnego/utils"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/log"
 )
@@ -33,7 +32,7 @@ func ExampleNewSpnegoKrb5AuthenticateMiddleware() {
 	if err != nil {
 		panic(fmt.Errorf("create keytab lookup function failed: %w", err))
 	}
-	authMiddleware, err := v3.NewSpnegoKrb5AuthenticateMiddleware(spnego.Config{
+	authMiddleware, err := spnego.NewSpnegoKrb5AuthenticateMiddleware(spnego.Config{
 		KeytabLookup: keytabLookup,
 	})
 	if err != nil {

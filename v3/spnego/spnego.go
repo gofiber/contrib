@@ -1,19 +1,14 @@
-// Package v2 provides SPNEGO authentication middleware for Fiber v2.
-// This middleware enables Kerberos authentication for incoming requests
-// using the SPNEGO protocol, allowing seamless integration with Active Directory
-// and other Kerberos-based authentication systems.
-package v2
+package spnego
 
 import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 
-	spnego2 "github.com/gofiber/contrib/spnego"
-	"github.com/gofiber/contrib/spnego/utils"
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/adaptor"
+	"github.com/gofiber/contrib/v3/spnego/utils"
+	"github.com/gofiber/fiber/v3"
+	flog "github.com/gofiber/fiber/v3/log"
+	"github.com/gofiber/fiber/v3/middleware/adaptor"
 	"github.com/jcmturner/goidentity/v6"
 	"github.com/jcmturner/gokrb5/v8/service"
 	"github.com/jcmturner/gokrb5/v8/spnego"
@@ -23,35 +18,37 @@ import (
 // It takes a Config struct and returns a Fiber handler or an error.
 // The middleware handles Kerberos authentication for incoming requests using the
 // SPNEGO protocol, verifying client credentials against the configured keytab.
-func NewSpnegoKrb5AuthenticateMiddleware(cfg spnego2.Config) (fiber.Handler, error) {
+func NewSpnegoKrb5AuthenticateMiddleware(cfg Config) (fiber.Handler, error) {
 	// Validate configuration
 	if cfg.KeytabLookup == nil {
-		return nil, spnego2.ErrConfigInvalidOfKeytabLookupFunctionRequired
+		return nil, ErrConfigInvalidOfKeytabLookupFunctionRequired
 	}
-	// Set default logger if not provided
-	if cfg.Log == nil {
-		// Due to differences between Fiber v2 and v3 versions, internal log.Log cannot be obtained, so a new one is created in the same way
-		cfg.Log = log.New(os.Stderr, "", log.LstdFlags|log.Lshortfile|log.Lmicroseconds)
+	// Set default logger if fiber log using *log.Logger
+	var opts = make([]func(settings *service.Settings), 0, 1)
+	if cfg.Log != nil {
+		opts = append(opts, service.Logger(cfg.Log))
+	} else if l := flog.DefaultLogger[*log.Logger]().Logger(); l != nil {
+		opts = append(opts, service.Logger(l))
 	}
 	// Return the middleware handler
-	return func(ctx *fiber.Ctx) error {
+	return func(ctx fiber.Ctx) error {
 		// Look up the keytab
 		kt, err := cfg.KeytabLookup()
 		if err != nil {
-			return fmt.Errorf("%w: %w", spnego2.ErrLookupKeytabFailed, err)
+			return fmt.Errorf("%w: %w", ErrLookupKeytabFailed, err)
 		}
 		// Create the SPNEGO handler using the keytab
 		var handleErr error
 		handler := spnego.SPNEGOKRB5Authenticate(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 			// Set the authenticated identity in the Fiber context
-			spnego2.SetAuthenticatedIdentityToContext(ctx, goidentity.FromHTTPRequestContext(r))
+			SetAuthenticatedIdentityToContext(ctx, goidentity.FromHTTPRequestContext(r))
 			// Call the next handler in the chain
 			handleErr = ctx.Next()
-		}), kt, service.Logger(cfg.Log))
+		}), kt, opts...)
 		// Convert Fiber context to HTTP request
 		rawReq, err := adaptor.ConvertRequest(ctx, true)
 		if err != nil {
-			return fmt.Errorf("%w: %w", spnego2.ErrConvertRequestFailed, err)
+			return fmt.Errorf("%w: %w", ErrConvertRequestFailed, err)
 		}
 		// Serve the request using the SPNEGO handler
 		handler.ServeHTTP(utils.NewWrapFiberContext(ctx), rawReq)
