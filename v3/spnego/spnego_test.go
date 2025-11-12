@@ -1,4 +1,4 @@
-package v2
+package spnego
 
 import (
 	"errors"
@@ -8,9 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gofiber/contrib/spnego"
-	"github.com/gofiber/contrib/spnego/utils"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/contrib/v3/spnego/utils"
+	"github.com/gofiber/fiber/v3"
 	"github.com/jcmturner/gokrb5/v8/keytab"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -18,18 +17,18 @@ import (
 
 func TestNewSpnegoKrb5AuthenticateMiddleware(t *testing.T) {
 	t.Run("test for keytab lookup function not set", func(t *testing.T) {
-		_, err := NewSpnegoKrb5AuthenticateMiddleware(spnego.Config{})
-		require.ErrorIs(t, err, spnego.ErrConfigInvalidOfKeytabLookupFunctionRequired)
+		_, err := NewSpnegoKrb5AuthenticateMiddleware(Config{})
+		require.ErrorIs(t, err, ErrConfigInvalidOfKeytabLookupFunctionRequired)
 	})
 	t.Run("test for keytab lookup failed", func(t *testing.T) {
-		middleware, err := NewSpnegoKrb5AuthenticateMiddleware(spnego.Config{
+		middleware, err := NewSpnegoKrb5AuthenticateMiddleware(Config{
 			KeytabLookup: func() (*keytab.Keytab, error) {
 				return nil, errors.New("mock keytab lookup error")
 			},
 		})
 		require.NoError(t, err)
 		app := fiber.New()
-		app.Get("/authenticate", middleware, func(c *fiber.Ctx) error {
+		app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
 			return c.SendString("authenticated")
 		})
 		handler := app.Handler()
@@ -38,7 +37,7 @@ func TestNewSpnegoKrb5AuthenticateMiddleware(t *testing.T) {
 		ctx.Request.SetRequestURI("/authenticate")
 		handler(ctx)
 		require.Equal(t, http.StatusInternalServerError, ctx.Response.StatusCode())
-		require.Equal(t, fmt.Sprintf("%s: mock keytab lookup error", spnego.ErrLookupKeytabFailed), string(ctx.Response.Body()))
+		require.Equal(t, fmt.Sprintf("%s: mock keytab lookup error", ErrLookupKeytabFailed), string(ctx.Response.Body()))
 	})
 	t.Run("test for keytab lookup function is set", func(t *testing.T) {
 		tm := time.Now()
@@ -68,22 +67,20 @@ func TestNewSpnegoKrb5AuthenticateMiddleware(t *testing.T) {
 		)
 		require.NoError(t, err2)
 		t.Cleanup(clean2)
-		lookupFunc, err := spnego.NewKeytabFileLookupFunc(filename1, filename2)
+		lookupFunc, err := NewKeytabFileLookupFunc(filename1, filename2)
 		require.NoError(t, err)
-		middleware, err := NewSpnegoKrb5AuthenticateMiddleware(spnego.Config{
+		middleware, err := NewSpnegoKrb5AuthenticateMiddleware(Config{
 			KeytabLookup: lookupFunc,
 		})
 		require.NoError(t, err)
 		app := fiber.New()
-		app.Get("/authenticate", middleware, func(c *fiber.Ctx) error {
-			user, ok := spnego.GetAuthenticatedIdentityFromContext(c)
-			require.True(t, ok)
+		app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
+			user, ok := GetAuthenticatedIdentityFromContext(c)
 			if ok {
 				t.Logf("username: %s\ndomain: %s\n", user.UserName(), user.Domain())
 			}
 			return c.SendString("authenticated")
 		})
-
 		handler := app.Handler()
 		ctx := &fasthttp.RequestCtx{}
 		ctx.Request.Header.SetMethod(fiber.MethodGet)

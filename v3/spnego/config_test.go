@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gofiber/contrib/spnego/utils"
+	"github.com/gofiber/contrib/v3/spnego/utils"
 	"github.com/stretchr/testify/require"
 )
 
