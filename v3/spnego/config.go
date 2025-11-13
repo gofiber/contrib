@@ -7,8 +7,10 @@ import (
 	"github.com/jcmturner/gokrb5/v8/keytab"
 )
 
+type contextKey string
+
 // contextKeyOfIdentity is the key used to store the authenticated identity in the Fiber context
-const contextKeyOfIdentity = "middleware.spnego.Identity"
+const contextKeyOfIdentity contextKey = "middleware.spnego.Identity"
 
 // KeytabLookupFunc is a function type that returns a keytab or an error
 // It's used to look up the keytab dynamically when needed

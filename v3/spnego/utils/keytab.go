@@ -12,19 +12,19 @@ import (
 // KeytabInfo represents information about a principal in a Kerberos keytab
 // It contains the principal name, realm, and associated encryption type pairs
 type KeytabInfo struct {
-	PrincipalName string          // The Kerberos principal name (e.g., HTTP/service.example.com)
-	Realm         string          // The Kerberos realm (e.g., EXAMPLE.COM)
+	PrincipalName string            // The Kerberos principal name (e.g., HTTP/service.example.com)
+	Realm         string            // The Kerberos realm (e.g., EXAMPLE.COM)
 	Pairs         []EncryptTypePair // List of encryption type pairs for this principal
 }
 
 // EncryptTypePair represents an encryption type entry in a Kerberos keytab
 // It contains the version, encryption type, and creation timestamp
 type EncryptTypePair struct {
-	Version     uint8      // The key version number
-	EncryptType int32      // The encryption type (e.g., 18 for AES-256-CTS-HMAC-SHA1-96)
-	CreateTime  time.Time  // The timestamp when this key was created
+	Version     uint8     // The key version number
+	EncryptType int32     // The encryption type (e.g., 18 for AES-256-CTS-HMAC-SHA1-96)
+	CreateTime  time.Time // The timestamp when this key was created
 }
- 
+
 // MultiKeytabInfo is a slice of KeytabInfo structures
 // Used to represent multiple principal entries from a keytab
 type MultiKeytabInfo []KeytabInfo
@@ -33,20 +33,23 @@ type MultiKeytabInfo []KeytabInfo
 // It organizes keytab entries by principal name and sorts them alphabetically
 //
 // Parameters:
-//   kt - A pointer to a keytab.Keytab instance (can be nil)
+//
+//	kt - A pointer to a keytab.Keytab instance (can be nil)
 //
 // Returns:
-//   MultiKeytabInfo - A sorted slice of KeytabInfo structures containing principal information
+//
+//	MultiKeytabInfo - A sorted slice of KeytabInfo structures containing principal information
 //
 // Example usage:
-//   kt, _ := keytab.Load("/path/to/keytab")
-//   info := GetKeytabInfo(kt)
-//   for _, principal := range info {
-//     fmt.Printf("Principal: %s@%s\n", principal.PrincipalName, principal.Realm)
-//     for _, pair := range principal.Pairs {
-//       fmt.Printf("  EncryptType: %d, Version: %d, Created: %v\n", pair.EncryptType, pair.Version, pair.CreateTime)
-//     }
-//   }
+//
+//	kt, _ := keytab.Load("/path/to/keytab")
+//	info := GetKeytabInfo(kt)
+//	for _, principal := range info {
+//	  fmt.Printf("Principal: %s@%s\n", principal.PrincipalName, principal.Realm)
+//	  for _, pair := range principal.Pairs {
+//	    fmt.Printf("  EncryptType: %d, Version: %d, Created: %v\n", pair.EncryptType, pair.Version, pair.CreateTime)
+//	  }
+//	}
 func GetKeytabInfo(kt *keytab.Keytab) MultiKeytabInfo {
 	keytabMap := make(map[string]KeytabInfo)
 	if kt != nil {

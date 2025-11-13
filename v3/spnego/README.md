@@ -140,7 +140,6 @@ The `Config` struct supports the following fields:
 
 ## Requirements
 
-- Go 1.25 or higher
 - Fiber v3
 - Kerberos infrastructure
 
