@@ -49,7 +49,7 @@ func ExampleNewSpnegoKrb5AuthenticateMiddleware() {
 		}
 		return c.SendString(fmt.Sprintf("Hello, %s!", identity.UserName()))
 	})
-	log.Info("Server is running on :3000")
+	log.Info("Server is running on sso.example.local:3000")
 	go func() {
 		<-time.After(time.Second * 1)
 		fmt.Println("use curl -kv --negotiate http://sso.example.local:3000/protected/resource")
@@ -65,8 +65,9 @@ func ExampleNewSpnegoKrb5AuthenticateMiddleware() {
 	}
 
 	// Output:
-	// Server is running on :3000
+	// Server is running on sso.example.local:3000
 	// use curl -kv --negotiate http://sso.example.local:3000/protected/resource
+	// Note: In /etc/hosts, sso.example.local must be bound to a LAN address; 127.0.0.1 won't work.
 	// if response is 401, execute `klist` to check use kerberos session
 	// close server
 }
