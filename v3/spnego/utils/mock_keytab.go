@@ -144,7 +144,10 @@ func NewMockKeytab(opts ...MockOption) (*keytab.Keytab, func(), error) {
 			clean()
 			return nil, nil, fmt.Errorf("error writing to file: %w", err)
 		}
-		_ = file.Close()
+		if err = file.Close(); err != nil {
+			clean()
+			return nil, nil, fmt.Errorf("error closing file: %w", err)
+		}
 		return kt, clean, nil
 	}
 	return kt, clean, nil

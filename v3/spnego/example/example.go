@@ -64,5 +64,9 @@ func ExampleNewSpnegoKrb5AuthenticateMiddleware() {
 		panic(fmt.Errorf("start server failed: %w", err))
 	}
 
-	// Output: Server is running on :3000
+	// Output:
+	// Server is running on :3000
+	// use curl -kv --negotiate http://sso.example.local:3000/protected/resource
+	// if response is 401, execute `klist` to check use kerberos session
+	// close server
 }

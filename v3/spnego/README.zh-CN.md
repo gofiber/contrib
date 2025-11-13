@@ -131,7 +131,6 @@ func remoteKeytabLookup() (*keytab.Keytab, error) {
 
 ## 要求
 
-- Go 1.25或更高版本
 - Fiber v3
 - Kerberos基础设施
 

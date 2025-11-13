@@ -35,7 +35,7 @@ func NewSpnegoKrb5AuthenticateMiddleware(cfg Config) (fiber.Handler, error) {
 		// Look up the keytab
 		kt, err := cfg.KeytabLookup()
 		if err != nil {
-			return fmt.Errorf("%w: %w", ErrLookupKeytabFailed, err)
+			return fmt.Errorf("%w: %v", ErrLookupKeytabFailed, err)
 		}
 		// Create the SPNEGO handler using the keytab
 		var handleErr error
@@ -48,7 +48,7 @@ func NewSpnegoKrb5AuthenticateMiddleware(cfg Config) (fiber.Handler, error) {
 		// Convert Fiber context to HTTP request
 		rawReq, err := adaptor.ConvertRequest(ctx, true)
 		if err != nil {
-			return fmt.Errorf("%w: %w", ErrConvertRequestFailed, err)
+			return fmt.Errorf("%w: %v", ErrConvertRequestFailed, err)
 		}
 		// Serve the request using the SPNEGO handler
 		handler.ServeHTTP(utils.NewWrapFiberContext(ctx), rawReq)
