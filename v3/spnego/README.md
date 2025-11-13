@@ -10,8 +10,6 @@ id: spnego
 
 This middleware provides SPNEGO (Simple and Protected GSSAPI Negotiation Mechanism) authentication for [Fiber](https://github.com/gofiber/fiber) applications, enabling Kerberos authentication for HTTP requests and inspired by [gokrb5](https://github.com/jcmturner/gokrb5)
 
-[中文版本](README.zh-CN.md)
-
 ## Features
 
 - Kerberos authentication via SPNEGO mechanism
