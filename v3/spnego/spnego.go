@@ -5,7 +5,6 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/gofiber/contrib/v3/spnego/utils"
 	"github.com/gofiber/fiber/v3"
 	flog "github.com/gofiber/fiber/v3/log"
 	"github.com/gofiber/fiber/v3/middleware/adaptor"
@@ -14,11 +13,11 @@ import (
 	"github.com/jcmturner/gokrb5/v8/spnego"
 )
 
-// NewSpnegoKrb5AuthenticateMiddleware creates a new SPNEGO authentication middleware.
+// New creates a new SPNEGO authentication middleware.
 // It takes a Config struct and returns a Fiber handler or an error.
 // The middleware handles Kerberos authentication for incoming requests using the
 // SPNEGO protocol, verifying client credentials against the configured keytab.
-func NewSpnegoKrb5AuthenticateMiddleware(cfg Config) (fiber.Handler, error) {
+func New(cfg Config) (fiber.Handler, error) {
 	// Validate configuration
 	if cfg.KeytabLookup == nil {
 		return nil, ErrConfigInvalidOfKeytabLookupFunctionRequired
@@ -51,7 +50,35 @@ func NewSpnegoKrb5AuthenticateMiddleware(cfg Config) (fiber.Handler, error) {
 			return fmt.Errorf("%w: %v", ErrConvertRequestFailed, err)
 		}
 		// Serve the request using the SPNEGO handler
-		handler.ServeHTTP(utils.NewWrapFiberContext(ctx), rawReq)
+		handler.ServeHTTP(&wrapContext{ctx: ctx}, rawReq)
 		return handleErr
 	}, nil
+}
+
+// wrapContext adapts a Fiber context to the http.ResponseWriter interface
+// This allows Fiber to work with libraries that expect the standard http.ResponseWriter
+// T represents the type of the Fiber context (v2 or v3 compatible).
+type wrapContext struct {
+	ctx fiber.Ctx
+}
+
+// Header returns the response headers from the Fiber context
+// in the standard http.Header format
+// note: write header must using fiber context
+func (f *wrapContext) Header() http.Header {
+	headers := make(http.Header, f.ctx.Response().Header.Len())
+	for k, v := range f.ctx.Response().Header.All() {
+		headers.Set(string(k), string(v))
+	}
+	return headers
+}
+
+// Write writes bytes to the response body using the Fiber context's Write method
+func (f *wrapContext) Write(bytes []byte) (int, error) {
+	return f.ctx.Write(bytes)
+}
+
+// WriteHeader sets the HTTP status code using the Fiber context's Status method
+func (f *wrapContext) WriteHeader(statusCode int) {
+	f.ctx.Status(statusCode)
 }
