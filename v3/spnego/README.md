@@ -71,7 +71,7 @@ func main() {
 	}
 	
 	// Create the middleware
-	authMiddleware, err := spnego.NewSpnegoKrb5AuthenticateMiddleware(spnego.Config{
+	authMiddleware, err := spnego.New(spnego.Config{
 		KeytabLookup: keytabLookup,
 	})
 	if err != nil {
@@ -117,7 +117,7 @@ func remoteKeytabLookup() (*keytab.Keytab, error) {
 
 ## API Reference
 
-### `NewSpnegoKrb5AuthenticateMiddleware(cfg Config) (fiber.Handler, error)`
+### `New(cfg Config) (fiber.Handler, error)`
 
 Creates a new SPNEGO authentication middleware.
 

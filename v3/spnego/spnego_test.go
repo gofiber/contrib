@@ -17,11 +17,11 @@ import (
 
 func TestNewSpnegoKrb5AuthenticateMiddleware(t *testing.T) {
 	t.Run("test for keytab lookup function not set", func(t *testing.T) {
-		_, err := NewSpnegoKrb5AuthenticateMiddleware(Config{})
+		_, err := New(Config{})
 		require.ErrorIs(t, err, ErrConfigInvalidOfKeytabLookupFunctionRequired)
 	})
 	t.Run("test for keytab lookup failed", func(t *testing.T) {
-		middleware, err := NewSpnegoKrb5AuthenticateMiddleware(Config{
+		middleware, err := New(Config{
 			KeytabLookup: func() (*keytab.Keytab, error) {
 				return nil, errors.New("mock keytab lookup error")
 			},
@@ -69,7 +69,7 @@ func TestNewSpnegoKrb5AuthenticateMiddleware(t *testing.T) {
 		t.Cleanup(clean2)
 		lookupFunc, err := NewKeytabFileLookupFunc(filename1, filename2)
 		require.NoError(t, err)
-		middleware, err := NewSpnegoKrb5AuthenticateMiddleware(Config{
+		middleware, err := New(Config{
 			KeytabLookup: lookupFunc,
 		})
 		require.NoError(t, err)

@@ -10,7 +10,7 @@ import (
 	"github.com/gofiber/fiber/v3/log"
 )
 
-func ExampleNewSpnegoKrb5AuthenticateMiddleware() {
+func ExampleNew() {
 	app := fiber.New()
 	// create mock keytab file
 	// you must use a real keytab file
@@ -32,7 +32,7 @@ func ExampleNewSpnegoKrb5AuthenticateMiddleware() {
 	if err != nil {
 		panic(fmt.Errorf("create keytab lookup function failed: %w", err))
 	}
-	authMiddleware, err := spnego.NewSpnegoKrb5AuthenticateMiddleware(spnego.Config{
+	authMiddleware, err := spnego.New(spnego.Config{
 		KeytabLookup: keytabLookup,
 	})
 	if err != nil {
@@ -53,6 +53,7 @@ func ExampleNewSpnegoKrb5AuthenticateMiddleware() {
 	go func() {
 		<-time.After(time.Second * 1)
 		fmt.Println("use curl -kv --negotiate http://sso.example.local:3000/protected/resource")
+		fmt.Println("Note: In /etc/hosts, sso.example.local must be bound to a LAN address; 127.0.0.1 won't work.")
 		fmt.Println("if response is 401, execute `klist` to check use kerberos session")
 		<-time.After(time.Second * 2)
 		fmt.Println("close server")
@@ -63,11 +64,4 @@ func ExampleNewSpnegoKrb5AuthenticateMiddleware() {
 	if err := app.Listen("sso.example.local:3000"); err != nil {
 		panic(fmt.Errorf("start server failed: %w", err))
 	}
-
-	// Output:
-	// Server is running on sso.example.local:3000
-	// use curl -kv --negotiate http://sso.example.local:3000/protected/resource
-	// Note: In /etc/hosts, sso.example.local must be bound to a LAN address; 127.0.0.1 won't work.
-	// if response is 401, execute `klist` to check use kerberos session
-	// close server
 }

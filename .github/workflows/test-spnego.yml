@@ -1,0 +1,34 @@
+name: "Test spnego"
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - 'v3/spnego/**/*.go'
+      - 'v3/spnego/go.mod'
+      - 'v3/spnego/go.sum'
+  pull_request:
+    paths:
+      - 'v3/spnego/**/*.go'
+      - 'v3/spnego/go.mod'
+      - 'v3/spnego/go.sum'
+
+jobs:
+  Tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version:
+          - 1.25.x
+    steps:
+      - name: Fetch Repository
+        uses: actions/checkout@v5
+      - name: Install Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '${{ matrix.go-version }}'
+      - name: Run Test
+        working-directory: ./v3/spnego
+        run: go test -v -race ./...
