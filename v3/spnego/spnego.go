@@ -38,47 +38,15 @@ func New(cfg Config) (fiber.Handler, error) {
 		}
 		// Create the SPNEGO handler using the keytab
 		var handleErr error
-		handler := spnego.SPNEGOKRB5Authenticate(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		handler := adaptor.HTTPHandler(spnego.SPNEGOKRB5Authenticate(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 			// Set the authenticated identity in the Fiber context
 			SetAuthenticatedIdentityToContext(ctx, goidentity.FromHTTPRequestContext(r))
 			// Call the next handler in the chain
 			handleErr = ctx.Next()
-		}), kt, opts...)
-		// Convert Fiber context to HTTP request
-		rawReq, err := adaptor.ConvertRequest(ctx, true)
-		if err != nil {
-			return fmt.Errorf("%w: %v", ErrConvertRequestFailed, err)
+		}), kt, opts...))
+		if err = handler(ctx); err != nil {
+			return err
 		}
-		// Serve the request using the SPNEGO handler
-		handler.ServeHTTP(&wrapContext{ctx: ctx}, rawReq)
 		return handleErr
 	}, nil
-}
-
-// wrapContext adapts a Fiber context to the http.ResponseWriter interface
-// This allows Fiber to work with libraries that expect the standard http.ResponseWriter
-// T represents the type of the Fiber context (v2 or v3 compatible).
-type wrapContext struct {
-	ctx fiber.Ctx
-}
-
-// Header returns the response headers from the Fiber context
-// in the standard http.Header format
-// note: write header must using fiber context
-func (f *wrapContext) Header() http.Header {
-	headers := make(http.Header, f.ctx.Response().Header.Len())
-	for k, v := range f.ctx.Response().Header.All() {
-		headers.Set(string(k), string(v))
-	}
-	return headers
-}
-
-// Write writes bytes to the response body using the Fiber context's Write method
-func (f *wrapContext) Write(bytes []byte) (int, error) {
-	return f.ctx.Write(bytes)
-}
-
-// WriteHeader sets the HTTP status code using the Fiber context's Status method
-func (f *wrapContext) WriteHeader(statusCode int) {
-	f.ctx.Status(statusCode)
 }
