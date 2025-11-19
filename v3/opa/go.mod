@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/v3/opa
 go 1.25.0
 
 require (
-	github.com/gofiber/fiber/v3 v3.0.0-rc.2
+	github.com/gofiber/fiber/v3 v3.0.0-rc.3
 	github.com/gofiber/utils/v2 v2.0.0-rc.2
 	github.com/open-policy-agent/opa v1.10.1
 	github.com/stretchr/testify v1.11.1
@@ -60,7 +60,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.38.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	golang.org/x/crypto v0.44.0 // indirect
-	golang.org/x/net v0.46.0 // indirect
+	golang.org/x/net v0.47.0 // indirect
 	golang.org/x/sys v0.38.0 // indirect
 	golang.org/x/text v0.31.0 // indirect
 	google.golang.org/protobuf v1.36.10 // indirect
