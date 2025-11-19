@@ -13,6 +13,7 @@ on:
       - 'v3/circuitbreaker/**/*.go'
       - 'v3/circuitbreaker/go.mod'
 
+  workflow_dispatch:
 jobs:
   Tests:
     runs-on: ubuntu-latest

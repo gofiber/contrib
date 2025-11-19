@@ -15,6 +15,7 @@ on:
       - 'v3/swaggerui/go.mod'
       - 'v3/swaggerui/go.sum'
 
+  workflow_dispatch:
 jobs:
   Tests:
     runs-on: ubuntu-latest

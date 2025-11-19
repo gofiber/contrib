@@ -13,6 +13,7 @@ on:
       - 'v3/loadshed/**/*.go'
       - 'v3/loadshed/go.mod'
 
+  workflow_dispatch:
 jobs:
   Tests:
     runs-on: ubuntu-latest
