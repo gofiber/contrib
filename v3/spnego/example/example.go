@@ -54,7 +54,7 @@ func ExampleNew() {
 		<-time.After(time.Second * 1)
 		fmt.Println("use curl -kv --negotiate http://sso.example.local:3000/protected/resource")
 		fmt.Println("Note: In /etc/hosts, sso.example.local must be bound to a LAN address; 127.0.0.1 won't work.")
-		fmt.Println("if response is 401, execute `klist` to check use kerberos session")
+		fmt.Println("if response is 401, execute `klist` to check your Kerberos session")
 		<-time.After(time.Second * 2)
 		fmt.Println("close server")
 		if err = app.Shutdown(); err != nil {
