@@ -14,6 +14,10 @@ type Storage interface {
 	// Returns new count and whether the key was newly created
 	Increment(ctx context.Context, key string, expiration time.Duration) (int, bool, error)
 	
+	// Decrement decrements the count for the given key
+	// Returns new count after decrement
+	Decrement(ctx context.Context, key string) (int, error)
+	
 	// Reset resets the count for the given key
 	Reset(ctx context.Context, key string) error
 	

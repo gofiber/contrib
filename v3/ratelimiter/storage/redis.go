@@ -73,6 +73,39 @@ func (r *Redis) Increment(ctx context.Context, key string, expiration time.Durat
 	return count, isNew, nil
 }
 
+// Decrement decrements the count for the given key
+func (r *Redis) Decrement(ctx context.Context, key string) (int, error) {
+	redisKey := r.prefix + key
+	
+	// Use Lua script for atomic decrement
+	luaScript := `
+		local current = redis.call("GET", KEYS[1])
+		if current == false then
+			return 0
+		else
+			local count = tonumber(current)
+			if count <= 0 then
+				return 0
+			else
+				local newCount = redis.call("DECR", KEYS[1])
+				if newCount < 0 then
+					redis.call("SET", KEYS[1], 0)
+					return 0
+				end
+				return newCount
+			end
+		end
+	`
+	
+	result, err := r.client.Eval(ctx, luaScript, []string{redisKey}).Result()
+	if err != nil {
+		return 0, err
+	}
+	
+	count := int(result.(int64))
+	return count, nil
+}
+
 // Reset resets the count for the given key
 func (r *Redis) Reset(ctx context.Context, key string) error {
 	return r.client.Del(ctx, r.prefix+key).Err()

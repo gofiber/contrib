@@ -1,6 +1,7 @@
 package ratelimiter
 
 import (
+	"context"
 	"strconv"
 	"time"
 
@@ -52,20 +53,23 @@ func New(config ...Config) fiber.Handler {
 		err = c.Next()
 
 		// Handle post-request logic for SkipFailedRequests and SkipSuccessfulRequests
+		shouldDecrement := false
+		
 		if err != nil && cfg.SkipFailedRequests {
-			// Decrement counter for failed requests
-			cfg.Storage.Increment(c.Context(), key+":failed", cfg.Expiration)
+			shouldDecrement = true
 		} else if err == nil {
 			statusCode := c.Response().StatusCode()
 			
 			if statusCode >= 400 && cfg.SkipFailedRequests {
-				// Decrement counter for failed status codes
-				cfg.Storage.Increment(c.Context(), key+":failed", cfg.Expiration)
+				shouldDecrement = true
 			} else if statusCode < 400 && cfg.SkipSuccessfulRequests {
-				// For successful requests when SkipSuccessfulRequests is true,
-				// we need to decrement the counter
-				cfg.Storage.Increment(c.Context(), key+":success", cfg.Expiration)
+				shouldDecrement = true
 			}
+		}
+
+		// Decrement counter if the request should be skipped
+		if shouldDecrement {
+			cfg.Storage.Decrement(c.Context(), key)
 		}
 
 		return err
@@ -73,11 +77,11 @@ func New(config ...Config) fiber.Handler {
 }
 
 // Reset resets the rate limit for a given key
-func Reset(storage interface{}, key string) error {
+func Reset(ctx context.Context, storage interface{}, key string) error {
 	if s, ok := storage.(interface {
-		Reset(ctx interface{}, key string) error
+		Reset(ctx context.Context, key string) error
 	}); ok {
-		return s.Reset(nil, key)
+		return s.Reset(ctx, key)
 	}
 	return nil
 }
