@@ -1,0 +1,70 @@
+name: Test RateLimit
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "v3/ratelimiter/**"
+      - ".github/workflows/test-ratelimiter.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "v3/ratelimiter/**"
+      - ".github/workflows/test-ratelimiter.yml"
+
+jobs:
+  Tests:
+    strategy:
+      matrix:
+        go-version: [1.25.x]
+        platform: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Run tests
+        working-directory: ./v3/ratelimiter
+        run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Upload coverage reports
+        if: matrix.platform == 'ubuntu-latest'
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./v3/ratelimiter/coverage.out
+          flags: ratelimiter
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  Tests-Redis:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.25.x
+
+      - name: Run Redis integration tests
+        working-directory: ./v3/ratelimiter
+        run: go test -v -race -tags=integration ./...
+        env:
+          REDIS_URL: redis://localhost:6379
