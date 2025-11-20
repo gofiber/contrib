@@ -12,6 +12,7 @@ updates:
           interval: "daily"
     - package-ecosystem: "gomod"
       open-pull-requests-limit: 30
+      dependency-type: "all"
       directories:
           - "**/*"
       labels:
