@@ -20,7 +20,7 @@ require (
 	github.com/go-openapi/spec v0.22.1 // indirect
 	github.com/go-openapi/strfmt v0.25.0 // indirect
 	github.com/go-openapi/swag/conv v0.25.1 // indirect
-	github.com/go-openapi/swag/fileutils v0.25.1 // indirect
+	github.com/go-openapi/swag/fileutils v0.25.3 // indirect
 	github.com/go-openapi/swag/jsonname v0.25.1 // indirect
 	github.com/go-openapi/swag/jsonutils v0.25.1 // indirect
 	github.com/go-openapi/swag/loading v0.25.1 // indirect
