@@ -16,7 +16,7 @@ jobs:
             packages: ${{ github.event_name == 'workflow_dispatch' && steps.filter-setup.outputs.packages || steps.map-packages.outputs.packages || '[]' }}
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
 
             - name: Generate filters
               id: filter-setup
@@ -86,7 +86,7 @@ jobs:
                 package: ${{ fromJSON(needs.changes.outputs.packages || '[]') }}
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
 
             - name: Generate dynamic config from template
               id: generate-config

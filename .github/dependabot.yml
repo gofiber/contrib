@@ -4,14 +4,17 @@
 version: 2
 updates:
     - package-ecosystem: "github-actions"
-      open-pull-requests-limit: 30
+      open-pull-requests-limit: 50
       directory: "/"
       labels:
           - "🤖 Dependencies"
       schedule:
           interval: "daily"
     - package-ecosystem: "gomod"
-      open-pull-requests-limit: 30
+      open-pull-requests-limit: 50
+      allow:
+          # Allow both direct and indirect updates for all packages.
+          - dependency-type: "all"
       directories:
           - "**/*"
       labels:
@@ -44,6 +47,12 @@ updates:
                   - "github.com/mattn/go-colorable"
                   - "github.com/mattn/go-isatty"
                   - "github.com/mattn/go-runewidth"
+          ebitengine-modules:
+              patterns:
+                  - "github.com/ebitengine/**"
+          tklauser-modules:
+              patterns:
+                  - "github.com/tklauser/**"
           google-modules:
               patterns:
                   - "github.com/google/**"
@@ -53,6 +62,9 @@ updates:
                   - "github.com/stretchr/**"
                   - "github.com/davecgh/go-spew"
                   - "github.com/pmezard/go-difflib"
+          openapi-modules:
+              patterns:
+                  - "github.com/go-openapi/**"
           yaml-modules:
               patterns:
                   - "gopkg.in/yaml.*"

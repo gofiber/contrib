@@ -15,6 +15,7 @@ on:
       - 'v3/swaggo/go.mod'
       - 'v3/swaggo/go.sum'
 
+  workflow_dispatch:
 jobs:
   Tests:
     runs-on: ubuntu-latest
@@ -24,7 +25,7 @@ jobs:
           - 1.25.x
     steps:
       - name: Fetch Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
       - name: Install Go
         uses: actions/setup-go@v6
         with:

@@ -13,6 +13,7 @@ on:
       - 'v3/newrelic/**/*.go'
       - 'v3/newrelic/go.mod'
 
+  workflow_dispatch:
 jobs:
   Tests:
     runs-on: ubuntu-latest
@@ -22,7 +23,7 @@ jobs:
           - 1.25.x
     steps:
       - name: Fetch Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
       - name: Install Go
         uses: actions/setup-go@v6
         with:
