@@ -7,7 +7,7 @@ require (
 	github.com/gofiber/utils/v2 v2.0.0-rc.2
 	github.com/stretchr/testify v1.11.1
 	github.com/valyala/fasthttp v1.68.0
-	go.uber.org/zap v1.27.0
+	go.uber.org/zap v1.27.1
 )
 
 require (
