@@ -15,4 +15,3 @@ jobs:
     with:
       config-path: .github/labeler.yml
       config-repository: gofiber/.github
-      config-ref: main
