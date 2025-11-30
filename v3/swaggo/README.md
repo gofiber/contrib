@@ -1,9 +1,8 @@
 ---
 id: swaggo
-title: Swaggo – Swagger Doc Generator Middleware (formerly "swagger")
 ---
 
-# Swaggo – Swagger Doc Generator Middleware
+# Swaggo
 
 > ⚠️ This module was renamed from `swagger` to `swaggo` to clearly distinguish it from the ported `swaggerui` middleware. Update your imports accordingly.
 
