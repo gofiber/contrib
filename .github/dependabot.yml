@@ -47,6 +47,10 @@ updates:
                   - "github.com/mattn/go-colorable"
                   - "github.com/mattn/go-isatty"
                   - "github.com/mattn/go-runewidth"
+          shirou-modules:
+              patterns:
+                  - "github.com/shirou/gopsutil"
+                  - "github.com/shirou/gopsutil/**"
           ebitengine-modules:
               patterns:
                   - "github.com/ebitengine/**"
