@@ -73,6 +73,9 @@ updates:
                   - "github.com/stretchr/**"
                   - "github.com/davecgh/go-spew"
                   - "github.com/pmezard/go-difflib"
+          tinylib-modules:
+              patterns:
+                  - "github.com/tinylib/**"
           openapi-modules:
               patterns:
                   - "github.com/go-openapi/**"
