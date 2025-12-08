@@ -13,6 +13,7 @@ use (
 ./v3/opa
 ./v3/otel
 ./v3/paseto
+./v3/prometheus
 ./v3/sentry
 ./v3/socketio
 ./v3/swagger
