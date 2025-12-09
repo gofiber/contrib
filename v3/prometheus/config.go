@@ -34,13 +34,13 @@ type Config struct {
 	// Optional. Default: a private registry.
 	Registerer prometheus.Registerer
 
-        // Gatherer provides metrics to the HTTP handler.
-        //
-        // Optional. Default: a private registry/gatherer pair created when neither
-        // Registerer nor Gatherer is supplied. If only one is provided, it must also
-        // implement the other interface or the middleware will panic to prevent
-        // silently omitting metrics.
-        Gatherer prometheus.Gatherer
+	// Gatherer provides metrics to the HTTP handler.
+	//
+	// Optional. Default: a private registry/gatherer pair created when neither
+	// Registerer nor Gatherer is supplied. If only one is provided, it must also
+	// implement the other interface or the middleware will panic to prevent
+	// silently omitting metrics.
+	Gatherer prometheus.Gatherer
 
 	// DisableGoCollector disables the Go runtime metrics collector registration.
 	//
