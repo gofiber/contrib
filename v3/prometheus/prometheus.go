@@ -4,7 +4,6 @@ package prometheus
 
 import (
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -394,7 +393,7 @@ func (m *middleware) resolveRoutePath(ctx fiber.Ctx) string {
 // normalizePath trims trailing slashes and converts empty paths to "/" so
 // routes can be matched consistently.
 func normalizePath(routePath string) string {
-	normalized := strings.TrimRight(routePath, "/")
+	normalized := utils.TrimRight(routePath, '/')
 	if normalized == "" {
 		return "/"
 	}
