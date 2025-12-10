@@ -70,7 +70,7 @@ func GetKeytabInfo(kt *keytab.Keytab) MultiKeytabInfo {
 		}
 	}
 	var mk = make(MultiKeytabInfo, 0, len(keytabMap))
-	for item := range maps.Values(keytabMap) {
+	for _, item := range maps.Values(keytabMap) {
 		mk = append(mk, item)
 	}
 	sort.Slice(mk, func(i, j int) bool {
