@@ -1,0 +1,31 @@
+name: "Test Prometheus"
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'v3/prometheus/**/*.go'
+      - 'v3/prometheus/go.mod'
+  pull_request:
+    paths:
+      - 'v3/prometheus/**/*.go'
+      - 'v3/prometheus/go.mod'
+
+jobs:
+  Tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version:
+          - 1.25.x
+    steps:
+      - name: Fetch Repository
+        uses: actions/checkout@v5
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '${{ matrix.go-version }}'
+      - name: Run Test
+        working-directory: ./v3/prometheus
+        run: go test -v -race ./...
