@@ -21,4 +21,5 @@ use (
 ./v3/websocket
 ./v3/zap
 ./v3/zerolog
+./v3/spnego
 )
