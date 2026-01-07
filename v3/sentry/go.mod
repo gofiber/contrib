@@ -5,16 +5,17 @@ go 1.25.0
 require (
 	github.com/getsentry/sentry-go v0.40.0
 	github.com/gofiber/fiber/v3 v3.0.0-rc.3
-	github.com/gofiber/utils/v2 v2.0.0-rc.5
+	github.com/gofiber/utils/v2 v2.0.0-rc.6
 )
 
 require (
-	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/gofiber/schema v1.6.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/kr/text v0.2.0 // indirect
+	github.com/kr/pretty v0.3.1 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
-	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
+	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/tinylib/msgp v1.6.3 // indirect
 	github.com/valyala/fasthttp v1.69.0 // indirect
 	golang.org/x/crypto v0.46.0 // indirect
