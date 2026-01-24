@@ -226,7 +226,11 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 			if c.WrapHeaders {
 				dict := zerolog.Dict()
 				for header, values := range fc.GetReqHeaders() {
-					if len(values) == 0 || c.skipHeader(header) {
+					if len(values) == 0 {
+						continue
+					}
+
+					if c.skipHeader(header) {
 						continue
 					}
 
@@ -240,7 +244,11 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 				zc = zc.Dict(field, dict)
 			} else {
 				for header, values := range fc.GetReqHeaders() {
-					if len(values) == 0 || c.skipHeader(header) {
+					if len(values) == 0 {
+						continue
+					}
+
+					if c.skipHeader(header) {
 						continue
 					}
 
@@ -259,7 +267,11 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 			if c.WrapHeaders {
 				dict := zerolog.Dict()
 				for header, values := range fc.GetRespHeaders() {
-					if len(values) == 0 || c.skipHeader(header) {
+					if len(values) == 0 {
+						continue
+					}
+
+					if c.skipHeader(header) {
 						continue
 					}
 
@@ -273,7 +285,11 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 				zc = zc.Dict(field, dict)
 			} else {
 				for header, values := range fc.GetRespHeaders() {
-					if len(values) == 0 || c.skipHeader(header) {
+					if len(values) == 0 {
+						continue
+					}
+
+					if c.skipHeader(header) {
 						continue
 					}
 
