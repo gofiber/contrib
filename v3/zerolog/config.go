@@ -311,11 +311,13 @@ var logger = zerolog.New(os.Stderr).With().Timestamp().Logger()
 
 // ConfigDefault is the default config
 var ConfigDefault = Config{
-	Next:     nil,
-	Logger:   &logger,
-	Fields:   []string{FieldIP, FieldLatency, FieldStatus, FieldMethod, FieldURL, FieldError},
-	Messages: []string{"Server error", "Client error", "Success"},
-	Levels:   []zerolog.Level{zerolog.ErrorLevel, zerolog.WarnLevel, zerolog.InfoLevel},
+	Next:         nil,
+	Logger:       &logger,
+	Fields:       []string{FieldIP, FieldLatency, FieldStatus, FieldMethod, FieldURL, FieldError},
+	Messages:     []string{"Server error", "Client error", "Success"},
+	Levels:       []zerolog.Level{zerolog.ErrorLevel, zerolog.WarnLevel, zerolog.InfoLevel},
+	allowHeaders: make(map[string]struct{}),
+	blockHeaders: make(map[string]struct{}),
 }
 
 // Helper function to set default values
