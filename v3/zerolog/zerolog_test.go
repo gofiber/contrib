@@ -691,6 +691,42 @@ func Test_Logger_WhitelistHeaders(t *testing.T) {
 	}
 }
 
+func Test_WhitelisttHeadrs_Resp_Headers(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	app := fiber.New()
+	app.Use(New(Config{
+		Logger:           &logger,
+		Fields:           []string{FieldResHeaders},
+		WhitelistHeaders: []string{"Bar"},
+	}))
+
+	app.Get("/", func(c fiber.Ctx) error {
+		c.Set("test", "skip")
+		c.Set("bar", "bar")
+		return c.SendString("hello")
+	})
+	req := httptest.NewRequest("GET", "/", nil)
+
+	resp, err := app.Test(req)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+
+	expected := map[string]interface{}{
+		"Bar":     "bar",
+		"level":   "info",
+		"message": "Success",
+	}
+
+	var logs map[string]any
+	_ = json.Unmarshal(buf.Bytes(), &logs)
+
+	assert.Equal(t, expected, logs)
+}
+
 func Test_Logger_BlacklistHeaders(t *testing.T) {
 
 	t.Parallel()
@@ -702,7 +738,7 @@ func Test_Logger_BlacklistHeaders(t *testing.T) {
 	app.Use(New(Config{
 		Logger:           &logger,
 		Fields:           []string{FieldReqHeaders},
-		BlackListHeaders: []string{"Foo", "Bar"},
+		BlackListHeaders: []string{"Foo"},
 	}))
 
 	app.Get("/", func(c fiber.Ctx) error {
@@ -728,22 +764,41 @@ func Test_Logger_BlacklistHeaders(t *testing.T) {
 	_ = json.Unmarshal(buf.Bytes(), &logs)
 
 	assert.Equal(t, expected, logs)
+}
 
-	app.Get("/res-headers", func(c fiber.Ctx) error {
+func Test_BlacklistHeadrs_Resp_Headers(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	app := fiber.New()
+	app.Use(New(Config{
+		Logger:           &logger,
+		Fields:           []string{FieldResHeaders},
+		BlackListHeaders: []string{"Test"},
+	}))
+
+	app.Get("/", func(c fiber.Ctx) error {
+		c.Set("test", "skip")
 		c.Set("bar", "bar")
 		return c.SendString("hello")
 	})
-	req = httptest.NewRequest("GET", "/res-headers", nil)
-	req.Header.Add("foo", "bar")
-	req.Header.Add("baz", "foo")
+	req := httptest.NewRequest("GET", "/", nil)
 
-	resp, err = app.Test(req)
+	resp, err := app.Test(req)
 	assert.Equal(t, nil, err)
 	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 
-	expected = map[string]interface{}{
-		"Bar":     "bar",
-		"level":   "info",
-		"message": "Success",
+	expected := map[string]interface{}{
+		"Bar":          "bar",
+		"Content-Type": "text/plain; charset=utf-8",
+		"level":        "info",
+		"message":      "Success",
 	}
+
+	var logs map[string]any
+	_ = json.Unmarshal(buf.Bytes(), &logs)
+
+	assert.Equal(t, expected, logs)
 }

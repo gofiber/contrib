@@ -91,14 +91,14 @@ type Config struct {
 
 	// List of headers to log. Any other headers will not be logged. If empty,
 	// log all headers. Only relevant if `FieldReqHeaders` and/or
-	// `FieldResHeaders` are included.
+	// `FieldResHeaders` are included. Case-sensitive.
 	//
 	// Optional. Default: []
 	WhitelistHeaders []string
 
 	// List of headers to not log. All other headers will be logged. If empty,
 	// log all headers. Ignored if `WhitelistHeaders` is set. Only relevant if
-	// `FieldReqHeaders` and/or `FieldResHeaders` are included.
+	// `FieldReqHeaders` and/or `FieldResHeaders` are included. Case-sensitive.
 	//
 	// Optional. Default: []
 	BlackListHeaders []string
@@ -258,7 +258,7 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 			if c.WrapHeaders {
 				dict := zerolog.Dict()
 				for header, values := range fc.GetRespHeaders() {
-					if len(values) == 0 {
+					if len(values) == 0 || c.skipHeader(header) {
 						continue
 					}
 
@@ -272,7 +272,7 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 				zc = zc.Dict(field, dict)
 			} else {
 				for header, values := range fc.GetRespHeaders() {
-					if len(values) == 0 {
+					if len(values) == 0 || c.skipHeader(header) {
 						continue
 					}
 
@@ -337,10 +337,10 @@ func configDefault(config ...Config) Config {
 
 func (c *Config) skipHeader(header string) bool {
 	if len(c.WhitelistHeaders) > 0 {
-		return slices.Contains(c.WhitelistHeaders, header)
+		return !slices.Contains(c.WhitelistHeaders, header)
 	}
 	if len(c.BlackListHeaders) > 0 {
-		return !slices.Contains(c.BlackListHeaders, header)
+		return slices.Contains(c.BlackListHeaders, header)
 	}
 
 	return false
