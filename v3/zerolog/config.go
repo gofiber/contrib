@@ -336,6 +336,7 @@ func configDefault(config ...Config) Config {
 	return cfg
 }
 
+// Helper function to check if a header should be skipped
 func (c *Config) skipHeader(header string) bool {
 	if len(c.WhitelistHeaders) > 0 {
 		_, ok := c.whitelistHeaders[header]
