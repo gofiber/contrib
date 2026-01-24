@@ -97,7 +97,7 @@ type Config struct {
 	allowHeaders map[string]struct{}
 
 	// List of headers to not log. All other headers will be logged. If empty,
-	// log all headers. Ignored if `WhitelistHeaders` is set. Only relevant if
+	// log all headers. Ignored if `AllowHeaders` is set. Only relevant if
 	// `FieldReqHeaders` and/or `FieldResHeaders` are included. Case-sensitive.
 	//
 	// Optional. Default: []
