@@ -101,7 +101,7 @@ type Config struct {
 	// `FieldReqHeaders` and/or `FieldResHeaders` are included. Case-sensitive.
 	//
 	// Optional. Default: []
-	BlackListHeaders []string
+	BlacklistHeaders []string
 
 	// Wrap headers to dictionary.
 	// If false: {"method":"POST", "header-key":"header value"}
@@ -339,8 +339,8 @@ func (c *Config) skipHeader(header string) bool {
 	if len(c.WhitelistHeaders) > 0 {
 		return !slices.Contains(c.WhitelistHeaders, header)
 	}
-	if len(c.BlackListHeaders) > 0 {
-		return slices.Contains(c.BlackListHeaders, header)
+	if len(c.BlacklistHeaders) > 0 {
+		return slices.Contains(c.BlacklistHeaders, header)
 	}
 
 	return false

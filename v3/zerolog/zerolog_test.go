@@ -738,7 +738,7 @@ func Test_Logger_BlacklistHeaders(t *testing.T) {
 	app.Use(New(Config{
 		Logger:           &logger,
 		Fields:           []string{FieldReqHeaders},
-		BlackListHeaders: []string{"Foo"},
+		BlacklistHeaders: []string{"Foo"},
 	}))
 
 	app.Get("/", func(c fiber.Ctx) error {
@@ -776,7 +776,7 @@ func Test_BlacklistHeadrs_Resp_Headers(t *testing.T) {
 	app.Use(New(Config{
 		Logger:           &logger,
 		Fields:           []string{FieldResHeaders},
-		BlackListHeaders: []string{"Test"},
+		BlacklistHeaders: []string{"Test"},
 	}))
 
 	app.Get("/", func(c fiber.Ctx) error {
