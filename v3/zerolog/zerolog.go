@@ -19,13 +19,13 @@ func New(config ...Config) fiber.Handler {
 	}
 
 	// put header filtering into a map for faster matching
-	cfg.whitelistHeaders = make(map[string]struct{}, len(cfg.WhitelistHeaders))
-	for _, header := range cfg.WhitelistHeaders {
-		cfg.whitelistHeaders[header] = struct{}{}
+	cfg.allowHeaders = make(map[string]struct{}, len(cfg.AllowHeaders))
+	for _, header := range cfg.AllowHeaders {
+		cfg.allowHeaders[header] = struct{}{}
 	}
-	cfg.blacklistHeaders = make(map[string]struct{}, len(cfg.BlacklistHeaders))
-	for _, header := range cfg.BlacklistHeaders {
-		cfg.blacklistHeaders[header] = struct{}{}
+	cfg.blockHeaders = make(map[string]struct{}, len(cfg.BlockHeaders))
+	for _, header := range cfg.BlockHeaders {
+		cfg.blockHeaders[header] = struct{}{}
 	}
 
 	// Return new handler

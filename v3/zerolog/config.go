@@ -93,16 +93,16 @@ type Config struct {
 	// `FieldResHeaders` are included. Case-sensitive.
 	//
 	// Optional. Default: []
-	WhitelistHeaders []string
-	whitelistHeaders map[string]struct{}
+	AllowHeaders []string
+	allowHeaders map[string]struct{}
 
 	// List of headers to not log. All other headers will be logged. If empty,
 	// log all headers. Ignored if `WhitelistHeaders` is set. Only relevant if
 	// `FieldReqHeaders` and/or `FieldResHeaders` are included. Case-sensitive.
 	//
 	// Optional. Default: []
-	BlacklistHeaders []string
-	blacklistHeaders map[string]struct{}
+	BlockHeaders []string
+	blockHeaders map[string]struct{}
 
 	// Wrap headers to dictionary.
 	// If false: {"method":"POST", "header-key":"header value"}
@@ -354,12 +354,12 @@ func configDefault(config ...Config) Config {
 
 // Helper function to check if a header should be skipped
 func (c *Config) skipHeader(header string) bool {
-	if len(c.WhitelistHeaders) > 0 {
-		_, ok := c.whitelistHeaders[header]
+	if len(c.AllowHeaders) > 0 {
+		_, ok := c.allowHeaders[header]
 		return !ok
 	}
-	if len(c.BlacklistHeaders) > 0 {
-		_, ok := c.blacklistHeaders[header]
+	if len(c.BlockHeaders) > 0 {
+		_, ok := c.blockHeaders[header]
 		return ok
 	}
 

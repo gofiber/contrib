@@ -642,9 +642,9 @@ func Test_Logger_WhitelistHeaders(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(New(Config{
-		Logger:           &logger,
-		Fields:           []string{FieldReqHeaders},
-		WhitelistHeaders: []string{"Foo", "Host", "Bar"},
+		Logger:       &logger,
+		Fields:       []string{FieldReqHeaders},
+		AllowHeaders: []string{"Foo", "Host", "Bar"},
 	}))
 
 	app.Get("/", func(c fiber.Ctx) error {
@@ -699,9 +699,9 @@ func Test_WhitelisttHeadrs_Resp_Headers(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(New(Config{
-		Logger:           &logger,
-		Fields:           []string{FieldResHeaders},
-		WhitelistHeaders: []string{"Bar"},
+		Logger:       &logger,
+		Fields:       []string{FieldResHeaders},
+		AllowHeaders: []string{"Bar"},
 	}))
 
 	app.Get("/", func(c fiber.Ctx) error {
@@ -736,9 +736,9 @@ func Test_Logger_BlacklistHeaders(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(New(Config{
-		Logger:           &logger,
-		Fields:           []string{FieldReqHeaders},
-		BlacklistHeaders: []string{"Foo"},
+		Logger:       &logger,
+		Fields:       []string{FieldReqHeaders},
+		BlockHeaders: []string{"Foo"},
 	}))
 
 	app.Get("/", func(c fiber.Ctx) error {
@@ -774,9 +774,9 @@ func Test_BlacklistHeadrs_Resp_Headers(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(New(Config{
-		Logger:           &logger,
-		Fields:           []string{FieldResHeaders},
-		BlacklistHeaders: []string{"Test"},
+		Logger:       &logger,
+		Fields:       []string{FieldResHeaders},
+		BlockHeaders: []string{"Test"},
 	}))
 
 	app.Get("/", func(c fiber.Ctx) error {
