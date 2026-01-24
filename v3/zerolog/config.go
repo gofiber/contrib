@@ -2,7 +2,6 @@ package zerolog
 
 import (
 	"os"
-	"slices"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -95,6 +94,7 @@ type Config struct {
 	//
 	// Optional. Default: []
 	WhitelistHeaders []string
+	whitelistHeaders map[string]struct{}
 
 	// List of headers to not log. All other headers will be logged. If empty,
 	// log all headers. Ignored if `WhitelistHeaders` is set. Only relevant if
@@ -102,6 +102,7 @@ type Config struct {
 	//
 	// Optional. Default: []
 	BlacklistHeaders []string
+	blacklistHeaders map[string]struct{}
 
 	// Wrap headers to dictionary.
 	// If false: {"method":"POST", "header-key":"header value"}
@@ -337,10 +338,12 @@ func configDefault(config ...Config) Config {
 
 func (c *Config) skipHeader(header string) bool {
 	if len(c.WhitelistHeaders) > 0 {
-		return !slices.Contains(c.WhitelistHeaders, header)
+		_, ok := c.whitelistHeaders[header]
+		return !ok
 	}
 	if len(c.BlacklistHeaders) > 0 {
-		return slices.Contains(c.BlacklistHeaders, header)
+		_, ok := c.blacklistHeaders[header]
+		return ok
 	}
 
 	return false

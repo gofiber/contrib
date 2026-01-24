@@ -18,6 +18,16 @@ func New(config ...Config) fiber.Handler {
 		skipURIs[uri] = struct{}{}
 	}
 
+	// put header filtering into a map for faster matching
+	cfg.whitelistHeaders = make(map[string]struct{}, len(cfg.WhitelistHeaders))
+	for _, header := range cfg.WhitelistHeaders {
+		cfg.whitelistHeaders[header] = struct{}{}
+	}
+	cfg.blacklistHeaders = make(map[string]struct{}, len(cfg.BlacklistHeaders))
+	for _, header := range cfg.BlacklistHeaders {
+		cfg.blacklistHeaders[header] = struct{}{}
+	}
+
 	// Return new handler
 	return func(c fiber.Ctx) error {
 		// Don't execute middleware if Next returns true
