@@ -12,31 +12,10 @@ func New(config ...Config) fiber.Handler {
 	// Set default config
 	cfg := configDefault(config...)
 
-	// put ignore uri into a map for faster match
-	skipURIs := make(map[string]struct{}, len(cfg.SkipURIs))
-	for _, uri := range cfg.SkipURIs {
-		skipURIs[uri] = struct{}{}
-	}
-
-	// put header filtering into a map for faster matching
-	cfg.allowHeaders = make(map[string]struct{}, len(cfg.AllowHeaders))
-	for _, header := range cfg.AllowHeaders {
-		cfg.allowHeaders[header] = struct{}{}
-	}
-	cfg.blockHeaders = make(map[string]struct{}, len(cfg.BlockHeaders))
-	for _, header := range cfg.BlockHeaders {
-		cfg.blockHeaders[header] = struct{}{}
-	}
-
 	// Return new handler
 	return func(c fiber.Ctx) error {
 		// Don't execute middleware if Next returns true
 		if cfg.Next != nil && cfg.Next(c) {
-			return c.Next()
-		}
-
-		// skip uri
-		if _, ok := skipURIs[c.Path()]; ok {
 			return c.Next()
 		}
 

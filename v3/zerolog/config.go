@@ -60,11 +60,6 @@ type Config struct {
 	// Optional. Default: nil
 	GetResBody func(c fiber.Ctx) []byte
 
-	// Skip logging for these uri
-	//
-	// Optional. Default: nil
-	SkipURIs []string
-
 	// Add custom zerolog logger.
 	//
 	// Optional. Default: zerolog.New(os.Stderr).With().Timestamp().Logger()
@@ -83,21 +78,11 @@ type Config struct {
 	// Optional. Default: {"ip", "latency", "status", "method", "url", "error"}
 	Fields []string
 
-	// List of headers to log. Any other headers will not be logged. If empty,
-	// log all headers. Only relevant if `FieldReqHeaders` and/or
-	// `FieldResHeaders` are included. Case-sensitive.
+	// Defines a function that returns true if a header should not be logged.
+	// Only relevant if `FieldReqHeaders` and/or `FieldResHeaders` are logged.
 	//
-	// Optional. Default: []
-	AllowHeaders []string
-	allowHeaders map[string]struct{}
-
-	// List of headers to not log. All other headers will be logged. If empty,
-	// log all headers. Ignored if `AllowHeaders` is set. Only relevant if
-	// `FieldReqHeaders` and/or `FieldResHeaders` are included. Case-sensitive.
-	//
-	// Optional. Default: []
-	BlockHeaders []string
-	blockHeaders map[string]struct{}
+	// Optional. Default: nil
+	SkipHeader func(header string, c fiber.Ctx) bool
 
 	// Wrap headers to dictionary.
 	// If false: {"method":"POST", "header-key":"header value"}
@@ -217,7 +202,7 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 						continue
 					}
 
-					if c.skipHeader(header) {
+					if c.SkipHeader(header, fc) {
 						continue
 					}
 
@@ -235,7 +220,7 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 						continue
 					}
 
-					if c.skipHeader(header) {
+					if c.SkipHeader(header, fc) {
 						continue
 					}
 
@@ -258,7 +243,7 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 						continue
 					}
 
-					if c.skipHeader(header) {
+					if c.SkipHeader(header, fc) {
 						continue
 					}
 
@@ -276,7 +261,7 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 						continue
 					}
 
-					if c.skipHeader(header) {
+					if c.SkipHeader(header, fc) {
 						continue
 					}
 
@@ -298,13 +283,11 @@ var logger = zerolog.New(os.Stderr).With().Timestamp().Logger()
 
 // ConfigDefault is the default config
 var ConfigDefault = Config{
-	Next:         nil,
-	Logger:       &logger,
-	Fields:       []string{FieldIP, FieldLatency, FieldStatus, FieldMethod, FieldURL, FieldError},
-	Messages:     []string{"Server error", "Client error", "Success"},
-	Levels:       []zerolog.Level{zerolog.ErrorLevel, zerolog.WarnLevel, zerolog.InfoLevel},
-	allowHeaders: make(map[string]struct{}),
-	blockHeaders: make(map[string]struct{}),
+	Next:     nil,
+	Logger:   &logger,
+	Fields:   []string{FieldIP, FieldLatency, FieldStatus, FieldMethod, FieldURL, FieldError},
+	Messages: []string{"Server error", "Client error", "Success"},
+	Levels:   []zerolog.Level{zerolog.ErrorLevel, zerolog.WarnLevel, zerolog.InfoLevel},
 }
 
 // Helper function to set default values
@@ -339,18 +322,4 @@ func configDefault(config ...Config) Config {
 	}
 
 	return cfg
-}
-
-// Helper function to check if a header should be skipped
-func (c *Config) skipHeader(header string) bool {
-	if len(c.AllowHeaders) > 0 {
-		_, ok := c.allowHeaders[header]
-		return !ok
-	}
-	if len(c.BlockHeaders) > 0 {
-		_, ok := c.blockHeaders[header]
-		return ok
-	}
-
-	return false
 }
