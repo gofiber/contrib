@@ -202,7 +202,7 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 						continue
 					}
 
-					if c.SkipHeader(header, fc) {
+					if c.SkipHeader != nil && c.SkipHeader(header, fc) {
 						continue
 					}
 
@@ -220,7 +220,7 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 						continue
 					}
 
-					if c.SkipHeader(header, fc) {
+					if c.SkipHeader != nil && c.SkipHeader(header, fc) {
 						continue
 					}
 
@@ -243,7 +243,7 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 						continue
 					}
 
-					if c.SkipHeader(header, fc) {
+					if c.SkipHeader != nil && c.SkipHeader(header, fc) {
 						continue
 					}
 
@@ -261,7 +261,7 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 						continue
 					}
 
-					if c.SkipHeader(header, fc) {
+					if c.SkipHeader != nil && c.SkipHeader(header, fc) {
 						continue
 					}
 
