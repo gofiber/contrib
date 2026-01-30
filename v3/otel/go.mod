@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/gofiber/fiber/v3 v3.0.0-rc.3
-	github.com/gofiber/utils/v2 v2.0.0-rc.6
+	github.com/gofiber/utils/v2 v2.0.0
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/contrib v1.39.0
 	go.opentelemetry.io/contrib/propagators/b3 v1.39.0
