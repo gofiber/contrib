@@ -38,6 +38,10 @@ func New(config ...Config) fiber.Handler {
 		cfg = config[0]
 	}
 
+	if cfg.Criteria == nil {
+		cfg.Criteria = ConfigDefault.Criteria
+	}
+
 	return func(c fiber.Ctx) error {
 		// Don't execute middleware if Next returns true
 		if cfg.Next != nil && cfg.Next(c) {
