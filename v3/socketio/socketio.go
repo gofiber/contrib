@@ -200,25 +200,6 @@ func (p *safePool) delete(key string) {
 	p.Unlock()
 }
 
-func (p *safePool) updateUUID(oldUUID, newUUID string, socket ws) error {
-	p.Lock()
-	defer p.Unlock()
-
-	if oldUUID == newUUID {
-		return nil
-	}
-
-	if existing, ok := p.conn[newUUID]; ok && existing != socket {
-		return ErrorUUIDDuplication
-	}
-
-	if oldUUID != "" && oldUUID != newUUID {
-		delete(p.conn, oldUUID)
-	}
-	p.conn[newUUID] = socket
-	return nil
-}
-
 //nolint:all
 func (p *safePool) reset() {
 	p.Lock()
@@ -299,14 +280,26 @@ func (kws *Websocket) GetUUID() string {
 }
 
 func (kws *Websocket) SetUUID(uuid string) error {
+	pool.Lock()
+	defer pool.Unlock()
 	kws.mu.Lock()
 	defer kws.mu.Unlock()
 
 	prevUUID := kws.UUID
-	if err := pool.updateUUID(prevUUID, uuid, kws); err != nil {
-		return err
+	if prevUUID == uuid {
+		return nil
 	}
 	kws.UUID = uuid
+
+	if existing, ok := pool.conn[uuid]; ok && existing != kws {
+		kws.UUID = prevUUID
+		return ErrorUUIDDuplication
+	}
+
+	if prevUUID != "" {
+		delete(pool.conn, prevUUID)
+	}
+	pool.conn[uuid] = kws
 	return nil
 }
 
