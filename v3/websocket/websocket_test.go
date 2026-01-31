@@ -74,8 +74,10 @@ func TestWebSocketMiddlewareConfigOrigin(t *testing.T) {
 		conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", http.Header{
 			"Origin": []string{"http://localhost:5000"},
 		})
-		defer conn.Close()
-		assert.NoError(t, err)
+if !assert.NoError(t, err) {
+    return
+}
+defer conn.Close()
 		assert.Equal(t, fiber.StatusSwitchingProtocols, resp.StatusCode)
 		assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
 
