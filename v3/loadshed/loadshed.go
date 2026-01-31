@@ -31,16 +31,19 @@ var ConfigDefault = Config{
 	},
 }
 
-func New(config ...Config) fiber.Handler {
+func configWithDefaults(config ...Config) Config {
 	cfg := ConfigDefault
-
 	if len(config) > 0 {
 		cfg = config[0]
 	}
-
 	if cfg.Criteria == nil {
 		cfg.Criteria = ConfigDefault.Criteria
 	}
+	return cfg
+}
+
+func New(config ...Config) fiber.Handler {
+	cfg := configWithDefaults(config...)
 
 	return func(c fiber.Ctx) error {
 		// Don't execute middleware if Next returns true

@@ -48,26 +48,9 @@ func Test_Loadshed_LowerThreshold(t *testing.T) {
 }
 
 func Test_Loadshed_DefaultCriteriaWhenNil(t *testing.T) {
-	originalCriteria := ConfigDefault.Criteria
-	defer func() {
-		ConfigDefault.Criteria = originalCriteria
-	}()
+	cfg := configWithDefaults(Config{})
 
-	mockGetter := &MockCPUPercentGetter{MockedPercentage: []float64{1.0}}
-	ConfigDefault.Criteria = &CPULoadCriteria{
-		LowerThreshold: 0,
-		UpperThreshold: 0,
-		Interval:       time.Second,
-		Getter:         mockGetter,
-	}
-
-	app := fiber.New()
-	app.Use(New(Config{}))
-	app.Get("/", ReturnOK)
-
-	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
-	assert.Equal(t, nil, err)
-	assert.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
+	assert.Same(t, ConfigDefault.Criteria, cfg.Criteria)
 }
 
 func Test_Loadshed_MiddleValue(t *testing.T) {
