@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"testing"
+	"sync"
 
 	"github.com/fasthttp/websocket"
 	"github.com/gofiber/fiber/v3"
@@ -381,4 +382,32 @@ func TestWebsocketRecoverCustomHandlerShouldNotPanic(t *testing.T) {
 	err = conn.ReadJSON(&msg)
 	assert.NoError(t, err)
 	assert.Equal(t, "error occurred", msg["customError"])
+}
+
+func TestWebSocketReleasesConnOnUpgradeError(t *testing.T) {
+	originalPool := poolConn
+	poolConn = sync.Pool{
+		New: func() interface{} {
+			t.Fatal("unexpected pool allocation")
+			return &Conn{}
+		},
+	}
+	defer func() {
+		poolConn = originalPool
+	}()
+
+	seeded := &Conn{}
+	poolConn.Put(seeded)
+
+	app := fiber.New()
+	app.Get("/ws", New(func(*Conn) {}, Config{}))
+
+	req, err := http.NewRequest(http.MethodGet, "/ws", nil)
+	assert.NoError(t, err)
+	resp, err := app.Test(req)
+	assert.NoError(t, err)
+	assert.Equal(t, fiber.StatusUpgradeRequired, resp.StatusCode)
+
+	reused := poolConn.Get().(*Conn)
+	assert.Same(t, seeded, reused)
 }
