@@ -119,6 +119,12 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		}
 
 		conn := acquireConn()
+		releaseConnOnExit := true
+		defer func() {
+			if releaseConnOnExit {
+				releaseConn(conn)
+			}
+		}()
 		// locals
 		c.RequestCtx().VisitUserValues(func(key []byte, value interface{}) {
 			conn.locals[string(key)] = value
@@ -153,11 +159,11 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 
 		if err := upgrader.Upgrade(c.RequestCtx(), func(fconn *websocket.Conn) {
 			conn.Conn = fconn
+			releaseConnOnExit = false
 			defer releaseConn(conn)
 			defer cfg.RecoverHandler(conn)
 			handler(conn)
 		}); err != nil { // Upgrading required
-			releaseConn(conn)
 			return fiber.ErrUpgradeRequired
 		}
 
