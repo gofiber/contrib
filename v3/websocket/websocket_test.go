@@ -66,9 +66,27 @@ func TestWebSocketMiddlewareConfigOrigin(t *testing.T) {
 		assert.Equal(t, "hello websocket", msg["message"])
 	})
 
-	t.Run("empty origin allowed", func(t *testing.T) {
+	t.Run("empty origin rejected by default", func(t *testing.T) {
 		app := setupTestApp(Config{
 			Origins: []string{"http://localhost:3000"},
+		}, nil)
+		defer app.Shutdown()
+		conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
+		if conn != nil {
+			defer conn.Close()
+		}
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "bad handshake")
+		assert.Equal(t, fiber.StatusUpgradeRequired, resp.StatusCode)
+		assert.Equal(t, "", resp.Header.Get("Upgrade"))
+
+		assert.Nil(t, conn)
+	})
+
+	t.Run("empty origin allowed with config", func(t *testing.T) {
+		app := setupTestApp(Config{
+			Origins:          []string{"http://localhost:3000"},
+			AllowEmptyOrigin: true,
 		}, nil)
 		defer app.Shutdown()
 		conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
