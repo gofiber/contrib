@@ -36,7 +36,7 @@ type Config struct {
 	Origins []string
 
 	// AllowEmptyOrigin allows WebSocket connections when the Origin header is absent.
-	// When false (default), connections without an Origin header are rejected when Origins is configured.
+	// When false (default), connections without an Origin header are rejected unless Origins includes "*".
 	// Set to true to allow connections from non-browser clients that don't send Origin headers.
 	// Optional. Default: false
 	AllowEmptyOrigin bool
