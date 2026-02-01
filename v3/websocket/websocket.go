@@ -101,12 +101,9 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		EnableCompression: cfg.EnableCompression,
 		WriteBufferPool:   cfg.WriteBufferPool,
 		CheckOrigin: func(fctx *fasthttp.RequestCtx) bool {
-			if cfg.Origins[0] == "*" {
-				return true
-			}
 			origin := utils.UnsafeString(fctx.Request.Header.Peek("Origin"))
 			for i := range cfg.Origins {
-				if cfg.Origins[i] == origin {
+				if cfg.Origins[i] == "*" || cfg.Origins[i] == origin {
 					return true
 				}
 			}
