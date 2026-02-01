@@ -90,6 +90,14 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 	if len(cfg.Origins) == 0 {
 		cfg.Origins = []string{"*"}
 	}
+	// Check if wildcard is present in the Origins list during initialization
+	hasWildcard := false
+	for _, origin := range cfg.Origins {
+		if origin == "*" {
+			hasWildcard = true
+			break
+		}
+	}
 	if cfg.ReadBufferSize == 0 {
 		cfg.ReadBufferSize = 1024
 	}
@@ -113,11 +121,16 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 			}
 			origin := utils.UnsafeString(fctx.Request.Header.Peek("Origin"))
 			if origin == "" {
-				// Allow empty Origin only if explicitly configured
-				return cfg.AllowEmptyOrigin
+				// Allow empty Origin if wildcard is in list or explicitly configured
+				return hasWildcard || cfg.AllowEmptyOrigin
 			}
+			// If wildcard is present, allow any non-empty origin
+			if hasWildcard {
+				return true
+			}
+			// No wildcard present, check if origin matches any specific origin in the list
 			for i := range cfg.Origins {
-				if cfg.Origins[i] == "*" || cfg.Origins[i] == origin {
+				if cfg.Origins[i] == origin {
 					return true
 				}
 			}
