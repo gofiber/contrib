@@ -143,10 +143,9 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		}
 
 		// headers
-		headers := c.RequestCtx().Request.Header.All()
-		for key, values := range headers {
-			conn.headers[utils.ToLower(string(key))] = string(values)
-		}
+		c.RequestCtx().Request.Header.VisitAll(func(key, value []byte) {
+			conn.headers[utils.ToLower(string(key))] = string(value)
+		})
 
 		// ip address
 		conn.ip = c.IP()
