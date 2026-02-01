@@ -102,6 +102,9 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		WriteBufferPool:   cfg.WriteBufferPool,
 		CheckOrigin: func(fctx *fasthttp.RequestCtx) bool {
 			origin := utils.UnsafeString(fctx.Request.Header.Peek("Origin"))
+			if origin == "" {
+				return true
+			}
 			for i := range cfg.Origins {
 				if cfg.Origins[i] == "*" || cfg.Origins[i] == origin {
 					return true
@@ -142,7 +145,7 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		// headers
 		headers := c.RequestCtx().Request.Header.All()
 		for key, values := range headers {
-			conn.headers[string(key)] = string(values)
+			conn.headers[utils.ToLower(string(key))] = string(values)
 		}
 
 		// ip address
@@ -244,7 +247,7 @@ func (conn *Conn) Cookies(key string, defaultValue ...string) string {
 // Defaults to empty string "" if the header doesn't exist.
 // If a default value is given, it will return that value if the header doesn't exist.
 func (conn *Conn) Headers(key string, defaultValue ...string) string {
-	v, ok := conn.headers[key]
+	v, ok := conn.headers[utils.ToLower(key)]
 	if !ok && len(defaultValue) > 0 {
 		return defaultValue[0]
 	}
