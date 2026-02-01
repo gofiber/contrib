@@ -92,8 +92,8 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 	}
 	// Check if wildcard is present in the Origins list during initialization
 	hasWildcard := false
-	for i := range cfg.Origins {
-		if cfg.Origins[i] == "*" {
+	for _, origin := range cfg.Origins {
+		if origin == "*" {
 			hasWildcard = true
 			break
 		}

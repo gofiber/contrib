@@ -127,6 +127,7 @@ func TestWebSocketMiddlewareConfigOrigin(t *testing.T) {
 			Origins: []string{"http://localhost:3000", "*"},
 		}, nil)
 		defer app.Shutdown()
+		// Explicitly test with no Origin header (nil headers = no Origin sent)
 		conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
 		if !assert.NoError(t, err) {
 			return
