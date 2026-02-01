@@ -37,6 +37,7 @@ func New(handler func(*websocket.Conn), config ...websocket.Config) fiber.Handle
 | HandshakeTimeout    | `time.Duration`              | HandshakeTimeout specifies the duration for the handshake to complete.                                                        | `0` (No timeout)       |
 | Subprotocols        | `[]string`                   | Subprotocols specifies the client's requested subprotocols.                                                                   | `nil`                  |
 | Origins             | `[]string`                   | Allowed Origins based on the Origin header. If empty, everything is allowed.                                                  | `nil`                  |
+| AllowEmptyOrigin    | `bool`                       | Allows connections without an Origin header when Origins is configured. Useful for non-browser clients.                       | `false`                |
 | ReadBufferSize      | `int`                        | ReadBufferSize specifies the I/O buffer size in bytes for incoming messages.                                                  | `0` (Use default size) |
 | WriteBufferSize     | `int`                        | WriteBufferSize specifies the I/O buffer size in bytes for outgoing messages.                                                 | `0` (Use default size) |
 | WriteBufferPool     | `websocket.BufferPool`       | WriteBufferPool is a pool of buffers for write operations.                                                                    | `nil`                  |
@@ -142,6 +143,28 @@ cfg := Config{
 
 app.Get("/ws/:id", websocket.New(func(c *websocket.Conn) {}, cfg))
 
+```
+
+## Breaking Changes
+
+### Header Key Normalization
+
+**Important:** As of this version, all request header keys are normalized to lowercase for case-insensitive access. This aligns with HTTP standards (RFC 2616) but may affect code that relies on exact case matching.
+
+**What changed:**
+- Header keys are now stored in lowercase (e.g., `content-type`, `x-custom-header`)
+- The `conn.Headers()` method accepts any case variation (e.g., `Content-Type`, `CONTENT-TYPE`, `content-type` all work)
+
+**Migration:** If your code previously accessed headers with specific casing, it will continue to work. However, if you were iterating over the headers map directly or relying on exact key matching, you may need to update your code.
+
+```go
+// Before: Case-sensitive
+value := conn.Headers("X-Custom-Header")  // Only matched exact case
+
+// After: Case-insensitive  
+value := conn.Headers("X-Custom-Header")  // Works with any case
+value = conn.Headers("x-custom-header")   // Also works
+value = conn.Headers("X-CUSTOM-HEADER")   // Also works
 ```
 
 ## Note for WebSocket subprotocols
