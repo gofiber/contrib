@@ -128,7 +128,7 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 			if hasWildcard {
 				return true
 			}
-			// Otherwise check if origin matches any in the list
+			// No wildcard present, check if origin matches any specific origin in the list
 			for i := range cfg.Origins {
 				if cfg.Origins[i] == origin {
 					return true
