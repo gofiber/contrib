@@ -156,7 +156,7 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		// headers
 		headers := c.RequestCtx().Request.Header.All()
 		for key, value := range headers {
-			conn.headers[utils.ToLower(string(key))] = string(value)
+			conn.headers[string(key)] = string(value)
 		}
 
 		// ip address
@@ -257,12 +257,17 @@ func (conn *Conn) Cookies(key string, defaultValue ...string) string {
 // Headers is used for getting a header value by key
 // Defaults to empty string "" if the header doesn't exist.
 // If a default value is given, it will return that value if the header doesn't exist.
+// Header lookups are case-insensitive.
 func (conn *Conn) Headers(key string, defaultValue ...string) string {
-	v, ok := conn.headers[utils.ToLower(key)]
-	if !ok && len(defaultValue) > 0 {
+	for k, v := range conn.headers {
+		if utils.EqualFold(k, key) {
+			return v
+		}
+	}
+	if len(defaultValue) > 0 {
 		return defaultValue[0]
 	}
-	return v
+	return ""
 }
 
 // IP returns the client's network address
