@@ -157,6 +157,7 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 			defer cfg.RecoverHandler(conn)
 			handler(conn)
 		}); err != nil { // Upgrading required
+			releaseConn(conn)
 			return fiber.ErrUpgradeRequired
 		}
 
