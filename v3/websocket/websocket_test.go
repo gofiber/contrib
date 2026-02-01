@@ -122,6 +122,25 @@ func TestWebSocketMiddlewareConfigOrigin(t *testing.T) {
 		assert.Equal(t, "hello websocket", msg["message"])
 	})
 
+	t.Run("wildcard in list allows empty origin", func(t *testing.T) {
+		app := setupTestApp(Config{
+			Origins: []string{"http://localhost:3000", "*"},
+		}, nil)
+		defer app.Shutdown()
+		conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
+		if !assert.NoError(t, err) {
+			return
+		}
+		defer conn.Close()
+		assert.Equal(t, fiber.StatusSwitchingProtocols, resp.StatusCode)
+		assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
+
+		var msg fiber.Map
+		err = conn.ReadJSON(&msg)
+		assert.NoError(t, err)
+		assert.Equal(t, "hello websocket", msg["message"])
+	})
+
 	t.Run("disallowed origin", func(t *testing.T) {
 		app := setupTestApp(Config{
 			Origins: []string{"http://localhost:3000"},
