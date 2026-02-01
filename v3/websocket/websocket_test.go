@@ -72,8 +72,11 @@ func TestWebSocketMiddlewareConfigOrigin(t *testing.T) {
 		}, nil)
 		defer app.Shutdown()
 		conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
-		defer conn.Close()
-		assert.Equal(t, err.Error(), "websocket: bad handshake")
+		if conn != nil {
+			defer conn.Close()
+		}
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "bad handshake")
 		assert.Equal(t, fiber.StatusUpgradeRequired, resp.StatusCode)
 		assert.Equal(t, "", resp.Header.Get("Upgrade"))
 

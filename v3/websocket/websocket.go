@@ -107,7 +107,7 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		EnableCompression: cfg.EnableCompression,
 		WriteBufferPool:   cfg.WriteBufferPool,
 		CheckOrigin: func(fctx *fasthttp.RequestCtx) bool {
-			// If Origins is set to wildcard, allow all connections
+			// Fast path: if Origins is just wildcard (the default), allow all without checking header
 			if len(cfg.Origins) == 1 && cfg.Origins[0] == "*" {
 				return true
 			}
