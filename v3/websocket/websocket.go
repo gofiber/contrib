@@ -35,6 +35,12 @@ type Config struct {
 	// prevent cross-site request forgery. Everything is allowed if left empty.
 	Origins []string
 
+	// AllowEmptyOrigin allows WebSocket connections when the Origin header is absent.
+	// When false (default), connections without an Origin header are rejected when Origins is configured.
+	// Set to true to allow connections from non-browser clients that don't send Origin headers.
+	// Optional. Default: false
+	AllowEmptyOrigin bool
+
 	// ReadBufferSize and WriteBufferSize specify I/O buffer sizes in bytes. If a buffer
 	// size is zero, then a useful default size is used. The I/O buffer sizes
 	// do not limit the size of the messages that can be sent or received.
@@ -101,9 +107,14 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		EnableCompression: cfg.EnableCompression,
 		WriteBufferPool:   cfg.WriteBufferPool,
 		CheckOrigin: func(fctx *fasthttp.RequestCtx) bool {
+			// If Origins is set to wildcard, allow all connections
+			if len(cfg.Origins) == 1 && cfg.Origins[0] == "*" {
+				return true
+			}
 			origin := utils.UnsafeString(fctx.Request.Header.Peek("Origin"))
 			if origin == "" {
-				return true
+				// Allow empty Origin only if explicitly configured
+				return cfg.AllowEmptyOrigin
 			}
 			for i := range cfg.Origins {
 				if cfg.Origins[i] == "*" || cfg.Origins[i] == origin {
