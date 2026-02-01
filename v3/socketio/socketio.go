@@ -280,13 +280,26 @@ func (kws *Websocket) GetUUID() string {
 }
 
 func (kws *Websocket) SetUUID(uuid string) error {
+	pool.Lock()
+	defer pool.Unlock()
 	kws.mu.Lock()
 	defer kws.mu.Unlock()
 
-	if pool.contains(uuid) {
-		return ErrorUUIDDuplication
+	prevUUID := kws.UUID
+	if prevUUID == uuid {
+		return nil
 	}
 	kws.UUID = uuid
+
+	if existing, ok := pool.conn[uuid]; ok && existing != kws {
+		kws.UUID = prevUUID
+		return ErrorUUIDDuplication
+	}
+
+	if prevUUID != "" {
+		delete(pool.conn, prevUUID)
+	}
+	pool.conn[uuid] = kws
 	return nil
 }
 
