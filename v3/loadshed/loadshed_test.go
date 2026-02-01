@@ -47,6 +47,12 @@ func Test_Loadshed_LowerThreshold(t *testing.T) {
 	}
 }
 
+func Test_Loadshed_DefaultCriteriaWhenNil(t *testing.T) {
+	cfg := configWithDefaults(Config{})
+
+	assert.Same(t, ConfigDefault.Criteria, cfg.Criteria)
+}
+
 func Test_Loadshed_MiddleValue(t *testing.T) {
 	app := fiber.New()
 
