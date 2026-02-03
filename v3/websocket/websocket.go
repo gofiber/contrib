@@ -35,6 +35,12 @@ type Config struct {
 	// prevent cross-site request forgery. Everything is allowed if left empty.
 	Origins []string
 
+	// AllowEmptyOrigin allows WebSocket connections when the Origin header is absent.
+	// When false (default), connections without an Origin header are rejected unless Origins includes "*".
+	// Set to true to allow connections from non-browser clients that don't send Origin headers.
+	// Optional. Default: false
+	AllowEmptyOrigin bool
+
 	// ReadBufferSize and WriteBufferSize specify I/O buffer sizes in bytes. If a buffer
 	// size is zero, then a useful default size is used. The I/O buffer sizes
 	// do not limit the size of the messages that can be sent or received.
@@ -84,6 +90,14 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 	if len(cfg.Origins) == 0 {
 		cfg.Origins = []string{"*"}
 	}
+	// Check if wildcard is present in the Origins list during initialization
+	hasWildcard := false
+	for _, origin := range cfg.Origins {
+		if origin == "*" {
+			hasWildcard = true
+			break
+		}
+	}
 	if cfg.ReadBufferSize == 0 {
 		cfg.ReadBufferSize = 1024
 	}
@@ -101,9 +115,22 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		EnableCompression: cfg.EnableCompression,
 		WriteBufferPool:   cfg.WriteBufferPool,
 		CheckOrigin: func(fctx *fasthttp.RequestCtx) bool {
+			// Fast path: if Origins is just wildcard (the default), allow all without checking header
+			if len(cfg.Origins) == 1 && cfg.Origins[0] == "*" {
+				return true
+			}
 			origin := utils.UnsafeString(fctx.Request.Header.Peek("Origin"))
+			if origin == "" {
+				// Allow empty Origin if wildcard is in list or explicitly configured
+				return hasWildcard || cfg.AllowEmptyOrigin
+			}
+			// If wildcard is present, allow any non-empty origin
+			if hasWildcard {
+				return true
+			}
+			// No wildcard present, check if origin matches any specific origin in the list
 			for i := range cfg.Origins {
-				if cfg.Origins[i] == "*" || cfg.Origins[i] == origin {
+				if cfg.Origins[i] == origin {
 					return true
 				}
 			}
@@ -141,8 +168,8 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 
 		// headers
 		headers := c.RequestCtx().Request.Header.All()
-		for key, values := range headers {
-			conn.headers[string(key)] = string(values)
+		for key, value := range headers {
+			conn.headers[string(key)] = string(value)
 		}
 
 		// ip address
@@ -243,12 +270,17 @@ func (conn *Conn) Cookies(key string, defaultValue ...string) string {
 // Headers is used for getting a header value by key
 // Defaults to empty string "" if the header doesn't exist.
 // If a default value is given, it will return that value if the header doesn't exist.
+// Header lookups are case-insensitive.
 func (conn *Conn) Headers(key string, defaultValue ...string) string {
-	v, ok := conn.headers[key]
-	if !ok && len(defaultValue) > 0 {
+	for k, v := range conn.headers {
+		if utils.EqualFold(k, key) {
+			return v
+		}
+	}
+	if len(defaultValue) > 0 {
 		return defaultValue[0]
 	}
-	return v
+	return ""
 }
 
 // IP returns the client's network address
