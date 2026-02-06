@@ -49,26 +49,16 @@ type Config struct {
 	// Optional. Default: nil
 	Next func(c fiber.Ctx) bool
 
-	// SkipBody defines a function to skip log  "body" field when returned true.
+	// SkipField defines a function that returns true if a specific field should be skipped from logging.
 	//
 	// Optional. Default: nil
-	SkipBody func(c fiber.Ctx) bool
-
-	// SkipResBody defines a function to skip log  "resBody" field when returned true.
-	//
-	// Optional. Default: nil
-	SkipResBody func(c fiber.Ctx) bool
+	SkipField func(field string, c fiber.Ctx) bool
 
 	// GetResBody defines a function to get ResBody.
 	//  eg: when use compress middleware, resBody is unreadable. you can set GetResBody func to get readable resBody.
 	//
 	// Optional. Default: nil
 	GetResBody func(c fiber.Ctx) []byte
-
-	// Skip logging for these uri
-	//
-	// Optional. Default: nil
-	SkipURIs []string
 
 	// Add custom zerolog logger.
 	//
@@ -87,6 +77,12 @@ type Config struct {
 	//
 	// Optional. Default: {"ip", "latency", "status", "method", "url", "error"}
 	Fields []string
+
+	// Defines a function that returns true if a header should not be logged.
+	// Only relevant if `FieldReqHeaders` and/or `FieldResHeaders` are logged.
+	//
+	// Optional. Default: nil
+	SkipHeader func(header string, c fiber.Ctx) bool
 
 	// Wrap headers to dictionary.
 	// If false: {"method":"POST", "header-key":"header value"}
@@ -135,6 +131,9 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 	zc := c.loggerCtx(fc)
 
 	for _, field := range c.Fields {
+		if c.SkipField != nil && c.SkipField(field, fc) {
+			continue
+		}
 		switch field {
 		case FieldReferer:
 			zc = zc.Str(field, fc.Get(fiber.HeaderReferer))
@@ -164,22 +163,11 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 			if c.FieldsSnakeCase {
 				field = fieldResBody_
 			}
-			if c.SkipResBody == nil || !c.SkipResBody(fc) {
-				if c.GetResBody == nil {
-					zc = zc.Bytes(field, fc.Response().Body())
-				} else {
-					zc = zc.Bytes(field, c.GetResBody(fc))
-				}
-			}
 		case FieldQueryParams:
 			if c.FieldsSnakeCase {
 				field = fieldQueryParams_
 			}
 			zc = zc.Stringer(field, fc.Request().URI().QueryArgs())
-		case FieldBody:
-			if c.SkipBody == nil || !c.SkipBody(fc) {
-				zc = zc.Bytes(field, fc.Body())
-			}
 		case FieldBytesReceived:
 			if c.FieldsSnakeCase {
 				field = fieldBytesReceived_
@@ -214,6 +202,10 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 						continue
 					}
 
+					if c.SkipHeader != nil && c.SkipHeader(header, fc) {
+						continue
+					}
+
 					if len(values) == 1 {
 						dict.Str(header, values[0])
 						continue
@@ -225,6 +217,10 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 			} else {
 				for header, values := range fc.GetReqHeaders() {
 					if len(values) == 0 {
+						continue
+					}
+
+					if c.SkipHeader != nil && c.SkipHeader(header, fc) {
 						continue
 					}
 
@@ -247,6 +243,10 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 						continue
 					}
 
+					if c.SkipHeader != nil && c.SkipHeader(header, fc) {
+						continue
+					}
+
 					if len(values) == 1 {
 						dict.Str(header, values[0])
 						continue
@@ -258,6 +258,10 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 			} else {
 				for header, values := range fc.GetRespHeaders() {
 					if len(values) == 0 {
+						continue
+					}
+
+					if c.SkipHeader != nil && c.SkipHeader(header, fc) {
 						continue
 					}
 
