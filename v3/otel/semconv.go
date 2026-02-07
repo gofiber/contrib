@@ -14,6 +14,7 @@ var (
 	httpProtocolNameAttr = semconv.NetworkProtocolName("http")
 	http11VersionAttr    = semconv.NetworkProtocolVersion("1.1")
 	http10VersionAttr    = semconv.NetworkProtocolVersion("1.0")
+	enduserIDKey         = attribute.Key("enduser.id")
 )
 
 func httpServerMetricAttributesFromRequest(c fiber.Ctx, cfg config) []attribute.KeyValue {
@@ -59,7 +60,7 @@ func httpServerTraceAttributesFromRequest(c fiber.Ctx, cfg config) []attribute.K
 	}
 
 	if username, ok := HasBasicAuth(c.Get(fiber.HeaderAuthorization)); ok {
-		attrs = append(attrs, semconv.UserIDKey.String(utils.CopyString(username)))
+		attrs = append(attrs, enduserIDKey.String(utils.CopyString(username)))
 	}
 
 	if cfg.clientIP {

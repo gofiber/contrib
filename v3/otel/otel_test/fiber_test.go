@@ -353,7 +353,7 @@ func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, 
 	dp := hist.DataPoints[0]
 	assert.Equal(t, attribute.NewSet(responseAttrs...), dp.Attributes, "attributes")
 	assert.Equal(t, uint64(1), dp.Count, "count")
-	assert.Less(t, dp.Sum, float64(10)) // test shouldn't take longer than 10 milliseconds
+	assert.Less(t, dp.Sum, 0.01) // test shouldn't take longer than 10 milliseconds (0.01 seconds)
 
 	// Request size
 	want := metricdata.Metrics{
@@ -595,7 +595,6 @@ func TestCollectClientIP(t *testing.T) {
 
 					sr := tracetest.NewSpanRecorder()
 					provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-					otel.SetTracerProvider(provider)
 
 					app := fiber.New()
 					app.Use(fiberotel.Middleware(

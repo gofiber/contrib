@@ -40,8 +40,9 @@ const (
 	MetricNameHttpServerResponseSize = MetricNameHTTPServerResponseBodySize
 	// Deprecated: use MetricNameHTTPServerActiveRequests.
 	MetricNameHttpServerActiveRequests = MetricNameHTTPServerActiveRequests
-	// Deprecated: use UnitSeconds.
-	UnitMilliseconds = UnitSeconds
+	// Deprecated: kept for backward compatibility with legacy millisecond-based metrics.
+	// New duration metrics use UnitSeconds.
+	UnitMilliseconds = "ms"
 )
 
 // Middleware returns fiber handler which will trace incoming requests.
