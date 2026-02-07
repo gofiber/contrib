@@ -76,10 +76,12 @@ func main() {
 		// Optional custom validation handling.
 		ValidateFunc: func(success bool, c fiber.Ctx) error {
 			if !success {
-				c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				if err := c.Status(fiber.StatusForbidden).JSON(fiber.Map{
 					"error":   "HCaptcha validation failed",
 					"details": "Please complete the captcha challenge and try again",
-				})
+				}); err != nil {
+					return err
+				}
 				return errors.New("custom validation failed")
 			}
 			return nil

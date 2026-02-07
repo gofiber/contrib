@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
-	"strings"
 )
 
 // DefaultSiteVerifyURL is the default URL for the HCaptcha API

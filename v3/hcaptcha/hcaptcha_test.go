@@ -85,7 +85,10 @@ func TestHCaptchaDefaultValidation(t *testing.T) {
 		require.NoError(t, err)
 		defer res.Body.Close()
 
+		body, err := io.ReadAll(res.Body)
+		require.NoError(t, err)
 		assert.Equal(t, fiber.StatusForbidden, res.StatusCode)
+		assert.Equal(t, "unable to check that you are not a robot", string(body))
 	})
 }
 
@@ -149,7 +152,42 @@ func TestHCaptchaValidateFunc(t *testing.T) {
 		require.NoError(t, err)
 		defer res.Body.Close()
 
+		body, err := io.ReadAll(res.Body)
+		require.NoError(t, err)
 		assert.Equal(t, fiber.StatusUnprocessableEntity, res.StatusCode)
+		assert.Equal(t, "custom validation failed", string(body))
+	})
+
+	t.Run("defaults to 403 and error body when validatefunc sets neither", func(t *testing.T) {
+		server := newSiteVerifyServer(t, false)
+		defer server.Close()
+
+		app := fiber.New()
+		m := New(Config{
+			SecretKey:     TestSecretKey,
+			SiteVerifyURL: server.URL,
+			ResponseKeyFunc: func(c fiber.Ctx) (string, error) {
+				return TestResponseToken, nil
+			},
+			ValidateFunc: func(success bool, c fiber.Ctx) error {
+				assert.False(t, success)
+				return errors.New("custom validation failed")
+			},
+		})
+
+		app.Get("/hcaptcha", m, func(c fiber.Ctx) error {
+			return c.SendString("ok")
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/hcaptcha", nil)
+		res, err := app.Test(req, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+		require.NoError(t, err)
+		defer res.Body.Close()
+
+		body, err := io.ReadAll(res.Body)
+		require.NoError(t, err)
+		assert.Equal(t, fiber.StatusForbidden, res.StatusCode)
+		assert.Equal(t, "custom validation failed", string(body))
 	})
 }
 

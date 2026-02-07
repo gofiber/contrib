@@ -80,7 +80,8 @@ func (h *HCaptcha) Validate(c fiber.Ctx) error {
 	}
 
 	if validationErr != nil {
-		if c.Response().StatusCode() < fiber.StatusBadRequest {
+		statusCode := c.Response().StatusCode()
+		if statusCode == 0 || statusCode == fiber.StatusOK {
 			c.Status(fiber.StatusForbidden)
 		}
 		if len(c.Response().Body()) == 0 {
