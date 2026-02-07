@@ -2,7 +2,6 @@ package zap
 
 import (
 	"os"
-	"strconv"
 	"sync"
 	"time"
 
@@ -17,7 +16,7 @@ func New(config ...Config) fiber.Handler {
 	cfg := configDefault(config...)
 
 	// Set PID once
-	pid := strconv.Itoa(os.Getpid())
+	pid := utils.FormatInt(int64(os.Getpid()))
 
 	// Set variables
 	var (

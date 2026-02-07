@@ -1,9 +1,10 @@
 package monitor
 
 import (
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gofiber/utils/v2"
 )
 
 type viewBag struct {
@@ -20,7 +21,7 @@ func newIndex(dat viewBag) string {
 	if timeout < timeoutDiff {
 		timeout = timeoutDiff
 	}
-	ts := strconv.FormatInt(timeout, 10)
+	ts := utils.FormatInt(timeout)
 	replacer := strings.NewReplacer("$TITLE", dat.title, "$TIMEOUT", ts,
 		"$FONT_URL", dat.fontURL, "$CHART_JS_URL", dat.chartJSURL, "$CUSTOM_HEAD", dat.customHead,
 	)
