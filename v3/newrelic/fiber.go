@@ -121,16 +121,16 @@ func createTransactionName(c fiber.Ctx) string {
 
 func createWebRequest(c fiber.Ctx, host, method, scheme string, filter func(key, value string) bool) newrelic.WebRequest {
 	headers := make(http.Header, c.Request().Header.Len())
-	c.Request().Header.VisitAll(func(key, value []byte) {
+	for key, value := range c.Request().Header.All() {
 		headerKey := string(key)
 		headerValue := string(value)
 
 		if filter != nil && !filter(headerKey, headerValue) {
-			return
+			continue
 		}
 
 		headers.Add(headerKey, headerValue)
-	})
+	}
 
 	return newrelic.WebRequest{
 		Header:    headers,
