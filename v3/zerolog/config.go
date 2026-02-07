@@ -159,10 +159,19 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 			zc = zc.Str(field, latency.String())
 		case FieldStatus:
 			zc = zc.Int(field, fc.Response().StatusCode())
+		case FieldBody:
+			zc = zc.Str(field, string(fc.Body()))
 		case FieldResBody:
 			if c.FieldsSnakeCase {
 				field = fieldResBody_
 			}
+			resBody := fc.Response().Body()
+			if c.GetResBody != nil {
+				if customResBody := c.GetResBody(fc); customResBody != nil {
+					resBody = customResBody
+				}
+			}
+			zc = zc.Str(field, string(resBody))
 		case FieldQueryParams:
 			if c.FieldsSnakeCase {
 				field = fieldQueryParams_
