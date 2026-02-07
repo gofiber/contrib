@@ -7,13 +7,14 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/utils/v2"
 	"go.opentelemetry.io/otel/attribute"
-	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
 )
 
 var (
 	httpProtocolNameAttr = semconv.NetworkProtocolName("http")
 	http11VersionAttr    = semconv.NetworkProtocolVersion("1.1")
 	http10VersionAttr    = semconv.NetworkProtocolVersion("1.0")
+	enduserIDKey         = attribute.Key("enduser.id")
 )
 
 func httpServerMetricAttributesFromRequest(c fiber.Ctx, cfg config) []attribute.KeyValue {
@@ -50,19 +51,19 @@ func httpServerTraceAttributesFromRequest(c fiber.Ctx, cfg config) []attribute.K
 		semconv.URLFull(utils.CopyString(c.OriginalURL())),
 		semconv.UserAgentOriginal(string(utils.CopyBytes(c.Request().Header.UserAgent()))),
 		semconv.ServerAddress(utils.CopyString(c.Hostname())),
-		semconv.NetTransportTCP,
+		semconv.NetworkTransportTCP,
 	}
 	attrs = append(attrs, protocolAttributes...)
 
 	if cfg.Port != nil {
-		attrs = append(attrs, semconv.NetHostPortKey.Int(*cfg.Port))
+		attrs = append(attrs, semconv.ServerPort(*cfg.Port))
 	}
 
 	if username, ok := HasBasicAuth(c.Get(fiber.HeaderAuthorization)); ok {
-		attrs = append(attrs, semconv.EnduserIDKey.String(utils.CopyString(username)))
+		attrs = append(attrs, enduserIDKey.String(utils.CopyString(username)))
 	}
 
-	if cfg.collectClientIP {
+	if cfg.clientIP {
 		clientIP := c.IP()
 		if len(clientIP) > 0 {
 			attrs = append(attrs, semconv.ClientAddress(utils.CopyString(clientIP)))

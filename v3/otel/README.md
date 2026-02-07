@@ -39,13 +39,15 @@ You can configure the middleware using functional parameters
 | `WithNext`                    | `func(fiber.Ctx) bool`         | Define a function to skip this middleware when returned true .| nil                                                                 |
 | `WithTracerProvider`          | `oteltrace.TracerProvider`      | Specifies a tracer provider to use for creating a tracer.                         | nil - the global tracer provider is used                                   |
 | `WithMeterProvider`           | `otelmetric.MeterProvider`      | Specifies a meter provider to use for reporting.                                     | nil - the global meter provider is used                                                             |
-| `WithPort`                    | `int`                          | Specifies the value to use when setting the `net.host.port` attribute on metrics/spans.                            | Defaults to (`80` for `http`, `443` for `https`)              |
+| `WithPort`                    | `int`                          | Specifies the value to use when setting the `server.port` attribute on metrics/spans.                            | Defaults to (`80` for `http`, `443` for `https`)              |
 | `WithPropagators`             | `propagation.TextMapPropagator` | Specifies propagators to use for extracting information from the HTTP requests.                     | If none are specified, global ones will be used                                                               |
-| (❌ **Removed**) `WithServerName`             | `string`                       | This option was removed because the `http.server_name` attribute is deprecated in the OpenTelemetry semantic conventions. Beginning with v1.21.0, the recommended attribute is `server.address`, which this middleware already fills with the hostname reported by Fiber.                                            | -                                                                   |
+| (❌ **Removed**) `WithServerName`             | `string`                       | This option was removed because the `http.server_name` attribute is deprecated in the OpenTelemetry semantic conventions. The recommended attribute is `server.address`, which this middleware already fills with the hostname reported by Fiber.                                            | -                                                                   |
 | `WithSpanNameFormatter`       | `func(fiber.Ctx) string`       | Takes a function that will be called on every request and the returned string will become the span Name.                                   | Default formatter returns the route pathRaw |
 | `WithCustomAttributes`        | `func(fiber.Ctx) []attribute.KeyValue` | Define a function to add custom attributes to the span.                  | nil                                                                 |
 | `WithCustomMetricAttributes`  | `func(fiber.Ctx) []attribute.KeyValue` | Define a function to add custom attributes to the metrics.               | nil                                                                 |
-| `WithCollectClientIP`         | `bool` | Specifies whether to collect the client's IP address from the request. | true |
+| `WithClientIP`         | `bool` | Specifies whether to collect the client's IP address from the request. | true |
+| (⚠️ **Deprecated**) `WithCollectClientIP`         | `bool` | Deprecated alias for `WithClientIP`. | true |
+| `WithoutMetrics`         | `bool` | Disables metrics collection when set to true. | false |
 
 ## Usage
 
@@ -73,7 +75,7 @@ import (
     //"go.opentelemetry.io/otel/exporters/jaeger"
     "go.opentelemetry.io/otel/propagation"
     sdktrace "go.opentelemetry.io/otel/sdk/trace"
-    semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
+    semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
     oteltrace "go.opentelemetry.io/otel/trace"
 )
 
