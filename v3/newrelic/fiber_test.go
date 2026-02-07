@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
@@ -404,4 +405,45 @@ func TestFromContext(t *testing.T) {
 	// then
 	assert.Nil(t, err)
 	assert.Equal(t, http.StatusOK, res.StatusCode)
+}
+
+func TestCreateWebRequest(t *testing.T) {
+	t.Run("should include inbound headers for distributed tracing", func(t *testing.T) {
+		app := fiber.New()
+		app.Get("/", func(ctx fiber.Ctx) error {
+			req := createWebRequest(ctx, ctx.Hostname(), ctx.Method(), string(ctx.Request().URI().Scheme()), nil)
+			assert.Equal(t, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", req.Header.Get("traceparent"))
+			assert.ElementsMatch(t, []string{"abc", "def"}, req.Header.Values("X-Custom"))
+			return ctx.SendStatus(http.StatusNoContent)
+		})
+
+		r := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+		r.Header.Set("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+		r.Header.Add("X-Custom", "abc")
+		r.Header.Add("X-Custom", "def")
+
+		resp, err := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+	})
+
+	t.Run("should apply request header filter when configured", func(t *testing.T) {
+		app := fiber.New()
+		app.Get("/", func(ctx fiber.Ctx) error {
+			req := createWebRequest(ctx, ctx.Hostname(), ctx.Method(), string(ctx.Request().URI().Scheme()), func(key, _ string) bool {
+				return strings.EqualFold(key, "traceparent")
+			})
+			assert.Equal(t, "trace-value", req.Header.Get("traceparent"))
+			assert.Empty(t, req.Header.Values("Authorization"))
+			return ctx.SendStatus(http.StatusNoContent)
+		})
+
+		r := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+		r.Header.Set("traceparent", "trace-value")
+		r.Header.Set("Authorization", "Bearer secret")
+
+		resp, err := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+	})
 }
