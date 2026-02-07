@@ -51,6 +51,12 @@ You can configure the middleware using functional parameters
 
 Please refer to [example](./example)
 
+## Metrics Notes
+
+- `http.server.request.size` and `http.server.response.size` are measured without buffering full streamed bodies into memory.
+- For streamed responses, size is recorded when the stream reaches EOF.
+- For `text/event-stream` responses (SSE), response body size is not recorded.
+
 ## Example
 
 ```go
