@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
 )
 
 // DefaultSiteVerifyURL is the default URL for the HCaptcha API
@@ -41,7 +41,7 @@ func DefaultResponseKeyFunc(c fiber.Ctx) (string, error) {
 		return "", fmt.Errorf("failed to decode HCaptcha token: %w", err)
 	}
 
-	if strings.TrimSpace(data.HCaptchaToken) == "" {
+	if utils.TrimSpace(data.HCaptchaToken) == "" {
 		return "", fmt.Errorf("hcaptcha token is empty")
 	}
 

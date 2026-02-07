@@ -91,7 +91,7 @@ app.Use(swaggerui.New(swaggerui.Config{
     Path:     "docs",
 }))
 
-// Create Swagger middleware for v2
+// Create Swagger middleware for a second API version
 //
 // Swagger will be available at: /api/v2/docs
 app.Use(swaggerui.New(swaggerui.Config{

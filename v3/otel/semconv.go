@@ -99,8 +99,9 @@ func HasBasicAuth(auth string) (string, bool) {
 		return "", false
 	}
 
-	// Check if the Authorization header is Basic
-	if !strings.HasPrefix(auth, "Basic ") {
+	// Check if the Authorization header is Basic.
+	// Auth schemes are case-insensitive.
+	if len(auth) < 6 || !utils.EqualFold(auth[:6], "Basic ") {
 		return "", false
 	}
 

@@ -22,6 +22,8 @@ Requires Go **1.25** and above
 
 We only support the latest two versions of Go. Visit [https://go.dev/doc/devel/release](https://go.dev/doc/devel/release) for more information.
 
+> Test requirement: integration tests for this package require a reachable Docker daemon.
+
 ## Common Use Cases
 
 - Local development
