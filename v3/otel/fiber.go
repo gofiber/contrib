@@ -2,6 +2,7 @@ package otel
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"time"
 
@@ -32,6 +33,31 @@ const (
 	UnitBytes         = "By"
 	UnitMilliseconds  = "ms"
 )
+
+type bodyStreamSizeReader struct {
+	reader io.Reader
+	onEOF  func(read int64)
+	read   int64
+}
+
+func (b *bodyStreamSizeReader) Read(p []byte) (n int, err error) {
+	n, err = b.reader.Read(p)
+	b.read += int64(n)
+	if err == io.EOF && b.onEOF != nil {
+		b.onEOF(b.read)
+	}
+
+	return n, err
+}
+
+func (b *bodyStreamSizeReader) Close() error {
+	closer, ok := b.reader.(io.Closer)
+	if !ok {
+		return nil
+	}
+
+	return closer.Close()
+}
 
 // Middleware returns fiber handler which will trace incoming requests.
 func Middleware(opts ...Option) fiber.Handler {
@@ -109,6 +135,19 @@ func Middleware(opts ...Option) fiber.Handler {
 		responseMetricAttrs := make([]attribute.KeyValue, len(requestMetricsAttrs))
 		copy(responseMetricAttrs, requestMetricsAttrs)
 
+		request := c.Request()
+		requestSize := int64(len(request.Body()))
+		isRequestBodyStream := request.IsBodyStream()
+		var requestBodyStreamSizeReader *bodyStreamSizeReader
+		if isRequestBodyStream {
+			requestBodyStream := request.BodyStream()
+			if requestBodyStream != nil {
+				requestSize = 0
+				requestBodyStreamSizeReader = &bodyStreamSizeReader{reader: requestBodyStream}
+				request.SetBodyStream(requestBodyStreamSizeReader, -1)
+			}
+		}
+
 		reqHeader := make(http.Header)
 		for header, values := range c.GetReqHeaders() {
 			for _, value := range values {
@@ -147,27 +186,53 @@ func Middleware(opts ...Option) fiber.Handler {
 			semconv.HTTPRouteKey.String(c.Route().Path), // no need to copy c.Route().Path: route strings should be immutable across app lifecycle
 		}
 
-		var responseSize int64
-		requestSize := int64(len(c.Request().Body()))
-		if c.GetRespHeader("Content-Type") != "text/event-stream" {
-			responseSize = int64(len(c.Response().Body()))
+		response := c.Response()
+		responseSize := int64(0)
+		isResponseBodyStream := response.IsBodyStream()
+		if !isResponseBodyStream && c.GetRespHeader("Content-Type") != "text/event-stream" {
+			responseSize = int64(len(response.Body()))
+		}
+
+		if isResponseBodyStream {
+			responseBodyStream := response.BodyStream()
+			if responseBodyStream != nil {
+				responseMetricAttrsWithResponse := append(responseMetricAttrs, responseAttrs...)
+				responseBodyStreamReader := &bodyStreamSizeReader{
+					reader: responseBodyStream,
+					onEOF: func(read int64) {
+						httpServerResponseSize.Record(context.Background(), read, metric.WithAttributes(responseMetricAttrsWithResponse...))
+					},
+				}
+				response.SetBodyStream(responseBodyStreamReader, -1)
+			} else {
+				isResponseBodyStream = false
+			}
 		}
 
 		defer func() {
 			responseMetricAttrs = append(responseMetricAttrs, responseAttrs...)
+			if requestBodyStreamSizeReader != nil {
+				requestSize = requestBodyStreamSizeReader.read
+			}
 
 			if !cfg.withoutMetrics {
 				httpServerActiveRequests.Add(savedCtx, -1, metric.WithAttributes(requestMetricsAttrs...))
 				httpServerDuration.Record(savedCtx, float64(time.Since(start).Microseconds())/1000, metric.WithAttributes(responseMetricAttrs...))
 				httpServerRequestSize.Record(savedCtx, requestSize, metric.WithAttributes(responseMetricAttrs...))
-				httpServerResponseSize.Record(savedCtx, responseSize, metric.WithAttributes(responseMetricAttrs...))
+				if !isResponseBodyStream {
+					httpServerResponseSize.Record(savedCtx, responseSize, metric.WithAttributes(responseMetricAttrs...))
+				}
 			}
 
 			c.SetContext(savedCtx)
 			cancel()
 		}()
 
-		span.SetAttributes(append(responseAttrs, semconv.HTTPResponseBodySizeKey.Int64(responseSize))...)
+		if !isResponseBodyStream {
+			span.SetAttributes(append(responseAttrs, semconv.HTTPResponseBodySizeKey.Int64(responseSize))...)
+		} else {
+			span.SetAttributes(responseAttrs...)
+		}
 		span.SetName(cfg.SpanNameFormatter(c))
 
 		spanStatus, spanMessage := internal.SpanStatusFromHTTPStatusCodeAndSpanKind(c.Response().StatusCode(), oteltrace.SpanKindServer)
