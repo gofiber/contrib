@@ -700,7 +700,7 @@ func Test_Logger_WhitelistHeaders(t *testing.T) {
 	}
 }
 
-func Test_WhitelisttHeadrs_Resp_Headers(t *testing.T) {
+func Test_WhitelistHeaders_Resp_Headers(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
@@ -779,7 +779,7 @@ func Test_Logger_BlacklistHeaders(t *testing.T) {
 	assert.Equal(t, expected, logs)
 }
 
-func Test_BlacklistHeadrs_Resp_Headers(t *testing.T) {
+func Test_BlacklistHeaders_Resp_Headers(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
