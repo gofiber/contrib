@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gofiber/contrib/v3/otel/internal"
@@ -13,6 +15,7 @@ import (
 	otelcontrib "go.opentelemetry.io/contrib"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
@@ -38,13 +41,19 @@ type bodyStreamSizeReader struct {
 	reader io.Reader
 	onEOF  func(read int64)
 	read   int64
+	eof    sync.Once
 }
 
 func (b *bodyStreamSizeReader) Read(p []byte) (n int, err error) {
 	n, err = b.reader.Read(p)
-	b.read += int64(n)
+	if n > 0 {
+		atomic.AddInt64(&b.read, int64(n))
+	}
 	if err == io.EOF && b.onEOF != nil {
-		b.onEOF(b.read)
+		read := atomic.LoadInt64(&b.read)
+		b.eof.Do(func() {
+			b.onEOF(read)
+		})
 	}
 
 	return n, err
@@ -57,6 +66,20 @@ func (b *bodyStreamSizeReader) Close() error {
 	}
 
 	return closer.Close()
+}
+
+func detachedMetricContext(ctx context.Context) context.Context {
+	detached := context.Background()
+
+	if spanContext := oteltrace.SpanContextFromContext(ctx); spanContext.IsValid() {
+		detached = oteltrace.ContextWithSpanContext(detached, spanContext)
+	}
+
+	if bg := baggage.FromContext(ctx); bg.Len() > 0 {
+		detached = baggage.ContextWithBaggage(detached, bg)
+	}
+
+	return detached
 }
 
 // Middleware returns fiber handler which will trace incoming requests.
@@ -136,16 +159,17 @@ func Middleware(opts ...Option) fiber.Handler {
 		copy(responseMetricAttrs, requestMetricsAttrs)
 
 		request := c.Request()
-		requestSize := int64(len(request.Body()))
 		isRequestBodyStream := request.IsBodyStream()
+		requestSize := int64(0)
 		var requestBodyStreamSizeReader *bodyStreamSizeReader
-		if isRequestBodyStream {
+		if isRequestBodyStream && !cfg.withoutMetrics {
 			requestBodyStream := request.BodyStream()
 			if requestBodyStream != nil {
-				requestSize = 0
 				requestBodyStreamSizeReader = &bodyStreamSizeReader{reader: requestBodyStream}
 				request.SetBodyStream(requestBodyStreamSizeReader, -1)
 			}
+		} else {
+			requestSize = int64(len(request.Body()))
 		}
 
 		reqHeader := make(http.Header)
@@ -187,20 +211,22 @@ func Middleware(opts ...Option) fiber.Handler {
 		}
 
 		response := c.Response()
+		isSSE := c.GetRespHeader("Content-Type") == "text/event-stream"
 		responseSize := int64(0)
 		isResponseBodyStream := response.IsBodyStream()
-		if !isResponseBodyStream && c.GetRespHeader("Content-Type") != "text/event-stream" {
+		if !isResponseBodyStream && !isSSE {
 			responseSize = int64(len(response.Body()))
 		}
 
-		if isResponseBodyStream {
+		if isResponseBodyStream && !isSSE && !cfg.withoutMetrics {
 			responseBodyStream := response.BodyStream()
 			if responseBodyStream != nil {
 				responseMetricAttrsWithResponse := append(responseMetricAttrs, responseAttrs...)
+				responseMetricsCtx := detachedMetricContext(savedCtx)
 				responseBodyStreamReader := &bodyStreamSizeReader{
 					reader: responseBodyStream,
 					onEOF: func(read int64) {
-						httpServerResponseSize.Record(context.Background(), read, metric.WithAttributes(responseMetricAttrsWithResponse...))
+						httpServerResponseSize.Record(responseMetricsCtx, read, metric.WithAttributes(responseMetricAttrsWithResponse...))
 					},
 				}
 				response.SetBodyStream(responseBodyStreamReader, -1)
@@ -212,7 +238,7 @@ func Middleware(opts ...Option) fiber.Handler {
 		defer func() {
 			responseMetricAttrs = append(responseMetricAttrs, responseAttrs...)
 			if requestBodyStreamSizeReader != nil {
-				requestSize = requestBodyStreamSizeReader.read
+				requestSize = atomic.LoadInt64(&requestBodyStreamSizeReader.read)
 			}
 
 			if !cfg.withoutMetrics {

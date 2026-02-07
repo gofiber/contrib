@@ -643,6 +643,36 @@ func TestWithoutMetrics(t *testing.T) {
 	assert.Len(t, metrics.ScopeMetrics, 0, "No metrics should be collected when metrics are disabled")
 }
 
+func TestWithoutMetricsWithStreamResponse(t *testing.T) {
+	reader := metric.NewManualReader()
+	provider := metric.NewMeterProvider(metric.WithReader(reader))
+
+	app := fiber.New()
+	app.Use(
+		fiberotel.Middleware(
+			fiberotel.WithMeterProvider(provider),
+			fiberotel.WithoutMetrics(true),
+		),
+	)
+
+	app.Get("/stream", func(ctx fiber.Ctx) error {
+		return ctx.SendStream(bytes.NewReader(make([]byte, 2048)))
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/stream", nil))
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Len(t, body, 2048)
+
+	metrics := metricdata.ResourceMetrics{}
+	err = reader.Collect(context.Background(), &metrics)
+	assert.NoError(t, err)
+	assert.Len(t, metrics.ScopeMetrics, 0, "No metrics should be collected when metrics are disabled")
+}
+
 func TestResponseBodySizeWithStream(t *testing.T) {
 	const responseBodySize = 8192
 
