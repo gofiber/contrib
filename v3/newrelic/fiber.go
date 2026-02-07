@@ -2,6 +2,7 @@ package newrelic
 
 import (
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 
@@ -84,18 +85,7 @@ func New(cfg Config) fiber.Handler {
 		)
 
 		scheme := c.Request().URI().Scheme()
-
-		txn.SetWebRequest(newrelic.WebRequest{
-			Host:      host,
-			Method:    method,
-			Transport: transport(string(scheme)),
-			URL: &url.URL{
-				Host:     host,
-				Scheme:   string(c.Request().URI().Scheme()),
-				Path:     string(c.Request().URI().Path()),
-				RawQuery: string(c.Request().URI().QueryString()),
-			},
-		})
+		txn.SetWebRequest(createWebRequest(c, host, method, string(scheme)))
 
 		c.SetContext(newrelic.NewContext(c.Context(), txn))
 
@@ -121,6 +111,26 @@ func FromContext(c fiber.Ctx) *newrelic.Transaction {
 
 func createTransactionName(c fiber.Ctx) string {
 	return fmt.Sprintf("%s %s", c.Request().Header.Method(), c.Request().URI().Path())
+}
+
+func createWebRequest(c fiber.Ctx, host, method, scheme string) newrelic.WebRequest {
+	headers := make(http.Header)
+	c.Request().Header.VisitAll(func(key, value []byte) {
+		headers.Add(string(key), string(value))
+	})
+
+	return newrelic.WebRequest{
+		Header:    headers,
+		Host:      host,
+		Method:    method,
+		Transport: transport(scheme),
+		URL: &url.URL{
+			Host:     host,
+			Scheme:   scheme,
+			Path:     string(c.Request().URI().Path()),
+			RawQuery: string(c.Request().URI().QueryString()),
+		},
+	}
 }
 
 func transport(schema string) newrelic.TransportType {

@@ -10,6 +10,8 @@ id: newrelic
 
 [New Relic](https://github.com/newrelic/go-agent) support for Fiber.
 
+Incoming request headers are forwarded to New Relic transactions, enabling distributed tracing header processing.
+
 
 **Compatible with Fiber v3.**
 
