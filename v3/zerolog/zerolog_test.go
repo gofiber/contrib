@@ -57,8 +57,8 @@ func Test_SkipBody(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(New(Config{
-		SkipBody: func(_ fiber.Ctx) bool {
-			return true
+		SkipField: func(field string, _ fiber.Ctx) bool {
+			return field == FieldBody
 		},
 		Logger: &logger,
 		Fields: []string{FieldPID, FieldBody},
@@ -84,8 +84,8 @@ func Test_SkipResBody(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(New(Config{
-		SkipResBody: func(_ fiber.Ctx) bool {
-			return true
+		SkipField: func(field string, _ fiber.Ctx) bool {
+			return field == FieldResBody
 		},
 		Logger: &logger,
 		Fields: []string{FieldResBody},
@@ -301,8 +301,10 @@ func Test_Skip_URIs(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(New(Config{
-		Logger:   &logger,
-		SkipURIs: []string{"/ignore_logging"},
+		Logger: &logger,
+		Next: func(c fiber.Ctx) bool {
+			return c.Path() == "/ignore_logging"
+		},
 	}))
 
 	app.Get("/ignore_logging", func(c fiber.Ctx) error {
@@ -631,4 +633,187 @@ func Test_Logger_FromContext(t *testing.T) {
 	_ = json.Unmarshal(buf.Bytes(), &logs)
 
 	assert.Equal(t, "bar", logs["foo"])
+}
+
+func Test_Logger_WhitelistHeaders(t *testing.T) {
+
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	app := fiber.New()
+	app.Use(New(Config{
+		Logger: &logger,
+		Fields: []string{FieldReqHeaders},
+		SkipHeader: func(header string, _ fiber.Ctx) bool {
+			switch header {
+			case "Foo", "Host", "Bar":
+				return false
+			default:
+				return true
+			}
+		},
+	}))
+
+	app.Get("/", func(c fiber.Ctx) error {
+		return c.SendString("hello")
+	})
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Add("foo", "bar")
+	req.Header.Add("baz", "foo")
+
+	resp, err := app.Test(req)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+
+	expected := map[string]interface{}{
+		"Host":    "example.com",
+		"Foo":     "bar",
+		"level":   "info",
+		"message": "Success",
+	}
+
+	var logs map[string]any
+	_ = json.Unmarshal(buf.Bytes(), &logs)
+
+	assert.Equal(t, expected, logs)
+
+	app.Get("/res-headers", func(c fiber.Ctx) error {
+		c.Set("test", "skip")
+		c.Set("bar", "bar")
+		return c.SendString("hello")
+	})
+	req = httptest.NewRequest("GET", "/res-headers", nil)
+	req.Header.Add("foo", "bar")
+	req.Header.Add("baz", "foo")
+
+	resp, err = app.Test(req)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+
+	expected = map[string]interface{}{
+		"Bar":     "bar",
+		"level":   "info",
+		"message": "Success",
+	}
+}
+
+func Test_WhitelistHeaders_Resp_Headers(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	app := fiber.New()
+	app.Use(New(Config{
+		Logger: &logger,
+		Fields: []string{FieldResHeaders},
+		SkipHeader: func(header string, _ fiber.Ctx) bool {
+			return header != "Bar"
+		},
+	}))
+
+	app.Get("/", func(c fiber.Ctx) error {
+		c.Set("test", "skip")
+		c.Set("bar", "bar")
+		return c.SendString("hello")
+	})
+	req := httptest.NewRequest("GET", "/", nil)
+
+	resp, err := app.Test(req)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+
+	expected := map[string]interface{}{
+		"Bar":     "bar",
+		"level":   "info",
+		"message": "Success",
+	}
+
+	var logs map[string]any
+	_ = json.Unmarshal(buf.Bytes(), &logs)
+
+	assert.Equal(t, expected, logs)
+}
+
+func Test_Logger_BlacklistHeaders(t *testing.T) {
+
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	app := fiber.New()
+	app.Use(New(Config{
+		Logger: &logger,
+		Fields: []string{FieldReqHeaders},
+		SkipHeader: func(header string, _ fiber.Ctx) bool {
+			return header == "Foo"
+		},
+	}))
+
+	app.Get("/", func(c fiber.Ctx) error {
+		return c.SendString("hello")
+	})
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Add("foo", "bar")
+	req.Header.Add("baz", "foo")
+
+	resp, err := app.Test(req)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+
+	expected := map[string]interface{}{
+		"Host":    "example.com",
+		"Baz":     "foo",
+		"level":   "info",
+		"message": "Success",
+	}
+
+	var logs map[string]any
+	_ = json.Unmarshal(buf.Bytes(), &logs)
+
+	assert.Equal(t, expected, logs)
+}
+
+func Test_BlacklistHeaders_Resp_Headers(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	app := fiber.New()
+	app.Use(New(Config{
+		Logger: &logger,
+		Fields: []string{FieldResHeaders},
+		SkipHeader: func(header string, _ fiber.Ctx) bool {
+			return header == "Test"
+		},
+	}))
+
+	app.Get("/", func(c fiber.Ctx) error {
+		c.Set("test", "skip")
+		c.Set("bar", "bar")
+		return c.SendString("hello")
+	})
+	req := httptest.NewRequest("GET", "/", nil)
+
+	resp, err := app.Test(req)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+
+	expected := map[string]interface{}{
+		"Bar":          "bar",
+		"Content-Type": "text/plain; charset=utf-8",
+		"level":        "info",
+		"message":      "Success",
+	}
+
+	var logs map[string]any
+	_ = json.Unmarshal(buf.Bytes(), &logs)
+
+	assert.Equal(t, expected, logs)
 }
