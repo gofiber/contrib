@@ -54,26 +54,27 @@ type Config struct {
 	// Optional. Default: nil
 	SkipField func(field string, c fiber.Ctx) bool
 
-	// GetResBody defines a function to get ResBody.
-	//  eg: when use compress middleware, resBody is unreadable. you can set GetResBody func to get readable resBody.
+	// GetResBody defines a function to get a custom response body.
+	// e.g. when using compress middleware, the original response body may be unreadable.
+	// You can use GetResBody to provide a readable body.
 	//
 	// Optional. Default: nil
 	GetResBody func(c fiber.Ctx) []byte
 
-	// Add custom zerolog logger.
+	// Add a custom zerolog logger.
 	//
 	// Optional. Default: zerolog.New(os.Stderr).With().Timestamp().Logger()
 	Logger *zerolog.Logger
 
-	// GetLogger defines a function to get custom zerolog logger.
-	//  eg: when we need to create a new logger for each request.
+	// GetLogger defines a function to get a custom zerolog logger.
+	// e.g. when creating a new logger for each request.
 	//
 	// GetLogger will override Logger.
 	//
 	// Optional. Default: nil
 	GetLogger func(c fiber.Ctx) zerolog.Logger
 
-	// Add fields what you want see.
+	// Add the fields you want to log.
 	//
 	// Optional. Default: {"ip", "latency", "status", "method", "url", "error"}
 	Fields []string
@@ -84,14 +85,14 @@ type Config struct {
 	// Optional. Default: nil
 	SkipHeader func(header string, c fiber.Ctx) bool
 
-	// Wrap headers to dictionary.
+	// Wrap headers into a dictionary.
 	// If false: {"method":"POST", "header-key":"header value"}
 	// If true: {"method":"POST", "reqHeaders": {"header-key":"header value"}}
 	//
 	// Optional. Default: false
 	WrapHeaders bool
 
-	// Use snake case for fields: FieldResBody, FieldQueryParams, FieldBytesReceived, FieldBytesSent, FieldRequestId, FieldReqHeaders, FieldResHeaders.
+	// Use snake case for fields: FieldResBody, FieldQueryParams, FieldBytesReceived, FieldBytesSent, FieldRequestID, FieldReqHeaders, FieldResHeaders.
 	// If false: {"method":"POST", "resBody":"v", "queryParams":"v"}
 	// If true: {"method":"POST", "res_body":"v", "query_params":"v"}
 	//
@@ -102,7 +103,7 @@ type Config struct {
 	// Response codes >= 500 will be logged with Messages[0].
 	// Response codes >= 400 will be logged with Messages[1].
 	// Other response codes will be logged with Messages[2].
-	// You can specify less, than 3 messages, but you must specify at least 1.
+	// You can specify fewer than 3 messages, but you must specify at least 1.
 	// Specifying more than 3 messages is useless.
 	//
 	// Optional. Default: {"Server error", "Client error", "Success"}
@@ -112,7 +113,7 @@ type Config struct {
 	// Response codes >= 500 will be logged with Levels[0].
 	// Response codes >= 400 will be logged with Levels[1].
 	// Other response codes will be logged with Levels[2].
-	// You can specify less, than 3 levels, but you must specify at least 1.
+	// You can specify fewer than 3 levels, but you must specify at least 1.
 	// Specifying more than 3 levels is useless.
 	//
 	// Optional. Default: {zerolog.ErrorLevel, zerolog.WarnLevel, zerolog.InfoLevel}
