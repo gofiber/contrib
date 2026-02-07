@@ -30,6 +30,11 @@ type Config struct {
 	// Next defines a function to skip this middleware when returned true.
 	// Optional. Default: nil
 	Next func(c fiber.Ctx) bool
+	// RequestHeaderFilter controls which inbound request headers are forwarded to
+	// New Relic via WebRequest.Header.
+	// Return true to include a header, false to exclude it.
+	// Optional. Default: include all headers.
+	RequestHeaderFilter func(key, value string) bool
 }
 
 var ConfigDefault = Config{
@@ -39,6 +44,7 @@ var ConfigDefault = Config{
 	Enabled:                false,
 	ErrorStatusCodeHandler: DefaultErrorStatusCodeHandler,
 	Next:                   nil,
+	RequestHeaderFilter:    nil,
 }
 
 func New(cfg Config) fiber.Handler {
@@ -85,7 +91,7 @@ func New(cfg Config) fiber.Handler {
 		)
 
 		scheme := c.Request().URI().Scheme()
-		txn.SetWebRequest(createWebRequest(c, host, method, string(scheme)))
+		txn.SetWebRequest(createWebRequest(c, host, method, string(scheme), cfg.RequestHeaderFilter))
 
 		c.SetContext(newrelic.NewContext(c.Context(), txn))
 
@@ -113,10 +119,17 @@ func createTransactionName(c fiber.Ctx) string {
 	return fmt.Sprintf("%s %s", c.Request().Header.Method(), c.Request().URI().Path())
 }
 
-func createWebRequest(c fiber.Ctx, host, method, scheme string) newrelic.WebRequest {
-	headers := make(http.Header)
+func createWebRequest(c fiber.Ctx, host, method, scheme string, filter func(key, value string) bool) newrelic.WebRequest {
+	headers := make(http.Header, c.Request().Header.Len())
 	c.Request().Header.VisitAll(func(key, value []byte) {
-		headers.Add(string(key), string(value))
+		headerKey := string(key)
+		headerValue := string(value)
+
+		if filter != nil && !filter(headerKey, headerValue) {
+			return
+		}
+
+		headers.Add(headerKey, headerValue)
 	})
 
 	return newrelic.WebRequest{
