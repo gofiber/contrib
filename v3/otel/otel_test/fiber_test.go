@@ -1,9 +1,11 @@
 package otel_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -654,4 +656,79 @@ func TestWithoutMetrics(t *testing.T) {
 	err = reader.Collect(context.Background(), &metrics)
 	assert.NoError(t, err)
 	assert.Len(t, metrics.ScopeMetrics, 0, "No metrics should be collected when metrics are disabled")
+}
+
+func TestWithoutMetricsWithStreamResponse(t *testing.T) {
+	reader := metric.NewManualReader()
+	provider := metric.NewMeterProvider(metric.WithReader(reader))
+
+	app := fiber.New()
+	app.Use(
+		fiberotel.Middleware(
+			fiberotel.WithMeterProvider(provider),
+			fiberotel.WithoutMetrics(true),
+		),
+	)
+
+	app.Get("/stream", func(ctx fiber.Ctx) error {
+		return ctx.SendStream(bytes.NewReader(make([]byte, 2048)))
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/stream", nil))
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Len(t, body, 2048)
+
+	metrics := metricdata.ResourceMetrics{}
+	err = reader.Collect(context.Background(), &metrics)
+	assert.NoError(t, err)
+	assert.Len(t, metrics.ScopeMetrics, 0, "No metrics should be collected when metrics are disabled")
+}
+
+func TestResponseBodySizeWithStream(t *testing.T) {
+	const responseBodySize = 8192
+
+	reader := metric.NewManualReader()
+	provider := metric.NewMeterProvider(metric.WithReader(reader))
+
+	app := fiber.New()
+	app.Use(
+		fiberotel.Middleware(
+			fiberotel.WithMeterProvider(provider),
+		),
+	)
+
+	app.Get("/stream", func(ctx fiber.Ctx) error {
+		payload := make([]byte, responseBodySize)
+		return ctx.SendStream(bytes.NewReader(payload))
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/stream", nil))
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Len(t, body, responseBodySize)
+
+	metrics := metricdata.ResourceMetrics{}
+	err = reader.Collect(context.Background(), &metrics)
+	require.NoError(t, err)
+	require.Len(t, metrics.ScopeMetrics, 1)
+
+	var got metricdata.Histogram[int64]
+	for _, m := range metrics.ScopeMetrics[0].Metrics {
+		if m.Name == fiberotel.MetricNameHttpServerResponseSize {
+			var ok bool
+			got, ok = m.Data.(metricdata.Histogram[int64])
+			require.True(t, ok)
+			break
+		}
+	}
+
+	require.Len(t, got.DataPoints, 1)
+	assert.Equal(t, int64(responseBodySize), got.DataPoints[0].Sum)
 }

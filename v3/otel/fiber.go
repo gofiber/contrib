@@ -2,7 +2,10 @@ package otel
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gofiber/contrib/v3/otel/internal"
@@ -12,6 +15,7 @@ import (
 	otelcontrib "go.opentelemetry.io/contrib"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
@@ -44,6 +48,51 @@ const (
 	// New duration metrics use UnitSeconds.
 	UnitMilliseconds = "ms"
 )
+
+type bodyStreamSizeReader struct {
+	reader io.Reader
+	onEOF  func(read int64)
+	read   int64
+	eof    sync.Once
+}
+
+func (b *bodyStreamSizeReader) Read(p []byte) (n int, err error) {
+	n, err = b.reader.Read(p)
+	if n > 0 {
+		atomic.AddInt64(&b.read, int64(n))
+	}
+	if err == io.EOF && b.onEOF != nil {
+		read := atomic.LoadInt64(&b.read)
+		b.eof.Do(func() {
+			b.onEOF(read)
+		})
+	}
+
+	return n, err
+}
+
+func (b *bodyStreamSizeReader) Close() error {
+	closer, ok := b.reader.(io.Closer)
+	if !ok {
+		return nil
+	}
+
+	return closer.Close()
+}
+
+func detachedMetricContext(ctx context.Context) context.Context {
+	detached := context.Background()
+
+	if spanContext := oteltrace.SpanContextFromContext(ctx); spanContext.IsValid() {
+		detached = oteltrace.ContextWithSpanContext(detached, spanContext)
+	}
+
+	if bg := baggage.FromContext(ctx); bg.Len() > 0 {
+		detached = baggage.ContextWithBaggage(detached, bg)
+	}
+
+	return detached
+}
 
 // Middleware returns fiber handler which will trace incoming requests.
 func Middleware(opts ...Option) fiber.Handler {
@@ -121,6 +170,20 @@ func Middleware(opts ...Option) fiber.Handler {
 		responseMetricAttrs := make([]attribute.KeyValue, len(requestMetricsAttrs))
 		copy(responseMetricAttrs, requestMetricsAttrs)
 
+		request := c.Request()
+		isRequestBodyStream := request.IsBodyStream()
+		requestSize := int64(0)
+		var requestBodyStreamSizeReader *bodyStreamSizeReader
+		if isRequestBodyStream && !cfg.withoutMetrics {
+			requestBodyStream := request.BodyStream()
+			if requestBodyStream != nil {
+				requestBodyStreamSizeReader = &bodyStreamSizeReader{reader: requestBodyStream}
+				request.SetBodyStream(requestBodyStreamSizeReader, -1)
+			}
+		} else {
+			requestSize = int64(len(request.Body()))
+		}
+
 		reqHeader := make(http.Header)
 		for header, values := range c.GetReqHeaders() {
 			for _, value := range values {
@@ -159,27 +222,55 @@ func Middleware(opts ...Option) fiber.Handler {
 			semconv.HTTPRouteKey.String(c.Route().Path), // no need to copy c.Route().Path: route strings should be immutable across app lifecycle
 		}
 
-		var responseSize int64
-		requestSize := int64(len(c.Request().Body()))
-		if c.GetRespHeader("Content-Type") != "text/event-stream" {
-			responseSize = int64(len(c.Response().Body()))
+		response := c.Response()
+		isSSE := c.GetRespHeader("Content-Type") == "text/event-stream"
+		responseSize := int64(0)
+		isResponseBodyStream := response.IsBodyStream()
+		if !isResponseBodyStream && !isSSE {
+			responseSize = int64(len(response.Body()))
+		}
+
+		if isResponseBodyStream && !isSSE && !cfg.withoutMetrics {
+			responseBodyStream := response.BodyStream()
+			if responseBodyStream != nil {
+				responseMetricAttrsWithResponse := append(responseMetricAttrs, responseAttrs...)
+				responseMetricsCtx := detachedMetricContext(savedCtx)
+				responseBodyStreamReader := &bodyStreamSizeReader{
+					reader: responseBodyStream,
+					onEOF: func(read int64) {
+						httpServerResponseSize.Record(responseMetricsCtx, read, metric.WithAttributes(responseMetricAttrsWithResponse...))
+					},
+				}
+				response.SetBodyStream(responseBodyStreamReader, -1)
+			} else {
+				isResponseBodyStream = false
+			}
 		}
 
 		defer func() {
 			responseMetricAttrs = append(responseMetricAttrs, responseAttrs...)
+			if requestBodyStreamSizeReader != nil {
+				requestSize = atomic.LoadInt64(&requestBodyStreamSizeReader.read)
+			}
 
 			if !cfg.withoutMetrics {
 				httpServerActiveRequests.Add(savedCtx, -1, metric.WithAttributes(requestMetricsAttrs...))
 				httpServerDuration.Record(savedCtx, time.Since(start).Seconds(), metric.WithAttributes(responseMetricAttrs...))
 				httpServerRequestSize.Record(savedCtx, requestSize, metric.WithAttributes(responseMetricAttrs...))
-				httpServerResponseSize.Record(savedCtx, responseSize, metric.WithAttributes(responseMetricAttrs...))
+				if !isResponseBodyStream {
+					httpServerResponseSize.Record(savedCtx, responseSize, metric.WithAttributes(responseMetricAttrs...))
+				}
 			}
 
 			c.SetContext(savedCtx)
 			cancel()
 		}()
 
-		span.SetAttributes(append(responseAttrs, semconv.HTTPResponseBodySizeKey.Int64(responseSize))...)
+		if !isResponseBodyStream {
+			span.SetAttributes(append(responseAttrs, semconv.HTTPResponseBodySizeKey.Int64(responseSize))...)
+		} else {
+			span.SetAttributes(responseAttrs...)
+		}
 		span.SetName(cfg.SpanNameFormatter(c))
 
 		spanStatus, spanMessage := internal.SpanStatusFromHTTPStatusCodeAndSpanKind(c.Response().StatusCode(), oteltrace.SpanKindServer)
