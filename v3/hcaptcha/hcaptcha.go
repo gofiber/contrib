@@ -69,9 +69,24 @@ func (h *HCaptcha) Validate(c fiber.Ctx) error {
 		return fmt.Errorf("error decoding HCaptcha API response: %w", err)
 	}
 
-	if !o.Success {
-		c.Status(fiber.StatusForbidden)
-		return errors.New("unable to check that you are not a robot")
+	// Execute custom validation if ValidateFunc is defined.
+	// ValidateFunc receives the siteverify result and should return an error on validation failure.
+	// If ValidateFunc is nil, default behavior rejects unsuccessful verification.
+	var validationErr error
+	if h.ValidateFunc != nil {
+		validationErr = h.ValidateFunc(o.Success, c)
+	} else if !o.Success {
+		validationErr = errors.New("unable to check that you are not a robot")
+	}
+
+	if validationErr != nil {
+		if c.Response().StatusCode() < fiber.StatusBadRequest {
+			c.Status(fiber.StatusForbidden)
+		}
+		if len(c.Response().Body()) == 0 {
+			return c.SendString(validationErr.Error())
+		}
+		return nil
 	}
 
 	return c.Next()

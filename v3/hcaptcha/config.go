@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+
 	"github.com/gofiber/fiber/v3"
+	"strings"
 )
 
 // DefaultSiteVerifyURL is the default URL for the HCaptcha API
@@ -19,6 +21,12 @@ type Config struct {
 	// SiteVerifyURL is the endpoint URL where the program should verify the given token
 	// default value is: "https://api.hcaptcha.com/siteverify"
 	SiteVerifyURL string
+	// ValidateFunc allows custom validation handling based on the HCaptcha validation result.
+	// If set, it is called with the API success status and the current context after siteverify.
+	// For secure bot protection, reject requests when success is false.
+	// Return nil to continue to the next handler, or return an error to stop the middleware chain.
+	// If ValidateFunc is nil, default behavior is used and unsuccessful verification returns 403.
+	ValidateFunc func(success bool, c fiber.Ctx) error
 }
 
 // DefaultResponseKeyFunc is the default function to get the HCaptcha token from the request body
@@ -31,6 +39,10 @@ func DefaultResponseKeyFunc(c fiber.Ctx) (string, error) {
 
 	if err != nil {
 		return "", fmt.Errorf("failed to decode HCaptcha token: %w", err)
+	}
+
+	if strings.TrimSpace(data.HCaptchaToken) == "" {
+		return "", fmt.Errorf("hcaptcha token is empty")
 	}
 
 	return data.HCaptchaToken, nil
