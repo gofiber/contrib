@@ -14,7 +14,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
-	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
@@ -22,21 +22,32 @@ const (
 	tracerKey           = "gofiber-contrib-tracer-fiber"
 	instrumentationName = "github.com/gofiber/contrib/v3/otel"
 
-	MetricNameHttpServerDuration       = "http.server.duration"
-	MetricNameHttpServerRequestSize    = "http.server.request.size"
-	MetricNameHttpServerResponseSize   = "http.server.response.size"
-	MetricNameHttpServerActiveRequests = "http.server.active_requests"
+	MetricNameHTTPServerRequestDuration  = "http.server.request.duration"
+	MetricNameHTTPServerRequestBodySize  = "http.server.request.body.size"
+	MetricNameHTTPServerResponseBodySize = "http.server.response.body.size"
+	MetricNameHTTPServerActiveRequests   = "http.server.active_requests"
 
 	// Unit constants for deprecated metric units
 	UnitDimensionless = "1"
 	UnitBytes         = "By"
-	UnitMilliseconds  = "ms"
+	UnitSeconds       = "s"
+
+	// Deprecated: use MetricNameHTTPServerRequestDuration.
+	MetricNameHttpServerDuration = MetricNameHTTPServerRequestDuration
+	// Deprecated: use MetricNameHTTPServerRequestBodySize.
+	MetricNameHttpServerRequestSize = MetricNameHTTPServerRequestBodySize
+	// Deprecated: use MetricNameHTTPServerResponseBodySize.
+	MetricNameHttpServerResponseSize = MetricNameHTTPServerResponseBodySize
+	// Deprecated: use MetricNameHTTPServerActiveRequests.
+	MetricNameHttpServerActiveRequests = MetricNameHTTPServerActiveRequests
+	// Deprecated: use UnitSeconds.
+	UnitMilliseconds = UnitSeconds
 )
 
 // Middleware returns fiber handler which will trace incoming requests.
 func Middleware(opts ...Option) fiber.Handler {
 	cfg := config{
-		collectClientIP: true,
+		clientIP: true,
 	}
 	for _, opt := range opts {
 		opt.apply(&cfg)
@@ -65,19 +76,19 @@ func Middleware(opts ...Option) fiber.Handler {
 		)
 
 		var err error
-		httpServerDuration, err = meter.Float64Histogram(MetricNameHttpServerDuration, metric.WithUnit(UnitMilliseconds), metric.WithDescription("measures the duration inbound HTTP requests"))
+		httpServerDuration, err = meter.Float64Histogram(MetricNameHTTPServerRequestDuration, metric.WithUnit(UnitSeconds), metric.WithDescription("Duration of HTTP server requests."))
 		if err != nil {
 			otel.Handle(err)
 		}
-		httpServerRequestSize, err = meter.Int64Histogram(MetricNameHttpServerRequestSize, metric.WithUnit(UnitBytes), metric.WithDescription("measures the size of HTTP request messages"))
+		httpServerRequestSize, err = meter.Int64Histogram(MetricNameHTTPServerRequestBodySize, metric.WithUnit(UnitBytes), metric.WithDescription("Size of HTTP server request bodies."))
 		if err != nil {
 			otel.Handle(err)
 		}
-		httpServerResponseSize, err = meter.Int64Histogram(MetricNameHttpServerResponseSize, metric.WithUnit(UnitBytes), metric.WithDescription("measures the size of HTTP response messages"))
+		httpServerResponseSize, err = meter.Int64Histogram(MetricNameHTTPServerResponseBodySize, metric.WithUnit(UnitBytes), metric.WithDescription("Size of HTTP server response bodies."))
 		if err != nil {
 			otel.Handle(err)
 		}
-		httpServerActiveRequests, err = meter.Int64UpDownCounter(MetricNameHttpServerActiveRequests, metric.WithUnit(UnitDimensionless), metric.WithDescription("measures the number of concurrent HTTP requests that are currently in-flight"))
+		httpServerActiveRequests, err = meter.Int64UpDownCounter(MetricNameHTTPServerActiveRequests, metric.WithUnit(UnitDimensionless), metric.WithDescription("Number of active HTTP server requests."))
 		if err != nil {
 			otel.Handle(err)
 		}
@@ -158,7 +169,7 @@ func Middleware(opts ...Option) fiber.Handler {
 
 			if !cfg.withoutMetrics {
 				httpServerActiveRequests.Add(savedCtx, -1, metric.WithAttributes(requestMetricsAttrs...))
-				httpServerDuration.Record(savedCtx, float64(time.Since(start).Microseconds())/1000, metric.WithAttributes(responseMetricAttrs...))
+				httpServerDuration.Record(savedCtx, time.Since(start).Seconds(), metric.WithAttributes(responseMetricAttrs...))
 				httpServerRequestSize.Record(savedCtx, requestSize, metric.WithAttributes(responseMetricAttrs...))
 				httpServerResponseSize.Record(savedCtx, responseSize, metric.WithAttributes(responseMetricAttrs...))
 			}
