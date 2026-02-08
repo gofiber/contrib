@@ -96,3 +96,6 @@ updates:
                   - "gopkg.in/yaml.*"
                   - "go.yaml.in/yaml/**"
                   - "sigs.k8s.io/yaml"
+          andybalholm-modules:
+              patterns:
+                  - "github.com/andybalholm/**"
