@@ -29,6 +29,10 @@ updates:
               patterns:
                   - "github.com/gofiber/utils" 
                   - "github.com/gofiber/utils/**" 
+          fiber-schema-modules:
+              patterns:
+                  - "github.com/gofiber/schema"
+                  - "github.com/gofiber/schema/**"
           fasthttp-modules:
               patterns:
                   - "github.com/valyala/fasthttp"
@@ -73,12 +77,22 @@ updates:
                   - "github.com/stretchr/**"
                   - "github.com/davecgh/go-spew"
                   - "github.com/pmezard/go-difflib"
+          check-testing-modules:
+              patterns:
+                  - "gopkg.in/check.v*"
+                  - "github.com/kr/**"
+                  - "github.com/rogpeppe/go-internal"
           tinylib-modules:
               patterns:
                   - "github.com/tinylib/**"
+          msgp-modules:
+              patterns:
+                  - "github.com/philhofer/fwd"
           openapi-modules:
               patterns:
                   - "github.com/go-openapi/**"
           yaml-modules:
               patterns:
                   - "gopkg.in/yaml.*"
+                  - "go.yaml.in/yaml/**"
+                  - "sigs.k8s.io/yaml"
