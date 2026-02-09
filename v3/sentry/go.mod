@@ -18,8 +18,8 @@ require (
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/tinylib/msgp v1.6.3 // indirect
 	github.com/valyala/fasthttp v1.69.0 // indirect
-	golang.org/x/crypto v0.47.0 // indirect
-	golang.org/x/net v0.49.0 // indirect
+	golang.org/x/crypto v0.48.0 // indirect
+	golang.org/x/net v0.50.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
@@ -31,6 +31,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/stretchr/testify v1.11.1
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
-	golang.org/x/sys v0.40.0 // indirect
-	golang.org/x/text v0.33.0 // indirect
+	golang.org/x/sys v0.41.0 // indirect
+	golang.org/x/text v0.34.0 // indirect
 )
