@@ -7,11 +7,11 @@ on:
       - main
     paths:
       - 'v3/casbin/**/*.go'
-      - 'v3/casbin/go.mod'
+      - '../../go.mod'
   pull_request:
     paths:
       - 'v3/casbin/**/*.go'
-      - 'v3/casbin/go.mod'
+      - '../../go.mod'
 
   workflow_dispatch:
 jobs:
