@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/gofiber/fiber/v3 v3.0.0
-	github.com/gofiber/utils/v2 v2.0.1
+	github.com/gofiber/utils/v2 v2.0.2
 	github.com/shirou/gopsutil/v4 v4.26.1
 	github.com/stretchr/testify v1.11.1
 	github.com/valyala/fasthttp v1.69.0
