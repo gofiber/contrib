@@ -6,7 +6,7 @@ id: swaggerui
 
 > ⚠️ This module was renamed from `gofiber/contrib/swagger` to `swaggerui` to clearly distinguish it from the ported `swaggo` middleware. Update your imports accordingly.
 
-![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=swaggerui*)
+![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=*swaggerui*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Test%20swaggerui/badge.svg)
 
