@@ -7,6 +7,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/utils/v2"
+	utilsstrings "github.com/gofiber/utils/v2/strings"
 	"go.uber.org/zap"
 )
 
@@ -217,7 +218,7 @@ func sanitizeHeaderValues(header string, values []string) []string {
 		return values
 	}
 
-	if _, ok := sensitiveRequestHeaders[utils.ToLower(header)]; !ok {
+	if _, ok := sensitiveRequestHeaders[utilsstrings.ToLower(header)]; !ok {
 		return values
 	}
 
