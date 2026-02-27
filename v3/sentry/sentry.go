@@ -57,7 +57,7 @@ func New(config ...Config) fiber.Handler {
 func MustGetHubFromContext(ctx any) *sentry.Hub {
 	hub, ok := fiber.ValueFromContext[*sentry.Hub](ctx, hubKey)
 	if !ok {
-		panic("interface conversion: interface {} is nil, not *sentry.Hub")
+		panic("sentry: hub not found in context or has unexpected type")
 	}
 
 	return hub
