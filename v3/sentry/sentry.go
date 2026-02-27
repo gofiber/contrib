@@ -27,7 +27,7 @@ func New(config ...Config) fiber.Handler {
 		scope := hub.Scope()
 		scope.SetRequest(r)
 		scope.SetRequestBody(utils.CopyBytes(c.Body()))
-		c.Locals(hubKey, hub)
+		fiber.StoreInContext(c, hubKey, hub)
 
 		// Catch panics
 		defer func() {
@@ -52,12 +52,21 @@ func New(config ...Config) fiber.Handler {
 	}
 }
 
-func MustGetHubFromContext(ctx fiber.Ctx) *sentry.Hub {
-	return ctx.Locals(hubKey).(*sentry.Hub)
+// MustGetHubFromContext returns the Sentry hub from context.
+// It accepts fiber.CustomCtx, fiber.Ctx, *fasthttp.RequestCtx, and context.Context.
+func MustGetHubFromContext(ctx any) *sentry.Hub {
+	hub, ok := fiber.ValueFromContext[*sentry.Hub](ctx, hubKey)
+	if !ok {
+		panic("interface conversion: interface {} is nil, not *sentry.Hub")
+	}
+
+	return hub
 }
 
-func GetHubFromContext(ctx fiber.Ctx) *sentry.Hub {
-	hub, ok := ctx.Locals(hubKey).(*sentry.Hub)
+// GetHubFromContext returns the Sentry hub from context.
+// It accepts fiber.CustomCtx, fiber.Ctx, *fasthttp.RequestCtx, and context.Context.
+func GetHubFromContext(ctx any) *sentry.Hub {
+	hub, ok := fiber.ValueFromContext[*sentry.Hub](ctx, hubKey)
 	if !ok {
 		return nil
 	}

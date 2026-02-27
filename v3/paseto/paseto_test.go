@@ -563,3 +563,24 @@ func Test_PASETO_CustomValidateError(t *testing.T) {
 	assert.Equal(t, nil, err)
 	assert.Equal(t, fiber.StatusForbidden, resp.StatusCode)
 }
+
+func Test_PASETO_FromContext_PassLocalsToContext(t *testing.T) {
+	app := fiber.New(fiber.Config{PassLocalsToContext: true})
+
+	app.Use(New(Config{SymmetricKey: []byte(symmetricKey)}))
+	app.Get("/", func(ctx fiber.Ctx) error {
+		payload := FromContext(ctx)
+		payloadFromContext := FromContext(ctx.Context())
+		if payload == nil || payloadFromContext == nil {
+			return ctx.SendStatus(fiber.StatusUnauthorized)
+		}
+		return ctx.SendStatus(fiber.StatusOK)
+	})
+
+	request, err := generateTokenRequest("/", CreateToken, durationTest, PurposeLocal)
+	assert.NoError(t, err)
+
+	resp, err := app.Test(request)
+	assert.NoError(t, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+}

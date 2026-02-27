@@ -741,3 +741,29 @@ func TestTokenProcessorFuncError(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 400, resp.StatusCode)
 }
+
+func TestFromContext_PassLocalsToContext(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New(fiber.Config{PassLocalsToContext: true})
+
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{Key: []byte(defaultSigningKey)},
+	}))
+
+	app.Get("/ok", func(c fiber.Ctx) error {
+		tokenFromCtx := jwtware.FromContext(c)
+		tokenFromStdCtx := jwtware.FromContext(c.Context())
+		if tokenFromCtx == nil || tokenFromStdCtx == nil {
+			return c.SendStatus(fiber.StatusUnauthorized)
+		}
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/ok", nil)
+	req.Header.Add("Authorization", "Bearer "+hamac[0].Token)
+
+	resp, err := app.Test(req)
+	assert.NoError(t, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+}

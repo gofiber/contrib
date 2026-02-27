@@ -52,7 +52,7 @@ func New(authConfigs ...Config) fiber.Handler {
 		payload, err := config.Validate(outData)
 		if err == nil {
 			// Store user information from token into context.
-			c.Locals(payloadKey, payload)
+			fiber.StoreInContext(c, payloadKey, payload)
 
 			return config.SuccessHandler(c)
 		}
@@ -62,6 +62,8 @@ func New(authConfigs ...Config) fiber.Handler {
 }
 
 // FromContext returns the payload from the context.
-func FromContext(c fiber.Ctx) interface{} {
-	return c.Locals(payloadKey)
+// It accepts fiber.CustomCtx, fiber.Ctx, *fasthttp.RequestCtx, and context.Context.
+func FromContext(ctx any) interface{} {
+	payload, _ := fiber.ValueFromContext[interface{}](ctx, payloadKey)
+	return payload
 }
