@@ -119,14 +119,9 @@ func New(cfg Config) fiber.Handler {
 	}
 }
 
-// FromContext returns the Transaction from the Fiber context if present, and nil otherwise.
-func FromContext(c fiber.Ctx) *newrelic.Transaction {
-	return FromAnyContext(c)
-}
-
-// FromAnyContext returns the Transaction from the context if present, and nil otherwise.
+// FromContext returns the Transaction from the context if present, and nil otherwise.
 // It accepts fiber.CustomCtx, fiber.Ctx, *fasthttp.RequestCtx, and context.Context.
-func FromAnyContext(ctx any) *newrelic.Transaction {
+func FromContext(ctx any) *newrelic.Transaction {
 	if txn, ok := fiber.ValueFromContext[*newrelic.Transaction](ctx, transactionKey); ok {
 		return txn
 	}

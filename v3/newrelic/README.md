@@ -30,11 +30,10 @@ go get -u github.com/gofiber/contrib/v3/newrelic
 
 ```go
 middleware.New(config middleware.Config) fiber.Handler
-middleware.FromContext(c fiber.Ctx) *nr.Transaction     // nr "github.com/newrelic/go-agent/v3/newrelic"
-middleware.FromAnyContext(ctx any) *nr.Transaction      // nr "github.com/newrelic/go-agent/v3/newrelic"
+middleware.FromContext(ctx any) *nr.Transaction     // nr "github.com/newrelic/go-agent/v3/newrelic"
 ```
 
-`FromContext` accepts a `fiber.Ctx`. `FromAnyContext` additionally accepts `fiber.CustomCtx`, `*fasthttp.RequestCtx`, or a standard `context.Context` (e.g. the value returned by `c.Context()` when `PassLocalsToContext` is enabled). Both return a `*newrelic.Transaction` from `github.com/newrelic/go-agent/v3/newrelic`.
+`FromContext` accepts a `fiber.Ctx`, `fiber.CustomCtx`, `*fasthttp.RequestCtx`, or a standard `context.Context` (e.g. the value returned by `c.Context()` when `PassLocalsToContext` is enabled). It returns a `*newrelic.Transaction` from `github.com/newrelic/go-agent/v3/newrelic`.
 
 ## Config
 
@@ -124,12 +123,12 @@ func main() {
 
 ## Retrieving the transaction with PassLocalsToContext
 
-When `fiber.Config{PassLocalsToContext: true}` is set, the New Relic transaction stored by the middleware is also available in the underlying `context.Context`. Use `FromAnyContext` with any of the supported context types:
+When `fiber.Config{PassLocalsToContext: true}` is set, the New Relic transaction stored by the middleware is also available in the underlying `context.Context`. Use `FromContext` with any of the supported context types:
 
 ```go
 // From a fiber.Ctx (most common usage)
 txn := middleware.FromContext(c)
 
 // From the underlying context.Context (useful in service layers or when PassLocalsToContext is enabled)
-txn := middleware.FromAnyContext(c.Context())
+txn := middleware.FromContext(c.Context())
 ```

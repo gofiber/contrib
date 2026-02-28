@@ -33,11 +33,10 @@ go get -u github.com/o1egl/paseto
 
 ```go
 pasetoware.New(config ...pasetoware.Config) func(fiber.Ctx) error
-pasetoware.FromContext(c fiber.Ctx) interface{}
-pasetoware.FromAnyContext(ctx any) interface{}
+pasetoware.FromContext(ctx any) interface{}
 ```
 
-`FromContext` accepts a `fiber.Ctx`. `FromAnyContext` additionally accepts `fiber.CustomCtx`, `*fasthttp.RequestCtx`, or a standard `context.Context` (e.g. the value returned by `c.Context()` when `PassLocalsToContext` is enabled).
+`FromContext` accepts a `fiber.Ctx`, `fiber.CustomCtx`, `*fasthttp.RequestCtx`, or a standard `context.Context` (e.g. the value returned by `c.Context()` when `PassLocalsToContext` is enabled).
 
 ## Config
 

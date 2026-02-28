@@ -570,7 +570,7 @@ func Test_PASETO_FromContext_PassLocalsToContext(t *testing.T) {
 	app.Use(New(Config{SymmetricKey: []byte(symmetricKey)}))
 	app.Get("/", func(ctx fiber.Ctx) error {
 		payload := FromContext(ctx)
-		payloadFromContext := FromAnyContext(ctx.Context())
+		payloadFromContext := FromContext(ctx.Context())
 		if payload == nil || payloadFromContext == nil {
 			return ctx.SendStatus(fiber.StatusUnauthorized)
 		}

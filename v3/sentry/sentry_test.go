@@ -235,7 +235,7 @@ func Test_GetHubFromContext_PassLocalsToContext(t *testing.T) {
 
 	app.Get("/", func(c fiber.Ctx) error {
 		hub := GetHubFromContext(c)
-		hubFromContext := GetHubFromAnyContext(c.Context())
+		hubFromContext := GetHubFromContext(c.Context())
 		require.NotNil(t, hub)
 		require.NotNil(t, hubFromContext)
 		return c.SendStatus(http.StatusOK)

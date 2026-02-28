@@ -457,7 +457,7 @@ func TestFromContext_PassLocalsToContext(t *testing.T) {
 	app.Use(New(cfg))
 	app.Get("/foo", func(ctx fiber.Ctx) error {
 		tx := FromContext(ctx)
-		txFromContext := FromAnyContext(ctx.Context())
+		txFromContext := FromContext(ctx.Context())
 		assert.NotNil(t, tx)
 		assert.NotNil(t, txFromContext)
 		return ctx.SendStatus(http.StatusOK)

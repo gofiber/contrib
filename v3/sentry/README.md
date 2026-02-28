@@ -29,13 +29,11 @@ go get -u github.com/getsentry/sentry-go
 
 ```go
 fiberSentry.New(config ...fiberSentry.Config) fiber.Handler
-fiberSentry.GetHubFromContext(c fiber.Ctx) *sdk.Hub         // sdk "github.com/getsentry/sentry-go"
-fiberSentry.MustGetHubFromContext(c fiber.Ctx) *sdk.Hub     // sdk "github.com/getsentry/sentry-go"
-fiberSentry.GetHubFromAnyContext(ctx any) *sdk.Hub          // sdk "github.com/getsentry/sentry-go"
-fiberSentry.MustGetHubFromAnyContext(ctx any) *sdk.Hub      // sdk "github.com/getsentry/sentry-go"
+fiberSentry.GetHubFromContext(ctx any) *sdk.Hub         // sdk "github.com/getsentry/sentry-go"
+fiberSentry.MustGetHubFromContext(ctx any) *sdk.Hub     // sdk "github.com/getsentry/sentry-go"
 ```
 
-`GetHubFromContext` and `MustGetHubFromContext` accept a `fiber.Ctx`. `GetHubFromAnyContext` and `MustGetHubFromAnyContext` additionally accept `fiber.CustomCtx`, `*fasthttp.RequestCtx`, or a standard `context.Context` (e.g. the value returned by `c.Context()` when `PassLocalsToContext` is enabled). The `Must*` variants panic if the hub is not found. `*sdk.Hub` is `*sentry.Hub` from `github.com/getsentry/sentry-go`.
+`GetHubFromContext` and `MustGetHubFromContext` each accept a `fiber.Ctx`, `fiber.CustomCtx`, `*fasthttp.RequestCtx`, or a standard `context.Context` (e.g. the value returned by `c.Context()` when `PassLocalsToContext` is enabled). The `Must*` variant panics if the hub is not found. `*sdk.Hub` is `*sentry.Hub` from `github.com/getsentry/sentry-go`.
 
 ## Config
 
@@ -141,18 +139,18 @@ sdk.Init(sdk.ClientOptions{
 
 ## Retrieving the hub with PassLocalsToContext
 
-When `fiber.Config{PassLocalsToContext: true}` is set, the Sentry hub stored by the middleware is also available in the underlying `context.Context`. Use `GetHubFromAnyContext` or `MustGetHubFromAnyContext` with any of the supported context types:
+When `fiber.Config{PassLocalsToContext: true}` is set, the Sentry hub stored by the middleware is also available in the underlying `context.Context`. Use `GetHubFromContext` or `MustGetHubFromContext` with any of the supported context types:
 
 ```go
 // From a fiber.Ctx (most common usage)
 hub := fiberSentry.GetHubFromContext(c)
 
 // From the underlying context.Context (useful in service layers or when PassLocalsToContext is enabled)
-hub := fiberSentry.GetHubFromAnyContext(c.Context())
+hub := fiberSentry.GetHubFromContext(c.Context())
 ```
 
-`MustGetHubFromAnyContext` panics if the hub is not found (e.g. in middleware that runs before `sentry`):
+`MustGetHubFromContext` panics if the hub is not found (e.g. in middleware that runs before `sentry`):
 
 ```go
-hub := fiberSentry.MustGetHubFromAnyContext(c.Context())
+hub := fiberSentry.MustGetHubFromContext(c)
 ```

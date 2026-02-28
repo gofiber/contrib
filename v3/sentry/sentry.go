@@ -52,17 +52,11 @@ func New(config ...Config) fiber.Handler {
 	}
 }
 
-// MustGetHubFromContext returns the Sentry hub from the Fiber context.
-// Panics if the hub is not found.
-func MustGetHubFromContext(c fiber.Ctx) *sentry.Hub {
-	return MustGetHubFromAnyContext(c)
-}
-
-// MustGetHubFromAnyContext returns the Sentry hub from context.
+// MustGetHubFromContext returns the Sentry hub from context.
 // It accepts fiber.CustomCtx, fiber.Ctx, *fasthttp.RequestCtx, and context.Context.
 // Panics if the hub is not found.
-func MustGetHubFromAnyContext(ctx any) *sentry.Hub {
-	hub := GetHubFromAnyContext(ctx)
+func MustGetHubFromContext(ctx any) *sentry.Hub {
+	hub := GetHubFromContext(ctx)
 	if hub == nil {
 		panic("sentry: hub not found in context or has unexpected type")
 	}
@@ -70,14 +64,9 @@ func MustGetHubFromAnyContext(ctx any) *sentry.Hub {
 	return hub
 }
 
-// GetHubFromContext returns the Sentry hub from the Fiber context.
-func GetHubFromContext(c fiber.Ctx) *sentry.Hub {
-	return GetHubFromAnyContext(c)
-}
-
-// GetHubFromAnyContext returns the Sentry hub from context.
+// GetHubFromContext returns the Sentry hub from context.
 // It accepts fiber.CustomCtx, fiber.Ctx, *fasthttp.RequestCtx, and context.Context.
-func GetHubFromAnyContext(ctx any) *sentry.Hub {
+func GetHubFromContext(ctx any) *sentry.Hub {
 	hub, ok := fiber.ValueFromContext[*sentry.Hub](ctx, hubKey)
 	if !ok {
 		return nil

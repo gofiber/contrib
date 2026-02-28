@@ -62,14 +62,9 @@ func New(authConfigs ...Config) fiber.Handler {
 	}
 }
 
-// FromContext returns the payload from the Fiber context.
-func FromContext(c fiber.Ctx) interface{} {
-	return FromAnyContext(c)
-}
-
-// FromAnyContext returns the payload from the context.
+// FromContext returns the payload from the context.
 // It accepts fiber.CustomCtx, fiber.Ctx, *fasthttp.RequestCtx, and context.Context.
-func FromAnyContext(ctx any) interface{} {
+func FromContext(ctx any) interface{} {
 	payload, _ := fiber.ValueFromContext[interface{}](ctx, payloadKey)
 	return payload
 }
