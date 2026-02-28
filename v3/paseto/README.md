@@ -10,7 +10,7 @@ id: paseto
 
 PASETO returns a Web Token (PASETO) auth middleware.
 
-- For valid token, it sets the payload data in Ctx.Locals and calls next handler.
+- For valid token, it sets the payload data in Ctx.Locals (and in the underlying `context.Context` when `PassLocalsToContext` is enabled) and calls next handler.
 - For invalid token, it returns "401 - Unauthorized" error.
 - For missing token, it returns "400 - BadRequest" error.
 
@@ -33,8 +33,10 @@ go get -u github.com/o1egl/paseto
 
 ```go
 pasetoware.New(config ...pasetoware.Config) func(fiber.Ctx) error
-pasetoware.FromContext(c fiber.Ctx) interface{}
+pasetoware.FromContext(ctx any) interface{}
 ```
+
+`FromContext` accepts a `fiber.Ctx`, `fiber.CustomCtx`, `*fasthttp.RequestCtx`, or a standard `context.Context` (e.g. the value returned by `c.Context()` when `PassLocalsToContext` is enabled).
 
 ## Config
 
@@ -443,6 +445,16 @@ if payloadFromCtx == nil {
     return  
 }  
 payload := payloadFromCtx.(string)  
+```
+
+`FromContext` accepts a `fiber.Ctx`, `fiber.CustomCtx`, `*fasthttp.RequestCtx`, or a standard `context.Context`. When `fiber.Config{PassLocalsToContext: true}` is set, the payload is also available in the underlying `context.Context`:
+
+```go
+// From a fiber.Ctx (most common usage)
+payload := pasetoware.FromContext(c)
+
+// From the underlying context.Context (useful in service layers or when PassLocalsToContext is enabled)
+payload := pasetoware.FromContext(c.Context())
 ```
 
 #### Test it
