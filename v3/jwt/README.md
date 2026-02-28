@@ -9,7 +9,7 @@ id: jwt
 ![Test](https://github.com/gofiber/contrib/workflows/Test%20jwt/badge.svg)
 
 JWT returns a JSON Web Token (JWT) auth middleware.
-For valid token, it sets the token in Ctx.Locals and calls next handler.
+For valid token, it sets the token in Ctx.Locals (and in the underlying `context.Context` when `PassLocalsToContext` is enabled) and calls next handler.
 For invalid token, it returns "401 - Unauthorized" error.
 For missing token, it returns "400 - Bad Request" error.
 
@@ -34,8 +34,10 @@ go get -u github.com/golang-jwt/jwt/v5
 
 ```go
 jwtware.New(config ...jwtware.Config) func(fiber.Ctx) error
-jwtware.FromContext(c fiber.Ctx) *jwt.Token
+jwtware.FromContext(ctx any) *jwt.Token
 ```
+
+`FromContext` accepts a `fiber.Ctx`, `fiber.CustomCtx`, `*fasthttp.RequestCtx`, or a standard `context.Context` (e.g. the value returned by `c.Context()` when `PassLocalsToContext` is enabled).
 
 ## Config
 
@@ -312,6 +314,18 @@ func restricted(c fiber.Ctx) error {
     name := claims["name"].(string)
     return c.SendString("Welcome " + name)
 }
+```
+
+## Retrieving the token with PassLocalsToContext
+
+When `fiber.Config{PassLocalsToContext: true}` is set, the JWT token stored by the middleware is also available in the underlying `context.Context`. Use `jwtware.FromContext` with any of the supported context types:
+
+```go
+// From a fiber.Ctx (most common usage)
+token := jwtware.FromContext(c)
+
+// From the underlying context.Context (useful in service layers or when PassLocalsToContext is enabled)
+token := jwtware.FromContext(c.Context())
 ```
 
 ## RS256 Test

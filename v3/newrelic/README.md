@@ -30,7 +30,10 @@ go get -u github.com/gofiber/contrib/v3/newrelic
 
 ```go
 newrelic.New(config newrelic.Config) fiber.Handler
+newrelic.FromContext(ctx any) *newrelic.Transaction
 ```
+
+`FromContext` accepts a `fiber.Ctx`, `fiber.CustomCtx`, `*fasthttp.RequestCtx`, or a standard `context.Context` (e.g. the value returned by `c.Context()` when `PassLocalsToContext` is enabled).
 
 ## Config
 
@@ -116,4 +119,16 @@ func main() {
 
     app.Listen(":8080")
 }
+```
+
+## Retrieving the transaction with PassLocalsToContext
+
+When `fiber.Config{PassLocalsToContext: true}` is set, the New Relic transaction stored by the middleware is also available in the underlying `context.Context`. Use `newrelic.FromContext` with any of the supported context types:
+
+```go
+// From a fiber.Ctx (most common usage)
+txn := newrelic.FromContext(c)
+
+// From the underlying context.Context (useful in service layers or when PassLocalsToContext is enabled)
+txn := newrelic.FromContext(c.Context())
 ```
