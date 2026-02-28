@@ -113,12 +113,12 @@ func main() {
     defer logger.Sync()
 
     app.Use(func(c fiber.Ctx) error {
-        ctx := context.WithValue(c.UserContext(), "request_id", "123")
-        c.SetUserContext(ctx)
+        ctx := context.WithValue(c.Context(), "request_id", "123")
+        c.SetContext(ctx)
         return c.Next()
     })
     app.Get("/", func(c fiber.Ctx) error {
-        log.WithContext(c.UserContext()).Info("Hello, World!")
+        log.WithContext(c.Context()).Info("Hello, World!")
         return c.SendString("Hello, World!")
     })
     log.Fatal(app.Listen(":3000"))
