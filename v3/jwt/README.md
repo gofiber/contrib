@@ -34,10 +34,10 @@ go get -u github.com/golang-jwt/jwt/v5
 
 ```go
 jwtware.New(config ...jwtware.Config) func(fiber.Ctx) error
-jwtware.FromContext(ctx any) *jwt.Token
+jwtware.FromContext(ctx any) *jwt.Token    // jwt "github.com/golang-jwt/jwt/v5"
 ```
 
-`FromContext` accepts a `fiber.Ctx`, `fiber.CustomCtx`, `*fasthttp.RequestCtx`, or a standard `context.Context` (e.g. the value returned by `c.Context()` when `PassLocalsToContext` is enabled).
+`FromContext` accepts a `fiber.Ctx`, `fiber.CustomCtx`, `*fasthttp.RequestCtx`, or a standard `context.Context` (e.g. the value returned by `c.Context()` when `PassLocalsToContext` is enabled). It returns a `*jwt.Token` from `github.com/golang-jwt/jwt/v5`.
 
 ## Config
 
