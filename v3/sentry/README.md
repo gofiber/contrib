@@ -28,12 +28,12 @@ go get -u github.com/getsentry/sentry-go
 ## Signature
 
 ```go
-sentry.New(config ...sentry.Config) fiber.Handler
-sentry.GetHubFromContext(ctx any) *sentry.Hub
-sentry.MustGetHubFromContext(ctx any) *sentry.Hub
+fiberSentry.New(config ...fiberSentry.Config) fiber.Handler
+fiberSentry.GetHubFromContext(ctx any) *sdk.Hub         // sdk "github.com/getsentry/sentry-go"
+fiberSentry.MustGetHubFromContext(ctx any) *sdk.Hub     // sdk "github.com/getsentry/sentry-go"
 ```
 
-`GetHubFromContext` and `MustGetHubFromContext` each accept a `fiber.Ctx`, `fiber.CustomCtx`, `*fasthttp.RequestCtx`, or a standard `context.Context` (e.g. the value returned by `c.Context()` when `PassLocalsToContext` is enabled). `MustGetHubFromContext` panics if the hub is not found.
+`GetHubFromContext` and `MustGetHubFromContext` each accept a `fiber.Ctx`, `fiber.CustomCtx`, `*fasthttp.RequestCtx`, or a standard `context.Context` (e.g. the value returned by `c.Context()` when `PassLocalsToContext` is enabled). The `Must*` variant panics if the hub is not found. `*sdk.Hub` is `*sentry.Hub` from `github.com/getsentry/sentry-go`.
 
 ## Config
 
