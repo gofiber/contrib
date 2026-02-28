@@ -1,6 +1,7 @@
 package newrelic
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -10,6 +11,14 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/newrelic/go-agent/v3/newrelic"
+)
+
+// The contextKey type is unexported to prevent collisions with context keys defined in
+// other packages.
+type contextKey int
+
+const (
+	transactionKey contextKey = iota
 )
 
 type Config struct {
@@ -93,6 +102,7 @@ func New(cfg Config) fiber.Handler {
 		scheme := c.Request().URI().Scheme()
 		txn.SetWebRequest(createWebRequest(c, host, method, string(scheme), cfg.RequestHeaderFilter))
 
+		fiber.StoreInContext(c, transactionKey, txn)
 		c.SetContext(newrelic.NewContext(c.Context(), txn))
 
 		handlerErr := c.Next()
@@ -111,8 +121,16 @@ func New(cfg Config) fiber.Handler {
 
 // FromContext returns the Transaction from the context if present, and nil
 // otherwise.
-func FromContext(c fiber.Ctx) *newrelic.Transaction {
-	return newrelic.FromContext(c.Context())
+func FromContext(ctx any) *newrelic.Transaction {
+	if txn, ok := fiber.ValueFromContext[*newrelic.Transaction](ctx, transactionKey); ok {
+		return txn
+	}
+
+	if ctx, ok := ctx.(context.Context); ok {
+		return newrelic.FromContext(ctx)
+	}
+
+	return nil
 }
 
 func createTransactionName(c fiber.Ctx) string {

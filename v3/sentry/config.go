@@ -2,7 +2,13 @@ package sentry
 
 import "time"
 
-const hubKey = "sentry-hub"
+// The contextKey type is unexported to prevent collisions with context keys defined in
+// other packages.
+type contextKey int
+
+const (
+	hubKey contextKey = iota
+)
 
 // Config defines the config for middleware.
 type Config struct {
