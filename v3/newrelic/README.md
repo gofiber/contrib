@@ -33,7 +33,7 @@ middleware.New(config middleware.Config) fiber.Handler
 middleware.FromContext(ctx any) *nr.Transaction     // nr "github.com/newrelic/go-agent/v3/newrelic"
 ```
 
-`FromContext` accepts a `fiber.Ctx`, `fiber.CustomCtx`, `*fasthttp.RequestCtx`, or a standard `context.Context` (e.g. the value returned by `c.Context()` when `PassLocalsToContext` is enabled). It returns a `*newrelic.Transaction` from `github.com/newrelic/go-agent/v3/newrelic`.
+`FromContext` accepts a `fiber.Ctx`, `fiber.CustomCtx`, `*fasthttp.RequestCtx`, or a standard `context.Context` (e.g. the value returned by `c.Context()` when `PassLocalsToContext` is enabled). It returns an `*nr.Transaction` (a New Relic transaction from `github.com/newrelic/go-agent/v3/newrelic`).
 
 ## Config
 
