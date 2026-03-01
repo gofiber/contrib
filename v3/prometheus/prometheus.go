@@ -197,8 +197,7 @@ func (m *middleware) handle(ctx fiber.Ctx) error {
 		if method != fiber.MethodGet && method != fiber.MethodHead {
 			return fiber.ErrMethodNotAllowed
 		}
-		_ = m.metricsHandler(ctx)
-		return nil
+		return m.metricsHandler(ctx)
 	}
 
 	if m.cfg.Next != nil && m.cfg.Next(ctx) {
