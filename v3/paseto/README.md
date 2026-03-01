@@ -447,7 +447,7 @@ if payloadFromCtx == nil {
 payload := payloadFromCtx.(string)  
 ```
 
-`FromContext` accepts a `fiber.Ctx`, `fiber.CustomCtx`, `*fasthttp.RequestCtx`, or a standard `context.Context`. When `fiber.Config{PassLocalsToContext: true}` is set, the payload is also available in the underlying `context.Context`:
+`FromContext` accepts a `fiber.Ctx`, `fiber.CustomCtx`, `*fasthttp.RequestCtx`, or a standard `context.Context` (e.g. the value returned by `c.Context()` when `PassLocalsToContext` is enabled):
 
 ```go
 // From a fiber.Ctx (most common usage)
