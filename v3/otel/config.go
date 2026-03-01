@@ -18,7 +18,7 @@ type config struct {
 	SpanNameFormatter      func(fiber.Ctx) string
 	CustomAttributes       func(fiber.Ctx) []attribute.KeyValue
 	CustomMetricAttributes func(fiber.Ctx) []attribute.KeyValue
-	collectClientIP        bool
+	clientIP               bool
 	withoutMetrics         bool
 }
 
@@ -99,12 +99,18 @@ func WithCustomMetricAttributes(f func(ctx fiber.Ctx) []attribute.KeyValue) Opti
 	})
 }
 
-// WithCollectClientIP specifies whether to collect the client's IP address
+// WithClientIP specifies whether to collect the client's IP address
 // from the request. This is enabled by default.
-func WithCollectClientIP(collect bool) Option {
+func WithClientIP(collect bool) Option {
 	return optionFunc(func(cfg *config) {
-		cfg.collectClientIP = collect
+		cfg.clientIP = collect
 	})
+}
+
+// WithCollectClientIP is deprecated and kept for backwards compatibility.
+// Deprecated: use WithClientIP instead.
+func WithCollectClientIP(collect bool) Option {
+	return WithClientIP(collect)
 }
 
 // WithoutMetrics disables metrics collection when set to true

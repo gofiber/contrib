@@ -7,7 +7,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/utils/v2"
-	"github.com/open-policy-agent/opa/rego"
+	"github.com/open-policy-agent/opa/v1/rego"
 )
 
 type InputCreationFunc func(c fiber.Ctx) (map[string]interface{}, error)

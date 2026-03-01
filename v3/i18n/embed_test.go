@@ -19,18 +19,18 @@ import (
 var fs embed.FS
 
 func newEmbedServer() *fiber.App {
-	app := fiber.New()
-	app.Use(New(&Config{
+	translator := New(&Config{
 		Loader:           &EmbedLoader{fs},
 		UnmarshalFunc:    json.Unmarshal,
 		RootPath:         "./example/localizeJSON/",
 		FormatBundleFile: "json",
-	}))
+	})
+	app := fiber.New()
 	app.Get("/", func(ctx fiber.Ctx) error {
-		return ctx.SendString(MustLocalize(ctx, "welcome"))
+		return ctx.SendString(translator.MustLocalize(ctx, "welcome"))
 	})
 	app.Get("/:name", func(ctx fiber.Ctx) error {
-		return ctx.SendString(MustLocalize(ctx, &i18n.LocalizeConfig{
+		return ctx.SendString(translator.MustLocalize(ctx, &i18n.LocalizeConfig{
 			MessageID: "welcomeWithName",
 			TemplateData: map[string]string{
 				"name": ctx.Params("name"),
@@ -93,6 +93,7 @@ func TestEmbedLoader_LoadMessage(t *testing.T) {
 			got, err := request(tt.args.lang, tt.args.name)
 			assert.Equal(t, err, nil)
 			body, err := io.ReadAll(got.Body)
+			got.Body.Close()
 			assert.Equal(t, err, nil)
 			assert.Equal(t, tt.want, string(body))
 		})

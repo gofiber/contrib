@@ -5,18 +5,35 @@ import (
 	"path"
 	"sync"
 
-	"github.com/gofiber/fiber/v3/log"
-
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/log"
 	"github.com/nicksnyder/go-i18n/v2/i18n"
+	"golang.org/x/text/language"
 )
 
-const localsKey = "i18n"
+// I18n exposes thread-safe localization helpers backed by a shared bundle
+// and localizer map. Use New to construct an instance during application start
+// and reuse it across handlers.
+type I18n struct {
+	cfg *Config
+}
 
-// New creates a new middleware handler
-func New(config ...*Config) fiber.Handler {
-	cfg := configDefault(config...)
-	// init bundle
+// New prepares a thread-safe i18n container instance.
+func New(config ...*Config) *I18n {
+	cfg := prepareConfig(config...)
+
+	return &I18n{cfg: cfg}
+}
+
+func prepareConfig(config ...*Config) *Config {
+	source := configDefault(config...)
+
+	cfg := *source
+
+	if source.AcceptLanguages != nil {
+		cfg.AcceptLanguages = append([]language.Tag(nil), source.AcceptLanguages...)
+	}
+
 	bundle := i18n.NewBundle(cfg.DefaultLanguage)
 	bundle.RegisterUnmarshalFunc(cfg.FormatBundleFile, cfg.UnmarshalFunc)
 	cfg.bundle = bundle
@@ -24,13 +41,7 @@ func New(config ...*Config) fiber.Handler {
 	cfg.loadMessages()
 	cfg.initLocalizerMap()
 
-	return func(c fiber.Ctx) error {
-		if cfg.Next != nil && cfg.Next(c) {
-			return c.Next()
-		}
-		c.Locals(localsKey, cfg)
-		return c.Next()
-	}
+	return &cfg
 }
 
 func (c *Config) loadMessage(filepath string) {
@@ -64,9 +75,7 @@ func (c *Config) initLocalizerMap() {
 	if _, ok := localizerMap.Load(lang); !ok {
 		localizerMap.Store(lang, i18n.NewLocalizer(c.bundle, lang))
 	}
-	c.mu.Lock()
 	c.localizerMap = localizerMap
-	c.mu.Unlock()
 }
 
 /*
@@ -82,8 +91,8 @@ MustLocalize get the i18n message without error handling
 				},
 		})
 */
-func MustLocalize(ctx fiber.Ctx, params interface{}) string {
-	message, err := Localize(ctx, params)
+func (i *I18n) MustLocalize(ctx fiber.Ctx, params interface{}) string {
+	message, err := i.Localize(ctx, params)
 	if err != nil {
 		panic(err)
 	}
@@ -103,17 +112,12 @@ Localize get the i18n message
 				},
 		})
 */
-func Localize(ctx fiber.Ctx, params interface{}) (string, error) {
-	local := ctx.Locals(localsKey)
-	if local == nil {
-		return "", fmt.Errorf("i18n.Localize error: %v", "Config is nil")
+func (i *I18n) Localize(ctx fiber.Ctx, params interface{}) (string, error) {
+	if i == nil || i.cfg == nil {
+		return "", fmt.Errorf("i18n.Localize error: %v", "translator is nil")
 	}
 
-	appCfg, ok := local.(*Config)
-	if !ok {
-		return "", fmt.Errorf("i18n.Localize error: %v", "Config is not *Config type")
-	}
-
+	appCfg := i.cfg
 	lang := appCfg.LangHandler(ctx, appCfg.DefaultLanguage.String())
 	localizer, _ := appCfg.localizerMap.Load(lang)
 
@@ -128,6 +132,12 @@ func Localize(ctx fiber.Ctx, params interface{}) (string, error) {
 		localizeConfig = &i18n.LocalizeConfig{MessageID: paramValue}
 	case *i18n.LocalizeConfig:
 		localizeConfig = paramValue
+	default:
+		return "", fmt.Errorf("i18n.Localize error: %v", "unsupported params type")
+	}
+
+	if localizer == nil {
+		return "", fmt.Errorf("i18n.Localize error: %v", "localizer is nil")
 	}
 
 	message, err := localizer.(*i18n.Localizer).Localize(localizeConfig)

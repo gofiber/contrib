@@ -90,8 +90,8 @@ package example.authz
 
 default allow := false
 
-allow {
-	input.method == "GET"
+allow if {
+        input.method == "GET"
 }
 `
 
@@ -124,8 +124,8 @@ package example.authz
 
 default allow := false
 
-allow {
-	input.path == "/path"
+allow if {
+        input.path == "/path"
 }
 `
 
@@ -160,8 +160,8 @@ import future.keywords.in
 
 default allow := false
 
-allow {
-	input.query == {"testKey": ["testVal"]}
+allow if {
+        input.query == {"testKey": ["testVal"]}
 }
 `
 
@@ -197,8 +197,8 @@ import future.keywords.in
 
 default allow := false
 
-allow {
-	input.headers == {"testHeaderKey": "testHeaderVal"}
+allow if {
+        input.headers == {"testHeaderKey": "testHeaderVal"}
 }
 `
 
@@ -234,8 +234,8 @@ package example.authz
 
 default allow := false
 
-allow {
-	input.custom == "test"
+allow if {
+        input.custom == "test"
 }
 `
 
@@ -274,8 +274,8 @@ package example.authz
 
 default allow := false
 
-allow {
-	input.custom == "test"
+allow if {
+        input.custom == "test"
 }
 `
 

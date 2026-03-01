@@ -4,7 +4,7 @@ id: zap
 
 # Zap
 
-![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=zap*)
+![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=*zap*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Test%20zap/badge.svg)
 
@@ -113,12 +113,12 @@ func main() {
     defer logger.Sync()
 
     app.Use(func(c fiber.Ctx) error {
-        ctx := context.WithValue(c.UserContext(), "request_id", "123")
-        c.SetUserContext(ctx)
+        ctx := context.WithValue(c.Context(), "request_id", "123")
+        c.SetContext(ctx)
         return c.Next()
     })
     app.Get("/", func(c fiber.Ctx) error {
-        log.WithContext(c.UserContext()).Info("Hello, World!")
+        log.WithContext(c.Context()).Info("Hello, World!")
         return c.SendString("Hello, World!")
     })
     log.Fatal(app.Listen(":3000"))

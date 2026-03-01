@@ -4,7 +4,7 @@ id: websocket
 
 # Websocket
 
-![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=websocket*)
+![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=*websocket*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Test%20websocket/badge.svg)
 
@@ -37,6 +37,7 @@ func New(handler func(*websocket.Conn), config ...websocket.Config) fiber.Handle
 | HandshakeTimeout    | `time.Duration`              | HandshakeTimeout specifies the duration for the handshake to complete.                                                        | `0` (No timeout)       |
 | Subprotocols        | `[]string`                   | Subprotocols specifies the client's requested subprotocols.                                                                   | `nil`                  |
 | Origins             | `[]string`                   | Allowed Origins based on the Origin header. If empty, everything is allowed.                                                  | `nil`                  |
+| AllowEmptyOrigin    | `bool`                       | Allows connections without an Origin header when Origins is configured. Useful for non-browser clients.                       | `false`                |
 | ReadBufferSize      | `int`                        | ReadBufferSize specifies the I/O buffer size in bytes for incoming messages.                                                  | `0` (Use default size) |
 | WriteBufferSize     | `int`                        | WriteBufferSize specifies the I/O buffer size in bytes for outgoing messages.                                                 | `0` (Use default size) |
 | WriteBufferPool     | `websocket.BufferPool`       | WriteBufferPool is a pool of buffers for write operations.                                                                    | `nil`                  |

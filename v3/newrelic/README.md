@@ -4,11 +4,13 @@ id: newrelic
 
 # New Relic
 
-![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=newrelic*)
+![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=*newrelic*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Test%20newrelic/badge.svg)
 
 [New Relic](https://github.com/newrelic/go-agent) support for Fiber.
+
+Incoming request headers are forwarded to New Relic transactions by default. This enables distributed tracing header processing, but can also forward sensitive headers. Use `RequestHeaderFilter` to allowlist or redact headers as needed.
 
 
 **Compatible with Fiber v3.**
@@ -41,6 +43,7 @@ newrelic.New(config newrelic.Config) fiber.Handler
 | Application            | `Application`    | Existing New Relic App                                      | `nil`                           |
 | ErrorStatusCodeHandler | `func(c fiber.Ctx, err error) int`    | If you want to change newrelic status code, you can use it. | `DefaultErrorStatusCodeHandler` |
 | Next                   | `func(c fiber.Ctx) bool`    | Next defines a function to skip this middleware when returned true.                                                           | `nil`                           |
+| RequestHeaderFilter    | `func(key, value string) bool`    | Return `true` to forward a request header to New Relic, `false` to skip it. | `nil` (forward all headers) |
 
 ## Usage
 

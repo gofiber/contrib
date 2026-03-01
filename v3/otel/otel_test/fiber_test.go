@@ -1,9 +1,11 @@
 package otel_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -25,7 +27,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
@@ -344,7 +346,8 @@ func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, 
 
 	// Duration value is not predictable.
 	m := sm.Metrics[0]
-	assert.Equal(t, fiberotel.MetricNameHttpServerDuration, m.Name)
+	assert.Equal(t, fiberotel.MetricNameHTTPServerRequestDuration, m.Name)
+	assert.Equal(t, fiberotel.UnitSeconds, m.Unit)
 	require.IsType(t, m.Data, metricdata.Histogram[float64]{})
 	hist := m.Data.(metricdata.Histogram[float64])
 	assert.Equal(t, metricdata.CumulativeTemporality, hist.Temporality)
@@ -352,12 +355,12 @@ func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, 
 	dp := hist.DataPoints[0]
 	assert.Equal(t, attribute.NewSet(responseAttrs...), dp.Attributes, "attributes")
 	assert.Equal(t, uint64(1), dp.Count, "count")
-	assert.Less(t, dp.Sum, float64(10)) // test shouldn't take longer than 10 milliseconds
+	assert.Less(t, dp.Sum, 0.01) // test shouldn't take longer than 10 milliseconds (0.01 seconds)
 
 	// Request size
 	want := metricdata.Metrics{
-		Name:        fiberotel.MetricNameHttpServerRequestSize,
-		Description: "measures the size of HTTP request messages",
+		Name:        fiberotel.MetricNameHTTPServerRequestBodySize,
+		Description: "Size of HTTP server request bodies.",
 		Unit:        fiberotel.UnitBytes,
 		Data:        getHistogram(0, responseAttrs),
 	}
@@ -365,8 +368,8 @@ func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, 
 
 	// Response size
 	want = metricdata.Metrics{
-		Name:        fiberotel.MetricNameHttpServerResponseSize,
-		Description: "measures the size of HTTP response messages",
+		Name:        fiberotel.MetricNameHTTPServerResponseBodySize,
+		Description: "Size of HTTP server response bodies.",
 		Unit:        fiberotel.UnitBytes,
 		Data:        getHistogram(2, responseAttrs),
 	}
@@ -374,8 +377,8 @@ func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, 
 
 	// Active requests
 	want = metricdata.Metrics{
-		Name:        fiberotel.MetricNameHttpServerActiveRequests,
-		Description: "measures the number of concurrent HTTP requests that are currently in-flight",
+		Name:        fiberotel.MetricNameHTTPServerActiveRequests,
+		Description: "Number of active HTTP server requests.",
 		Unit:        fiberotel.UnitDimensionless,
 		Data: metricdata.Sum[int64]{
 			DataPoints: []metricdata.DataPoint[int64]{
@@ -574,38 +577,52 @@ func TestOutboundTracingPropagationWithInboundContext(t *testing.T) {
 func TestCollectClientIP(t *testing.T) {
 	t.Parallel()
 
-	for _, enabled := range []bool{true, false} {
-		enabled := enabled
-		t.Run(fmt.Sprintf("enabled=%t", enabled), func(t *testing.T) {
+	optFactories := []struct {
+		name string
+		opt  func(bool) fiberotel.Option
+	}{
+		{name: "WithClientIP", opt: fiberotel.WithClientIP},
+		{name: "WithCollectClientIP", opt: fiberotel.WithCollectClientIP},
+	}
+
+	for _, factory := range optFactories {
+		factory := factory
+		t.Run(factory.name, func(t *testing.T) {
 			t.Parallel()
 
-			sr := tracetest.NewSpanRecorder()
-			provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-			otel.SetTracerProvider(provider)
+			for _, enabled := range []bool{true, false} {
+				enabled := enabled
+				t.Run(fmt.Sprintf("enabled=%t", enabled), func(t *testing.T) {
+					t.Parallel()
 
-			app := fiber.New()
-			app.Use(fiberotel.Middleware(
-				fiberotel.WithTracerProvider(provider),
-				fiberotel.WithCollectClientIP(enabled),
-			))
-			app.Get("/foo", func(ctx fiber.Ctx) error {
-				return ctx.SendStatus(http.StatusNoContent)
-			})
+					sr := tracetest.NewSpanRecorder()
+					provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 
-			req := httptest.NewRequest("GET", "/foo", nil)
-			resp, err := app.Test(req)
-			require.NoError(t, err)
-			require.NotNil(t, resp)
+					app := fiber.New()
+					app.Use(fiberotel.Middleware(
+						fiberotel.WithTracerProvider(provider),
+						factory.opt(enabled),
+					))
+					app.Get("/foo", func(ctx fiber.Ctx) error {
+						return ctx.SendStatus(http.StatusNoContent)
+					})
 
-			spans := sr.Ended()
-			require.Len(t, spans, 1)
+					req := httptest.NewRequest("GET", "/foo", nil)
+					resp, err := app.Test(req)
+					require.NoError(t, err)
+					require.NotNil(t, resp)
 
-			span := spans[0]
-			attrs := span.Attributes()
-			if enabled {
-				assert.Contains(t, attrs, attribute.String("client.address", "0.0.0.0"))
-			} else {
-				assert.NotContains(t, attrs, attribute.String("client.address", "0.0.0.0"))
+					spans := sr.Ended()
+					require.Len(t, spans, 1)
+
+					span := spans[0]
+					attrs := span.Attributes()
+					if enabled {
+						assert.Contains(t, attrs, attribute.String("client.address", "0.0.0.0"))
+					} else {
+						assert.NotContains(t, attrs, attribute.String("client.address", "0.0.0.0"))
+					}
+				})
 			}
 		})
 	}
@@ -639,4 +656,79 @@ func TestWithoutMetrics(t *testing.T) {
 	err = reader.Collect(context.Background(), &metrics)
 	assert.NoError(t, err)
 	assert.Len(t, metrics.ScopeMetrics, 0, "No metrics should be collected when metrics are disabled")
+}
+
+func TestWithoutMetricsWithStreamResponse(t *testing.T) {
+	reader := metric.NewManualReader()
+	provider := metric.NewMeterProvider(metric.WithReader(reader))
+
+	app := fiber.New()
+	app.Use(
+		fiberotel.Middleware(
+			fiberotel.WithMeterProvider(provider),
+			fiberotel.WithoutMetrics(true),
+		),
+	)
+
+	app.Get("/stream", func(ctx fiber.Ctx) error {
+		return ctx.SendStream(bytes.NewReader(make([]byte, 2048)))
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/stream", nil))
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Len(t, body, 2048)
+
+	metrics := metricdata.ResourceMetrics{}
+	err = reader.Collect(context.Background(), &metrics)
+	assert.NoError(t, err)
+	assert.Len(t, metrics.ScopeMetrics, 0, "No metrics should be collected when metrics are disabled")
+}
+
+func TestResponseBodySizeWithStream(t *testing.T) {
+	const responseBodySize = 8192
+
+	reader := metric.NewManualReader()
+	provider := metric.NewMeterProvider(metric.WithReader(reader))
+
+	app := fiber.New()
+	app.Use(
+		fiberotel.Middleware(
+			fiberotel.WithMeterProvider(provider),
+		),
+	)
+
+	app.Get("/stream", func(ctx fiber.Ctx) error {
+		payload := make([]byte, responseBodySize)
+		return ctx.SendStream(bytes.NewReader(payload))
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/stream", nil))
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Len(t, body, responseBodySize)
+
+	metrics := metricdata.ResourceMetrics{}
+	err = reader.Collect(context.Background(), &metrics)
+	require.NoError(t, err)
+	require.Len(t, metrics.ScopeMetrics, 1)
+
+	var got metricdata.Histogram[int64]
+	for _, m := range metrics.ScopeMetrics[0].Metrics {
+		if m.Name == fiberotel.MetricNameHttpServerResponseSize {
+			var ok bool
+			got, ok = m.Data.(metricdata.Histogram[int64])
+			require.True(t, ok)
+			break
+		}
+	}
+
+	require.Len(t, got.DataPoints, 1)
+	assert.Equal(t, int64(responseBodySize), got.DataPoints[0].Sum)
 }

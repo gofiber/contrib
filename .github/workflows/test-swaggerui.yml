@@ -1,4 +1,4 @@
-name: "Test swagger"
+name: "Test swaggerui"
 
 on:
   push:
@@ -6,13 +6,16 @@ on:
       - master
       - main
     paths:
-      - 'v3/swagger/**/*.go'
-      - 'v3/swagger/go.mod'
+      - 'v3/swaggerui/**/*.go'
+      - 'v3/swaggerui/go.mod'
+      - 'v3/swaggerui/go.sum'
   pull_request:
     paths:
-      - 'v3/swagger/**/*.go'
-      - 'v3/swagger/go.mod'
+      - 'v3/swaggerui/**/*.go'
+      - 'v3/swaggerui/go.mod'
+      - 'v3/swaggerui/go.sum'
 
+  workflow_dispatch:
 jobs:
   Tests:
     runs-on: ubuntu-latest
@@ -22,11 +25,11 @@ jobs:
           - 1.25.x
     steps:
       - name: Fetch Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
       - name: Install Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '${{ matrix.go-version }}'
       - name: Run Test
-        working-directory: ./v3/swagger
+        working-directory: ./v3/swaggerui
         run: go test -v -race ./...
