@@ -100,15 +100,13 @@ jobs:
               run: |
                   package="${{ matrix.package }}"
                   directory="$package"
-                  config_name="release-drafter-${package//\//-}.yml"
-                  config_path=".github/$config_name"
                   {
-                      echo "config_name=$config_name"
+                      echo "config<<EOF"
+                      sed -e "s|{{PACKAGE}}|$package|g" -e "s|{{DIRECTORY}}|$directory|g" .github/release-drafter-template.yml
+                      echo "EOF"
                   } >> "$GITHUB_OUTPUT"
-                  sed -e "s|{{PACKAGE}}|$package|g" -e "s|{{DIRECTORY}}|$directory|g" .github/release-drafter-template.yml > "$config_path"
 
             - name: Use dynamic release-drafter configuration
-              uses: release-drafter/release-drafter@v6
+              uses: ReneWerner87/release-drafter@1e213032283aaa6d64a8df087c4587a2ff531582
               with:
-                  config-name: ${{ steps.generate-config.outputs.config_name }}
-                  disable-autolabeler: true
+                  config: ${{ steps.generate-config.outputs.config }}
