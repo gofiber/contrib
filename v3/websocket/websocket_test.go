@@ -110,7 +110,7 @@ func TestWebSocketMiddlewareConfigOrigin(t *testing.T) {
 			"Origin": []string{"http://localhost:5000"},
 		})
 		if !assert.NoError(t, err) {
- 		   return
+			return
 		}
 		defer conn.Close()
 		assert.Equal(t, fiber.StatusSwitchingProtocols, resp.StatusCode)
@@ -366,9 +366,9 @@ func setupTestApp(cfg Config, h func(c *Conn)) *fiber.App {
 
 	app.Use("/ws", func(c fiber.Ctx) error {
 		if IsWebSocketUpgrade(c) {
-			c.Locals("allowed", true)
-			c.Locals("local1", "value1")
-			c.Locals("local2", "value2")
+			fiber.StoreInContext(c, "allowed", true)
+			fiber.StoreInContext(c, "local1", "value1")
+			fiber.StoreInContext(c, "local2", "value2")
 			return c.Next()
 		}
 		return fiber.ErrUpgradeRequired

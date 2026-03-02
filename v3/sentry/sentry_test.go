@@ -228,3 +228,22 @@ func Test_Sentry(t *testing.T) {
 		t.Fatal("sentry.Flush timed out")
 	}
 }
+
+func Test_GetHubFromContext_PassLocalsToContext(t *testing.T) {
+	app := fiber.New(fiber.Config{PassLocalsToContext: true})
+	app.Use(New())
+
+	app.Get("/", func(c fiber.Ctx) error {
+		hub := GetHubFromContext(c)
+		hubFromContext := GetHubFromContext(c.Context())
+		require.NotNil(t, hub)
+		require.NotNil(t, hubFromContext)
+		return c.SendStatus(http.StatusOK)
+	})
+
+	req, err := http.NewRequest(http.MethodGet, "http://example.com/", nil)
+	require.NoError(t, err)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+}

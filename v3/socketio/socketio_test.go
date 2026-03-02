@@ -387,7 +387,7 @@ func upgradeMiddleware(c fiber.Ctx) error {
 	// IsWebSocketUpgrade returns true if the client
 	// requested upgrade to the WebSocket protocol.
 	if fws.IsWebSocketUpgrade(c) {
-		c.Locals("allowed", true)
+		fiber.StoreInContext(c, "allowed", true)
 		return c.Next()
 	}
 	return fiber.ErrUpgradeRequired

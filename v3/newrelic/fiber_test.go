@@ -447,3 +447,24 @@ func TestCreateWebRequest(t *testing.T) {
 		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
 	})
 }
+
+func TestFromContext_PassLocalsToContext(t *testing.T) {
+	cfg := Config{
+		License: "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+		Enabled: true,
+	}
+	app := fiber.New(fiber.Config{PassLocalsToContext: true})
+	app.Use(New(cfg))
+	app.Get("/foo", func(ctx fiber.Ctx) error {
+		tx := FromContext(ctx)
+		txFromContext := FromContext(ctx.Context())
+		assert.NotNil(t, tx)
+		assert.NotNil(t, txFromContext)
+		return ctx.SendStatus(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/foo", http.NoBody)
+	res, err := app.Test(req, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, res.StatusCode)
+}
