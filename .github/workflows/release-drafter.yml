@@ -110,3 +110,4 @@ jobs:
               uses: ReneWerner87/release-drafter@1e213032283aaa6d64a8df087c4587a2ff531582
               with:
                   config: ${{ steps.generate-config.outputs.config }}
+                  disable-autolabeler: true
