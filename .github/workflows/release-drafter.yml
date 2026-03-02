@@ -7,10 +7,14 @@ on:
             - main
     workflow_dispatch:
 
+permissions:
+    contents: read
+
 jobs:
     changes:
         runs-on: ubuntu-latest
         permissions:
+            contents: read
             pull-requests: read
         outputs:
             packages: ${{ github.event_name == 'workflow_dispatch' && steps.filter-setup.outputs.packages || steps.map-packages.outputs.packages || '[]' }}
@@ -79,6 +83,9 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 30
         if: needs.changes.outputs.packages != '[]'
+        permissions:
+            contents: write
+            pull-requests: read
         env:
             GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         strategy:
@@ -93,13 +100,15 @@ jobs:
               run: |
                   package="${{ matrix.package }}"
                   directory="$package"
+                  config_name="release-drafter-${package//\//-}.yml"
+                  config_path=".github/$config_name"
                   {
-                      echo "config<<EOF"
-                      sed -e "s|{{PACKAGE}}|$package|g" -e "s|{{DIRECTORY}}|$directory|g" .github/release-drafter-template.yml
-                      echo "EOF"
+                      echo "config_name=$config_name"
                   } >> "$GITHUB_OUTPUT"
+                  sed -e "s|{{PACKAGE}}|$package|g" -e "s|{{DIRECTORY}}|$directory|g" .github/release-drafter-template.yml > "$config_path"
 
             - name: Use dynamic release-drafter configuration
-              uses: ReneWerner87/release-drafter@6dec4ceb1fb86b6514f11a2e7a39e1dedce709d0
+              uses: release-drafter/release-drafter@v6
               with:
-                  config: ${{ steps.generate-config.outputs.config }}
+                  config-name: ${{ steps.generate-config.outputs.config_name }}
+                  disable-autolabeler: true
