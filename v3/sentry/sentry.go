@@ -54,7 +54,7 @@ func New(config ...Config) fiber.Handler {
 
 // MustGetHubFromContext returns the Sentry hub from context.
 // It accepts fiber.CustomCtx, fiber.Ctx, *fasthttp.RequestCtx, and context.Context.
-// Panics if the hub is not found.
+// Panics if the hub is not found or has an unexpected type.
 func MustGetHubFromContext(ctx any) *sentry.Hub {
 	hub := GetHubFromContext(ctx)
 	if hub == nil {
