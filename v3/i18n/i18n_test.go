@@ -331,7 +331,7 @@ func TestMustLocalize_panics(t *testing.T) {
 	app := fiber.New()
 	app.Get("/", func(ctx fiber.Ctx) error {
 		assert.Panics(t, func() {
-			translator.MustLocalize(ctx, "nonexistent?message")
+			translator.MustLocalize(ctx, "nonexistent_message")
 		})
 		return nil
 	})
