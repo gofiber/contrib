@@ -131,6 +131,9 @@ func (i *I18n) Localize(ctx fiber.Ctx, params interface{}) (string, error) {
 	case string:
 		localizeConfig = &i18n.LocalizeConfig{MessageID: paramValue}
 	case *i18n.LocalizeConfig:
+		if paramValue == nil {
+			return "", fmt.Errorf("i18n.Localize error: %v", "params is nil")
+		}
 		localizeConfig = paramValue
 	default:
 		return "", fmt.Errorf("i18n.Localize error: %v", "unsupported params type")
@@ -140,7 +143,11 @@ func (i *I18n) Localize(ctx fiber.Ctx, params interface{}) (string, error) {
 		return "", fmt.Errorf("i18n.Localize error: %v", "localizer is nil")
 	}
 
-	message, err := localizer.(*i18n.Localizer).Localize(localizeConfig)
+	loc, ok := localizer.(*i18n.Localizer)
+	if !ok {
+		return "", fmt.Errorf("i18n.Localize error: %v", "unexpected localizer type")
+	}
+	message, err := loc.Localize(localizeConfig)
 	if err != nil {
 		log.Errorf("i18n.Localize error: %v", err)
 		return "", fmt.Errorf("i18n.Localize error: %v", err)

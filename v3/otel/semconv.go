@@ -1,8 +1,8 @@
 package otel
 
 import (
+	"bytes"
 	"encoding/base64"
-	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/utils/v2"
@@ -60,7 +60,7 @@ func httpServerTraceAttributesFromRequest(c fiber.Ctx, cfg config) []attribute.K
 	}
 
 	if username, ok := HasBasicAuth(c.Get(fiber.HeaderAuthorization)); ok {
-		attrs = append(attrs, enduserIDKey.String(utils.CopyString(username)))
+		attrs = append(attrs, enduserIDKey.String(username))
 	}
 
 	if cfg.clientIP {
@@ -111,16 +111,13 @@ func HasBasicAuth(auth string) (string, bool) {
 		return "", false
 	}
 
-	// Get the credentials
-	creds := utils.UnsafeString(raw)
-
-	// Check if the credentials are in the correct form
+	// Check if the decoded credentials are in the correct form
 	// which is "username:password".
-	index := strings.Index(creds, ":")
+	index := bytes.IndexByte(raw, ':')
 	if index == -1 {
 		return "", false
 	}
 
 	// Get the username
-	return creds[:index], true
+	return string(raw[:index]), true
 }

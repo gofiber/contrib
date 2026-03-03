@@ -168,7 +168,7 @@ func Middleware(opts ...Option) fiber.Handler {
 		}
 
 		fiber.StoreInContext(c, tracerKey, tracer)
-		savedCtx, cancel := context.WithCancel(c)
+		savedCtx, cancel := context.WithCancel(c.Context())
 
 		start := time.Now()
 

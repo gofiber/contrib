@@ -631,6 +631,39 @@ func TestCollectClientIP(t *testing.T) {
 	}
 }
 
+func TestMiddlewarePreservesUserContext(t *testing.T) {
+	type ctxKey string
+	const requestIDKey ctxKey = "request_id"
+	const expectedID = 1234
+
+	sr := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+
+	app := fiber.New()
+	// Middleware that injects a value into the context before otel
+	app.Use(func(c fiber.Ctx) error {
+		ctx := context.WithValue(c.Context(), requestIDKey, expectedID)
+		c.SetContext(ctx)
+		return c.Next()
+	})
+	app.Use(fiberotel.Middleware(fiberotel.WithTracerProvider(provider)))
+	app.Get("/", func(c fiber.Ctx) error {
+		val := c.Context().Value(requestIDKey)
+		if val == nil {
+			return c.SendString("request_id NOT found in context")
+		}
+		return c.SendString(fmt.Sprintf("request_id from context: %d", val.(int)))
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, fmt.Sprintf("request_id from context: %d", expectedID), string(body))
+}
+
 func TestWithoutMetrics(t *testing.T) {
 	reader := metric.NewManualReader()
 	provider := metric.NewMeterProvider(metric.WithReader(reader))
