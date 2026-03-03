@@ -16,6 +16,8 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/baggage"
+	otellog "go.opentelemetry.io/otel/log"
+	otelloglobal "go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
@@ -109,6 +111,14 @@ func Middleware(opts ...Option) fiber.Handler {
 	tracer := cfg.TracerProvider.Tracer(
 		instrumentationName,
 		oteltrace.WithInstrumentationVersion(otelcontrib.Version()),
+	)
+
+	if cfg.LoggerProvider == nil {
+		cfg.LoggerProvider = otelloglobal.GetLoggerProvider()
+	}
+	logger := cfg.LoggerProvider.Logger(
+		instrumentationName,
+		otellog.WithInstrumentationVersion(otelcontrib.Version()),
 	)
 
 	var httpServerDuration metric.Float64Histogram
@@ -276,6 +286,23 @@ func Middleware(opts ...Option) fiber.Handler {
 		spanStatus, spanMessage := internal.SpanStatusFromHTTPStatusCodeAndSpanKind(c.Response().StatusCode(), oteltrace.SpanKindServer)
 		span.SetStatus(spanStatus, spanMessage)
 
+		// Emit a log record for the request
+		logSeverity := severityFromHTTPStatusCode(c.Response().StatusCode())
+		if logger.Enabled(ctx, otellog.EnabledParameters{Severity: logSeverity}) {
+			var logRecord otellog.Record
+			logRecord.SetTimestamp(start)
+			logRecord.SetObservedTimestamp(time.Now())
+			logRecord.SetSeverity(logSeverity)
+			logRecord.SetBody(otellog.StringValue(c.Method() + " " + c.Route().Path))
+			logRecord.AddAttributes(
+				otellog.String(string(semconv.HTTPRequestMethodKey), c.Method()),
+				otellog.String(string(semconv.HTTPRouteKey), c.Route().Path),
+				otellog.Int(string(semconv.HTTPResponseStatusCodeKey), c.Response().StatusCode()),
+				otellog.String(string(semconv.URLPathKey), c.Path()),
+			)
+			logger.Emit(ctx, logRecord)
+		}
+
 		//Propagate tracing context as headers in outbound response
 		tracingHeaders := make(propagation.HeaderCarrier)
 		cfg.Propagators.Inject(c.Context(), tracingHeaders)
@@ -291,4 +318,17 @@ func Middleware(opts ...Option) fiber.Handler {
 // integration. Returns the route pathRaw
 func defaultSpanNameFormatter(ctx fiber.Ctx) string {
 	return ctx.Route().Path
+}
+
+// severityFromHTTPStatusCode returns the log severity for a given HTTP status code.
+// 5xx -> Error, 4xx -> Warn, others -> Info.
+func severityFromHTTPStatusCode(code int) otellog.Severity {
+	switch {
+	case code >= http.StatusInternalServerError:
+		return otellog.SeverityError
+	case code >= http.StatusBadRequest:
+		return otellog.SeverityWarn
+	default:
+		return otellog.SeverityInfo
+	}
 }

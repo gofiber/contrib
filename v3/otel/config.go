@@ -3,6 +3,7 @@ package otel
 import (
 	"github.com/gofiber/fiber/v3"
 	"go.opentelemetry.io/otel/attribute"
+	otellog "go.opentelemetry.io/otel/log"
 	otelmetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -13,6 +14,7 @@ type config struct {
 	Next                   func(fiber.Ctx) bool
 	TracerProvider         oteltrace.TracerProvider
 	MeterProvider          otelmetric.MeterProvider
+	LoggerProvider         otellog.LoggerProvider
 	Port                   *int
 	Propagators            propagation.TextMapPropagator
 	SpanNameFormatter      func(fiber.Ctx) string
@@ -63,6 +65,14 @@ func WithTracerProvider(provider oteltrace.TracerProvider) Option {
 func WithMeterProvider(provider otelmetric.MeterProvider) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.MeterProvider = provider
+	})
+}
+
+// WithLoggerProvider specifies a logger provider to use for logging.
+// If none is specified, the global provider is used.
+func WithLoggerProvider(provider otellog.LoggerProvider) Option {
+	return optionFunc(func(cfg *config) {
+		cfg.LoggerProvider = provider
 	})
 }
 
