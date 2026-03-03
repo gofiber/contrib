@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,11 +21,13 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/instrumentation"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
@@ -764,4 +767,135 @@ func TestResponseBodySizeWithStream(t *testing.T) {
 
 	require.Len(t, got.DataPoints, 1)
 	assert.Equal(t, int64(responseBodySize), got.DataPoints[0].Sum)
+}
+
+// testLogProcessor is a simple in-memory log processor for testing.
+type testLogProcessor struct {
+	mu      sync.Mutex
+	records []sdklog.Record
+}
+
+func (p *testLogProcessor) OnEmit(_ context.Context, record *sdklog.Record) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.records = append(p.records, *record)
+	return nil
+}
+
+func (p *testLogProcessor) Enabled(_ context.Context, _ sdklog.EnabledParameters) bool {
+	return true
+}
+
+func (p *testLogProcessor) Shutdown(_ context.Context) error  { return nil }
+func (p *testLogProcessor) ForceFlush(_ context.Context) error { return nil }
+
+func (p *testLogProcessor) Records() []sdklog.Record {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]sdklog.Record(nil), p.records...)
+}
+
+func TestLoggerProviderEmitsRecordOnRequest(t *testing.T) {
+	processor := &testLogProcessor{}
+	logProvider := sdklog.NewLoggerProvider(sdklog.WithProcessor(processor))
+
+	app := fiber.New()
+	app.Use(fiberotel.Middleware(fiberotel.WithLoggerProvider(logProvider)))
+	app.Get("/user/:id", func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(http.StatusOK)
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/user/123", nil))
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	records := processor.Records()
+	require.Len(t, records, 1)
+
+	rec := records[0]
+	assert.Equal(t, otellog.SeverityInfo, rec.Severity())
+	assert.Equal(t, "GET /user/:id", rec.Body().AsString())
+
+	// verify HTTP attributes are present in the log record
+	var method, route, path string
+	var statusCode int64
+	rec.WalkAttributes(func(kv otellog.KeyValue) bool {
+		switch string(kv.Key) {
+		case "http.request.method":
+			method = kv.Value.AsString()
+		case "http.route":
+			route = kv.Value.AsString()
+		case "http.response.status_code":
+			statusCode = kv.Value.AsInt64()
+		case "url.path":
+			path = kv.Value.AsString()
+		}
+		return true
+	})
+	assert.Equal(t, http.MethodGet, method)
+	assert.Equal(t, "/user/:id", route)
+	assert.Equal(t, int64(http.StatusOK), statusCode)
+	assert.Equal(t, "/user/123", path)
+}
+
+func TestLoggerProviderSeverity5xx(t *testing.T) {
+	processor := &testLogProcessor{}
+	logProvider := sdklog.NewLoggerProvider(sdklog.WithProcessor(processor))
+
+	app := fiber.New()
+	app.Use(fiberotel.Middleware(fiberotel.WithLoggerProvider(logProvider)))
+	app.Get("/err", func(ctx fiber.Ctx) error {
+		return errors.New("internal error")
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/err", nil))
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	records := processor.Records()
+	require.Len(t, records, 1)
+	assert.Equal(t, otellog.SeverityError, records[0].Severity())
+}
+
+func TestLoggerProviderSeverity4xx(t *testing.T) {
+	processor := &testLogProcessor{}
+	logProvider := sdklog.NewLoggerProvider(sdklog.WithProcessor(processor))
+
+	app := fiber.New()
+	app.Use(fiberotel.Middleware(fiberotel.WithLoggerProvider(logProvider)))
+	app.Get("/notfound", func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(http.StatusNotFound)
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/notfound", nil))
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	records := processor.Records()
+	require.Len(t, records, 1)
+	assert.Equal(t, otellog.SeverityWarn, records[0].Severity())
+}
+
+func TestLoggerProviderWithSkipNext(t *testing.T) {
+	processor := &testLogProcessor{}
+	logProvider := sdklog.NewLoggerProvider(sdklog.WithProcessor(processor))
+
+	app := fiber.New()
+	app.Use(fiberotel.Middleware(
+		fiberotel.WithLoggerProvider(logProvider),
+		fiberotel.WithNext(func(c fiber.Ctx) bool {
+			return c.Path() == "/health"
+		}),
+	))
+	app.Get("/health", func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(http.StatusOK)
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/health", nil))
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	// No log records should be emitted when middleware is skipped
+	assert.Len(t, processor.Records(), 0)
 }

@@ -39,6 +39,7 @@ You can configure the middleware using functional parameters
 | `WithNext`                    | `func(fiber.Ctx) bool`         | Define a function to skip this middleware when returned true .| nil                                                                 |
 | `WithTracerProvider`          | `oteltrace.TracerProvider`      | Specifies a tracer provider to use for creating a tracer.                         | nil - the global tracer provider is used                                   |
 | `WithMeterProvider`           | `otelmetric.MeterProvider`      | Specifies a meter provider to use for reporting.                                     | nil - the global meter provider is used                                                             |
+| `WithLoggerProvider`          | `otellog.LoggerProvider`        | Specifies a logger provider to use for emitting log records.                        | nil - the global logger provider is used                                   |
 | `WithPort`                    | `int`                          | Specifies the value to use when setting the `server.port` attribute on metrics/spans.                            | Defaults to (`80` for `http`, `443` for `https`)              |
 | `WithPropagators`             | `propagation.TextMapPropagator` | Specifies propagators to use for extracting information from the HTTP requests.                     | If none are specified, global ones will be used                                                               |
 | (❌ **Removed**) `WithServerName`             | `string`                       | This option was removed because the `http.server_name` attribute is deprecated in the OpenTelemetry semantic conventions. The recommended attribute is `server.address`, which this middleware already fills with the hostname reported by Fiber.                                            | -                                                                   |
@@ -138,5 +139,50 @@ func getUser(ctx context.Context, id string) string {
         return "otel tester"
     }
     return "unknown"
+}
+```
+
+## Logger Provider Example
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+
+    "github.com/gofiber/fiber/v3"
+
+    fiberotel "github.com/gofiber/contrib/v3/otel"
+    otelloglobal "go.opentelemetry.io/otel/log/global"
+    sdklog "go.opentelemetry.io/otel/sdk/log"
+)
+
+func main() {
+    lp := initLoggerProvider()
+    defer func() {
+        if err := lp.Shutdown(context.Background()); err != nil {
+            log.Printf("Error shutting down logger provider: %v", err)
+        }
+    }()
+
+    app := fiber.New()
+
+    // Pass the logger provider to the middleware so it emits a log record
+    // for every HTTP request, correlated with the active trace.
+    app.Use(fiberotel.Middleware(fiberotel.WithLoggerProvider(lp)))
+
+    app.Get("/users/:id", func(c fiber.Ctx) error {
+        return c.SendString("hello")
+    })
+
+    log.Fatal(app.Listen(":3000"))
+}
+
+func initLoggerProvider() *sdklog.LoggerProvider {
+    // Replace with your preferred log exporter (e.g. OTLP, stdout).
+    lp := sdklog.NewLoggerProvider()
+    otelloglobal.SetLoggerProvider(lp)
+    return lp
 }
 ```
