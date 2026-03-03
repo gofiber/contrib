@@ -276,8 +276,9 @@ func TestNew_doesNotMutateCallerConfig(t *testing.T) {
 	// to verify that New() does not mutate the caller's config.
 	originalDefaultLanguage := cfg.DefaultLanguage
 
-	_ = New(cfg)
+	translator := New(cfg)
 
+	assert.NotNil(t, translator)
 	assert.Equal(t, originalDefaultLanguage, cfg.DefaultLanguage, "New() must not mutate the caller's Config")
 	assert.Equal(t, language.Und, cfg.DefaultLanguage, "caller's DefaultLanguage should remain Und")
 }
