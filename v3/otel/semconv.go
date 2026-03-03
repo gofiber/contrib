@@ -60,7 +60,7 @@ func httpServerTraceAttributesFromRequest(c fiber.Ctx, cfg config) []attribute.K
 	}
 
 	if username, ok := HasBasicAuth(c.Get(fiber.HeaderAuthorization)); ok {
-		attrs = append(attrs, enduserIDKey.String(utils.CopyString(username)))
+		attrs = append(attrs, enduserIDKey.String(username))
 	}
 
 	if cfg.clientIP {
