@@ -111,8 +111,7 @@ func HasBasicAuth(auth string) (string, bool) {
 		return "", false
 	}
 
-	// Get the credentials
-	// Check if the credentials are in the correct form
+	// Check if the decoded credentials are in the correct form
 	// which is "username:password".
 	index := bytes.IndexByte(raw, ':')
 	if index == -1 {
