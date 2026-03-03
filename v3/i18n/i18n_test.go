@@ -266,6 +266,22 @@ func TestLocalize(t *testing.T) {
 	})
 }
 
+func TestNew_doesNotMutateCallerConfig(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		RootPath:        "./example/localize",
+		AcceptLanguages: []language.Tag{language.Chinese, language.English},
+	}
+	// DefaultLanguage is intentionally left as zero value (language.Und)
+	// to verify that New() does not mutate the caller's config.
+	originalDefaultLanguage := cfg.DefaultLanguage
+
+	_ = New(cfg)
+
+	assert.Equal(t, originalDefaultLanguage, cfg.DefaultLanguage, "New() must not mutate the caller's Config")
+	assert.Equal(t, language.Und, cfg.DefaultLanguage, "caller's DefaultLanguage should remain Und")
+}
+
 func Test_defaultLangHandler(t *testing.T) {
 	app := fiber.New()
 	app.Get("/", func(c fiber.Ctx) error {
