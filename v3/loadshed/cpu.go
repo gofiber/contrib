@@ -42,14 +42,7 @@ func (c *CPULoadCriteria) startSampler() {
 		for {
 			start := time.Now()
 
-			percentages, err := c.Getter.PercentWithContext(ctx, interval, false)
-			if err == nil && len(percentages) > 0 {
-				c.cached.Store(math.Float64bits(percentages[0]))
-			} else {
-				// Fail open on sampling errors or empty results: treat CPU as
-				// idle so the middleware never sheds based on stale high values.
-				c.cached.Store(math.Float64bits(0))
-			}
+			c.sample(ctx, interval)
 
 			// Ensure we never busy-spin even if the getter returns instantly.
 			elapsed := time.Since(start)
@@ -69,6 +62,27 @@ func (c *CPULoadCriteria) startSampler() {
 			}
 		}
 	}()
+}
+
+// sample performs a single CPU measurement with panic recovery.
+// If the getter panics, it recovers and fails open (cached → 0).
+func (c *CPULoadCriteria) sample(ctx context.Context, interval time.Duration) {
+	defer func() {
+		if r := recover(); r != nil {
+			// Fail open: treat CPU as idle so the middleware never sheds
+			// based on a panicking getter.
+			c.cached.Store(math.Float64bits(0))
+		}
+	}()
+
+	percentages, err := c.Getter.PercentWithContext(ctx, interval, false)
+	if err == nil && len(percentages) > 0 {
+		c.cached.Store(math.Float64bits(percentages[0]))
+	} else {
+		// Fail open on sampling errors or empty results: treat CPU as
+		// idle so the middleware never sheds based on stale high values.
+		c.cached.Store(math.Float64bits(0))
+	}
 }
 
 // Stop terminates the background CPU sampler goroutine.
