@@ -29,6 +29,9 @@ type CPULoadCriteria struct {
 }
 
 func (c *CPULoadCriteria) startSampler() {
+	// The sampler goroutine runs for the lifetime of the server.
+	// This is intentional: it continuously updates the cached CPU metric
+	// so that Metric() can return immediately without blocking.
 	go func() {
 		for {
 			percentages, err := c.Getter.PercentWithContext(context.Background(), c.Interval, false)
@@ -43,6 +46,7 @@ func (c *CPULoadCriteria) startSampler() {
 // On the first call it starts a background goroutine that continuously
 // samples CPU usage at the configured Interval, so individual requests
 // are never blocked waiting for a CPU measurement.
+// Before the first sample completes, it returns 0 (allowing requests through).
 func (c *CPULoadCriteria) Metric(_ context.Context) (float64, error) {
 	c.once.Do(c.startSampler)
 	return math.Float64frombits(c.cached.Load()), nil
