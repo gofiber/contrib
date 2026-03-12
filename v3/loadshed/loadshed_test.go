@@ -3,21 +3,29 @@ package loadshed
 import (
 	"context"
 	"io"
+	"math"
 	"net/http/httptest"
-	"runtime"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/gofiber/fiber/v3"
 )
 
-// waitForSample yields the processor to allow the background sampler goroutine
-// to complete at least one iteration with the mock getter.
-func waitForSample() {
-	runtime.Gosched()
-	time.Sleep(10 * time.Millisecond)
+// waitForSample polls the criteria's cached value until it is non-zero or the
+// timeout expires. This avoids flaky fixed-duration sleeps on slow CI.
+func waitForSample(t *testing.T, criteria *CPULoadCriteria) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if math.Float64frombits(criteria.cached.Load()) != 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("timed out waiting for background sampler to populate cached metric")
 }
 
 type MockCPUPercentGetter struct {
@@ -36,16 +44,18 @@ func Test_Loadshed_LowerThreshold(t *testing.T) {
 	app := fiber.New()
 
 	mockGetter := &MockCPUPercentGetter{MockedPercentage: []float64{89.0}}
-	var cfg Config
-	cfg.Criteria = &CPULoadCriteria{
+	criteria := &CPULoadCriteria{
 		LowerThreshold: 0.90,
 		UpperThreshold: 0.95,
 		Interval:       time.Second,
 		Getter:         mockGetter,
 	}
+	var cfg Config
+	cfg.Criteria = criteria
 	app.Use(New(cfg))
 	app.Get("/", ReturnOK)
-	waitForSample()
+	t.Cleanup(criteria.Stop)
+	waitForSample(t, criteria)
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
 	assert.Equal(t, nil, err)
@@ -59,23 +69,33 @@ func Test_Loadshed_LowerThreshold(t *testing.T) {
 func Test_Loadshed_DefaultCriteriaWhenNil(t *testing.T) {
 	cfg := configWithDefaults(Config{})
 
-	assert.Same(t, ConfigDefault.Criteria, cfg.Criteria)
+	// configWithDefaults should clone the default CPULoadCriteria, not share it.
+	criteria, ok := cfg.Criteria.(*CPULoadCriteria)
+	require.True(t, ok)
+	assert.NotSame(t, ConfigDefault.Criteria, criteria)
+
+	def := ConfigDefault.Criteria.(*CPULoadCriteria)
+	assert.Equal(t, def.LowerThreshold, criteria.LowerThreshold)
+	assert.Equal(t, def.UpperThreshold, criteria.UpperThreshold)
+	assert.Equal(t, def.Interval, criteria.Interval)
 }
 
 func Test_Loadshed_MiddleValue(t *testing.T) {
 	app := fiber.New()
 
 	mockGetter := &MockCPUPercentGetter{MockedPercentage: []float64{93.0}}
-	var cfg Config
-	cfg.Criteria = &CPULoadCriteria{
+	criteria := &CPULoadCriteria{
 		LowerThreshold: 0.90,
 		UpperThreshold: 0.95,
 		Interval:       time.Second,
 		Getter:         mockGetter,
 	}
+	var cfg Config
+	cfg.Criteria = criteria
 	app.Use(New(cfg))
 	app.Get("/", ReturnOK)
-	waitForSample()
+	t.Cleanup(criteria.Stop)
+	waitForSample(t, criteria)
 
 	rejectedCount := 0
 	acceptedCount := 0
@@ -102,16 +122,18 @@ func Test_Loadshed_UpperThreshold(t *testing.T) {
 	app := fiber.New()
 
 	mockGetter := &MockCPUPercentGetter{MockedPercentage: []float64{96.0}}
-	var cfg Config
-	cfg.Criteria = &CPULoadCriteria{
+	criteria := &CPULoadCriteria{
 		LowerThreshold: 0.90,
 		UpperThreshold: 0.95,
 		Interval:       time.Second,
 		Getter:         mockGetter,
 	}
+	var cfg Config
+	cfg.Criteria = criteria
 	app.Use(New(cfg))
 	app.Get("/", ReturnOK)
-	waitForSample()
+	t.Cleanup(criteria.Stop)
+	waitForSample(t, criteria)
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
 	assert.Equal(t, nil, err)
@@ -122,20 +144,22 @@ func Test_Loadshed_CustomOnShed(t *testing.T) {
 	app := fiber.New()
 
 	mockGetter := &MockCPUPercentGetter{MockedPercentage: []float64{96.0}}
-	var cfg Config
-	cfg.Criteria = &CPULoadCriteria{
+	criteria := &CPULoadCriteria{
 		LowerThreshold: 0.90,
 		UpperThreshold: 0.95,
 		Interval:       time.Second,
 		Getter:         mockGetter,
 	}
+	var cfg Config
+	cfg.Criteria = criteria
 	cfg.OnShed = func(c fiber.Ctx) error {
 		return c.Status(fiber.StatusTooManyRequests).Send([]byte{})
 	}
 
 	app.Use(New(cfg))
 	app.Get("/", ReturnOK)
-	waitForSample()
+	t.Cleanup(criteria.Stop)
+	waitForSample(t, criteria)
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
 	assert.Equal(t, nil, err)
@@ -146,13 +170,14 @@ func Test_Loadshed_CustomOnShedWithResponse(t *testing.T) {
 	app := fiber.New()
 
 	mockGetter := &MockCPUPercentGetter{MockedPercentage: []float64{96.0}}
-	var cfg Config
-	cfg.Criteria = &CPULoadCriteria{
+	criteria := &CPULoadCriteria{
 		LowerThreshold: 0.90,
 		UpperThreshold: 0.95,
 		Interval:       time.Second,
 		Getter:         mockGetter,
 	}
+	var cfg Config
+	cfg.Criteria = criteria
 
 	// This OnShed directly sets a response without returning it
 	cfg.OnShed = func(c fiber.Ctx) error {
@@ -162,7 +187,8 @@ func Test_Loadshed_CustomOnShedWithResponse(t *testing.T) {
 
 	app.Use(New(cfg))
 	app.Get("/", ReturnOK)
-	waitForSample()
+	t.Cleanup(criteria.Stop)
+	waitForSample(t, criteria)
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
 	assert.Equal(t, nil, err)
@@ -173,13 +199,14 @@ func Test_Loadshed_CustomOnShedWithNilReturn(t *testing.T) {
 	app := fiber.New()
 
 	mockGetter := &MockCPUPercentGetter{MockedPercentage: []float64{96.0}}
-	var cfg Config
-	cfg.Criteria = &CPULoadCriteria{
+	criteria := &CPULoadCriteria{
 		LowerThreshold: 0.90,
 		UpperThreshold: 0.95,
 		Interval:       time.Second,
 		Getter:         mockGetter,
 	}
+	var cfg Config
+	cfg.Criteria = criteria
 
 	// OnShed returns nil without setting a response
 	cfg.OnShed = func(c fiber.Ctx) error {
@@ -188,7 +215,8 @@ func Test_Loadshed_CustomOnShedWithNilReturn(t *testing.T) {
 
 	app.Use(New(cfg))
 	app.Get("/", ReturnOK)
-	waitForSample()
+	t.Cleanup(criteria.Stop)
+	waitForSample(t, criteria)
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
 	assert.Equal(t, nil, err)
@@ -199,13 +227,14 @@ func Test_Loadshed_CustomOnShedWithCustomError(t *testing.T) {
 	app := fiber.New()
 
 	mockGetter := &MockCPUPercentGetter{MockedPercentage: []float64{96.0}}
-	var cfg Config
-	cfg.Criteria = &CPULoadCriteria{
+	criteria := &CPULoadCriteria{
 		LowerThreshold: 0.90,
 		UpperThreshold: 0.95,
 		Interval:       time.Second,
 		Getter:         mockGetter,
 	}
+	var cfg Config
+	cfg.Criteria = criteria
 
 	// OnShed returns a custom error
 	cfg.OnShed = func(c fiber.Ctx) error {
@@ -214,7 +243,8 @@ func Test_Loadshed_CustomOnShedWithCustomError(t *testing.T) {
 
 	app.Use(New(cfg))
 	app.Get("/", ReturnOK)
-	waitForSample()
+	t.Cleanup(criteria.Stop)
+	waitForSample(t, criteria)
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
 	assert.Equal(t, nil, err)
@@ -225,13 +255,14 @@ func Test_Loadshed_CustomOnShedWithResponseAndCustomError(t *testing.T) {
 	app := fiber.New()
 
 	mockGetter := &MockCPUPercentGetter{MockedPercentage: []float64{96.0}}
-	var cfg Config
-	cfg.Criteria = &CPULoadCriteria{
+	criteria := &CPULoadCriteria{
 		LowerThreshold: 0.90,
 		UpperThreshold: 0.95,
 		Interval:       time.Second,
 		Getter:         mockGetter,
 	}
+	var cfg Config
+	cfg.Criteria = criteria
 
 	// OnShed sets a response and returns a different error
 	// The NewError have higher priority since executed last
@@ -248,7 +279,8 @@ func Test_Loadshed_CustomOnShedWithResponseAndCustomError(t *testing.T) {
 
 	app.Use(New(cfg))
 	app.Get("/", ReturnOK)
-	waitForSample()
+	t.Cleanup(criteria.Stop)
+	waitForSample(t, criteria)
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
 	payload, readErr := io.ReadAll(resp.Body)
@@ -264,13 +296,14 @@ func Test_Loadshed_CustomOnShedWithJSON(t *testing.T) {
 	app := fiber.New()
 
 	mockGetter := &MockCPUPercentGetter{MockedPercentage: []float64{96.0}}
-	var cfg Config
-	cfg.Criteria = &CPULoadCriteria{
+	criteria := &CPULoadCriteria{
 		LowerThreshold: 0.90,
 		UpperThreshold: 0.95,
 		Interval:       time.Second,
 		Getter:         mockGetter,
 	}
+	var cfg Config
+	cfg.Criteria = criteria
 
 	// OnShed returns JSON response
 	cfg.OnShed = func(c fiber.Ctx) error {
@@ -282,7 +315,8 @@ func Test_Loadshed_CustomOnShedWithJSON(t *testing.T) {
 
 	app.Use(New(cfg))
 	app.Get("/", ReturnOK)
-	waitForSample()
+	t.Cleanup(criteria.Stop)
+	waitForSample(t, criteria)
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
 	assert.Equal(t, nil, err)

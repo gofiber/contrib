@@ -26,20 +26,57 @@ type CPULoadCriteria struct {
 
 	once   sync.Once
 	cached atomic.Uint64
+	done   chan struct{}
 }
 
 func (c *CPULoadCriteria) startSampler() {
-	// The sampler goroutine runs for the lifetime of the server.
-	// This is intentional: it continuously updates the cached CPU metric
-	// so that Metric() can return immediately without blocking.
+	c.done = make(chan struct{})
+
+	interval := c.Interval
+	if interval <= 0 {
+		interval = time.Second
+	}
+
 	go func() {
 		for {
-			percentages, err := c.Getter.PercentWithContext(context.Background(), c.Interval, false)
+			start := time.Now()
+
+			percentages, err := c.Getter.PercentWithContext(context.Background(), interval, false)
 			if err == nil && len(percentages) > 0 {
 				c.cached.Store(math.Float64bits(percentages[0]))
 			}
+
+			// Ensure we never busy-spin even if the getter returns instantly.
+			elapsed := time.Since(start)
+			if elapsed < interval {
+				select {
+				case <-c.done:
+					return
+				case <-time.After(interval - elapsed):
+				}
+			} else {
+				// Check for stop between iterations.
+				select {
+				case <-c.done:
+					return
+				default:
+				}
+			}
 		}
 	}()
+}
+
+// Stop terminates the background CPU sampler goroutine.
+// It is safe to call Stop multiple times or before the sampler has started.
+func (c *CPULoadCriteria) Stop() {
+	if c.done != nil {
+		select {
+		case <-c.done:
+			// already closed
+		default:
+			close(c.done)
+		}
+	}
 }
 
 // Metric returns the most recently sampled CPU usage percentage.
