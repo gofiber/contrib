@@ -405,11 +405,9 @@ func Test_CPULoadCriteria_PanickingGetter(t *testing.T) {
 	}
 	t.Cleanup(criteria.Stop)
 
-	// Start the sampler.
+	// Start the sampler, then use NaN sentinel to detect when it has run.
 	criteria.once.Do(criteria.startSampler)
-
-	// Give the sampler time to run a few iterations.
-	time.Sleep(500 * time.Millisecond)
+	waitForSample(t, criteria)
 
 	// The sampler should still be alive and returning 0 (fail-open).
 	metric, err := criteria.Metric(context.Background())
@@ -428,8 +426,7 @@ func Test_CPULoadCriteria_ErrorGetter(t *testing.T) {
 	t.Cleanup(criteria.Stop)
 
 	criteria.once.Do(criteria.startSampler)
-
-	time.Sleep(500 * time.Millisecond)
+	waitForSample(t, criteria)
 
 	metric, err := criteria.Metric(context.Background())
 	assert.NoError(t, err)
@@ -447,8 +444,7 @@ func Test_CPULoadCriteria_EmptyGetter(t *testing.T) {
 	t.Cleanup(criteria.Stop)
 
 	criteria.once.Do(criteria.startSampler)
-
-	time.Sleep(500 * time.Millisecond)
+	waitForSample(t, criteria)
 
 	metric, err := criteria.Metric(context.Background())
 	assert.NoError(t, err)
