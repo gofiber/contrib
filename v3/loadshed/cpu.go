@@ -2,7 +2,10 @@ package loadshed
 
 import (
 	"context"
+	"math"
 	"math/rand"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/shirou/gopsutil/cpu"
@@ -20,14 +23,29 @@ type CPULoadCriteria struct {
 	UpperThreshold float64
 	Interval       time.Duration
 	Getter         CPUPercentGetter
+
+	once   sync.Once
+	cached atomic.Uint64
 }
 
-func (c *CPULoadCriteria) Metric(ctx context.Context) (float64, error) {
-	percentages, err := c.Getter.PercentWithContext(ctx, c.Interval, false)
-	if err != nil || len(percentages) == 0 {
-		return 0, err
-	}
-	return percentages[0], nil
+func (c *CPULoadCriteria) startSampler() {
+	go func() {
+		for {
+			percentages, err := c.Getter.PercentWithContext(context.Background(), c.Interval, false)
+			if err == nil && len(percentages) > 0 {
+				c.cached.Store(math.Float64bits(percentages[0]))
+			}
+		}
+	}()
+}
+
+// Metric returns the most recently sampled CPU usage percentage.
+// On the first call it starts a background goroutine that continuously
+// samples CPU usage at the configured Interval, so individual requests
+// are never blocked waiting for a CPU measurement.
+func (c *CPULoadCriteria) Metric(_ context.Context) (float64, error) {
+	c.once.Do(c.startSampler)
+	return math.Float64frombits(c.cached.Load()), nil
 }
 
 func (c *CPULoadCriteria) ShouldShed(metric float64) bool {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http/httptest"
+	"runtime"
 	"testing"
 	"time"
 
@@ -11,6 +12,13 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 )
+
+// waitForSample yields the processor to allow the background sampler goroutine
+// to complete at least one iteration with the mock getter.
+func waitForSample() {
+	runtime.Gosched()
+	time.Sleep(10 * time.Millisecond)
+}
 
 type MockCPUPercentGetter struct {
 	MockedPercentage []float64
@@ -37,6 +45,7 @@ func Test_Loadshed_LowerThreshold(t *testing.T) {
 	}
 	app.Use(New(cfg))
 	app.Get("/", ReturnOK)
+	waitForSample()
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
 	assert.Equal(t, nil, err)
@@ -66,6 +75,7 @@ func Test_Loadshed_MiddleValue(t *testing.T) {
 	}
 	app.Use(New(cfg))
 	app.Get("/", ReturnOK)
+	waitForSample()
 
 	rejectedCount := 0
 	acceptedCount := 0
@@ -101,6 +111,7 @@ func Test_Loadshed_UpperThreshold(t *testing.T) {
 	}
 	app.Use(New(cfg))
 	app.Get("/", ReturnOK)
+	waitForSample()
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
 	assert.Equal(t, nil, err)
@@ -124,6 +135,7 @@ func Test_Loadshed_CustomOnShed(t *testing.T) {
 
 	app.Use(New(cfg))
 	app.Get("/", ReturnOK)
+	waitForSample()
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
 	assert.Equal(t, nil, err)
@@ -150,6 +162,7 @@ func Test_Loadshed_CustomOnShedWithResponse(t *testing.T) {
 
 	app.Use(New(cfg))
 	app.Get("/", ReturnOK)
+	waitForSample()
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
 	assert.Equal(t, nil, err)
@@ -175,6 +188,7 @@ func Test_Loadshed_CustomOnShedWithNilReturn(t *testing.T) {
 
 	app.Use(New(cfg))
 	app.Get("/", ReturnOK)
+	waitForSample()
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
 	assert.Equal(t, nil, err)
@@ -200,6 +214,7 @@ func Test_Loadshed_CustomOnShedWithCustomError(t *testing.T) {
 
 	app.Use(New(cfg))
 	app.Get("/", ReturnOK)
+	waitForSample()
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
 	assert.Equal(t, nil, err)
@@ -233,6 +248,7 @@ func Test_Loadshed_CustomOnShedWithResponseAndCustomError(t *testing.T) {
 
 	app.Use(New(cfg))
 	app.Get("/", ReturnOK)
+	waitForSample()
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
 	payload, readErr := io.ReadAll(resp.Body)
@@ -266,6 +282,7 @@ func Test_Loadshed_CustomOnShedWithJSON(t *testing.T) {
 
 	app.Use(New(cfg))
 	app.Get("/", ReturnOK)
+	waitForSample()
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
 	assert.Equal(t, nil, err)

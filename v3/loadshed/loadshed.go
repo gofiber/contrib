@@ -45,6 +45,12 @@ func configWithDefaults(config ...Config) Config {
 func New(config ...Config) fiber.Handler {
 	cfg := configWithDefaults(config...)
 
+	// Eagerly start the background CPU sampler so that a cached value
+	// is available as soon as possible when requests arrive.
+	if cpuCriteria, ok := cfg.Criteria.(*CPULoadCriteria); ok {
+		cpuCriteria.once.Do(cpuCriteria.startSampler)
+	}
+
 	return func(c fiber.Ctx) error {
 		// Don't execute middleware if Next returns true
 		if cfg.Next != nil && cfg.Next(c) {
