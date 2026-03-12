@@ -52,6 +52,27 @@ func (m *MockCPUPercentGetter) PercentWithContext(_ context.Context, _ time.Dura
 	return m.MockedPercentage, nil
 }
 
+// PanickingGetter panics on every call (for testing panic recovery).
+type PanickingGetter struct{}
+
+func (*PanickingGetter) PercentWithContext(_ context.Context, _ time.Duration, _ bool) ([]float64, error) {
+	panic("boom")
+}
+
+// ErrorGetter always returns an error (for testing fail-open on errors).
+type ErrorGetter struct{}
+
+func (*ErrorGetter) PercentWithContext(_ context.Context, _ time.Duration, _ bool) ([]float64, error) {
+	return nil, context.DeadlineExceeded
+}
+
+// EmptyGetter returns an empty slice (for testing fail-open on empty results).
+type EmptyGetter struct{}
+
+func (*EmptyGetter) PercentWithContext(_ context.Context, _ time.Duration, _ bool) ([]float64, error) {
+	return []float64{}, nil
+}
+
 func ReturnOK(c fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusOK)
 }
@@ -352,4 +373,103 @@ func Test_Loadshed_CustomOnShedWithJSON(t *testing.T) {
 	assert.Equal(t, nil, err)
 	assert.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
 	assert.Equal(t, "application/json; charset=utf-8", resp.Header.Get("Content-Type"))
+}
+
+func Test_CPULoadCriteria_StopBeforeStart(t *testing.T) {
+	// Stop() called before the sampler has been started should not panic
+	// and should prevent the sampler from ever launching.
+	criteria := &CPULoadCriteria{
+		LowerThreshold: 0.90,
+		UpperThreshold: 0.95,
+		Interval:       time.Second,
+		Getter:         &MockCPUPercentGetter{MockedPercentage: []float64{50.0}},
+	}
+
+	// Should not panic.
+	criteria.Stop()
+
+	// Metric should still work (returns 0, nil) without starting a sampler.
+	metric, err := criteria.Metric(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, float64(0), metric)
+}
+
+func Test_CPULoadCriteria_PanickingGetter(t *testing.T) {
+	// A getter that panics should not crash the process; the sampler
+	// should recover and fail open (cached → 0).
+	criteria := &CPULoadCriteria{
+		LowerThreshold: 0.90,
+		UpperThreshold: 0.95,
+		Interval:       100 * time.Millisecond,
+		Getter:         &PanickingGetter{},
+	}
+	t.Cleanup(criteria.Stop)
+
+	// Start the sampler.
+	criteria.once.Do(criteria.startSampler)
+
+	// Give the sampler time to run a few iterations.
+	time.Sleep(500 * time.Millisecond)
+
+	// The sampler should still be alive and returning 0 (fail-open).
+	metric, err := criteria.Metric(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, float64(0), metric)
+}
+
+func Test_CPULoadCriteria_ErrorGetter(t *testing.T) {
+	// A getter that returns errors should fail open (cached → 0).
+	criteria := &CPULoadCriteria{
+		LowerThreshold: 0.90,
+		UpperThreshold: 0.95,
+		Interval:       100 * time.Millisecond,
+		Getter:         &ErrorGetter{},
+	}
+	t.Cleanup(criteria.Stop)
+
+	criteria.once.Do(criteria.startSampler)
+
+	time.Sleep(500 * time.Millisecond)
+
+	metric, err := criteria.Metric(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, float64(0), metric)
+}
+
+func Test_CPULoadCriteria_EmptyGetter(t *testing.T) {
+	// A getter that returns an empty slice should fail open (cached → 0).
+	criteria := &CPULoadCriteria{
+		LowerThreshold: 0.90,
+		UpperThreshold: 0.95,
+		Interval:       100 * time.Millisecond,
+		Getter:         &EmptyGetter{},
+	}
+	t.Cleanup(criteria.Stop)
+
+	criteria.once.Do(criteria.startSampler)
+
+	time.Sleep(500 * time.Millisecond)
+
+	metric, err := criteria.Metric(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, float64(0), metric)
+}
+
+func Test_CPULoadCriteria_MetricCancelledContext(t *testing.T) {
+	// Metric() with a cancelled context should fail open (return 0)
+	// but surface the context error for observability.
+	criteria := &CPULoadCriteria{
+		LowerThreshold: 0.90,
+		UpperThreshold: 0.95,
+		Interval:       time.Second,
+		Getter:         &MockCPUPercentGetter{MockedPercentage: []float64{50.0}},
+	}
+	t.Cleanup(criteria.Stop)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	metric, err := criteria.Metric(ctx)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, float64(0), metric)
 }

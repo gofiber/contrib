@@ -29,6 +29,10 @@ type CPULoadCriteria struct {
 	cancel context.CancelFunc
 }
 
+// minSamplerSleep is the minimum pause between sampler iterations to prevent
+// busy-spin when a custom getter returns instantly or the interval is tiny.
+const minSamplerSleep = 100 * time.Millisecond
+
 func (c *CPULoadCriteria) startSampler() {
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
@@ -39,26 +43,26 @@ func (c *CPULoadCriteria) startSampler() {
 	}
 
 	go func() {
+		timer := time.NewTimer(interval)
+		defer timer.Stop()
+
 		for {
 			start := time.Now()
 
 			c.sample(ctx, interval)
 
-			// Ensure we never busy-spin even if the getter returns instantly.
+			// Calculate how long to sleep before the next sample.
 			elapsed := time.Since(start)
-			if elapsed < interval {
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(interval - elapsed):
-				}
-			} else {
-				// Check for stop between iterations.
-				select {
-				case <-ctx.Done():
-					return
-				default:
-				}
+			sleep := interval - elapsed
+			if sleep < minSamplerSleep {
+				sleep = minSamplerSleep
+			}
+
+			timer.Reset(sleep)
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
 			}
 		}
 	}()
@@ -107,8 +111,13 @@ func (c *CPULoadCriteria) Stop() {
 // Before the first sample completes, it returns 0 (allowing requests through).
 // On sampling errors the cached value is reset to 0, preserving fail-open
 // behaviour: ShouldShed(0) is always false, so requests are allowed through.
-func (c *CPULoadCriteria) Metric(_ context.Context) (float64, error) {
+func (c *CPULoadCriteria) Metric(ctx context.Context) (float64, error) {
 	c.once.Do(c.startSampler)
+	if err := ctx.Err(); err != nil {
+		// Fail open: return a zero metric so requests are allowed through,
+		// but surface the context error for observability.
+		return 0, err
+	}
 	return math.Float64frombits(c.cached.Load()), nil
 }
 
