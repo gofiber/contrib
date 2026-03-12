@@ -24,14 +24,14 @@ type CPULoadCriteria struct {
 	Interval       time.Duration
 	Getter         CPUPercentGetter
 
-	once     sync.Once
-	stopOnce sync.Once
-	cached   atomic.Uint64
-	done     chan struct{}
+	once   sync.Once
+	cached atomic.Uint64
+	cancel context.CancelFunc
 }
 
 func (c *CPULoadCriteria) startSampler() {
-	c.done = make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	c.cancel = cancel
 
 	interval := c.Interval
 	if interval <= 0 {
@@ -42,7 +42,7 @@ func (c *CPULoadCriteria) startSampler() {
 		for {
 			start := time.Now()
 
-			percentages, err := c.Getter.PercentWithContext(context.Background(), interval, false)
+			percentages, err := c.Getter.PercentWithContext(ctx, interval, false)
 			if err == nil && len(percentages) > 0 {
 				c.cached.Store(math.Float64bits(percentages[0]))
 			} else {
@@ -55,14 +55,14 @@ func (c *CPULoadCriteria) startSampler() {
 			elapsed := time.Since(start)
 			if elapsed < interval {
 				select {
-				case <-c.done:
+				case <-ctx.Done():
 					return
 				case <-time.After(interval - elapsed):
 				}
 			} else {
 				// Check for stop between iterations.
 				select {
-				case <-c.done:
+				case <-ctx.Done():
 					return
 				default:
 				}
@@ -72,16 +72,19 @@ func (c *CPULoadCriteria) startSampler() {
 }
 
 // Stop terminates the background CPU sampler goroutine.
-// It is safe to call Stop concurrently and multiple times.
-// If called before the sampler has started, it is a no-op and does not
-// prevent a future startSampler from being stopped later.
+// It is safe to call Stop concurrently and multiple times (context.CancelFunc
+// is idempotent). Stop also interrupts any in-progress CPU sampling call,
+// so shutdown is responsive regardless of the configured Interval.
+// If called before the sampler has started, no goroutine is ever launched.
 func (c *CPULoadCriteria) Stop() {
-	if c.done == nil {
-		return
-	}
-	c.stopOnce.Do(func() {
-		close(c.done)
+	c.once.Do(func() {
+		// If Stop is called before Metric/New, create a cancel func without
+		// starting the sampler goroutine. sync.Once guarantees that either
+		// this func or startSampler runs, never both.
+		_, cancel := context.WithCancel(context.Background())
+		c.cancel = cancel
 	})
+	c.cancel()
 }
 
 // Metric returns the most recently sampled CPU usage percentage.

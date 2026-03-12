@@ -26,20 +26,22 @@ func waitForSample(t *testing.T, criteria *CPULoadCriteria) {
 	criteria.cached.Store(math.Float64bits(math.NaN()))
 
 	// The sampler may be mid-sleep when we store NaN, so allow enough
-	// time for the current sleep cycle to finish plus the next sample.
+	// time for multiple sleep cycles plus the next sample.
 	interval := criteria.Interval
 	if interval <= 0 {
 		interval = time.Second
 	}
-	deadline := time.Now().Add(interval + 500*time.Millisecond)
-	for time.Now().Before(deadline) {
-		v := math.Float64frombits(criteria.cached.Load())
-		if !math.IsNaN(v) {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatal("timed out waiting for background sampler to populate cached metric")
+
+	require.Eventually(
+		t,
+		func() bool {
+			v := math.Float64frombits(criteria.cached.Load())
+			return !math.IsNaN(v)
+		},
+		5*interval,
+		10*time.Millisecond,
+		"timed out waiting for background sampler to populate cached metric",
+	)
 }
 
 type MockCPUPercentGetter struct {
