@@ -14,13 +14,27 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// waitForSample polls the criteria's cached value until it is non-zero or the
-// timeout expires. This avoids flaky fixed-duration sleeps on slow CI.
+// waitForSample polls the criteria's cached value until it has a real sample
+// (i.e., is not NaN) or the timeout expires. We store NaN first so that a
+// legitimate 0.0% CPU sample is still detected as "sampler has run".
 func waitForSample(t *testing.T, criteria *CPULoadCriteria) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
+
+	// Mark the cached value as unknown so we can reliably detect when
+	// the background sampler writes a fresh sample, even if that sample
+	// is legitimately 0.0.
+	criteria.cached.Store(math.Float64bits(math.NaN()))
+
+	// The sampler may be mid-sleep when we store NaN, so allow enough
+	// time for the current sleep cycle to finish plus the next sample.
+	interval := criteria.Interval
+	if interval <= 0 {
+		interval = time.Second
+	}
+	deadline := time.Now().Add(interval + 500*time.Millisecond)
 	for time.Now().Before(deadline) {
-		if math.Float64frombits(criteria.cached.Load()) != 0 {
+		v := math.Float64frombits(criteria.cached.Load())
+		if !math.IsNaN(v) {
 			return
 		}
 		time.Sleep(time.Millisecond)
@@ -70,6 +84,20 @@ func Test_Loadshed_DefaultCriteriaWhenNil(t *testing.T) {
 	cfg := configWithDefaults(Config{})
 
 	// configWithDefaults should clone the default CPULoadCriteria, not share it.
+	criteria, ok := cfg.Criteria.(*CPULoadCriteria)
+	require.True(t, ok)
+	assert.NotSame(t, ConfigDefault.Criteria, criteria)
+
+	def := ConfigDefault.Criteria.(*CPULoadCriteria)
+	assert.Equal(t, def.LowerThreshold, criteria.LowerThreshold)
+	assert.Equal(t, def.UpperThreshold, criteria.UpperThreshold)
+	assert.Equal(t, def.Interval, criteria.Interval)
+}
+
+func Test_Loadshed_DefaultCriteriaNoArgs(t *testing.T) {
+	cfg := configWithDefaults()
+
+	// The no-args path should also clone, not share the default singleton.
 	criteria, ok := cfg.Criteria.(*CPULoadCriteria)
 	require.True(t, ok)
 	assert.NotSame(t, ConfigDefault.Criteria, criteria)

@@ -36,9 +36,11 @@ func configWithDefaults(config ...Config) Config {
 	if len(config) > 0 {
 		cfg = config[0]
 	}
-	if cfg.Criteria == nil {
+	if cfg.Criteria == nil || cfg.Criteria == ConfigDefault.Criteria {
 		// Clone the default CPULoadCriteria so each middleware instance has
-		// its own sampler state (once/cached/done).
+		// its own sampler state (once/cached/done). This covers both the
+		// no-args path (cfg inherits ConfigDefault.Criteria) and the
+		// explicit Config{} path (Criteria is nil).
 		def := ConfigDefault.Criteria.(*CPULoadCriteria)
 		cfg.Criteria = &CPULoadCriteria{
 			LowerThreshold: def.LowerThreshold,

@@ -45,6 +45,10 @@ func (c *CPULoadCriteria) startSampler() {
 			percentages, err := c.Getter.PercentWithContext(context.Background(), interval, false)
 			if err == nil && len(percentages) > 0 {
 				c.cached.Store(math.Float64bits(percentages[0]))
+			} else {
+				// Fail open on sampling errors or empty results: treat CPU as
+				// idle so the middleware never sheds based on stale high values.
+				c.cached.Store(math.Float64bits(0))
 			}
 
 			// Ensure we never busy-spin even if the getter returns instantly.
@@ -69,11 +73,14 @@ func (c *CPULoadCriteria) startSampler() {
 
 // Stop terminates the background CPU sampler goroutine.
 // It is safe to call Stop concurrently and multiple times.
+// If called before the sampler has started, it is a no-op and does not
+// prevent a future startSampler from being stopped later.
 func (c *CPULoadCriteria) Stop() {
+	if c.done == nil {
+		return
+	}
 	c.stopOnce.Do(func() {
-		if c.done != nil {
-			close(c.done)
-		}
+		close(c.done)
 	})
 }
 
@@ -82,6 +89,8 @@ func (c *CPULoadCriteria) Stop() {
 // samples CPU usage at the configured Interval, so individual requests
 // are never blocked waiting for a CPU measurement.
 // Before the first sample completes, it returns 0 (allowing requests through).
+// On sampling errors the cached value is reset to 0, preserving fail-open
+// behaviour: ShouldShed(0) is always false, so requests are allowed through.
 func (c *CPULoadCriteria) Metric(_ context.Context) (float64, error) {
 	c.once.Do(c.startSampler)
 	return math.Float64frombits(c.cached.Load()), nil
