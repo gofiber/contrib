@@ -24,9 +24,10 @@ type CPULoadCriteria struct {
 	Interval       time.Duration
 	Getter         CPUPercentGetter
 
-	once   sync.Once
-	cached atomic.Uint64
-	done   chan struct{}
+	once     sync.Once
+	stopOnce sync.Once
+	cached   atomic.Uint64
+	done     chan struct{}
 }
 
 func (c *CPULoadCriteria) startSampler() {
@@ -67,16 +68,13 @@ func (c *CPULoadCriteria) startSampler() {
 }
 
 // Stop terminates the background CPU sampler goroutine.
-// It is safe to call Stop multiple times or before the sampler has started.
+// It is safe to call Stop concurrently and multiple times.
 func (c *CPULoadCriteria) Stop() {
-	if c.done != nil {
-		select {
-		case <-c.done:
-			// already closed
-		default:
+	c.stopOnce.Do(func() {
+		if c.done != nil {
 			close(c.done)
 		}
-	}
+	})
 }
 
 // Metric returns the most recently sampled CPU usage percentage.
