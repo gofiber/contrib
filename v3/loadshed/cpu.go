@@ -42,8 +42,17 @@ func (c *CPULoadCriteria) startSampler() {
 		interval = time.Second
 	}
 
+	// Mark cached as "no sample yet" so callers (e.g. waitForSample in tests)
+	// can detect when the first real sample has been written.
+	c.cached.Store(math.Float64bits(math.NaN()))
+
 	go func() {
-		timer := time.NewTimer(interval)
+		// Create a stopped, drained timer. We Reset it after each sample()
+		// so the sleep duration is measured from the right point in time.
+		timer := time.NewTimer(0)
+		if !timer.Stop() {
+			<-timer.C
+		}
 		defer timer.Stop()
 
 		for {
@@ -58,6 +67,8 @@ func (c *CPULoadCriteria) startSampler() {
 				sleep = minSamplerSleep
 			}
 
+			// Safe to Reset: the channel was drained either by the initial
+			// stop+drain above or by the previous <-timer.C in the select.
 			timer.Reset(sleep)
 			select {
 			case <-ctx.Done():
@@ -112,12 +123,14 @@ func (c *CPULoadCriteria) Stop() {
 // On sampling errors the cached value is reset to 0, preserving fail-open
 // behaviour: ShouldShed(0) is always false, so requests are allowed through.
 func (c *CPULoadCriteria) Metric(ctx context.Context) (float64, error) {
-	c.once.Do(c.startSampler)
 	if err := ctx.Err(); err != nil {
 		// Fail open: return a zero metric so requests are allowed through,
 		// but surface the context error for observability.
+		// Check before starting the sampler so a cancelled context doesn't
+		// needlessly spin up the background goroutine.
 		return 0, err
 	}
+	c.once.Do(c.startSampler)
 	return math.Float64frombits(c.cached.Load()), nil
 }
 

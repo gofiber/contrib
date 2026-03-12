@@ -14,19 +14,14 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// waitForSample polls the criteria's cached value until it has a real sample
-// (i.e., is not NaN) or the timeout expires. We store NaN first so that a
-// legitimate 0.0% CPU sample is still detected as "sampler has run".
+// waitForSample polls the criteria's cached value until the background
+// sampler has written a real sample (i.e., not NaN). The NaN sentinel is
+// set by startSampler itself, so this helper never clobbers an
+// already-populated cache — if the sampler has already completed a sample
+// before this function is called, it returns immediately.
 func waitForSample(t *testing.T, criteria *CPULoadCriteria) {
 	t.Helper()
 
-	// Mark the cached value as unknown so we can reliably detect when
-	// the background sampler writes a fresh sample, even if that sample
-	// is legitimately 0.0.
-	criteria.cached.Store(math.Float64bits(math.NaN()))
-
-	// The sampler may be mid-sleep when we store NaN, so allow enough
-	// time for multiple sleep cycles plus the next sample.
 	interval := criteria.Interval
 	if interval <= 0 {
 		interval = time.Second
