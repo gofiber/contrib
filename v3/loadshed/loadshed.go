@@ -50,6 +50,9 @@ func configWithDefaults(config ...Config) Config {
 				Interval:       def.Interval,
 				Getter:         def.Getter,
 			}
+		} else if cfg.Criteria == nil {
+			// ConfigDefault.Criteria is a custom implementation; use it as-is.
+			cfg.Criteria = ConfigDefault.Criteria
 		}
 	}
 	return cfg
