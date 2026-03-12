@@ -78,11 +78,10 @@ func (c *CPULoadCriteria) startSampler() {
 // If called before the sampler has started, no goroutine is ever launched.
 func (c *CPULoadCriteria) Stop() {
 	c.once.Do(func() {
-		// If Stop is called before Metric/New, create a cancel func without
+		// If Stop is called before Metric/New, set a no-op cancel without
 		// starting the sampler goroutine. sync.Once guarantees that either
 		// this func or startSampler runs, never both.
-		_, cancel := context.WithCancel(context.Background())
-		c.cancel = cancel
+		c.cancel = func() {}
 	})
 	c.cancel()
 }
