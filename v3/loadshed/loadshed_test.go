@@ -22,6 +22,9 @@ import (
 func waitForSample(t *testing.T, criteria *CPULoadCriteria) {
 	t.Helper()
 
+	// Ensure the sampler is running (triggers lazy start if needed).
+	criteria.once.Do(criteria.startSampler)
+
 	interval := criteria.Interval
 	if interval <= 0 {
 		interval = time.Second

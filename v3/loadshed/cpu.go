@@ -53,7 +53,14 @@ func (c *CPULoadCriteria) startSampler() {
 		if !timer.Stop() {
 			<-timer.C
 		}
-		defer timer.Stop()
+		defer func() {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		}()
 
 		for {
 			start := time.Now()
@@ -131,7 +138,14 @@ func (c *CPULoadCriteria) Metric(ctx context.Context) (float64, error) {
 		return 0, err
 	}
 	c.once.Do(c.startSampler)
-	return math.Float64frombits(c.cached.Load()), nil
+	value := math.Float64frombits(c.cached.Load())
+	if math.IsNaN(value) {
+		// Before the first successful sample, the cached value may be a NaN
+		// sentinel. Expose this as 0 to preserve the documented fail-open
+		// behaviour.
+		value = 0
+	}
+	return value, nil
 }
 
 func (c *CPULoadCriteria) ShouldShed(metric float64) bool {
