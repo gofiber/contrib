@@ -47,8 +47,6 @@ func (c *CPULoadCriteria) startSampler() {
 	// Mark cached as "no sample yet" so callers (e.g. waitForSample in tests)
 	// can detect when the first real sample has been written.
 	c.cached.Store(math.Float64bits(math.NaN()))
-	// Explicitly clear any previous error state when (re)starting the sampler.
-	c.lastErr.Store(nil)
 
 	go func() {
 		// Create a stopped, drained timer. We Reset it after each sample()
@@ -106,8 +104,6 @@ func (c *CPULoadCriteria) sample(ctx context.Context, interval time.Duration) {
 	percentages, err := c.Getter.PercentWithContext(ctx, interval, false)
 	if err == nil && len(percentages) > 0 {
 		c.cached.Store(math.Float64bits(percentages[0]))
-		// Clear any previous sampling error on successful sample.
-		c.lastErr.Store(nil)
 	} else {
 		// Fail open on sampling errors or empty results: treat CPU as
 		// idle so the middleware never sheds based on stale high values.
