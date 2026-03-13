@@ -40,12 +40,14 @@ func configWithDefaults(config ...Config) Config {
 	// Use type assertion + pointer comparison instead of interface equality (==)
 	// to avoid panics when a custom LoadCriteria holds a non-comparable type.
 	// Also treat a typed-nil *CPULoadCriteria as unset so defaults are applied.
+	typedNilCPU := false
 	isDefault := cfg.Criteria == nil
 	if !isDefault {
 		cfgCPU, cfgOK := cfg.Criteria.(*CPULoadCriteria)
 		if cfgOK && cfgCPU == nil {
 			// Typed-nil *CPULoadCriteria — treat as unset.
 			isDefault = true
+			typedNilCPU = true
 		} else {
 			defCPU, defOK := ConfigDefault.Criteria.(*CPULoadCriteria)
 			isDefault = cfgOK && defOK && cfgCPU == defCPU
@@ -65,7 +67,7 @@ func configWithDefaults(config ...Config) Config {
 				Interval:       def.Interval,
 				Getter:         def.Getter,
 			}
-		} else if cfg.Criteria == nil {
+		} else if cfg.Criteria == nil || typedNilCPU {
 			// ConfigDefault.Criteria is a custom implementation; use it as-is.
 			cfg.Criteria = ConfigDefault.Criteria
 		}
