@@ -58,7 +58,7 @@ jobs:
 
             - name: Filter changes
               id: filter
-              uses: dorny/paths-filter@v3
+              uses: dorny/paths-filter@v4
               if: github.event_name != 'workflow_dispatch'
               with:
                   filters: ${{ steps.filter-setup.outputs.filters }}
