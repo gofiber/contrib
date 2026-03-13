@@ -2,6 +2,7 @@ package loadshed
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"math/rand"
 	"sync"
@@ -24,9 +25,10 @@ type CPULoadCriteria struct {
 	Interval       time.Duration
 	Getter         CPUPercentGetter
 
-	once   sync.Once
-	cached atomic.Uint64
-	cancel context.CancelFunc
+	once    sync.Once
+	cached  atomic.Uint64
+	lastErr atomic.Value // stores error; nil means "no error"
+	cancel  context.CancelFunc
 }
 
 // minSamplerSleep is the minimum pause between sampler iterations to prevent
@@ -45,6 +47,8 @@ func (c *CPULoadCriteria) startSampler() {
 	// Mark cached as "no sample yet" so callers (e.g. waitForSample in tests)
 	// can detect when the first real sample has been written.
 	c.cached.Store(math.Float64bits(math.NaN()))
+	// Explicitly clear any previous error state when (re)starting the sampler.
+	c.lastErr.Store(nil)
 
 	go func() {
 		// Create a stopped, drained timer. We Reset it after each sample()
@@ -87,23 +91,35 @@ func (c *CPULoadCriteria) startSampler() {
 }
 
 // sample performs a single CPU measurement with panic recovery.
-// If the getter panics, it recovers and fails open (cached → 0).
+// If the getter panics, it recovers and fails open (cached → 0) while
+// recording the underlying error for observability.
 func (c *CPULoadCriteria) sample(ctx context.Context, interval time.Duration) {
 	defer func() {
 		if r := recover(); r != nil {
 			// Fail open: treat CPU as idle so the middleware never sheds
-			// based on a panicking getter.
+			// based on a panicking getter, but record the panic as an error.
 			c.cached.Store(math.Float64bits(0))
+			c.lastErr.Store(fmt.Errorf("cpu percent getter panicked: %v", r))
 		}
 	}()
 
 	percentages, err := c.Getter.PercentWithContext(ctx, interval, false)
 	if err == nil && len(percentages) > 0 {
 		c.cached.Store(math.Float64bits(percentages[0]))
+		// Clear any previous sampling error on successful sample.
+		c.lastErr.Store(nil)
 	} else {
 		// Fail open on sampling errors or empty results: treat CPU as
 		// idle so the middleware never sheds based on stale high values.
 		c.cached.Store(math.Float64bits(0))
+
+		// Persist the underlying error so callers can observe persistent
+		// sampling failures, even though the value fails open.
+		if err != nil {
+			c.lastErr.Store(err)
+		} else {
+			c.lastErr.Store(fmt.Errorf("cpu percent getter returned no samples"))
+		}
 	}
 }
 
