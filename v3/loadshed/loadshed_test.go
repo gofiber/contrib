@@ -373,6 +373,23 @@ func Test_Loadshed_CustomOnShedWithJSON(t *testing.T) {
 	assert.Equal(t, "application/json; charset=utf-8", resp.Header.Get("Content-Type"))
 }
 
+func Test_Loadshed_TypedNilCriteria(t *testing.T) {
+	// A typed-nil *CPULoadCriteria assigned to the Criteria interface should
+	// be treated as unset, and configWithDefaults should clone the default.
+	var nilCriteria *CPULoadCriteria
+	cfg := configWithDefaults(Config{Criteria: nilCriteria})
+
+	criteria, ok := cfg.Criteria.(*CPULoadCriteria)
+	require.True(t, ok)
+	assert.NotNil(t, criteria, "typed-nil should be replaced with a cloned default")
+	assert.NotSame(t, ConfigDefault.Criteria, criteria)
+
+	def := ConfigDefault.Criteria.(*CPULoadCriteria)
+	assert.Equal(t, def.LowerThreshold, criteria.LowerThreshold)
+	assert.Equal(t, def.UpperThreshold, criteria.UpperThreshold)
+	assert.Equal(t, def.Interval, criteria.Interval)
+}
+
 func Test_CPULoadCriteria_StopBeforeStart(t *testing.T) {
 	// Stop() called before the sampler has been started should not panic
 	// and should prevent the sampler from ever launching.

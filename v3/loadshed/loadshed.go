@@ -39,11 +39,17 @@ func configWithDefaults(config ...Config) Config {
 	// Determine whether cfg.Criteria is the shared default pointer.
 	// Use type assertion + pointer comparison instead of interface equality (==)
 	// to avoid panics when a custom LoadCriteria holds a non-comparable type.
+	// Also treat a typed-nil *CPULoadCriteria as unset so defaults are applied.
 	isDefault := cfg.Criteria == nil
 	if !isDefault {
 		cfgCPU, cfgOK := cfg.Criteria.(*CPULoadCriteria)
-		defCPU, defOK := ConfigDefault.Criteria.(*CPULoadCriteria)
-		isDefault = cfgOK && defOK && cfgCPU == defCPU
+		if cfgOK && cfgCPU == nil {
+			// Typed-nil *CPULoadCriteria — treat as unset.
+			isDefault = true
+		} else {
+			defCPU, defOK := ConfigDefault.Criteria.(*CPULoadCriteria)
+			isDefault = cfgOK && defOK && cfgCPU == defCPU
+		}
 	}
 	if isDefault {
 		// Clone the default CPULoadCriteria so each middleware instance has
