@@ -503,8 +503,8 @@ func processRequest(tx types.Transaction, req *http.Request) (*types.Interruptio
 		tx.SetServerName(req.Host)
 	}
 
-	if len(req.TransferEncoding) > 0 {
-		tx.AddRequestHeader("Transfer-Encoding", req.TransferEncoding[0])
+	for _, te := range req.TransferEncoding {
+		tx.AddRequestHeader("Transfer-Encoding", te)
 	}
 
 	if in := tx.ProcessRequestHeaders(); in != nil {
@@ -520,7 +520,10 @@ func processRequest(tx types.Transaction, req *http.Request) (*types.Interruptio
 			return it, nil
 		}
 
-		rbr, _ := tx.RequestBodyReader()
+		rbr, err := tx.RequestBodyReader()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get WAF request body reader: %w", err)
+		}
 		req.Body = io.NopCloser(io.MultiReader(rbr, req.Body))
 	}
 
