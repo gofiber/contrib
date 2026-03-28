@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -15,10 +14,10 @@ import (
 	"time"
 
 	"github.com/corazawaf/coraza/v3"
-	"github.com/corazawaf/coraza/v3/debuglog"
 	"github.com/corazawaf/coraza/v3/experimental"
 	"github.com/corazawaf/coraza/v3/types"
 	"github.com/gofiber/fiber/v3"
+	fiberlog "github.com/gofiber/fiber/v3/log"
 	"github.com/gofiber/fiber/v3/middleware/adaptor"
 )
 
@@ -39,26 +38,18 @@ type Config struct {
 	RootFS fs.FS
 	// BlockMessage overrides the message used by the built-in block handler.
 	BlockMessage string
+	// LogLevel controls middleware lifecycle logging.
+	LogLevel fiberlog.Level
 	// RequestBodyAccess enables request body inspection in Coraza.
 	RequestBodyAccess bool
-	// RequestBodyLimit limits the maximum request body size Coraza will process.
-	RequestBodyLimit int
-	// RequestBodyInMemoryLimit limits how much request body data Coraza keeps in memory.
-	RequestBodyInMemoryLimit int
-	// DebugLogger enables Coraza debug logging when provided.
-	DebugLogger debuglog.Logger
-	// EnableErrorLog enables logging for matched rules via Coraza's error callback.
-	EnableErrorLog bool
 	// MetricsCollector overrides the default in-memory metrics collector.
 	MetricsCollector MetricsCollector
 }
 
 // ConfigDefault provides the default Coraza configuration.
 var ConfigDefault = Config{
-	RequestBodyAccess:        true,
-	RequestBodyLimit:         10 * 1024 * 1024,
-	RequestBodyInMemoryLimit: 128 * 1024,
-	EnableErrorLog:           true,
+	LogLevel:          fiberlog.LevelInfo,
+	RequestBodyAccess: true,
 }
 
 // MiddlewareConfig customizes how Engine middleware behaves for a specific mount.
@@ -116,6 +107,7 @@ type Engine struct {
 	activeCfg      Config
 	lastAttemptCfg Config
 	blockMessage   string
+	logLevel       fiberlog.Level
 	metrics        MetricsCollector
 	reloadCount    uint64
 	lastLoadedAt   time.Time
@@ -163,6 +155,7 @@ func NewEngine(cfg Config) (*Engine, error) {
 // recorded for observability.
 func (e *Engine) Init(cfg Config) error {
 	newWAF, err := createWAFWithConfig(cfg)
+	logLevel := normalizeLogLevel(cfg.LogLevel)
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -172,7 +165,7 @@ func (e *Engine) Init(cfg Config) error {
 	if err != nil {
 		e.initErr = err
 		e.initFailureCount++
-		slog.Error("[Coraza] initialization failed", "error", err.Error())
+		logWithLevel(logLevel, fiberlog.LevelError, "Coraza initialization failed", "error", err.Error())
 		return err
 	}
 
@@ -183,23 +176,18 @@ func (e *Engine) Init(cfg Config) error {
 	e.initialized = true
 	e.lastLoadedAt = time.Now()
 	e.initSuccessCount++
-	if cfg.BlockMessage != "" {
-		e.blockMessage = cfg.BlockMessage
-	}
+	e.blockMessage = resolveBlockMessage(cfg.BlockMessage)
+	e.logLevel = logLevel
 
-	slog.Info("[Coraza] initialized successfully", "supports_options", e.supportsOptions)
+	logWithLevel(logLevel, fiberlog.LevelInfo, "Coraza initialized successfully", "supports_options", e.supportsOptions)
 	return nil
 }
 
 // SetBlockMessage overrides the default message returned by the built-in block handler.
 func (e *Engine) SetBlockMessage(msg string) {
-	if msg == "" {
-		return
-	}
-
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.blockMessage = msg
+	e.blockMessage = resolveBlockMessage(msg)
 }
 
 // Metrics returns the Engine's metrics collector.
@@ -262,6 +250,10 @@ func (e *Engine) Middleware(config ...MiddlewareConfig) fiber.Handler {
 				Data:       it.Data,
 				Message:    e.blockMessageValue(),
 			}
+			e.log(fiberlog.LevelWarn, "Coraza request interrupted",
+				"rule_id", details.RuleID,
+				"action", details.Action,
+				"status", details.StatusCode)
 
 			if mwCfg.BlockHandler != nil {
 				return mwCfg.BlockHandler(c, details)
@@ -284,7 +276,7 @@ func (e *Engine) inspectRequest(
 
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Error("Coraza panic recovered",
+			e.log(fiberlog.LevelError, "Coraza panic recovered",
 				"panic", r,
 				"method", c.Method(),
 				"path", c.Path(),
@@ -325,7 +317,7 @@ func (e *Engine) inspectRequest(
 		return nil, nil
 	}
 
-	it, err := processRequest(tx, stdReq)
+	it, err := processRequest(tx, stdReq, c.App().Config().BodyLimit)
 	if err != nil {
 		return nil, &MiddlewareError{
 			StatusCode: http.StatusInternalServerError,
@@ -341,7 +333,7 @@ func (e *Engine) inspectRequest(
 func (e *Engine) finishTransaction(c fiber.Ctx, tx types.Transaction, mwErr **MiddlewareError) {
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Error("Coraza cleanup panic recovered",
+			e.log(fiberlog.LevelError, "Coraza cleanup panic recovered",
 				"panic", r,
 				"method", c.Method(),
 				"path", c.Path(),
@@ -359,7 +351,9 @@ func (e *Engine) finishTransaction(c fiber.Ctx, tx types.Transaction, mwErr **Mi
 	}()
 
 	tx.ProcessLogging()
-	_ = tx.Close()
+	if err := tx.Close(); err != nil {
+		e.log(fiberlog.LevelDebug, "Coraza transaction close failed", "error", err.Error())
+	}
 }
 
 // Reload rebuilds the current WAF instance using the active configuration.
@@ -372,14 +366,15 @@ func (e *Engine) Reload() error {
 		return fmt.Errorf("no configuration available for reload")
 	}
 
-	slog.Info("[Coraza] starting manual reload")
+	logLevel := normalizeLogLevel(cfg.LogLevel)
+	logWithLevel(logLevel, fiberlog.LevelInfo, "Coraza starting manual reload")
 
 	newWAF, err := createWAFWithConfig(cfg)
 	if err != nil {
 		e.mu.Lock()
 		e.reloadFailureCount++
 		e.mu.Unlock()
-		slog.Error("[Coraza] reload failed", "error", err.Error())
+		logWithLevel(logLevel, fiberlog.LevelError, "Coraza reload failed", "error", err.Error())
 		return fmt.Errorf("failed to reload WAF: %w", err)
 	}
 
@@ -390,9 +385,11 @@ func (e *Engine) Reload() error {
 	e.reloadCount++
 	e.reloadSuccessCount++
 	e.lastLoadedAt = time.Now()
+	reloadCount := e.reloadCount
+	e.logLevel = logLevel
 	e.mu.Unlock()
 
-	slog.Info("[Coraza] reload completed successfully", "reload_count", e.reloadCount)
+	logWithLevel(logLevel, fiberlog.LevelInfo, "Coraza reload completed successfully", "reload_count", reloadCount)
 	return nil
 }
 
@@ -435,6 +432,7 @@ func newEngine(collector MetricsCollector) *Engine {
 
 	return &Engine{
 		blockMessage: defaultBlockMessage,
+		logLevel:     fiberlog.LevelInfo,
 		metrics:      collector,
 	}
 }
@@ -475,18 +473,7 @@ func defaultErrorHandler(_ fiber.Ctx, mwErr MiddlewareError) error {
 	return fiber.NewError(mwErr.StatusCode, mwErr.Message)
 }
 
-func logError(rule types.MatchedRule) {
-	slog.Warn("Coraza rule matched",
-		slog.String("severity", rule.Rule().Severity().String()),
-		slog.String("error_log", rule.ErrorLog()),
-		slog.String("request_uri", rule.URI()),
-		slog.Int("rule_id", rule.Rule().ID()),
-		slog.String("rule_msg", rule.Message()),
-		slog.Time("timestamp", time.Now()),
-	)
-}
-
-func processRequest(tx types.Transaction, req *http.Request) (*types.Interruption, error) {
+func processRequest(tx types.Transaction, req *http.Request, bodyLimit int) (*types.Interruption, error) {
 	client, cport := splitRemoteAddr(req.RemoteAddr)
 
 	tx.ProcessConnection(client, cport, "", 0)
@@ -512,19 +499,18 @@ func processRequest(tx types.Transaction, req *http.Request) (*types.Interruptio
 	}
 
 	if tx.IsRequestBodyAccessible() && req.Body != nil && req.Body != http.NoBody {
-		it, _, err := tx.ReadRequestBodyFrom(req.Body)
+		bodyReader := io.Reader(req.Body)
+		if bodyLimit > 0 {
+			bodyReader = io.LimitReader(req.Body, int64(bodyLimit))
+		}
+
+		it, _, err := tx.ReadRequestBodyFrom(bodyReader)
 		if err != nil {
 			return nil, err
 		}
 		if it != nil {
 			return it, nil
 		}
-
-		rbr, err := tx.RequestBodyReader()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get WAF request body reader: %w", err)
-		}
-		req.Body = io.NopCloser(io.MultiReader(rbr, req.Body))
 	}
 
 	return tx.ProcessRequestBody()
@@ -564,23 +550,11 @@ func createWAFWithConfig(cfg Config) (coraza.WAF, error) {
 
 	wafConfig := coraza.NewWAFConfig()
 
-	if cfg.EnableErrorLog {
-		wafConfig = wafConfig.WithErrorCallback(logError)
-	}
 	if cfg.RequestBodyAccess {
 		wafConfig = wafConfig.WithRequestBodyAccess()
 	}
-	if cfg.RequestBodyLimit > 0 {
-		wafConfig = wafConfig.WithRequestBodyLimit(cfg.RequestBodyLimit)
-	}
-	if cfg.RequestBodyInMemoryLimit > 0 {
-		wafConfig = wafConfig.WithRequestBodyInMemoryLimit(cfg.RequestBodyInMemoryLimit)
-	}
 	if cfg.RootFS != nil {
 		wafConfig = wafConfig.WithRootFS(cfg.RootFS)
-	}
-	if cfg.DebugLogger != nil {
-		wafConfig = wafConfig.WithDebugLogger(cfg.DebugLogger)
 	}
 
 	for _, path := range cfg.DirectivesFile {
@@ -627,4 +601,50 @@ func cloneConfig(cfg Config) Config {
 	clone := cfg
 	clone.DirectivesFile = append([]string(nil), cfg.DirectivesFile...)
 	return clone
+}
+
+func resolveBlockMessage(msg string) string {
+	if msg == "" {
+		return defaultBlockMessage
+	}
+
+	return msg
+}
+
+func normalizeLogLevel(level fiberlog.Level) fiberlog.Level {
+	switch level {
+	case fiberlog.LevelTrace, fiberlog.LevelDebug, fiberlog.LevelInfo, fiberlog.LevelWarn, fiberlog.LevelError:
+		return level
+	default:
+		return fiberlog.LevelInfo
+	}
+}
+
+func logWithLevel(configLevel, targetLevel fiberlog.Level, msg string, keysAndValues ...any) {
+	if normalizeLogLevel(configLevel) > normalizeLogLevel(targetLevel) {
+		return
+	}
+
+	switch targetLevel {
+	case fiberlog.LevelTrace:
+		fiberlog.Tracew(msg, keysAndValues...)
+	case fiberlog.LevelDebug:
+		fiberlog.Debugw(msg, keysAndValues...)
+	case fiberlog.LevelWarn:
+		fiberlog.Warnw(msg, keysAndValues...)
+	case fiberlog.LevelError:
+		fiberlog.Errorw(msg, keysAndValues...)
+	default:
+		fiberlog.Infow(msg, keysAndValues...)
+	}
+}
+
+func (e *Engine) currentLogLevel() fiberlog.Level {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.logLevel
+}
+
+func (e *Engine) log(targetLevel fiberlog.Level, msg string, keysAndValues ...any) {
+	logWithLevel(e.currentLogLevel(), targetLevel, msg, keysAndValues...)
 }

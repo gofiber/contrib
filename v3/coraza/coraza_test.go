@@ -13,6 +13,7 @@ import (
 	"github.com/corazawaf/coraza/v3/debuglog"
 	"github.com/corazawaf/coraza/v3/types"
 	"github.com/gofiber/fiber/v3"
+	fiberlog "github.com/gofiber/fiber/v3/log"
 )
 
 const testRules = `SecRuleEngine On
@@ -55,6 +56,7 @@ func TestNewWithoutConfigReturnsMiddleware(t *testing.T) {
 func TestNewEngineWithLocalFile(t *testing.T) {
 	path := writeRuleFile(t, t.TempDir(), "local.conf", testRules)
 	engine, err := NewEngine(Config{
+		LogLevel:          fiberlog.LevelInfo,
 		DirectivesFile:    []string{path},
 		BlockMessage:      "blocked from config",
 		RequestBodyAccess: true,
@@ -74,6 +76,20 @@ func TestNewEngineWithLocalFile(t *testing.T) {
 	}
 	if engine.blockMessage != "blocked from config" {
 		t.Fatalf("expected block message to be initialized from config, got %q", engine.blockMessage)
+	}
+}
+
+func TestSetBlockMessageEmptyResetsDefault(t *testing.T) {
+	engine, err := newTestEngine(t)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	engine.SetBlockMessage("custom block")
+	engine.SetBlockMessage("")
+
+	if got := engine.blockMessageValue(); got != defaultBlockMessage {
+		t.Fatalf("expected empty block message to restore default, got %q", got)
 	}
 }
 
@@ -449,6 +465,7 @@ func newTestEngineWithRules(t *testing.T, rules string) (*Engine, error) {
 
 	path := writeRuleFile(t, t.TempDir(), "test.conf", rules)
 	return NewEngine(Config{
+		LogLevel:          fiberlog.LevelInfo,
 		DirectivesFile:    []string{path},
 		RequestBodyAccess: true,
 	})

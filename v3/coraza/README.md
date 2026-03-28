@@ -40,15 +40,13 @@ coraza.NewEngine(config coraza.Config) (*coraza.Engine, error)
 | DirectivesFile | `[]string` | Coraza directives files loaded in order | `nil` |
 | RootFS | `fs.FS` | Optional filesystem used to resolve `DirectivesFile` | `nil` |
 | BlockMessage | `string` | Message returned by the built-in block handler | `"Request blocked by Web Application Firewall"` |
+| LogLevel | `fiberlog.Level` | Middleware lifecycle log level | `fiberlog.LevelInfo` in `coraza.ConfigDefault` |
 | RequestBodyAccess | `bool` | Enables request body inspection | `true` in `coraza.ConfigDefault` |
-| RequestBodyLimit | `int` | Maximum request body size Coraza will process | `10 * 1024 * 1024` in `coraza.ConfigDefault` |
-| RequestBodyInMemoryLimit | `int` | Maximum request body bytes kept in memory | `128 * 1024` in `coraza.ConfigDefault` |
-| DebugLogger | `debuglog.Logger` | Optional Coraza debug logger | `nil` |
-| EnableErrorLog | `bool` | Enables Coraza matched-rule error logging | `true` in `coraza.ConfigDefault` |
 | MetricsCollector | `coraza.MetricsCollector` | Optional custom in-memory metrics collector | `nil` |
 
 If you want the defaults, start from `coraza.ConfigDefault` and override the fields you need.
 By default, the middleware starts without external rule files. Set `DirectivesFile` to load your Coraza or CRS ruleset.
+Request body size follows the Fiber app `BodyLimit`.
 
 ## Usage
 
@@ -86,7 +84,6 @@ Use `NewEngine` when you need explicit lifecycle control, reload support, or obs
 engine, err := coraza.NewEngine(coraza.Config{
 	DirectivesFile:    []string{"./conf/coraza.conf"},
 	RequestBodyAccess: true,
-	EnableErrorLog:    true,
 })
 if err != nil {
 	log.Fatal(err)
@@ -117,6 +114,7 @@ The middleware does not open operational routes for you, but `Engine` exposes da
 ## Notes
 
 - Request headers and request bodies are inspected.
+- Request body size follows the Fiber app `BodyLimit`.
 - Response body inspection is not supported.
 - `coraza.New()` starts successfully without external rule files, but it does not load any rules until `DirectivesFile` is configured.
 - Invalid configuration causes `coraza.New(...)` to panic during startup, which allows applications to fail fast.
