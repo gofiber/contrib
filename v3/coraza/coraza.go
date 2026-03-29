@@ -217,7 +217,7 @@ func (e *Engine) Middleware(config ...MiddlewareConfig) fiber.Handler {
 			metrics.RecordLatency(time.Since(startTime))
 		}()
 
-		currentWAF, currentErr, currentSupportsOptions, currentWAFWithOptions := e.snapshot()
+		currentWAF, currentSupportsOptions, currentWAFWithOptions, currentErr := e.snapshot()
 		if currentWAF == nil {
 			if currentErr != nil {
 				return e.handleError(c, mwCfg, MiddlewareError{
@@ -389,11 +389,11 @@ func (e *Engine) Reload() error {
 	return nil
 }
 
-func (e *Engine) snapshot() (coraza.WAF, error, bool, experimental.WAFWithOptions) {
+func (e *Engine) snapshot() (coraza.WAF, bool, experimental.WAFWithOptions, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	return e.waf, e.initErr, e.supportsOptions, e.wafWithOptions
+	return e.waf, e.supportsOptions, e.wafWithOptions, e.initErr
 }
 
 func (e *Engine) setWAFOptionsStateLocked(waf coraza.WAF) {
@@ -598,7 +598,7 @@ func resolveDirectivesFiles(root fs.FS, path string) ([]string, error) {
 			return nil, fmt.Errorf("invalid Coraza directives glob %q: %w", path, err)
 		}
 		if len(matches) == 0 {
-			return nil, fmt.Errorf("Coraza directives glob %q matched no files", path)
+			return nil, fmt.Errorf("coraza directives glob %q matched no files", path)
 		}
 
 		return matches, nil
@@ -606,13 +606,13 @@ func resolveDirectivesFiles(root fs.FS, path string) ([]string, error) {
 
 	if root != nil {
 		if _, err := fs.Stat(root, path); err != nil {
-			return nil, fmt.Errorf("Coraza directives file %q not found in RootFS: %w", path, err)
+			return nil, fmt.Errorf("coraza directives file %q not found in RootFS: %w", path, err)
 		}
 		return []string{path}, nil
 	}
 
 	if _, err := os.Stat(path); err != nil {
-		return nil, fmt.Errorf("Coraza directives file %q not found: %w", path, err)
+		return nil, fmt.Errorf("coraza directives file %q not found: %w", path, err)
 	}
 
 	return []string{path}, nil
