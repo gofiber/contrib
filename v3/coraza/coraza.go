@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -361,10 +362,6 @@ func (e *Engine) Reload() error {
 	cfg := cloneConfig(e.activeCfg)
 	e.mu.RUnlock()
 
-	if len(cfg.DirectivesFile) == 0 {
-		return fmt.Errorf("no configuration available for reload")
-	}
-
 	logLevel := normalizeLogLevel(cfg.LogLevel)
 	logWithLevel(logLevel, fiberlog.LevelInfo, "Coraza starting manual reload")
 
@@ -584,6 +581,23 @@ func validateDirectivesFile(root fs.FS, path string) error {
 			"path", path,
 			"note", "if no files match, the WAF may start without the expected rules",
 		)
+
+		var (
+			matches []string
+			err     error
+		)
+		if root != nil {
+			matches, err = fs.Glob(root, path)
+		} else {
+			matches, err = filepath.Glob(path)
+		}
+		if err != nil {
+			return fmt.Errorf("invalid Coraza directives glob %q: %w", path, err)
+		}
+		if len(matches) == 0 {
+			return fmt.Errorf("Coraza directives glob %q matched no files", path)
+		}
+
 		return nil
 	}
 

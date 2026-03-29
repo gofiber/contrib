@@ -497,6 +497,56 @@ func TestEngineSnapshotTracksLifecycleCounters(t *testing.T) {
 	}
 }
 
+func TestReloadWithoutDirectivesSucceeds(t *testing.T) {
+	engine, err := NewEngine(Config{
+		RequestBodyAccess: true,
+	})
+	if err != nil {
+		t.Fatalf("failed to initialize engine without directives: %v", err)
+	}
+
+	if err := engine.Reload(); err != nil {
+		t.Fatalf("expected reload without directives to succeed, got %v", err)
+	}
+
+	snapshot := engine.Snapshot()
+	if snapshot.ReloadSuccessTotal != 1 {
+		t.Fatalf("expected ReloadSuccessTotal=1, got %#v", snapshot.ReloadSuccessTotal)
+	}
+	if snapshot.InitSuccessTotal != 1 {
+		t.Fatalf("expected InitSuccessTotal=1, got %#v", snapshot.InitSuccessTotal)
+	}
+	if snapshot.ReloadCount != 1 {
+		t.Fatalf("expected ReloadCount=1, got %#v", snapshot.ReloadCount)
+	}
+}
+
+func TestNewEngineWildcardDirectivesRequireMatch(t *testing.T) {
+	_, err := NewEngine(Config{
+		DirectivesFile: []string{filepath.Join(t.TempDir(), "*.conf")},
+	})
+	if err == nil {
+		t.Fatal("expected wildcard directives with no matches to fail")
+	}
+	if !strings.Contains(err.Error(), "matched no files") {
+		t.Fatalf("expected wildcard match error, got %v", err)
+	}
+}
+
+func TestNewEngineWildcardDirectivesWithRootFSRequireMatch(t *testing.T) {
+	rootDir := t.TempDir()
+	_, err := NewEngine(Config{
+		DirectivesFile: []string{"*.conf"},
+		RootFS:         os.DirFS(rootDir),
+	})
+	if err == nil {
+		t.Fatal("expected RootFS wildcard directives with no matches to fail")
+	}
+	if !strings.Contains(err.Error(), "matched no files") {
+		t.Fatalf("expected wildcard match error, got %v", err)
+	}
+}
+
 func newInstanceApp(engine *Engine, cfg MiddlewareConfig) *fiber.App {
 	app := fiber.New()
 	app.Use(engine.Middleware(cfg))
