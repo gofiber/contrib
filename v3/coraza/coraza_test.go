@@ -533,6 +533,38 @@ func TestNewEngineWildcardDirectivesRequireMatch(t *testing.T) {
 	}
 }
 
+func TestNewEngineQuestionMarkGlobDirectivesMatch(t *testing.T) {
+	rootDir := t.TempDir()
+	writeRuleFile(t, rootDir, "rule-1.conf", testRules)
+
+	engine, err := NewEngine(Config{
+		DirectivesFile:    []string{filepath.Join(rootDir, "rule-?.conf")},
+		RequestBodyAccess: true,
+	})
+	if err != nil {
+		t.Fatalf("expected question mark glob to match directives file, got %v", err)
+	}
+	if engine == nil || engine.waf == nil {
+		t.Fatal("expected engine to initialize from question mark glob")
+	}
+}
+
+func TestNewEngineCharacterClassGlobDirectivesMatch(t *testing.T) {
+	rootDir := t.TempDir()
+	writeRuleFile(t, rootDir, "rule-1.conf", testRules)
+
+	engine, err := NewEngine(Config{
+		DirectivesFile:    []string{filepath.Join(rootDir, "rule-[12].conf")},
+		RequestBodyAccess: true,
+	})
+	if err != nil {
+		t.Fatalf("expected character class glob to match directives file, got %v", err)
+	}
+	if engine == nil || engine.waf == nil {
+		t.Fatal("expected engine to initialize from character class glob")
+	}
+}
+
 func TestNewEngineWildcardDirectivesWithRootFSRequireMatch(t *testing.T) {
 	rootDir := t.TempDir()
 	_, err := NewEngine(Config{
@@ -544,6 +576,25 @@ func TestNewEngineWildcardDirectivesWithRootFSRequireMatch(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "matched no files") {
 		t.Fatalf("expected wildcard match error, got %v", err)
+	}
+}
+
+func TestDefaultMetricsCollectorRecordLatencyUsesOnlineAverage(t *testing.T) {
+	collector := NewDefaultMetricsCollector().(*defaultMetricsCollector)
+
+	collector.RecordLatency(time.Millisecond)
+	collector.RecordLatency(3 * time.Millisecond)
+	collector.RecordLatency(-time.Millisecond)
+
+	snapshot := collector.GetMetrics()
+	if snapshot == nil {
+		t.Fatal("expected metrics snapshot")
+	}
+	if collector.latencyCount != 2 {
+		t.Fatalf("expected negative latency sample to be ignored, got %d", collector.latencyCount)
+	}
+	if snapshot.AvgLatencyMs != 2 {
+		t.Fatalf("expected average latency to be 2ms, got %v", snapshot.AvgLatencyMs)
 	}
 }
 

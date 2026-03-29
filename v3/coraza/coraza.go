@@ -552,10 +552,13 @@ func convertFiberToStdRequest(c fiber.Ctx) (*http.Request, error) {
 }
 
 func createWAFWithConfig(cfg Config) (coraza.WAF, error) {
+	var directivesFiles []string
 	for _, path := range cfg.DirectivesFile {
-		if err := validateDirectivesFile(cfg.RootFS, path); err != nil {
+		expandedPaths, err := resolveDirectivesFiles(cfg.RootFS, path)
+		if err != nil {
 			return nil, err
 		}
+		directivesFiles = append(directivesFiles, expandedPaths...)
 	}
 
 	wafConfig := coraza.NewWAFConfig()
@@ -567,19 +570,19 @@ func createWAFWithConfig(cfg Config) (coraza.WAF, error) {
 		wafConfig = wafConfig.WithRootFS(cfg.RootFS)
 	}
 
-	for _, path := range cfg.DirectivesFile {
+	for _, path := range directivesFiles {
 		wafConfig = wafConfig.WithDirectivesFromFile(path)
 	}
 
 	return coraza.NewWAF(wafConfig)
 }
 
-func validateDirectivesFile(root fs.FS, path string) error {
-	if strings.Contains(path, "*") {
+func resolveDirectivesFiles(root fs.FS, path string) ([]string, error) {
+	if strings.ContainsAny(path, "*?[") {
 		fiberlog.Warnw(
-			"Coraza directives path contains a wildcard and will be resolved by Coraza at runtime",
+			"Coraza directives path uses glob matching and is expanded before initialization",
 			"path", path,
-			"note", "if no files match, the WAF may start without the expected rules",
+			"note", "all matching directives files will be loaded in sorted order",
 		)
 
 		var (
@@ -592,27 +595,27 @@ func validateDirectivesFile(root fs.FS, path string) error {
 			matches, err = filepath.Glob(path)
 		}
 		if err != nil {
-			return fmt.Errorf("invalid Coraza directives glob %q: %w", path, err)
+			return nil, fmt.Errorf("invalid Coraza directives glob %q: %w", path, err)
 		}
 		if len(matches) == 0 {
-			return fmt.Errorf("Coraza directives glob %q matched no files", path)
+			return nil, fmt.Errorf("Coraza directives glob %q matched no files", path)
 		}
 
-		return nil
+		return matches, nil
 	}
 
 	if root != nil {
 		if _, err := fs.Stat(root, path); err != nil {
-			return fmt.Errorf("Coraza directives file %q not found in RootFS: %w", path, err)
+			return nil, fmt.Errorf("Coraza directives file %q not found in RootFS: %w", path, err)
 		}
-		return nil
+		return []string{path}, nil
 	}
 
 	if _, err := os.Stat(path); err != nil {
-		return fmt.Errorf("Coraza directives file %q not found: %w", path, err)
+		return nil, fmt.Errorf("Coraza directives file %q not found: %w", path, err)
 	}
 
-	return nil
+	return []string{path}, nil
 }
 
 func splitRemoteAddr(remoteAddr string) (string, int) {
