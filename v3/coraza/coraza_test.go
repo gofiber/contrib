@@ -249,11 +249,17 @@ func TestNewEngineProvidesInstanceIsolation(t *testing.T) {
 
 	firstResp := performRequest(t, firstApp, httptest.NewRequest(http.MethodGet, "/?attack=1", nil))
 	defer firstResp.Body.Close()
-	firstBody, _ := io.ReadAll(firstResp.Body)
+	firstBody, err := io.ReadAll(firstResp.Body)
+	if err != nil {
+		t.Fatalf("failed to read first response body: %v", err)
+	}
 
 	secondResp := performRequest(t, secondApp, httptest.NewRequest(http.MethodGet, "/?attack=1", nil))
 	defer secondResp.Body.Close()
-	secondBody, _ := io.ReadAll(secondResp.Body)
+	secondBody, err := io.ReadAll(secondResp.Body)
+	if err != nil {
+		t.Fatalf("failed to read second response body: %v", err)
+	}
 
 	if !strings.Contains(string(firstBody), "blocked by first") {
 		t.Fatalf("expected first engine response to contain its block message, got %q", string(firstBody))
@@ -306,7 +312,10 @@ func TestMiddlewareConfigCustomBlockHandler(t *testing.T) {
 
 	resp := performRequest(t, app, httptest.NewRequest(http.MethodGet, "/?attack=1", nil))
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read custom block response body: %v", err)
+	}
 
 	if resp.StatusCode != http.StatusTeapot {
 		t.Fatalf("expected custom block status 418, got %d", resp.StatusCode)
@@ -332,7 +341,10 @@ func TestMiddlewareConfigCustomErrorHandler(t *testing.T) {
 
 	resp := performRequest(t, app, httptest.NewRequest(http.MethodGet, "/", nil))
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read custom error response body: %v", err)
+	}
 
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("expected custom error status 503, got %d", resp.StatusCode)
@@ -373,6 +385,29 @@ func TestMetricsSnapshotHandlesNilCollectorSnapshot(t *testing.T) {
 	}
 }
 
+func TestNewEngineFallsBackToDefaultCollectorForTypedNilMetricsCollector(t *testing.T) {
+	var collector MetricsCollector = (*nilPtrSnapshotCollector)(nil)
+
+	engine := newEngine(collector)
+
+	if engine.Metrics() == nil {
+		t.Fatal("expected typed-nil metrics collector to fall back to the default collector")
+	}
+
+	app := newInstanceApp(engine, MiddlewareConfig{})
+	resp := performRequest(t, app, httptest.NewRequest(http.MethodGet, "/", nil))
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected status 500 with uninitialized WAF, got %d", resp.StatusCode)
+	}
+
+	snapshot := engine.MetricsSnapshot()
+	if snapshot.TotalRequests != 1 {
+		t.Fatalf("expected fallback collector to record one request, got %+v", snapshot)
+	}
+}
+
 func TestEngineInitFailureKeepsLastWorkingWAF(t *testing.T) {
 	engine, err := newTestEngine(t)
 	if err != nil {
@@ -394,7 +429,10 @@ func TestEngineInitFailureKeepsLastWorkingWAF(t *testing.T) {
 
 	allowedAfter := performRequest(t, app, httptest.NewRequest(http.MethodGet, "/?name=safe", nil))
 	defer allowedAfter.Body.Close()
-	body, _ := io.ReadAll(allowedAfter.Body)
+	body, err := io.ReadAll(allowedAfter.Body)
+	if err != nil {
+		t.Fatalf("failed to read response body after failed reinit: %v", err)
+	}
 
 	if allowedAfter.StatusCode != http.StatusOK {
 		t.Fatalf("expected last working WAF to continue serving after failed reinit, got %d with body %q", allowedAfter.StatusCode, string(body))
@@ -420,7 +458,10 @@ func TestMiddlewareFailsClosedWhenWAFPanicOccurs(t *testing.T) {
 	resp := performRequest(t, app, httptest.NewRequest(http.MethodGet, "/?name=safe", nil))
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read panic recovery response body: %v", err)
+	}
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("expected status 500 when WAF panics, got %d", resp.StatusCode)
 	}
@@ -510,6 +551,14 @@ func (nilSnapshotCollector) RecordBlock()                 {}
 func (nilSnapshotCollector) RecordLatency(time.Duration)  {}
 func (nilSnapshotCollector) GetMetrics() *MetricsSnapshot { return nil }
 func (nilSnapshotCollector) Reset()                       {}
+
+type nilPtrSnapshotCollector struct{}
+
+func (*nilPtrSnapshotCollector) RecordRequest()               {}
+func (*nilPtrSnapshotCollector) RecordBlock()                 {}
+func (*nilPtrSnapshotCollector) RecordLatency(time.Duration)  {}
+func (*nilPtrSnapshotCollector) GetMetrics() *MetricsSnapshot { return nil }
+func (*nilPtrSnapshotCollector) Reset()                       {}
 
 type fakePanicWAF struct{}
 

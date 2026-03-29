@@ -65,8 +65,8 @@ type MetricsReport struct {
 }
 
 type defaultMetricsCollector struct {
-	totalRequests   uint64
-	blockedRequests uint64
+	totalRequests   atomic.Uint64
+	blockedRequests atomic.Uint64
 
 	latencyMutex sync.RWMutex
 	latencySum   time.Duration
@@ -79,11 +79,11 @@ func NewDefaultMetricsCollector() MetricsCollector {
 }
 
 func (m *defaultMetricsCollector) RecordRequest() {
-	atomic.AddUint64(&m.totalRequests, 1)
+	m.totalRequests.Add(1)
 }
 
 func (m *defaultMetricsCollector) RecordBlock() {
-	atomic.AddUint64(&m.blockedRequests, 1)
+	m.blockedRequests.Add(1)
 }
 
 func (m *defaultMetricsCollector) RecordLatency(duration time.Duration) {
@@ -95,8 +95,8 @@ func (m *defaultMetricsCollector) RecordLatency(duration time.Duration) {
 }
 
 func (m *defaultMetricsCollector) GetMetrics() *MetricsSnapshot {
-	totalReqs := atomic.LoadUint64(&m.totalRequests)
-	blockedReqs := atomic.LoadUint64(&m.blockedRequests)
+	totalReqs := m.totalRequests.Load()
+	blockedReqs := m.blockedRequests.Load()
 
 	m.latencyMutex.RLock()
 	var avgLatencyMs float64
@@ -120,8 +120,8 @@ func (m *defaultMetricsCollector) GetMetrics() *MetricsSnapshot {
 }
 
 func (m *defaultMetricsCollector) Reset() {
-	atomic.StoreUint64(&m.totalRequests, 0)
-	atomic.StoreUint64(&m.blockedRequests, 0)
+	m.totalRequests.Store(0)
+	m.blockedRequests.Store(0)
 
 	m.latencyMutex.Lock()
 	defer m.latencyMutex.Unlock()

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -424,7 +425,7 @@ func (e *Engine) handleError(c fiber.Ctx, cfg MiddlewareConfig, mwErr Middleware
 }
 
 func newEngine(collector MetricsCollector) *Engine {
-	if collector == nil {
+	if isNilMetricsCollector(collector) {
 		collector = NewDefaultMetricsCollector()
 	}
 
@@ -432,6 +433,20 @@ func newEngine(collector MetricsCollector) *Engine {
 		blockMessage: defaultBlockMessage,
 		logLevel:     fiberlog.LevelInfo,
 		metrics:      collector,
+	}
+}
+
+func isNilMetricsCollector(collector MetricsCollector) bool {
+	if collector == nil {
+		return true
+	}
+
+	value := reflect.ValueOf(collector)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
 	}
 }
 
