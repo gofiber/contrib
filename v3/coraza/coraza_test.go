@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/corazawaf/coraza/v3/debuglog"
 	"github.com/corazawaf/coraza/v3/types"
@@ -70,9 +71,6 @@ func TestNewEngineWithLocalFile(t *testing.T) {
 	}
 	if engine.waf == nil {
 		t.Fatal("expected engine WAF to be initialized")
-	}
-	if !engine.initialized {
-		t.Fatal("expected engine to be marked initialized")
 	}
 	if engine.blockMessage != "blocked from config" {
 		t.Fatalf("expected block message to be initialized from config, got %q", engine.blockMessage)
@@ -362,6 +360,19 @@ func TestEngineReportIncludesLifecycleSnapshot(t *testing.T) {
 	}
 }
 
+func TestMetricsSnapshotHandlesNilCollectorSnapshot(t *testing.T) {
+	engine := newEngine(nilSnapshotCollector{})
+
+	snapshot := engine.MetricsSnapshot()
+
+	if snapshot.TotalRequests != 0 || snapshot.BlockedRequests != 0 || snapshot.AvgLatencyMs != 0 || snapshot.BlockRate != 0 {
+		t.Fatalf("expected zero-value metrics snapshot, got %+v", snapshot)
+	}
+	if snapshot.Timestamp.IsZero() {
+		t.Fatal("expected metrics snapshot timestamp to be populated")
+	}
+}
+
 func TestEngineInitFailureKeepsLastWorkingWAF(t *testing.T) {
 	engine, err := newTestEngine(t)
 	if err != nil {
@@ -404,7 +415,6 @@ func TestEngineInitFailureKeepsLastWorkingWAF(t *testing.T) {
 func TestMiddlewareFailsClosedWhenWAFPanicOccurs(t *testing.T) {
 	engine := newEngine(NewDefaultMetricsCollector())
 	engine.waf = fakePanicWAF{}
-	engine.initialized = true
 
 	app := newInstanceApp(engine, MiddlewareConfig{})
 	resp := performRequest(t, app, httptest.NewRequest(http.MethodGet, "/?name=safe", nil))
@@ -492,6 +502,14 @@ func performRequest(t *testing.T, app *fiber.App, req *http.Request) *http.Respo
 
 	return resp
 }
+
+type nilSnapshotCollector struct{}
+
+func (nilSnapshotCollector) RecordRequest()               {}
+func (nilSnapshotCollector) RecordBlock()                 {}
+func (nilSnapshotCollector) RecordLatency(time.Duration)  {}
+func (nilSnapshotCollector) GetMetrics() *MetricsSnapshot { return nil }
+func (nilSnapshotCollector) Reset()                       {}
 
 type fakePanicWAF struct{}
 

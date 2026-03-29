@@ -131,7 +131,17 @@ func (m *defaultMetricsCollector) Reset() {
 
 // MetricsSnapshot returns a copy of the Engine's current request metrics.
 func (e *Engine) MetricsSnapshot() MetricsSnapshot {
-	return *e.Metrics().GetMetrics()
+	collector := e.Metrics()
+	if collector == nil {
+		return MetricsSnapshot{Timestamp: time.Now()}
+	}
+
+	snapshot := collector.GetMetrics()
+	if snapshot == nil {
+		return MetricsSnapshot{Timestamp: time.Now()}
+	}
+
+	return *snapshot
 }
 
 // Snapshot returns lifecycle and configuration state for the Engine.

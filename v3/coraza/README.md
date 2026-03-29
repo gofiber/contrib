@@ -47,6 +47,7 @@ coraza.NewEngine(config coraza.Config) (*coraza.Engine, error)
 If you want the defaults, start from `coraza.ConfigDefault` and override the fields you need.
 By default, the middleware starts without external rule files. Set `DirectivesFile` to load your Coraza or CRS ruleset.
 Request body size follows the Fiber app `BodyLimit`.
+Wildcard entries in `DirectivesFile` are resolved by Coraza at runtime. If a wildcard matches no files, the WAF may start without the expected rules loaded.
 
 ## Usage
 

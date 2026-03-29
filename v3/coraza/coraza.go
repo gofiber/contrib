@@ -102,7 +102,6 @@ type Engine struct {
 	wafWithOptions  experimental.WAFWithOptions
 	supportsOptions bool
 	initErr         error
-	initialized     bool
 
 	activeCfg      Config
 	lastAttemptCfg Config
@@ -173,7 +172,6 @@ func (e *Engine) Init(cfg Config) error {
 	e.initErr = nil
 	e.setWAFOptionsStateLocked(newWAF)
 	e.activeCfg = cloneConfig(cfg)
-	e.initialized = true
 	e.lastLoadedAt = time.Now()
 	e.initSuccessCount++
 	e.blockMessage = resolveBlockMessage(cfg.BlockMessage)
@@ -566,6 +564,11 @@ func createWAFWithConfig(cfg Config) (coraza.WAF, error) {
 
 func validateDirectivesFile(root fs.FS, path string) error {
 	if strings.Contains(path, "*") {
+		fiberlog.Warnw(
+			"Coraza directives path contains a wildcard and will be resolved by Coraza at runtime",
+			"path", path,
+			"note", "if no files match, the WAF may start without the expected rules",
+		)
 		return nil
 	}
 
