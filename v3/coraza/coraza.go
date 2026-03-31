@@ -26,6 +26,12 @@ import (
 const defaultBlockMessage = "Request blocked by Web Application Firewall"
 
 // Config defines the configuration for the Coraza middleware and Engine.
+//
+// For zero-value-backed fields such as RequestBodyAccess=false,
+// LogLevel=fiberlog.LevelTrace, or resetting MetricsCollector to the built-in
+// default, start from ConfigDefault or use the WithRequestBodyAccess,
+// WithLogLevel, and WithMetricsCollector helpers so the override remains
+// explicit.
 type Config struct {
 	// Next defines a function to skip this middleware when it returns true.
 	Next func(fiber.Ctx) bool
@@ -46,12 +52,18 @@ type Config struct {
 	RequestBodyAccess bool
 	// MetricsCollector overrides the default in-memory metrics collector.
 	MetricsCollector MetricsCollector
+
+	logLevelSet          bool
+	requestBodyAccessSet bool
+	metricsCollectorSet  bool
 }
 
 // ConfigDefault provides the default Coraza configuration.
 var ConfigDefault = Config{
-	LogLevel:          fiberlog.LevelInfo,
-	RequestBodyAccess: true,
+	LogLevel:             fiberlog.LevelInfo,
+	RequestBodyAccess:    true,
+	logLevelSet:          true,
+	requestBodyAccessSet: true,
 }
 
 // MiddlewareConfig customizes how Engine middleware behaves for a specific mount.
@@ -125,7 +137,7 @@ type Engine struct {
 func New(config ...Config) fiber.Handler {
 	cfg := ConfigDefault
 	if len(config) > 0 {
-		cfg = config[0]
+		cfg = resolveConfig(config[0])
 	}
 
 	engine, err := NewEngine(cfg)
@@ -142,7 +154,7 @@ func New(config ...Config) fiber.Handler {
 
 // NewEngine creates and initializes an Engine with the provided configuration.
 func NewEngine(cfg Config) (*Engine, error) {
-	engine := newEngine(cfg.MetricsCollector)
+	engine := newEngine(nil)
 	if err := engine.Init(cfg); err != nil {
 		return nil, err
 	}
@@ -155,13 +167,16 @@ func NewEngine(cfg Config) (*Engine, error) {
 // On failure, the last working WAF instance is kept in place and the failure is
 // recorded for observability.
 func (e *Engine) Init(cfg Config) error {
-	newWAF, err := createWAFWithConfig(cfg)
-	logLevel := normalizeLogLevel(cfg.LogLevel)
+	resolvedCfg := resolveConfig(cfg)
+	metrics := resolveMetricsCollector(resolvedCfg.MetricsCollector)
+
+	newWAF, err := createWAFWithConfig(resolvedCfg)
+	logLevel := normalizeLogLevel(resolvedCfg.LogLevel)
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	e.lastAttemptCfg = cloneConfig(cfg)
+	e.lastAttemptCfg = cloneConfig(resolvedCfg)
 
 	if err != nil {
 		e.initErr = err
@@ -173,11 +188,12 @@ func (e *Engine) Init(cfg Config) error {
 	e.waf = newWAF
 	e.initErr = nil
 	e.setWAFOptionsStateLocked(newWAF)
-	e.activeCfg = cloneConfig(cfg)
+	e.activeCfg = cloneConfig(resolvedCfg)
 	e.lastLoadedAt = time.Now()
 	e.initSuccessCount++
-	e.blockMessage = resolveBlockMessage(cfg.BlockMessage)
+	e.blockMessage = resolveBlockMessage(resolvedCfg.BlockMessage)
 	e.logLevel = logLevel
+	e.metrics = metrics
 
 	logWithLevel(logLevel, fiberlog.LevelInfo, "Coraza initialized successfully", "supports_options", e.supportsOptions)
 	return nil
@@ -422,14 +438,10 @@ func (e *Engine) handleError(c fiber.Ctx, cfg MiddlewareConfig, mwErr Middleware
 }
 
 func newEngine(collector MetricsCollector) *Engine {
-	if isNilMetricsCollector(collector) {
-		collector = NewDefaultMetricsCollector()
-	}
-
 	return &Engine{
 		blockMessage: defaultBlockMessage,
 		logLevel:     fiberlog.LevelInfo,
-		metrics:      collector,
+		metrics:      resolveMetricsCollector(collector),
 	}
 }
 
@@ -445,6 +457,14 @@ func isNilMetricsCollector(collector MetricsCollector) bool {
 	default:
 		return false
 	}
+}
+
+func resolveMetricsCollector(collector MetricsCollector) MetricsCollector {
+	if isNilMetricsCollector(collector) {
+		return NewDefaultMetricsCollector()
+	}
+
+	return collector
 }
 
 func (e *Engine) observabilitySnapshot() EngineSnapshot {
@@ -553,8 +573,9 @@ func convertFiberToStdRequest(c fiber.Ctx) (*http.Request, error) {
 
 func createWAFWithConfig(cfg Config) (coraza.WAF, error) {
 	var directivesFiles []string
+	logLevel := normalizeLogLevel(cfg.LogLevel)
 	for _, path := range cfg.DirectivesFile {
-		expandedPaths, err := resolveDirectivesFiles(cfg.RootFS, path)
+		expandedPaths, err := resolveDirectivesFiles(cfg.RootFS, path, logLevel)
 		if err != nil {
 			return nil, err
 		}
@@ -577,9 +598,9 @@ func createWAFWithConfig(cfg Config) (coraza.WAF, error) {
 	return coraza.NewWAF(wafConfig)
 }
 
-func resolveDirectivesFiles(root fs.FS, path string) ([]string, error) {
+func resolveDirectivesFiles(root fs.FS, path string, logLevel fiberlog.Level) ([]string, error) {
 	if strings.ContainsAny(path, "*?[") {
-		fiberlog.Warnw(
+		logWithLevel(logLevel, fiberlog.LevelWarn,
 			"Coraza directives path uses glob matching and is expanded before initialization",
 			"path", path,
 			"note", "all matching directives files will be loaded in sorted order",
@@ -636,6 +657,65 @@ func cloneConfig(cfg Config) Config {
 	clone := cfg
 	clone.DirectivesFile = append([]string(nil), cfg.DirectivesFile...)
 	return clone
+}
+
+func resolveConfig(cfg Config) Config {
+	resolved := ConfigDefault
+
+	if cfg.Next != nil {
+		resolved.Next = cfg.Next
+	}
+	if cfg.BlockHandler != nil {
+		resolved.BlockHandler = cfg.BlockHandler
+	}
+	if cfg.ErrorHandler != nil {
+		resolved.ErrorHandler = cfg.ErrorHandler
+	}
+	if cfg.DirectivesFile != nil {
+		resolved.DirectivesFile = append([]string(nil), cfg.DirectivesFile...)
+	}
+	if cfg.RootFS != nil {
+		resolved.RootFS = cfg.RootFS
+	}
+	if cfg.BlockMessage != "" {
+		resolved.BlockMessage = cfg.BlockMessage
+	}
+	if cfg.logLevelSet || cfg.LogLevel != 0 {
+		resolved.LogLevel = normalizeLogLevel(cfg.LogLevel)
+	}
+	if cfg.requestBodyAccessSet || cfg.RequestBodyAccess {
+		resolved.RequestBodyAccess = cfg.RequestBodyAccess
+	}
+	if cfg.metricsCollectorSet || !isNilMetricsCollector(cfg.MetricsCollector) {
+		resolved.MetricsCollector = cfg.MetricsCollector
+	}
+
+	resolved.logLevelSet = true
+	resolved.requestBodyAccessSet = true
+	resolved.metricsCollectorSet = cfg.metricsCollectorSet || !isNilMetricsCollector(cfg.MetricsCollector)
+
+	return resolved
+}
+
+// WithLogLevel returns a copy of cfg with an explicit lifecycle log level.
+func (cfg Config) WithLogLevel(level fiberlog.Level) Config {
+	cfg.LogLevel = level
+	cfg.logLevelSet = true
+	return cfg
+}
+
+// WithRequestBodyAccess returns a copy of cfg with explicit request body inspection behavior.
+func (cfg Config) WithRequestBodyAccess(enabled bool) Config {
+	cfg.RequestBodyAccess = enabled
+	cfg.requestBodyAccessSet = true
+	return cfg
+}
+
+// WithMetricsCollector returns a copy of cfg with an explicit metrics collector choice.
+func (cfg Config) WithMetricsCollector(collector MetricsCollector) Config {
+	cfg.MetricsCollector = collector
+	cfg.metricsCollectorSet = true
+	return cfg
 }
 
 func resolveBlockMessage(msg string) string {

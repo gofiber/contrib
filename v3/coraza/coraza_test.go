@@ -141,6 +141,43 @@ func TestNewReturnsMiddleware(t *testing.T) {
 	}
 }
 
+func TestNewAppliesConfigDefaults(t *testing.T) {
+	bodyRules := `SecRuleEngine On
+SecRequestBodyAccess On
+SecRule REQUEST_BODY "@contains attack" "id:1002,phase:2,deny,status:403,msg:'body attack detected'"`
+
+	path := writeRuleFile(t, t.TempDir(), "body.conf", bodyRules)
+
+	app := fiber.New()
+	app.Use(New(Config{
+		DirectivesFile: []string{path},
+	}))
+	app.Post("/", func(c fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("payload=attack"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp := performRequest(t, app, req)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected status 403 when New applies default request body access, got %d", resp.StatusCode)
+	}
+}
+
+func TestResolveConfigHonorsExplicitZeroValueOverrides(t *testing.T) {
+	resolved := resolveConfig(Config{}.WithRequestBodyAccess(false).WithLogLevel(fiberlog.LevelTrace))
+
+	if resolved.RequestBodyAccess {
+		t.Fatal("expected explicit request body access override to remain false")
+	}
+	if resolved.LogLevel != fiberlog.LevelTrace {
+		t.Fatalf("expected explicit trace log level override, got %v", resolved.LogLevel)
+	}
+}
+
 func TestEngineMiddlewareAllowsCleanRequest(t *testing.T) {
 	engine, err := newTestEngine(t)
 	if err != nil {
@@ -497,6 +534,69 @@ func TestEngineSnapshotTracksLifecycleCounters(t *testing.T) {
 	}
 }
 
+func TestEngineInitReplacesMetricsCollectorWhenProvided(t *testing.T) {
+	initialCollector := &countingCollector{}
+	engine := newEngine(initialCollector)
+
+	path := writeRuleFile(t, t.TempDir(), "collector.conf", testRules)
+	replacementCollector := &countingCollector{}
+
+	if err := engine.Init(Config{
+		DirectivesFile:    []string{path},
+		RequestBodyAccess: true,
+		MetricsCollector:  replacementCollector,
+	}); err != nil {
+		t.Fatalf("expected init to succeed, got %v", err)
+	}
+
+	app := newInstanceApp(engine, MiddlewareConfig{})
+	resp := performRequest(t, app, httptest.NewRequest(http.MethodGet, "/?name=safe", nil))
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200 after init, got %d", resp.StatusCode)
+	}
+	if initialCollector.requests != 0 {
+		t.Fatalf("expected initial collector to stop receiving updates, got %d requests", initialCollector.requests)
+	}
+	if replacementCollector.requests != 1 {
+		t.Fatalf("expected replacement collector to record one request, got %d", replacementCollector.requests)
+	}
+}
+
+func TestEngineInitResetsMetricsCollectorToDefaultWhenOmitted(t *testing.T) {
+	initialCollector := &countingCollector{}
+	engine, err := NewEngine(Config{
+		DirectivesFile: []string{writeRuleFile(t, t.TempDir(), "collector.conf", testRules)},
+	}.WithMetricsCollector(initialCollector))
+	if err != nil {
+		t.Fatalf("failed to create engine with custom collector: %v", err)
+	}
+
+	reloadPath := writeRuleFile(t, t.TempDir(), "collector-reload.conf", testRules)
+	if err := engine.Init(Config{
+		DirectivesFile: []string{reloadPath},
+	}); err != nil {
+		t.Fatalf("expected reinit without collector to succeed, got %v", err)
+	}
+
+	app := newInstanceApp(engine, MiddlewareConfig{})
+	resp := performRequest(t, app, httptest.NewRequest(http.MethodGet, "/?name=safe", nil))
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200 after collector reset, got %d", resp.StatusCode)
+	}
+	if initialCollector.requests != 0 {
+		t.Fatalf("expected original custom collector to stop receiving updates, got %d requests", initialCollector.requests)
+	}
+
+	snapshot := engine.MetricsSnapshot()
+	if snapshot.TotalRequests != 1 {
+		t.Fatalf("expected default collector to record one request after reset, got %+v", snapshot)
+	}
+}
+
 func TestReloadWithoutDirectivesSucceeds(t *testing.T) {
 	engine, err := NewEngine(Config{
 		RequestBodyAccess: true,
@@ -660,6 +760,26 @@ func (*nilPtrSnapshotCollector) RecordBlock()                 {}
 func (*nilPtrSnapshotCollector) RecordLatency(time.Duration)  {}
 func (*nilPtrSnapshotCollector) GetMetrics() *MetricsSnapshot { return nil }
 func (*nilPtrSnapshotCollector) Reset()                       {}
+
+type countingCollector struct {
+	requests uint64
+	blocks   uint64
+}
+
+func (c *countingCollector) RecordRequest()              { c.requests++ }
+func (c *countingCollector) RecordBlock()                { c.blocks++ }
+func (c *countingCollector) RecordLatency(time.Duration) {}
+func (c *countingCollector) GetMetrics() *MetricsSnapshot {
+	return &MetricsSnapshot{
+		TotalRequests:   c.requests,
+		BlockedRequests: c.blocks,
+		Timestamp:       time.Now(),
+	}
+}
+func (c *countingCollector) Reset() {
+	c.requests = 0
+	c.blocks = 0
+}
 
 type fakePanicWAF struct{}
 

@@ -42,12 +42,13 @@ coraza.NewEngine(config coraza.Config) (*coraza.Engine, error)
 | BlockMessage | `string` | Message returned by the built-in block handler | `"Request blocked by Web Application Firewall"` |
 | LogLevel | `fiberlog.Level` | Middleware lifecycle log level | `fiberlog.LevelInfo` in `coraza.ConfigDefault` |
 | RequestBodyAccess | `bool` | Enables request body inspection | `true` in `coraza.ConfigDefault` |
-| MetricsCollector | `coraza.MetricsCollector` | Optional custom in-memory metrics collector | `nil` |
+| MetricsCollector | `coraza.MetricsCollector` | Optional custom in-memory metrics collector | `nil` (falls back to the built-in collector) |
 
 If you want the defaults, start from `coraza.ConfigDefault` and override the fields you need.
+For zero-value-backed settings such as `RequestBodyAccess: false`, `LogLevel: fiberlog.LevelTrace`, or resetting `MetricsCollector` to the built-in default, use `ConfigDefault` or the helper methods `WithRequestBodyAccess`, `WithLogLevel`, and `WithMetricsCollector` so the choice remains explicit.
 By default, the middleware starts without external rule files. Set `DirectivesFile` to load your Coraza or CRS ruleset.
 Request body size follows the Fiber app `BodyLimit`.
-Wildcard entries in `DirectivesFile` are resolved by Coraza at runtime. If a wildcard matches no files, the WAF may start without the expected rules loaded.
+Wildcard entries in `DirectivesFile` are expanded before Coraza initializes. If a wildcard matches no files, initialization fails with an error and the middleware does not start.
 
 ## Usage
 
@@ -82,10 +83,10 @@ func main() {
 Use `NewEngine` when you need explicit lifecycle control, reload support, or observability data.
 
 ```go
-engine, err := coraza.NewEngine(coraza.Config{
-	DirectivesFile:    []string{"./conf/coraza.conf"},
-	RequestBodyAccess: true,
-})
+engineCfg := coraza.ConfigDefault
+engineCfg.DirectivesFile = []string{"./conf/coraza.conf"}
+
+engine, err := coraza.NewEngine(engineCfg)
 if err != nil {
 	log.Fatal(err)
 }
