@@ -103,7 +103,7 @@ func TestMiddlewareRecordsMetrics(t *testing.T) {
 	if !strings.Contains(metrics, "http_requests_status_class_total") {
 		t.Fatalf("expected metrics to contain status class counter")
 	}
-	if !strings.Contains(metrics, "http_requests_in_progress_total{method=\"GET\",path=\"/hello\",service=\"test-service\"}") {
+	if !strings.Contains(metrics, "http_requests_in_progress{method=\"GET\",path=\"/hello\",service=\"test-service\"}") {
 		t.Fatalf("expected in-flight gauge to include method and path labels, got %q", metrics)
 	}
 }
@@ -154,7 +154,7 @@ func TestSkipURIs(t *testing.T) {
 	if strings.Contains(metrics, "http_requests_status_class_total{status_class=\"2xx\",method=\"GET\",path=\"/skip\"}") {
 		t.Fatalf("expected skip path status class metric to be excluded")
 	}
-	if strings.Contains(metrics, "http_requests_in_progress_total{method=\"GET\",path=\"/skip\"}") {
+	if strings.Contains(metrics, "http_requests_in_progress{method=\"GET\",path=\"/skip\"}") {
 		t.Fatalf("expected skip path in-flight metric to be excluded")
 	}
 }
@@ -212,7 +212,7 @@ func TestIgnoreStatusCodesRemovesInFlightGauge(t *testing.T) {
 	}
 
 	metrics := getMetrics(t, app, "/metrics")
-	if strings.Contains(metrics, "http_requests_in_progress_total{method=\"GET\",path=\"/deny\"") {
+	if strings.Contains(metrics, "http_requests_in_progress{method=\"GET\",path=\"/deny\"") {
 		t.Fatalf("expected ignored status code in-flight metric to be removed, got %q", metrics)
 	}
 }
@@ -431,7 +431,7 @@ func TestHeadRequestsMatchGetRoutes(t *testing.T) {
 		t.Fatalf("expected HEAD request duration histogram to be emitted, got %q", metrics)
 	}
 
-	if !strings.Contains(metrics, "http_requests_in_progress_total{method=\"HEAD\",path=\"/head-get\"}") {
+	if !strings.Contains(metrics, "http_requests_in_progress{method=\"HEAD\",path=\"/head-get\"}") {
 		t.Fatalf("expected HEAD request in-flight gauge to be emitted, got %q", metrics)
 	}
 }

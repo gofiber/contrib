@@ -113,7 +113,7 @@ func New(config ...Config) fiber.Handler {
 
 	gauge := promauto.With(registry).NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name:        prometheus.BuildFQName(cfg.Namespace, cfg.Subsystem, "requests_in_progress_total"),
+			Name:        prometheus.BuildFQName(cfg.Namespace, cfg.Subsystem, "requests_in_progress"),
 			Help:        "All the requests in progress",
 			ConstLabels: labels,
 		},

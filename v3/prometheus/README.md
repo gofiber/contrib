@@ -11,12 +11,12 @@ Following metrics are available by default:
 http_requests_total
 http_requests_status_class_total
 http_request_duration_seconds
-http_requests_in_progress_total
+http_requests_in_progress
 http_request_size_bytes
 http_response_size_bytes
 ```
 
-`http_requests_in_progress_total` exposes both the HTTP method and normalized
+`http_requests_in_progress` exposes both the HTTP method and normalized
 route path so you can pinpoint which handlers are currently running.
 
 > [!NOTE]
