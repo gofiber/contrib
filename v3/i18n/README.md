@@ -4,7 +4,7 @@ id: i18n
 
 # I18n
 
-![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=i18n*)
+![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=*i18n*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Test%20i18n/badge.svg)
 
@@ -29,8 +29,16 @@ go get -u github.com/gofiber/contrib/v3/i18n
 | Name                 | Signature                                                                | Description                                                                 |
 |----------------------|--------------------------------------------------------------------------|-----------------------------------------------------------------------------|
 | New                  | `New(config ...*i18n.Config) *i18n.I18n`                                 | Create a reusable, thread-safe localization container.                     |
-| (*I18n).Localize     | `Localize(ctx fiber.Ctx, params interface{}) (string, error)`            | Returns a localized message. `params` may be a message ID or `*i18n.LocalizeConfig`. |
-| (*I18n).MustLocalize | `MustLocalize(ctx fiber.Ctx, params interface{}) string`                 | Like `Localize` but panics when localization fails.                         |
+| (*I18n).Localize     | `Localize(ctx fiber.Ctx, params interface{}) (string, error)`            | Returns a localized message. `params` must be a message ID string or `*goi18n.LocalizeConfig`. Returns an error if the message is not found, the param type is unsupported, or `params` is nil. |
+| (*I18n).MustLocalize | `MustLocalize(ctx fiber.Ctx, params interface{}) string`                 | Like `Localize` but panics on any error.                                    |
+
+## Types
+
+| Name             | Description                                                                                         |
+|------------------|-----------------------------------------------------------------------------------------------------|
+| `Loader`         | Interface for loading message files. Implement `LoadMessage(path string) ([]byte, error)`.         |
+| `LoaderFunc`     | Adapter to use a plain function as a `Loader`.                                                     |
+| `EmbedLoader`    | `Loader` implementation backed by an `embed.FS`. Use with Go's `//go:embed` directive.             |
 
 ## Config
 

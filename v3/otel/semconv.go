@@ -1,19 +1,20 @@
 package otel
 
 import (
+	"bytes"
 	"encoding/base64"
-	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/utils/v2"
 	"go.opentelemetry.io/otel/attribute"
-	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
 )
 
 var (
 	httpProtocolNameAttr = semconv.NetworkProtocolName("http")
 	http11VersionAttr    = semconv.NetworkProtocolVersion("1.1")
 	http10VersionAttr    = semconv.NetworkProtocolVersion("1.0")
+	enduserIDKey         = attribute.Key("enduser.id")
 )
 
 func httpServerMetricAttributesFromRequest(c fiber.Ctx, cfg config) []attribute.KeyValue {
@@ -50,19 +51,19 @@ func httpServerTraceAttributesFromRequest(c fiber.Ctx, cfg config) []attribute.K
 		semconv.URLFull(utils.CopyString(c.OriginalURL())),
 		semconv.UserAgentOriginal(string(utils.CopyBytes(c.Request().Header.UserAgent()))),
 		semconv.ServerAddress(utils.CopyString(c.Hostname())),
-		semconv.NetTransportTCP,
+		semconv.NetworkTransportTCP,
 	}
 	attrs = append(attrs, protocolAttributes...)
 
 	if cfg.Port != nil {
-		attrs = append(attrs, semconv.NetHostPortKey.Int(*cfg.Port))
+		attrs = append(attrs, semconv.ServerPort(*cfg.Port))
 	}
 
 	if username, ok := HasBasicAuth(c.Get(fiber.HeaderAuthorization)); ok {
-		attrs = append(attrs, semconv.EnduserIDKey.String(utils.CopyString(username)))
+		attrs = append(attrs, enduserIDKey.String(username))
 	}
 
-	if cfg.collectClientIP {
+	if cfg.clientIP {
 		clientIP := c.IP()
 		if len(clientIP) > 0 {
 			attrs = append(attrs, semconv.ClientAddress(utils.CopyString(clientIP)))
@@ -98,8 +99,9 @@ func HasBasicAuth(auth string) (string, bool) {
 		return "", false
 	}
 
-	// Check if the Authorization header is Basic
-	if !strings.HasPrefix(auth, "Basic ") {
+	// Check if the Authorization header is Basic.
+	// Auth schemes are case-insensitive.
+	if len(auth) < 6 || !utils.EqualFold(auth[:6], "Basic ") {
 		return "", false
 	}
 
@@ -109,16 +111,13 @@ func HasBasicAuth(auth string) (string, bool) {
 		return "", false
 	}
 
-	// Get the credentials
-	creds := utils.UnsafeString(raw)
-
-	// Check if the credentials are in the correct form
+	// Check if the decoded credentials are in the correct form
 	// which is "username:password".
-	index := strings.Index(creds, ":")
+	index := bytes.IndexByte(raw, ':')
 	if index == -1 {
 		return "", false
 	}
 
 	// Get the username
-	return creds[:index], true
+	return string(raw[:index]), true
 }

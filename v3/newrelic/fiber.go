@@ -1,7 +1,9 @@
 package newrelic
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 
@@ -9,6 +11,14 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/newrelic/go-agent/v3/newrelic"
+)
+
+// The contextKey type is unexported to prevent collisions with context keys defined in
+// other packages.
+type contextKey int
+
+const (
+	transactionKey contextKey = iota
 )
 
 type Config struct {
@@ -29,6 +39,11 @@ type Config struct {
 	// Next defines a function to skip this middleware when returned true.
 	// Optional. Default: nil
 	Next func(c fiber.Ctx) bool
+	// RequestHeaderFilter controls which inbound request headers are forwarded to
+	// New Relic via WebRequest.Header.
+	// Return true to include a header, false to exclude it.
+	// Optional. Default: include all headers.
+	RequestHeaderFilter func(key, value string) bool
 }
 
 var ConfigDefault = Config{
@@ -38,6 +53,7 @@ var ConfigDefault = Config{
 	Enabled:                false,
 	ErrorStatusCodeHandler: DefaultErrorStatusCodeHandler,
 	Next:                   nil,
+	RequestHeaderFilter:    nil,
 }
 
 func New(cfg Config) fiber.Handler {
@@ -84,19 +100,9 @@ func New(cfg Config) fiber.Handler {
 		)
 
 		scheme := c.Request().URI().Scheme()
+		txn.SetWebRequest(createWebRequest(c, host, method, string(scheme), cfg.RequestHeaderFilter))
 
-		txn.SetWebRequest(newrelic.WebRequest{
-			Host:      host,
-			Method:    method,
-			Transport: transport(string(scheme)),
-			URL: &url.URL{
-				Host:     host,
-				Scheme:   string(c.Request().URI().Scheme()),
-				Path:     string(c.Request().URI().Path()),
-				RawQuery: string(c.Request().URI().QueryString()),
-			},
-		})
-
+		fiber.StoreInContext(c, transactionKey, txn)
 		c.SetContext(newrelic.NewContext(c.Context(), txn))
 
 		handlerErr := c.Next()
@@ -113,14 +119,49 @@ func New(cfg Config) fiber.Handler {
 	}
 }
 
-// FromContext returns the Transaction from the context if present, and nil
-// otherwise.
-func FromContext(c fiber.Ctx) *newrelic.Transaction {
-	return newrelic.FromContext(c.Context())
+// FromContext returns the Transaction from the context if present, and nil otherwise.
+// It accepts fiber.CustomCtx, fiber.Ctx, *fasthttp.RequestCtx, and context.Context.
+func FromContext(ctx any) *newrelic.Transaction {
+	if txn, ok := fiber.ValueFromContext[*newrelic.Transaction](ctx, transactionKey); ok {
+		return txn
+	}
+
+	if ctx, ok := ctx.(context.Context); ok {
+		return newrelic.FromContext(ctx)
+	}
+
+	return nil
 }
 
 func createTransactionName(c fiber.Ctx) string {
 	return fmt.Sprintf("%s %s", c.Request().Header.Method(), c.Request().URI().Path())
+}
+
+func createWebRequest(c fiber.Ctx, host, method, scheme string, filter func(key, value string) bool) newrelic.WebRequest {
+	headers := make(http.Header, c.Request().Header.Len())
+	for key, value := range c.Request().Header.All() {
+		headerKey := string(key)
+		headerValue := string(value)
+
+		if filter != nil && !filter(headerKey, headerValue) {
+			continue
+		}
+
+		headers.Add(headerKey, headerValue)
+	}
+
+	return newrelic.WebRequest{
+		Header:    headers,
+		Host:      host,
+		Method:    method,
+		Transport: transport(scheme),
+		URL: &url.URL{
+			Host:     host,
+			Scheme:   scheme,
+			Path:     string(c.Request().URI().Path()),
+			RawQuery: string(c.Request().URI().QueryString()),
+		},
+	}
 }
 
 func transport(schema string) newrelic.TransportType {

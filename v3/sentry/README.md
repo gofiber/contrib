@@ -4,7 +4,7 @@ id: sentry
 
 # Sentry
 
-![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=sentry*)
+![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=*sentry*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Test%20sentry/badge.svg)
 
@@ -28,8 +28,12 @@ go get -u github.com/getsentry/sentry-go
 ## Signature
 
 ```go
-sentry.New(config ...sentry.Config) fiber.Handler
+fiberSentry.New(config ...fiberSentry.Config) fiber.Handler
+fiberSentry.GetHubFromContext(ctx any) *sdk.Hub         // sdk "github.com/getsentry/sentry-go"
+fiberSentry.MustGetHubFromContext(ctx any) *sdk.Hub     // sdk "github.com/getsentry/sentry-go"
 ```
+
+`GetHubFromContext` and `MustGetHubFromContext` each accept a `fiber.Ctx`, `fiber.CustomCtx`, `*fasthttp.RequestCtx`, or a standard `context.Context` (e.g. the value returned by `c.Context()` when `PassLocalsToContext` is enabled). The `Must*` variant panics if the hub is not found. `*sdk.Hub` is `*sentry.Hub` from `github.com/getsentry/sentry-go`.
 
 ## Config
 
@@ -131,4 +135,22 @@ sdk.Init(sdk.ClientOptions{
         return event
     },
 })
+```
+
+## Retrieving the hub with PassLocalsToContext
+
+When `fiber.Config{PassLocalsToContext: true}` is set, the Sentry hub stored by the middleware is also available in the underlying `context.Context`. Use `GetHubFromContext` or `MustGetHubFromContext` with any of the supported context types:
+
+```go
+// From a fiber.Ctx (most common usage)
+hub := fiberSentry.GetHubFromContext(c)
+
+// From the underlying context.Context (useful in service layers or when PassLocalsToContext is enabled)
+hub := fiberSentry.GetHubFromContext(c.Context())
+```
+
+`MustGetHubFromContext` panics if the hub is not found (e.g. in middleware that runs before `sentry`):
+
+```go
+hub := fiberSentry.MustGetHubFromContext(c)
 ```

@@ -4,7 +4,7 @@ id: fgprof
 
 # Fgprof
 
-![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=fgprof*)
+![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=*fgprof*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Test%20Fgprof/badge.svg)
 

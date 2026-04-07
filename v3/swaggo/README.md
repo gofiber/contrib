@@ -1,13 +1,12 @@
 ---
 id: swaggo
-title: Swaggo – Swagger Doc Generator Middleware (formerly "swagger")
 ---
 
-# Swaggo – Swagger Doc Generator Middleware
+# Swaggo
 
-> ⚠️ This module was renamed from `swagger` to `swaggo` to clearly distinguish it from the ported `swaggerui` middleware. Update your imports accordingly.
+> ⚠️ This module was renamed from `gofiber/swagger` to `swaggo` to clearly distinguish it from the ported `swaggerui` middleware. Update your imports accordingly.
 
-![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=swaggo*)
+![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=*swaggo*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/actions/workflows/test-swaggo.yml/badge.svg)
 

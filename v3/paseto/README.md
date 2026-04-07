@@ -4,13 +4,13 @@ id: paseto
 
 # Paseto
 
-![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=paseto*)
+![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=*paseto*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Test%20paseto/badge.svg)
 
 PASETO returns a Web Token (PASETO) auth middleware.
 
-- For valid token, it sets the payload data in Ctx.Locals and calls next handler.
+- For valid token, it sets the payload data in Ctx.Locals (and in the underlying `context.Context` when `PassLocalsToContext` is enabled) and calls next handler.
 - For invalid token, it returns "401 - Unauthorized" error.
 - For missing token, it returns "400 - BadRequest" error.
 
@@ -33,8 +33,10 @@ go get -u github.com/o1egl/paseto
 
 ```go
 pasetoware.New(config ...pasetoware.Config) func(fiber.Ctx) error
-pasetoware.FromContext(c fiber.Ctx) interface{}
+pasetoware.FromContext(ctx any) interface{}
 ```
+
+`FromContext` accepts a `fiber.Ctx`, `fiber.CustomCtx`, `*fasthttp.RequestCtx`, or a standard `context.Context` (e.g. the value returned by `c.Context()` when `PassLocalsToContext` is enabled).
 
 ## Config
 
@@ -443,6 +445,16 @@ if payloadFromCtx == nil {
     return  
 }  
 payload := payloadFromCtx.(string)  
+```
+
+`FromContext` accepts a `fiber.Ctx`, `fiber.CustomCtx`, `*fasthttp.RequestCtx`, or a standard `context.Context` (e.g. the value returned by `c.Context()` when `PassLocalsToContext` is enabled):
+
+```go
+// From a fiber.Ctx (most common usage)
+payload := pasetoware.FromContext(c)
+
+// From the underlying context.Context (useful in service layers or when PassLocalsToContext is enabled)
+payload := pasetoware.FromContext(c.Context())
 ```
 
 #### Test it

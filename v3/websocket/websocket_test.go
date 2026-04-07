@@ -66,6 +66,82 @@ func TestWebSocketMiddlewareConfigOrigin(t *testing.T) {
 		assert.Equal(t, "hello websocket", msg["message"])
 	})
 
+	t.Run("empty origin rejected by default", func(t *testing.T) {
+		app := setupTestApp(Config{
+			Origins: []string{"http://localhost:3000"},
+		}, nil)
+		defer app.Shutdown()
+		conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
+		if conn != nil {
+			defer conn.Close()
+		}
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "bad handshake")
+		assert.Equal(t, fiber.StatusUpgradeRequired, resp.StatusCode)
+		assert.Equal(t, "", resp.Header.Get("Upgrade"))
+
+		assert.Nil(t, conn)
+	})
+
+	t.Run("empty origin allowed with config", func(t *testing.T) {
+		app := setupTestApp(Config{
+			Origins:          []string{"http://localhost:3000"},
+			AllowEmptyOrigin: true,
+		}, nil)
+		defer app.Shutdown()
+		conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
+		defer conn.Close()
+		assert.NoError(t, err)
+		assert.Equal(t, fiber.StatusSwitchingProtocols, resp.StatusCode)
+		assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
+
+		var msg fiber.Map
+		err = conn.ReadJSON(&msg)
+		assert.NoError(t, err)
+		assert.Equal(t, "hello websocket", msg["message"])
+	})
+
+	t.Run("wildcard in list", func(t *testing.T) {
+		app := setupTestApp(Config{
+			Origins: []string{"http://localhost:3000", "*"},
+		}, nil)
+		defer app.Shutdown()
+		conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", http.Header{
+			"Origin": []string{"http://localhost:5000"},
+		})
+		if !assert.NoError(t, err) {
+			return
+		}
+		defer conn.Close()
+		assert.Equal(t, fiber.StatusSwitchingProtocols, resp.StatusCode)
+		assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
+
+		var msg fiber.Map
+		err = conn.ReadJSON(&msg)
+		assert.NoError(t, err)
+		assert.Equal(t, "hello websocket", msg["message"])
+	})
+
+	t.Run("wildcard in list allows empty origin", func(t *testing.T) {
+		app := setupTestApp(Config{
+			Origins: []string{"http://localhost:3000", "*"},
+		}, nil)
+		defer app.Shutdown()
+		// Explicitly test with no Origin header (nil headers = no Origin sent)
+		conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
+		if !assert.NoError(t, err) {
+			return
+		}
+		defer conn.Close()
+		assert.Equal(t, fiber.StatusSwitchingProtocols, resp.StatusCode)
+		assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
+
+		var msg fiber.Map
+		err = conn.ReadJSON(&msg)
+		assert.NoError(t, err)
+		assert.Equal(t, "hello websocket", msg["message"])
+	})
+
 	t.Run("disallowed origin", func(t *testing.T) {
 		app := setupTestApp(Config{
 			Origins: []string{"http://localhost:3000"},
@@ -162,10 +238,12 @@ func TestWebSocketConnHeaders(t *testing.T) {
 	app := setupTestApp(Config{}, func(c *Conn) {
 		header1 := c.Headers("Header1")
 		header2 := c.Headers("Header2")
+		contentType := c.Headers("Content-Type")
 		headerDefault := c.Headers("HeaderDefault", "valueDefault")
 
 		assert.Equal(t, "value1", header1)
 		assert.Equal(t, "value2", header2)
+		assert.Equal(t, "application/json", contentType)
 		assert.Equal(t, "valueDefault", headerDefault)
 
 		c.WriteJSON(fiber.Map{
@@ -175,8 +253,9 @@ func TestWebSocketConnHeaders(t *testing.T) {
 	defer app.Shutdown()
 
 	conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", http.Header{
-		"header1": []string{"value1"},
-		"header2": []string{"value2"},
+		"header1":      []string{"value1"},
+		"header2":      []string{"value2"},
+		"content-type": []string{"application/json"},
 	})
 	defer conn.Close()
 	assert.NoError(t, err)
@@ -287,9 +366,9 @@ func setupTestApp(cfg Config, h func(c *Conn)) *fiber.App {
 
 	app.Use("/ws", func(c fiber.Ctx) error {
 		if IsWebSocketUpgrade(c) {
-			c.Locals("allowed", true)
-			c.Locals("local1", "value1")
-			c.Locals("local2", "value2")
+			fiber.StoreInContext(c, "allowed", true)
+			fiber.StoreInContext(c, "local1", "value1")
+			fiber.StoreInContext(c, "local2", "value2")
 			return c.Next()
 		}
 		return fiber.ErrUpgradeRequired

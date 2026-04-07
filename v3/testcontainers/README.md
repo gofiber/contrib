@@ -4,7 +4,7 @@ id: testcontainers
 
 # Testcontainers
 
-![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=testcontainers*)
+![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=*testcontainers*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Test%20Testcontainers%20Services/badge.svg)
 
@@ -21,6 +21,8 @@ Requires Go **1.25** and above
 ## Go version support
 
 We only support the latest two versions of Go. Visit [https://go.dev/doc/devel/release](https://go.dev/doc/devel/release) for more information.
+
+> Test requirement: integration tests for this package require a reachable Docker daemon.
 
 ## Common Use Cases
 

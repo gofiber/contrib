@@ -316,6 +316,39 @@ func TestWebsocket_GetStringAttribute(t *testing.T) {
 	require.Equal(t, "3", v)
 }
 
+func TestWebsocket_SetUUIDUpdatesPool(t *testing.T) {
+	pool.reset()
+
+	kws := createWS()
+	pool.set(kws)
+
+	oldUUID := kws.GetUUID()
+	newUUID := "new-uuid"
+
+	err := kws.SetUUID(newUUID)
+	require.NoError(t, err)
+	require.Equal(t, newUUID, kws.GetUUID())
+
+	_, err = pool.get(oldUUID)
+	require.ErrorIs(t, err, ErrorInvalidConnection)
+
+	poolEntry, err := pool.get(newUUID)
+	require.NoError(t, err)
+	require.Equal(t, kws, poolEntry)
+
+	other := createWS()
+	other.UUID = "other-uuid"
+	pool.set(other)
+
+	err = kws.SetUUID(other.UUID)
+	require.ErrorIs(t, err, ErrorUUIDDuplication)
+	require.Equal(t, newUUID, kws.GetUUID())
+
+	poolEntry, err = pool.get(newUUID)
+	require.NoError(t, err)
+	require.Equal(t, kws, poolEntry)
+}
+
 func assertPanic(t *testing.T, f func()) {
 	defer func() {
 		if r := recover(); r == nil {
@@ -354,7 +387,7 @@ func upgradeMiddleware(c fiber.Ctx) error {
 	// IsWebSocketUpgrade returns true if the client
 	// requested upgrade to the WebSocket protocol.
 	if fws.IsWebSocketUpgrade(c) {
-		c.Locals("allowed", true)
+		fiber.StoreInContext(c, "allowed", true)
 		return c.Next()
 	}
 	return fiber.ErrUpgradeRequired

@@ -7,10 +7,14 @@ on:
             - main
     workflow_dispatch:
 
+permissions:
+    contents: read
+
 jobs:
     changes:
         runs-on: ubuntu-latest
         permissions:
+            contents: read
             pull-requests: read
         outputs:
             packages: ${{ github.event_name == 'workflow_dispatch' && steps.filter-setup.outputs.packages || steps.map-packages.outputs.packages || '[]' }}
@@ -54,7 +58,7 @@ jobs:
 
             - name: Filter changes
               id: filter
-              uses: dorny/paths-filter@v3
+              uses: dorny/paths-filter@v4
               if: github.event_name != 'workflow_dispatch'
               with:
                   filters: ${{ steps.filter-setup.outputs.filters }}
@@ -79,6 +83,9 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 30
         if: needs.changes.outputs.packages != '[]'
+        permissions:
+            contents: write
+            pull-requests: read
         env:
             GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         strategy:
@@ -100,6 +107,7 @@ jobs:
                   } >> "$GITHUB_OUTPUT"
 
             - name: Use dynamic release-drafter configuration
-              uses: ReneWerner87/release-drafter@6dec4ceb1fb86b6514f11a2e7a39e1dedce709d0
+              uses: ReneWerner87/release-drafter@1e213032283aaa6d64a8df087c4587a2ff531582
               with:
                   config: ${{ steps.generate-config.outputs.config }}
+                  disable-autolabeler: true

@@ -1,11 +1,12 @@
 ---
 id: swaggerui
-title: Swagger UI Middleware
 ---
 
-# Swagger UI Middleware
+# Swagger UI
 
-![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=swaggerui*)
+> ⚠️ This module was renamed from `gofiber/contrib/swagger` to `swaggerui` to clearly distinguish it from the ported `swaggo` middleware. Update your imports accordingly.
+
+![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=*swaggerui*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Test%20swaggerui/badge.svg)
 
@@ -90,7 +91,7 @@ app.Use(swaggerui.New(swaggerui.Config{
     Path:     "docs",
 }))
 
-// Create Swagger middleware for v2
+// Create Swagger middleware for a second API version
 //
 // Swagger will be available at: /api/v2/docs
 app.Use(swaggerui.New(swaggerui.Config{
