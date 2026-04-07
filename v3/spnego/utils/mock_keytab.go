@@ -127,7 +127,7 @@ func NewMockKeytab(opts ...MockOption) (*keytab.Keytab, func(), error) {
 	var err error
 	for _, pair := range opt.Pairs {
 		if err = kt.AddEntry(opt.PrincipalName, opt.Realm, opt.Password, pair.CreateTime, pair.Version, pair.EncryptType); err != nil {
-			return nil, nil, fmt.Errorf("error adding entry: %v", err)
+			return nil, nil, fmt.Errorf("error adding entry: %w", err)
 		}
 	}
 	var clean = func() {}
