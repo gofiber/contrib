@@ -53,7 +53,7 @@ func New(config ...Config) fiber.Handler {
 		}
 		if err == nil && token.Valid {
 			// Store user information from token into context.
-			c.Locals(tokenKey, token)
+			fiber.StoreInContext(c, tokenKey, token)
 			return cfg.SuccessHandler(c)
 		}
 		return cfg.ErrorHandler(c, err)
@@ -61,9 +61,10 @@ func New(config ...Config) fiber.Handler {
 }
 
 // FromContext returns the token from the context.
+// It accepts fiber.CustomCtx, fiber.Ctx, *fasthttp.RequestCtx, and context.Context.
 // If there is no token, nil is returned.
-func FromContext(c fiber.Ctx) *jwt.Token {
-	token, ok := c.Locals(tokenKey).(*jwt.Token)
+func FromContext(ctx any) *jwt.Token {
+	token, ok := fiber.ValueFromContext[*jwt.Token](ctx, tokenKey)
 	if !ok {
 		return nil
 	}

@@ -2,7 +2,7 @@ name-template: '{{PACKAGE}} - v$RESOLVED_VERSION'
 tag-template: '{{PACKAGE}}/v$RESOLVED_VERSION'
 tag-prefix: {{PACKAGE}}/v
 include-paths:
-  - {{DIRECTORY}}/**
+  - {{DIRECTORY}}
 categories:
   - title: '❗ Breaking Changes'
     labels:

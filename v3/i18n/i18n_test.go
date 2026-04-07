@@ -266,6 +266,79 @@ func TestLocalize(t *testing.T) {
 	})
 }
 
+func TestNew_doesNotMutateCallerConfig(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		RootPath:        "./example/localize",
+		AcceptLanguages: []language.Tag{language.Chinese, language.English},
+	}
+	// DefaultLanguage is intentionally left as zero value (language.Und)
+	// to verify that New() does not mutate the caller's config.
+	originalDefaultLanguage := cfg.DefaultLanguage
+
+	translator := New(cfg)
+
+	assert.NotNil(t, translator)
+	assert.Equal(t, originalDefaultLanguage, cfg.DefaultLanguage, "New() must not mutate the caller's Config")
+	assert.Equal(t, language.Und, cfg.DefaultLanguage, "caller's DefaultLanguage should remain Und")
+}
+
+func TestLocalize_nilReceiver(t *testing.T) {
+	t.Parallel()
+	var translator *I18n
+	localize, err := translator.Localize(nil, "welcome")
+	assert.Equal(t, "", localize)
+	assert.EqualError(t, err, "i18n.Localize error: translator is nil")
+}
+
+func TestLocalize_unsupportedParamsType(t *testing.T) {
+	t.Parallel()
+	translator := New()
+	app := fiber.New()
+	app.Get("/", func(ctx fiber.Ctx) error {
+		localize, err := translator.Localize(ctx, 42)
+		assert.Equal(t, "", localize)
+		return fiber.NewError(500, err.Error())
+	})
+	got, err := makeRequest(language.English, "", app)
+	assert.NoError(t, err)
+	assert.Equal(t, 500, got.StatusCode)
+	body, _ := io.ReadAll(got.Body)
+	got.Body.Close()
+	assert.Equal(t, "i18n.Localize error: unsupported params type", string(body))
+}
+
+func TestLocalize_nilLocalizeConfig(t *testing.T) {
+	t.Parallel()
+	translator := New()
+	app := fiber.New()
+	app.Get("/", func(ctx fiber.Ctx) error {
+		localize, err := translator.Localize(ctx, (*i18n.LocalizeConfig)(nil))
+		assert.Equal(t, "", localize)
+		return fiber.NewError(500, err.Error())
+	})
+	got, err := makeRequest(language.English, "", app)
+	assert.NoError(t, err)
+	assert.Equal(t, 500, got.StatusCode)
+	body, _ := io.ReadAll(got.Body)
+	got.Body.Close()
+	assert.Equal(t, "i18n.Localize error: params is nil", string(body))
+}
+
+func TestMustLocalize_panics(t *testing.T) {
+	t.Parallel()
+	translator := New()
+	app := fiber.New()
+	app.Get("/", func(ctx fiber.Ctx) error {
+		assert.Panics(t, func() {
+			translator.MustLocalize(ctx, "nonexistent_message")
+		})
+		return nil
+	})
+	_, err := makeRequest(language.English, "", app)
+	assert.NoError(t, err)
+}
+
 func Test_defaultLangHandler(t *testing.T) {
 	app := fiber.New()
 	app.Get("/", func(c fiber.Ctx) error {

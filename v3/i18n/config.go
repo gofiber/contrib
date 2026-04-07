@@ -97,7 +97,11 @@ func configDefault(config ...*Config) *Config {
 		}
 		cfg = &copyCfg
 	default:
-		cfg = config[0]
+		copyCfg := *config[0]
+		if config[0].AcceptLanguages != nil {
+			copyCfg.AcceptLanguages = append([]language.Tag(nil), config[0].AcceptLanguages...)
+		}
+		cfg = &copyCfg
 	}
 
 	if cfg.RootPath == "" {

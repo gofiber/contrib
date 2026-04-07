@@ -16,8 +16,9 @@ const (
 	payloadKey contextKey = iota
 )
 
-// New PASETO middleware, returns a handler that takes a token in selected lookup param and in case token is valid
-// it saves the decrypted token on ctx.Locals, take a look on Config to know more configuration options
+// New PASETO middleware returns a handler that takes a token in the selected lookup param and,
+// when valid, stores the decrypted payload via fiber.StoreInContext (locals + context when enabled).
+// See Config for more configuration options.
 func New(authConfigs ...Config) fiber.Handler {
 	// Set default authConfig
 	config := configDefault(authConfigs...)
@@ -52,7 +53,7 @@ func New(authConfigs ...Config) fiber.Handler {
 		payload, err := config.Validate(outData)
 		if err == nil {
 			// Store user information from token into context.
-			c.Locals(payloadKey, payload)
+			fiber.StoreInContext(c, payloadKey, payload)
 
 			return config.SuccessHandler(c)
 		}
@@ -62,6 +63,8 @@ func New(authConfigs ...Config) fiber.Handler {
 }
 
 // FromContext returns the payload from the context.
-func FromContext(c fiber.Ctx) interface{} {
-	return c.Locals(payloadKey)
+// It accepts fiber.CustomCtx, fiber.Ctx, *fasthttp.RequestCtx, and context.Context.
+func FromContext(ctx any) interface{} {
+	payload, _ := fiber.ValueFromContext[interface{}](ctx, payloadKey)
+	return payload
 }
