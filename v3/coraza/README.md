@@ -19,8 +19,8 @@ We only support the latest two versions of Go. Visit [https://go.dev/doc/devel/r
 ## Install
 
 ```sh
-go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/v3/coraza
+go get github.com/gofiber/fiber/v3
+go get github.com/gofiber/contrib/v3/coraza
 ```
 
 ## Signature

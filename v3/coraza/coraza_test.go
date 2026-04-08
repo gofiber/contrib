@@ -268,6 +268,36 @@ SecRule REQUEST_BODY "@contains attack" "id:1002,phase:2,deny,status:403,msg:'bo
 	}
 }
 
+func TestEngineMiddlewareRespectsFiberBodyLimit(t *testing.T) {
+	bodyRules := `SecRuleEngine On
+SecRequestBodyAccess On
+SecRule REQUEST_BODY "@contains attack" "id:1002,phase:2,deny,status:403,msg:'body attack detected'"`
+
+	engine, err := newTestEngineWithRules(t, bodyRules)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	app := fiber.New(fiber.Config{
+		BodyLimit: 8,
+	})
+	app.Use(engine.Middleware())
+	app.Post("/", func(c fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("payload=attack"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	_, err = app.Test(req)
+	if err == nil {
+		t.Fatal("expected Fiber body limit error, got nil")
+	}
+	if err.Error() != "body size exceeds the given limit" {
+		t.Fatalf("expected Fiber body limit error, got %v", err)
+	}
+}
+
 func TestNewEngineProvidesInstanceIsolation(t *testing.T) {
 	first, err := newTestEngine(t)
 	if err != nil {
