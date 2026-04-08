@@ -78,6 +78,8 @@ jobs:
             cache: false
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v9
+        env:
+          GOWORK: off
         with:
           args: "--tests=false --timeout=5m"
           working-directory: ./v3/${{ matrix.package }}
