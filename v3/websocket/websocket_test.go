@@ -406,8 +406,8 @@ func TestWebSocketCompressionAfterHandlerReturns(t *testing.T) {
 		EnableCompression: true,
 	}
 	conn, resp, err := dialer.Dial("ws://localhost:3000/ws/message", nil)
-	defer conn.Close()
 	require.NoError(t, err)
+	defer conn.Close()
 	assert.Equal(t, 101, resp.StatusCode)
 	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
 
