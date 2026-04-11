@@ -8,7 +8,6 @@ import (
 
 	"github.com/fasthttp/websocket"
 	"github.com/gofiber/fiber/v3"
-	"github.com/klauspost/compress/flate"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -393,7 +392,7 @@ func TestWebSocketCompressionAfterHandlerReturns(t *testing.T) {
 		go func() {
 			time.Sleep(10 * time.Millisecond)
 			conn.EnableWriteCompression(true)
-			if err := conn.SetCompressionLevel(flate.BestSpeed + 1); err != nil {
+			if err := conn.SetCompressionLevel(2); err != nil {
 				writeErr <- err
 				return
 			}
