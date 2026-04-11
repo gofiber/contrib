@@ -409,6 +409,7 @@ func TestWebSocketCompressionAfterHandlerReturns(t *testing.T) {
 	defer conn.Close()
 	assert.Equal(t, 101, resp.StatusCode)
 	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
+	assert.Contains(t, resp.Header.Get("Sec-WebSocket-Extensions"), "permessage-deflate")
 
 	var msg fiber.Map
 	err = conn.ReadJSON(&msg)
