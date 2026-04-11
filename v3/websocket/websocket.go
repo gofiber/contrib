@@ -141,6 +141,9 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
 		}
+		if _, loaded := keepHijackedConnServer.LoadOrStore(c.App(), struct{}{}); !loaded {
+			c.App().Server().KeepHijackedConns = true
+		}
 
 		conn := acquireConn()
 		// locals
@@ -206,6 +209,8 @@ var poolConn = sync.Pool{
 		return new(Conn)
 	},
 }
+
+var keepHijackedConnServer sync.Map
 
 // Acquire Conn from pool
 func acquireConn() *Conn {
