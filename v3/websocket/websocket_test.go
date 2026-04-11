@@ -350,6 +350,77 @@ func TestWebSocketConnIP(t *testing.T) {
 	assert.Equal(t, "hello websocket", msg["message"])
 }
 
+func TestWebSocketConnIPStaysStableAcrossRequests(t *testing.T) {
+	trigger := make(chan struct{})
+
+	app := fiber.New(fiber.Config{
+		ProxyHeader: "X-Real-IP",
+		TrustProxy:  true,
+		TrustProxyConfig: fiber.TrustProxyConfig{
+			Loopback: true,
+		},
+	})
+
+	app.Get("/ws/hold", New(func(c *Conn) {
+		<-trigger
+		c.WriteJSON(fiber.Map{
+			"ip": c.IP(),
+		})
+	}))
+
+	app.Get("/ws/churn", New(func(c *Conn) {
+		c.WriteJSON(fiber.Map{
+			"message": "ok",
+		})
+	}))
+
+	go app.Listen(":3000", fiber.ListenConfig{DisableStartupMessage: true})
+	defer app.Shutdown()
+
+	readyCh := make(chan struct{})
+	go func() {
+		for {
+			conn, err := net.Dial("tcp", "localhost:3000")
+			if err != nil {
+				continue
+			}
+			conn.Close()
+			readyCh <- struct{}{}
+			return
+		}
+	}()
+	<-readyCh
+
+	const firstIP = "165.227.7.228"
+
+	conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/hold", http.Header{
+		"X-Real-IP": []string{firstIP},
+	})
+	if !assert.NoError(t, err) {
+		return
+	}
+	defer conn.Close()
+	assert.Equal(t, 101, resp.StatusCode)
+
+	for i := 0; i < 10; i++ {
+		churnConn, _, churnErr := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/churn", http.Header{
+			"X-Real-IP": []string{"89.125.209.209"},
+		})
+		if !assert.NoError(t, churnErr) {
+			close(trigger)
+			return
+		}
+		churnConn.Close()
+	}
+
+	close(trigger)
+
+	var msg fiber.Map
+	err = conn.ReadJSON(&msg)
+	assert.NoError(t, err)
+	assert.Equal(t, firstIP, msg["ip"])
+}
+
 func setupTestApp(cfg Config, h func(c *Conn)) *fiber.App {
 	var handler fiber.Handler
 	if h == nil {

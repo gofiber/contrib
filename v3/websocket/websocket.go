@@ -173,7 +173,7 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		}
 
 		// ip address
-		conn.ip = c.IP()
+		conn.ip = utils.CopyString(c.IP())
 
 		if err := upgrader.Upgrade(c.RequestCtx(), func(fconn *websocket.Conn) {
 			conn.Conn = fconn
