@@ -8,6 +8,7 @@ import (
 	"github.com/fasthttp/websocket"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestWebSocketMiddlewareDefaultConfig(t *testing.T) {
@@ -352,7 +353,7 @@ func TestWebSocketConnIP(t *testing.T) {
 
 // TestWebSocketConnIPSafeCopy verifies that conn.IP() returns a safe copy
 // that is not corrupted when fasthttp reuses its internal buffer for
-// subsequent requests. See: gofiber/fiber#4208
+// subsequent requests. See: gofiber/fiber#4208, gofiber/contrib#1800
 func TestWebSocketConnIPSafeCopy(t *testing.T) {
 	const iterations = 5
 	ips := make(chan string, iterations)
@@ -367,10 +368,10 @@ func TestWebSocketConnIPSafeCopy(t *testing.T) {
 
 	for i := 0; i < iterations; i++ {
 		conn, _, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		var msg fiber.Map
 		err = conn.ReadJSON(&msg)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, "127.0.0.1", msg["ip"])
 		conn.Close()
 	}
