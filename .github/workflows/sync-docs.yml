@@ -14,7 +14,7 @@ on:
                 required: true
                 default: 'push'
             tag_name:
-                description: 'Tag name to use for release mode (optional when triggering manually)'
+                description: 'Tag name to use for release mode (e.g. v3/jwt/v1.1.0)'
                 required: false
                 default: ''
     release:

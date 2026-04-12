@@ -67,8 +67,10 @@ elif [[ "${EVENT}" == "release" ]]; then
 
     log "Handling release event for tag: ${TAG_NAME}"
 
-    package_name="${TAG_NAME%/*}"
-    major_version="${TAG_NAME#*/}"
+    # Strip SOURCE_DIR prefix (e.g. "v3/") from tag if present
+    tag="${TAG_NAME#"${SOURCE_DIR}/"}"
+    package_name="${tag%/*}"
+    major_version="${tag#*/}"
     major_version="${major_version%%.*}"
     new_version="${package_name}_${major_version}.x.x"
 
