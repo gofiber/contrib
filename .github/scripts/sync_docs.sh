@@ -72,7 +72,7 @@ elif [[ "${EVENT}" == "release" ]]; then
     package_name="${tag%/*}"
     major_version="${tag#*/}"
     major_version="${major_version%%.*}"
-    new_version="${SOURCE_DIR}/${package_name}_${major_version}.x.x"
+    new_version="${SOURCE_DIR}_${package_name}_${major_version}.x.x"
 
     log "Computed new version identifier for docs: ${new_version}"
 
