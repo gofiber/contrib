@@ -141,7 +141,9 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
 		}
-		c.App().Server().KeepHijackedConns = true
+		if !c.App().Server().KeepHijackedConns {
+			c.App().Server().KeepHijackedConns = true
+		}
 
 		conn := acquireConn()
 		// locals
