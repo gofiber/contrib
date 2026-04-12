@@ -45,6 +45,7 @@ var embedApp = newEmbedServer()
 func request(lang language.Tag, name string) (*http.Response, error) {
 	path := "/" + name
 	req, _ := http.NewRequestWithContext(context.Background(), "GET", path, nil)
+	req.Host = "localhost"
 	req.Header.Add("Accept-Language", lang.String())
 	req.Method = "GET"
 	req.RequestURI = path

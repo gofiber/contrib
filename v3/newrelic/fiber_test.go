@@ -63,6 +63,7 @@ func TestNewRelicAppConfig(t *testing.T) {
 			})
 
 			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.Host = "localhost"
 			resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
 		})
@@ -92,6 +93,7 @@ func TestNewRelicAppConfig(t *testing.T) {
 			})
 
 			r := httptest.NewRequest("GET", "/", nil)
+			r.Host = "localhost"
 			resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 			assert.Equal(t, 200, resp.StatusCode)
 		})
@@ -112,6 +114,7 @@ func TestNewRelicAppConfig(t *testing.T) {
 			})
 
 			r := httptest.NewRequest("GET", "/invalid-url", nil)
+			r.Host = "localhost"
 			resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 			assert.Equal(t, 404, resp.StatusCode)
 		})
@@ -132,6 +135,7 @@ func TestNewRelicAppConfig(t *testing.T) {
 			})
 
 			r := httptest.NewRequest("GET", "/", nil)
+			r.Host = "localhost"
 			resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 			assert.Equal(t, 200, resp.StatusCode)
 		})
@@ -152,6 +156,7 @@ func TestNewRelicAppConfig(t *testing.T) {
 			})
 
 			r := httptest.NewRequest("GET", "/", nil)
+			r.Host = "localhost"
 			resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 			assert.Equal(t, 200, resp.StatusCode)
 		})
@@ -172,6 +177,7 @@ func TestNewRelicAppConfig(t *testing.T) {
 			})
 
 			r := httptest.NewRequest("GET", "/", nil)
+			r.Host = "localhost"
 			resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 			assert.Equal(t, 200, resp.StatusCode)
 		})
@@ -199,6 +205,7 @@ func TestNewRelicAppConfig(t *testing.T) {
 			assert.NotNil(t, newrelicApp)
 
 			r := httptest.NewRequest("GET", "/", nil)
+			r.Host = "localhost"
 			resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 			assert.Equal(t, 200, resp.StatusCode)
 		})
@@ -241,7 +248,9 @@ func TestNewRelicAppConfig(t *testing.T) {
 		app.Get("/", func(ctx fiber.Ctx) error { return errors.New("system error") })
 
 		// when
-		resp, err := app.Test(httptest.NewRequest("GET", "/", nil), fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+		r := httptest.NewRequest("GET", "/", nil)
+		r.Host = "localhost"
+		resp, err := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 		assert.NoError(t, err)
 		assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 	})
@@ -268,7 +277,9 @@ func TestNewRelicAppConfig(t *testing.T) {
 		app.Get("/", func(ctx fiber.Ctx) error { return errors.New("system error") })
 
 		// when
-		resp, err := app.Test(httptest.NewRequest("GET", "/", nil), fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+		r := httptest.NewRequest("GET", "/", nil)
+		r.Host = "localhost"
+		resp, err := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 		assert.NoError(t, err)
 		assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 		assert.True(t, errorStatusCodeHandlerCalled)
@@ -302,6 +313,7 @@ func TestNewRelicAppConfig(t *testing.T) {
 			})
 
 			r := httptest.NewRequest("GET", "/jump", nil)
+			r.Host = "localhost"
 			resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 			assert.Equal(t, 200, resp.StatusCode)
 		})
@@ -334,6 +346,7 @@ func TestNewRelicAppConfig(t *testing.T) {
 			})
 
 			r := httptest.NewRequest("GET", "/", nil)
+			r.Host = "localhost"
 			resp, _ := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 			assert.Equal(t, 200, resp.StatusCode)
 		})
@@ -370,7 +383,9 @@ func TestDefaultErrorStatusCodeHandler(t *testing.T) {
 		})
 
 		// when
-		resp, err := app.Test(httptest.NewRequest("GET", "/", nil), fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+		r := httptest.NewRequest("GET", "/", nil)
+		r.Host = "localhost"
+		resp, err := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 		assert.NoError(t, err)
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 	})
@@ -398,6 +413,7 @@ func TestFromContext(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/foo", http.NoBody)
+	req.Host = "localhost"
 
 	// when
 	res, err := app.Test(req, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
@@ -417,7 +433,8 @@ func TestCreateWebRequest(t *testing.T) {
 			return ctx.SendStatus(http.StatusNoContent)
 		})
 
-		r := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Host = "example.com"
 		r.Header.Set("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 		r.Header.Add("X-Custom", "abc")
 		r.Header.Add("X-Custom", "def")
@@ -438,7 +455,8 @@ func TestCreateWebRequest(t *testing.T) {
 			return ctx.SendStatus(http.StatusNoContent)
 		})
 
-		r := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Host = "example.com"
 		r.Header.Set("traceparent", "trace-value")
 		r.Header.Set("Authorization", "Bearer secret")
 
@@ -464,6 +482,7 @@ func TestFromContext_PassLocalsToContext(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/foo", http.NoBody)
+	req.Host = "localhost"
 	res, err := app.Test(req, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusOK, res.StatusCode)
