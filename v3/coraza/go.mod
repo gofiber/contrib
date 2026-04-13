@@ -18,7 +18,7 @@ require (
 	github.com/kaptinlin/go-i18n v0.3.1 // indirect
 	github.com/kaptinlin/jsonpointer v0.4.17 // indirect
 	github.com/kaptinlin/jsonschema v0.7.7 // indirect
-	github.com/kaptinlin/messageformat-go v0.4.19 // indirect
+	github.com/kaptinlin/messageformat-go v0.4.20 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/magefile/mage v1.17.1 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
