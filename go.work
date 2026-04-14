@@ -3,6 +3,7 @@ go 1.25.0
 use (
 	./v3/casbin
 	./v3/circuitbreaker
+	./v3/coraza
 	./v3/fgprof
 	./v3/hcaptcha
 	./v3/i18n
