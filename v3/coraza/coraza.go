@@ -230,10 +230,12 @@ func (e *Engine) Middleware(config ...MiddlewareConfig) fiber.Handler {
 
 		startTime := time.Now()
 		metrics := e.Metrics()
-		metrics.RecordRequest()
+		blocked := false
 
 		defer func() {
-			metrics.RecordLatency(time.Since(startTime))
+			if metrics != nil {
+				metrics.ObserveRequest(time.Since(startTime), blocked)
+			}
 		}()
 
 		currentWAF, currentSupportsOptions, currentWAFWithOptions, currentErr := e.snapshot()
@@ -260,7 +262,7 @@ func (e *Engine) Middleware(config ...MiddlewareConfig) fiber.Handler {
 		}
 
 		if it != nil {
-			metrics.RecordBlock()
+			blocked = true
 
 			details := InterruptionDetails{
 				StatusCode: obtainStatusCodeFromInterruptionOrDefault(it, http.StatusForbidden),

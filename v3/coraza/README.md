@@ -42,7 +42,7 @@ coraza.NewEngine(config coraza.Config) (*coraza.Engine, error)
 | BlockMessage | `string` | Message returned by the built-in block handler | `"Request blocked by Web Application Firewall"` |
 | LogLevel | `fiberlog.Level` | Middleware lifecycle log level | `fiberlog.LevelInfo` in `coraza.ConfigDefault` |
 | RequestBodyAccess | `bool` | Enables request body inspection | `true` in `coraza.ConfigDefault` |
-| MetricsCollector | `coraza.MetricsCollector` | Optional custom in-memory metrics collector | `nil` (falls back to the built-in collector) |
+| MetricsCollector | `coraza.MetricsCollector` | Optional custom metrics collector | `nil` (falls back to the built-in collector) |
 
 If you want the defaults, start from `coraza.ConfigDefault` and override the fields you need.
 For zero-value-backed settings such as `RequestBodyAccess: false`, `LogLevel: fiberlog.LevelTrace`, or resetting `MetricsCollector` to the built-in default, use `ConfigDefault` or the helper methods `WithRequestBodyAccess`, `WithLogLevel`, and `WithMetricsCollector` so the choice remains explicit.
@@ -112,6 +112,9 @@ The middleware does not open operational routes for you, but `Engine` exposes da
 - `engine.MetricsSnapshot()`
 - `engine.Snapshot()`
 - `engine.Report()`
+
+`BlockRate` is cumulative since process start or the most recent collector reset.
+`RecentLatencyMs` and `RecentBlockRate` are EWMA-based recent-trend metrics with a fixed alpha of `0.2`.
 
 ## Notes
 

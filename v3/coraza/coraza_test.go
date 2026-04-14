@@ -444,7 +444,7 @@ func TestMetricsSnapshotHandlesNilCollectorSnapshot(t *testing.T) {
 
 	snapshot := engine.MetricsSnapshot()
 
-	if snapshot.TotalRequests != 0 || snapshot.BlockedRequests != 0 || snapshot.AvgLatencyMs != 0 || snapshot.BlockRate != 0 {
+	if snapshot.TotalRequests != 0 || snapshot.BlockedRequests != 0 || snapshot.BlockRate != 0 || snapshot.RecentLatencyMs != 0 || snapshot.RecentBlockRate != 0 {
 		t.Fatalf("expected zero-value metrics snapshot, got %+v", snapshot)
 	}
 	if snapshot.Timestamp.IsZero() {
@@ -751,22 +751,61 @@ func TestNewEngineWildcardDirectivesWithRootFSRequireMatch(t *testing.T) {
 	}
 }
 
-func TestDefaultMetricsCollectorRecordLatencyUsesOnlineAverage(t *testing.T) {
+func TestDefaultMetricsCollectorObserveRequestTracksRecentMetrics(t *testing.T) {
 	collector := NewDefaultMetricsCollector().(*defaultMetricsCollector)
 
-	collector.RecordLatency(time.Millisecond)
-	collector.RecordLatency(3 * time.Millisecond)
-	collector.RecordLatency(-time.Millisecond)
-
-	snapshot := collector.GetMetrics()
-	if snapshot == nil {
+	collector.ObserveRequest(time.Millisecond, false)
+	first := collector.GetMetrics()
+	if first == nil {
 		t.Fatal("expected metrics snapshot")
 	}
-	if collector.latencyCount != 2 {
-		t.Fatalf("expected negative latency sample to be ignored, got %d", collector.latencyCount)
+	if first.TotalRequests != 1 || first.BlockedRequests != 0 {
+		t.Fatalf("unexpected first snapshot counts: %+v", first)
 	}
-	if snapshot.AvgLatencyMs != 2 {
-		t.Fatalf("expected average latency to be 2ms, got %v", snapshot.AvgLatencyMs)
+	if first.BlockRate != 0 {
+		t.Fatalf("expected cumulative block rate to be 0, got %v", first.BlockRate)
+	}
+	if first.RecentLatencyMs != 1 {
+		t.Fatalf("expected first recent latency to seed at 1ms, got %v", first.RecentLatencyMs)
+	}
+	if first.RecentBlockRate != 0 {
+		t.Fatalf("expected first recent block rate to seed at 0, got %v", first.RecentBlockRate)
+	}
+
+	collector.ObserveRequest(3*time.Millisecond, true)
+	second := collector.GetMetrics()
+	if second == nil {
+		t.Fatal("expected metrics snapshot")
+	}
+	if second.TotalRequests != 2 || second.BlockedRequests != 1 {
+		t.Fatalf("unexpected second snapshot counts: %+v", second)
+	}
+	if second.BlockRate != 0.5 {
+		t.Fatalf("expected cumulative block rate to be 0.5, got %v", second.BlockRate)
+	}
+	if second.RecentLatencyMs != 1.4 {
+		t.Fatalf("expected recent latency EWMA to be 1.4ms, got %v", second.RecentLatencyMs)
+	}
+	if second.RecentBlockRate != 0.2 {
+		t.Fatalf("expected recent block rate EWMA to be 0.2, got %v", second.RecentBlockRate)
+	}
+
+	collector.ObserveRequest(-time.Millisecond, false)
+	third := collector.GetMetrics()
+	if third == nil {
+		t.Fatal("expected metrics snapshot")
+	}
+	if third.TotalRequests != 3 || third.BlockedRequests != 1 {
+		t.Fatalf("unexpected third snapshot counts: %+v", third)
+	}
+	if third.BlockRate != (1.0 / 3.0) {
+		t.Fatalf("expected cumulative block rate to be 1/3, got %v", third.BlockRate)
+	}
+	if third.RecentLatencyMs != second.RecentLatencyMs {
+		t.Fatalf("expected negative latency sample to leave recent latency unchanged, got %v want %v", third.RecentLatencyMs, second.RecentLatencyMs)
+	}
+	if third.RecentBlockRate != 0.16 {
+		t.Fatalf("expected recent block rate EWMA to be 0.16, got %v", third.RecentBlockRate)
 	}
 }
 
@@ -819,28 +858,27 @@ func performRequest(t *testing.T, app *fiber.App, req *http.Request) *http.Respo
 
 type nilSnapshotCollector struct{}
 
-func (nilSnapshotCollector) RecordRequest()               {}
-func (nilSnapshotCollector) RecordBlock()                 {}
-func (nilSnapshotCollector) RecordLatency(time.Duration)  {}
-func (nilSnapshotCollector) GetMetrics() *MetricsSnapshot { return nil }
-func (nilSnapshotCollector) Reset()                       {}
+func (nilSnapshotCollector) ObserveRequest(time.Duration, bool) {}
+func (nilSnapshotCollector) GetMetrics() *MetricsSnapshot       { return nil }
+func (nilSnapshotCollector) Reset()                             {}
 
 type nilPtrSnapshotCollector struct{}
 
-func (*nilPtrSnapshotCollector) RecordRequest()               {}
-func (*nilPtrSnapshotCollector) RecordBlock()                 {}
-func (*nilPtrSnapshotCollector) RecordLatency(time.Duration)  {}
-func (*nilPtrSnapshotCollector) GetMetrics() *MetricsSnapshot { return nil }
-func (*nilPtrSnapshotCollector) Reset()                       {}
+func (*nilPtrSnapshotCollector) ObserveRequest(time.Duration, bool) {}
+func (*nilPtrSnapshotCollector) GetMetrics() *MetricsSnapshot       { return nil }
+func (*nilPtrSnapshotCollector) Reset()                             {}
 
 type countingCollector struct {
 	requests uint64
 	blocks   uint64
 }
 
-func (c *countingCollector) RecordRequest()              { c.requests++ }
-func (c *countingCollector) RecordBlock()                { c.blocks++ }
-func (c *countingCollector) RecordLatency(time.Duration) {}
+func (c *countingCollector) ObserveRequest(_ time.Duration, blocked bool) {
+	c.requests++
+	if blocked {
+		c.blocks++
+	}
+}
 func (c *countingCollector) GetMetrics() *MetricsSnapshot {
 	return &MetricsSnapshot{
 		TotalRequests:   c.requests,
