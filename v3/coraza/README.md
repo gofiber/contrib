@@ -98,11 +98,14 @@ app.Use(engine.Middleware(coraza.MiddlewareConfig{
 	BlockHandler: func(c fiber.Ctx, details coraza.InterruptionDetails) error {
 		return c.Status(details.StatusCode).JSON(fiber.Map{
 			"blocked": true,
-			"rule_id": details.RuleID,
+			"message": "request blocked by security policy",
 		})
 	},
 }))
 ```
+
+For production deployments, avoid returning rule identifiers or detailed match data to clients.
+Prefer a generic error body and log the matched rule metadata server-side when needed.
 
 ## Engine observability
 
@@ -115,6 +118,15 @@ The middleware does not open operational routes for you, but `Engine` exposes da
 
 `BlockRate` is cumulative since process start or the most recent collector reset.
 `RecentLatencyMs` and `RecentBlockRate` are EWMA-based recent-trend metrics with a fixed alpha of `0.2`.
+
+## Reverse proxy / trusted proxy notes
+
+When running behind Nginx, Caddy, Traefik, Cloudflare, or any other reverse proxy,
+make sure Fiber trusted proxy settings are configured correctly before relying on
+`c.IP()` or Coraza rules that depend on `REMOTE_ADDR`.
+
+If trusted proxy validation is not configured correctly, spoofed forwarding headers
+may cause Coraza to evaluate rules against attacker-controlled client IP values.
 
 ## Notes
 
