@@ -17,6 +17,8 @@ on:
 jobs:
   Tests:
     runs-on: ubuntu-latest
+    env:
+      GOWORK: off
     strategy:
       matrix:
         go-version:

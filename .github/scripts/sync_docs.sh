@@ -67,10 +67,12 @@ elif [[ "${EVENT}" == "release" ]]; then
 
     log "Handling release event for tag: ${TAG_NAME}"
 
-    package_name="${TAG_NAME%/*}"
-    major_version="${TAG_NAME#*/}"
+    # Strip SOURCE_DIR prefix (e.g. "v3/") from tag if present
+    tag="${TAG_NAME#"${SOURCE_DIR}/"}"
+    package_name="${tag%/*}"
+    major_version="${tag#*/}"
     major_version="${major_version%%.*}"
-    new_version="${package_name}_${major_version}.x.x"
+    new_version="${SOURCE_DIR}_${package_name}_${major_version}.x.x"
 
     log "Computed new version identifier for docs: ${new_version}"
 
@@ -106,7 +108,8 @@ if git status --porcelain | grep -q .; then
         git commit -m "Add docs from ${COMMIT_URL}/commit/${latest_commit}"
     else
         log "Committing changes for release event"
-        git commit -m "Sync docs for release ${COMMIT_URL}/releases/tag/${TAG_NAME}"
+        encoded_tag="${TAG_NAME//\//%2F}"
+        git commit -m "Sync docs for release ${COMMIT_URL}/releases/tag/${encoded_tag}"
     fi
 
     log "Pushing changes to ${REPO_URL}"

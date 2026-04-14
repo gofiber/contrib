@@ -211,6 +211,7 @@ func Test_RequiresPermission(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			req.Host = "localhost"
 
 			resp, err := app.Test(req)
 			if err != nil {
@@ -322,6 +323,7 @@ func Test_RequiresRoles(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			req.Host = "localhost"
 
 			resp, err := app.Test(req)
 			if err != nil {
@@ -430,6 +432,7 @@ func Test_RoutePermission(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			req.Host = "localhost"
 
 			req.Header.Set("x-subject", tC.subject)
 			resp, err := app.Test(req)

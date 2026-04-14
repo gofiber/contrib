@@ -39,6 +39,7 @@ var (
 func makeRequest(lang language.Tag, name string, app *fiber.App) (*http.Response, error) {
 	path := "/" + name
 	req, _ := http.NewRequestWithContext(context.Background(), "GET", path, nil)
+	req.Host = "localhost"
 	if lang != language.Und {
 		req.Header.Add("Accept-Language", lang.String())
 	}

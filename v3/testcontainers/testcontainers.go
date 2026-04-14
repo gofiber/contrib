@@ -144,7 +144,7 @@ func (c *ContainerService[T]) State(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("container state is nil for %s", c.key)
 	}
 
-	return st.Status, nil
+	return string(st.Status), nil
 }
 
 // Terminate stops and removes the container. It implements the [fiber.Service] interface.

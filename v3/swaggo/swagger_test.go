@@ -93,6 +93,7 @@ func Test_Swagger(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			req.Host = "localhost"
 
 			resp, err := app.Test(req)
 			if err != nil {
@@ -143,6 +144,7 @@ func Test_Swagger_Proxy_Redirect(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		req.Host = "localhost"
 		req.Header.Set("X-Forwarded-Prefix", "/custom/path/")
 
 		resp, err := app.Test(req)
