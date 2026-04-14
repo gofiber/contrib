@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/v3/coraza
 go 1.25.0
 
 require (
-	github.com/corazawaf/coraza/v3 v3.5.0
+	github.com/corazawaf/coraza/v3 v3.7.0
 	github.com/gofiber/fiber/v3 v3.1.0
 )
 
@@ -20,7 +20,7 @@ require (
 	github.com/kaptinlin/go-i18n v0.1.4 // indirect
 	github.com/kaptinlin/jsonschema v0.4.6 // indirect
 	github.com/klauspost/compress v1.18.4 // indirect
-	github.com/magefile/mage v1.15.1-0.20250615140142-78acbaf2e3ae // indirect
+	github.com/magefile/mage v1.17.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/petar-dambovaliev/aho-corasick v0.0.0-20250424160509-463d218d4745 // indirect
@@ -37,6 +37,6 @@ require (
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
-	google.golang.org/protobuf v1.35.1 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
 	rsc.io/binaryregexp v0.2.0 // indirect
 )
