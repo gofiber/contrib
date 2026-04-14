@@ -517,6 +517,27 @@ func TestEngineInitFailureKeepsLastWorkingWAF(t *testing.T) {
 	}
 }
 
+func TestEngineInitClosesPreviousWAFOnSuccess(t *testing.T) {
+	engine := newEngine(NewDefaultMetricsCollector())
+	oldWAF := &fakeClosableWAF{}
+
+	engine.mu.Lock()
+	engine.waf = oldWAF
+	engine.mu.Unlock()
+
+	path := writeRuleFile(t, t.TempDir(), "reinit.conf", testRules)
+	if err := engine.Init(Config{
+		DirectivesFile:    []string{path},
+		RequestBodyAccess: true,
+	}); err != nil {
+		t.Fatalf("expected init to succeed, got %v", err)
+	}
+
+	if oldWAF.closeCalls != 1 {
+		t.Fatalf("expected previous WAF to be closed once, got %d", oldWAF.closeCalls)
+	}
+}
+
 func TestMiddlewareFailsClosedWhenWAFPanicOccurs(t *testing.T) {
 	engine := newEngine(NewDefaultMetricsCollector())
 	engine.waf = fakePanicWAF{}
@@ -561,6 +582,27 @@ func TestEngineSnapshotTracksLifecycleCounters(t *testing.T) {
 	}
 	if snapshot.ReloadCount != 1 {
 		t.Fatalf("expected ReloadCount=1, got %#v", snapshot.ReloadCount)
+	}
+}
+
+func TestEngineReloadClosesPreviousWAFOnSuccess(t *testing.T) {
+	engine, err := newTestEngine(t)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	oldWAF := &fakeClosableWAF{}
+	engine.mu.Lock()
+	engine.waf = oldWAF
+	engine.setWAFOptionsStateLocked(oldWAF)
+	engine.mu.Unlock()
+
+	if err := engine.Reload(); err != nil {
+		t.Fatalf("expected reload to succeed, got %v", err)
+	}
+
+	if oldWAF.closeCalls != 1 {
+		t.Fatalf("expected previous WAF to be closed once, got %d", oldWAF.closeCalls)
 	}
 }
 
@@ -819,6 +861,23 @@ func (fakePanicWAF) NewTransaction() types.Transaction {
 
 func (fakePanicWAF) NewTransactionWithID(string) types.Transaction {
 	return fakePanicTransaction{}
+}
+
+type fakeClosableWAF struct {
+	closeCalls int
+}
+
+func (*fakeClosableWAF) NewTransaction() types.Transaction {
+	return fakePanicTransaction{}
+}
+
+func (*fakeClosableWAF) NewTransactionWithID(string) types.Transaction {
+	return fakePanicTransaction{}
+}
+
+func (w *fakeClosableWAF) Close() error {
+	w.closeCalls++
+	return nil
 }
 
 type fakePanicTransaction struct{}

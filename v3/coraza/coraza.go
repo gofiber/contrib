@@ -174,17 +174,17 @@ func (e *Engine) Init(cfg Config) error {
 	logLevel := normalizeLogLevel(resolvedCfg.LogLevel)
 
 	e.mu.Lock()
-	defer e.mu.Unlock()
-
 	e.lastAttemptCfg = cloneConfig(resolvedCfg)
 
 	if err != nil {
 		e.initErr = err
 		e.initFailureCount++
+		e.mu.Unlock()
 		logWithLevel(logLevel, fiberlog.LevelError, "Coraza initialization failed", "error", err.Error())
 		return err
 	}
 
+	oldWAF := e.waf
 	e.waf = newWAF
 	e.initErr = nil
 	e.setWAFOptionsStateLocked(newWAF)
@@ -194,8 +194,11 @@ func (e *Engine) Init(cfg Config) error {
 	e.blockMessage = resolveBlockMessage(resolvedCfg.BlockMessage)
 	e.logLevel = logLevel
 	e.metrics = metrics
+	supportsOptions := e.supportsOptions
+	e.mu.Unlock()
 
-	logWithLevel(logLevel, fiberlog.LevelInfo, "Coraza initialized successfully", "supports_options", e.supportsOptions)
+	closeWAF(oldWAF, logLevel)
+	logWithLevel(logLevel, fiberlog.LevelInfo, "Coraza initialized successfully", "supports_options", supportsOptions)
 	return nil
 }
 
@@ -391,6 +394,7 @@ func (e *Engine) Reload() error {
 	}
 
 	e.mu.Lock()
+	oldWAF := e.waf
 	e.waf = newWAF
 	e.initErr = nil
 	e.setWAFOptionsStateLocked(newWAF)
@@ -401,8 +405,24 @@ func (e *Engine) Reload() error {
 	e.logLevel = logLevel
 	e.mu.Unlock()
 
+	closeWAF(oldWAF, logLevel)
 	logWithLevel(logLevel, fiberlog.LevelInfo, "Coraza reload completed successfully", "reload_count", reloadCount)
 	return nil
+}
+
+func closeWAF(waf coraza.WAF, logLevel fiberlog.Level) {
+	if waf == nil {
+		return
+	}
+
+	closer, ok := waf.(experimental.WAFCloser)
+	if !ok {
+		return
+	}
+
+	if err := closer.Close(); err != nil {
+		logWithLevel(logLevel, fiberlog.LevelWarn, "Coraza WAF close failed", "error", err.Error())
+	}
 }
 
 func (e *Engine) snapshot() (coraza.WAF, bool, experimental.WAFWithOptions, error) {
