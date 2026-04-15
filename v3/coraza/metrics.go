@@ -3,11 +3,18 @@ package coraza
 
 import (
 	"math"
+	"runtime"
 	"sync/atomic"
 	"time"
 )
 
 const metricsEWMAAlpha = 0.2
+
+const (
+	ewmaStateUninitialized uint32 = iota
+	ewmaStateSeeding
+	ewmaStateReady
+)
 
 // MetricsCollector records lightweight request metrics for a Coraza Engine.
 type MetricsCollector interface {
@@ -117,8 +124,8 @@ func (m *defaultMetricsCollector) Reset() {
 	m.blockedRequests.Store(0)
 	m.recentLatencyBits.Store(0)
 	m.recentBlockRateBits.Store(0)
-	m.recentLatencyInitialized.Store(0)
-	m.recentBlockInitialized.Store(0)
+	m.recentLatencyInitialized.Store(ewmaStateUninitialized)
+	m.recentBlockInitialized.Store(ewmaStateUninitialized)
 }
 
 func (m *defaultMetricsCollector) updateRecentLatency(duration time.Duration) {
@@ -135,25 +142,35 @@ func (m *defaultMetricsCollector) updateRecentBlockRate(blocked bool) {
 }
 
 func (m *defaultMetricsCollector) updateEWMA(sample float64, bits *atomic.Uint64, initialized *atomic.Uint32) {
-	if initialized.Load() == 0 {
-		if initialized.CompareAndSwap(0, 1) {
-			bits.Store(math.Float64bits(sample))
-			return
-		}
-	}
-
 	for {
-		currentBits := bits.Load()
-		current := math.Float64frombits(currentBits)
-		next := current + metricsEWMAAlpha*(sample-current)
-		if bits.CompareAndSwap(currentBits, math.Float64bits(next)) {
+		switch initialized.Load() {
+		case ewmaStateReady:
+			for {
+				currentBits := bits.Load()
+				current := math.Float64frombits(currentBits)
+				next := current + metricsEWMAAlpha*(sample-current)
+				if bits.CompareAndSwap(currentBits, math.Float64bits(next)) {
+					return
+				}
+			}
+		case ewmaStateUninitialized:
+			if initialized.CompareAndSwap(ewmaStateUninitialized, ewmaStateSeeding) {
+				bits.Store(math.Float64bits(sample))
+				initialized.Store(ewmaStateReady)
+				return
+			}
+		case ewmaStateSeeding:
+			runtime.Gosched()
+		default:
+			bits.Store(math.Float64bits(sample))
+			initialized.Store(ewmaStateReady)
 			return
 		}
 	}
 }
 
 func (m *defaultMetricsCollector) loadRecentLatencyMs() float64 {
-	if m.recentLatencyInitialized.Load() == 0 {
+	if m.recentLatencyInitialized.Load() != ewmaStateReady {
 		return 0
 	}
 
@@ -161,7 +178,7 @@ func (m *defaultMetricsCollector) loadRecentLatencyMs() float64 {
 }
 
 func (m *defaultMetricsCollector) loadRecentBlockRate() float64 {
-	if m.recentBlockInitialized.Load() == 0 {
+	if m.recentBlockInitialized.Load() != ewmaStateReady {
 		return 0
 	}
 

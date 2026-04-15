@@ -3,6 +3,7 @@ package coraza
 import (
 	"bytes"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,9 +18,18 @@ import (
 	fiberlog "github.com/gofiber/fiber/v3/log"
 )
 
+const float64Epsilon = 1e-9
+
 const testRules = `SecRuleEngine On
 SecRequestBodyAccess On
 SecRule ARGS:attack "@streq 1" "id:1001,phase:2,deny,status:403,msg:'attack detected'"`
+
+func assertFloat64Within(t *testing.T, got, want float64, label string) {
+	t.Helper()
+	if math.Abs(got-want) > float64Epsilon {
+		t.Fatalf("expected %s to be %v +/- %v, got %v", label, want, float64Epsilon, got)
+	}
+}
 
 func TestNewPanicsOnInvalidConfig(t *testing.T) {
 	defer func() {
@@ -783,12 +793,8 @@ func TestDefaultMetricsCollectorObserveRequestTracksRecentMetrics(t *testing.T) 
 	if second.BlockRate != 0.5 {
 		t.Fatalf("expected cumulative block rate to be 0.5, got %v", second.BlockRate)
 	}
-	if second.RecentLatencyMs != 1.4 {
-		t.Fatalf("expected recent latency EWMA to be 1.4ms, got %v", second.RecentLatencyMs)
-	}
-	if second.RecentBlockRate != 0.2 {
-		t.Fatalf("expected recent block rate EWMA to be 0.2, got %v", second.RecentBlockRate)
-	}
+	assertFloat64Within(t, second.RecentLatencyMs, 1.4, "recent latency EWMA")
+	assertFloat64Within(t, second.RecentBlockRate, 0.2, "recent block rate EWMA")
 
 	collector.ObserveRequest(-time.Millisecond, false)
 	third := collector.GetMetrics()
@@ -804,9 +810,7 @@ func TestDefaultMetricsCollectorObserveRequestTracksRecentMetrics(t *testing.T) 
 	if third.RecentLatencyMs != second.RecentLatencyMs {
 		t.Fatalf("expected negative latency sample to leave recent latency unchanged, got %v want %v", third.RecentLatencyMs, second.RecentLatencyMs)
 	}
-	if third.RecentBlockRate != 0.16 {
-		t.Fatalf("expected recent block rate EWMA to be 0.16, got %v", third.RecentBlockRate)
-	}
+	assertFloat64Within(t, third.RecentBlockRate, 0.16, "recent block rate EWMA")
 }
 
 func newInstanceApp(engine *Engine, cfg MiddlewareConfig) *fiber.App {
