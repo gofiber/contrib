@@ -385,12 +385,13 @@ func TestWebSocketConnIPSafeCopy(t *testing.T) {
 
 func TestWebSocketCompressionAfterHandlerReturns(t *testing.T) {
 	writeErr := make(chan error, 1)
+	handlerReturning := make(chan struct{})
 	app := setupTestApp(Config{
 		EnableCompression: true,
 	}, func(c *Conn) {
 		conn := c.Conn
 		go func() {
-			time.Sleep(10 * time.Millisecond)
+			<-handlerReturning
 			conn.EnableWriteCompression(true)
 			if err := conn.SetCompressionLevel(2); err != nil {
 				writeErr <- err
@@ -398,6 +399,7 @@ func TestWebSocketCompressionAfterHandlerReturns(t *testing.T) {
 			}
 			writeErr <- conn.WriteJSON(fiber.Map{"message": "hello websocket"})
 		}()
+		close(handlerReturning)
 	})
 	defer app.Shutdown()
 
