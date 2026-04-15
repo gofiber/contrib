@@ -389,6 +389,7 @@ func TestWebSocketCompressionAfterHandlerReturns(t *testing.T) {
 	app := setupTestApp(Config{
 		EnableCompression: true,
 	}, func(c *Conn) {
+		defer close(handlerReturning)
 		conn := c.Conn
 		go func() {
 			<-handlerReturning
@@ -399,7 +400,6 @@ func TestWebSocketCompressionAfterHandlerReturns(t *testing.T) {
 			}
 			writeErr <- conn.WriteJSON(fiber.Map{"message": "hello websocket"})
 		}()
-		close(handlerReturning)
 	})
 	defer app.Shutdown()
 
