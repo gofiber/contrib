@@ -12,14 +12,24 @@ updates:
           interval: "daily"
 
     # gomod split by alphabet ranges to reduce group PR size
-    # [a-l] ~8 modules | [m-r] ~6 modules | [s-z] ~8 modules
+    # a-l ~8 modules | m-r ~6 modules | s-z ~8 modules
     - package-ecosystem: "gomod"
       open-pull-requests-limit: 20
       allow:
           - dependency-type: "all"
       directories:
-          - "/v3/[a-l]*"
-          - "/v3/[a-l]*/**"
+          - "/v3/a*/**"
+          - "/v3/b*/**"
+          - "/v3/c*/**"
+          - "/v3/d*/**"
+          - "/v3/e*/**"
+          - "/v3/f*/**"
+          - "/v3/g*/**"
+          - "/v3/h*/**"
+          - "/v3/i*/**"
+          - "/v3/j*/**"
+          - "/v3/k*/**"
+          - "/v3/l*/**"
       labels:
           - "🤖 Dependencies"
       schedule:
@@ -108,8 +118,12 @@ updates:
       allow:
           - dependency-type: "all"
       directories:
-          - "/v3/[m-r]*"
-          - "/v3/[m-r]*/**"
+          - "/v3/m*/**"
+          - "/v3/n*/**"
+          - "/v3/o*/**"
+          - "/v3/p*/**"
+          - "/v3/q*/**"
+          - "/v3/r*/**"
       labels:
           - "🤖 Dependencies"
       schedule:
@@ -198,8 +212,14 @@ updates:
       allow:
           - dependency-type: "all"
       directories:
-          - "/v3/[s-z]*"
-          - "/v3/[s-z]*/**"
+          - "/v3/s*/**"
+          - "/v3/t*/**"
+          - "/v3/u*/**"
+          - "/v3/v*/**"
+          - "/v3/w*/**"
+          - "/v3/x*/**"
+          - "/v3/y*/**"
+          - "/v3/z*/**"
       labels:
           - "🤖 Dependencies"
       schedule:
