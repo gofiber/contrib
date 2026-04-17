@@ -18,18 +18,18 @@ updates:
       allow:
           - dependency-type: "all"
       directories:
-          - "/v3/a*/**"
-          - "/v3/b*/**"
-          - "/v3/c*/**"
-          - "/v3/d*/**"
-          - "/v3/e*/**"
-          - "/v3/f*/**"
-          - "/v3/g*/**"
-          - "/v3/h*/**"
-          - "/v3/i*/**"
-          - "/v3/j*/**"
-          - "/v3/k*/**"
-          - "/v3/l*/**"
+          - "/v3/a*"
+          - "/v3/b*"
+          - "/v3/c*"
+          - "/v3/d*"
+          - "/v3/e*"
+          - "/v3/f*"
+          - "/v3/g*"
+          - "/v3/h*"
+          - "/v3/i*"
+          - "/v3/j*"
+          - "/v3/k*"
+          - "/v3/l*"
       labels:
           - "🤖 Dependencies"
       schedule:
@@ -118,12 +118,13 @@ updates:
       allow:
           - dependency-type: "all"
       directories:
-          - "/v3/m*/**"
-          - "/v3/n*/**"
-          - "/v3/o*/**"
-          - "/v3/p*/**"
-          - "/v3/q*/**"
-          - "/v3/r*/**"
+          - "/v3/m*"
+          - "/v3/n*"
+          - "/v3/o*"
+          - "/v3/o*/*"
+          - "/v3/p*"
+          - "/v3/q*"
+          - "/v3/r*"
       labels:
           - "🤖 Dependencies"
       schedule:
@@ -212,14 +213,14 @@ updates:
       allow:
           - dependency-type: "all"
       directories:
-          - "/v3/s*/**"
-          - "/v3/t*/**"
-          - "/v3/u*/**"
-          - "/v3/v*/**"
-          - "/v3/w*/**"
-          - "/v3/x*/**"
-          - "/v3/y*/**"
-          - "/v3/z*/**"
+          - "/v3/s*"
+          - "/v3/t*"
+          - "/v3/u*"
+          - "/v3/v*"
+          - "/v3/w*"
+          - "/v3/x*"
+          - "/v3/y*"
+          - "/v3/z*"
       labels:
           - "🤖 Dependencies"
       schedule:
