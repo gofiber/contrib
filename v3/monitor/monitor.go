@@ -21,9 +21,10 @@ type stats struct {
 }
 
 type statsPID struct {
-	CPU   float64 `json:"cpu"`
-	RAM   uint64  `json:"ram"`
-	Conns int     `json:"conns"`
+	CPU      float64 `json:"cpu"`
+	RAM      uint64  `json:"ram"`
+	Conns    int     `json:"conns"`
+	Requests uint64  `json:"requests"`
 }
 
 type statsOS struct {
@@ -44,6 +45,8 @@ var (
 	monitOSTotalRAM atomic.Value
 	monitOSLoadAvg  atomic.Value
 	monitOSConns    atomic.Value
+
+	monitTotalRequests atomic.Uint64
 )
 
 var (
@@ -80,6 +83,9 @@ func New(config ...Config) fiber.Handler {
 			return c.Next()
 		}
 
+		// Increment the absolute request counter
+		monitTotalRequests.Add(1)
+
 		if c.Method() != fiber.MethodGet {
 			return fiber.ErrMethodNotAllowed
 		}
@@ -88,14 +94,16 @@ func New(config ...Config) fiber.Handler {
 			data.PID.CPU, _ = monitPIDCPU.Load().(float64)
 			data.PID.RAM, _ = monitPIDRAM.Load().(uint64)
 			data.PID.Conns, _ = monitPIDConns.Load().(int)
+			data.PID.Requests = monitTotalRequests.Load()
 
 			data.OS.CPU, _ = monitOSCPU.Load().(float64)
 			data.OS.RAM, _ = monitOSRAM.Load().(uint64)
 			data.OS.TotalRAM, _ = monitOSTotalRAM.Load().(uint64)
 			data.OS.LoadAvg, _ = monitOSLoadAvg.Load().(float64)
 			data.OS.Conns, _ = monitOSConns.Load().(int)
+			snapshot := *data
 			mutex.Unlock()
-			return c.Status(fiber.StatusOK).JSON(data)
+			return c.Status(fiber.StatusOK).JSON(&snapshot)
 		}
 		c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
 		return c.Status(fiber.StatusOK).SendString(cfg.index)

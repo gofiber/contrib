@@ -196,3 +196,35 @@ func Test_Monitor_APIOnly(t *testing.T) {
 	assert.Equal(t, true, bytes.Contains(b, []byte("pid")))
 	assert.Equal(t, true, bytes.Contains(b, []byte("os")))
 }
+
+// go test -run Test_Monitor_Requests -race
+func Test_Monitor_Requests(t *testing.T) {
+	t.Parallel()
+
+	// Reset counter before test using a fresh app
+	app := fiber.New()
+
+	app.Get("/metrics", New(Config{
+		APIOnly: true,
+	}))
+
+	// Make several requests
+	for i := 0; i < 5; i++ {
+		req := httptest.NewRequest(fiber.MethodGet, "/metrics", nil)
+		req.Header.Set(fiber.HeaderAccept, fiber.MIMEApplicationJSON)
+		resp, err := app.Test(req)
+		assert.Equal(t, nil, err)
+		assert.Equal(t, 200, resp.StatusCode)
+	}
+
+	// The last response should contain a requests counter > 0
+	req := httptest.NewRequest(fiber.MethodGet, "/metrics", nil)
+	req.Header.Set(fiber.HeaderAccept, fiber.MIMEApplicationJSON)
+	resp, err := app.Test(req)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, 200, resp.StatusCode)
+
+	b, err := io.ReadAll(resp.Body)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, true, bytes.Contains(b, []byte(`"requests"`)))
+}

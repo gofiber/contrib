@@ -136,6 +136,15 @@ $CUSTOM_HEAD
 				<canvas id="connsChart"></canvas>
 			</div>
 		</div>
+		<div class="row">
+			<div class="column">
+				<div class="metric">Total Requests</div>
+				<h2 id="reqsMetric">0</h2>
+			</div>
+			<div class="column">
+				<canvas id="reqsChart"></canvas>
+			</div>
+		</div>
 	</section>
 	</section>
 <script>
@@ -179,18 +188,21 @@ $CUSTOM_HEAD
 	const ramMetric = document.querySelector('#ramMetric');
 	const rtimeMetric = document.querySelector('#rtimeMetric');
 	const connsMetric = document.querySelector('#connsMetric');
+	const reqsMetric = document.querySelector('#reqsMetric');
 
 	const cpuChartCtx = document.querySelector('#cpuChart').getContext('2d');
 	const ramChartCtx = document.querySelector('#ramChart').getContext('2d');
 	const rtimeChartCtx = document.querySelector('#rtimeChart').getContext('2d');
 	const connsChartCtx = document.querySelector('#connsChart').getContext('2d');
+	const reqsChartCtx = document.querySelector('#reqsChart').getContext('2d');
 
 	const cpuChart = createChart(cpuChartCtx);
 	const ramChart = createChart(ramChartCtx);
 	const rtimeChart = createChart(rtimeChartCtx);
 	const connsChart = createChart(connsChartCtx);
+	const reqsChart = createChart(reqsChartCtx);
 
-	const charts = [cpuChart, ramChart, rtimeChart, connsChart];
+	const charts = [cpuChart, ramChart, rtimeChart, connsChart, reqsChart];
 
 	function createChart(ctx) {
 		return new Chart(ctx, {
@@ -230,6 +242,7 @@ $CUSTOM_HEAD
 			'<span><span> / </span><span class="ram_total">' + formatBytes(json.os.total_ram) + '</span>';
 		rtimeMetric.innerHTML = rtime + 'ms <span>client</span>';
 		connsMetric.innerHTML = json.pid.conns + ' <span>' + json.os.conns + '</span>';
+		reqsMetric.innerHTML = json.pid.requests;
 
 		cpuChart.data.datasets[0].data.push(cpu);
 		ramChart.data.datasets[2].data.push((json.os.total_ram / 1e6).toFixed(2));
@@ -237,6 +250,7 @@ $CUSTOM_HEAD
 		ramChart.data.datasets[0].data.push((json.pid.ram / 1e6).toFixed(2));
 		rtimeChart.data.datasets[0].data.push(rtime);
 		connsChart.data.datasets[0].data.push(json.pid.conns);
+		reqsChart.data.datasets[0].data.push(json.pid.requests);
 
 		const timestamp = new Date().getTime();
 
