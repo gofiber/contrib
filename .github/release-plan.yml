@@ -6,7 +6,7 @@
 #
 # Constraint: socketio depends on websocket (local replace).
 
-repo-type: multi
+wave-delay-minutes: 30
 
 waves:
   - name: base
