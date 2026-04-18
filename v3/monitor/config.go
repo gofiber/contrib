@@ -115,6 +115,14 @@ func configDefault(config ...Config) Config {
 		cfg.Next = ConfigDefault.Next
 	}
 
+	// Inherit the global APIOnly default when the caller hasn't explicitly enabled it.
+	// Note: because bool has no tri-state, Config{APIOnly: false} cannot override a
+	// ConfigDefault.APIOnly = true; callers who need that must reset ConfigDefault.APIOnly
+	// to false before constructing the handler.
+	if !cfg.APIOnly {
+		cfg.APIOnly = ConfigDefault.APIOnly
+	}
+
 	// update cfg.index with custom title/refresh
 	cfg.index = newIndex(viewBag{
 		title:      cfg.Title,

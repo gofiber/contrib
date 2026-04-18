@@ -2,9 +2,11 @@ package monitor
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -207,23 +209,36 @@ func Test_Monitor_Requests(t *testing.T) {
 		APIOnly: true,
 	}))
 
+	const nRequests = 5
+
 	// Make several requests
-	for i := 0; i < 5; i++ {
+	for i := 0; i < nRequests; i++ {
 		req := httptest.NewRequest(fiber.MethodGet, "/metrics", nil)
 		req.Header.Set(fiber.HeaderAccept, fiber.MIMEApplicationJSON)
 		resp, err := app.Test(req)
 		assert.Equal(t, nil, err)
 		assert.Equal(t, 200, resp.StatusCode)
+		assert.NoError(t, resp.Body.Close())
 	}
 
-	// The response should contain the absolute requests counter field
+	// Decode the final response and verify the counter reflects actual traffic.
 	req := httptest.NewRequest(fiber.MethodGet, "/metrics", nil)
 	req.Header.Set(fiber.HeaderAccept, fiber.MIMEApplicationJSON)
 	resp, err := app.Test(req)
 	assert.Equal(t, nil, err)
 	assert.Equal(t, 200, resp.StatusCode)
 
-	b, err := io.ReadAll(resp.Body)
+	var result struct {
+		PID struct {
+			Requests string `json:"requests"`
+		} `json:"pid"`
+	}
+	err = json.NewDecoder(resp.Body).Decode(&result)
 	assert.Equal(t, nil, err)
-	assert.True(t, bytes.Contains(b, []byte(`"requests"`)))
+
+	count, err := strconv.ParseUint(result.PID.Requests, 10, 64)
+	assert.Equal(t, nil, err)
+	// The counter is a global atomic shared across all parallel tests; assert >= the
+	// minimum number of requests we know we made (nRequests + this final request).
+	assert.GreaterOrEqual(t, count, uint64(nRequests+1))
 }

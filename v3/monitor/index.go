@@ -281,7 +281,7 @@ $CUSTOM_HEAD
 		ramChart.data.datasets[0].data.push((json.pid.ram / 1e6).toFixed(2));
 		rtimeChart.data.datasets[0].data.push(rtime);
 		connsChart.data.datasets[0].data.push(json.pid.conns);
-		reqsChart.data.datasets[0].data.push(json.pid.requests);
+		reqsChart.data.datasets[0].data.push(parseInt(json.pid.requests, 10));
 		goroutinesChart.data.datasets[0].data.push(json.pid.goroutines);
 
 		const timestamp = new Date().getTime();

@@ -3,6 +3,7 @@ package monitor
 import (
 	"os"
 	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,8 +26,10 @@ type statsPID struct {
 	RAM        uint64  `json:"ram"`
 	Conns      int     `json:"conns"`
 	Goroutines int     `json:"goroutines"`
-	Requests   uint64  `json:"requests"`
-	Uptime     float64 `json:"uptime"`
+	// Requests is encoded as a string to preserve precision in JavaScript,
+	// which cannot exactly represent uint64 values above 2^53-1.
+	Requests string  `json:"requests"`
+	Uptime   float64 `json:"uptime"`
 }
 
 type statsOS struct {
@@ -67,10 +70,8 @@ func New(config ...Config) fiber.Handler {
 	// Start routine to update statistics
 	once.Do(func() {
 		startTime = time.Now()
-		p, err := process.NewProcess(int32(os.Getpid()))
-		if err != nil {
-			return
-		}
+		// p may be nil on permission/platform errors; updateStatistics handles nil gracefully.
+		p, _ := process.NewProcess(int32(os.Getpid()))
 		numcpu := runtime.NumCPU()
 		updateStatistics(p, numcpu)
 
@@ -103,7 +104,7 @@ func New(config ...Config) fiber.Handler {
 			data.PID.RAM, _ = monitPIDRAM.Load().(uint64)
 			data.PID.Conns, _ = monitPIDConns.Load().(int)
 			data.PID.Goroutines, _ = monitPIDGoroutines.Load().(int)
-			data.PID.Requests = monitTotalRequests.Load()
+			data.PID.Requests = strconv.FormatUint(monitTotalRequests.Load(), 10)
 			data.PID.Uptime = time.Since(startTime).Seconds()
 
 			data.OS.CPU, _ = monitOSCPU.Load().(float64)
@@ -121,17 +122,24 @@ func New(config ...Config) fiber.Handler {
 }
 
 func updateStatistics(p *process.Process, numcpu int) {
-	pidCPU, err := p.Percent(0)
-	if err == nil {
-		monitPIDCPU.Store(pidCPU / float64(numcpu))
+	// Process-dependent metrics — skipped when p is nil (e.g. NewProcess failed).
+	if p != nil {
+		if pidCPU, err := p.Percent(0); err == nil {
+			monitPIDCPU.Store(pidCPU / float64(numcpu))
+		}
+
+		if pidRAM, err := p.MemoryInfo(); err == nil && pidRAM != nil {
+			monitPIDRAM.Store(pidRAM.RSS)
+		}
+
+		if pidConns, err := net.ConnectionsPid("tcp", p.Pid); err == nil {
+			monitPIDConns.Store(len(pidConns))
+		}
 	}
 
+	// Process-independent metrics — always updated.
 	if osCPU, err := cpu.Percent(0, false); err == nil && len(osCPU) > 0 {
 		monitOSCPU.Store(osCPU[0])
-	}
-
-	if pidRAM, err := p.MemoryInfo(); err == nil && pidRAM != nil {
-		monitPIDRAM.Store(pidRAM.RSS)
 	}
 
 	if osRAM, err := mem.VirtualMemory(); err == nil && osRAM != nil {
@@ -145,13 +153,7 @@ func updateStatistics(p *process.Process, numcpu int) {
 
 	monitPIDGoroutines.Store(runtime.NumGoroutine())
 
-	pidConns, err := net.ConnectionsPid("tcp", p.Pid)
-	if err == nil {
-		monitPIDConns.Store(len(pidConns))
-	}
-
-	osConns, err := net.Connections("tcp")
-	if err == nil {
+	if osConns, err := net.Connections("tcp"); err == nil {
 		monitOSConns.Store(len(osConns))
 	}
 }
