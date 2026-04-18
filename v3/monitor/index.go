@@ -262,6 +262,7 @@ $CUSTOM_HEAD
 		backgroundColor: 'rgba(0, 255, 0, .4)',
 		borderColor: 'rgba(0, 200, 0, .8)',
 	})
+	let prevRequestsBig = BigInt(0);
 	function update(json, rtime) {
 		const cpu = json.pid.cpu.toFixed(1);
 		const cpuOS = json.os.cpu.toFixed(1);
@@ -281,7 +282,9 @@ $CUSTOM_HEAD
 		ramChart.data.datasets[0].data.push((json.pid.ram / 1e6).toFixed(2));
 		rtimeChart.data.datasets[0].data.push(rtime);
 		connsChart.data.datasets[0].data.push(json.pid.conns);
-		reqsChart.data.datasets[0].data.push(parseInt(json.pid.requests, 10));
+		const reqsBig = BigInt(json.pid.requests);
+		reqsChart.data.datasets[0].data.push(Number(reqsBig - prevRequestsBig));
+		prevRequestsBig = reqsBig;
 		goroutinesChart.data.datasets[0].data.push(json.pid.goroutines);
 
 		const timestamp = new Date().getTime();

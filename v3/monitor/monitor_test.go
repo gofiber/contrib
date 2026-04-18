@@ -127,10 +127,31 @@ func Test_Monitor_JSON(t *testing.T) {
 	assert.Equal(t, 200, resp.StatusCode)
 	assert.Equal(t, fiber.MIMEApplicationJSONCharsetUTF8, resp.Header.Get(fiber.HeaderContentType))
 
-	b, err := io.ReadAll(resp.Body)
+	var result struct {
+		PID struct {
+			CPU        float64 `json:"cpu"`
+			RAM        uint64  `json:"ram"`
+			Conns      int     `json:"conns"`
+			Goroutines int     `json:"goroutines"`
+			Requests   string  `json:"requests"`
+			Uptime     float64 `json:"uptime"`
+		} `json:"pid"`
+		OS struct {
+			CPU      float64 `json:"cpu"`
+			RAM      uint64  `json:"ram"`
+			TotalRAM uint64  `json:"total_ram"`
+			LoadAvg  float64 `json:"load_avg"`
+			Conns    int     `json:"conns"`
+		} `json:"os"`
+	}
+	err = json.NewDecoder(resp.Body).Decode(&result)
 	assert.Equal(t, nil, err)
-	assert.Equal(t, true, bytes.Contains(b, []byte("pid")))
-	assert.Equal(t, true, bytes.Contains(b, []byte("os")))
+
+	// Validate new field types and expected value ranges.
+	_, parseErr := strconv.ParseUint(result.PID.Requests, 10, 64)
+	assert.NoError(t, parseErr, "pid.requests must be a string containing a non-negative integer")
+	assert.GreaterOrEqual(t, result.PID.Uptime, float64(0), "pid.uptime must be >= 0")
+	assert.Greater(t, result.PID.Goroutines, 0, "pid.goroutines must be > 0")
 }
 
 // go test -v -run=^$ -bench=Benchmark_Monitor -benchmem -count=4
@@ -227,6 +248,7 @@ func Test_Monitor_Requests(t *testing.T) {
 	resp, err := app.Test(req)
 	assert.Equal(t, nil, err)
 	assert.Equal(t, 200, resp.StatusCode)
+	defer resp.Body.Close() //nolint:errcheck
 
 	var result struct {
 		PID struct {
