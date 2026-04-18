@@ -28,6 +28,11 @@ func TestGetAndSetAuthenticatedIdentityFromContextForFiberV3(t *testing.T) {
 		require.Equal(t, id.Domain(), user.Domain())
 		return ctx.SendStatus(fiberV3.StatusOK)
 	})
-	app.Test(httptest.NewRequest("GET", "/test", nil))
-	app.Test(httptest.NewRequest("GET", "/identity/test", nil))
+	resp, err := app.Test(httptest.NewRequest("GET", "/test", nil))
+	require.NoError(t, err)
+	require.Equal(t, fiberV3.StatusOK, resp.StatusCode)
+
+	resp, err = app.Test(httptest.NewRequest("GET", "/identity/test", nil))
+	require.NoError(t, err)
+	require.Equal(t, fiberV3.StatusOK, resp.StatusCode)
 }
