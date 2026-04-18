@@ -3,6 +3,7 @@ package monitor
 import (
 	"os"
 	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,9 +22,14 @@ type stats struct {
 }
 
 type statsPID struct {
-	CPU   float64 `json:"cpu"`
-	RAM   uint64  `json:"ram"`
-	Conns int     `json:"conns"`
+	CPU        float64 `json:"cpu"`
+	RAM        uint64  `json:"ram"`
+	Conns      int     `json:"conns"`
+	Goroutines int     `json:"goroutines"`
+	// Requests is encoded as a string to preserve precision in JavaScript,
+	// which cannot exactly represent uint64 values above 2^53-1.
+	Requests string  `json:"requests"`
+	Uptime   float64 `json:"uptime"`
 }
 
 type statsOS struct {
@@ -35,21 +41,25 @@ type statsOS struct {
 }
 
 var (
-	monitPIDCPU   atomic.Value
-	monitPIDRAM   atomic.Value
-	monitPIDConns atomic.Value
+	monitPIDCPU        atomic.Value
+	monitPIDRAM        atomic.Value
+	monitPIDConns      atomic.Value
+	monitPIDGoroutines atomic.Value
 
 	monitOSCPU      atomic.Value
 	monitOSRAM      atomic.Value
 	monitOSTotalRAM atomic.Value
 	monitOSLoadAvg  atomic.Value
 	monitOSConns    atomic.Value
+
+	monitTotalRequests atomic.Uint64
 )
 
 var (
-	mutex sync.RWMutex
-	once  sync.Once
-	data  = &stats{}
+	mutex     sync.Mutex
+	once      sync.Once
+	data      = &stats{}
+	startTime time.Time
 )
 
 // New creates a new middleware handler
@@ -59,7 +69,9 @@ func New(config ...Config) fiber.Handler {
 
 	// Start routine to update statistics
 	once.Do(func() {
-		p, _ := process.NewProcess(int32(os.Getpid())) //nolint:errcheck // TODO: Handle error
+		startTime = time.Now()
+		// p may be nil on permission/platform errors; updateStatistics handles nil gracefully.
+		p, _ := process.NewProcess(int32(os.Getpid()))
 		numcpu := runtime.NumCPU()
 		updateStatistics(p, numcpu)
 
@@ -80,6 +92,9 @@ func New(config ...Config) fiber.Handler {
 			return c.Next()
 		}
 
+		// Increment the absolute request counter
+		monitTotalRequests.Add(1)
+
 		if c.Method() != fiber.MethodGet {
 			return fiber.ErrMethodNotAllowed
 		}
@@ -88,14 +103,18 @@ func New(config ...Config) fiber.Handler {
 			data.PID.CPU, _ = monitPIDCPU.Load().(float64)
 			data.PID.RAM, _ = monitPIDRAM.Load().(uint64)
 			data.PID.Conns, _ = monitPIDConns.Load().(int)
+			data.PID.Goroutines, _ = monitPIDGoroutines.Load().(int)
+			data.PID.Requests = strconv.FormatUint(monitTotalRequests.Load(), 10)
+			data.PID.Uptime = time.Since(startTime).Seconds()
 
 			data.OS.CPU, _ = monitOSCPU.Load().(float64)
 			data.OS.RAM, _ = monitOSRAM.Load().(uint64)
 			data.OS.TotalRAM, _ = monitOSTotalRAM.Load().(uint64)
 			data.OS.LoadAvg, _ = monitOSLoadAvg.Load().(float64)
 			data.OS.Conns, _ = monitOSConns.Load().(int)
+			snapshot := *data
 			mutex.Unlock()
-			return c.Status(fiber.StatusOK).JSON(data)
+			return c.Status(fiber.StatusOK).JSON(&snapshot)
 		}
 		c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
 		return c.Status(fiber.StatusOK).SendString(cfg.index)
@@ -103,17 +122,24 @@ func New(config ...Config) fiber.Handler {
 }
 
 func updateStatistics(p *process.Process, numcpu int) {
-	pidCPU, err := p.Percent(0)
-	if err == nil {
-		monitPIDCPU.Store(pidCPU / float64(numcpu))
+	// Process-dependent metrics — skipped when p is nil (e.g. NewProcess failed).
+	if p != nil {
+		if pidCPU, err := p.Percent(0); err == nil {
+			monitPIDCPU.Store(pidCPU / float64(numcpu))
+		}
+
+		if pidRAM, err := p.MemoryInfo(); err == nil && pidRAM != nil {
+			monitPIDRAM.Store(pidRAM.RSS)
+		}
+
+		if pidConns, err := net.ConnectionsPid("tcp", p.Pid); err == nil {
+			monitPIDConns.Store(len(pidConns))
+		}
 	}
 
+	// Process-independent metrics — always updated.
 	if osCPU, err := cpu.Percent(0, false); err == nil && len(osCPU) > 0 {
 		monitOSCPU.Store(osCPU[0])
-	}
-
-	if pidRAM, err := p.MemoryInfo(); err == nil && pidRAM != nil {
-		monitPIDRAM.Store(pidRAM.RSS)
 	}
 
 	if osRAM, err := mem.VirtualMemory(); err == nil && osRAM != nil {
@@ -125,13 +151,9 @@ func updateStatistics(p *process.Process, numcpu int) {
 		monitOSLoadAvg.Store(loadAvg.Load1)
 	}
 
-	pidConns, err := net.ConnectionsPid("tcp", p.Pid)
-	if err == nil {
-		monitPIDConns.Store(len(pidConns))
-	}
+	monitPIDGoroutines.Store(runtime.NumGoroutine())
 
-	osConns, err := net.Connections("tcp")
-	if err == nil {
+	if osConns, err := net.Connections("tcp"); err == nil {
 		monitOSConns.Store(len(osConns))
 	}
 }
