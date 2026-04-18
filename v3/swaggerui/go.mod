@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/v3/swaggerui
 go 1.25.0
 
 require (
-	github.com/go-openapi/runtime v0.29.3
+	github.com/go-openapi/runtime v0.29.4
 	github.com/gofiber/fiber/v3 v3.1.0
 	github.com/stretchr/testify v1.11.1
 	gopkg.in/yaml.v2 v2.4.0
@@ -53,3 +53,4 @@ require (
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
