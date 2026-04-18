@@ -50,7 +50,7 @@ var (
 )
 
 var (
-	mutex sync.RWMutex
+	mutex sync.Mutex
 	once  sync.Once
 	data  = &stats{}
 )
@@ -62,7 +62,10 @@ func New(config ...Config) fiber.Handler {
 
 	// Start routine to update statistics
 	once.Do(func() {
-		p, _ := process.NewProcess(int32(os.Getpid())) //nolint:errcheck // TODO: Handle error
+		p, err := process.NewProcess(int32(os.Getpid()))
+		if err != nil {
+			return
+		}
 		numcpu := runtime.NumCPU()
 		updateStatistics(p, numcpu)
 

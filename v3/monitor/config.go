@@ -115,10 +115,6 @@ func configDefault(config ...Config) Config {
 		cfg.Next = ConfigDefault.Next
 	}
 
-	if !cfg.APIOnly {
-		cfg.APIOnly = ConfigDefault.APIOnly
-	}
-
 	// update cfg.index with custom title/refresh
 	cfg.index = newIndex(viewBag{
 		title:      cfg.Title,

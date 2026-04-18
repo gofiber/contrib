@@ -234,8 +234,8 @@ $CUSTOM_HEAD
 		borderColor: 'rgba(0, 200, 0, .8)',
 	})
 	function update(json, rtime) {
-		cpu = json.pid.cpu.toFixed(1);
-		cpuOS = json.os.cpu.toFixed(1);
+		const cpu = json.pid.cpu.toFixed(1);
+		const cpuOS = json.os.cpu.toFixed(1);
 
 		cpuMetric.innerHTML = cpu + '% <span>' + cpuOS + '%</span>';
 		ramMetric.innerHTML = formatBytes(json.pid.ram) + '<span> / </span><span class="ram_os">' + formatBytes(json.os.ram) +
