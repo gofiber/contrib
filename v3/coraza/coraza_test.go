@@ -3,6 +3,7 @@ package coraza
 import (
 	"bytes"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,9 +18,18 @@ import (
 	fiberlog "github.com/gofiber/fiber/v3/log"
 )
 
+const float64Epsilon = 1e-9
+
 const testRules = `SecRuleEngine On
 SecRequestBodyAccess On
 SecRule ARGS:attack "@streq 1" "id:1001,phase:2,deny,status:403,msg:'attack detected'"`
+
+func assertFloat64Within(t *testing.T, got, want float64, label string) {
+	t.Helper()
+	if math.Abs(got-want) > float64Epsilon {
+		t.Fatalf("expected %s to be %v +/- %v, got %v", label, want, float64Epsilon, got)
+	}
+}
 
 func TestNewPanicsOnInvalidConfig(t *testing.T) {
 	defer func() {
@@ -444,7 +454,7 @@ func TestMetricsSnapshotHandlesNilCollectorSnapshot(t *testing.T) {
 
 	snapshot := engine.MetricsSnapshot()
 
-	if snapshot.TotalRequests != 0 || snapshot.BlockedRequests != 0 || snapshot.AvgLatencyMs != 0 || snapshot.BlockRate != 0 {
+	if snapshot.TotalRequests != 0 || snapshot.BlockedRequests != 0 || snapshot.BlockRate != 0 || snapshot.RecentLatencyMs != 0 || snapshot.RecentBlockRate != 0 {
 		t.Fatalf("expected zero-value metrics snapshot, got %+v", snapshot)
 	}
 	if snapshot.Timestamp.IsZero() {
@@ -517,6 +527,27 @@ func TestEngineInitFailureKeepsLastWorkingWAF(t *testing.T) {
 	}
 }
 
+func TestEngineInitClosesPreviousWAFOnSuccess(t *testing.T) {
+	engine := newEngine(NewDefaultMetricsCollector())
+	oldWAF := &fakeClosableWAF{}
+
+	engine.mu.Lock()
+	engine.waf = oldWAF
+	engine.mu.Unlock()
+
+	path := writeRuleFile(t, t.TempDir(), "reinit.conf", testRules)
+	if err := engine.Init(Config{
+		DirectivesFile:    []string{path},
+		RequestBodyAccess: true,
+	}); err != nil {
+		t.Fatalf("expected init to succeed, got %v", err)
+	}
+
+	if oldWAF.closeCalls != 1 {
+		t.Fatalf("expected previous WAF to be closed once, got %d", oldWAF.closeCalls)
+	}
+}
+
 func TestMiddlewareFailsClosedWhenWAFPanicOccurs(t *testing.T) {
 	engine := newEngine(NewDefaultMetricsCollector())
 	engine.waf = fakePanicWAF{}
@@ -561,6 +592,27 @@ func TestEngineSnapshotTracksLifecycleCounters(t *testing.T) {
 	}
 	if snapshot.ReloadCount != 1 {
 		t.Fatalf("expected ReloadCount=1, got %#v", snapshot.ReloadCount)
+	}
+}
+
+func TestEngineReloadClosesPreviousWAFOnSuccess(t *testing.T) {
+	engine, err := newTestEngine(t)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	oldWAF := &fakeClosableWAF{}
+	engine.mu.Lock()
+	engine.waf = oldWAF
+	engine.setWAFOptionsStateLocked(oldWAF)
+	engine.mu.Unlock()
+
+	if err := engine.Reload(); err != nil {
+		t.Fatalf("expected reload to succeed, got %v", err)
+	}
+
+	if oldWAF.closeCalls != 1 {
+		t.Fatalf("expected previous WAF to be closed once, got %d", oldWAF.closeCalls)
 	}
 }
 
@@ -709,23 +761,56 @@ func TestNewEngineWildcardDirectivesWithRootFSRequireMatch(t *testing.T) {
 	}
 }
 
-func TestDefaultMetricsCollectorRecordLatencyUsesOnlineAverage(t *testing.T) {
+func TestDefaultMetricsCollectorObserveRequestTracksRecentMetrics(t *testing.T) {
 	collector := NewDefaultMetricsCollector().(*defaultMetricsCollector)
 
-	collector.RecordLatency(time.Millisecond)
-	collector.RecordLatency(3 * time.Millisecond)
-	collector.RecordLatency(-time.Millisecond)
-
-	snapshot := collector.GetMetrics()
-	if snapshot == nil {
+	collector.ObserveRequest(time.Millisecond, false)
+	first := collector.GetMetrics()
+	if first == nil {
 		t.Fatal("expected metrics snapshot")
 	}
-	if collector.latencyCount != 2 {
-		t.Fatalf("expected negative latency sample to be ignored, got %d", collector.latencyCount)
+	if first.TotalRequests != 1 || first.BlockedRequests != 0 {
+		t.Fatalf("unexpected first snapshot counts: %+v", first)
 	}
-	if snapshot.AvgLatencyMs != 2 {
-		t.Fatalf("expected average latency to be 2ms, got %v", snapshot.AvgLatencyMs)
+	if first.BlockRate != 0 {
+		t.Fatalf("expected cumulative block rate to be 0, got %v", first.BlockRate)
 	}
+	if first.RecentLatencyMs != 1 {
+		t.Fatalf("expected first recent latency to seed at 1ms, got %v", first.RecentLatencyMs)
+	}
+	if first.RecentBlockRate != 0 {
+		t.Fatalf("expected first recent block rate to seed at 0, got %v", first.RecentBlockRate)
+	}
+
+	collector.ObserveRequest(3*time.Millisecond, true)
+	second := collector.GetMetrics()
+	if second == nil {
+		t.Fatal("expected metrics snapshot")
+	}
+	if second.TotalRequests != 2 || second.BlockedRequests != 1 {
+		t.Fatalf("unexpected second snapshot counts: %+v", second)
+	}
+	if second.BlockRate != 0.5 {
+		t.Fatalf("expected cumulative block rate to be 0.5, got %v", second.BlockRate)
+	}
+	assertFloat64Within(t, second.RecentLatencyMs, 1.4, "recent latency EWMA")
+	assertFloat64Within(t, second.RecentBlockRate, 0.2, "recent block rate EWMA")
+
+	collector.ObserveRequest(-time.Millisecond, false)
+	third := collector.GetMetrics()
+	if third == nil {
+		t.Fatal("expected metrics snapshot")
+	}
+	if third.TotalRequests != 3 || third.BlockedRequests != 1 {
+		t.Fatalf("unexpected third snapshot counts: %+v", third)
+	}
+	if third.BlockRate != (1.0 / 3.0) {
+		t.Fatalf("expected cumulative block rate to be 1/3, got %v", third.BlockRate)
+	}
+	if third.RecentLatencyMs != second.RecentLatencyMs {
+		t.Fatalf("expected negative latency sample to leave recent latency unchanged, got %v want %v", third.RecentLatencyMs, second.RecentLatencyMs)
+	}
+	assertFloat64Within(t, third.RecentBlockRate, 0.16, "recent block rate EWMA")
 }
 
 func newInstanceApp(engine *Engine, cfg MiddlewareConfig) *fiber.App {
@@ -777,28 +862,27 @@ func performRequest(t *testing.T, app *fiber.App, req *http.Request) *http.Respo
 
 type nilSnapshotCollector struct{}
 
-func (nilSnapshotCollector) RecordRequest()               {}
-func (nilSnapshotCollector) RecordBlock()                 {}
-func (nilSnapshotCollector) RecordLatency(time.Duration)  {}
-func (nilSnapshotCollector) GetMetrics() *MetricsSnapshot { return nil }
-func (nilSnapshotCollector) Reset()                       {}
+func (nilSnapshotCollector) ObserveRequest(time.Duration, bool) {}
+func (nilSnapshotCollector) GetMetrics() *MetricsSnapshot       { return nil }
+func (nilSnapshotCollector) Reset()                             {}
 
 type nilPtrSnapshotCollector struct{}
 
-func (*nilPtrSnapshotCollector) RecordRequest()               {}
-func (*nilPtrSnapshotCollector) RecordBlock()                 {}
-func (*nilPtrSnapshotCollector) RecordLatency(time.Duration)  {}
-func (*nilPtrSnapshotCollector) GetMetrics() *MetricsSnapshot { return nil }
-func (*nilPtrSnapshotCollector) Reset()                       {}
+func (*nilPtrSnapshotCollector) ObserveRequest(time.Duration, bool) {}
+func (*nilPtrSnapshotCollector) GetMetrics() *MetricsSnapshot       { return nil }
+func (*nilPtrSnapshotCollector) Reset()                             {}
 
 type countingCollector struct {
 	requests uint64
 	blocks   uint64
 }
 
-func (c *countingCollector) RecordRequest()              { c.requests++ }
-func (c *countingCollector) RecordBlock()                { c.blocks++ }
-func (c *countingCollector) RecordLatency(time.Duration) {}
+func (c *countingCollector) ObserveRequest(_ time.Duration, blocked bool) {
+	c.requests++
+	if blocked {
+		c.blocks++
+	}
+}
 func (c *countingCollector) GetMetrics() *MetricsSnapshot {
 	return &MetricsSnapshot{
 		TotalRequests:   c.requests,
@@ -819,6 +903,23 @@ func (fakePanicWAF) NewTransaction() types.Transaction {
 
 func (fakePanicWAF) NewTransactionWithID(string) types.Transaction {
 	return fakePanicTransaction{}
+}
+
+type fakeClosableWAF struct {
+	closeCalls int
+}
+
+func (*fakeClosableWAF) NewTransaction() types.Transaction {
+	return fakePanicTransaction{}
+}
+
+func (*fakeClosableWAF) NewTransactionWithID(string) types.Transaction {
+	return fakePanicTransaction{}
+}
+
+func (w *fakeClosableWAF) Close() error {
+	w.closeCalls++
+	return nil
 }
 
 type fakePanicTransaction struct{}
