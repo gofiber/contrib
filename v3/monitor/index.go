@@ -93,12 +93,19 @@ const (
 		width: 200px;
 		height: 180px;
 	}
+	.uptime {
+		text-align: center;
+		color: #777;
+		font-size: 0.9em;
+		margin-top: -1.5em;
+		margin-bottom: 1.5em;
+	}
 $CUSTOM_HEAD
 </style>
 </head>
 <body>
 	<section class="wrapper">
-	<div class="title"><h1>$TITLE</h1></div>
+	<div class="title"><h1>$TITLE</h1><div class="uptime">Uptime: <span id="uptimeMetric">—</span></div></div>
 	<section class="charts">
 		<div class="row">
 			<div class="column">
@@ -145,6 +152,15 @@ $CUSTOM_HEAD
 				<canvas id="reqsChart"></canvas>
 			</div>
 		</div>
+		<div class="row">
+			<div class="column">
+				<div class="metric">Goroutines</div>
+				<h2 id="goroutinesMetric">0</h2>
+			</div>
+			<div class="column">
+				<canvas id="goroutinesChart"></canvas>
+			</div>
+		</div>
 	</section>
 	</section>
 <script>
@@ -158,6 +174,15 @@ $CUSTOM_HEAD
 		const i = Math.floor(Math.log(bytes) / Math.log(k));
 
 		return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+	}
+	function formatUptime(seconds) {
+		if (seconds < 0) return '0s';
+		const s = Math.floor(seconds % 60);
+		const m = Math.floor((seconds / 60) % 60);
+		const h = Math.floor(seconds / 3600);
+		if (h > 0) return h + 'h ' + m + 'm ' + s + 's';
+		if (m > 0) return m + 'm ' + s + 's';
+		return s + 's';
 	}
 	Chart.defaults.global.legend.display = false;
 	Chart.defaults.global.defaultFontSize = 8;
@@ -189,20 +214,24 @@ $CUSTOM_HEAD
 	const rtimeMetric = document.querySelector('#rtimeMetric');
 	const connsMetric = document.querySelector('#connsMetric');
 	const reqsMetric = document.querySelector('#reqsMetric');
+	const goroutinesMetric = document.querySelector('#goroutinesMetric');
+	const uptimeMetric = document.querySelector('#uptimeMetric');
 
 	const cpuChartCtx = document.querySelector('#cpuChart').getContext('2d');
 	const ramChartCtx = document.querySelector('#ramChart').getContext('2d');
 	const rtimeChartCtx = document.querySelector('#rtimeChart').getContext('2d');
 	const connsChartCtx = document.querySelector('#connsChart').getContext('2d');
 	const reqsChartCtx = document.querySelector('#reqsChart').getContext('2d');
+	const goroutinesChartCtx = document.querySelector('#goroutinesChart').getContext('2d');
 
 	const cpuChart = createChart(cpuChartCtx);
 	const ramChart = createChart(ramChartCtx);
 	const rtimeChart = createChart(rtimeChartCtx);
 	const connsChart = createChart(connsChartCtx);
 	const reqsChart = createChart(reqsChartCtx);
+	const goroutinesChart = createChart(goroutinesChartCtx);
 
-	const charts = [cpuChart, ramChart, rtimeChart, connsChart, reqsChart];
+	const charts = [cpuChart, ramChart, rtimeChart, connsChart, reqsChart, goroutinesChart];
 
 	function createChart(ctx) {
 		return new Chart(ctx, {
@@ -243,6 +272,8 @@ $CUSTOM_HEAD
 		rtimeMetric.innerHTML = rtime + 'ms <span>client</span>';
 		connsMetric.innerHTML = json.pid.conns + ' <span>' + json.os.conns + '</span>';
 		reqsMetric.innerHTML = json.pid.requests;
+		goroutinesMetric.innerHTML = json.pid.goroutines;
+		uptimeMetric.innerHTML = formatUptime(json.pid.uptime);
 
 		cpuChart.data.datasets[0].data.push(cpu);
 		ramChart.data.datasets[2].data.push((json.os.total_ram / 1e6).toFixed(2));
@@ -251,6 +282,7 @@ $CUSTOM_HEAD
 		rtimeChart.data.datasets[0].data.push(rtime);
 		connsChart.data.datasets[0].data.push(json.pid.conns);
 		reqsChart.data.datasets[0].data.push(json.pid.requests);
+		goroutinesChart.data.datasets[0].data.push(json.pid.goroutines);
 
 		const timestamp = new Date().getTime();
 

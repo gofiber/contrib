@@ -21,10 +21,12 @@ type stats struct {
 }
 
 type statsPID struct {
-	CPU      float64 `json:"cpu"`
-	RAM      uint64  `json:"ram"`
-	Conns    int     `json:"conns"`
-	Requests uint64  `json:"requests"`
+	CPU        float64 `json:"cpu"`
+	RAM        uint64  `json:"ram"`
+	Conns      int     `json:"conns"`
+	Goroutines int     `json:"goroutines"`
+	Requests   uint64  `json:"requests"`
+	Uptime     float64 `json:"uptime"`
 }
 
 type statsOS struct {
@@ -36,9 +38,10 @@ type statsOS struct {
 }
 
 var (
-	monitPIDCPU   atomic.Value
-	monitPIDRAM   atomic.Value
-	monitPIDConns atomic.Value
+	monitPIDCPU        atomic.Value
+	monitPIDRAM        atomic.Value
+	monitPIDConns      atomic.Value
+	monitPIDGoroutines atomic.Value
 
 	monitOSCPU      atomic.Value
 	monitOSRAM      atomic.Value
@@ -50,9 +53,10 @@ var (
 )
 
 var (
-	mutex sync.Mutex
-	once  sync.Once
-	data  = &stats{}
+	mutex     sync.Mutex
+	once      sync.Once
+	data      = &stats{}
+	startTime time.Time
 )
 
 // New creates a new middleware handler
@@ -62,6 +66,7 @@ func New(config ...Config) fiber.Handler {
 
 	// Start routine to update statistics
 	once.Do(func() {
+		startTime = time.Now()
 		p, err := process.NewProcess(int32(os.Getpid()))
 		if err != nil {
 			return
@@ -97,7 +102,9 @@ func New(config ...Config) fiber.Handler {
 			data.PID.CPU, _ = monitPIDCPU.Load().(float64)
 			data.PID.RAM, _ = monitPIDRAM.Load().(uint64)
 			data.PID.Conns, _ = monitPIDConns.Load().(int)
+			data.PID.Goroutines, _ = monitPIDGoroutines.Load().(int)
 			data.PID.Requests = monitTotalRequests.Load()
+			data.PID.Uptime = time.Since(startTime).Seconds()
 
 			data.OS.CPU, _ = monitOSCPU.Load().(float64)
 			data.OS.RAM, _ = monitOSRAM.Load().(uint64)
@@ -135,6 +142,8 @@ func updateStatistics(p *process.Process, numcpu int) {
 	if loadAvg, err := load.Avg(); err == nil && loadAvg != nil {
 		monitOSLoadAvg.Store(loadAvg.Load1)
 	}
+
+	monitPIDGoroutines.Store(runtime.NumGoroutine())
 
 	pidConns, err := net.ConnectionsPid("tcp", p.Pid)
 	if err == nil {
