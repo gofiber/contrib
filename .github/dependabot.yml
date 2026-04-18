@@ -10,13 +10,26 @@ updates:
           - "🤖 Dependencies"
       schedule:
           interval: "daily"
+
+    # gomod split by alphabet ranges to reduce group PR size
+    # a-l ~8 modules | m-r ~6 modules | s-z ~8 modules
     - package-ecosystem: "gomod"
-      open-pull-requests-limit: 50
+      open-pull-requests-limit: 20
       allow:
-          # Allow both direct and indirect updates for all packages.
           - dependency-type: "all"
       directories:
-          - "**/*"
+          - "/v3/a*"
+          - "/v3/b*"
+          - "/v3/c*"
+          - "/v3/d*"
+          - "/v3/e*"
+          - "/v3/f*"
+          - "/v3/g*"
+          - "/v3/h*"
+          - "/v3/i*"
+          - "/v3/j*"
+          - "/v3/k*"
+          - "/v3/l*"
       labels:
           - "🤖 Dependencies"
       schedule:
@@ -27,8 +40,199 @@ updates:
                   - "github.com/gofiber/fiber/**"
           fiber-utils-modules:
               patterns:
-                  - "github.com/gofiber/utils" 
-                  - "github.com/gofiber/utils/**" 
+                  - "github.com/gofiber/utils"
+                  - "github.com/gofiber/utils/**"
+          fiber-schema-modules:
+              patterns:
+                  - "github.com/gofiber/schema"
+                  - "github.com/gofiber/schema/**"
+          fasthttp-modules:
+              patterns:
+                  - "github.com/valyala/fasthttp"
+                  - "github.com/valyala/fasthttp/**"
+          golang-modules:
+              patterns:
+                  - "golang.org/x/**"
+          opentelemetry-modules:
+              patterns:
+                  - "go.opentelemetry.io/**"
+          fasthttp-websocket-modules:
+              patterns:
+                  - "github.com/fasthttp/websocket/**"
+          valyala-utils-modules:
+              patterns:
+                  - "github.com/valyala/bytebufferpool"
+                  - "github.com/valyala/tcplisten"
+          mattn-modules:
+              patterns:
+                  - "github.com/mattn/go-colorable"
+                  - "github.com/mattn/go-isatty"
+                  - "github.com/mattn/go-runewidth"
+          shirou-modules:
+              patterns:
+                  - "github.com/shirou/gopsutil"
+                  - "github.com/shirou/gopsutil/**"
+          ebitengine-modules:
+              patterns:
+                  - "github.com/ebitengine/**"
+          klauspost-modules:
+              patterns:
+                  - "github.com/klauspost/**"
+          tklauser-modules:
+              patterns:
+                  - "github.com/tklauser/**"
+          google-modules:
+              patterns:
+                  - "github.com/google/**"
+                  - "google.golang.org/**"
+          testing-modules:
+              patterns:
+                  - "github.com/stretchr/**"
+                  - "github.com/davecgh/go-spew"
+                  - "github.com/pmezard/go-difflib"
+          check-testing-modules:
+              patterns:
+                  - "gopkg.in/check.v*"
+                  - "github.com/kr/**"
+                  - "github.com/rogpeppe/go-internal"
+          tinylib-modules:
+              patterns:
+                  - "github.com/tinylib/**"
+          msgp-modules:
+              patterns:
+                  - "github.com/philhofer/fwd"
+          openapi-modules:
+              patterns:
+                  - "github.com/go-openapi/**"
+          yaml-modules:
+              patterns:
+                  - "gopkg.in/yaml.*"
+                  - "go.yaml.in/yaml/**"
+                  - "sigs.k8s.io/yaml"
+          andybalholm-modules:
+              patterns:
+                  - "github.com/andybalholm/**"
+
+    - package-ecosystem: "gomod"
+      open-pull-requests-limit: 20
+      allow:
+          - dependency-type: "all"
+      directories:
+          - "/v3/m*"
+          - "/v3/n*"
+          - "/v3/o*"
+          - "/v3/o*/*"
+          - "/v3/p*"
+          - "/v3/q*"
+          - "/v3/r*"
+      labels:
+          - "🤖 Dependencies"
+      schedule:
+          interval: "daily"
+      groups:
+          fiber-modules:
+              patterns:
+                  - "github.com/gofiber/fiber/**"
+          fiber-utils-modules:
+              patterns:
+                  - "github.com/gofiber/utils"
+                  - "github.com/gofiber/utils/**"
+          fiber-schema-modules:
+              patterns:
+                  - "github.com/gofiber/schema"
+                  - "github.com/gofiber/schema/**"
+          fasthttp-modules:
+              patterns:
+                  - "github.com/valyala/fasthttp"
+                  - "github.com/valyala/fasthttp/**"
+          golang-modules:
+              patterns:
+                  - "golang.org/x/**"
+          opentelemetry-modules:
+              patterns:
+                  - "go.opentelemetry.io/**"
+          fasthttp-websocket-modules:
+              patterns:
+                  - "github.com/fasthttp/websocket/**"
+          valyala-utils-modules:
+              patterns:
+                  - "github.com/valyala/bytebufferpool"
+                  - "github.com/valyala/tcplisten"
+          mattn-modules:
+              patterns:
+                  - "github.com/mattn/go-colorable"
+                  - "github.com/mattn/go-isatty"
+                  - "github.com/mattn/go-runewidth"
+          shirou-modules:
+              patterns:
+                  - "github.com/shirou/gopsutil"
+                  - "github.com/shirou/gopsutil/**"
+          ebitengine-modules:
+              patterns:
+                  - "github.com/ebitengine/**"
+          klauspost-modules:
+              patterns:
+                  - "github.com/klauspost/**"
+          tklauser-modules:
+              patterns:
+                  - "github.com/tklauser/**"
+          google-modules:
+              patterns:
+                  - "github.com/google/**"
+                  - "google.golang.org/**"
+          testing-modules:
+              patterns:
+                  - "github.com/stretchr/**"
+                  - "github.com/davecgh/go-spew"
+                  - "github.com/pmezard/go-difflib"
+          check-testing-modules:
+              patterns:
+                  - "gopkg.in/check.v*"
+                  - "github.com/kr/**"
+                  - "github.com/rogpeppe/go-internal"
+          tinylib-modules:
+              patterns:
+                  - "github.com/tinylib/**"
+          msgp-modules:
+              patterns:
+                  - "github.com/philhofer/fwd"
+          openapi-modules:
+              patterns:
+                  - "github.com/go-openapi/**"
+          yaml-modules:
+              patterns:
+                  - "gopkg.in/yaml.*"
+                  - "go.yaml.in/yaml/**"
+                  - "sigs.k8s.io/yaml"
+          andybalholm-modules:
+              patterns:
+                  - "github.com/andybalholm/**"
+
+    - package-ecosystem: "gomod"
+      open-pull-requests-limit: 20
+      allow:
+          - dependency-type: "all"
+      directories:
+          - "/v3/s*"
+          - "/v3/t*"
+          - "/v3/u*"
+          - "/v3/v*"
+          - "/v3/w*"
+          - "/v3/x*"
+          - "/v3/y*"
+          - "/v3/z*"
+      labels:
+          - "🤖 Dependencies"
+      schedule:
+          interval: "daily"
+      groups:
+          fiber-modules:
+              patterns:
+                  - "github.com/gofiber/fiber/**"
+          fiber-utils-modules:
+              patterns:
+                  - "github.com/gofiber/utils"
+                  - "github.com/gofiber/utils/**"
           fiber-schema-modules:
               patterns:
                   - "github.com/gofiber/schema"
