@@ -201,7 +201,6 @@ func Test_Monitor_APIOnly(t *testing.T) {
 func Test_Monitor_Requests(t *testing.T) {
 	t.Parallel()
 
-	// Reset counter before test using a fresh app
 	app := fiber.New()
 
 	app.Get("/metrics", New(Config{
@@ -217,7 +216,7 @@ func Test_Monitor_Requests(t *testing.T) {
 		assert.Equal(t, 200, resp.StatusCode)
 	}
 
-	// The last response should contain a requests counter > 0
+	// The response should contain the absolute requests counter field
 	req := httptest.NewRequest(fiber.MethodGet, "/metrics", nil)
 	req.Header.Set(fiber.HeaderAccept, fiber.MIMEApplicationJSON)
 	resp, err := app.Test(req)
@@ -226,5 +225,5 @@ func Test_Monitor_Requests(t *testing.T) {
 
 	b, err := io.ReadAll(resp.Body)
 	assert.Equal(t, nil, err)
-	assert.Equal(t, true, bytes.Contains(b, []byte(`"requests"`)))
+	assert.True(t, bytes.Contains(b, []byte(`"requests"`)))
 }
