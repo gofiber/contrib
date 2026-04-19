@@ -86,8 +86,6 @@ jobs:
         permissions:
             contents: write
             pull-requests: read
-        env:
-            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         strategy:
             matrix:
                 package: ${{ fromJSON(needs.changes.outputs.packages || '[]') }}
@@ -96,18 +94,12 @@ jobs:
               uses: actions/checkout@v6
 
             - name: Generate dynamic config from template
-              id: generate-config
               run: |
-                  package="${{ matrix.package }}"
-                  directory="$package"
-                  {
-                      echo "config<<EOF"
-                      sed -e "s|{{PACKAGE}}|$package|g" -e "s|{{DIRECTORY}}|$directory|g" .github/release-drafter-template.yml
-                      echo "EOF"
-                  } >> "$GITHUB_OUTPUT"
+                  sed -e "s|{{PACKAGE}}|${{ matrix.package }}|g" \
+                      -e "s|{{DIRECTORY}}|${{ matrix.package }}|g" \
+                      .github/release-drafter-template.yml > .github/release-drafter-parsed.yml
 
-            - name: Use dynamic release-drafter configuration
-              uses: ReneWerner87/release-drafter@1e213032283aaa6d64a8df087c4587a2ff531582
+            - name: Run release drafter
+              uses: release-drafter/release-drafter@v7
               with:
-                  config: ${{ steps.generate-config.outputs.config }}
-                  disable-autolabeler: true
+                  config-name: file:release-drafter-parsed.yml
