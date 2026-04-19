@@ -4,29 +4,19 @@ on:
   release:
     types: [published]
 
-permissions:
-  contents: write
-
 jobs:
-  # When websocket is released, trigger dependabot in self (for socketio dep)
+  # Websocket releases update socketio dep in same repo
   self-update:
     if: contains(github.event.release.tag_name, 'websocket')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: gofiber/.github/.github/actions/trigger-dependabot@main
-        with:
-          reason: 'websocket ${{ github.event.release.tag_name }} released'
+    uses: gofiber/.github/.github/workflows/after-release.yml@main
+    with:
+      repos: '["gofiber/contrib"]'
+    secrets:
+      dispatch-token: ${{ secrets.DISPATCH_TOKEN }}
 
-  # Trigger dependabot in dependent repos for any contrib module release
   notify-dependents:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        repo:
-          - gofiber/recipes
-    steps:
-      - uses: gofiber/.github/.github/actions/trigger-dependabot@main
-        with:
-          repo: ${{ matrix.repo }}
-          reason: 'contrib ${{ github.event.release.tag_name }} released'
-          token: ${{ secrets.DISPATCH_TOKEN }}
+    uses: gofiber/.github/.github/workflows/after-release.yml@main
+    with:
+      repos: '["gofiber/recipes"]'
+    secrets:
+      dispatch-token: ${{ secrets.DISPATCH_TOKEN }}
