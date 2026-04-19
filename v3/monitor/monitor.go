@@ -70,6 +70,18 @@ func New(config ...Config) fiber.Handler {
 	// Start routine to update statistics
 	once.Do(func() {
 		startTime = time.Now()
+		// Initialize atomic.Values with typed zero defaults so that Load() before
+		// the first updateStatistics completes returns a typed zero rather than nil,
+		// preventing a nil-interface type-assertion panic in the JSON handler.
+		monitPIDCPU.Store(float64(0))
+		monitPIDRAM.Store(uint64(0))
+		monitPIDConns.Store(int(0))
+		monitPIDGoroutines.Store(int(0))
+		monitOSCPU.Store(float64(0))
+		monitOSRAM.Store(uint64(0))
+		monitOSTotalRAM.Store(uint64(0))
+		monitOSLoadAvg.Store(float64(0))
+		monitOSConns.Store(int(0))
 		// p may be nil on permission/platform errors; updateStatistics handles nil gracefully.
 		p, _ := process.NewProcess(int32(os.Getpid()))
 		numcpu := runtime.NumCPU()

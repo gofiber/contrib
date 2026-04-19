@@ -283,7 +283,8 @@ $CUSTOM_HEAD
 		rtimeChart.data.datasets[0].data.push(rtime);
 		connsChart.data.datasets[0].data.push(json.pid.conns);
 		const reqsBig = BigInt(json.pid.requests);
-		reqsChart.data.datasets[0].data.push(Number(reqsBig - prevRequestsBig));
+		const reqsDelta = reqsChart.data.datasets[0].data.length === 0 ? 0 : Number(reqsBig - prevRequestsBig);
+		reqsChart.data.datasets[0].data.push(reqsDelta);
 		prevRequestsBig = reqsBig;
 		goroutinesChart.data.datasets[0].data.push(json.pid.goroutines);
 
