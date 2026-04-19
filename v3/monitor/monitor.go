@@ -56,10 +56,8 @@ var (
 )
 
 var (
-	mutex     sync.Mutex
-	once      sync.Once
-	data      = &stats{}
-	startTime time.Time
+	once             sync.Once
+	processStartTime time.Time
 )
 
 // New creates a new middleware handler
@@ -69,10 +67,9 @@ func New(config ...Config) fiber.Handler {
 
 	// Start routine to update statistics
 	once.Do(func() {
-		startTime = time.Now()
 		// Initialize atomic.Values with typed zero defaults so that Load() before
-		// the first updateStatistics completes returns a typed zero rather than nil,
-		// preventing a nil-interface type-assertion panic in the JSON handler.
+		// the first updateStatistics completes does not panic with
+		// "sync/atomic: Load of uninitialized Value".
 		monitPIDCPU.Store(float64(0))
 		monitPIDRAM.Store(uint64(0))
 		monitPIDConns.Store(int(0))
@@ -84,6 +81,16 @@ func New(config ...Config) fiber.Handler {
 		monitOSConns.Store(int(0))
 		// p may be nil on permission/platform errors; updateStatistics handles nil gracefully.
 		p, _ := process.NewProcess(int32(os.Getpid()))
+
+		// Use the actual process start time from gopsutil when available;
+		// fall back to middleware init time if the process handle is unavailable.
+		processStartTime = time.Now()
+		if p != nil {
+			if createMs, err := p.CreateTime(); err == nil {
+				processStartTime = time.UnixMilli(createMs)
+			}
+		}
+
 		numcpu := runtime.NumCPU()
 		updateStatistics(p, numcpu)
 
@@ -97,7 +104,6 @@ func New(config ...Config) fiber.Handler {
 	})
 
 	// Return new handler
-	//nolint:errcheck // Ignore the type-assertion errors
 	return func(c fiber.Ctx) error {
 		// Don't execute middleware if Next returns true
 		if cfg.Next != nil && cfg.Next(c) {
@@ -111,21 +117,20 @@ func New(config ...Config) fiber.Handler {
 			return fiber.ErrMethodNotAllowed
 		}
 		if c.Get(fiber.HeaderAccept) == fiber.MIMEApplicationJSON || cfg.APIOnly {
-			mutex.Lock()
-			data.PID.CPU, _ = monitPIDCPU.Load().(float64)
-			data.PID.RAM, _ = monitPIDRAM.Load().(uint64)
-			data.PID.Conns, _ = monitPIDConns.Load().(int)
-			data.PID.Goroutines, _ = monitPIDGoroutines.Load().(int)
-			data.PID.Requests = strconv.FormatUint(monitTotalRequests.Load(), 10)
-			data.PID.Uptime = time.Since(startTime).Seconds()
+			snapshot := stats{}
+			//nolint:errcheck // Ignore the type-assertion errors
+			snapshot.PID.CPU, _ = monitPIDCPU.Load().(float64)
+			snapshot.PID.RAM, _ = monitPIDRAM.Load().(uint64)
+			snapshot.PID.Conns, _ = monitPIDConns.Load().(int)
+			snapshot.PID.Goroutines, _ = monitPIDGoroutines.Load().(int)
+			snapshot.PID.Requests = strconv.FormatUint(monitTotalRequests.Load(), 10)
+			snapshot.PID.Uptime = time.Since(processStartTime).Seconds()
 
-			data.OS.CPU, _ = monitOSCPU.Load().(float64)
-			data.OS.RAM, _ = monitOSRAM.Load().(uint64)
-			data.OS.TotalRAM, _ = monitOSTotalRAM.Load().(uint64)
-			data.OS.LoadAvg, _ = monitOSLoadAvg.Load().(float64)
-			data.OS.Conns, _ = monitOSConns.Load().(int)
-			snapshot := *data
-			mutex.Unlock()
+			snapshot.OS.CPU, _ = monitOSCPU.Load().(float64)
+			snapshot.OS.RAM, _ = monitOSRAM.Load().(uint64)
+			snapshot.OS.TotalRAM, _ = monitOSTotalRAM.Load().(uint64)
+			snapshot.OS.LoadAvg, _ = monitOSLoadAvg.Load().(float64)
+			snapshot.OS.Conns, _ = monitOSConns.Load().(int)
 			return c.Status(fiber.StatusOK).JSON(&snapshot)
 		}
 		c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
