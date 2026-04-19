@@ -124,6 +124,7 @@ func Test_Monitor_JSON(t *testing.T) {
 	req.Header.Set(fiber.HeaderAccept, fiber.MIMEApplicationJSON)
 	resp, err := app.Test(req)
 	assert.Equal(t, nil, err)
+	defer resp.Body.Close()
 	assert.Equal(t, 200, resp.StatusCode)
 	assert.Equal(t, fiber.MIMEApplicationJSONCharsetUTF8, resp.Header.Get(fiber.HeaderContentType))
 

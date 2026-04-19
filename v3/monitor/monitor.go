@@ -118,19 +118,36 @@ func New(config ...Config) fiber.Handler {
 		}
 		if c.Get(fiber.HeaderAccept) == fiber.MIMEApplicationJSON || cfg.APIOnly {
 			snapshot := stats{}
-			//nolint:errcheck // Ignore the type-assertion errors
-			snapshot.PID.CPU, _ = monitPIDCPU.Load().(float64)
-			snapshot.PID.RAM, _ = monitPIDRAM.Load().(uint64)
-			snapshot.PID.Conns, _ = monitPIDConns.Load().(int)
-			snapshot.PID.Goroutines, _ = monitPIDGoroutines.Load().(int)
+			if v, ok := monitPIDCPU.Load().(float64); ok {
+				snapshot.PID.CPU = v
+			}
+			if v, ok := monitPIDRAM.Load().(uint64); ok {
+				snapshot.PID.RAM = v
+			}
+			if v, ok := monitPIDConns.Load().(int); ok {
+				snapshot.PID.Conns = v
+			}
+			if v, ok := monitPIDGoroutines.Load().(int); ok {
+				snapshot.PID.Goroutines = v
+			}
 			snapshot.PID.Requests = strconv.FormatUint(monitTotalRequests.Load(), 10)
 			snapshot.PID.Uptime = time.Since(processStartTime).Seconds()
 
-			snapshot.OS.CPU, _ = monitOSCPU.Load().(float64)
-			snapshot.OS.RAM, _ = monitOSRAM.Load().(uint64)
-			snapshot.OS.TotalRAM, _ = monitOSTotalRAM.Load().(uint64)
-			snapshot.OS.LoadAvg, _ = monitOSLoadAvg.Load().(float64)
-			snapshot.OS.Conns, _ = monitOSConns.Load().(int)
+			if v, ok := monitOSCPU.Load().(float64); ok {
+				snapshot.OS.CPU = v
+			}
+			if v, ok := monitOSRAM.Load().(uint64); ok {
+				snapshot.OS.RAM = v
+			}
+			if v, ok := monitOSTotalRAM.Load().(uint64); ok {
+				snapshot.OS.TotalRAM = v
+			}
+			if v, ok := monitOSLoadAvg.Load().(float64); ok {
+				snapshot.OS.LoadAvg = v
+			}
+			if v, ok := monitOSConns.Load().(int); ok {
+				snapshot.OS.Conns = v
+			}
 			return c.Status(fiber.StatusOK).JSON(&snapshot)
 		}
 		c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
