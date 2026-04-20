@@ -9,7 +9,7 @@ sidebar_position: 1
   <br />
 
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
-![Linter](https://github.com/gofiber/contrib/workflows/Golangci%20Lint%20Check/badge.svg)
+![Linter](https://github.com/gofiber/contrib/actions/workflows/lint.yml/badge.svg)
 
 Repository for third party middlewares and service implementations, with dependencies.
 
