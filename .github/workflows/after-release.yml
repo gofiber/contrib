@@ -5,6 +5,7 @@ on:
     types: [published]
   repository_dispatch:
     types: [after-release]
+  workflow_dispatch:
 
 jobs:
   # Websocket releases update socketio dep in same repo (manual releases only).
