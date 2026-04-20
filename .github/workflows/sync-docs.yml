@@ -1,50 +1,35 @@
-name: 'Sync docs'
+name: Sync docs
 
 on:
-    push:
-        branches:
-            - master
-            - main
-        paths:
-            - '**/*.md'
-    workflow_dispatch:
-        inputs:
-            mode:
-                description: 'Trigger mode: choose "push" to run the push flow or "release" to run the release flow'
-                required: true
-                default: 'push'
-            tag_name:
-                description: 'Tag name to use for release mode (e.g. v3/jwt/v1.1.0)'
-                required: false
-                default: ''
-    release:
-        types: [published]
-    repository_dispatch:
-        types: [sync-docs]
+  push:
+    branches: [main, master]
+    paths: ['**/*.md']
+  release:
+    types: [published]
+  repository_dispatch:
+    types: [sync-docs]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'push = sync current docs, release-all = version snapshots for all latest module releases'
+        type: choice
+        options: [push, release-all]
+        default: push
 
 jobs:
-    sync-docs:
-        runs-on: ubuntu-latest
-        steps:
-            - name: Checkout
-              uses: actions/checkout@v6
-              with:
-                  fetch-depth: 2
-
-            - name: Setup Node.js environment
-              uses: actions/setup-node@v6
-              with:
-                  node-version: '20'
-
-            - name: Install JQ
-              run: sudo apt-get install jq
-
-            - name: Sync docs
-              run: ./.github/scripts/sync_docs.sh
-              env:
-                  # If manually triggered, use the provided inputs; otherwise keep the event-driven values
-                  EVENT: ${{ github.event_name == 'repository_dispatch' && 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode || github.event_name) }}
-                  TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}
-                  TOKEN: ${{ secrets.DOC_SYNC_TOKEN }}
-                  SOURCE_DIR: 'v3'
-                  DESTINATION_DIR: 'docs/contrib'
+  sync:
+    uses: gofiber/.github/.github/workflows/sync-docs.yml@main
+    with:
+      repo-type: multi
+      source-dir: v3
+      destination-dir: docs/contrib
+      version-file: contrib_versions.json
+      docusaurus-command: npm run docusaurus -- docs:version:contrib
+      commit-url: https://github.com/gofiber/contrib
+      event-mode: >-
+        ${{ github.event_name == 'workflow_dispatch' && inputs.mode
+        || github.event_name == 'repository_dispatch' && 'push'
+        || github.event_name }}
+      tag-name: ${{ github.ref_name }}
+    secrets:
+      doc-sync-token: ${{ secrets.DOC_SYNC_TOKEN }}
