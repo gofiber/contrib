@@ -1,0 +1,35 @@
+name: After Release
+
+on:
+  release:
+    types: [published]
+  repository_dispatch:
+    types: [after-release]
+  workflow_dispatch:
+
+jobs:
+  # Websocket releases update socketio dep in same repo (manual releases only).
+  # During weekly releases, the intra-wave hook in release-plan.yml handles this.
+  self-update:
+    if: >-
+      github.event_name == 'release' &&
+      github.actor != 'github-actions[bot]' &&
+      contains(github.event.release.tag_name, 'websocket')
+    uses: gofiber/.github/.github/workflows/after-release.yml@main
+    with:
+      skip-wait: ${{ github.event_name == 'workflow_dispatch' }}
+      repos: |
+        - gofiber/contrib
+    secrets:
+      dispatch-token: ${{ secrets.DISPATCH_TOKEN }}
+
+  # Notify downstream repos. Runs for manual releases and weekly batch dispatch.
+  notify-dependents:
+    if: github.event_name != 'release' || github.actor != 'github-actions[bot]'
+    uses: gofiber/.github/.github/workflows/after-release.yml@main
+    with:
+      skip-wait: ${{ github.event_name == 'workflow_dispatch' }}
+      repos: |
+        - gofiber/recipes
+    secrets:
+      dispatch-token: ${{ secrets.DISPATCH_TOKEN }}

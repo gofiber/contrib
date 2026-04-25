@@ -1,0 +1,33 @@
+# Release plan for gofiber/contrib.
+#
+# Only modules with ordering constraints need explicit waves.
+# The final wave with `auto-discover: true` picks up all remaining
+# draft releases that weren't handled by earlier waves.
+#
+# Constraint: socketio depends on websocket (local replace).
+# Websocket's post-release hook triggers dependabot in this repo
+# immediately so socketio picks up the new version before wave 2.
+#
+# After all modules are published, 'after-release' is dispatched once.
+# The after-release.yml workflow defines which repos to notify.
+
+wave-delay-minutes: 30
+
+waves:
+  - name: base
+    modules:
+      - name: websocket
+        tag-prefix: "v3/websocket/"
+        post-release:
+          - action: dispatch
+            repo: gofiber/contrib
+            event: dependabot-on-demand
+
+  - name: remaining
+    auto-discover: true
+
+post-release:
+  - action: dispatch
+    event: after-release
+  - action: dispatch
+    event: sync-docs
