@@ -42,7 +42,7 @@ coraza.NewEngine(config coraza.Config) (*coraza.Engine, error)
 | BlockMessage | `string` | Message returned by the built-in block handler | `"Request blocked by Web Application Firewall"` |
 | LogLevel | `fiberlog.Level` | Middleware lifecycle log level | `fiberlog.LevelInfo` in `coraza.ConfigDefault` |
 | RequestBodyAccess | `bool` | Enables request body inspection | `true` in `coraza.ConfigDefault` |
-| MetricsCollector | `coraza.MetricsCollector` | Optional custom in-memory metrics collector | `nil` (falls back to the built-in collector) |
+| MetricsCollector | `coraza.MetricsCollector` | Optional custom metrics collector | `nil` (falls back to the built-in collector) |
 
 If you want the defaults, start from `coraza.ConfigDefault` and override the fields you need.
 For zero-value-backed settings such as `RequestBodyAccess: false`, `LogLevel: fiberlog.LevelTrace`, or resetting `MetricsCollector` to the built-in default, use `ConfigDefault` or the helper methods `WithRequestBodyAccess`, `WithLogLevel`, and `WithMetricsCollector` so the choice remains explicit.
@@ -98,11 +98,14 @@ app.Use(engine.Middleware(coraza.MiddlewareConfig{
 	BlockHandler: func(c fiber.Ctx, details coraza.InterruptionDetails) error {
 		return c.Status(details.StatusCode).JSON(fiber.Map{
 			"blocked": true,
-			"rule_id": details.RuleID,
+			"message": "request blocked by security policy",
 		})
 	},
 }))
 ```
+
+For production deployments, avoid returning rule identifiers or detailed match data to clients.
+Prefer a generic error body and log the matched rule metadata server-side when needed.
 
 ## Engine observability
 
@@ -112,6 +115,18 @@ The middleware does not open operational routes for you, but `Engine` exposes da
 - `engine.MetricsSnapshot()`
 - `engine.Snapshot()`
 - `engine.Report()`
+
+`BlockRate` is cumulative since process start or the most recent collector reset.
+`RecentLatencyMs` and `RecentBlockRate` are EWMA-based recent-trend metrics with a fixed alpha of `0.2`.
+
+## Reverse proxy / trusted proxy notes
+
+When running behind Nginx, Caddy, Traefik, Cloudflare, or any other reverse proxy,
+make sure Fiber trusted proxy settings are configured correctly before relying on
+`c.IP()` or Coraza rules that depend on `REMOTE_ADDR`.
+
+If trusted proxy validation is not configured correctly, spoofed forwarding headers
+may cause Coraza to evaluate rules against attacker-controlled client IP values.
 
 ## Notes
 
