@@ -131,6 +131,15 @@ type Engine struct {
 	reloadFailureCount uint64
 }
 
+type middlewareSnapshot struct {
+	waf             coraza.WAF
+	wafWithOptions  experimental.WAFWithOptions
+	supportsOptions bool
+	initErr         error
+	metrics         MetricsCollector
+	blockMessage    string
+}
+
 // New constructs Coraza Fiber middleware.
 //
 // It panics if the provided configuration cannot initialize a WAF instance.
@@ -229,23 +238,22 @@ func (e *Engine) Middleware(config ...MiddlewareConfig) fiber.Handler {
 		}
 
 		startTime := time.Now()
-		metrics := e.Metrics()
+		state := e.middlewareSnapshot()
 		blocked := false
 
 		defer func() {
-			if metrics != nil {
-				metrics.ObserveRequest(time.Since(startTime), blocked)
+			if state.metrics != nil {
+				state.metrics.ObserveRequest(time.Since(startTime), blocked)
 			}
 		}()
 
-		currentWAF, currentSupportsOptions, currentWAFWithOptions, currentErr := e.snapshot()
-		if currentWAF == nil {
-			if currentErr != nil {
+		if state.waf == nil {
+			if state.initErr != nil {
 				return e.handleError(c, mwCfg, MiddlewareError{
 					StatusCode: http.StatusInternalServerError,
 					Code:       "waf_init_failed",
 					Message:    "WAF initialization failed",
-					Err:        currentErr,
+					Err:        state.initErr,
 				})
 			}
 
@@ -256,7 +264,7 @@ func (e *Engine) Middleware(config ...MiddlewareConfig) fiber.Handler {
 			})
 		}
 
-		it, mwErr := e.inspectRequest(c, currentWAF, currentSupportsOptions, currentWAFWithOptions)
+		it, mwErr := e.inspectRequest(c, state.waf, state.supportsOptions, state.wafWithOptions)
 		if mwErr != nil {
 			return e.handleError(c, mwCfg, *mwErr)
 		}
@@ -269,7 +277,7 @@ func (e *Engine) Middleware(config ...MiddlewareConfig) fiber.Handler {
 				Action:     it.Action,
 				RuleID:     it.RuleID,
 				Data:       it.Data,
-				Message:    e.blockMessageValue(),
+				Message:    state.blockMessage,
 			}
 			e.log(fiberlog.LevelWarn, "Coraza request interrupted",
 				"rule_id", details.RuleID,
@@ -434,6 +442,26 @@ func (e *Engine) snapshot() (coraza.WAF, bool, experimental.WAFWithOptions, erro
 	return e.waf, e.supportsOptions, e.wafWithOptions, e.initErr
 }
 
+func (e *Engine) middlewareSnapshot() middlewareSnapshot {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	return middlewareSnapshot{
+		waf:             e.waf,
+		wafWithOptions:  e.wafWithOptions,
+		supportsOptions: e.supportsOptions,
+		initErr:         e.initErr,
+		metrics:         e.metrics,
+		blockMessage:    e.blockMessage,
+	}
+}
+
+func (e *Engine) blockMessageValue() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.blockMessage
+}
+
 func (e *Engine) setWAFOptionsStateLocked(waf coraza.WAF) {
 	if wafWithOptions, ok := waf.(experimental.WAFWithOptions); ok {
 		e.wafWithOptions = wafWithOptions
@@ -443,12 +471,6 @@ func (e *Engine) setWAFOptionsStateLocked(waf coraza.WAF) {
 
 	e.wafWithOptions = nil
 	e.supportsOptions = false
-}
-
-func (e *Engine) blockMessageValue() string {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.blockMessage
 }
 
 func (e *Engine) handleError(c fiber.Ctx, cfg MiddlewareConfig, mwErr MiddlewareError) error {
