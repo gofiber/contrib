@@ -14,6 +14,10 @@ on:
       - 'v3/testcontainers/go.mod'
 
   workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
   Tests:
     runs-on: ubuntu-latest

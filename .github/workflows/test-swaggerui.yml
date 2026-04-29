@@ -16,6 +16,10 @@ on:
       - 'v3/swaggerui/go.sum'
 
   workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
   Tests:
     runs-on: ubuntu-latest
