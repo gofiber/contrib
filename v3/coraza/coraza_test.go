@@ -26,6 +26,9 @@ SecRule ARGS:attack "@streq 1" "id:1001,phase:2,deny,status:403,msg:'attack dete
 
 func assertFloat64Within(t *testing.T, got, want float64, label string) {
 	t.Helper()
+	if math.IsNaN(got) || math.IsInf(got, 0) {
+		t.Fatalf("expected %s to be a finite float, got %v", label, got)
+	}
 	if math.Abs(got-want) > float64Epsilon {
 		t.Fatalf("expected %s to be %v +/- %v, got %v", label, want, float64Epsilon, got)
 	}
