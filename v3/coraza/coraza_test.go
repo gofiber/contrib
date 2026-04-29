@@ -99,7 +99,10 @@ func TestSetBlockMessageEmptyResetsDefault(t *testing.T) {
 	engine.SetBlockMessage("custom block")
 	engine.SetBlockMessage("")
 
-	if got := engine.blockMessageValue(); got != defaultBlockMessage {
+	engine.mu.RLock()
+	got := engine.blockMessage
+	engine.mu.RUnlock()
+	if got != defaultBlockMessage {
 		t.Fatalf("expected empty block message to restore default, got %q", got)
 	}
 }

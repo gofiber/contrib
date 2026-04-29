@@ -435,13 +435,6 @@ func closeWAF(waf coraza.WAF, logLevel fiberlog.Level) {
 	}
 }
 
-func (e *Engine) snapshot() (coraza.WAF, bool, experimental.WAFWithOptions, error) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-
-	return e.waf, e.supportsOptions, e.wafWithOptions, e.initErr
-}
-
 func (e *Engine) middlewareSnapshot() middlewareSnapshot {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -454,12 +447,6 @@ func (e *Engine) middlewareSnapshot() middlewareSnapshot {
 		metrics:         e.metrics,
 		blockMessage:    e.blockMessage,
 	}
-}
-
-func (e *Engine) blockMessageValue() string {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.blockMessage
 }
 
 func (e *Engine) setWAFOptionsStateLocked(waf coraza.WAF) {
