@@ -17,7 +17,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/kaptinlin/go-i18n v0.4.5 // indirect
 	github.com/kaptinlin/jsonpointer v0.4.20 // indirect
-	github.com/kaptinlin/jsonschema v0.7.7 // indirect
+	github.com/kaptinlin/jsonschema v0.7.11 // indirect
 	github.com/kaptinlin/messageformat-go v0.6.0 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/magefile/mage v1.17.2 // indirect
