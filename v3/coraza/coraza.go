@@ -112,6 +112,8 @@ type ErrorHandler func(fiber.Ctx, MiddlewareError) error
 type Engine struct {
 	mu sync.RWMutex
 
+	state *runtimeState
+
 	waf             coraza.WAF
 	wafWithOptions  experimental.WAFWithOptions
 	supportsOptions bool
@@ -131,7 +133,17 @@ type Engine struct {
 	reloadFailureCount uint64
 }
 
+type runtimeState struct {
+	waf             coraza.WAF
+	wafWithOptions  experimental.WAFWithOptions
+	supportsOptions bool
+	metrics         MetricsCollector
+	blockMessage    string
+	inflight        sync.WaitGroup
+}
+
 type middlewareSnapshot struct {
+	runtime         *runtimeState
 	waf             coraza.WAF
 	wafWithOptions  experimental.WAFWithOptions
 	supportsOptions bool
@@ -193,20 +205,26 @@ func (e *Engine) Init(cfg Config) error {
 		return err
 	}
 
-	oldWAF := e.waf
+	oldState := e.state
+	if oldState == nil || oldState.waf != e.waf {
+		oldState = newRuntimeState(e.waf, e.metrics, e.blockMessage)
+	}
+	blockMessage := resolveBlockMessage(resolvedCfg.BlockMessage)
+	newState := newRuntimeState(newWAF, metrics, blockMessage)
 	e.waf = newWAF
 	e.initErr = nil
 	e.setWAFOptionsStateLocked(newWAF)
 	e.activeCfg = cloneConfig(resolvedCfg)
 	e.lastLoadedAt = time.Now()
 	e.initSuccessCount++
-	e.blockMessage = resolveBlockMessage(resolvedCfg.BlockMessage)
+	e.blockMessage = blockMessage
 	e.logLevel = logLevel
 	e.metrics = metrics
+	e.state = newState
 	supportsOptions := e.supportsOptions
 	e.mu.Unlock()
 
-	closeWAF(oldWAF, logLevel)
+	drainAndCloseState(oldState, logLevel)
 	logWithLevel(logLevel, fiberlog.LevelInfo, "Coraza initialized successfully", "supports_options", supportsOptions)
 	return nil
 }
@@ -216,6 +234,9 @@ func (e *Engine) SetBlockMessage(msg string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.blockMessage = resolveBlockMessage(msg)
+	if e.state != nil {
+		e.state.blockMessage = e.blockMessage
+	}
 }
 
 // Metrics returns the Engine's metrics collector.
@@ -242,6 +263,9 @@ func (e *Engine) Middleware(config ...MiddlewareConfig) fiber.Handler {
 		blocked := false
 
 		defer func() {
+			if state.runtime != nil {
+				state.runtime.inflight.Done()
+			}
 			if state.metrics != nil {
 				state.metrics.ObserveRequest(time.Since(startTime), blocked)
 			}
@@ -404,7 +428,11 @@ func (e *Engine) Reload() error {
 	}
 
 	e.mu.Lock()
-	oldWAF := e.waf
+	oldState := e.state
+	if oldState == nil || oldState.waf != e.waf {
+		oldState = newRuntimeState(e.waf, e.metrics, e.blockMessage)
+	}
+	newState := newRuntimeState(newWAF, e.metrics, e.blockMessage)
 	e.waf = newWAF
 	e.initErr = nil
 	e.setWAFOptionsStateLocked(newWAF)
@@ -413,9 +441,10 @@ func (e *Engine) Reload() error {
 	e.lastLoadedAt = time.Now()
 	reloadCount := e.reloadCount
 	e.logLevel = logLevel
+	e.state = newState
 	e.mu.Unlock()
 
-	closeWAF(oldWAF, logLevel)
+	drainAndCloseState(oldState, logLevel)
 	logWithLevel(logLevel, fiberlog.LevelInfo, "Coraza reload completed successfully", "reload_count", reloadCount)
 	return nil
 }
@@ -435,11 +464,36 @@ func closeWAF(waf coraza.WAF, logLevel fiberlog.Level) {
 	}
 }
 
+func drainAndCloseState(state *runtimeState, logLevel fiberlog.Level) {
+	if state == nil || state.waf == nil {
+		return
+	}
+
+	state.inflight.Wait()
+	closeWAF(state.waf, logLevel)
+}
+
 func (e *Engine) middlewareSnapshot() middlewareSnapshot {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
+	state := e.state
+	if state == nil {
+		return middlewareSnapshot{
+			initErr:         e.initErr,
+			waf:             e.waf,
+			wafWithOptions:  e.wafWithOptions,
+			supportsOptions: e.supportsOptions,
+			metrics:         e.metrics,
+			blockMessage:    e.blockMessage,
+		}
+	}
+	if state != nil {
+		state.inflight.Add(1)
+	}
+
 	return middlewareSnapshot{
+		runtime:         state,
 		waf:             e.waf,
 		wafWithOptions:  e.wafWithOptions,
 		supportsOptions: e.supportsOptions,
@@ -469,11 +523,28 @@ func (e *Engine) handleError(c fiber.Ctx, cfg MiddlewareConfig, mwErr Middleware
 }
 
 func newEngine(collector MetricsCollector) *Engine {
+	metrics := resolveMetricsCollector(collector)
 	return &Engine{
 		blockMessage: defaultBlockMessage,
 		logLevel:     fiberlog.LevelInfo,
-		metrics:      resolveMetricsCollector(collector),
+		metrics:      metrics,
+		state:        newRuntimeState(nil, metrics, defaultBlockMessage),
 	}
+}
+
+func newRuntimeState(waf coraza.WAF, metrics MetricsCollector, blockMessage string) *runtimeState {
+	state := &runtimeState{
+		waf:          waf,
+		metrics:      metrics,
+		blockMessage: blockMessage,
+	}
+
+	if wafWithOptions, ok := waf.(experimental.WAFWithOptions); ok {
+		state.wafWithOptions = wafWithOptions
+		state.supportsOptions = true
+	}
+
+	return state
 }
 
 func isNilMetricsCollector(collector MetricsCollector) bool {

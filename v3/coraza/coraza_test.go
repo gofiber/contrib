@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -622,6 +623,102 @@ func TestEngineReloadClosesPreviousWAFOnSuccess(t *testing.T) {
 	}
 }
 
+func TestReloadWaitsForInflightRequestsBeforeClosingPreviousWAF(t *testing.T) {
+	engine, err := newTestEngine(t)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	oldWAF := &fakeDrainingWAF{closed: make(chan struct{})}
+	engine.mu.Lock()
+	engine.waf = oldWAF
+	engine.setWAFOptionsStateLocked(oldWAF)
+	engine.state = newRuntimeState(oldWAF, engine.metrics, engine.blockMessage)
+	engine.mu.Unlock()
+
+	app := fiber.New()
+	app.Use(engine.Middleware())
+
+	requestEntered := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	app.Get("/", func(c fiber.Ctx) error {
+		close(requestEntered)
+		<-releaseRequest
+		return c.SendString("ok")
+	})
+
+	requestDone := make(chan *http.Response, 1)
+	requestErr := make(chan error, 1)
+	go func() {
+		resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+		if err != nil {
+			requestErr <- err
+			return
+		}
+		requestDone <- resp
+	}()
+
+	select {
+	case <-requestEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for request to enter handler")
+	}
+
+	reloadDone := make(chan error, 1)
+	go func() {
+		reloadDone <- engine.Reload()
+	}()
+
+	select {
+	case err := <-reloadDone:
+		t.Fatalf("expected reload to wait for inflight request, got early result: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if oldWAF.closeCalls.Load() != 0 {
+		t.Fatalf("expected previous WAF to remain open while request is inflight, got %d close calls", oldWAF.closeCalls.Load())
+	}
+
+	select {
+	case <-oldWAF.closed:
+		t.Fatal("expected previous WAF to remain open while request is inflight")
+	default:
+	}
+
+	close(releaseRequest)
+
+	select {
+	case err := <-reloadDone:
+		if err != nil {
+			t.Fatalf("expected reload to succeed after request drain, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for reload to complete after request drain")
+	}
+
+	select {
+	case resp := <-requestDone:
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", resp.StatusCode)
+		}
+	case err := <-requestErr:
+		t.Fatalf("request failed: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for request to complete")
+	}
+
+	select {
+	case <-oldWAF.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for previous WAF to close after request drain")
+	}
+
+	if oldWAF.closeCalls.Load() != 1 {
+		t.Fatalf("expected previous WAF to be closed once after request drain, got %d", oldWAF.closeCalls.Load())
+	}
+}
+
 func TestEngineInitReplacesMetricsCollectorWhenProvided(t *testing.T) {
 	initialCollector := &countingCollector{}
 	engine := newEngine(initialCollector)
@@ -928,7 +1025,31 @@ func (w *fakeClosableWAF) Close() error {
 	return nil
 }
 
+type fakeDrainingWAF struct {
+	closeCalls atomic.Int32
+	closed     chan struct{}
+}
+
+func (*fakeDrainingWAF) NewTransaction() types.Transaction {
+	return fakeAllowTransaction{}
+}
+
+func (*fakeDrainingWAF) NewTransactionWithID(string) types.Transaction {
+	return fakeAllowTransaction{}
+}
+
+func (w *fakeDrainingWAF) Close() error {
+	if w.closeCalls.Add(1) == 1 && w.closed != nil {
+		close(w.closed)
+	}
+	return nil
+}
+
 type fakePanicTransaction struct{}
+
+type fakeAllowTransaction struct {
+	fakePanicTransaction
+}
 
 func (fakePanicTransaction) ProcessConnection(string, int, string, int)       {}
 func (fakePanicTransaction) ProcessURI(string, string, string)                {}
@@ -974,3 +1095,6 @@ func (fakePanicTransaction) MatchedRules() []types.MatchedRule { return nil }
 func (fakePanicTransaction) DebugLogger() debuglog.Logger      { return nil }
 func (fakePanicTransaction) ID() string                        { return "panic-tx" }
 func (fakePanicTransaction) Close() error                      { return nil }
+
+func (fakeAllowTransaction) ProcessRequestHeaders() *types.Interruption       { return nil }
+func (fakeAllowTransaction) ProcessRequestBody() (*types.Interruption, error) { return nil, nil }
