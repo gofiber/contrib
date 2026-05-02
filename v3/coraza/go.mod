@@ -10,7 +10,7 @@ require (
 require (
 	github.com/andybalholm/brotli v1.2.1 // indirect
 	github.com/corazawaf/libinjection-go v0.3.2 // indirect
-	github.com/go-json-experiment/json v0.0.0-20260214004413-d219187c3433 // indirect
+	github.com/go-json-experiment/json v0.0.0-20260430182902-b6187a392ed4 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/gofiber/schema v1.7.1 // indirect
 	github.com/gofiber/utils/v2 v2.0.4 // indirect
@@ -18,7 +18,7 @@ require (
 	github.com/kaptinlin/go-i18n v0.4.5 // indirect
 	github.com/kaptinlin/jsonpointer v0.4.20 // indirect
 	github.com/kaptinlin/jsonschema v0.7.11 // indirect
-	github.com/kaptinlin/messageformat-go v0.6.0 // indirect
+	github.com/kaptinlin/messageformat-go v0.6.1 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/magefile/mage v1.17.2 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
