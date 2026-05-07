@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gofiber/contrib/v3/otel/internal"
@@ -199,7 +200,8 @@ func Middleware(opts ...Option) fiber.Handler {
 		}
 
 		response := c.Response()
-		isSSE := c.GetRespHeader("Content-Type") == "text/event-stream"
+		contentType, _, _ := strings.Cut(c.GetRespHeader("Content-Type"), ";")
+		isSSE := utils.EqualFold(strings.TrimSpace(contentType), "text/event-stream")
 		responseSize := int64(0)
 		responseSizeKnown := false
 		isResponseBodyStream := response.IsBodyStream()
