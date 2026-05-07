@@ -2,8 +2,10 @@ package socketio
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -95,6 +97,7 @@ func (s *WebsocketMock) GetUUID() string {
 
 func TestParallelConnections(t *testing.T) {
 	pool.reset()
+	listeners.reset()
 
 	// create test server
 	cfg := fiber.Config{}
@@ -110,10 +113,10 @@ func TestParallelConnections(t *testing.T) {
 	// attach upgrade middleware
 	app.Use(upgradeMiddleware)
 
-	// send back response on correct message
+	// echo "response" JSON string when a "message" event carrying `"test"` arrives
 	On(EventMessage, func(payload *EventPayload) {
-		if string(payload.Data) == "test" {
-			payload.Kws.Emit([]byte("response"))
+		if string(payload.Data) == `"test"` {
+			payload.Kws.Emit([]byte(`"response"`))
 		}
 	})
 
@@ -128,7 +131,7 @@ func TestParallelConnections(t *testing.T) {
 
 	wsURL := "ws://" + ln.Addr().String()
 
-	// create concurrent connections
+	// create concurrent connections – each one performs the full socket.io handshake
 	for i := 0; i < numParallelTestConn; i++ {
 		wg.Add(1)
 		go func() {
@@ -144,18 +147,26 @@ func TestParallelConnections(t *testing.T) {
 				return
 			}
 
-			if err := dial.WriteMessage(websocket.TextMessage, []byte("test")); err != nil {
+			// Perform socket.io handshake via the helper
+			if err := sioHandshake(t, dial); err != nil {
 				t.Error(err)
 				return
 			}
 
-			tp, m, err := dial.ReadMessage()
+			// Send a socket.io "message" event: 42["message","test"]
+			if err := dial.WriteMessage(websocket.TextMessage, []byte(`42["message","test"]`)); err != nil {
+				t.Error(err)
+				return
+			}
+
+			// Read back the server's response, skipping any EIO PING packets
+			tp, m, err := sioReadSkipPings(dial)
 			if err != nil {
 				t.Error(err)
 				return
 			}
 			require.Equal(t, TextMessage, tp)
-			require.Equal(t, "response", string(m))
+			require.Equal(t, `42["message","response"]`, string(m))
 			wg.Done()
 
 			if err := dial.Close(); err != nil {
@@ -169,6 +180,7 @@ func TestParallelConnections(t *testing.T) {
 
 func TestGlobalFire(t *testing.T) {
 	pool.reset()
+	listeners.reset()
 
 	// simulate connections
 	for i := 0; i < numTestConn; i++ {
@@ -449,6 +461,10 @@ func (s *WebsocketMock) createUUID() string {
 	return s.randomUUID()
 }
 
+func (s *WebsocketMock) EmitEvent(_ string, _ []byte) {
+	panic("implement me")
+}
+
 func (s *WebsocketMock) randomUUID() string {
 	return uuid.New().String()
 }
@@ -456,3 +472,432 @@ func (s *WebsocketMock) randomUUID() string {
 func (s *WebsocketMock) fireEvent(_ string, _ []byte, _ error) {
 	panic("implement me")
 }
+
+// ---------------------------------------------------------------------------
+// Socket.IO test helpers
+// ---------------------------------------------------------------------------
+
+// sioHandshake performs the Engine.IO / Socket.IO connection handshake:
+//
+//  1. Reads the EIO OPEN packet ("0{...}") from the server.
+//  2. Sends the SIO CONNECT packet ("40").
+//  3. Reads and validates the SIO CONNECT confirmation ("40{...}").
+func sioHandshake(t *testing.T, conn *websocket.Conn) error {
+	t.Helper()
+
+	// 1. Read EIO OPEN
+	mType, msg, err := conn.ReadMessage()
+	if err != nil {
+		return err
+	}
+	if mType != websocket.TextMessage {
+		t.Errorf("sioHandshake: expected TextMessage, got %d", mType)
+		return nil
+	}
+	if len(msg) == 0 || msg[0] != eioOpen {
+		t.Errorf("sioHandshake: expected EIO OPEN ('0'), got %q", msg)
+		return nil
+	}
+	// Parse the open data to validate structure
+	var openData eioOpenPacket
+	if err := json.Unmarshal(msg[1:], &openData); err != nil {
+		t.Errorf("sioHandshake: failed to parse EIO OPEN payload: %v", err)
+		return nil
+	}
+	if openData.SID == "" {
+		t.Error("sioHandshake: EIO OPEN payload missing 'sid'")
+		return nil
+	}
+
+	// 2. Send SIO CONNECT ("40")
+	if err := conn.WriteMessage(websocket.TextMessage, []byte("40")); err != nil {
+		return err
+	}
+
+	// 3. Read SIO CONNECT confirmation ("40{...}")
+	mType, msg, err = conn.ReadMessage()
+	if err != nil {
+		return err
+	}
+	if mType != websocket.TextMessage {
+		t.Errorf("sioHandshake: expected TextMessage for SIO CONNECT conf, got %d", mType)
+		return nil
+	}
+	if len(msg) < 2 || msg[0] != eioMessage || msg[1] != sioConnect {
+		t.Errorf("sioHandshake: expected SIO CONNECT conf ('40...'), got %q", msg)
+	}
+
+	return nil
+}
+
+// sioReadSkipPings reads the next meaningful message, transparently responding
+// to any EIO PING packets ("2") with PONG packets ("3").
+func sioReadSkipPings(conn *websocket.Conn) (int, []byte, error) {
+	for {
+		mType, msg, err := conn.ReadMessage()
+		if err != nil {
+			return 0, nil, err
+		}
+		if mType == websocket.TextMessage && len(msg) == 1 && msg[0] == eioPing {
+			// Respond with PONG and keep waiting
+			if werr := conn.WriteMessage(websocket.TextMessage, []byte{eioPong}); werr != nil {
+				return 0, nil, werr
+			}
+			continue
+		}
+		return mType, msg, nil
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Socket.IO integration tests
+// ---------------------------------------------------------------------------
+
+// newSIOTestServer starts a Fiber app with the socketio middleware and returns
+// the listener and a teardown function.
+func newSIOTestServer(t *testing.T, callback func(*Websocket)) (*fasthttputil.InmemoryListener, func()) {
+	t.Helper()
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+
+	app.Use(upgradeMiddleware)
+	app.Get("/", New(callback))
+
+	go func() { _ = app.Listener(ln) }()
+
+	return ln, func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}
+}
+
+// dialSIO creates a raw WebSocket connection that bypasses the real network.
+func dialSIO(t *testing.T, ln *fasthttputil.InmemoryListener) *websocket.Conn {
+	t.Helper()
+
+	dialer := &websocket.Dialer{
+		NetDial: func(_, _ string) (net.Conn, error) {
+			return ln.Dial()
+		},
+		HandshakeTimeout: 10 * time.Second,
+	}
+	wsURL := "ws://" + ln.Addr().String()
+	conn, _, err := dialer.Dial(wsURL, nil)
+	require.NoError(t, err)
+	return conn
+}
+
+// TestSocketIOHandshake verifies the full EIO / socket.io connection handshake.
+func TestSocketIOHandshake(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	connectFired := make(chan struct{}, 1)
+	On(EventConnect, func(payload *EventPayload) {
+		select {
+		case connectFired <- struct{}{}:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	require.NoError(t, sioHandshake(t, conn))
+
+	select {
+	case <-connectFired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventConnect was not fired within the timeout")
+	}
+}
+
+// TestSocketIOEvent verifies that a socket.io event sent by the client is
+// delivered to the server-side EventMessage listener with the correct payload.
+func TestSocketIOEvent(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	received := make(chan []byte, 1)
+	On(EventMessage, func(payload *EventPayload) {
+		received <- payload.Data
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	require.NoError(t, sioHandshake(t, conn))
+
+	// Send: 42["message",{"hello":"world"}]
+	msg := `42["message",{"hello":"world"}]`
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(msg)))
+
+	select {
+	case data := <-received:
+		// The payload should be just the JSON object, without the array wrapper
+		require.Equal(t, `{"hello":"world"}`, string(data))
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventMessage was not fired within the timeout")
+	}
+}
+
+// TestSocketIOEmitEvent verifies that the server can push a named event to the
+// client and that the wire format matches the socket.io protocol.
+func TestSocketIOEmitEvent(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	ready := make(chan *Websocket, 1)
+	On(EventConnect, func(payload *EventPayload) {
+		select {
+		case ready <- payload.Kws:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	require.NoError(t, sioHandshake(t, conn))
+
+	// Wait until EventConnect fires and obtain the server-side handle
+	var kws *Websocket
+	select {
+	case kws = <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventConnect did not fire within the timeout")
+	}
+
+	// Server pushes a named event to the client
+	kws.EmitEvent("greet", []byte(`"hello"`))
+
+	tp, raw, err := sioReadSkipPings(conn)
+	require.NoError(t, err)
+	require.Equal(t, websocket.TextMessage, tp)
+	require.Equal(t, `42["greet","hello"]`, string(raw))
+}
+
+// TestSocketIOEmit verifies that Emit wraps the payload as a "message" event.
+func TestSocketIOEmit(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	ready := make(chan *Websocket, 1)
+	On(EventConnect, func(payload *EventPayload) {
+		select {
+		case ready <- payload.Kws:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	require.NoError(t, sioHandshake(t, conn))
+
+	var kws *Websocket
+	select {
+	case kws = <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventConnect did not fire within the timeout")
+	}
+
+	// Server emits raw JSON – should arrive as a socket.io "message" event
+	kws.Emit([]byte(`{"key":"value"}`))
+
+	tp, raw, err := sioReadSkipPings(conn)
+	require.NoError(t, err)
+	require.Equal(t, websocket.TextMessage, tp)
+	require.Equal(t, `42["message",{"key":"value"}]`, string(raw))
+}
+
+// TestSocketIOCustomEvent verifies that a client-sent custom event (non-"message")
+// is routed to a custom listener rather than EventMessage.
+func TestSocketIOCustomEvent(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	customReceived := make(chan []byte, 1)
+	messageReceived := make(chan []byte, 1)
+
+	On("custom", func(payload *EventPayload) {
+		customReceived <- payload.Data
+	})
+	On(EventMessage, func(payload *EventPayload) {
+		messageReceived <- payload.Data
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	require.NoError(t, sioHandshake(t, conn))
+
+	// Send a "custom" event, not a "message" event
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`42["custom","payload"]`)))
+
+	select {
+	case data := <-customReceived:
+		require.Equal(t, `"payload"`, string(data))
+	case <-time.After(2 * time.Second):
+		t.Fatal("custom event listener was not called within the timeout")
+	}
+
+	// The EventMessage listener must NOT have been triggered
+	select {
+	case <-messageReceived:
+		t.Fatal("EventMessage was unexpectedly triggered by a custom event")
+	default:
+	}
+}
+
+// TestSocketIODisconnect verifies that sending a SIO DISCONNECT packet ("41")
+// causes the server to fire EventDisconnect.
+func TestSocketIODisconnect(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	disconnected := make(chan struct{}, 1)
+	On(EventDisconnect, func(_ *EventPayload) {
+		select {
+		case disconnected <- struct{}{}:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	require.NoError(t, sioHandshake(t, conn))
+
+	// Client sends SIO DISCONNECT
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte("41")))
+
+	select {
+	case <-disconnected:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventDisconnect was not fired within the timeout")
+	}
+}
+
+// TestSocketIOHeartbeat verifies that the server sends EIO PING ("2") packets
+// and accepts EIO PONG ("3") responses from the client.
+func TestSocketIOHeartbeat(t *testing.T) {
+	// Use a very short ping interval so the test doesn't take 25 seconds.
+	orig := PingInterval
+	PingInterval = 100 * time.Millisecond
+	defer func() { PingInterval = orig }()
+
+	pool.reset()
+	listeners.reset()
+
+	pongReceived := make(chan struct{}, 1)
+	On(EventPong, func(_ *EventPayload) {
+		select {
+		case pongReceived <- struct{}{}:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	require.NoError(t, sioHandshake(t, conn))
+
+	// Respond to at least one EIO PING with a PONG
+	for i := 0; i < 5; i++ {
+		tp, msg, err := conn.ReadMessage()
+		require.NoError(t, err)
+		require.Equal(t, websocket.TextMessage, tp)
+
+		if len(msg) == 1 && msg[0] == eioPing {
+			require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte{eioPong}))
+			break
+		}
+	}
+
+	select {
+	case <-pongReceived:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventPong was not fired within the timeout")
+	}
+}
+
+// TestSocketIOBuildSIOEvent checks the wire-format produced by buildSIOEvent.
+func TestSocketIOBuildSIOEvent(t *testing.T) {
+	cases := []struct {
+		name     string
+		event    string
+		data     []byte
+		expected string
+	}{
+		{"no data", "ping", nil, `42["ping"]`},
+		{"string data", "message", []byte(`"hello"`), `42["message","hello"]`},
+		{"object data", "update", []byte(`{"key":"val"}`), `42["update",{"key":"val"}]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildSIOEvent(tc.event, tc.data)
+			require.Equal(t, tc.expected, string(got))
+		})
+	}
+}
+
+// TestSocketIOParseSIOEvent checks round-trip decoding of SIO EVENT payloads.
+func TestSocketIOParseSIOEvent(t *testing.T) {
+	t.Run("single string arg", func(t *testing.T) {
+		name, data, err := parseSIOEvent([]byte(`["message","hello"]`))
+		require.NoError(t, err)
+		require.Equal(t, "message", name)
+		require.Equal(t, `"hello"`, string(data))
+	})
+	t.Run("single object arg", func(t *testing.T) {
+		name, data, err := parseSIOEvent([]byte(`["update",{"k":"v"}]`))
+		require.NoError(t, err)
+		require.Equal(t, "update", name)
+		require.Equal(t, `{"k":"v"}`, string(data))
+	})
+	t.Run("multiple args", func(t *testing.T) {
+		name, data, err := parseSIOEvent([]byte(`["event","a","b"]`))
+		require.NoError(t, err)
+		require.Equal(t, "event", name)
+		// Multiple args are returned as a JSON array
+		require.True(t, strings.HasPrefix(string(data), "["))
+	})
+	t.Run("no data arg", func(t *testing.T) {
+		name, data, err := parseSIOEvent([]byte(`["ping"]`))
+		require.NoError(t, err)
+		require.Equal(t, "ping", name)
+		require.Nil(t, data)
+	})
+	t.Run("invalid JSON", func(t *testing.T) {
+		_, _, err := parseSIOEvent([]byte(`not json`))
+		require.Error(t, err)
+	})
+	t.Run("empty array", func(t *testing.T) {
+		_, _, err := parseSIOEvent([]byte(`[]`))
+		require.Error(t, err)
+	})
+}
+

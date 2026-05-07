@@ -8,8 +8,7 @@ id: socketio
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Test%20Socket.io/badge.svg)
 
-WebSocket wrapper for [Fiber](https://github.com/gofiber/fiber) with events support and inspired by [Socket.io](https://github.com/socketio/socket.io)
-
+WebSocket wrapper for [Fiber](https://github.com/gofiber/fiber) that implements the [Engine.IO v4](https://github.com/socketio/engine.io-protocol) / [Socket.IO v5](https://github.com/socketio/socket.io-protocol) wire protocol, making it fully compatible with the official [`socket.io-client`](https://socket.io/docs/v4/client-api/) library.
 
 **Compatible with Fiber v3.**
 
@@ -23,6 +22,36 @@ We only support the latest two versions of Go. Visit [https://go.dev/doc/devel/r
 go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/v3/socketio
 ```
+
+## Protocol compatibility
+
+The middleware automatically handles the Engine.IO / Socket.IO handshake so you do **not** need any special server-side code – just point your `socket.io-client` at the WebSocket endpoint.
+
+### Required client configuration
+
+The client **must** use `transports: ['websocket']` (polling transport is not supported):
+
+```js
+import { io } from "socket.io-client";
+
+const socket = io("http://localhost:3000", {
+  path: "/ws",                 // match the Fiber route
+  transports: ["websocket"],   // WebSocket-only; polling is not supported
+});
+```
+
+### Message format
+
+All messages are exchanged as Socket.IO events.
+
+| Side            | API call                              | Wire format                        |
+|:----------------|:--------------------------------------|:-----------------------------------|
+| Server → Client | `kws.Emit([]byte(`"hello"`))` | `42["message","hello"]`            |
+| Server → Client | `kws.EmitEvent("greet", data)` | `42["greet",<data>]`              |
+| Client → Server | `socket.emit("message", obj)` | fires `EventMessage` with `obj` |
+| Client → Server | `socket.emit("custom", obj)`  | fires the `"custom"` event     |
+
+> **Note:** `Emit` and `EmitEvent` expect the `data` argument to be **valid JSON** (an object, array, string literal, number, etc.).
 
 ## Signatures
 
@@ -61,6 +90,8 @@ func Fire(event string, data []byte)
 ```
 
 ## Example
+
+### Go server
 
 ```go
 package main
@@ -183,15 +214,48 @@ func main() {
         // Every websocket connection has an optional session key => value storage
         kws.SetAttribute("user_id", userId)
 
-        //Broadcast to all the connected users the newcomer
-        kws.Broadcast([]byte(fmt.Sprintf("New user connected: %s and UUID: %s", userId, kws.UUID)), true, socketio.TextMessage)
-        //Write welcome message
-        kws.Emit([]byte(fmt.Sprintf("Hello user: %s with UUID: %s", userId, kws.UUID)), socketio.TextMessage)
+        // Broadcast to all the connected users the newcomer
+        newUserMsg, _ := json.Marshal(fmt.Sprintf("New user connected: %s and UUID: %s", userId, kws.UUID))
+        kws.Broadcast(newUserMsg, true, socketio.TextMessage)
+
+        // Write welcome message (must be valid JSON)
+        welcomeMsg, _ := json.Marshal(fmt.Sprintf("Hello user: %s with UUID: %s", userId, kws.UUID))
+        kws.Emit(welcomeMsg, socketio.TextMessage)
     }))
 
     log.Fatal(app.Listen(":3000"))
 }
+```
 
+### TypeScript / JavaScript client
+
+```ts
+import { io } from "socket.io-client";
+
+const socket = io("http://localhost:3000", {
+  path: "/ws",
+  transports: ["websocket"],
+});
+
+socket.on("connect", () => {
+  console.log("connected, sid =", socket.id);
+
+  // Send a message to the server
+  socket.emit("message", {
+    from: "user1",
+    to:   "user2",
+    event: "",
+    data: "hello",
+  });
+});
+
+socket.on("message", (data: unknown) => {
+  console.log("received message:", data);
+});
+
+socket.on("disconnect", (reason) => {
+  console.log("disconnected:", reason);
+});
 ```
 
 ---
@@ -200,13 +264,15 @@ func main() {
 
 | Const           | Event        | Description                                                                                                                                                |
 |:----------------|:-------------|:-----------------------------------------------------------------------------------------------------------------------------------------------------------|
-| EventMessage    | `message`    | Fired when a Text/Binary message is received                                                                                                               |
-| EventPing       | `ping`       | [More details here](https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API/Writing_WebSocket_servers#Pings_and_Pongs_The_Heartbeat_of_WebSockets) |
-| EventPong       | `pong`       | Refer to ping description                                                                                                                                  |
+| EventMessage    | `message`    | Fired when a `socket.emit("message", …)` event is received from the client                                                                                |
+| EventPing       | `ping`       | Fired when an Engine.IO PING is received from the client                                                                                                   |
+| EventPong       | `pong`       | Fired when the client replies with an Engine.IO PONG to the server's heartbeat                                                                             |
 | EventDisconnect | `disconnect` | Fired on disconnection. The error provided in disconnection event as defined in RFC 6455, section 11.7.                                                    |
-| EventConnect    | `connect`    | Fired on first connection                                                                                                                                  |
+| EventConnect    | `connect`    | Fired after the Engine.IO / Socket.IO handshake completes                                                                                                  |
 | EventClose      | `close`      | Fired when the connection is actively closed from the server. Different from client disconnection                                                          |
 | EventError      | `error`      | Fired when some error appears useful also for debugging websockets                                                                                         |
+
+Custom events map directly to the event name used in `socket.emit("myEvent", …)` on the client and `kws.EmitEvent("myEvent", data)` on the server.
 
 ## Event Payload object
 
@@ -217,7 +283,7 @@ func main() {
 | SocketUUID       | `string`            | Unique connection UUID                                                          |
 | SocketAttributes | `map[string]string` | Optional websocket attributes                                                   |
 | Error            | `error`             | (optional) Fired from disconnection or error events                             |
-| Data             | `[]byte`            | Data used on Message and on Error event, contains the payload for custom events |
+| Data             | `[]byte`            | Raw JSON of the event payload (first argument of `socket.emit`)                 |
 
 ## Socket instance functions
 
@@ -225,13 +291,14 @@ func main() {
 |:-------------|:---------|:----------------------------------------------------------------------------------|
 | SetAttribute | `void`   | Set a specific attribute for the specific socket connection                       |
 | GetUUID      | `string` | Get socket connection UUID                                                        |
-| SetUUID      | `error`   | Set socket connection UUID                                                        |
+| SetUUID      | `error`  | Set socket connection UUID                                                        |
 | GetAttribute | `string` | Get a specific attribute from the socket attributes                               |
 | EmitToList   | `void`   | Emit the message to a specific socket uuids list                                  |
 | EmitTo       | `error`  | Emit to a specific socket connection                                              |
 | Broadcast    | `void`   | Broadcast to all the active connections except broadcasting the message to itself |
 | Fire         | `void`   | Fire custom event                                                                 |
-| Emit         | `void`   | Emit/Write the message into the given connection                                  |
+| Emit         | `void`   | Send data as a `"message"` socket.io event (data must be valid JSON)              |
+| EmitEvent    | `void`   | Send a named socket.io event (data must be valid JSON)                            |
 | Close        | `void`   | Actively close the connection from the server                                     |
 
 **Note: the FastHTTP connection can be accessed directly from the instance**
@@ -239,3 +306,4 @@ func main() {
 ```go
 kws.Conn
 ```
+

@@ -1,14 +1,39 @@
 package socketio
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/gofiber/contrib/v3/websocket"
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+)
+
+// Engine.IO v4 packet type bytes
+const (
+	eioOpen    = '0' // Server → Client: sent right after upgrade, carries session info
+	eioClose   = '1' // Either side: request to close the transport
+	eioPing    = '2' // Server → Client: heartbeat ping
+	eioPong    = '3' // Client → Server: heartbeat pong (response to eioPing)
+	eioMessage = '4' // Either side: wraps a Socket.IO packet
+	eioUpgrade = '5' // Client → Server: signals transport upgrade complete
+	eioNoop    = '6' // Either side: no-operation
+)
+
+// Socket.IO v5 packet type bytes (carried inside an eioMessage payload)
+const (
+	sioConnect      = '0' // Client → Server: connect to a namespace
+	sioDisconnect   = '1' // Either side: disconnect from a namespace
+	sioEvent        = '2' // Either side: named event with JSON payload
+	sioAck          = '3' // Either side: acknowledge a previous event
+	sioConnectError = '4' // Server → Client: namespace connection error
+	sioBinaryEvent  = '5' // Either side: named event with binary payload
+	sioBinaryAck    = '6' // Either side: binary acknowledge
 )
 
 // Source @url:https://github.com/gorilla/websocket/blob/master/conn.go#L61
@@ -61,13 +86,17 @@ var (
 )
 
 var (
+	// PongTimeout is deprecated. Use PingInterval instead.
 	PongTimeout = 1 * time.Second
 	// RetrySendTimeout retry after 20 ms if there is an error
 	RetrySendTimeout = 20 * time.Millisecond
-	//MaxSendRetry define max retries if there are socket issues
+	// MaxSendRetry define max retries if there are socket issues
 	MaxSendRetry = 5
 	// ReadTimeout Instead of reading in a for loop, try to avoid full CPU load taking some pause
 	ReadTimeout = 10 * time.Millisecond
+	// PingInterval is how often the server sends Engine.IO PING packets to the client.
+	// The client must reply with a PONG packet to keep the connection alive.
+	PingInterval = 25 * time.Second
 )
 
 // Raw form of websocket message
@@ -100,6 +129,63 @@ type EventPayload struct {
 	Data []byte
 }
 
+// eioOpenPacket holds the JSON payload sent in the Engine.IO OPEN packet.
+type eioOpenPacket struct {
+	SID          string   `json:"sid"`
+	Upgrades     []string `json:"upgrades"`
+	PingInterval int      `json:"pingInterval"`
+	PingTimeout  int      `json:"pingTimeout"`
+	MaxPayload   int      `json:"maxPayload"`
+}
+
+// buildSIOEvent encodes a Socket.IO EVENT packet ready to send over the wire.
+// Format: 4 2 [ "<event>" , <data> ]
+//
+// The data argument must be valid JSON (object, array, string, number, etc.).
+func buildSIOEvent(event string, data []byte) []byte {
+	name, _ := json.Marshal(event)
+	buf := make([]byte, 0, 3+len(name)+1+len(data)+1)
+	buf = append(buf, eioMessage, sioEvent, '[')
+	buf = append(buf, name...)
+	if len(data) > 0 {
+		buf = append(buf, ',')
+		buf = append(buf, data...)
+	}
+	buf = append(buf, ']')
+	return buf
+}
+
+// parseSIOEvent parses the JSON-array payload of a Socket.IO EVENT packet.
+//
+// payload is the bytes after the "42" prefix, e.g. `["message",{"key":"val"}]`.
+// It returns the event name and the raw JSON of the first data argument.
+// When the client sends multiple arguments they are returned as a JSON array.
+func parseSIOEvent(payload []byte) (string, []byte, error) {
+	var arr []json.RawMessage
+	if err := json.Unmarshal(payload, &arr); err != nil {
+		return "", nil, fmt.Errorf("socketio: failed to parse event payload: %w", err)
+	}
+	if len(arr) == 0 {
+		return "", nil, errors.New("socketio: empty event array")
+	}
+	var eventName string
+	if err := json.Unmarshal(arr[0], &eventName); err != nil {
+		return "", nil, fmt.Errorf("socketio: failed to parse event name: %w", err)
+	}
+	if len(arr) == 1 {
+		return eventName, nil, nil
+	}
+	if len(arr) == 2 {
+		return eventName, []byte(arr[1]), nil
+	}
+	// Multiple args: return remaining args as a JSON array
+	rest, err := json.Marshal(arr[1:])
+	if err != nil {
+		return "", nil, fmt.Errorf("socketio: failed to serialize event args: %w", err)
+	}
+	return eventName, rest, nil
+}
+
 type ws interface {
 	IsAlive() bool
 	GetUUID() string
@@ -113,6 +199,7 @@ type ws interface {
 	Broadcast(message []byte, except bool, mType ...int)
 	Fire(event string, data []byte)
 	Emit(message []byte, mType ...int)
+	EmitEvent(event string, data []byte)
 	Close()
 	pong(ctx context.Context)
 	write(messageType int, messageBytes []byte)
@@ -230,6 +317,13 @@ func (l *safeListeners) get(event string) []eventCallback {
 	return ret
 }
 
+//nolint:all
+func (l *safeListeners) reset() {
+	l.Lock()
+	l.list = make(map[string][]eventCallback)
+	l.Unlock()
+}
+
 // List of the listeners for the events
 var listeners = safeListeners{
 	list: make(map[string][]eventCallback),
@@ -266,9 +360,8 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 		// execute the callback of the socket initialization
 		callback(kws)
 
-		kws.fireEvent(EventConnect, nil, nil)
-
-		// Run the loop for the given connection
+		// Run the loop for the given connection.
+		// The EIO handshake and EventConnect are handled inside run().
 		kws.run()
 	}, config...)
 }
@@ -277,6 +370,28 @@ func (kws *Websocket) GetUUID() string {
 	kws.mu.RLock()
 	defer kws.mu.RUnlock()
 	return kws.UUID
+}
+
+// sendEIOOpen sends the Engine.IO OPEN packet after the WebSocket upgrade.
+// The client uses the session ID and timing parameters from this packet.
+func (kws *Websocket) sendEIOOpen() {
+	open := eioOpenPacket{
+		SID:          kws.UUID,
+		Upgrades:     []string{},
+		PingInterval: int(PingInterval.Milliseconds()),
+		PingTimeout:  int(PongTimeout.Milliseconds()),
+		MaxPayload:   1_000_000,
+	}
+	data, _ := json.Marshal(open)
+	kws.write(TextMessage, append([]byte{eioOpen}, data...))
+}
+
+// sendSIOConnect sends the Socket.IO CONNECT confirmation for the root namespace.
+func (kws *Websocket) sendSIOConnect() {
+	data, _ := json.Marshal(struct {
+		SID string `json:"sid"`
+	}{SID: kws.UUID})
+	kws.write(TextMessage, append([]byte{eioMessage, sioConnect}, data...))
 }
 
 func (kws *Websocket) SetUUID(uuid string) error {
@@ -424,17 +539,31 @@ func Fire(event string, data []byte) {
 	fireGlobalEvent(event, data, nil)
 }
 
-// Emit /Write the message into the given connection
+// Emit sends a message to the client as a socket.io "message" event.
+// The message parameter should be valid JSON (object, array, string literal, etc.).
+// For named events use EmitEvent instead.
 func (kws *Websocket) Emit(message []byte, mType ...int) {
 	t := TextMessage
 	if len(mType) > 0 {
 		t = mType[0]
 	}
-	kws.write(t, message)
+	if t == TextMessage {
+		kws.write(TextMessage, buildSIOEvent(EventMessage, message))
+	} else {
+		kws.write(t, message)
+	}
+}
+
+// EmitEvent sends a named socket.io event to the client.
+// The data parameter should be valid JSON.
+func (kws *Websocket) EmitEvent(event string, data []byte) {
+	kws.write(TextMessage, buildSIOEvent(event, data))
 }
 
 // Close Actively close the connection from the server
 func (kws *Websocket) Close() {
+	// Notify the client with a Socket.IO DISCONNECT packet before closing
+	kws.write(TextMessage, []byte{eioMessage, sioDisconnect})
 	kws.write(CloseMessage, []byte("Connection closed"))
 	kws.fireEvent(EventClose, nil, nil)
 }
@@ -464,14 +593,15 @@ func (kws *Websocket) queueLength() int {
 	return len(kws.queue)
 }
 
-// pong writes a control message to the client
+// pong sends Engine.IO PING packets to the client at regular PingInterval intervals.
+// The client is expected to respond with an EIO PONG ("3") within PongTimeout.
 func (kws *Websocket) pong(ctx context.Context) {
-	timeoutTicker := time.NewTicker(PongTimeout)
-	defer timeoutTicker.Stop()
+	ticker := time.NewTicker(PingInterval)
+	defer ticker.Stop()
 	for {
 		select {
-		case <-timeoutTicker.C:
-			kws.write(PongMessage, []byte{})
+		case <-ticker.C:
+			kws.write(TextMessage, []byte{eioPing})
 		case <-ctx.Done():
 			return
 		}
@@ -523,9 +653,38 @@ func (kws *Websocket) send(ctx context.Context) {
 func (kws *Websocket) run() {
 	ctx, cancelFunc := context.WithCancel(context.Background())
 
+	// Start the send goroutine first so it can deliver the EIO OPEN packet.
+	go kws.send(ctx)
+
+	// Perform the Engine.IO / Socket.IO handshake:
+	// 1. Server sends EIO OPEN   → "0{...}"
+	// 2. Client sends SIO CONNECT → "40"
+	// 3. Server sends SIO CONNECT confirmation → "40{\"sid\":\"...\"}"
+	kws.sendEIOOpen()
+
+	kws.mu.RLock()
+	mType, msg, err := kws.Conn.ReadMessage()
+	kws.mu.RUnlock()
+
+	switch {
+	case err != nil:
+		cancelFunc()
+		kws.disconnected(err)
+		return
+	case mType == CloseMessage:
+		cancelFunc()
+		kws.disconnected(nil)
+		return
+	case mType == TextMessage && len(msg) >= 2 && msg[0] == eioMessage && msg[1] == sioConnect:
+		// Normal socket.io-client CONNECT → confirm connection
+		kws.sendSIOConnect()
+	}
+
+	// Fire EventConnect after the handshake is complete
+	kws.fireEvent(EventConnect, nil, nil)
+
 	go kws.pong(ctx)
 	go kws.read(ctx)
-	go kws.send(ctx)
 
 	<-kws.done // block until one event is sent to the done channel
 
@@ -548,16 +707,15 @@ func (kws *Websocket) read(ctx context.Context) {
 			mType, msg, err := kws.Conn.ReadMessage()
 			kws.mu.RUnlock()
 
+			// WebSocket-level control frames
 			if mType == PingMessage {
 				kws.fireEvent(EventPing, nil, nil)
 				continue
 			}
-
 			if mType == PongMessage {
 				kws.fireEvent(EventPong, nil, nil)
 				continue
 			}
-
 			if mType == CloseMessage {
 				kws.disconnected(nil)
 				return
@@ -568,11 +726,89 @@ func (kws *Websocket) read(ctx context.Context) {
 				return
 			}
 
-			// We have a message and we fire the message event
-			kws.fireEvent(EventMessage, msg, nil)
+			// Binary messages (socket.io binary events / raw binary data)
+			if mType == BinaryMessage {
+				kws.fireEvent(EventMessage, msg, nil)
+				continue
+			}
+
+			// Text messages: parse Engine.IO packet
+			if mType != TextMessage || len(msg) == 0 {
+				continue
+			}
+
+			switch msg[0] {
+			case eioPong:
+				// EIO PONG — client's response to our PING
+				kws.fireEvent(EventPong, nil, nil)
+
+			case eioPing:
+				// EIO PING from client (unusual in EIO v4 but handle gracefully)
+				kws.write(TextMessage, []byte{eioPong})
+				kws.fireEvent(EventPing, nil, nil)
+
+			case eioClose:
+				kws.disconnected(nil)
+				return
+
+			case eioNoop:
+				// No-op, ignore
+
+			case eioMessage:
+				// Socket.IO packet wrapped in an EIO MESSAGE
+				kws.handleSIOPacket(msg[1:])
+
+			default:
+				// Unknown EIO packet type — surface as a raw message
+				kws.fireEvent(EventMessage, msg, nil)
+			}
+
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// handleSIOPacket processes a Socket.IO packet (the bytes after the "4" EIO prefix).
+func (kws *Websocket) handleSIOPacket(payload []byte) {
+	if len(payload) == 0 {
+		return
+	}
+
+	sioType := payload[0]
+	data := payload[1:]
+
+	// Strip optional namespace prefix (e.g., "/admin,")
+	if len(data) > 0 && data[0] == '/' {
+		if idx := bytes.IndexByte(data, ','); idx >= 0 {
+			data = data[idx+1:]
+		} else {
+			data = nil
+		}
+	}
+
+	switch sioType {
+	case sioEvent:
+		eventName, eventData, err := parseSIOEvent(data)
+		if err != nil {
+			kws.fireEvent(EventError, payload, err)
+			return
+		}
+		kws.fireEvent(eventName, eventData, nil)
+
+	case sioDisconnect:
+		kws.disconnected(nil)
+
+	case sioConnect:
+		// Re-connection to a namespace — confirm
+		kws.sendSIOConnect()
+
+	case sioAck:
+		// Acknowledge packets are intentionally ignored for now
+
+	default:
+		// Unknown SIO packet type — surface payload as a raw message
+		kws.fireEvent(EventMessage, payload, nil)
 	}
 }
 
