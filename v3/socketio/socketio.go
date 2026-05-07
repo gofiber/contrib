@@ -144,7 +144,7 @@ type eioOpenPacket struct {
 // The data argument must be valid JSON (object, array, string, number, etc.).
 func buildSIOEvent(event string, data []byte) []byte {
 	name, _ := json.Marshal(event)
-	buf := make([]byte, 0, 3+len(name)+1+len(data)+1)
+	var buf []byte
 	buf = append(buf, eioMessage, sioEvent, '[')
 	buf = append(buf, name...)
 	if len(data) > 0 {
@@ -317,7 +317,7 @@ func (l *safeListeners) get(event string) []eventCallback {
 	return ret
 }
 
-//nolint:all
+//nolint:unused
 func (l *safeListeners) reset() {
 	l.Lock()
 	l.list = make(map[string][]eventCallback)
@@ -382,15 +382,23 @@ func (kws *Websocket) sendEIOOpen() {
 		PingTimeout:  int(PongTimeout.Milliseconds()),
 		MaxPayload:   1_000_000,
 	}
-	data, _ := json.Marshal(open)
+	data, err := json.Marshal(open)
+	if err != nil {
+		kws.fireEvent(EventError, nil, err)
+		return
+	}
 	kws.write(TextMessage, append([]byte{eioOpen}, data...))
 }
 
 // sendSIOConnect sends the Socket.IO CONNECT confirmation for the root namespace.
 func (kws *Websocket) sendSIOConnect() {
-	data, _ := json.Marshal(struct {
+	data, err := json.Marshal(struct {
 		SID string `json:"sid"`
 	}{SID: kws.UUID})
+	if err != nil {
+		kws.fireEvent(EventError, nil, err)
+		return
+	}
 	kws.write(TextMessage, append([]byte{eioMessage, sioConnect}, data...))
 }
 
