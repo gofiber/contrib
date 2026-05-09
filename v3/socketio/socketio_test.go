@@ -86,6 +86,11 @@ func (s *WebsocketMock) Emit(message []byte, _ ...int) {
 	s.wg.Done()
 }
 
+// EmitWithAck satisfies the ws interface for test mocks. The mock does not
+// model the ack callback dispatch; Tests should use the real *Websocket if
+// they want to exercise that path.
+func (s *WebsocketMock) EmitWithAck(_ string, _ []byte, _ func([]byte)) {}
+
 func (s *WebsocketMock) IsAlive() bool {
 	args := s.Called()
 	return args.Bool(0)
@@ -798,14 +803,13 @@ func TestSocketIODisconnect(t *testing.T) {
 	}
 }
 
-// TestSocketIOHeartbeat verifies that the server sends EIO PING ("2") packets
-// and accepts EIO PONG ("3") responses from the client.
+// TestSocketIOHeartbeat verifies that an EIO PING from the server to the
+// client triggers an EventPong on the server when the client replies.
+//
+// We intentionally do NOT mutate the global PingInterval here: that races
+// with previously-spawned pong goroutines reading the same global. Instead,
+// we drive a single PING manually from the server side via kws.write.
 func TestSocketIOHeartbeat(t *testing.T) {
-	// Use a very short ping interval so the test doesn't take 25 seconds.
-	orig := PingInterval
-	PingInterval = 100 * time.Millisecond
-	defer func() { PingInterval = orig }()
-
 	pool.reset()
 	listeners.reset()
 
@@ -813,6 +817,14 @@ func TestSocketIOHeartbeat(t *testing.T) {
 	On(EventPong, func(_ *EventPayload) {
 		select {
 		case pongReceived <- struct{}{}:
+		default:
+		}
+	})
+
+	kwsCh := make(chan *Websocket, 1)
+	On(EventConnect, func(p *EventPayload) {
+		select {
+		case kwsCh <- p.Kws:
 		default:
 		}
 	})
@@ -825,17 +837,25 @@ func TestSocketIOHeartbeat(t *testing.T) {
 
 	require.NoError(t, sioHandshake(t, conn))
 
-	// Respond to at least one EIO PING with a PONG
-	for i := 0; i < 5; i++ {
-		tp, msg, err := conn.ReadMessage()
-		require.NoError(t, err)
-		require.Equal(t, websocket.TextMessage, tp)
-
-		if len(msg) == 1 && msg[0] == eioPing {
-			require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte{eioPong}))
-			break
-		}
+	var kws *Websocket
+	select {
+	case kws = <-kwsCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventConnect did not fire")
 	}
+
+	// Force an immediate EIO PING from the server side (avoids the 25s
+	// ticker wait and the data race that goes with mutating PingInterval).
+	kws.write(TextMessage, []byte{eioPing})
+
+	// Read the PING off the wire.
+	tp, msg, err := conn.ReadMessage()
+	require.NoError(t, err)
+	require.Equal(t, websocket.TextMessage, tp)
+	require.Equalf(t, []byte{eioPing}, msg, "expected PING ('2'), got %q", msg)
+
+	// Reply with PONG.
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte{eioPong}))
 
 	select {
 	case <-pongReceived:
@@ -994,6 +1014,118 @@ func TestSocketIONamespaceHandshake(t *testing.T) {
 	_, msg, err = sioReadSkipPings(conn)
 	require.NoError(t, err)
 	require.Equal(t, `42/admin,["hello","world"]`, string(msg))
+}
+
+// TestSocketIOInboundAck verifies that an event packet with an ack id
+// (42<id>[event,data]) is exposed to the listener as HasAck=true / AckID=N
+// and that EventPayload.Ack(...) puts the matching 43<id>[<data>] frame on
+// the wire.
+func TestSocketIOInboundAck(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	On(EventMessage, func(ep *EventPayload) {
+		if ep.HasAck {
+			_ = ep.Ack([]byte(`"ok"`))
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+
+	// Client sends: 421["message",{"k":"v"}]  (ack id = 1)
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`421["message",{"k":"v"}]`)))
+
+	tp, msg, err := sioReadSkipPings(conn)
+	require.NoError(t, err)
+	require.Equal(t, websocket.TextMessage, tp)
+	require.Equal(t, `431["ok"]`, string(msg))
+}
+
+// TestSocketIOOutboundAck verifies that EmitWithAck encodes the ack id and
+// that the registered callback fires when the client replies with a 43.
+func TestSocketIOOutboundAck(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	ready := make(chan *Websocket, 1)
+	On(EventConnect, func(p *EventPayload) {
+		select {
+		case ready <- p.Kws:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+
+	var kws *Websocket
+	select {
+	case kws = <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no EventConnect")
+	}
+
+	gotAck := make(chan []byte, 1)
+	kws.EmitWithAck("ping", []byte(`"hi"`), func(ack []byte) {
+		gotAck <- ack
+	})
+
+	tp, msg, err := sioReadSkipPings(conn)
+	require.NoError(t, err)
+	require.Equal(t, websocket.TextMessage, tp)
+	require.Equal(t, `421["ping","hi"]`, string(msg))
+
+	// Client replies with 431["pong"]
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`431["pong"]`)))
+
+	select {
+	case ack := <-gotAck:
+		require.Equal(t, `"pong"`, string(ack))
+	case <-time.After(2 * time.Second):
+		t.Fatal("ack callback never fired")
+	}
+}
+
+// TestSocketIOSplitAckID exercises the leading-digits parser used for
+// inbound ack-id detection.
+func TestSocketIOSplitAckID(t *testing.T) {
+	cases := []struct {
+		in       string
+		hasID    bool
+		id       uint64
+		rest     string
+		errsLike string
+	}{
+		{`["x"]`, false, 0, `["x"]`, ""},
+		{`5["x"]`, true, 5, `["x"]`, ""},
+		{`12345["x","y"]`, true, 12345, `["x","y"]`, ""},
+		{`0["x"]`, true, 0, `["x"]`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			id, has, rest, err := splitSIOAckID([]byte(tc.in))
+			require.NoError(t, err)
+			require.Equal(t, tc.hasID, has)
+			require.Equal(t, tc.id, id)
+			require.Equal(t, tc.rest, string(rest))
+		})
+	}
+}
+
+// TestSocketIOBuildSIOAck checks the wire format of ack frames.
+func TestSocketIOBuildSIOAck(t *testing.T) {
+	require.Equal(t, `431[]`, string(buildSIOAck(nil, 1, nil)))
+	require.Equal(t, `431["ok"]`, string(buildSIOAck(nil, 1, []byte(`"ok"`))))
+	require.Equal(t, `43/admin,7[{"x":1}]`, string(buildSIOAck([]byte("/admin"), 7, []byte(`{"x":1}`))))
 }
 
 // TestSocketIOPingTimeoutIsAdvertised checks that the EIO OPEN packet exposes

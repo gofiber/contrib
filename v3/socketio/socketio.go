@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gofiber/contrib/v3/websocket"
@@ -134,6 +136,29 @@ type EventPayload struct {
 	Error error
 	// Data is used on Message and on Error event
 	Data []byte
+	// AckID is the Socket.IO ack id attached to this event by the client.
+	// It is meaningful only when HasAck is true. Use Ack() to respond.
+	AckID uint64
+	// HasAck reports whether the client requested an ack for this event
+	// (i.e. the JS side called socket.emit("event", data, callback)).
+	HasAck bool
+}
+
+// Ack sends a Socket.IO ACK ("43") response back to the client for the
+// event represented by this payload. data must be valid JSON (object,
+// array, string literal, number, etc.) or nil for an empty ack.
+//
+// Returns an error if the event has no ack id, or if the connection is
+// already closed.
+func (ep *EventPayload) Ack(data []byte) error {
+	if !ep.HasAck {
+		return errors.New("socketio: event has no ack id")
+	}
+	if ep.Kws == nil || !ep.Kws.IsAlive() {
+		return ErrorInvalidConnection
+	}
+	ep.Kws.write(TextMessage, buildSIOAck(ep.Kws.getNamespace(), ep.AckID, data))
+	return nil
 }
 
 // eioOpenPacket holds the JSON payload sent in the Engine.IO OPEN packet.
@@ -146,17 +171,27 @@ type eioOpenPacket struct {
 }
 
 // buildSIOEvent encodes a Socket.IO EVENT packet ready to send over the wire.
-// Format: 4 2 [/<namespace>,] [ "<event>" , <data> ]
+// Format: 4 2 [/<namespace>,] [<ackID>] [ "<event>" , <data> ]
 //
 // The data argument must be valid JSON (object, array, string, number, etc.).
-// namespace may be nil for the root namespace.
+// namespace may be nil for the root namespace. When hasAck is true the
+// ackID is encoded between the namespace separator and the JSON array,
+// signalling that the server expects the client to respond with a "43".
 func buildSIOEvent(namespace []byte, event string, data []byte) []byte {
+	return buildSIOEventWithAck(namespace, 0, false, event, data)
+}
+
+// buildSIOEventWithAck is the ack-id aware variant of buildSIOEvent.
+func buildSIOEventWithAck(namespace []byte, ackID uint64, hasAck bool, event string, data []byte) []byte {
 	name, _ := json.Marshal(event)
 	var buf []byte
 	buf = append(buf, eioMessage, sioEvent)
 	if len(namespace) > 0 {
 		buf = append(buf, namespace...)
 		buf = append(buf, ',')
+	}
+	if hasAck {
+		buf = strconv.AppendUint(buf, ackID, 10)
 	}
 	buf = append(buf, '[')
 	buf = append(buf, name...)
@@ -166,6 +201,44 @@ func buildSIOEvent(namespace []byte, event string, data []byte) []byte {
 	}
 	buf = append(buf, ']')
 	return buf
+}
+
+// buildSIOAck encodes a Socket.IO ACK ("43") packet.
+//
+// Format: 4 3 [/<namespace>,] <ackID> [ <data> ]
+// data may be nil to send an empty ack (`43<id>[]`).
+func buildSIOAck(namespace []byte, ackID uint64, data []byte) []byte {
+	var buf []byte
+	buf = append(buf, eioMessage, sioAck)
+	if len(namespace) > 0 {
+		buf = append(buf, namespace...)
+		buf = append(buf, ',')
+	}
+	buf = strconv.AppendUint(buf, ackID, 10)
+	buf = append(buf, '[')
+	if len(data) > 0 {
+		buf = append(buf, data...)
+	}
+	buf = append(buf, ']')
+	return buf
+}
+
+// splitSIOAckID extracts the optional leading numeric ack ID from a SIO
+// EVENT or ACK payload (the bytes after any namespace stripping). It
+// returns the ID, a flag whether one was present, and the remaining bytes.
+func splitSIOAckID(data []byte) (id uint64, has bool, rest []byte, err error) {
+	i := 0
+	for i < len(data) && data[i] >= '0' && data[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return 0, false, data, nil
+	}
+	parsed, perr := strconv.ParseUint(string(data[:i]), 10, 64)
+	if perr != nil {
+		return 0, false, data, fmt.Errorf("socketio: invalid ack id: %w", perr)
+	}
+	return parsed, true, data[i:], nil
 }
 
 // parseSIOEvent parses the JSON-array payload of a Socket.IO EVENT packet.
@@ -213,6 +286,7 @@ type ws interface {
 	Fire(event string, data []byte)
 	Emit(message []byte, mType ...int)
 	EmitEvent(event string, data []byte)
+	EmitWithAck(event string, data []byte, cb func(ack []byte))
 	Close()
 	pong(ctx context.Context)
 	write(messageType int, messageBytes []byte)
@@ -244,6 +318,17 @@ type Websocket struct {
 	// means the root namespace. Captured during the handshake from the
 	// client's CONNECT packet so outbound events can mirror it.
 	namespace []byte
+	// lastPongNanos is the unix-nano timestamp of the last frame received
+	// from the client. The pong ticker uses it to enforce the heartbeat
+	// timeout (PingInterval + PingTimeout) and disconnect dead peers.
+	lastPongNanos atomic.Int64
+	// outboundAckSeq is the monotonic counter for ack ids on emits issued
+	// via EmitWithAck. It is incremented under outboundAcksMu.
+	outboundAckSeq uint64
+	// outboundAcks tracks pending callbacks for server-initiated emits that
+	// asked for an ack from the client.
+	outboundAcks   map[uint64]func(data []byte)
+	outboundAcksMu sync.Mutex
 	// Attributes map collection for the connection
 	attributes map[string]interface{}
 	// Unique id of the connection
@@ -366,11 +451,13 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 			Cookies: func(key string, defaultValue ...string) string {
 				return c.Cookies(key, defaultValue...)
 			},
-			queue:      make(chan message, 100),
-			done:       make(chan struct{}, 1),
-			attributes: make(map[string]interface{}),
-			isAlive:    true,
+			queue:        make(chan message, 100),
+			done:         make(chan struct{}, 1),
+			attributes:   make(map[string]interface{}),
+			outboundAcks: make(map[uint64]func([]byte)),
+			isAlive:      true,
 		}
+		kws.lastPongNanos.Store(time.Now().UnixNano())
 
 		// Generate uuid
 		kws.UUID = kws.createUUID()
@@ -671,6 +758,39 @@ func (kws *Websocket) EmitEvent(event string, data []byte) {
 	kws.write(TextMessage, buildSIOEvent(kws.getNamespace(), event, data))
 }
 
+// EmitWithAck sends a named socket.io event and registers a callback that
+// is invoked with the client's ack response. The data parameter must be
+// valid JSON or nil. The callback receives the raw JSON bytes from the
+// client's ack ([] for an empty ack, the first arg as JSON, or a JSON
+// array when the client called the ack with multiple args).
+//
+// The callback is invoked at most once. If the connection closes before
+// the ack arrives, the callback is dropped silently.
+func (kws *Websocket) EmitWithAck(event string, data []byte, cb func(ack []byte)) {
+	if cb == nil {
+		kws.EmitEvent(event, data)
+		return
+	}
+	kws.outboundAcksMu.Lock()
+	kws.outboundAckSeq++
+	id := kws.outboundAckSeq
+	kws.outboundAcks[id] = cb
+	kws.outboundAcksMu.Unlock()
+	kws.write(TextMessage, buildSIOEventWithAck(kws.getNamespace(), id, true, event, data))
+}
+
+// deliverOutboundAck dispatches an incoming ACK to the registered callback,
+// if any, and removes it from the pending map.
+func (kws *Websocket) deliverOutboundAck(id uint64, data []byte) {
+	kws.outboundAcksMu.Lock()
+	cb, ok := kws.outboundAcks[id]
+	delete(kws.outboundAcks, id)
+	kws.outboundAcksMu.Unlock()
+	if ok && cb != nil {
+		cb(data)
+	}
+}
+
 // Close Actively close the connection from the server
 func (kws *Websocket) Close() {
 	// Notify the client with a Socket.IO DISCONNECT packet (mirroring the
@@ -722,14 +842,34 @@ func (kws *Websocket) queueLength() int {
 	return len(kws.queue)
 }
 
-// pong sends Engine.IO PING packets to the client at regular PingInterval intervals.
-// The client is expected to respond with an EIO PONG ("3") within PongTimeout.
+// pong sends Engine.IO PING packets to the client at PingInterval and
+// enforces the heartbeat timeout: if no frame has been received from the
+// peer within PingInterval + PingTimeout the connection is dropped.
+//
+// The interval is read once at goroutine start (handshake-completed time);
+// later mutations to the global PingInterval do not affect a live
+// connection, which keeps tests race-free.
 func (kws *Websocket) pong(ctx context.Context) {
-	ticker := time.NewTicker(PingInterval)
+	interval := PingInterval
+	if interval <= 0 {
+		interval = 25 * time.Second
+	}
+	timeout := PingTimeout
+	if timeout <= 0 {
+		timeout = 20 * time.Second
+	}
+	deadline := interval + timeout
+
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
+			last := kws.lastPongNanos.Load()
+			if last > 0 && time.Since(time.Unix(0, last)) > deadline {
+				kws.disconnected(errors.New("socketio: heartbeat timeout"))
+				return
+			}
 			kws.write(TextMessage, []byte{eioPing})
 		case <-ctx.Done():
 			return
@@ -820,6 +960,13 @@ func (kws *Websocket) read(ctx context.Context) {
 			mType, msg, err := kws.Conn.ReadMessage()
 			kws.mu.RUnlock()
 
+			// Any successfully-received frame from the peer counts as proof
+			// of life for the heartbeat enforcer. Update before any of the
+			// dispatch branches return.
+			if err == nil {
+				kws.lastPongNanos.Store(time.Now().UnixNano())
+			}
+
 			// WebSocket-level control frames
 			if mType == PingMessage {
 				kws.fireEvent(EventPing, nil, nil)
@@ -902,12 +1049,17 @@ func (kws *Websocket) handleSIOPacket(payload []byte) {
 
 	switch sioType {
 	case sioEvent:
-		eventName, eventData, err := parseSIOEvent(data)
+		ackID, hasAck, rest, err := splitSIOAckID(data)
 		if err != nil {
 			kws.fireEvent(EventError, payload, err)
 			return
 		}
-		kws.fireEvent(eventName, eventData, nil)
+		eventName, eventData, err := parseSIOEvent(rest)
+		if err != nil {
+			kws.fireEvent(EventError, payload, err)
+			return
+		}
+		kws.fireEventWithAck(eventName, eventData, nil, ackID, hasAck)
 
 	case sioDisconnect:
 		kws.disconnected(nil)
@@ -925,7 +1077,25 @@ func (kws *Websocket) handleSIOPacket(payload []byte) {
 		}
 
 	case sioAck:
-		// Acknowledge packets are intentionally ignored for now
+		// 43[/ns,]<id>[<data>] - response to a server-initiated EmitWithAck.
+		ackID, has, rest, err := splitSIOAckID(data)
+		if err != nil || !has {
+			return
+		}
+		var arr []json.RawMessage
+		if err := json.Unmarshal(rest, &arr); err != nil {
+			return
+		}
+		var ackData []byte
+		switch {
+		case len(arr) == 0:
+			ackData = nil
+		case len(arr) == 1:
+			ackData = []byte(arr[0])
+		default:
+			ackData, _ = json.Marshal(arr)
+		}
+		kws.deliverOutboundAck(ackID, ackData)
 
 	default:
 		// Unknown SIO packet type — surface payload as a raw message
@@ -975,6 +1145,12 @@ func fireGlobalEvent(event string, data []byte, error error) {
 // Checks if there is at least a listener for a given event
 // and loop over the callbacks registered
 func (kws *Websocket) fireEvent(event string, data []byte, error error) {
+	kws.fireEventWithAck(event, data, error, 0, false)
+}
+
+// fireEventWithAck is the ack-id aware variant. ackID/hasAck are forwarded
+// to listeners via EventPayload so handlers can call payload.Ack(...).
+func (kws *Websocket) fireEventWithAck(event string, data []byte, fireErr error, ackID uint64, hasAck bool) {
 	callbacks := listeners.get(event)
 
 	for _, callback := range callbacks {
@@ -984,7 +1160,9 @@ func (kws *Websocket) fireEvent(event string, data []byte, error error) {
 			SocketUUID:       kws.UUID,
 			SocketAttributes: kws.attributes,
 			Data:             data,
-			Error:            error,
+			Error:            fireErr,
+			AckID:            ackID,
+			HasAck:           hasAck,
 		})
 	}
 }
