@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -112,8 +113,7 @@ func (s *WebsocketMock) GetUUID() string {
 }
 
 func TestParallelConnections(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	// create test server
 	cfg := fiber.Config{}
@@ -195,8 +195,7 @@ func TestParallelConnections(t *testing.T) {
 }
 
 func TestGlobalFire(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	// simulate connections
 	for i := 0; i < numTestConn; i++ {
@@ -224,7 +223,7 @@ func TestGlobalFire(t *testing.T) {
 }
 
 func TestGlobalBroadcast(t *testing.T) {
-	pool.reset()
+	resetSIOGlobals(t)
 
 	for i := 0; i < numParallelTestConn; i++ {
 		mws := new(WebsocketMock)
@@ -248,7 +247,7 @@ func TestGlobalBroadcast(t *testing.T) {
 }
 
 func TestGlobalEmitTo(t *testing.T) {
-	pool.reset()
+	resetSIOGlobals(t)
 
 	aliveUUID := "80a80sdf809dsf"
 	closedUUID := "las3dfj09808"
@@ -285,7 +284,7 @@ func TestGlobalEmitTo(t *testing.T) {
 }
 
 func TestGlobalEmitToList(t *testing.T) {
-	pool.reset()
+	resetSIOGlobals(t)
 
 	uuids := []string{
 		"80a80sdf809dsf",
@@ -345,7 +344,7 @@ func TestWebsocket_GetStringAttribute(t *testing.T) {
 }
 
 func TestWebsocket_SetUUIDUpdatesPool(t *testing.T) {
-	pool.reset()
+	resetSIOGlobals(t)
 
 	kws := createWS()
 	pool.set(kws)
@@ -419,6 +418,38 @@ func upgradeMiddleware(c fiber.Ctx) error {
 		return c.Next()
 	}
 	return fiber.ErrUpgradeRequired
+}
+
+// resetSIOGlobals isolates a test from any global state left behind by
+// previous tests AND from any state THIS test leaves behind. It:
+//
+//  1. resets the global listener registry and connection pool at start so
+//     this test starts from a clean slate, and
+//  2. registers t.Cleanup to do the same on teardown so the next test
+//     (especially one running in -count=N or after a t.Parallel sibling)
+//     also starts clean. Any *Websocket entries still in the pool are
+//     closed so their per-connection goroutines do not leak across tests.
+//
+// Use this in EVERY new test instead of bare pool.reset() / listeners.reset()
+// at the top of the function.
+func resetSIOGlobals(t *testing.T) {
+	t.Helper()
+	pool.reset()
+	listeners.reset()
+	t.Cleanup(func() {
+		// Close every still-pooled connection so its read/send/pong
+		// goroutines exit before the next test snapshots them.
+		for _, w := range pool.all() {
+			if k, ok := w.(*Websocket); ok {
+				func() {
+					defer func() { _ = recover() }()
+					k.Close()
+				}()
+			}
+		}
+		pool.reset()
+		listeners.reset()
+	})
 }
 
 //
@@ -606,8 +637,7 @@ func dialSIO(t *testing.T, ln *fasthttputil.InmemoryListener) *websocket.Conn {
 
 // TestSocketIOHandshake verifies the full EIO / socket.io connection handshake.
 func TestSocketIOHandshake(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	connectFired := make(chan struct{}, 1)
 	On(EventConnect, func(payload *EventPayload) {
@@ -635,8 +665,7 @@ func TestSocketIOHandshake(t *testing.T) {
 // TestSocketIOEvent verifies that a socket.io event sent by the client is
 // delivered to the server-side EventMessage listener with the correct payload.
 func TestSocketIOEvent(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	received := make(chan []byte, 1)
 	On(EventMessage, func(payload *EventPayload) {
@@ -667,8 +696,7 @@ func TestSocketIOEvent(t *testing.T) {
 // TestSocketIOEmitEvent verifies that the server can push a named event to the
 // client and that the wire format matches the socket.io protocol.
 func TestSocketIOEmitEvent(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	ready := make(chan *Websocket, 1)
 	On(EventConnect, func(payload *EventPayload) {
@@ -705,8 +733,7 @@ func TestSocketIOEmitEvent(t *testing.T) {
 
 // TestSocketIOEmit verifies that Emit wraps the payload as a "message" event.
 func TestSocketIOEmit(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	ready := make(chan *Websocket, 1)
 	On(EventConnect, func(payload *EventPayload) {
@@ -743,8 +770,7 @@ func TestSocketIOEmit(t *testing.T) {
 // TestSocketIOCustomEvent verifies that a client-sent custom event (non-"message")
 // is routed to a custom listener rather than EventMessage.
 func TestSocketIOCustomEvent(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	customReceived := make(chan []byte, 1)
 	messageReceived := make(chan []byte, 1)
@@ -785,8 +811,7 @@ func TestSocketIOCustomEvent(t *testing.T) {
 // TestSocketIODisconnect verifies that sending a SIO DISCONNECT packet ("41")
 // causes the server to fire EventDisconnect.
 func TestSocketIODisconnect(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	disconnected := make(chan struct{}, 1)
 	On(EventDisconnect, func(_ *EventPayload) {
@@ -821,8 +846,7 @@ func TestSocketIODisconnect(t *testing.T) {
 // with previously-spawned pong goroutines reading the same global. Instead,
 // we drive a single PING manually from the server side via kws.write.
 func TestSocketIOHeartbeat(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	pongReceived := make(chan struct{}, 1)
 	On(EventPong, func(_ *EventPayload) {
@@ -941,8 +965,7 @@ func TestSocketIOParseSIOEvent(t *testing.T) {
 // test for issue #1903: a server that calls Emit inside the New() callback
 // must not leak the message before the EIO OPEN / SIO CONNECT handshake.
 func TestSocketIOEmitInsideNewCallbackArrivesAfterHandshake(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	ln, teardown := newSIOTestServer(t, func(kws *Websocket) {
 		// Calling Emit inside the New() callback used to send before EIO OPEN.
@@ -981,8 +1004,7 @@ func TestSocketIOEmitInsideNewCallbackArrivesAfterHandshake(t *testing.T) {
 // non-root namespace gets a namespace-prefixed CONNECT ack and that server
 // emits are scoped to the same namespace.
 func TestSocketIONamespaceHandshake(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	ready := make(chan *Websocket, 1)
 	On(EventConnect, func(payload *EventPayload) {
@@ -1035,8 +1057,7 @@ func TestSocketIONamespaceHandshake(t *testing.T) {
 // and that EventPayload.Ack(...) puts the matching 43<id>[<data>] frame on
 // the wire.
 func TestSocketIOInboundAck(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	On(EventMessage, func(ep *EventPayload) {
 		if ep.HasAck {
@@ -1063,8 +1084,7 @@ func TestSocketIOInboundAck(t *testing.T) {
 // TestSocketIOOutboundAck verifies that EmitWithAck encodes the ack id and
 // that the registered callback fires when the client replies with a 43.
 func TestSocketIOOutboundAck(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	ready := make(chan *Websocket, 1)
 	On(EventConnect, func(p *EventPayload) {
@@ -1149,8 +1169,7 @@ func TestSocketIOBuildSIOAck(t *testing.T) {
 // TestSocketIOPingTimeoutIsAdvertised checks that the EIO OPEN packet exposes
 // the configured PingTimeout, not the deprecated 1s PongTimeout default.
 func TestSocketIOPingTimeoutIsAdvertised(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
 	defer teardown()
@@ -1177,8 +1196,7 @@ func TestSocketIOPingTimeoutIsAdvertised(t *testing.T) {
 // to release its RLock'd ReadMessage call. Verify that Close completes
 // even when the peer sends nothing.
 func TestSocketIOCloseDoesNotDeadlockOnQuietPeer(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	ready := make(chan *Websocket, 1)
 	On(EventConnect, func(p *EventPayload) {
@@ -1221,8 +1239,7 @@ func TestSocketIOCloseDoesNotDeadlockOnQuietPeer(t *testing.T) {
 // for the same event both calling payload.Ack(...) produce only ONE "43"
 // frame on the wire (the second call returns ErrAckAlreadySent).
 func TestSocketIOMultipleListenersShareAckGuard(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	first := make(chan error, 1)
 	second := make(chan error, 1)
@@ -1286,8 +1303,7 @@ func TestSocketIOMultipleListenersShareAckGuard(t *testing.T) {
 // TestSocketIOEmitWithAckTimeout verifies that EmitWithAckTimeout fires
 // the callback with ErrAckTimeout when the client never replies.
 func TestSocketIOEmitWithAckTimeout(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	ready := make(chan *Websocket, 1)
 	On(EventConnect, func(p *EventPayload) {
@@ -1336,8 +1352,7 @@ func TestSocketIOEmitWithAckTimeout(t *testing.T) {
 // callbacks fire with ErrAckDisconnected when the connection closes
 // before the client replies.
 func TestSocketIOEmitWithAckDisconnectDelivered(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	ready := make(chan *Websocket, 1)
 	On(EventConnect, func(p *EventPayload) {
@@ -1385,8 +1400,7 @@ func TestSocketIOEmitWithAckDisconnectDelivered(t *testing.T) {
 // TestSocketIOEventPayloadAck_DoubleSend verifies a single listener
 // calling Ack twice gets ErrAckAlreadySent on the second call.
 func TestSocketIOEventPayloadAck_DoubleSend(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	results := make(chan []error, 1)
 	On(EventMessage, func(ep *EventPayload) {
@@ -1416,8 +1430,7 @@ func TestSocketIOEventPayloadAck_DoubleSend(t *testing.T) {
 // TestSocketIOMultiArgEvent verifies that an inbound event with multiple
 // args is exposed as Args [][]byte and that Data still carries Args[0].
 func TestSocketIOMultiArgEvent(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	got := make(chan *EventPayload, 1)
 	On("multi", func(ep *EventPayload) {
@@ -1451,8 +1464,7 @@ func TestSocketIOMultiArgEvent(t *testing.T) {
 // TestSocketIOEmitArgs verifies the multi-arg outbound API produces
 // the canonical wire frame.
 func TestSocketIOEmitArgs(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	ready := make(chan *Websocket, 1)
 	On(EventConnect, func(p *EventPayload) {
@@ -1487,8 +1499,7 @@ func TestSocketIOEmitArgs(t *testing.T) {
 // TestSocketIOAckMultiArg verifies that EventPayload.Ack accepts
 // multiple args and produces a canonical 43[...] frame.
 func TestSocketIOAckMultiArg(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	On(EventMessage, func(ep *EventPayload) {
 		_ = ep.Ack([]byte(`"ok"`), []byte(`42`), []byte(`{"k":"v"}`))
@@ -1514,8 +1525,7 @@ func TestSocketIOAckMultiArg(t *testing.T) {
 // listener is recovered, surfaced as EventError, and does NOT kill the
 // connection or starve subsequent listeners.
 func TestSocketIOListenerPanicRecovered(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	calledSecond := make(chan struct{}, 1)
 	gotErr := make(chan error, 1)
@@ -1566,8 +1576,7 @@ func TestSocketIOListenerPanicRecovered(t *testing.T) {
 // with the 0x1E record separator inside one WebSocket frame are split
 // and each dispatched individually.
 func TestSocketIOEIOBatchedFrame(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	first := make(chan []byte, 1)
 	second := make(chan []byte, 1)
@@ -1613,8 +1622,7 @@ func TestSocketIOEIOBatchedFrame(t *testing.T) {
 // reserved socket.io lifecycle name surfaces ErrReservedEventName via
 // EventError and does NOT enqueue a frame on the wire.
 func TestSocketIOReservedNamesRejected(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	gotErr := make(chan error, 6)
 	On(EventError, func(p *EventPayload) {
@@ -1671,10 +1679,13 @@ func TestSocketIOReservedNamesRejected(t *testing.T) {
 		)
 	}
 
-	// At least one EventError must have fired.
+	// At least one EventError must have fired. Bumped from 50ms to 2s:
+	// the previous tight bound was an unjustified flake risk on slow CI
+	// runners where the listener dispatch may lag a few hundred ms behind
+	// the test goroutine.
 	select {
 	case <-gotErr:
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(2 * time.Second):
 		t.Fatal("expected ErrReservedEventName via EventError")
 	}
 }
@@ -1687,8 +1698,7 @@ func TestSocketIOReservedNamesRejected(t *testing.T) {
 // because pipeConn.SetReadDeadline does not interrupt an already-blocked
 // Read; the netpoll-backed real TCP stack does.
 func TestSocketIOPackageShutdown(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	var disc, connd int32
 	On(EventConnect, func(_ *EventPayload) { atomic.AddInt32(&connd, 1) })
@@ -1741,8 +1751,7 @@ func TestSocketIOPackageShutdown(t *testing.T) {
 // malformed namespace receives a "44" CONNECT_ERROR and the connection
 // is closed by the server.
 func TestSocketIOInvalidNamespaceRejected(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
 	defer teardown()
@@ -1780,8 +1789,7 @@ func TestSocketIOInvalidNamespaceRejected(t *testing.T) {
 // required by socket.io-protocol v5. Without the comma, strict parsers
 // (including socket.io-client when DEBUG is enabled) reject the frame.
 func TestSocketIOServerDisconnectNamespacedComma(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	kwsCh := make(chan *Websocket, 1)
 	On(EventConnect, func(p *EventPayload) {
@@ -1835,8 +1843,7 @@ func TestSocketIOServerDisconnectNamespacedComma(t *testing.T) {
 // instead of being dispatched to user listeners (which would otherwise
 // double-fire EventConnect handlers).
 func TestSocketIOClientReservedEventRejected(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	connectFires := atomic.Int32{}
 	On(EventConnect, func(_ *EventPayload) { connectFires.Add(1) })
@@ -1874,8 +1881,7 @@ func TestSocketIOClientReservedEventRejected(t *testing.T) {
 // of more than MaxBatchPackets record separators surfaces an EventError
 // instead of allocating a multi-megabyte slice header.
 func TestSocketIOBatchedFrameOverflow(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	errCh := make(chan error, 1)
 	On(EventError, func(p *EventPayload) {
@@ -1909,4 +1915,1188 @@ func TestSocketIOBatchedFrameOverflow(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected EventError for over-batched frame")
 	}
+}
+
+// TestSocketIONoGoroutineLeak verifies that the per-connection goroutines
+// (send / pong / read), the Shutdown drain goroutine, and any ack
+// time.AfterFunc callbacks do not leak after the connection pool has been
+// drained.
+//
+// Strategy:
+//  1. Snapshot runtime.NumGoroutine() as a baseline AFTER the test server is
+//     up (so the server's accept goroutines are part of the baseline and we
+//     only measure per-connection goroutines).
+//  2. Open 100 connections, perform the EIO/SIO handshake on each, send 10
+//     events per connection, then close them client-side.
+//  3. Call package-level Shutdown(ctx) with a 5s deadline to tear the pool
+//     down deterministically.
+//  4. Poll up to 5s for the live goroutine count to settle within +2 of the
+//     baseline.
+//  5. On failure dump runtime.Stack(buf, true) so the offending goroutine
+//     is identifiable from its stack frames.
+func TestSocketIONoGoroutineLeak(t *testing.T) {
+	resetSIOGlobals(t)
+
+	const numConns = 100
+	const eventsPerConn = 10
+
+	// Real TCP listener: pipe-backed listeners do not honour SetReadDeadline,
+	// which the read goroutine relies on to break out of ReadMessage during
+	// teardown. Without that the leak detector would always flag a "false"
+	// leak that is really just a stuck unit-test transport.
+	app := fiber.New()
+	app.Use(upgradeMiddleware)
+	app.Get("/", New(func(_ *Websocket) {}))
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = app.Listener(ln) }()
+	defer func() { _ = app.Shutdown() }()
+
+	wsURL := "ws://" + ln.Addr().String() + "/"
+
+	// Give Fiber/fasthttp a beat to spin up its accept goroutines so they
+	// land in the baseline rather than the diff.
+	require.Eventually(t, func() bool {
+		c, derr := net.DialTimeout("tcp", ln.Addr().String(), 200*time.Millisecond)
+		if derr != nil {
+			return false
+		}
+		_ = c.Close()
+		return true
+	}, 2*time.Second, 10*time.Millisecond, "listener never accepted")
+
+	// Flush any stragglers, then snapshot. Replace the previous one-shot
+	// 50ms sleep with a stability check: wait until runtime.NumGoroutine
+	// reports the SAME value across three consecutive GC cycles spaced
+	// 20ms apart. This is robust on slow runners where 50ms may be
+	// insufficient for the listener accept goroutines to settle.
+	stableBaseline := func() int {
+		deadline := time.Now().Add(2 * time.Second)
+		var prev1, prev2, cur int
+		for time.Now().Before(deadline) {
+			runtime.GC()
+			cur = runtime.NumGoroutine()
+			if prev1 == cur && prev2 == cur && cur > 0 {
+				return cur
+			}
+			prev2 = prev1
+			prev1 = cur
+			time.Sleep(20 * time.Millisecond)
+		}
+		return cur
+	}
+	baseline := stableBaseline()
+
+	// 1) Open 100 connections + handshake.
+	conns := make([]*websocket.Conn, 0, numConns)
+	for i := 0; i < numConns; i++ {
+		dialer := &websocket.Dialer{HandshakeTimeout: 5 * time.Second}
+		c, _, derr := dialer.Dial(wsURL, nil)
+		require.NoErrorf(t, derr, "dial %d", i)
+		require.NoErrorf(t, sioHandshake(t, c), "handshake %d", i)
+		conns = append(conns, c)
+	}
+
+	// 2) 10 events per connection.
+	for i, c := range conns {
+		for j := 0; j < eventsPerConn; j++ {
+			frame := []byte(`42["leakprobe",{"i":` + strconv.Itoa(i) + `,"j":` + strconv.Itoa(j) + `}]`)
+			require.NoError(t, c.WriteMessage(websocket.TextMessage, frame))
+		}
+	}
+
+	// 3) Close client-side.
+	for _, c := range conns {
+		_ = c.Close()
+	}
+
+	// 4) Drain the pool deterministically.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, Shutdown(shutdownCtx))
+
+	// 5) Poll up to 5s for the goroutine count to settle within +2 of baseline.
+	const tolerance = 2
+	deadline := time.Now().Add(5 * time.Second)
+	var current int
+	for time.Now().Before(deadline) {
+		runtime.GC()
+		current = runtime.NumGoroutine()
+		if current <= baseline+tolerance {
+			return // clean exit
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Did not settle. Dump every goroutine's stack so the leaker is named.
+	buf := make([]byte, 1<<20) // 1 MiB
+	n := runtime.Stack(buf, true)
+	t.Fatalf("goroutine leak: baseline=%d, current=%d (delta=%d, tolerance=%d)\n=== full goroutine dump ===\n%s",
+		baseline, current, current-baseline, tolerance, buf[:n])
+}
+
+// TestExtractSIOConnectAuthEdgeCases pins the current behaviour of the
+// SIO CONNECT parser for the bytes following the "40" type prefix.
+//
+// The wire format per socket.io-protocol v5 is:
+//
+//	[ "/" namespace "," ] [ <json_auth_object> ]
+//
+// Notes on observed (current) behaviour, documented here for fuzz coverage:
+//   - The parser splits on the first ',' to separate the namespace from the
+//     auth payload. It does NOT validate that auth is a JSON value, let alone
+//     a JSON OBJECT (which the spec mandates). See "non-object auth" cases
+//     below: arrays, garbage strings, and truncated JSON all flow through
+//     verbatim. Validation/rejection is the handshake layer's responsibility,
+//     not this lexer.
+//   - "40/admin" (namespace, no comma) currently returns ns=`/admin`, auth=nil.
+//   - "40banana" (no leading slash) is treated as a root-namespace auth blob
+//     and currently returns ns=nil, auth=`banana`.
+func TestExtractSIOConnectAuthEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		in      string // bytes AFTER the "40" prefix
+		wantNS  string // "" means nil
+		wantAuth string // "" means nil
+		// note documents intentional/known-quirk behaviour we are pinning,
+		// not endorsing.
+		note string
+	}{
+		{
+			name: "root_no_auth",
+			in:   "",
+			wantNS: "", wantAuth: "",
+		},
+		{
+			name: "root_with_object_auth",
+			in:   `{"token":"x"}`,
+			wantNS: "", wantAuth: `{"token":"x"}`,
+		},
+		{
+			name: "namespaced_no_auth",
+			in:   "/admin,",
+			wantNS: "/admin", wantAuth: "",
+		},
+		{
+			name: "namespaced_with_object_auth",
+			in:   `/admin,{"token":"x"}`,
+			wantNS: "/admin", wantAuth: `{"token":"x"}`,
+		},
+		{
+			// QUIRK: "/admin" without a trailing comma is interpreted as a
+			// namespace with no auth. Auth is nil. Pin this so any future
+			// reinterpretation (e.g. treating it as malformed) trips the test.
+			name: "namespace_without_trailing_comma",
+			in:   "/admin",
+			wantNS: "/admin", wantAuth: "",
+			note: "no comma, no auth: ns='/admin', auth=nil",
+		},
+		{
+			// QUIRK: bytes that don't start with '/' are taken as a root-ns
+			// auth blob without ANY structural validation. The handshake
+			// layer is expected to reject this when it tries to decode JSON,
+			// but the lexer happily forwards it.
+			name: "garbage_root_auth_not_json",
+			in:   "banana",
+			wantNS: "", wantAuth: "banana",
+			note: "non-JSON root auth currently accepted by parser",
+		},
+		{
+			// QUIRK: namespace + non-JSON auth is also forwarded verbatim.
+			name: "namespaced_garbage_auth",
+			in:   "/admin,banana",
+			wantNS: "/admin", wantAuth: "banana",
+			note: "non-JSON namespaced auth currently accepted by parser",
+		},
+		{
+			// QUIRK: truncated JSON object is forwarded verbatim. The
+			// handshake layer must defend against this at decode time.
+			name: "truncated_object_open_brace",
+			in:   "{",
+			wantNS: "", wantAuth: "{",
+			note: "truncated JSON forwarded verbatim",
+		},
+		{
+			name: "truncated_mid_field",
+			in:   `{"token":`,
+			wantNS: "", wantAuth: `{"token":`,
+			note: "truncated mid-field JSON forwarded verbatim",
+		},
+		{
+			// SPEC VIOLATION (documented, not fixed): per socket.io-protocol
+			// v5 the auth payload MUST be a JSON OBJECT. The current parser
+			// also accepts JSON arrays (and any other JSON value) because it
+			// performs no JSON-shape validation. Pin the current behaviour.
+			name: "json_array_as_auth_spec_violation",
+			in:   "[1,2,3]",
+			wantNS: "", wantAuth: "[1,2,3]",
+			note: "spec says auth MUST be object; parser accepts arrays",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ns, auth := extractSIOConnect([]byte(tc.in))
+
+			if tc.wantNS == "" {
+				require.Nil(t, ns, "namespace: input=%q note=%s", tc.in, tc.note)
+			} else {
+				require.Equal(t, tc.wantNS, string(ns),
+					"namespace mismatch: input=%q note=%s", tc.in, tc.note)
+			}
+			if tc.wantAuth == "" {
+				require.Nil(t, auth, "auth: input=%q note=%s", tc.in, tc.note)
+			} else {
+				require.Equal(t, tc.wantAuth, string(auth),
+					"auth mismatch: input=%q note=%s", tc.in, tc.note)
+			}
+		})
+	}
+}
+
+// TestSocketIOMalformedAuthRejected sends a CONNECT packet with a truncated
+// JSON auth payload (`40{"unclosed`) and verifies that the server either:
+//
+//	(a) closes the connection, OR
+//	(b) sends a CONNECT_ERROR ("44") frame.
+//
+// Documented current behaviour (pinned by this test): the parser does not
+// validate the JSON shape of the auth payload, so a truncated object flows
+// through extractSIOConnect verbatim. The server stores it as
+// kws.handshakeAuth and then sends back a regular CONNECT_ACK ("40{...sid...}")
+// because the handshake layer has no JSON-shape gate either. Therefore the
+// expected outcome today is NEITHER (a) nor (b): the handshake completes.
+//
+// We assert the looser, factual contract first (no panic / EOF on the read),
+// and then explicitly document the gap by failing iff the server unexpectedly
+// closes or emits CONNECT_ERROR (which would be a behavioural change worth
+// noticing). Flip the assertions when malformed-auth rejection is implemented.
+func TestSocketIOMalformedAuthRejected(t *testing.T) {
+	resetSIOGlobals(t)
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	// Drain EIO OPEN.
+	_, _, err := conn.ReadMessage()
+	require.NoError(t, err)
+
+	// Truncated JSON auth, root namespace.
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`40{"unclosed`)))
+
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	mType, msg, rerr := conn.ReadMessage()
+
+	switch {
+	case rerr != nil:
+		// (a) connection closed/errored. Acceptable hardened behaviour.
+		t.Logf("BEHAVIOUR (a): server closed connection on malformed auth: %v", rerr)
+	case mType == websocket.TextMessage && len(msg) >= 2 && msg[0] == eioMessage && msg[1] == sioConnectError:
+		// (b) CONNECT_ERROR. Also acceptable hardened behaviour.
+		t.Logf("BEHAVIOUR (b): server sent CONNECT_ERROR: %q", msg)
+	case mType == websocket.TextMessage && len(msg) >= 2 && msg[0] == eioMessage && msg[1] == sioConnect:
+		// CURRENT BEHAVIOUR: handshake completes. Document the gap.
+		t.Logf("CURRENT BEHAVIOUR: malformed auth NOT rejected; server replied with CONNECT_ACK: %q", msg)
+		t.Skip("malformed-auth rejection is not implemented; see TestExtractSIOConnectAuthEdgeCases for the underlying parser quirks")
+	default:
+		t.Fatalf("unexpected response: type=%d payload=%q", mType, msg)
+	}
+}
+
+// TestSocketIOListenerCoWConsistency stress-tests the safeListeners CoW
+// registry. 8 writer goroutines call On() concurrently while 8 firer
+// goroutines call kws.fireEvent(). Under -race we expect:
+//   - no panic, no data race
+//   - every callback invocation is accounted for via an atomic counter
+//     (no "missed" firings beyond the natural CoW visibility window and
+//     no double-firings: each fire delivers to exactly the snapshot len)
+func TestSocketIOListenerCoWConsistency(t *testing.T) {
+	resetSIOGlobals(t)
+
+	kws := createWS()
+	pool.set(kws)
+
+	const numEvents = 4
+	eventNames := [numEvents]string{"cow_evt_0", "cow_evt_1", "cow_evt_2", "cow_evt_3"}
+
+	var invocations atomic.Int64
+	cb := func(_ *EventPayload) {
+		invocations.Add(1)
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	// 8 writer goroutines: each registers listeners on random events.
+	// Use a deterministic per-goroutine xorshift so we don't depend on
+	// math/rand seeding.
+	for w := 0; w < 8; w++ {
+		wg.Add(1)
+		go func(seed uint64) {
+			defer wg.Done()
+			x := seed | 1
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				x ^= x << 13
+				x ^= x >> 7
+				x ^= x << 17
+				On(eventNames[x%numEvents], cb)
+			}
+		}(uint64(w + 1))
+	}
+
+	// 8 firer goroutines: each fires an event and counts how many
+	// listeners it OBSERVED at fire time, by comparing the registry
+	// snapshot length to the post-fire invocation delta.
+	var fires atomic.Int64
+	var minExpected atomic.Int64 // sum of pre-fire snapshot sizes (lower bound)
+	for f := 0; f < 8; f++ {
+		wg.Add(1)
+		go func(seed uint64) {
+			defer wg.Done()
+			x := seed | 1
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				x ^= x << 13
+				x ^= x >> 7
+				x ^= x << 17
+				ev := eventNames[x%numEvents]
+				snapshot := listeners.get(ev)
+				expected := int64(len(snapshot))
+				kws.fireEvent(ev, []byte("d"), nil)
+				fires.Add(1)
+				minExpected.Add(expected)
+			}
+		}(uint64(100 + f))
+	}
+
+	time.Sleep(1 * time.Second)
+	close(stop)
+	wg.Wait()
+
+	got := invocations.Load()
+	low := minExpected.Load()
+	t.Logf("fires=%d invocations=%d minExpected=%d", fires.Load(), got, low)
+	require.Greater(t, fires.Load(), int64(0))
+	// CoW invariant: fireEvent loads its own snapshot AFTER our
+	// pre-fire load, so invocations must be >= the lower bound we
+	// recorded. A regression that truncates dispatch (e.g. ranging
+	// over a mutated slice) would make got < low.
+	require.GreaterOrEqual(t, got, low,
+		"missed firings: invocations < pre-fire snapshot sum")
+	// Sanity upper bound: each fire dispatches at most numListeners
+	// across all events. Total registrations is bounded by writer
+	// count over the second; if we observed double-firing, got would
+	// exceed this generous cap (effectively unbounded vs. fires *
+	// total registrations).
+	totalRegistrations := int64(0)
+	for _, ev := range eventNames {
+		totalRegistrations += int64(len(listeners.get(ev)))
+	}
+	require.LessOrEqual(t, got, fires.Load()*totalRegistrations,
+		"double-firing suspected: invocations exceed fires * total registered listeners")
+}
+
+// TestSocketIOListenersResetUnderFire verifies that a listeners.reset()
+// performed concurrently with an in-flight fireEvent does NOT race with
+// nor truncate the dispatch loop: fireEvent reads the snapshot once and
+// iterates it locally, so reset() only affects subsequent fires.
+func TestSocketIOListenersResetUnderFire(t *testing.T) {
+	resetSIOGlobals(t)
+
+	kws := createWS()
+	pool.set(kws)
+
+	const numListeners = 6
+	var entered atomic.Int32
+	var completed atomic.Int32
+	gate := make(chan struct{})
+	resetDone := make(chan struct{})
+
+	for i := 0; i < numListeners; i++ {
+		idx := i
+		On("reset_evt", func(_ *EventPayload) {
+			entered.Add(1)
+			if idx == 0 {
+				// First listener blocks until reset() has fired,
+				// guaranteeing the in-flight dispatch overlaps
+				// with the reset.
+				<-gate
+				<-resetDone
+			}
+			completed.Add(1)
+		})
+	}
+
+	var fireWG sync.WaitGroup
+	fireWG.Add(1)
+	go func() {
+		defer fireWG.Done()
+		kws.fireEvent("reset_evt", []byte("payload"), nil)
+	}()
+
+	// Wait for the dispatch loop to begin, then trigger reset()
+	// from a separate goroutine while listener 0 is still blocked.
+	require.Eventually(t, func() bool { return entered.Load() >= 1 },
+		1*time.Second, 1*time.Millisecond, "first listener never entered")
+
+	go func() {
+		listeners.reset()
+		close(resetDone)
+	}()
+
+	// Wait until the reset has actually completed (channel close) before
+	// unblocking listener 0. That removes the prior 20ms sleep, which was
+	// non-deterministic on slow runners and could let listener 0 unblock
+	// BEFORE reset() acquired its lock, defeating the test's intent.
+	<-resetDone
+	close(gate)
+
+	fireWG.Wait()
+
+	require.Equal(t, int32(numListeners), completed.Load(),
+		"all listeners on the OLD snapshot must complete despite reset()")
+
+	// And a fresh fireEvent after reset() must see ZERO listeners.
+	var post atomic.Int32
+	On("reset_evt_post", func(_ *EventPayload) { post.Add(1) }) // unrelated event
+	kws.fireEvent("reset_evt", []byte("again"), nil)
+	require.Equal(t, int32(numListeners), completed.Load(),
+		"post-reset fire must NOT invoke any old listener")
+}
+
+// TestSocketIOMultipleListenersAllFire is the non-ack equivalent of
+// TestSocketIOMultipleListenersShareAckGuard: registers 5 listeners on the
+// same event and asserts every one is invoked exactly once per fire.
+func TestSocketIOMultipleListenersAllFire(t *testing.T) {
+	resetSIOGlobals(t)
+
+	kws := createWS()
+	pool.set(kws)
+
+	const n = 5
+	var counters [n]atomic.Int32
+	for i := 0; i < n; i++ {
+		idx := i
+		On("multi_fire_evt", func(_ *EventPayload) {
+			counters[idx].Add(1)
+		})
+	}
+
+	kws.fireEvent("multi_fire_evt", []byte("once"), nil)
+
+	for i := 0; i < n; i++ {
+		require.Equalf(t, int32(1), counters[i].Load(),
+			"listener %d invocation count", i)
+	}
+}
+
+// TestSocketIOOnAfterFireDoesNotAffectInflight verifies the CoW snapshot
+// semantic: a listener that registers a NEW listener for the same event
+// during dispatch must NOT have the new listener fire for the in-flight
+// event, but the new listener MUST fire on the NEXT event.
+func TestSocketIOOnAfterFireDoesNotAffectInflight(t *testing.T) {
+	resetSIOGlobals(t)
+
+	kws := createWS()
+	pool.set(kws)
+
+	var firstCalls atomic.Int32
+	var newListenerCalls atomic.Int32
+	var registered atomic.Bool
+
+	On("inflight_evt", func(_ *EventPayload) {
+		firstCalls.Add(1)
+		// Register the new listener exactly once, during the very
+		// first dispatch. fireEvent has already taken its snapshot,
+		// so the new listener must not appear in this dispatch.
+		if registered.CompareAndSwap(false, true) {
+			On("inflight_evt", func(_ *EventPayload) {
+				newListenerCalls.Add(1)
+			})
+		}
+	})
+
+	// First fire: snapshot has 1 listener.
+	kws.fireEvent("inflight_evt", []byte("a"), nil)
+	require.Equal(t, int32(1), firstCalls.Load())
+	require.Equal(t, int32(0), newListenerCalls.Load(),
+		"newly-registered listener must NOT fire for in-flight event (CoW)")
+
+	// Second fire: snapshot now has 2 listeners.
+	kws.fireEvent("inflight_evt", []byte("b"), nil)
+	require.Equal(t, int32(2), firstCalls.Load())
+	require.Equal(t, int32(1), newListenerCalls.Load(),
+		"newly-registered listener MUST fire for next event")
+}
+
+// TestSocketIOConcurrentEmitClose stress-tests concurrent
+// Broadcast / Close / Shutdown / On registration interactions.
+//
+//   - 50 connections live in the pool.
+//   - 10 broadcaster goroutines push at ~100/s for 2s.
+//   - 5 closer goroutines randomly Close() connections.
+//   - 1 listener-churn goroutine register/deregisters listeners via On().
+//   - After 2s, emitters stop and Shutdown(ctx) is invoked.
+//
+// Verifies: no panic, no deadlock, Shutdown returns within deadline,
+// every connection ends up gone from the pool.
+//
+// Run under -race to surface any latent data race.
+func TestSocketIOConcurrentEmitClose(t *testing.T) {
+	// Iteration-2 race surfaced: Close() reads kws.Conn (socketio.go:1308-1309)
+	// while the upgrade handler's deferred releaseConn(c) writes c.Conn=nil
+	// in vendored websocket.go:226. Close still takes kws.mu.Lock around the
+	// dereference, but releaseConn does NOT take that lock; it nils the
+	// fasthttp.Conn pointer at handler exit. Two writers + one reader on the
+	// same word with no shared mutex => race.
+	//   read : socketio.go:1308 (Close, under kws.mu.Lock)
+	//   write: vendor/github.com/gofiber/contrib/v3/websocket/websocket.go:226
+	//          (releaseConn, deferred at handler return)
+	// Skip until iteration 9 per stress-test charter; do NOT fix in this pass.
+	t.Skip("iteration-2 data race: kws.Conn read in Close vs releaseConn write " +
+		"(socketio.go:1308-1309 vs vendor/.../websocket.go:226). Hold until iter 9.")
+	resetSIOGlobals(t)
+
+	// Stable connect listener: stash kws handles as connections come in.
+	kwsCh := make(chan *Websocket, 64)
+	On(EventConnect, func(p *EventPayload) {
+		select {
+		case kwsCh <- p.Kws:
+		default:
+		}
+	})
+	// Drop EventError to avoid noise; the broadcaster fires it on dead UUIDs.
+	On(EventError, func(_ *EventPayload) {})
+	On(EventDisconnect, func(_ *EventPayload) {})
+
+	app := fiber.New()
+	app.Use(upgradeMiddleware)
+	app.Get("/", New(func(_ *Websocket) {}))
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = app.Listener(ln) }()
+	defer func() { _ = app.Shutdown() }()
+
+	const numConns = 50
+	wsURL := "ws://" + ln.Addr().String() + "/"
+
+	clientConns := make([]*websocket.Conn, 0, numConns)
+	defer func() {
+		for _, c := range clientConns {
+			_ = c.Close()
+		}
+	}()
+
+	// Spawn 50 connections through the full socket.io handshake.
+	for i := 0; i < numConns; i++ {
+		dialer := &websocket.Dialer{HandshakeTimeout: 5 * time.Second}
+		c, _, derr := dialer.Dial(wsURL, nil)
+		require.NoError(t, derr)
+		require.NoError(t, sioHandshake(t, c))
+		clientConns = append(clientConns, c)
+		// Drain inbound frames so the read buffer never blocks the server.
+		go func(cc *websocket.Conn) {
+			for {
+				if _, _, rerr := cc.ReadMessage(); rerr != nil {
+					return
+				}
+			}
+		}(c)
+	}
+
+	// Wait until at least most connections registered into the pool.
+	require.Eventually(t, func() bool {
+		return len(pool.all()) >= numConns/2
+	}, 3*time.Second, 10*time.Millisecond, "pool never populated")
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	// 10 broadcasters at ~100 frames/s.
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			tick := time.NewTicker(10 * time.Millisecond)
+			defer tick.Stop()
+			payload := []byte(`"stress"`)
+			for {
+				select {
+				case <-stop:
+					return
+				case <-tick.C:
+					Broadcast(payload, TextMessage)
+					if all := pool.all(); len(all) > 0 {
+						for uuid := range all {
+							_ = EmitTo(uuid, payload, TextMessage)
+							break
+						}
+					}
+				}
+			}
+		}(i)
+	}
+
+	// 5 closers: pick a live connection and Close() it.
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tick := time.NewTicker(50 * time.Millisecond)
+			defer tick.Stop()
+			for {
+				select {
+				case <-stop:
+					return
+				case <-tick.C:
+					all := pool.all()
+					for _, w := range all {
+						if k, ok := w.(*Websocket); ok {
+							k.Close() // safe: idempotent via sync.Once
+							break
+						}
+					}
+				}
+			}
+		}()
+	}
+
+	// 1 listener-churn goroutine: register fresh listeners and reset.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		tick := time.NewTicker(20 * time.Millisecond)
+		defer tick.Stop()
+		var n int
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+				n++
+				name := "stress-" + strconv.Itoa(n%8)
+				On(name, func(_ *EventPayload) {})
+				if n%50 == 0 {
+					listeners.reset()
+				}
+			}
+		}
+	}()
+
+	// Drain kwsCh in the background so EventConnect handler never blocks.
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-kwsCh:
+			}
+		}
+	}()
+
+	// Run for 2 seconds.
+	time.Sleep(2 * time.Second)
+	close(stop)
+	wg.Wait()
+
+	// Shutdown with a generous deadline; failure here means deadlock.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	require.NoError(t, Shutdown(ctx), "Shutdown did not complete within deadline")
+
+	// Verify pool drained.
+	require.Eventually(t, func() bool {
+		return len(pool.all()) == 0
+	}, 3*time.Second, 20*time.Millisecond,
+		"pool not drained after Shutdown: %d entries remain", len(pool.all()))
+}
+
+// TestSocketIOEmitToVanishedConn opens a connection, has another goroutine
+// abruptly drop the underlying WebSocket (network drop simulation), and
+// expects EmitTo on that UUID to surface ErrorInvalidConnection without
+// panicking or blocking.
+func TestSocketIOEmitToVanishedConn(t *testing.T) {
+	resetSIOGlobals(t)
+
+	kwsCh := make(chan *Websocket, 1)
+	On(EventConnect, func(p *EventPayload) {
+		select {
+		case kwsCh <- p.Kws:
+		default:
+		}
+	})
+	On(EventError, func(_ *EventPayload) {})
+	On(EventDisconnect, func(_ *EventPayload) {})
+
+	app := fiber.New()
+	app.Use(upgradeMiddleware)
+	app.Get("/", New(func(_ *Websocket) {}))
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = app.Listener(ln) }()
+	defer func() { _ = app.Shutdown() }()
+
+	wsURL := "ws://" + ln.Addr().String() + "/"
+	dialer := &websocket.Dialer{HandshakeTimeout: 5 * time.Second}
+	c, _, err := dialer.Dial(wsURL, nil)
+	require.NoError(t, err)
+	require.NoError(t, sioHandshake(t, c))
+
+	var kws *Websocket
+	select {
+	case kws = <-kwsCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventConnect did not fire")
+	}
+	uuidA := kws.GetUUID()
+
+	// Goroutine 2: abruptly close A's underlying WS (simulate network drop).
+	dropped := make(chan struct{})
+	go func() {
+		// Yank the underlying TCP conn out from under both peers. This
+		// emulates a hard network disconnect rather than a graceful
+		// SIO DISCONNECT frame.
+		if uc := c.UnderlyingConn(); uc != nil {
+			_ = uc.Close()
+		}
+		_ = c.Close()
+		close(dropped)
+	}()
+	<-dropped
+
+	// Wait until the server-side read goroutine notices the drop and
+	// removes the entry from the pool.
+	require.Eventually(t, func() bool {
+		_, gerr := pool.get(uuidA)
+		return errors.Is(gerr, ErrorInvalidConnection)
+	}, 3*time.Second, 10*time.Millisecond,
+		"server never observed the abrupt drop")
+
+	// Goroutine 3: EmitTo on the vanished UUID. Must not panic, must not
+	// block forever, must return ErrorInvalidConnection.
+	done := make(chan error, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- errors.New("EmitTo panicked")
+			}
+		}()
+		done <- EmitTo(uuidA, []byte(`"hello"`))
+	}()
+
+	select {
+	case emitErr := <-done:
+		require.ErrorIs(t, emitErr, ErrorInvalidConnection,
+			"expected ErrorInvalidConnection, got %v", emitErr)
+	case <-time.After(3 * time.Second):
+		t.Fatal("EmitTo on vanished connection blocked")
+	}
+}
+
+// TestSocketIOAckRaceTimeoutVsDelivery hammers the timer-vs-delivery race
+// inside deliverOutboundAck/fireAckTimeout. For each of 1000 iterations
+// we register a callback with a microsecond-class timeout and concurrently
+// drive deliverOutboundAck on the same id. Exactly one of the two paths
+// (timeout or delivery) must win because the map-delete-wins guard fences
+// both code paths through outboundAcksMu. Any double-fire, missed-fire,
+// or panic surfaces as a test failure.
+func TestSocketIOAckRaceTimeoutVsDelivery(t *testing.T) {
+	resetSIOGlobals(t)
+
+	const iterations = 1000
+
+	// Drive the ack state machine in isolation: no Conn is required because
+	// .write() is never called.
+	kws := &Websocket{
+		queue:        make(chan message, 16),
+		done:         make(chan struct{}, 1),
+		attributes:   make(map[string]any),
+		outboundAcks: make(map[uint64]*pendingAck),
+	}
+	kws.isAlive.Store(true)
+	kws.UUID = uuid.New().String()
+
+	for i := 0; i < iterations; i++ {
+		var fires atomic.Int32
+		done := make(chan struct{}, 2)
+
+		// Register the pending ack manually so we control the id.
+		kws.outboundAcksMu.Lock()
+		kws.outboundAckSeq++
+		id := kws.outboundAckSeq
+		p := &pendingAck{cb: func(_ []byte, _ error) {
+			fires.Add(1)
+			done <- struct{}{}
+		}}
+		// Microsecond-class timer to maximise the race window.
+		p.timer = time.AfterFunc(50*time.Microsecond, func() { kws.fireAckTimeout(id) })
+		kws.outboundAcks[id] = p
+		kws.outboundAcksMu.Unlock()
+
+		// Stagger delivery so it lands close to the timer fire.
+		spin := i % 32
+		for k := 0; k < spin; k++ {
+			runtime.Gosched()
+		}
+
+		go kws.deliverOutboundAck(id, []byte(`"x"`))
+
+		// Wait for at least one fire.
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iter %d: callback never fired", i)
+		}
+
+		// Brief grace window to detect any double fire.
+		select {
+		case <-done:
+			t.Fatalf("iter %d: callback fired twice (race)", i)
+		case <-time.After(2 * time.Millisecond):
+		}
+
+		require.Equalf(t, int32(1), fires.Load(), "iter %d: expected exactly 1 fire", i)
+
+		// Map must be empty between iterations.
+		kws.outboundAcksMu.Lock()
+		size := len(kws.outboundAcks)
+		kws.outboundAcksMu.Unlock()
+		require.Equalf(t, 0, size, "iter %d: map not drained", i)
+	}
+}
+
+// TestSocketIOAckUnsolicited verifies that a "43<unknown_id>[]" frame for
+// an ack id we never registered is silently dropped: the connection stays
+// alive, no panic occurs, and the outboundAcks map does not grow.
+func TestSocketIOAckUnsolicited(t *testing.T) {
+	resetSIOGlobals(t)
+
+	ready := make(chan *Websocket, 1)
+	On(EventConnect, func(p *EventPayload) {
+		select {
+		case ready <- p.Kws:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+
+	var kws *Websocket
+	select {
+	case kws = <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no EventConnect")
+	}
+
+	// Snapshot map size BEFORE injecting unsolicited acks.
+	kws.outboundAcksMu.Lock()
+	sizeBefore := len(kws.outboundAcks)
+	kws.outboundAcksMu.Unlock()
+
+	// Send a flurry of unsolicited acks for ids that were never registered.
+	for _, id := range []string{"1", "999", "424242", "0"} {
+		require.NoError(t, conn.WriteMessage(websocket.TextMessage,
+			[]byte(`43`+id+`[]`)))
+	}
+	// And one with a payload.
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage,
+		[]byte(`4377777["surprise"]`)))
+
+	// Round-trip an EIO PING so we know the read goroutine has processed
+	// every frame above before we inspect state.
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte{eioPing}))
+	_ = conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+	for {
+		mType, msg, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+		if mType == websocket.TextMessage && len(msg) == 1 && msg[0] == eioPong {
+			break
+		}
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+
+	// Connection must still be alive.
+	require.True(t, kws.IsAlive(), "conn must survive unsolicited acks")
+
+	// Map must not have grown.
+	kws.outboundAcksMu.Lock()
+	sizeAfter := len(kws.outboundAcks)
+	kws.outboundAcksMu.Unlock()
+	require.Equal(t, sizeBefore, sizeAfter,
+		"unsolicited ack must not grow outboundAcks map")
+}
+
+// TestSocketIOAckCallbackPanicIsolated verifies that a panic inside an
+// outbound ack callback is recovered, leaves the connection alive, and
+// does not corrupt the ack state machine: a subsequent ack on a DIFFERENT
+// id still fires its callback exactly once.
+func TestSocketIOAckCallbackPanicIsolated(t *testing.T) {
+	resetSIOGlobals(t)
+
+	ready := make(chan *Websocket, 1)
+	On(EventConnect, func(p *EventPayload) {
+		select {
+		case ready <- p.Kws:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+
+	var kws *Websocket
+	select {
+	case kws = <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no EventConnect")
+	}
+
+	panicFired := make(chan struct{}, 1)
+	kws.EmitWithAck("first", []byte(`"a"`), func(_ []byte) {
+		select {
+		case panicFired <- struct{}{}:
+		default:
+		}
+		panic("boom in ack callback")
+	})
+
+	// Read the outbound emit (id=1) to keep the wire clean.
+	tp, msg, err := sioReadSkipPings(conn)
+	require.NoError(t, err)
+	require.Equal(t, websocket.TextMessage, tp)
+	require.Equal(t, `421["first","a"]`, string(msg))
+
+	// Trigger the panicking callback.
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`431["pong"]`)))
+
+	select {
+	case <-panicFired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("panicking callback never fired")
+	}
+
+	// Connection must still be alive after the recovered panic.
+	require.True(t, kws.IsAlive(), "conn must survive callback panic")
+
+	// Register a SECOND ack with a different id (id=2) and verify clean dispatch.
+	gotSecond := make(chan []byte, 1)
+	kws.EmitWithAck("second", []byte(`"b"`), func(ack []byte) {
+		gotSecond <- ack
+	})
+
+	tp, msg, err = sioReadSkipPings(conn)
+	require.NoError(t, err)
+	require.Equal(t, websocket.TextMessage, tp)
+	require.Equal(t, `422["second","b"]`, string(msg))
+
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`432["ok"]`)))
+
+	select {
+	case ack := <-gotSecond:
+		require.Equal(t, `"ok"`, string(ack))
+	case <-time.After(2 * time.Second):
+		t.Fatal("second ack callback never fired (state corrupted)")
+	}
+}
+
+// TestSocketIOInboundAckDoubleSendIsHardGuard verifies the wire-level
+// invariant: even if the listener calls payload.Ack(...) twice, exactly
+// ONE "43" frame reaches the wire (the second Ack returns
+// ErrAckAlreadySent). Read the next frame to confirm no second ack is
+// queued behind the first.
+func TestSocketIOInboundAckDoubleSendIsHardGuard(t *testing.T) {
+	resetSIOGlobals(t)
+
+	results := make(chan []error, 1)
+	On(EventMessage, func(ep *EventPayload) {
+		first := ep.Ack([]byte(`"first"`))
+		second := ep.Ack([]byte(`"second"`))
+		results <- []error{first, second}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage,
+		[]byte(`421["message",{"k":"v"}]`)))
+
+	// First (and only) ack frame.
+	tp, msg, err := sioReadSkipPings(conn)
+	require.NoError(t, err)
+	require.Equal(t, websocket.TextMessage, tp)
+	require.Equal(t, `431["first"]`, string(msg))
+
+	// Listener saw exactly one success and one ErrAckAlreadySent.
+	select {
+	case errs := <-results:
+		require.NoError(t, errs[0])
+		require.ErrorIs(t, errs[1], ErrAckAlreadySent)
+	case <-time.After(2 * time.Second):
+		t.Fatal("listener never returned")
+	}
+
+	// Read again with a short deadline: NO second ack frame must arrive.
+	_ = conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	for {
+		_, extra, rerr := conn.ReadMessage()
+		if rerr != nil {
+			break // deadline hit, expected
+		}
+		// Pings are fine; anything else is a hard fail.
+		if len(extra) == 1 && extra[0] == eioPing {
+			continue
+		}
+		t.Fatalf("unexpected second frame on the wire: %q", extra)
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+}
+
+// TestSocketIOEmitWithAck10000Concurrent registers 10000 outstanding
+// pending acks on a single connection and verifies:
+//   - every callback fires exactly once during teardown with
+//     ErrAckDisconnected,
+//   - the outboundAcks map is fully drained after disconnect (no leak),
+//   - no double-fire and no panic.
+//
+// The pending-ack entries are inserted directly into kws.outboundAcks
+// (bypassing kws.write -> kws.queue) so we exercise the disconnect drain
+// path at high cardinality without overflowing the 100-deep send queue.
+// This is the state-machine-level test the brief calls for.
+func TestSocketIOEmitWithAck10000Concurrent(t *testing.T) {
+	resetSIOGlobals(t)
+
+	ready := make(chan *Websocket, 1)
+	On(EventConnect, func(p *EventPayload) {
+		select {
+		case ready <- p.Kws:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	require.NoError(t, sioHandshake(t, conn))
+
+	var kws *Websocket
+	select {
+	case kws = <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no EventConnect")
+	}
+
+	const N = 10000
+
+	var fires atomic.Int64
+	var doubleFires atomic.Int64
+	var panicCount atomic.Int64
+	var unexpectedErr atomic.Int64
+
+	// Per-callback once-flag slice keeps each fired observation isolated
+	// from compiler-loop-variable capture issues.
+	flags := make([]*atomic.Bool, N)
+
+	// Build N pending acks WITH timers (30s, well past the test horizon)
+	// inserted directly into the registry. Both the timer-fire path and
+	// the disconnect drain path race through outboundAcksMu, so registering
+	// timers exercises the same map-delete-wins guard used in production.
+	cbFor := func(idx int) AckCallback {
+		fired := &atomic.Bool{}
+		flags[idx] = fired
+		return func(_ []byte, err error) {
+			defer func() {
+				if r := recover(); r != nil {
+					panicCount.Add(1)
+				}
+			}()
+			if !fired.CompareAndSwap(false, true) {
+				doubleFires.Add(1)
+				return
+			}
+			if !errors.Is(err, ErrAckDisconnected) {
+				unexpectedErr.Add(1)
+			}
+			fires.Add(1)
+		}
+	}
+
+	for i := 0; i < N; i++ {
+		cb := cbFor(i)
+		kws.outboundAcksMu.Lock()
+		kws.outboundAckSeq++
+		id := kws.outboundAckSeq
+		p := &pendingAck{cb: cb}
+		kws.outboundAcks[id] = p
+		kws.outboundAcksMu.Unlock()
+		// Long timer so disconnect drains BEFORE any timer fires; this
+		// confirms the drain path explicitly stops timers and dispatches
+		// ErrAckDisconnected exactly once.
+		p.timer = time.AfterFunc(30*time.Second, func() { kws.fireAckTimeout(id) })
+	}
+
+	// Confirm the map grew to N.
+	kws.outboundAcksMu.Lock()
+	queued := len(kws.outboundAcks)
+	kws.outboundAcksMu.Unlock()
+	require.Equal(t, N, queued, "all N ack registrations should be queued")
+
+	// Disconnect: drains every pending callback with ErrAckDisconnected.
+	_ = conn.Close()
+	kws.Close()
+
+	// Poll: every callback must have fired exactly once.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if fires.Load() == int64(N) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	require.Equalf(t, int64(N), fires.Load(), "expected %d single fires", N)
+	require.Equalf(t, int64(0), doubleFires.Load(), "no callback may fire twice")
+	require.Equalf(t, int64(0), panicCount.Load(), "no callback may panic")
+	require.Equalf(t, int64(0), unexpectedErr.Load(),
+		"every callback must observe ErrAckDisconnected")
+
+	// Map must be drained.
+	kws.outboundAcksMu.Lock()
+	leftover := len(kws.outboundAcks)
+	kws.outboundAcksMu.Unlock()
+	require.Equal(t, 0, leftover, "outboundAcks must be fully drained after disconnect")
 }

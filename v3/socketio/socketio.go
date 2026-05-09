@@ -1348,7 +1348,14 @@ func (kws *Websocket) HandshakeAuth() json.RawMessage {
 // writeConnectError sends a Socket.IO CONNECT_ERROR ("44") frame directly on
 // the WebSocket conn (not via the queue, since this can run before the send
 // goroutine starts during the handshake).
+//
+// Returns ErrorInvalidConnection if the underlying conn is nil. Callers in the
+// post-handshake read path may invoke us during teardown after the conn was
+// released; without the guard the dereference would panic in the read goroutine.
 func (kws *Websocket) writeConnectError(namespace []byte, jsonMessage string) error {
+	if kws.Conn == nil {
+		return ErrorInvalidConnection
+	}
 	out := []byte{eioMessage, sioConnectError}
 	if len(namespace) > 0 {
 		out = append(out, namespace...)
