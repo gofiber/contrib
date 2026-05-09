@@ -78,11 +78,10 @@ func main() {
 	})
 
 	app.Get("/ws", socketio.New(func(kws *socketio.Websocket) {
-		// New() callback runs after handshake; reject unsupported namespaces.
-		if ns := string(kws.HandshakeAuth()); ns == "" {
-			// HandshakeAuth() returns nil when no auth supplied; tolerated.
-			_ = ns
-		}
+		// New() callback runs after the EIO/SIO handshake completes,
+		// before EventConnect listeners fire. Stash per-connection state
+		// here; auth/namespace validation lives in the EventConnect
+		// listener above (which can call kws.Close() to reject).
 		kws.SetAttribute("connected_at", time.Now().UTC())
 	}))
 

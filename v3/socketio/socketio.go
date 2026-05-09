@@ -611,7 +611,10 @@ type Websocket struct {
 	// deferred releaseConn() that nils the embedded *fasthttp.Conn.
 	closeOnce sync.Once
 	mu        sync.RWMutex
-	// The Fiber.Websocket connection
+	// Conn is the underlying Fiber WebSocket connection. Treat it as
+	// read-only from listener callbacks; writes must go through the
+	// Emit/EmitEvent/Broadcast methods so the send goroutine remains
+	// the sole writer.
 	Conn *websocket.Conn
 	// isAlive reports whether the connection is alive. Accessed lock-free
 	// from every emit path (write/EmitTo/etc.) and the read goroutine.
@@ -813,10 +816,12 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 			Cookies: func(key string, defaultValue ...string) string {
 				return c.Cookies(key, defaultValue...)
 			},
-			queue:        make(chan message, SendQueueSize),
-			done:         make(chan struct{}, 1),
-			attributes:   make(map[string]interface{}),
-			outboundAcks: make(map[uint64]*pendingAck),
+			queue: make(chan message, SendQueueSize),
+			done:  make(chan struct{}, 1),
+			// attributes and outboundAcks are lazy-initialised on first
+			// SetAttribute / EmitWithAck* call. Most idle connections never
+			// touch them; deferring the allocation saves ~560 B per conn at
+			// scale (1k idle conns => ~560 KB).
 		}
 		kws.isAlive.Store(true)
 		kws.lastPongNanos.Store(time.Now().UnixNano())
@@ -1139,6 +1144,9 @@ func (kws *Websocket) SetUUID(uuid string) error {
 func (kws *Websocket) SetAttribute(key string, attribute interface{}) {
 	kws.mu.Lock()
 	defer kws.mu.Unlock()
+	if kws.attributes == nil {
+		kws.attributes = make(map[string]interface{})
+	}
 	kws.attributes[key] = attribute
 }
 
@@ -1210,7 +1218,10 @@ func (kws *Websocket) EmitTo(uuid string, message []byte, mType ...int) error {
 	if err != nil {
 		return err
 	}
-	if !pool.contains(uuid) || !conn.IsAlive() {
+	// pool.get already returned a hit; we only need to verify the conn is
+	// still alive. Dropping the redundant pool.contains saves one RWMutex
+	// RLock per call - meaningful in Broadcast/EmitToList fanout paths.
+	if !conn.IsAlive() {
 		kws.fireEvent(EventError, []byte(uuid), ErrorInvalidConnection)
 		return ErrorInvalidConnection
 	}
@@ -1228,7 +1239,7 @@ func EmitTo(uuid string, message []byte, mType ...int) error {
 		return err
 	}
 
-	if !pool.contains(uuid) || !conn.IsAlive() {
+	if !conn.IsAlive() {
 		return ErrorInvalidConnection
 	}
 
@@ -1387,12 +1398,18 @@ func (kws *Websocket) EmitWithAckTimeout(event string, data []byte, timeout time
 		kws.EmitEvent(event, data)
 		return
 	}
-	if !kws.IsAlive() {
+	kws.outboundAcksMu.Lock()
+	// Re-check IsAlive while holding the ack mutex: disconnected() takes the
+	// same mutex when it swaps the pending map. Without this re-check, a
+	// disconnect that started after the IsAlive() probe but before us
+	// acquiring the mutex would land our entry in the post-swap (empty) map,
+	// where it could leak (timeout = 0) or fire with ErrAckTimeout instead of
+	// the correct ErrAckDisconnected (timeout > 0).
+	if !kws.isAlive.Load() {
+		kws.outboundAcksMu.Unlock()
 		cb(nil, ErrAckDisconnected)
 		return
 	}
-
-	kws.outboundAcksMu.Lock()
 	kws.outboundAckSeq++
 	id := kws.outboundAckSeq
 	p := &pendingAck{cb: cb}
@@ -1405,6 +1422,9 @@ func (kws *Websocket) EmitWithAckTimeout(event string, data []byte, timeout time
 	// even if the timer fires immediately on a stalled scheduler.
 	if timeout > 0 {
 		p.timer = time.AfterFunc(timeout, func() { kws.fireAckTimeout(id) })
+	}
+	if kws.outboundAcks == nil {
+		kws.outboundAcks = make(map[uint64]*pendingAck)
 	}
 	kws.outboundAcks[id] = p
 	kws.outboundAcksMu.Unlock()
@@ -1437,12 +1457,16 @@ func (kws *Websocket) EmitWithAckArgs(event string, args [][]byte, cb func([][]b
 		kws.write(TextMessage, buildSIOEventWithAck(kws.getNamespace(), 0, false, event, args))
 		return
 	}
-	if !kws.IsAlive() {
+	kws.outboundAcksMu.Lock()
+	// Re-check IsAlive while holding the ack mutex: see the matching comment
+	// in EmitWithAckTimeout. Closes the disconnect-vs-insert race that would
+	// otherwise either leak the entry (OutboundAckTimeout = 0) or surface as
+	// ErrAckTimeout instead of ErrAckDisconnected.
+	if !kws.isAlive.Load() {
+		kws.outboundAcksMu.Unlock()
 		cb(nil, ErrAckDisconnected)
 		return
 	}
-
-	kws.outboundAcksMu.Lock()
 	kws.outboundAckSeq++
 	id := kws.outboundAckSeq
 	// Adapt the user's [][]byte callback to the internal AckCallback shape.
@@ -1476,6 +1500,9 @@ func (kws *Websocket) EmitWithAckArgs(event string, args [][]byte, cb func([][]b
 	// to deliverOutboundAck / fireAckTimeout / the disconnected drain.
 	if OutboundAckTimeout > 0 {
 		p.timer = time.AfterFunc(OutboundAckTimeout, func() { kws.fireAckTimeout(id) })
+	}
+	if kws.outboundAcks == nil {
+		kws.outboundAcks = make(map[uint64]*pendingAck)
 	}
 	kws.outboundAcks[id] = p
 	kws.outboundAcksMu.Unlock()

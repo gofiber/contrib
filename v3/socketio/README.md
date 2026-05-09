@@ -19,7 +19,7 @@ The v3 line landed a sequence of correctness, protocol, and hardening fixes (ite
 - **Synchronous handshake.** The Engine.IO OPEN / Socket.IO CONNECT exchange completes before the user `New()` callback returns, so emits issued inside the callback are ordered after the handshake reply.
 - **Namespaces and handshake auth.** The negotiated namespace is honoured for inbound and outbound packets; the client's connect-time `auth` payload is exposed via `Websocket.HandshakeAuth()` and `EventPayload.HandshakeAuth`.
 - **Inbound acks.** Client-initiated callbacks surface as `EventPayload.HasAck` / `AckID`; reply once with `payload.Ack(args...)` (or `Kws.SendAck`).
-- **Outbound acks.** Server-initiated `EmitWithAck`, `EmitWithAckTimeout`, and `EmitWithAckArgs` round-trip a callback id and resolve when the client invokes its ack.
+- **Outbound acks.** Server-initiated `EmitWithAck`, `EmitWithAckTimeout`, and `EmitWithAckArgs` round-trip a callback id and invoke the supplied callback when the client acks (or on timeout/disconnect).
 - **Multi-arg events.** Inbound events expose every argument tuple as `EventPayload.Args [][]byte`; outbound `EmitArgs` / `EmitWithAckArgs` send pre-encoded JSON tuples.
 - **Deterministic heartbeat.** Server PINGs every `PingInterval`; the connection is torn down if no PONG arrives within `PingTimeout`.
 - **EIO 0x1E batched frames.** Multi-packet WebSocket frames separated by ASCII RS (`0x1E`) are parsed correctly, with a hard cap (`MaxBatchPackets`) to prevent slice-header amplification.
@@ -135,29 +135,28 @@ kws.EmitArgs("greet", []byte(`"hi"`), []byte(`{"id":1}`))
 
 #### Server-initiated acks
 
-`EmitWithAck` (and `EmitWithAckTimeout`) emit an event with an ack id and resolve once the client invokes its callback, or reject when the timeout expires. `EmitWithAck` uses `OutboundAckTimeout`; `EmitWithAckTimeout` takes a per-call duration.
+`EmitWithAck` (and `EmitWithAckTimeout`) emit an event with an ack id and invoke the supplied callback once the client acks, or with an error when the timeout expires. `EmitWithAck` uses `OutboundAckTimeout`; `EmitWithAckTimeout` takes a per-call duration plus a structured `AckCallback` that distinguishes timeout from disconnect.
 
 ```go
-ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-defer cancel()
-
-args, err := kws.EmitWithAckTimeout(ctx, "ping", 3*time.Second, []byte(`"hello"`))
-if err != nil {
-    log.Printf("ack failed: %v", err)
-    return
-}
-// args is the JSON array the client passed to its callback.
+kws.EmitWithAckTimeout("ping", []byte(`"hello"`), 3*time.Second, func(ack []byte, err error) {
+    if err != nil {
+        log.Printf("ack failed: %v", err)
+        return
+    }
+    // ack is the raw JSON the client passed to its callback (single value
+    // or a JSON-array literal for multi-arg acks).
+})
 ```
 
 #### Client-initiated acks
 
-When the client emits with a callback, the inbound event payload carries an ack id. Use `HasAck` and `AckID` to detect it, then send a single ack reply via `Kws.SendAck`:
+When the client emits with a callback, the inbound event payload carries an ack id. Use `HasAck` and `AckID` to detect it, then send a single ack reply via `EventPayload.Ack`:
 
 ```go
 socketio.On("greet", func(ep *socketio.EventPayload) {
     if ep.HasAck {
         // ep.Args holds the raw JSON arguments the client sent.
-        ep.Kws.SendAck(ep.AckID, []byte(`"ok"`))
+        _ = ep.Ack([]byte(`"ok"`))
     }
 })
 ```
@@ -204,51 +203,62 @@ func On(event string, callback func(payload *EventPayload))
 ```go
 // Emit the message to a specific socket uuids list
 // Ignores all errors
-func EmitToList(uuids []string, message []byte)
+func EmitToList(uuids []string, message []byte, mType ...int)
 ```
 
 ```go
 // Emit to a specific socket connection
-func EmitTo(uuid string, message []byte) error
+func EmitTo(uuid string, message []byte, mType ...int) error
 ```
 
 ```go
 // Broadcast to all the active connections
-// except avoid broadcasting the message to itself
-func Broadcast(message []byte)
+func Broadcast(message []byte, mType ...int)
 ```
 
 ```go
 // Fire custom event on all connections
-func Fire(event string, data []byte) 
+func Fire(event string, data []byte)
 ```
 
 ```go
 // Emit a named event with multiple already-encoded JSON arguments
 // (e.g. EmitArgs("greet", []byte(`"hi"`), []byte(`{"id":1}`)))
-func (kws *Websocket) EmitArgs(event string, args ...[]byte) error
+func (kws *Websocket) EmitArgs(event string, args ...[]byte)
 ```
 
 ```go
-// Emit a named event and wait for the client's ack, using OutboundAckTimeout.
-// Returns the ack arguments as raw JSON.
-func (kws *Websocket) EmitWithAck(ctx context.Context, event string, data []byte) ([]byte, error)
+// Emit a named event and invoke cb when the client acks (or on timeout /
+// disconnect). The default deadline is OutboundAckTimeout. The callback
+// receives the raw JSON ack value (or nil on timeout/disconnect).
+func (kws *Websocket) EmitWithAck(event string, data []byte, cb func(ack []byte))
 ```
 
 ```go
-// Like EmitWithAck but with a per-call timeout that overrides OutboundAckTimeout.
-func (kws *Websocket) EmitWithAckTimeout(ctx context.Context, event string, timeout time.Duration, data []byte) ([]byte, error)
+// Like EmitWithAck but with a per-call timeout and a structured AckCallback
+// that distinguishes ErrAckTimeout from ErrAckDisconnected. Pass timeout = 0
+// to disable the timeout.
+func (kws *Websocket) EmitWithAckTimeout(event string, data []byte, timeout time.Duration, cb AckCallback)
 ```
 
 ```go
-// Multi-argument variant of EmitWithAckTimeout.
-func (kws *Websocket) EmitWithAckArgs(ctx context.Context, event string, timeout time.Duration, args ...[]byte) ([]byte, error)
+// Multi-argument variant of EmitWithAck. The callback receives the slice of
+// raw-JSON ack arguments the client supplied (or an error on timeout /
+// disconnect). Uses OutboundAckTimeout.
+func (kws *Websocket) EmitWithAckArgs(event string, args [][]byte, cb func([][]byte, error))
 ```
 
 ```go
 // HandshakeAuth returns the raw JSON auth payload sent by the client at
 // connect time (nil if the client did not provide one).
-func (kws *Websocket) HandshakeAuth() []byte
+func (kws *Websocket) HandshakeAuth() json.RawMessage
+```
+
+```go
+// Ack sends a Socket.IO ACK frame back to the client for the inbound event
+// represented by this payload. Idempotent: only the first invocation
+// produces a wire frame; later calls return ErrAckAlreadySent.
+func (ep *EventPayload) Ack(args ...[]byte) error
 ```
 
 ## Example
@@ -448,8 +458,8 @@ Custom events map directly to the event name used in `socket.emit("myEvent", …
 | Data             | `[]byte`            | Raw JSON of the event payload (first argument of `socket.emit`)                                   |
 | Args             | `[][]byte`          | All raw JSON arguments after the event name; useful when the client emits multiple values         |
 | AckID            | `uint64`            | Ack id assigned by the client when it emitted with a callback (0 if `HasAck` is false)            |
-| HasAck           | `bool`              | True when the inbound event expects an ack reply; respond via `Kws.SendAck(AckID, ...)`           |
-| HandshakeAuth    | `[]byte`            | Raw JSON auth payload from the Socket.IO handshake; populated on `EventConnect` (and later events) |
+| HasAck           | `bool`              | True when the inbound event expects an ack reply; respond via `EventPayload.Ack(args...)`         |
+| HandshakeAuth    | `json.RawMessage`   | Raw JSON auth payload from the Socket.IO handshake; populated on `EventConnect` listeners (use `Kws.HandshakeAuth()` elsewhere) |
 
 ## Socket instance functions
 
@@ -465,11 +475,11 @@ Custom events map directly to the event name used in `socket.emit("myEvent", …
 | Fire                | `void`             | Fire custom event                                                                            |
 | Emit                | `void`             | Send data as a `"message"` socket.io event (data must be valid JSON)                         |
 | EmitEvent           | `void`             | Send a named socket.io event (data must be valid JSON)                                       |
-| EmitArgs            | `error`            | Emit a named event with multiple already-encoded JSON arguments                              |
-| EmitWithAck         | `([]byte, error)`  | Emit an event and wait for the client's ack (uses `OutboundAckTimeout`)                      |
-| EmitWithAckTimeout  | `([]byte, error)`  | Like `EmitWithAck` but with a per-call timeout                                               |
-| EmitWithAckArgs     | `([]byte, error)`  | Multi-argument variant of `EmitWithAckTimeout`                                               |
-| HandshakeAuth       | `[]byte`           | Raw JSON auth payload sent by the client at connect time (nil if absent)                     |
+| EmitArgs            | `void`             | Emit a named event with multiple already-encoded JSON arguments                              |
+| EmitWithAck         | `void`             | Emit an event and invoke `cb(ack)` when the client acks (uses `OutboundAckTimeout`)          |
+| EmitWithAckTimeout  | `void`             | Like `EmitWithAck` but with a per-call timeout and a structured `AckCallback`                |
+| EmitWithAckArgs     | `void`             | Multi-arg variant; `cb([][]byte, error)` receives the ack tuple (uses `OutboundAckTimeout`)  |
+| HandshakeAuth       | `json.RawMessage`  | Raw JSON auth payload sent by the client at connect time (nil if absent)                     |
 | IsAlive             | `bool`             | Reports whether the underlying connection is still open and the heartbeat loop is running    |
 | Close               | `void`             | Actively close the connection from the server                                                |
 

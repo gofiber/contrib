@@ -3195,6 +3195,12 @@ func TestSocketIOEmitWithAck10000Concurrent(t *testing.T) {
 		kws.outboundAckSeq++
 		id := kws.outboundAckSeq
 		p := &pendingAck{cb: cb}
+		// outboundAcks is lazy-initialised on first EmitWithAck*; this
+		// test bypasses those APIs and reaches into the map directly,
+		// so we must init it ourselves on the first iteration.
+		if kws.outboundAcks == nil {
+			kws.outboundAcks = make(map[uint64]*pendingAck)
+		}
 		kws.outboundAcks[id] = p
 		kws.outboundAcksMu.Unlock()
 		// Long timer so disconnect drains BEFORE any timer fires; this
