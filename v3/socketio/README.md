@@ -55,7 +55,7 @@ All tunables are package-level variables; override before the first connection i
 | `DropFramesOnOverflow` | `false`            | If true, drop the offending frame on overflow (fires `EventError`).           |
 | `RetrySendTimeout`     | `20ms`             | Back-off between send retries.                                                |
 | `MaxSendRetry`         | `5`                | Max send retries before a frame is dropped.                                   |
-| `ReadTimeout`          | `10ms`             | Idle pause inside the read loop.                                              |
+| `ReadTimeout`          | `10ms`             | Deprecated: no longer consulted by the read loop; kept for backward compatibility. |
 
 Use `socketio.Shutdown(ctx)` from `fiber.App.ShutdownWithContext` for a deterministic drain.
 
@@ -437,8 +437,8 @@ socket.on("disconnect", (reason) => {
 | Const           | Event        | Description                                                                                                                                                |
 |:----------------|:-------------|:-----------------------------------------------------------------------------------------------------------------------------------------------------------|
 | EventMessage    | `message`    | Fired when a `socket.emit("message", …)` event is received from the client                                                                                |
-| EventPing       | `ping`       | Fired when an Engine.IO PING is received from the client                                                                                                   |
-| EventPong       | `pong`       | Fired when the client replies with an Engine.IO PONG to the server's heartbeat                                                                             |
+| EventPing       | `ping`       | Fired when a WebSocket PING control frame is received (RFC 6455). Engine.IO PING is server-originated and not surfaced via this event.                     |
+| EventPong       | `pong`       | Fired when an Engine.IO PONG (`"3"`) replies to the server's heartbeat or when a WebSocket PONG control frame is received.                                 |
 | EventDisconnect | `disconnect` | Fired on disconnection. The error provided in disconnection event as defined in RFC 6455, section 11.7.                                                    |
 | EventConnect    | `connect`    | Fired after the Engine.IO / Socket.IO handshake completes; `ep.HandshakeAuth` is populated with the client's `auth` payload (raw JSON, nil if not provided) |
 | EventClose      | `close`      | Fired when the connection is actively closed from the server. Different from client disconnection                                                          |

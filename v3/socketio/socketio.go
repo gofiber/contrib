@@ -190,8 +190,12 @@ var (
 	// MaxSendRetry is the maximum number of times the send goroutine
 	// retries a frame against a missing connection before dropping it.
 	MaxSendRetry = 5
-	// ReadTimeout is the small pause inserted between read iterations to
-	// keep the read loop from saturating a CPU core under tight polling.
+	// ReadTimeout is no longer consulted by the read loop, which now
+	// blocks in a single ReadMessage call gated by SetReadDeadline rather
+	// than busy-polling with a sleep.
+	//
+	// Deprecated: kept only for backward compatibility with code that
+	// still references the variable; setting it has no effect.
 	ReadTimeout = 10 * time.Millisecond
 	// PingInterval is how often the server sends Engine.IO PING packets
 	// to the client. The client must reply with a PONG packet to keep
@@ -344,9 +348,11 @@ type message struct {
 // and the handshake auth payload (HandshakeAuth, populated for EventConnect
 // listeners only).
 //
-// Listeners must not retain Args, Data or HandshakeAuth past the callback
-// without copying: the underlying byte slices are owned by the connection
-// and may be reused by subsequent reads.
+// Byte-slice fields (Args, Data, HandshakeAuth) carry their own backing
+// storage independent of the read buffer: parseSIOEvent copies inbound
+// args, the read goroutine copies binary frames before dispatch, and
+// HandshakeAuth is captured during the handshake. Listeners may safely
+// retain these slices across goroutine boundaries.
 type EventPayload struct {
 	// Kws is the connection that fired the event. Use it to call
 	// Emit/EmitEvent/Close from inside the listener.
@@ -1609,7 +1615,13 @@ func (kws *Websocket) Close() {
 		// upgrade.
 		if kws.Conn != nil && kws.Conn.Conn != nil {
 			_ = kws.Conn.WriteMessage(TextMessage, disconnect)
-			_ = kws.Conn.WriteMessage(CloseMessage, []byte("Connection closed"))
+			// Per RFC 6455 a Close control frame's payload must start with
+			// a 2-byte big-endian status code optionally followed by a UTF-8
+			// reason. Writing the raw string would produce an invalid frame
+			// that strict clients (including socket.io-client's underlying
+			// engine.io transport) close with a protocol error.
+			_ = kws.Conn.WriteMessage(CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, "Connection closed"))
 		}
 		kws.mu.Unlock()
 
@@ -1671,7 +1683,14 @@ func (kws *Websocket) writeConnectError(namespace []byte, jsonMessage string) er
 	out = append(out, jsonMessage...)
 	kws.mu.Lock()
 	defer kws.mu.Unlock()
-	if kws.Conn == nil {
+	// Two-stage nil-check: kws.Conn is the wrapper; kws.Conn.Conn is the
+	// embedded *fasthttp.Conn that the vendored websocket package nils in
+	// releaseConn() once the upgrade handler returns. Both may be observed
+	// non-nil-then-nil by a concurrent caller during teardown; checking
+	// only the outer wrapper would let the read goroutine panic mid-Write
+	// when releaseConn ran between the kws.mu acquisition and the actual
+	// WriteMessage call. Same defensive pattern used by Close().
+	if kws.Conn == nil || kws.Conn.Conn == nil {
 		return ErrorInvalidConnection
 	}
 	return kws.Conn.WriteMessage(TextMessage, out)

@@ -1,10 +1,10 @@
-// Example: namespace-aware Socket.IO server with handshake auth,
-// listener-side payload.Ack, server-initiated EmitWithAckTimeout, and
-// graceful Shutdown(ctx) on SIGINT/SIGTERM.
+// Example: Socket.IO server with handshake auth, listener-side
+// payload.Ack, server-initiated EmitWithAckTimeout, and graceful
+// Shutdown(ctx) on SIGINT/SIGTERM.
 //
 // Client (socket.io-client v4):
 //
-//	const s = io("http://localhost:3000/chat", {
+//	const s = io("http://localhost:3000", {
 //	    path: "/ws",
 //	    transports: ["websocket"],
 //	    auth: { token: "secret" },
@@ -26,14 +26,12 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-const allowedNamespace = "/chat"
-
 func main() {
 	app := fiber.New()
 
-	// EventConnect: validate handshake auth, restrict namespace, then
-	// kick off a server-initiated ack round-trip. Closing kws here
-	// triggers a clean Socket.IO disconnect on the client.
+	// EventConnect: validate handshake auth, then kick off a server-
+	// initiated ack round-trip. Closing kws here triggers a clean
+	// Socket.IO disconnect on the client.
 	socketio.On(socketio.EventConnect, func(ep *socketio.EventPayload) {
 		var auth struct {
 			Token string `json:"token"`
@@ -43,7 +41,7 @@ func main() {
 			ep.Kws.Close()
 			return
 		}
-		log.Printf("connected uuid=%s ns=%s", ep.SocketUUID, allowedNamespace)
+		log.Printf("connected uuid=%s", ep.SocketUUID)
 
 		// Server-initiated ack with explicit per-call timeout. The
 		// client's callback bytes arrive on cb; ErrAckTimeout signals
@@ -80,8 +78,8 @@ func main() {
 	app.Get("/ws", socketio.New(func(kws *socketio.Websocket) {
 		// New() callback runs after the EIO/SIO handshake completes,
 		// before EventConnect listeners fire. Stash per-connection state
-		// here; auth/namespace validation lives in the EventConnect
-		// listener above (which can call kws.Close() to reject).
+		// here; auth validation lives in the EventConnect listener
+		// above (which can call kws.Close() to reject).
 		kws.SetAttribute("connected_at", time.Now().UTC())
 	}))
 

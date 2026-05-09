@@ -55,8 +55,7 @@ func sioHandshakeWithConnect(t *testing.T, conn *websocket.Conn, connectBody str
 // initial root-namespace SIO CONNECT ("40{...}") is captured and exposed via
 // EventPayload.HandshakeAuth and Kws.HandshakeAuth(). Closes test row 5.
 func TestSocketIOHandshakeWithAuth(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	type connectInfo struct {
 		auth json.RawMessage
@@ -94,8 +93,7 @@ func TestSocketIOHandshakeWithAuth(t *testing.T) {
 // captured and mirrored on the ack frame, auth payload is captured.
 // Closes test row 6.
 func TestSocketIONamespacedHandshakeWithAuth(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	type connectInfo struct {
 		auth json.RawMessage
@@ -132,8 +130,7 @@ func TestSocketIONamespacedHandshakeWithAuth(t *testing.T) {
 // addressed to a namespace ("42/admin,[...]") is dispatched to the listener.
 // Closes test row 16.
 func TestSocketIONamespacedInboundEvent(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	got := make(chan []byte, 1)
 	On("msg", func(p *EventPayload) {
@@ -167,8 +164,7 @@ func TestSocketIONamespacedInboundEvent(t *testing.T) {
 // and the client reply "43/admin,N[...]" fires the registered callback.
 // Closes test row 19.
 func TestSocketIONamespacedInboundAck(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	ready := make(chan *Websocket, 1)
 	On(EventConnect, func(p *EventPayload) {
@@ -226,8 +222,7 @@ func TestSocketIONamespacedInboundAck(t *testing.T) {
 // HasAck=true and AckID=0, and Ack(nil) produces "430[]".
 // Closes test rows 15 and 20.
 func TestSocketIOAckIDZeroRoundTrip(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	type seen struct {
 		hasAck bool
@@ -273,8 +268,7 @@ func TestSocketIOAckIDZeroRoundTrip(t *testing.T) {
 // "41/admin," (DISCONNECT on a namespace) fires EventDisconnect.
 // Closes test row 22.
 func TestSocketIONamespacedDisconnectFromClient(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	disconnected := make(chan struct{}, 1)
 	On(EventDisconnect, func(_ *EventPayload) {
@@ -307,8 +301,7 @@ func TestSocketIONamespacedDisconnectFromClient(t *testing.T) {
 // in the middle, and a leading separator followed by a real packet.
 // Closes test row 28.
 func TestSocketIOEIOBatchEdges(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	events := make(chan []byte, 8)
 	On("m", func(p *EventPayload) {
@@ -397,8 +390,7 @@ func TestSocketIOEIOBatchEdges(t *testing.T) {
 // disconnects must not kill the conn (otherwise a malicious client could
 // drop any session by sending "41/foreign,").
 func TestSocketIONamespacedDisconnectMismatchIgnored(t *testing.T) {
-	pool.reset()
-	listeners.reset()
+	resetSIOGlobals(t)
 
 	ready := make(chan *Websocket, 1)
 	On(EventConnect, func(p *EventPayload) {
