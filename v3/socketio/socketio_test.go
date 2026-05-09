@@ -146,6 +146,13 @@ func TestParallelConnections(t *testing.T) {
 		_ = app.Listener(ln)
 	}()
 
+	// Pre-set KeepHijackedConns so the upstream gofiber/contrib/v3/websocket
+	// package does not race on the unsynchronised check-then-set inside its
+	// upgrade handler ("if !c.App().Server().KeepHijackedConns { ... = true }").
+	// The first parallel goroutine writes true and subsequent ones race the
+	// read; warming the field serially before the fan-out closes that window.
+	app.Server().KeepHijackedConns = true
+
 	wsURL := "ws://" + ln.Addr().String()
 
 	// create concurrent connections – each one performs the full socket.io handshake
