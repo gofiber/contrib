@@ -12,6 +12,53 @@ WebSocket wrapper for [Fiber](https://github.com/gofiber/fiber) that implements 
 
 **Compatible with Fiber v3.**
 
+## What's new in v3
+
+The v3 line landed a sequence of correctness, protocol, and hardening fixes (iters 1 - 9):
+
+- **Synchronous handshake.** The Engine.IO OPEN / Socket.IO CONNECT exchange completes before the user `New()` callback returns, so emits issued inside the callback are ordered after the handshake reply.
+- **Namespaces and handshake auth.** The negotiated namespace is honoured for inbound and outbound packets; the client's connect-time `auth` payload is exposed via `Websocket.HandshakeAuth()` and `EventPayload.HandshakeAuth`.
+- **Inbound acks.** Client-initiated callbacks surface as `EventPayload.HasAck` / `AckID`; reply once with `payload.Ack(args...)` (or `Kws.SendAck`).
+- **Outbound acks.** Server-initiated `EmitWithAck`, `EmitWithAckTimeout`, and `EmitWithAckArgs` round-trip a callback id and resolve when the client invokes its ack.
+- **Multi-arg events.** Inbound events expose every argument tuple as `EventPayload.Args [][]byte`; outbound `EmitArgs` / `EmitWithAckArgs` send pre-encoded JSON tuples.
+- **Deterministic heartbeat.** Server PINGs every `PingInterval`; the connection is torn down if no PONG arrives within `PingTimeout`.
+- **EIO 0x1E batched frames.** Multi-packet WebSocket frames separated by ASCII RS (`0x1E`) are parsed correctly, with a hard cap (`MaxBatchPackets`) to prevent slice-header amplification.
+- **Reserved-event-name guard.** User code cannot register or emit names reserved by the protocol (e.g. `connect`, `disconnect`).
+- **EIO version validation.** Handshakes that advertise an unsupported `EIO` version are rejected.
+- **Auth payload validation.** The auth blob must be valid JSON and is bounded by `MaxAuthPayload`; oversize or malformed payloads are answered with CONNECT_ERROR.
+- **DoS hardening.** `MaxPayload`, `MaxBatchPackets`, `MaxEventNameLength`, and `MaxAuthPayload` bound every attacker-controlled length.
+- **Lock-free listener registry** plus `atomic.Bool isAlive`, removing the per-event mutex from the hot path.
+- **Optional drop-frames-on-overflow.** When `DropFramesOnOverflow` is true, a saturated send queue drops the offending frame and fires `EventError` instead of tearing down the connection.
+- **Graceful drain.** The package-level `Shutdown(ctx)` closes every active socket and waits for each worker to exit (or until `ctx` is cancelled).
+
+## Known limitations
+
+- **One namespace per Engine.IO connection.** Each WebSocket binds the namespace negotiated during the SIO CONNECT packet; multiplexing several namespaces over one EIO connection is not supported.
+- **No BINARY_EVENT (5) / BINARY_ACK (6).** Binary Socket.IO frames are passed through as raw `EventMessage` data; attachment reassembly is not implemented.
+- **No connection-state recovery.** Resume-on-reconnect (Socket.IO's `connectionStateRecovery` feature) is not implemented; reconnects always start a fresh session.
+
+## Configuration
+
+All tunables are package-level variables; override before the first connection is accepted.
+
+| Variable               | Default            | Meaning                                                                       |
+|:-----------------------|:-------------------|:------------------------------------------------------------------------------|
+| `PingInterval`         | `25s`              | How often the server emits Engine.IO PING.                                    |
+| `PingTimeout`          | `20s`              | Grace window for the client PONG before the connection is killed.             |
+| `HandshakeTimeout`     | `10s`              | Hard deadline for completing EIO OPEN + SIO CONNECT.                          |
+| `MaxPayload`           | `1_000_000` (1 MB) | Max bytes per inbound WebSocket frame; advertised to the client.              |
+| `MaxAuthPayload`       | `8 KiB`            | Max bytes for the SIO CONNECT auth JSON.                                      |
+| `MaxBatchPackets`      | `256`              | Max EIO packets in a single `0x1E`-batched frame.                             |
+| `MaxEventNameLength`   | `256`              | Max length of an inbound SIO event name.                                      |
+| `OutboundAckTimeout`   | `30s`              | Default ack deadline for `EmitWithAck`.                                       |
+| `SendQueueSize`        | `100`              | Capacity of the per-connection outbound queue.                                |
+| `DropFramesOnOverflow` | `false`            | If true, drop the offending frame on overflow (fires `EventError`).           |
+| `RetrySendTimeout`     | `20ms`             | Back-off between send retries.                                                |
+| `MaxSendRetry`         | `5`                | Max send retries before a frame is dropped.                                   |
+| `ReadTimeout`          | `10ms`             | Idle pause inside the read loop.                                              |
+
+Use `socketio.Shutdown(ctx)` from `fiber.App.ShutdownWithContext` for a deterministic drain.
+
 ## Go version support
 
 We only support the latest two versions of Go. Visit [https://go.dev/doc/devel/release](https://go.dev/doc/devel/release) for more information.

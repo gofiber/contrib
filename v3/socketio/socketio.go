@@ -61,24 +61,32 @@ const (
 
 // Supported event list
 const (
-	// EventMessage Fired when a Text/Binary message is received
+	// EventMessage is fired when a text or binary message is received that is
+	// not bound to a named Socket.IO event (i.e. wire-level "message" events
+	// or raw binary frames).
 	EventMessage = "message"
-	// EventPing More details here:
-	// @url https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API/Writing_WebSocket_servers#Pings_and_Pongs_The_Heartbeat_of_WebSockets
+	// EventPing is fired when a WebSocket PING control frame is received
+	// from the peer. See
+	// https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API/Writing_WebSocket_servers#Pings_and_Pongs_The_Heartbeat_of_WebSockets
 	EventPing = "ping"
-	// EventPong is fired when a WebSocket pong control frame, or an
+	// EventPong is fired when a WebSocket PONG control frame, or an
 	// Engine.IO PONG packet, is received from the peer.
 	EventPong = "pong"
-	// EventDisconnect Fired on disconnection
-	// The error provided in disconnection event
-	// is defined in RFC 6455, section 11.7.
-	// @url https://github.com/gofiber/websocket/blob/cd4720c435de415b864d975a9ca23a47eaf081ef/websocket.go#L192
+	// EventDisconnect is fired exactly once when the connection is torn
+	// down, regardless of which side initiated the close. The
+	// EventPayload.Error field carries the close reason (RFC 6455 section
+	// 11.7) when available, or nil for a clean shutdown.
 	EventDisconnect = "disconnect"
-	// EventConnect Fired on first connection
+	// EventConnect is fired exactly once after the Engine.IO and Socket.IO
+	// handshake completes, before the read loop starts dispatching events.
+	// EventPayload.HandshakeAuth carries the client's auth payload, if any.
 	EventConnect = "connect"
-	// EventClose Fired when the connection is actively closed from the server
+	// EventClose is fired exactly once when the connection is closed from
+	// the server side via Websocket.Close.
 	EventClose = "close"
-	// EventError Fired when some error appears useful also for debugging websockets
+	// EventError is fired when an error occurs on the connection (read,
+	// write, parse, or listener panic). EventPayload.Error carries the
+	// error value.
 	EventError = "error"
 )
 
@@ -107,6 +115,41 @@ var (
 	// lifecycle event (e.g. "connect", "disconnect"). The emit is dropped
 	// before the frame reaches the wire.
 	ErrReservedEventName = errors.New("socketio: reserved event name cannot be emitted")
+	// ErrAckIDOverflow is returned from inbound SIO frame parsing when the
+	// numeric ack id prefix would overflow uint64. Surfaced via EventError.
+	ErrAckIDOverflow = errors.New("socketio: ack id overflow")
+	// ErrEmptyEventArray is returned from inbound SIO EVENT parsing when
+	// the JSON-array payload is empty (no event name). Surfaced via
+	// EventError.
+	ErrEmptyEventArray = errors.New("socketio: empty event array")
+	// ErrHandshakeClosed is returned from the EIO/SIO handshake when the
+	// peer closes the connection before completing the SIO CONNECT step.
+	ErrHandshakeClosed = errors.New("socketio: connection closed during handshake")
+	// ErrInvalidNamespace is returned from the SIO CONNECT handshake when
+	// the namespace prefix fails charset validation. The handshake is
+	// rejected with CONNECT_ERROR before any user code runs.
+	ErrInvalidNamespace = errors.New("socketio: invalid namespace in SIO CONNECT")
+	// ErrInvalidAuthPayload is returned from the SIO CONNECT handshake
+	// when the auth field is malformed JSON, exceeds MaxAuthPayload, or
+	// is not a JSON object per socket.io-protocol v5.
+	ErrInvalidAuthPayload = errors.New("socketio: invalid auth payload in SIO CONNECT")
+	// ErrHeartbeatTimeout is the disconnection cause delivered to
+	// EventDisconnect when no client PONG arrives within
+	// PingInterval + PingTimeout.
+	ErrHeartbeatTimeout = errors.New("socketio: heartbeat timeout")
+	// ErrSendQueueClosed is the disconnection cause delivered to
+	// EventDisconnect when the send queue is full and DropFramesOnOverflow
+	// is false (the legacy hard-teardown path). Compare against
+	// ErrSendQueueOverflow which fires on per-frame drops when
+	// DropFramesOnOverflow is true.
+	ErrSendQueueClosed = errors.New("socketio: send queue overflow")
+	// ErrBatchPacketsExceeded is surfaced via EventError when a batched
+	// EIO frame contains more than MaxBatchPackets record-separated
+	// packets. Remaining packets in the frame are dropped.
+	ErrBatchPacketsExceeded = errors.New("socketio: batched frame exceeds MaxBatchPackets")
+	// ErrUnknownEIOPacket is surfaced via EventError when the inbound EIO
+	// packet type byte does not match any recognised Engine.IO opcode.
+	ErrUnknownEIOPacket = errors.New("socketio: unknown EIO packet type")
 )
 
 // reservedEventNames is the set of outbound event names the JS socket.io
@@ -130,70 +173,117 @@ func isReservedEventName(name string) bool {
 	return ok
 }
 
+// Tunable package-level knobs. Mutate them before calling New so each new
+// connection captures the desired value; in-flight connections retain the
+// values in effect at handshake time and are not affected by later changes.
+// These vars are not safe for concurrent mutation once connections are open.
 var (
 	// PongTimeout is the legacy heartbeat timeout knob.
 	//
 	// Deprecated: PongTimeout is no longer consulted by the heartbeat
 	// implementation. Use PingTimeout instead.
 	PongTimeout = 20 * time.Second
-	// RetrySendTimeout is the back-off delay the send goroutine waits before
-	// retrying a failed write to a temporarily unavailable connection.
+	// RetrySendTimeout is the back-off delay the send goroutine waits
+	// before retrying a failed write to a temporarily unavailable
+	// connection.
 	RetrySendTimeout = 20 * time.Millisecond
-	// MaxSendRetry is the maximum number of times the send goroutine retries a
-	// frame against a missing connection before dropping it.
+	// MaxSendRetry is the maximum number of times the send goroutine
+	// retries a frame against a missing connection before dropping it.
 	MaxSendRetry = 5
-	// ReadTimeout is the small pause inserted between read iterations to keep
-	// the read loop from saturating a CPU core under tight polling.
+	// ReadTimeout is the small pause inserted between read iterations to
+	// keep the read loop from saturating a CPU core under tight polling.
 	ReadTimeout = 10 * time.Millisecond
-	// PingInterval is how often the server sends Engine.IO PING packets to the client.
-	// The client must reply with a PONG packet to keep the connection alive.
+	// PingInterval is how often the server sends Engine.IO PING packets
+	// to the client. The client must reply with a PONG packet to keep
+	// the connection alive. Read once per connection at handshake time;
+	// mutating it does not affect already-open sockets.
 	PingInterval = 25 * time.Second
-	// PingTimeout is advertised to the client in the EIO OPEN packet.
-	// The client closes the connection if it does not receive a PING from the
-	// server within PingInterval + PingTimeout.
+	// PingTimeout is advertised to the client in the EIO OPEN packet and
+	// is also used by the server-side heartbeat enforcer: a connection
+	// is dropped when no frame arrives within PingInterval + PingTimeout.
+	// Read once per connection at handshake time.
 	PingTimeout = 20 * time.Second
-	// HandshakeTimeout caps how long the server waits for the client SIO CONNECT
-	// packet ("40") after sending the EIO OPEN packet.
+	// HandshakeTimeout caps how long the server waits for the client SIO
+	// CONNECT packet ("40") after sending the EIO OPEN packet. Set to
+	// zero to disable.
 	HandshakeTimeout = 10 * time.Second
-	// MaxPayload is the maximum size in bytes of an inbound WebSocket frame.
-	// It is advertised to the client in the EIO OPEN packet AND enforced via
-	// SetReadLimit on the underlying connection. Frames exceeding this size
-	// are rejected and the connection is closed.
+	// MaxPayload is the maximum size in bytes of an inbound WebSocket
+	// frame. It is advertised to the client in the EIO OPEN packet and
+	// enforced via SetReadLimit on the underlying connection: frames
+	// exceeding this size are rejected and the connection is closed. Set
+	// to zero or negative to disable the limit (not recommended).
 	MaxPayload int64 = 1_000_000
-	// MaxAuthPayload is the maximum size in bytes of the JSON auth payload
-	// supplied by the client in the SIO CONNECT ("40") packet. Per
-	// socket.io-protocol v5 the auth field is a JSON object (or absent);
-	// any payload exceeding this cap is rejected with CONNECT_ERROR and the
-	// handshake fails. Defaults to 8 KiB.
+	// MaxAuthPayload is the maximum size in bytes of the JSON auth
+	// payload supplied by the client in the SIO CONNECT ("40") packet.
+	// Per socket.io-protocol v5 the auth field is a JSON object (or
+	// absent); any payload exceeding this cap is rejected with
+	// CONNECT_ERROR and the handshake fails. Defaults to 8 KiB. Set to
+	// zero to disable.
 	MaxAuthPayload int = 8 * 1024
 	// OutboundAckTimeout is the default deadline for ack callbacks
-	// registered via EmitWithAck. Override with EmitWithAckTimeout for
-	// per-call timeouts.
+	// registered via Websocket.EmitWithAck and Websocket.EmitWithAckArgs.
+	// Use Websocket.EmitWithAckTimeout for per-call overrides.
 	OutboundAckTimeout = 30 * time.Second
-	// MaxBatchPackets caps the number of EIO packets accepted in a single
-	// 0x1E-batched WebSocket frame. Without this cap, a frame consisting
-	// almost entirely of record separators forces a multi-megabyte slice
-	// header allocation. 256 is comfortably above any legitimate batch.
+	// MaxBatchPackets caps the number of EIO packets accepted in a
+	// single 0x1E-batched WebSocket frame. Without this cap, a frame
+	// consisting almost entirely of record separators forces a
+	// multi-megabyte slice header allocation. 256 is comfortably above
+	// any legitimate batch.
 	MaxBatchPackets = 256
-	// MaxEventNameLength bounds inbound SIO event name strings so a hostile
-	// client cannot pin a multi-megabyte string per frame as part of the
-	// EventPayload it dispatches to user listeners.
+	// MaxEventNameLength bounds inbound SIO event name strings (in
+	// bytes) so a hostile client cannot pin a multi-megabyte string per
+	// frame inside the EventPayload dispatched to user listeners. Set
+	// to zero to disable the bound (not recommended).
 	MaxEventNameLength = 256
-	// SendQueueSize is the buffered capacity of the per-connection outbound
-	// frame queue. Must be tuned before connections are accepted; existing
-	// sockets retain the size in effect at New() time.
+	// SendQueueSize is the buffered capacity of the per-connection
+	// outbound frame queue. Tune it before connections are accepted;
+	// existing sockets retain the size in effect at New() time.
 	SendQueueSize = 100
-	// DropFramesOnOverflow controls behavior when the per-connection send
-	// queue is full. When false (default), the connection is torn down with
-	// a "send queue overflow" error (legacy behavior). When true, the
-	// individual frame is dropped and EventError fires with a descriptive
-	// error, allowing the connection to survive bursty producers.
+	// DropFramesOnOverflow controls behavior when the per-connection
+	// send queue is full. When false (default) the connection is torn
+	// down with a "send queue overflow" error (legacy behavior); when
+	// true the individual frame is dropped and EventError fires with
+	// ErrSendQueueOverflow, allowing the connection to survive bursty
+	// producers.
 	DropFramesOnOverflow = false
 	// ErrSendQueueOverflow is surfaced via EventError when a frame is
-	// dropped because the send queue was full and DropFramesOnOverflow is
-	// enabled.
+	// dropped because the send queue was full and DropFramesOnOverflow
+	// is true.
 	ErrSendQueueOverflow = errors.New("socketio: send queue overflow, frame dropped")
 )
+
+// Logger is an optional package-level hook that, when non-nil, receives
+// every internal warning/error the socketio package emits. The default
+// (nil) preserves the historical "silent" behavior, so this is a non-
+// breaking addition.
+//
+// level is one of "warn" or "error". msg is a short, stable description
+// of the event class (e.g. "handshake_failure", "queue_overflow",
+// "ack_timeout"). fields is a flat key/value list of structured context
+// suitable for forwarding to slog/zap/zerolog/etc., e.g.
+//
+//	Logger = func(level, msg string, fields ...any) {
+//	    slog.Default().Log(context.Background(), levelOf(level), msg, fields...)
+//	}
+//
+// Implementations MUST be safe for concurrent use and MUST NOT block;
+// the hook is invoked from goroutines on the connection hot path.
+//
+// Logger is read without synchronisation; assign it once during process
+// startup before serving connections.
+var Logger func(level, msg string, fields ...any)
+
+// logf is the internal trampoline that fans warnings/errors out to the
+// Logger hook when configured. Safe to call when Logger is nil; recovers
+// from any panic in the user-supplied hook so a buggy logger cannot kill
+// a connection.
+func logf(level, msg string, fields ...any) {
+	if Logger == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	Logger(level, msg, fields...)
+}
 
 // AckCallback receives the result of a server-initiated EmitWithAck.
 //
@@ -239,43 +329,54 @@ type message struct {
 	retries int
 }
 
-// EventPayload is the object passed to every event listener. It carries the
-// originating connection, the event arguments in Args (with Data kept as a
-// shortcut to the first arg), the ack bookkeeping fields AckID, HasAck and
-// Ack, and HandshakeAuth (the raw JSON auth payload supplied during the
-// initial SIO CONNECT, populated for EventConnect listeners).
+// EventPayload is the read-only value passed to every event listener. It
+// carries the originating connection (Kws), the event arguments (Args, with
+// Data as a shortcut to the first arg), ack bookkeeping (AckID, HasAck, Ack)
+// and the handshake auth payload (HandshakeAuth, populated for EventConnect
+// listeners only).
+//
+// Listeners must not retain Args, Data or HandshakeAuth past the callback
+// without copying: the underlying byte slices are owned by the connection
+// and may be reused by subsequent reads.
 type EventPayload struct {
-	// The connection object
+	// Kws is the connection that fired the event. Use it to call
+	// Emit/EmitEvent/Close from inside the listener.
 	Kws *Websocket
-	// The name of the event
+	// Name is the event name as registered with On (e.g. "message",
+	// EventConnect, or any custom event).
 	Name string
-	// Unique connection UUID
+	// SocketUUID is the unique identifier of the originating connection,
+	// captured at dispatch time so it remains stable even if the
+	// connection is concurrently closed.
 	SocketUUID string
-	// Optional websocket attributes
+	// SocketAttributes is a defensive snapshot of the connection's
+	// attribute map taken at dispatch time. Mutating it does not affect
+	// the live connection; use Kws.SetAttribute for that.
 	SocketAttributes map[string]any
-	// Optional error when are fired events like
-	// - Disconnect
-	// - Error
+	// Error is the cause associated with lifecycle events such as
+	// EventDisconnect and EventError; nil for ordinary user events.
 	Error error
 	// Data is the first event argument (if any). Kept for backwards
 	// compatibility; equivalent to Args[0] when len(Args) > 0, else nil.
 	Data []byte
 	// Args are the raw-JSON arguments the client sent with the event.
-	// Each entry is one JSON value; nil for events without args. Use this
-	// to consume socket.emit("event", a, b, c) from the JS client side.
+	// Each entry is one JSON value; nil for events without args. Use
+	// this to consume socket.emit("event", a, b, c) from the JS client.
 	Args [][]byte
-	// AckID is the Socket.IO ack id attached to this event by the client.
-	// It is meaningful only when HasAck is true. Use Ack() to respond.
+	// AckID is the Socket.IO ack id attached to this event by the
+	// client. It is meaningful only when HasAck is true. Use Ack to
+	// respond.
 	AckID uint64
-	// HasAck reports whether the client requested an ack for this event
-	// (i.e. the JS side called socket.emit("event", data, callback)).
+	// HasAck reports whether the client requested an ack for this
+	// event (i.e. the JS side called socket.emit("event", data,
+	// callback)).
 	HasAck bool
-	// HandshakeAuth is the raw JSON auth payload the client supplied in its
-	// SIO CONNECT packet, copied for safety. nil if the client connected
-	// without an auth payload. Populated for EventConnect; for other
-	// events use Kws.HandshakeAuth() if needed.
+	// HandshakeAuth is the raw JSON auth payload the client supplied
+	// in its SIO CONNECT packet, copied for safety. nil if the client
+	// connected without an auth payload. Populated for EventConnect
+	// listeners; for other events use Kws.HandshakeAuth instead.
 	HandshakeAuth json.RawMessage
-	// ackSent is the CAS guard that makes Ack() idempotent. It is shared
+	// ackSent is the CAS guard that makes Ack idempotent. It is shared
 	// across all EventPayload instances dispatched for the same inbound
 	// SIO event (one per listener), so that two listeners both calling
 	// Ack on their own payload still produce only one wire frame.
@@ -422,7 +523,7 @@ func splitSIOAckID(data []byte) (id uint64, has bool, rest []byte, err error) {
 	for i < len(data) && data[i] >= '0' && data[i] <= '9' {
 		d := uint64(data[i] - '0')
 		if v > (math.MaxUint64-d)/10 {
-			return 0, false, data, errors.New("socketio: ack id overflow")
+			return 0, false, data, ErrAckIDOverflow
 		}
 		v = v*10 + d
 		i++
@@ -449,7 +550,7 @@ func parseSIOEvent(payload []byte) (string, [][]byte, error) {
 		return "", nil, fmt.Errorf("socketio: failed to parse event payload: %w", err)
 	}
 	if len(arr) == 0 {
-		return "", nil, errors.New("socketio: empty event array")
+		return "", nil, ErrEmptyEventArray
 	}
 	var eventName string
 	if err := json.Unmarshal(arr[0], &eventName); err != nil {
@@ -744,6 +845,12 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 		//    arrive at the client before the handshake completes and would be
 		//    silently dropped by socket.io-client.
 		if err := kws.handshake(); err != nil {
+			// Handshake errors are particularly easy to miss: at this
+			// point the user callback has not run, so no per-conn
+			// EventError listener could be attached anyway. Surface
+			// through the package-level Logger hook so operators see
+			// rejected handshakes in production.
+			logf("error", "handshake_failure", "uuid", kws.UUID, "err", err.Error())
 			kws.disconnected(err)
 			return
 		}
@@ -776,6 +883,7 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 		// backwards compatibility with non-strict callers and tests
 		// that dial the WebSocket endpoint directly.
 		if eio := c.Query("EIO"); eio != "" && eio != "4" {
+			logf("warn", "eio_version_mismatch", "requested", eio, "supported", "4", "remote", c.IP())
 			c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
 			return c.Status(fiber.StatusBadRequest).SendString(unsupportedEIOVersionBody)
 		}
@@ -842,7 +950,7 @@ func (kws *Websocket) handshake() error {
 		return fmt.Errorf("socketio: read SIO CONNECT: %w", err)
 	}
 	if mType == CloseMessage {
-		return errors.New("socketio: connection closed during handshake")
+		return ErrHandshakeClosed
 	}
 	if mType != TextMessage || len(msg) < 2 || msg[0] != eioMessage || msg[1] != sioConnect {
 		return fmt.Errorf("socketio: expected SIO CONNECT (40), got type=%d payload=%q", mType, msg)
@@ -855,8 +963,9 @@ func (kws *Websocket) handshake() error {
 	// Validate namespace charset to reject malformed prefixes that would
 	// otherwise be echoed back verbatim into every outbound emit.
 	if !isValidNamespace(namespace) {
+		logf("warn", "invalid_namespace", "uuid", kws.UUID, "namespace", string(namespace))
 		_ = kws.writeConnectError(namespace, `{"message":"invalid namespace"}`)
-		return errors.New("socketio: invalid namespace in SIO CONNECT")
+		return ErrInvalidNamespace
 	}
 
 	// Validate the auth payload shape per socket.io-protocol v5: auth MUST
@@ -866,8 +975,9 @@ func (kws *Websocket) handshake() error {
 	// client cannot stage a large allocation through the handshake before
 	// any user code runs.
 	if !isValidAuthPayload(authPayload) {
+		logf("warn", "invalid_auth_payload", "uuid", kws.UUID, "namespace", string(namespace), "size", len(authPayload))
 		_ = kws.writeConnectError(namespace, `{"message":"Invalid auth payload"}`)
-		return errors.New("socketio: invalid auth payload in SIO CONNECT")
+		return ErrInvalidAuthPayload
 	}
 
 	// Store as a fresh slice (msg's backing buffer is owned by the read
@@ -1036,14 +1146,16 @@ func (kws *Websocket) SetUUID(uuid string) error {
 	return nil
 }
 
-// SetAttribute Set a specific attribute for the specific socket connection
+// SetAttribute stores a per-connection key/value pair. Concurrency-safe.
+// Listeners receive a defensive snapshot via EventPayload.SocketAttributes.
 func (kws *Websocket) SetAttribute(key string, attribute interface{}) {
 	kws.mu.Lock()
 	defer kws.mu.Unlock()
 	kws.attributes[key] = attribute
 }
 
-// GetAttribute Get a specific attribute from the socket attributes
+// GetAttribute returns the per-connection attribute previously stored under
+// key, or nil if no such attribute exists. Concurrency-safe.
 func (kws *Websocket) GetAttribute(key string) interface{} {
 	kws.mu.RLock()
 	defer kws.mu.RUnlock()
@@ -1054,8 +1166,8 @@ func (kws *Websocket) GetAttribute(key string) interface{} {
 	return nil
 }
 
-// GetIntAttribute Convenience method to retrieve an attribute as an int.
-// Will panic if attribute is not an int.
+// GetIntAttribute returns the per-connection attribute under key as an int,
+// or 0 if no such attribute exists. Panics if the stored value is not an int.
 func (kws *Websocket) GetIntAttribute(key string) int {
 	kws.mu.RLock()
 	defer kws.mu.RUnlock()
@@ -1066,7 +1178,9 @@ func (kws *Websocket) GetIntAttribute(key string) int {
 	return 0
 }
 
-// GetStringAttribute Convenience method to retrieve an attribute as a string.
+// GetStringAttribute returns the per-connection attribute under key as a
+// string, or "" if no such attribute exists. Panics if the stored value is
+// not a string.
 func (kws *Websocket) GetStringAttribute(key string) string {
 	kws.mu.RLock()
 	defer kws.mu.RUnlock()
@@ -1077,7 +1191,9 @@ func (kws *Websocket) GetStringAttribute(key string) string {
 	return ""
 }
 
-// EmitToList Emit the message to a specific socket uuids list
+// EmitToList sends message to every connection whose UUID appears in uuids.
+// Per-target failures are surfaced as EventError on kws (not returned). See
+// Websocket.Emit for the meaning of mType.
 func (kws *Websocket) EmitToList(uuids []string, message []byte, mType ...int) {
 	for _, wsUUID := range uuids {
 		err := kws.EmitTo(wsUUID, message, mType...)
@@ -1087,15 +1203,19 @@ func (kws *Websocket) EmitToList(uuids []string, message []byte, mType ...int) {
 	}
 }
 
-// EmitToList Emit the message to a specific socket uuids list
-// Ignores all errors
+// EmitToList is the package-level form of Websocket.EmitToList. It sends
+// message to every connection whose UUID appears in uuids. Errors are
+// silently ignored; use the method form to receive them via EventError.
 func EmitToList(uuids []string, message []byte, mType ...int) {
 	for _, wsUUID := range uuids {
 		_ = EmitTo(wsUUID, message, mType...)
 	}
 }
 
-// EmitTo Emit to a specific socket connection
+// EmitTo sends message to the connection identified by uuid. Returns
+// ErrorInvalidConnection when the target is unknown or already closed; in
+// that case an EventError is also fired on kws. See Websocket.Emit for the
+// meaning of mType.
 func (kws *Websocket) EmitTo(uuid string, message []byte, mType ...int) error {
 
 	conn, err := pool.get(uuid)
@@ -1111,7 +1231,9 @@ func (kws *Websocket) EmitTo(uuid string, message []byte, mType ...int) error {
 	return nil
 }
 
-// EmitTo Emit to a specific socket connection
+// EmitTo is the package-level form of Websocket.EmitTo. It sends message to
+// the connection identified by uuid and returns ErrorInvalidConnection when
+// the target is unknown or already closed.
 func EmitTo(uuid string, message []byte, mType ...int) error {
 	conn, err := pool.get(uuid)
 	if err != nil {
@@ -1144,30 +1266,43 @@ func (kws *Websocket) Broadcast(message []byte, except bool, mType ...int) {
 	}
 }
 
-// Broadcast sends message to every active connection in the pool. The
-// optional mType selects the WebSocket frame type: omit it (or pass
-// TextMessage) to wrap message as a Socket.IO "message" event; pass
-// BinaryMessage to send the bytes verbatim as a binary frame.
+// Broadcast is the package-level form of Websocket.Broadcast. It sends
+// message to every active connection in the pool, including the originator
+// (use the method form to skip the originator). See Websocket.Emit for the
+// meaning of mType.
 func Broadcast(message []byte, mType ...int) {
 	for _, kws := range pool.all() {
 		kws.Emit(message, mType...)
 	}
 }
 
-// Fire custom event
+// Fire delivers a synthetic event to the listeners registered for event on
+// this connection only. It does not produce a wire frame; use it to inject
+// internal events from server-side code. The data slice is exposed as the
+// listener's EventPayload.Data and as Args[0].
 func (kws *Websocket) Fire(event string, data []byte) {
 	kws.fireEvent(event, data, nil)
 }
 
-// Fire custom event on all connections
+// Fire delivers a synthetic event to the listeners registered for event on
+// every active connection. It does not produce a wire frame. See
+// Websocket.Fire for the per-connection variant.
 func Fire(event string, data []byte) {
 	fireGlobalEvent(event, data, nil)
 }
 
-// Emit sends a message to the client as a socket.io "message" event.
-// The message parameter should be valid JSON (object, array, string literal, etc.).
-// For named events use EmitEvent instead. The connection's namespace
-// (captured during the handshake) is mirrored on the wire.
+// Emit sends message to the client wrapped as a Socket.IO "message" event
+// (use EmitEvent for named events). The message bytes should be valid JSON
+// (object, array, string literal, number, etc.) or nil.
+//
+// The optional mType selects the WebSocket frame type: omit it (or pass
+// TextMessage) for a Socket.IO "message" event; pass BinaryMessage to send
+// the bytes verbatim as a binary WebSocket frame. The connection's
+// namespace (captured during the handshake) is mirrored on the wire.
+//
+// Concurrency-safe: enqueues onto the per-connection send queue. Calls on
+// already-disconnected sockets are a no-op. Behavior on a full queue is
+// governed by DropFramesOnOverflow.
 func (kws *Websocket) Emit(message []byte, mType ...int) {
 	t := TextMessage
 	if len(mType) > 0 {
@@ -1181,8 +1316,12 @@ func (kws *Websocket) Emit(message []byte, mType ...int) {
 }
 
 // EmitEvent sends a named socket.io event to the client. The data parameter
-// should be valid JSON. The connection's namespace (captured during the
-// handshake) is mirrored on the wire.
+// should be valid JSON or nil. The connection's namespace (captured during
+// the handshake) is mirrored on the wire.
+//
+// Reserved event names ("connect", "connect_error", "disconnect") are
+// rejected: the call is dropped and EventError fires with
+// ErrReservedEventName instead. Concurrency-safe.
 func (kws *Websocket) EmitEvent(event string, data []byte) {
 	if isReservedEventName(event) {
 		kws.fireEvent(EventError, []byte(event), ErrReservedEventName)
@@ -1196,9 +1335,10 @@ func (kws *Websocket) EmitEvent(event string, data []byte) {
 }
 
 // EmitArgs sends a named socket.io event with multiple raw-JSON arguments,
-// matching the JS-side call socket.emit("event", a, b, c). Each arg must
-// be valid JSON. Empty entries are skipped. The connection's namespace
-// (captured during the handshake) is mirrored on the wire.
+// matching the JS-side call socket.emit("event", a, b, c). Each arg must be
+// valid JSON; empty entries are skipped. The connection's namespace
+// (captured during the handshake) is mirrored on the wire. Reserved event
+// names are rejected as in EmitEvent. Concurrency-safe.
 func (kws *Websocket) EmitArgs(event string, args ...[]byte) {
 	if isReservedEventName(event) {
 		kws.fireEvent(EventError, []byte(event), ErrReservedEventName)
@@ -1405,15 +1545,18 @@ func (kws *Websocket) fireAckTimeout(id uint64) {
 	if !p.fired.CompareAndSwap(false, true) {
 		return
 	}
+	logf("warn", "ack_timeout", "uuid", kws.UUID, "ack_id", id)
 	defer func() { _ = recover() }()
 	p.cb(nil, ErrAckTimeout)
 }
 
-// Close Actively close the connection from the server.
+// Close actively closes the connection from the server side.
 //
-// Idempotent. Synchronously sends a Socket.IO DISCONNECT packet (mirroring
-// the namespace) followed by a WebSocket close frame, fires EventClose
-// exactly once, then runs the normal disconnected tear-down.
+// It is idempotent: the synchronous DISCONNECT plus close-frame write block
+// runs at most once even when called concurrently. EventClose fires exactly
+// once before the regular disconnected tear-down (which fires EventDisconnect).
+// Callers may invoke Close from inside an event listener; it does not block
+// on the listener's own goroutine.
 //
 // Synchronous writes (bypassing kws.queue) are required so the frames
 // reach the wire BEFORE disconnected() closes done and the send goroutine
@@ -1497,19 +1640,26 @@ func (kws *Websocket) HandshakeAuth() json.RawMessage {
 // the WebSocket conn (not via the queue, since this can run before the send
 // goroutine starts during the handshake).
 //
+// Acquires kws.mu.Lock around the WriteMessage so post-handshake callers (the
+// late-CONNECT path in the read goroutine) cannot race the send goroutine,
+// which writes under kws.mu.RLock. Same pattern Close() uses for its
+// synchronous DISCONNECT/CLOSE frames.
+//
 // Returns ErrorInvalidConnection if the underlying conn is nil. Callers in the
 // post-handshake read path may invoke us during teardown after the conn was
 // released; without the guard the dereference would panic in the read goroutine.
 func (kws *Websocket) writeConnectError(namespace []byte, jsonMessage string) error {
-	if kws.Conn == nil {
-		return ErrorInvalidConnection
-	}
 	out := []byte{eioMessage, sioConnectError}
 	if len(namespace) > 0 {
 		out = append(out, namespace...)
 		out = append(out, ',')
 	}
 	out = append(out, jsonMessage...)
+	kws.mu.Lock()
+	defer kws.mu.Unlock()
+	if kws.Conn == nil {
+		return ErrorInvalidConnection
+	}
 	return kws.Conn.WriteMessage(TextMessage, out)
 }
 
@@ -1575,7 +1725,8 @@ func (kws *Websocket) pong(ctx context.Context) {
 		case <-ticker.C:
 			last := kws.lastPongNanos.Load()
 			if last > 0 && time.Since(time.Unix(0, last)) > deadline {
-				kws.disconnected(errors.New("socketio: heartbeat timeout"))
+				logf("warn", "heartbeat_timeout", "uuid", kws.UUID, "deadline_ms", deadline.Milliseconds())
+				kws.disconnected(ErrHeartbeatTimeout)
 				return
 			}
 			// Emit a PING only every PingInterval, regardless of tick rate.
@@ -1608,12 +1759,14 @@ func (kws *Websocket) write(messageType int, messageBytes []byte) {
 		if DropFramesOnOverflow {
 			// Backpressure: drop the frame and surface an error event,
 			// keeping the connection alive for legitimate burst traffic.
+			logf("warn", "queue_overflow_drop", "uuid", kws.UUID, "queue_cap", cap(kws.queue))
 			kws.fireEvent(EventError, nil, ErrSendQueueOverflow)
 			return
 		}
 		// Queue is full and send is not draining; tear down rather than
 		// pin the calling goroutine.
-		kws.disconnected(errors.New("socketio: send queue overflow"))
+		logf("error", "queue_overflow_disconnect", "uuid", kws.UUID, "queue_cap", cap(kws.queue))
+		kws.disconnected(ErrSendQueueClosed)
 	}
 }
 
@@ -1794,7 +1947,8 @@ func (kws *Websocket) read(ctx context.Context) {
 			rest, count := msg, 0
 			for len(rest) > 0 {
 				if count > MaxBatchPackets {
-					kws.fireEvent(EventError, nil, errors.New("socketio: batched frame exceeds MaxBatchPackets"))
+					logf("warn", "batched_frame_overflow", "uuid", kws.UUID, "limit", MaxBatchPackets)
+					kws.fireEvent(EventError, nil, ErrBatchPacketsExceeded)
 					break
 				}
 				idx := bytes.IndexByte(rest, 0x1E)
@@ -1843,7 +1997,7 @@ func (kws *Websocket) dispatchEIOPacket(msg []byte) {
 
 	default:
 		// Unknown EIO packet type: surface as an error event.
-		kws.fireEvent(EventError, msg, errors.New("socketio: unknown EIO packet type"))
+		kws.fireEvent(EventError, msg, ErrUnknownEIOPacket)
 	}
 }
 
@@ -1967,7 +2121,7 @@ func (kws *Websocket) handleSIOPacket(payload []byte) {
 		kws.deliverOutboundAck(ackID, ackData)
 
 	default:
-		// Unknown SIO packet type — surface payload as a raw message
+		// Unknown SIO packet type: surface payload as a raw message.
 		kws.fireEvent(EventMessage, payload, nil)
 	}
 }
@@ -2116,6 +2270,7 @@ func (kws *Websocket) fireEventWithAck(event string, args [][]byte, fireErr erro
 		func(cb eventCallback) {
 			defer func() {
 				if r := recover(); r != nil {
+					logf("error", "listener_panic", "uuid", uuid, "event", event, "panic", fmt.Sprintf("%v", r))
 					kws.fireEvent(EventError, nil, fmt.Errorf("socketio: listener panic on %q: %v", event, r))
 				}
 			}()
@@ -2138,8 +2293,16 @@ func (kws *Websocket) fireEventWithAck(event string, args [][]byte, fireErr erro
 
 type eventCallback func(payload *EventPayload)
 
-// On registers a callback to be invoked whenever the named event fires on
-// any connection.
+// On registers callback for the named event. The callback fires for every
+// connection that receives event, in registration order. Multiple callbacks
+// may be registered for the same event; all run synchronously on the
+// connection's read goroutine.
+//
+// On is concurrency-safe and may be called at any time, including from
+// inside another listener; later registrations may or may not be observed
+// by concurrent dispatch loops (eventual consistency). Listeners cannot be
+// unregistered. A listener that calls payload.Ack must do so synchronously
+// or pass the payload to a goroutine that copies any byte slices it needs.
 func On(event string, callback eventCallback) {
 	listeners.set(event, callback)
 }
