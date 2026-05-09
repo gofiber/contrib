@@ -516,40 +516,59 @@ func (p *safePool) reset() {
 	p.Unlock()
 }
 
+// safeListeners is a copy-on-write registry of event callbacks.
+//
+// Reads are lock-free: a single atomic.Pointer load yields the current
+// immutable map, then a map index yields the slice. The returned slice
+// is the same backing array all subsequent readers observe and MUST NOT
+// be mutated by callers; listeners are append-only so values are
+// read-only after publication.
+//
+// Writes serialise on writeMu, clone the map, append to a fresh slice
+// and atomic.Store the new pointer. A get() racing a set() may or may
+// not observe the new listener; eventual consistency is acceptable for
+// registration-time mutations.
 type safeListeners struct {
-	sync.RWMutex
-	list map[string][]eventCallback
+	writeMu sync.Mutex
+	m       atomic.Pointer[map[string][]eventCallback]
 }
 
 func (l *safeListeners) set(event string, callback eventCallback) {
-	l.Lock()
-	listeners.list[event] = append(listeners.list[event], callback)
-	l.Unlock()
+	l.writeMu.Lock()
+	defer l.writeMu.Unlock()
+
+	cur := l.m.Load()
+	next := make(map[string][]eventCallback, len(*cur)+1)
+	for k, v := range *cur {
+		next[k] = v
+	}
+	old := next[event]
+	cp := make([]eventCallback, len(old), len(old)+1)
+	copy(cp, old)
+	next[event] = append(cp, callback)
+
+	l.m.Store(&next)
 }
 
 func (l *safeListeners) get(event string) []eventCallback {
-	l.RLock()
-	defer l.RUnlock()
-	if _, ok := l.list[event]; !ok {
-		return make([]eventCallback, 0)
-	}
-
-	ret := make([]eventCallback, 0)
-	ret = append(ret, l.list[event]...)
-	return ret
+	return (*l.m.Load())[event]
 }
 
 //nolint:unused
 func (l *safeListeners) reset() {
-	l.Lock()
-	l.list = make(map[string][]eventCallback)
-	l.Unlock()
+	l.writeMu.Lock()
+	defer l.writeMu.Unlock()
+	empty := make(map[string][]eventCallback)
+	l.m.Store(&empty)
 }
 
-// List of the listeners for the events
-var listeners = safeListeners{
-	list: make(map[string][]eventCallback),
-}
+// List of the listeners for the events.
+var listeners = func() *safeListeners {
+	l := &safeListeners{}
+	empty := make(map[string][]eventCallback)
+	l.m.Store(&empty)
+	return l
+}()
 
 func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.Ctx) error {
 	return websocket.New(func(c *websocket.Conn) {
@@ -1428,32 +1447,49 @@ func (kws *Websocket) read(ctx context.Context) {
 			continue
 		}
 
-		switch msg[0] {
-		case eioPong:
-			// EIO PONG — client's response to our PING.
-			kws.fireEvent(EventPong, nil, nil)
-
-		case eioPing:
-			// In EIO v4 the SERVER sends PING and the CLIENT replies with
-			// PONG. Receiving a PING from the peer means a non-conformant
-			// client (or a v3 client). Ignore quietly rather than echoing
-			// a PONG that would invert the heartbeat direction.
-
-		case eioClose:
-			kws.disconnected(nil)
-			return
-
-		case eioUpgrade, eioNoop:
-			// Transport upgrade / no-op: ignore.
-
-		case eioMessage:
-			// Socket.IO packet wrapped in an EIO MESSAGE.
-			kws.handleSIOPacket(msg[1:])
-
-		default:
-			// Unknown EIO packet type: surface as an error event.
-			kws.fireEvent(EventError, msg, errors.New("socketio: unknown EIO packet type"))
+		// EIO v4 supports batching multiple packets in one WebSocket
+		// frame, separated by ASCII RS (0x1E). Split them and dispatch
+		// each through the same packet switch. Single-packet frames
+		// (no separator) take the fast path with zero allocations.
+		for _, packet := range bytes.Split(msg, []byte{0x1E}) {
+			if len(packet) == 0 {
+				continue
+			}
+			kws.dispatchEIOPacket(packet)
 		}
+	}
+}
+
+// dispatchEIOPacket routes a single Engine.IO packet (one element of a
+// possibly-batched frame).
+func (kws *Websocket) dispatchEIOPacket(msg []byte) {
+	if len(msg) == 0 {
+		return
+	}
+	switch msg[0] {
+	case eioPong:
+		// EIO PONG: client's response to our PING.
+		kws.fireEvent(EventPong, nil, nil)
+
+	case eioPing:
+		// In EIO v4 the SERVER sends PING and the CLIENT replies with
+		// PONG. Receiving a PING from the peer means a non-conformant
+		// client (or a v3 client). Ignore quietly rather than echoing
+		// a PONG that would invert the heartbeat direction.
+
+	case eioClose:
+		kws.disconnected(nil)
+
+	case eioUpgrade, eioNoop:
+		// Transport upgrade / no-op: ignore.
+
+	case eioMessage:
+		// Socket.IO packet wrapped in an EIO MESSAGE.
+		kws.handleSIOPacket(msg[1:])
+
+	default:
+		// Unknown EIO packet type: surface as an error event.
+		kws.fireEvent(EventError, msg, errors.New("socketio: unknown EIO packet type"))
 	}
 }
 
@@ -1662,19 +1698,30 @@ func (kws *Websocket) fireEventWithAck(event string, args [][]byte, fireErr erro
 	}
 
 	for _, callback := range callbacks {
-		callback(&EventPayload{
-			Kws:              kws,
-			Name:             event,
-			SocketUUID:       uuid,
-			SocketAttributes: attrs,
-			Data:             firstArg,
-			Args:             args,
-			Error:            fireErr,
-			AckID:            ackID,
-			HasAck:           hasAck,
-			HandshakeAuth:    auth,
-			ackSent:          ackGuard,
-		})
+		// Recover from listener panics so one buggy handler cannot kill
+		// the read goroutine (and therefore the whole connection). Surface
+		// the panic value as an EventError event so the user can wire it
+		// up to logging.
+		func(cb eventCallback) {
+			defer func() {
+				if r := recover(); r != nil {
+					kws.fireEvent(EventError, nil, fmt.Errorf("socketio: listener panic on %q: %v", event, r))
+				}
+			}()
+			cb(&EventPayload{
+				Kws:              kws,
+				Name:             event,
+				SocketUUID:       uuid,
+				SocketAttributes: attrs,
+				Data:             firstArg,
+				Args:             args,
+				Error:            fireErr,
+				AckID:            ackID,
+				HasAck:           hasAck,
+				HandshakeAuth:    auth,
+				ackSent:          ackGuard,
+			})
+		}(callback)
 	}
 }
 

@@ -1509,6 +1509,105 @@ func TestSocketIOAckMultiArg(t *testing.T) {
 	require.Equal(t, `431["ok",42,{"k":"v"}]`, string(msg))
 }
 
+// TestSocketIOListenerPanicRecovered verifies that a panic in one
+// listener is recovered, surfaced as EventError, and does NOT kill the
+// connection or starve subsequent listeners.
+func TestSocketIOListenerPanicRecovered(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	calledSecond := make(chan struct{}, 1)
+	gotErr := make(chan error, 1)
+
+	On(EventMessage, func(_ *EventPayload) {
+		panic("boom")
+	})
+	On(EventMessage, func(_ *EventPayload) {
+		select {
+		case calledSecond <- struct{}{}:
+		default:
+		}
+	})
+	On(EventError, func(ep *EventPayload) {
+		select {
+		case gotErr <- ep.Error:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage,
+		[]byte(`42["message",{"k":"v"}]`)))
+
+	// Second listener still fires.
+	select {
+	case <-calledSecond:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second listener was not called after first panicked")
+	}
+	// EventError carries the panic value.
+	select {
+	case e := <-gotErr:
+		require.Error(t, e)
+		require.Contains(t, e.Error(), "boom")
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventError for the panic was not fired")
+	}
+}
+
+// TestSocketIOEIOBatchedFrame verifies that two EIO packets concatenated
+// with the 0x1E record separator inside one WebSocket frame are split
+// and each dispatched individually.
+func TestSocketIOEIOBatchedFrame(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	first := make(chan []byte, 1)
+	second := make(chan []byte, 1)
+	On("a", func(ep *EventPayload) {
+		select {
+		case first <- ep.Data:
+		default:
+		}
+	})
+	On("b", func(ep *EventPayload) {
+		select {
+		case second <- ep.Data:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+
+	// One WS frame, two EIO packets separated by 0x1E.
+	batched := []byte(`42["a",1]` + "\x1e" + `42["b",2]`)
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, batched))
+
+	select {
+	case d := <-first:
+		require.Equal(t, "1", string(d))
+	case <-time.After(2 * time.Second):
+		t.Fatal("first batched event missing")
+	}
+	select {
+	case d := <-second:
+		require.Equal(t, "2", string(d))
+	case <-time.After(2 * time.Second):
+		t.Fatal("second batched event missing")
+	}
+}
+
 // TestSocketIOInvalidNamespaceRejected verifies that a CONNECT with a
 // malformed namespace receives a "44" CONNECT_ERROR and the connection
 // is closed by the server.
