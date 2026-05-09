@@ -717,13 +717,6 @@ func (p *safePool) get(key string) (ws, error) {
 	return ret, nil
 }
 
-func (p *safePool) contains(key string) bool {
-	p.RLock()
-	_, ok := p.conn[key]
-	p.RUnlock()
-	return ok
-}
-
 func (p *safePool) delete(key string) {
 	p.Lock()
 	delete(p.conn, key)

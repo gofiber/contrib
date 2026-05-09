@@ -51,7 +51,7 @@ func (s *WebsocketMock) SetUUID(uuid string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if pool.contains(uuid) {
+	if _, err := pool.get(uuid); err == nil {
 		panic(ErrorUUIDDuplication)
 	}
 	s.UUID = uuid
