@@ -448,13 +448,7 @@ func buildSIOEvent(namespace []byte, event string, data []byte) []byte {
 // once instead of growing through 8/16/32/... append boundaries.
 func buildSIOEventWithAck(namespace []byte, ackID uint64, hasAck bool, event string, args [][]byte) []byte {
 	name, _ := json.Marshal(event)
-	size := 2 + len(namespace) + 1 + 20 + 2 + len(name)
-	for _, a := range args {
-		if len(a) > 0 {
-			size += 1 + len(a)
-		}
-	}
-	buf := make([]byte, 0, size)
+	var buf []byte
 	buf = append(buf, eioMessage, sioEvent)
 	if len(namespace) > 0 {
 		buf = append(buf, namespace...)
@@ -482,13 +476,7 @@ func buildSIOEventWithAck(namespace []byte, ackID uint64, hasAck bool, event str
 // args may be nil/empty to send `43<id>[]`. Each non-empty arg is one
 // raw-JSON value, comma-separated.
 func buildSIOAck(namespace []byte, ackID uint64, args [][]byte) []byte {
-	size := 2 + len(namespace) + 1 + 20 + 2
-	for _, a := range args {
-		if len(a) > 0 {
-			size += 1 + len(a)
-		}
-	}
-	buf := make([]byte, 0, size)
+	var buf []byte
 	buf = append(buf, eioMessage, sioAck)
 	if len(namespace) > 0 {
 		buf = append(buf, namespace...)
