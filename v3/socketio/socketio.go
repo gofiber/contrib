@@ -86,8 +86,8 @@ var (
 )
 
 var (
-	// PongTimeout is deprecated. Use PingInterval instead.
-	PongTimeout = 1 * time.Second
+	// PongTimeout is deprecated. Use PingTimeout instead.
+	PongTimeout = 20 * time.Second
 	// RetrySendTimeout retry after 20 ms if there is an error
 	RetrySendTimeout = 20 * time.Millisecond
 	// MaxSendRetry define max retries if there are socket issues
@@ -97,6 +97,13 @@ var (
 	// PingInterval is how often the server sends Engine.IO PING packets to the client.
 	// The client must reply with a PONG packet to keep the connection alive.
 	PingInterval = 25 * time.Second
+	// PingTimeout is advertised to the client in the EIO OPEN packet.
+	// The client closes the connection if it does not receive a PING from the
+	// server within PingInterval + PingTimeout.
+	PingTimeout = 20 * time.Second
+	// HandshakeTimeout caps how long the server waits for the client SIO CONNECT
+	// packet ("40") after sending the EIO OPEN packet.
+	HandshakeTimeout = 10 * time.Second
 )
 
 // Raw form of websocket message
@@ -139,13 +146,19 @@ type eioOpenPacket struct {
 }
 
 // buildSIOEvent encodes a Socket.IO EVENT packet ready to send over the wire.
-// Format: 4 2 [ "<event>" , <data> ]
+// Format: 4 2 [/<namespace>,] [ "<event>" , <data> ]
 //
 // The data argument must be valid JSON (object, array, string, number, etc.).
-func buildSIOEvent(event string, data []byte) []byte {
+// namespace may be nil for the root namespace.
+func buildSIOEvent(namespace []byte, event string, data []byte) []byte {
 	name, _ := json.Marshal(event)
 	var buf []byte
-	buf = append(buf, eioMessage, sioEvent, '[')
+	buf = append(buf, eioMessage, sioEvent)
+	if len(namespace) > 0 {
+		buf = append(buf, namespace...)
+		buf = append(buf, ',')
+	}
+	buf = append(buf, '[')
 	buf = append(buf, name...)
 	if len(data) > 0 {
 		buf = append(buf, ',')
@@ -223,6 +236,14 @@ type Websocket struct {
 	// Channel to signal when this websocket is closed
 	// so go routines will stop gracefully
 	done chan struct{}
+	// ctx is the lifetime context for read/send/pong goroutines.
+	ctx context.Context
+	// cancelCtx cancels ctx when the connection is torn down.
+	cancelCtx context.CancelFunc
+	// namespace is the Socket.IO namespace this connection belongs to. Empty
+	// means the root namespace. Captured during the handshake from the
+	// client's CONNECT packet so outbound events can mirror it.
+	namespace []byte
 	// Attributes map collection for the connection
 	attributes map[string]interface{}
 	// Unique id of the connection
@@ -357,11 +378,30 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 		// register the connection into the pool
 		pool.set(kws)
 
-		// execute the callback of the socket initialization
+		// 1. Perform the EIO/SIO handshake synchronously so that the EIO OPEN
+		//    packet is the very first frame on the wire. Without this, any
+		//    Emit / EmitEvent calls performed inside the user callback would
+		//    arrive at the client before the handshake completes and would be
+		//    silently dropped by socket.io-client.
+		if err := kws.handshake(); err != nil {
+			kws.disconnected(err)
+			return
+		}
+
+		// 2. Start the send goroutine before invoking the user callback so that
+		//    Emit/Broadcast calls inside it are flushed in order.
+		ctx, cancelCtx := context.WithCancel(context.Background())
+		kws.ctx = ctx
+		kws.cancelCtx = cancelCtx
+		go kws.send(ctx)
+
+		// 3. Execute the user callback on a fully established socket.
 		callback(kws)
 
-		// Run the loop for the given connection.
-		// The EIO handshake and EventConnect are handled inside run().
+		// 4. Notify listeners that the socket is ready.
+		kws.fireEvent(EventConnect, nil, nil)
+
+		// 5. Read / heartbeat goroutines and block until the connection closes.
 		kws.run()
 	}, config...)
 }
@@ -372,34 +412,97 @@ func (kws *Websocket) GetUUID() string {
 	return kws.UUID
 }
 
-// sendEIOOpen sends the Engine.IO OPEN packet after the WebSocket upgrade.
-// The client uses the session ID and timing parameters from this packet.
-func (kws *Websocket) sendEIOOpen() {
+// handshake performs the Engine.IO / Socket.IO handshake synchronously,
+// using direct WebSocket reads/writes (not the message queue) so that the
+// EIO OPEN packet is the very first frame the client receives. Without this,
+// any Emit calls performed inside the user callback would be queued before
+// EIO OPEN and silently dropped by socket.io-client during its opening state.
+//
+// Sequence:
+//  1. Server -> Client: 0{...sid,pingInterval,pingTimeout,maxPayload}
+//  2. Client -> Server: 40 (optionally with namespace, e.g. "40/admin,")
+//  3. Server -> Client: 40{"sid":"..."}
+func (kws *Websocket) handshake() error {
+	// 1. Send EIO OPEN
 	open := eioOpenPacket{
 		SID:          kws.UUID,
 		Upgrades:     []string{},
 		PingInterval: int(PingInterval.Milliseconds()),
-		PingTimeout:  int(PongTimeout.Milliseconds()),
+		PingTimeout:  int(PingTimeout.Milliseconds()),
 		MaxPayload:   1_000_000,
 	}
 	data, err := json.Marshal(open)
 	if err != nil {
-		kws.fireEvent(EventError, nil, err)
-		return
+		return fmt.Errorf("socketio: marshal EIO OPEN: %w", err)
 	}
-	kws.write(TextMessage, append([]byte{eioOpen}, data...))
-}
+	if err := kws.Conn.WriteMessage(TextMessage, append([]byte{eioOpen}, data...)); err != nil {
+		return fmt.Errorf("socketio: write EIO OPEN: %w", err)
+	}
 
-// sendSIOConnect sends the Socket.IO CONNECT confirmation for the root namespace.
-func (kws *Websocket) sendSIOConnect() {
-	data, err := json.Marshal(struct {
+	// 2. Wait for client SIO CONNECT, with a deadline so dead clients do not
+	//    pin a goroutine forever.
+	deadline := time.Time{}
+	if HandshakeTimeout > 0 {
+		deadline = time.Now().Add(HandshakeTimeout)
+	}
+	_ = kws.Conn.SetReadDeadline(deadline)
+	defer func() { _ = kws.Conn.SetReadDeadline(time.Time{}) }()
+
+	mType, msg, err := kws.Conn.ReadMessage()
+	if err != nil {
+		return fmt.Errorf("socketio: read SIO CONNECT: %w", err)
+	}
+	if mType == CloseMessage {
+		return errors.New("socketio: connection closed during handshake")
+	}
+	if mType != TextMessage || len(msg) < 2 || msg[0] != eioMessage || msg[1] != sioConnect {
+		return fmt.Errorf("socketio: expected SIO CONNECT (40), got type=%d payload=%q", mType, msg)
+	}
+
+	// Extract optional namespace from the CONNECT packet so the ack echoes it
+	// and so outbound events can mirror it.
+	// Wire format: "40" [ "/namespace," ] [ <json_auth> ]
+	namespace := extractSIONamespace(msg[2:])
+	kws.mu.Lock()
+	kws.namespace = append(kws.namespace[:0], namespace...)
+	kws.mu.Unlock()
+
+	// 3. Send SIO CONNECT confirmation, mirroring the namespace.
+	payload, err := json.Marshal(struct {
 		SID string `json:"sid"`
 	}{SID: kws.UUID})
 	if err != nil {
-		kws.fireEvent(EventError, nil, err)
-		return
+		return fmt.Errorf("socketio: marshal SIO CONNECT: %w", err)
 	}
-	kws.write(TextMessage, append([]byte{eioMessage, sioConnect}, data...))
+	ack := buildSIOConnectAck(namespace, payload)
+	if err := kws.Conn.WriteMessage(TextMessage, ack); err != nil {
+		return fmt.Errorf("socketio: write SIO CONNECT: %w", err)
+	}
+	return nil
+}
+
+// extractSIONamespace returns the namespace bytes (including the leading "/")
+// from a Socket.IO CONNECT or DISCONNECT payload (the bytes after the "40"/"41"
+// type prefix). Returns nil for the root namespace.
+func extractSIONamespace(data []byte) []byte {
+	if len(data) == 0 || data[0] != '/' {
+		return nil
+	}
+	if idx := bytes.IndexByte(data, ','); idx >= 0 {
+		return data[:idx]
+	}
+	// Namespace without trailing comma (no auth payload).
+	return data
+}
+
+// buildSIOConnectAck encodes a SIO CONNECT ack frame ("40[/ns,]<json>").
+func buildSIOConnectAck(namespace, payload []byte) []byte {
+	out := []byte{eioMessage, sioConnect}
+	if len(namespace) > 0 {
+		out = append(out, namespace...)
+		out = append(out, ',')
+	}
+	return append(out, payload...)
 }
 
 func (kws *Websocket) SetUUID(uuid string) error {
@@ -556,7 +659,7 @@ func (kws *Websocket) Emit(message []byte, mType ...int) {
 		t = mType[0]
 	}
 	if t == TextMessage {
-		kws.write(TextMessage, buildSIOEvent(EventMessage, message))
+		kws.write(TextMessage, buildSIOEvent(kws.getNamespace(), EventMessage, message))
 	} else {
 		kws.write(t, message)
 	}
@@ -565,15 +668,33 @@ func (kws *Websocket) Emit(message []byte, mType ...int) {
 // EmitEvent sends a named socket.io event to the client.
 // The data parameter should be valid JSON.
 func (kws *Websocket) EmitEvent(event string, data []byte) {
-	kws.write(TextMessage, buildSIOEvent(event, data))
+	kws.write(TextMessage, buildSIOEvent(kws.getNamespace(), event, data))
 }
 
 // Close Actively close the connection from the server
 func (kws *Websocket) Close() {
-	// Notify the client with a Socket.IO DISCONNECT packet before closing
-	kws.write(TextMessage, []byte{eioMessage, sioDisconnect})
+	// Notify the client with a Socket.IO DISCONNECT packet (mirroring the
+	// namespace) before closing.
+	disconnect := []byte{eioMessage, sioDisconnect}
+	if ns := kws.getNamespace(); len(ns) > 0 {
+		disconnect = append(disconnect, ns...)
+	}
+	kws.write(TextMessage, disconnect)
 	kws.write(CloseMessage, []byte("Connection closed"))
 	kws.fireEvent(EventClose, nil, nil)
+}
+
+// getNamespace returns the Socket.IO namespace this connection is bound to,
+// or nil for the root namespace.
+func (kws *Websocket) getNamespace() []byte {
+	kws.mu.RLock()
+	defer kws.mu.RUnlock()
+	if len(kws.namespace) == 0 {
+		return nil
+	}
+	out := make([]byte, len(kws.namespace))
+	copy(out, kws.namespace)
+	return out
 }
 
 func (kws *Websocket) IsAlive() bool {
@@ -655,48 +776,32 @@ func (kws *Websocket) send(ctx context.Context) {
 	}
 }
 
-// Start Pong/Read/Write functions
+// run starts the heartbeat and read goroutines and blocks until the connection
+// is torn down. The handshake, send goroutine and EventConnect notification
+// are intentionally performed in New() before run() is called, so that any
+// Emit/EmitEvent calls inside the user callback are flushed onto an already
+// established connection and are not interleaved with handshake frames.
 //
 // Needs to be blocking, otherwise the connection would close.
 func (kws *Websocket) run() {
-	ctx, cancelFunc := context.WithCancel(context.Background())
-
-	// Start the send goroutine first so it can deliver the EIO OPEN packet.
-	go kws.send(ctx)
-
-	// Perform the Engine.IO / Socket.IO handshake:
-	// 1. Server sends EIO OPEN   → "0{...}"
-	// 2. Client sends SIO CONNECT → "40"
-	// 3. Server sends SIO CONNECT confirmation → "40{\"sid\":\"...\"}"
-	kws.sendEIOOpen()
-
-	kws.mu.RLock()
-	mType, msg, err := kws.Conn.ReadMessage()
-	kws.mu.RUnlock()
-
-	switch {
-	case err != nil:
-		cancelFunc()
-		kws.disconnected(err)
-		return
-	case mType == CloseMessage:
-		cancelFunc()
-		kws.disconnected(nil)
-		return
-	case mType == TextMessage && len(msg) >= 2 && msg[0] == eioMessage && msg[1] == sioConnect:
-		// Normal socket.io-client CONNECT → confirm connection
-		kws.sendSIOConnect()
+	ctx := kws.ctx
+	if ctx == nil {
+		// Defensive: should always be set by New() but allow standalone use.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(context.Background())
+		kws.ctx = ctx
+		kws.cancelCtx = cancel
+		go kws.send(ctx)
 	}
-
-	// Fire EventConnect after the handshake is complete
-	kws.fireEvent(EventConnect, nil, nil)
 
 	go kws.pong(ctx)
 	go kws.read(ctx)
 
-	<-kws.done // block until one event is sent to the done channel
+	<-kws.done // block until disconnected closes the channel
 
-	cancelFunc()
+	if kws.cancelCtx != nil {
+		kws.cancelCtx()
+	}
 }
 
 // Listen for incoming messages
@@ -808,8 +913,16 @@ func (kws *Websocket) handleSIOPacket(payload []byte) {
 		kws.disconnected(nil)
 
 	case sioConnect:
-		// Re-connection to a namespace — confirm
-		kws.sendSIOConnect()
+		// Late namespace CONNECT (after the initial handshake): confirm via
+		// the send queue, mirroring the namespace, so we do not race the read
+		// loop.
+		ackPayload, err := json.Marshal(struct {
+			SID string `json:"sid"`
+		}{SID: kws.UUID})
+		if err == nil {
+			ns := extractSIONamespace(payload[1:])
+			kws.write(TextMessage, buildSIOConnectAck(ns, ackPayload))
+		}
 
 	case sioAck:
 		// Acknowledge packets are intentionally ignored for now

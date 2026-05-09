@@ -847,18 +847,20 @@ func TestSocketIOHeartbeat(t *testing.T) {
 // TestSocketIOBuildSIOEvent checks the wire-format produced by buildSIOEvent.
 func TestSocketIOBuildSIOEvent(t *testing.T) {
 	cases := []struct {
-		name     string
-		event    string
-		data     []byte
-		expected string
+		name      string
+		namespace []byte
+		event     string
+		data      []byte
+		expected  string
 	}{
-		{"no data", "ping", nil, `42["ping"]`},
-		{"string data", "message", []byte(`"hello"`), `42["message","hello"]`},
-		{"object data", "update", []byte(`{"key":"val"}`), `42["update",{"key":"val"}]`},
+		{"root no data", nil, "ping", nil, `42["ping"]`},
+		{"root string data", nil, "message", []byte(`"hello"`), `42["message","hello"]`},
+		{"root object data", nil, "update", []byte(`{"key":"val"}`), `42["update",{"key":"val"}]`},
+		{"namespaced", []byte("/admin"), "msg", []byte(`"x"`), `42/admin,["msg","x"]`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := buildSIOEvent(tc.event, tc.data)
+			got := buildSIOEvent(tc.namespace, tc.event, tc.data)
 			require.Equal(t, tc.expected, string(got))
 		})
 	}
@@ -901,3 +903,120 @@ func TestSocketIOParseSIOEvent(t *testing.T) {
 	})
 }
 
+// TestSocketIOEmitInsideNewCallbackArrivesAfterHandshake is the regression
+// test for issue #1903: a server that calls Emit inside the New() callback
+// must not leak the message before the EIO OPEN / SIO CONNECT handshake.
+func TestSocketIOEmitInsideNewCallbackArrivesAfterHandshake(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	ln, teardown := newSIOTestServer(t, func(kws *Websocket) {
+		// Calling Emit inside the New() callback used to send before EIO OPEN.
+		kws.Emit([]byte(`"early"`))
+	})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	// 1. EIO OPEN must be the very first frame on the wire.
+	mType, msg, err := conn.ReadMessage()
+	require.NoError(t, err)
+	require.Equal(t, websocket.TextMessage, mType)
+	require.NotEmpty(t, msg)
+	require.Equalf(t, byte(eioOpen), msg[0], "first frame must be EIO OPEN, got %q", msg)
+
+	// 2. Send SIO CONNECT.
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte("40")))
+
+	// 3. Read SIO CONNECT confirmation.
+	_, msg, err = conn.ReadMessage()
+	require.NoError(t, err)
+	require.Truef(t,
+		len(msg) >= 2 && msg[0] == eioMessage && msg[1] == sioConnect,
+		"expected SIO CONNECT, got %q", msg,
+	)
+
+	// 4. Only AFTER the handshake should the welcome message arrive.
+	_, msg, err = sioReadSkipPings(conn)
+	require.NoError(t, err)
+	require.Equal(t, `42["message","early"]`, string(msg))
+}
+
+// TestSocketIONamespaceHandshake verifies that a client connecting to a
+// non-root namespace gets a namespace-prefixed CONNECT ack and that server
+// emits are scoped to the same namespace.
+func TestSocketIONamespaceHandshake(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	ready := make(chan *Websocket, 1)
+	On(EventConnect, func(payload *EventPayload) {
+		select {
+		case ready <- payload.Kws:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	// 1. Read EIO OPEN.
+	mType, msg, err := conn.ReadMessage()
+	require.NoError(t, err)
+	require.Equal(t, websocket.TextMessage, mType)
+	require.Equal(t, byte(eioOpen), msg[0])
+
+	// 2. CONNECT to /admin namespace.
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte("40/admin,")))
+
+	// 3. Confirmation must echo the namespace.
+	_, msg, err = conn.ReadMessage()
+	require.NoError(t, err)
+	require.True(t,
+		strings.HasPrefix(string(msg), "40/admin,{"),
+		"expected '40/admin,{...}', got %q", msg,
+	)
+
+	// 4. Wait for the server-side handle and emit a server-side event.
+	var kws *Websocket
+	select {
+	case kws = <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventConnect did not fire")
+	}
+	kws.EmitEvent("hello", []byte(`"world"`))
+
+	// 5. The pushed event must include the namespace prefix.
+	_, msg, err = sioReadSkipPings(conn)
+	require.NoError(t, err)
+	require.Equal(t, `42/admin,["hello","world"]`, string(msg))
+}
+
+// TestSocketIOPingTimeoutIsAdvertised checks that the EIO OPEN packet exposes
+// the configured PingTimeout, not the deprecated 1s PongTimeout default.
+func TestSocketIOPingTimeoutIsAdvertised(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	mType, msg, err := conn.ReadMessage()
+	require.NoError(t, err)
+	require.Equal(t, websocket.TextMessage, mType)
+	require.Equal(t, byte(eioOpen), msg[0])
+
+	var open eioOpenPacket
+	require.NoError(t, json.Unmarshal(msg[1:], &open))
+	require.Equal(t, int(PingInterval.Milliseconds()), open.PingInterval)
+	require.Equal(t, int(PingTimeout.Milliseconds()), open.PingTimeout)
+	require.GreaterOrEqual(t, open.PingTimeout, 1000,
+		"PingTimeout must be at least 1s, got %d ms", open.PingTimeout)
+}
