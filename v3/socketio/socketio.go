@@ -401,9 +401,9 @@ type EventPayload struct {
 // Ack sends a Socket.IO ACK ("43") response back to the client for the event
 // represented by this payload. The variadic args ...[]byte signature accepts
 // zero arguments (empty ack), one argument (single value), or many arguments
-// that are emitted as comma-separated raw-JSON values, mirroring the JS-side
-// callback(a, b, c) shape. Each non-empty argument must be valid JSON; nil
-// or empty entries are skipped.
+// that are emitted as comma-separated values, mirroring the JS-side
+// callback(a, b, c) shape. Valid JSON args are passed through; raw text args
+// are encoded as JSON strings. Nil or empty entries are skipped.
 //
 // Ack is idempotent across all listeners dispatched for the same inbound
 // event: only the first invocation produces a wire frame, and subsequent
@@ -444,7 +444,9 @@ type eioOpenPacket struct {
 // buildSIOEvent encodes a Socket.IO EVENT packet ready to send over the wire.
 // Format: 4 2 [/<namespace>,] [ "<event>" , <data> ]
 //
-// data must be valid JSON (object, array, string, number, etc.) or nil.
+// data may be valid JSON (object, array, string, number, etc.) or raw text.
+// Raw text is encoded as a JSON string for compatibility with earlier
+// versions that accepted arbitrary bytes in Emit.
 // namespace may be nil for the root namespace.
 func buildSIOEvent(namespace []byte, event string, data []byte) []byte {
 	if len(data) == 0 {
@@ -455,9 +457,10 @@ func buildSIOEvent(namespace []byte, event string, data []byte) []byte {
 
 // buildSIOEventWithAck is the ack-id aware multi-arg variant of buildSIOEvent.
 //
-// args is the slice of raw-JSON arguments to encode after the event name
-// (matches the JS-side socket.emit("event", a, b, c) shape). Each entry
-// must be valid JSON; nil/empty entries are skipped.
+// args is the slice of arguments to encode after the event name (matches the
+// JS-side socket.emit("event", a, b, c) shape). Entries that are valid JSON are
+// passed through unchanged; raw text entries are encoded as JSON strings.
+// Nil/empty entries are skipped.
 //
 // The output buffer is pre-sized so a typical event allocates exactly
 // once instead of growing through 8/16/32/... append boundaries.
@@ -479,17 +482,28 @@ func buildSIOEventWithAck(namespace []byte, ackID uint64, hasAck bool, event str
 			continue
 		}
 		buf = append(buf, ',')
-		buf = append(buf, a...)
+		buf = append(buf, normalizeJSONArg(a)...)
 	}
 	buf = append(buf, ']')
 	return buf
 }
 
+func normalizeJSONArg(data []byte) []byte {
+	if len(data) == 0 || json.Valid(data) {
+		return data
+	}
+	encoded, err := json.Marshal(string(data))
+	if err != nil {
+		return []byte("null")
+	}
+	return encoded
+}
+
 // buildSIOAck encodes a Socket.IO ACK ("43") packet.
 //
 // Format: 4 3 [/<namespace>,] <ackID> [ <args> ]
-// args may be nil/empty to send `43<id>[]`. Each non-empty arg is one
-// raw-JSON value, comma-separated.
+// args may be nil/empty to send `43<id>[]`. Valid JSON args are passed
+// through; raw text args are encoded as JSON strings.
 func buildSIOAck(namespace []byte, ackID uint64, args [][]byte) []byte {
 	var buf []byte
 	buf = append(buf, eioMessage, sioAck)
@@ -507,7 +521,7 @@ func buildSIOAck(namespace []byte, ackID uint64, args [][]byte) []byte {
 		if !first {
 			buf = append(buf, ',')
 		}
-		buf = append(buf, a...)
+		buf = append(buf, normalizeJSONArg(a)...)
 		first = false
 	}
 	buf = append(buf, ']')
@@ -634,6 +648,11 @@ type Websocket struct {
 	// isAlive reports whether the connection is alive. Accessed lock-free
 	// from every emit path (write/EmitTo/etc.) and the read goroutine.
 	isAlive atomic.Bool
+	// handlerDone flips just before run returns to the websocket upgrader.
+	// After that point the vendored websocket package may release and nil the
+	// embedded fasthttp connection, so external Close callers must not touch
+	// Conn anymore.
+	handlerDone atomic.Bool
 	// Queue of messages sent from the socket
 	queue chan message
 	// Channel to signal when this websocket is closed
@@ -866,6 +885,14 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 
 		// 3. Execute the user callback on a fully established socket.
 		callback(kws)
+
+		// If the callback actively closed the socket (for example after
+		// inspecting HandshakeAuth), do not emit EventConnect for a connection
+		// user code already rejected.
+		if !kws.IsAlive() {
+			kws.finishRun()
+			return
+		}
 
 		// 4. Notify listeners that the socket is ready.
 		kws.fireEvent(EventConnect, nil, nil)
@@ -1299,8 +1326,9 @@ func Fire(event string, data []byte) {
 }
 
 // Emit sends message to the client wrapped as a Socket.IO "message" event
-// (use EmitEvent for named events). The message bytes should be valid JSON
-// (object, array, string literal, number, etc.) or nil.
+// (use EmitEvent for named events). The message bytes may be valid JSON
+// (object, array, string literal, number, etc.) or raw text; raw text is
+// encoded as a JSON string so socket.io-client can parse the frame.
 //
 // The optional mType selects the WebSocket frame type: omit it (or pass
 // TextMessage) for a Socket.IO "message" event; pass BinaryMessage to send
@@ -1323,7 +1351,7 @@ func (kws *Websocket) Emit(message []byte, mType ...int) {
 }
 
 // EmitEvent sends a named socket.io event to the client. The data parameter
-// should be valid JSON or nil. The connection's namespace (captured during
+// may be valid JSON or raw text. The connection's namespace (captured during
 // the handshake) is mirrored on the wire.
 //
 // Reserved event names ("connect", "connect_error", "disconnect") are
@@ -1341,11 +1369,12 @@ func (kws *Websocket) EmitEvent(event string, data []byte) {
 	kws.write(TextMessage, buildSIOEventWithAck(kws.getNamespace(), 0, false, event, args))
 }
 
-// EmitArgs sends a named socket.io event with multiple raw-JSON arguments,
-// matching the JS-side call socket.emit("event", a, b, c). Each arg must be
-// valid JSON; empty entries are skipped. The connection's namespace
-// (captured during the handshake) is mirrored on the wire. Reserved event
-// names are rejected as in EmitEvent. Concurrency-safe.
+// EmitArgs sends a named socket.io event with multiple arguments, matching the
+// JS-side call socket.emit("event", a, b, c). Valid JSON args are passed
+// through; raw text args are encoded as JSON strings. Empty entries are
+// skipped. The connection's namespace (captured during the handshake) is
+// mirrored on the wire. Reserved event names are rejected as in EmitEvent.
+// Concurrency-safe.
 func (kws *Websocket) EmitArgs(event string, args ...[]byte) {
 	if isReservedEventName(event) {
 		kws.fireEvent(EventError, []byte(event), ErrReservedEventName)
@@ -1358,7 +1387,7 @@ func (kws *Websocket) EmitArgs(event string, args ...[]byte) {
 // is invoked exactly once with the client's ack response. The connection's
 // namespace (captured during the handshake) is mirrored on the wire.
 //
-// The data parameter must be valid JSON or nil. The callback receives the
+// The data parameter may be valid JSON or raw text. The callback receives the
 // raw JSON bytes from the client's ack ([] for an empty ack, the first
 // arg as JSON, or a JSON-array when the client called the ack with
 // multiple args).
@@ -1445,7 +1474,7 @@ func (kws *Websocket) EmitWithAckTimeout(event string, data []byte, timeout time
 }
 
 // EmitWithAckArgs is the multi-arg + structured-error variant of
-// EmitWithAck. It sends a named event carrying multiple raw-JSON arguments
+// EmitWithAck. It sends a named event carrying multiple arguments
 // and registers a callback invoked exactly once when the client acks, on
 // timeout (OutboundAckTimeout), or on connection close. The connection's
 // namespace (captured during the handshake) is mirrored on the wire.
@@ -1607,13 +1636,11 @@ func (kws *Websocket) Close() {
 		}
 
 		kws.mu.Lock()
-		// Defensive nil-check on the embedded *fasthttp.Conn pointer.
-		// The vendored websocket package nils it inside releaseConn()
-		// when the upgrade handler returns. Holding kws.mu here pairs
-		// with the run()-exit fence so that, in the steady state, this
-		// branch only skips on a connection that never finished the
-		// upgrade.
-		if kws.Conn != nil && kws.Conn.Conn != nil {
+		// Do not read kws.Conn.Conn here. The vendored websocket
+		// package nils that embedded pointer in releaseConn() after the
+		// upgrade handler returns, without taking our mutex. handlerDone
+		// is our race-free guard for that lifecycle boundary.
+		if kws.Conn != nil && !kws.handlerDone.Load() {
 			_ = kws.Conn.WriteMessage(TextMessage, disconnect)
 			// Per RFC 6455 a Close control frame's payload must start with
 			// a 2-byte big-endian status code optionally followed by a UTF-8
@@ -1671,9 +1698,8 @@ func (kws *Websocket) HandshakeAuth() json.RawMessage {
 // which writes under kws.mu.RLock. Same pattern Close() uses for its
 // synchronous DISCONNECT/CLOSE frames.
 //
-// Returns ErrorInvalidConnection if the underlying conn is nil. Callers in the
-// post-handshake read path may invoke us during teardown after the conn was
-// released; without the guard the dereference would panic in the read goroutine.
+// Returns ErrorInvalidConnection if the underlying conn is nil or the upgrade
+// handler has already returned.
 func (kws *Websocket) writeConnectError(namespace []byte, jsonMessage string) error {
 	out := []byte{eioMessage, sioConnectError}
 	if len(namespace) > 0 {
@@ -1683,14 +1709,10 @@ func (kws *Websocket) writeConnectError(namespace []byte, jsonMessage string) er
 	out = append(out, jsonMessage...)
 	kws.mu.Lock()
 	defer kws.mu.Unlock()
-	// Two-stage nil-check: kws.Conn is the wrapper; kws.Conn.Conn is the
-	// embedded *fasthttp.Conn that the vendored websocket package nils in
-	// releaseConn() once the upgrade handler returns. Both may be observed
-	// non-nil-then-nil by a concurrent caller during teardown; checking
-	// only the outer wrapper would let the read goroutine panic mid-Write
-	// when releaseConn ran between the kws.mu acquisition and the actual
-	// WriteMessage call. Same defensive pattern used by Close().
-	if kws.Conn == nil || kws.Conn.Conn == nil {
+	// Do not inspect kws.Conn.Conn; releaseConn() mutates that embedded
+	// pointer without taking our mutex. handlerDone is the race-free
+	// lifecycle guard.
+	if kws.Conn == nil || kws.handlerDone.Load() {
 		return ErrorInvalidConnection
 	}
 	return kws.Conn.WriteMessage(TextMessage, out)
@@ -1879,6 +1901,10 @@ func (kws *Websocket) run() {
 
 	<-kws.done // block until disconnected closes the channel
 
+	kws.finishRun()
+}
+
+func (kws *Websocket) finishRun() {
 	if kws.cancelCtx != nil {
 		kws.cancelCtx()
 	}
@@ -1886,6 +1912,12 @@ func (kws *Websocket) run() {
 	// Wait for send / pong / read to actually exit before letting the
 	// upgrade handler return and the websocket framework release Conn.
 	kws.workersWg.Wait()
+
+	// Mark the upgrade handler as finished before the final barrier. A Close
+	// caller that starts after this point will skip direct Conn writes; a
+	// Close caller already inside its write block still holds kws.mu and is
+	// waited on by the barrier below.
+	kws.handlerDone.Store(true)
 
 	// Fence against any in-flight Close() that is still inside its
 	// kws.mu-protected write block. Close() is invoked from caller

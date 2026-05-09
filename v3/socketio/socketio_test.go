@@ -100,7 +100,7 @@ func (s *WebsocketMock) EmitWithAckTimeout(_ string, _ []byte, _ time.Duration, 
 }
 
 // EmitArgs / EmitWithAckArgs: no-op stubs for the mock.
-func (s *WebsocketMock) EmitArgs(_ string, _ ...[]byte)                           {}
+func (s *WebsocketMock) EmitArgs(_ string, _ ...[]byte) {}
 func (s *WebsocketMock) EmitWithAckArgs(_ string, _ [][]byte, _ func([][]byte, error)) {
 }
 
@@ -918,6 +918,7 @@ func TestSocketIOBuildSIOEvent(t *testing.T) {
 	}{
 		{"root no data", nil, "ping", nil, `42["ping"]`},
 		{"root string data", nil, "message", []byte(`"hello"`), `42["message","hello"]`},
+		{"root raw text data", nil, "message", []byte(`hello`), `42["message","hello"]`},
 		{"root object data", nil, "update", []byte(`{"key":"val"}`), `42["update",{"key":"val"}]`},
 		{"namespaced", []byte("/admin"), "msg", []byte(`"x"`), `42/admin,["msg","x"]`},
 	}
@@ -1006,6 +1007,68 @@ func TestSocketIOEmitInsideNewCallbackArrivesAfterHandshake(t *testing.T) {
 	_, msg, err = sioReadSkipPings(conn)
 	require.NoError(t, err)
 	require.Equal(t, `42["message","early"]`, string(msg))
+}
+
+func TestSocketIOEmitRawTextIsJSONEncoded(t *testing.T) {
+	resetSIOGlobals(t)
+
+	ready := make(chan *Websocket, 1)
+	On(EventConnect, func(payload *EventPayload) {
+		select {
+		case ready <- payload.Kws:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	require.NoError(t, sioHandshake(t, conn))
+
+	var kws *Websocket
+	select {
+	case kws = <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventConnect did not fire")
+	}
+
+	kws.Emit([]byte(`Hello user`))
+	_, msg, err := sioReadSkipPings(conn)
+	require.NoError(t, err)
+	require.Equal(t, `42["message","Hello user"]`, string(msg))
+
+	kws.EmitEvent("notice", []byte(`plain text`))
+	_, msg, err = sioReadSkipPings(conn)
+	require.NoError(t, err)
+	require.Equal(t, `42["notice","plain text"]`, string(msg))
+}
+
+func TestSocketIONewCallbackCloseSuppressesEventConnect(t *testing.T) {
+	resetSIOGlobals(t)
+
+	connectFired := make(chan struct{}, 1)
+	On(EventConnect, func(_ *EventPayload) {
+		connectFired <- struct{}{}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(kws *Websocket) {
+		kws.Close()
+	})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	require.NoError(t, sioHandshake(t, conn))
+
+	select {
+	case <-connectFired:
+		t.Fatal("EventConnect fired after New callback closed the socket")
+	case <-time.After(150 * time.Millisecond):
+	}
 }
 
 // TestSocketIONamespaceHandshake verifies that a client connecting to a
@@ -1167,6 +1230,7 @@ func TestSocketIOSplitAckID(t *testing.T) {
 func TestSocketIOBuildSIOAck(t *testing.T) {
 	require.Equal(t, `431[]`, string(buildSIOAck(nil, 1, nil)))
 	require.Equal(t, `431["ok"]`, string(buildSIOAck(nil, 1, [][]byte{[]byte(`"ok"`)})))
+	require.Equal(t, `431["ok"]`, string(buildSIOAck(nil, 1, [][]byte{[]byte(`ok`)})))
 	require.Equal(t, `43/admin,7[{"x":1}]`, string(buildSIOAck([]byte("/admin"), 7, [][]byte{[]byte(`{"x":1}`)})))
 	// Multi-arg ack: each arg is comma-separated JSON inside the array.
 	require.Equal(t, `431["a","b",{"k":1}]`, string(buildSIOAck(nil, 1, [][]byte{
@@ -2065,40 +2129,40 @@ func TestExtractSIOConnectAuthEdgeCases(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name    string
-		in      string // bytes AFTER the "40" prefix
-		wantNS  string // "" means nil
+		name     string
+		in       string // bytes AFTER the "40" prefix
+		wantNS   string // "" means nil
 		wantAuth string // "" means nil
 		// note documents intentional/known-quirk behaviour we are pinning,
 		// not endorsing.
 		note string
 	}{
 		{
-			name: "root_no_auth",
-			in:   "",
+			name:   "root_no_auth",
+			in:     "",
 			wantNS: "", wantAuth: "",
 		},
 		{
-			name: "root_with_object_auth",
-			in:   `{"token":"x"}`,
+			name:   "root_with_object_auth",
+			in:     `{"token":"x"}`,
 			wantNS: "", wantAuth: `{"token":"x"}`,
 		},
 		{
-			name: "namespaced_no_auth",
-			in:   "/admin,",
+			name:   "namespaced_no_auth",
+			in:     "/admin,",
 			wantNS: "/admin", wantAuth: "",
 		},
 		{
-			name: "namespaced_with_object_auth",
-			in:   `/admin,{"token":"x"}`,
+			name:   "namespaced_with_object_auth",
+			in:     `/admin,{"token":"x"}`,
 			wantNS: "/admin", wantAuth: `{"token":"x"}`,
 		},
 		{
 			// QUIRK: "/admin" without a trailing comma is interpreted as a
 			// namespace with no auth. Auth is nil. Pin this so any future
 			// reinterpretation (e.g. treating it as malformed) trips the test.
-			name: "namespace_without_trailing_comma",
-			in:   "/admin",
+			name:   "namespace_without_trailing_comma",
+			in:     "/admin",
 			wantNS: "/admin", wantAuth: "",
 			note: "no comma, no auth: ns='/admin', auth=nil",
 		},
@@ -2107,29 +2171,29 @@ func TestExtractSIOConnectAuthEdgeCases(t *testing.T) {
 			// auth blob without ANY structural validation. The handshake
 			// layer is expected to reject this when it tries to decode JSON,
 			// but the lexer happily forwards it.
-			name: "garbage_root_auth_not_json",
-			in:   "banana",
+			name:   "garbage_root_auth_not_json",
+			in:     "banana",
 			wantNS: "", wantAuth: "banana",
 			note: "non-JSON root auth currently accepted by parser",
 		},
 		{
 			// QUIRK: namespace + non-JSON auth is also forwarded verbatim.
-			name: "namespaced_garbage_auth",
-			in:   "/admin,banana",
+			name:   "namespaced_garbage_auth",
+			in:     "/admin,banana",
 			wantNS: "/admin", wantAuth: "banana",
 			note: "non-JSON namespaced auth currently accepted by parser",
 		},
 		{
 			// QUIRK: truncated JSON object is forwarded verbatim. The
 			// handshake layer must defend against this at decode time.
-			name: "truncated_object_open_brace",
-			in:   "{",
+			name:   "truncated_object_open_brace",
+			in:     "{",
 			wantNS: "", wantAuth: "{",
 			note: "truncated JSON forwarded verbatim",
 		},
 		{
-			name: "truncated_mid_field",
-			in:   `{"token":`,
+			name:   "truncated_mid_field",
+			in:     `{"token":`,
 			wantNS: "", wantAuth: `{"token":`,
 			note: "truncated mid-field JSON forwarded verbatim",
 		},
@@ -2138,8 +2202,8 @@ func TestExtractSIOConnectAuthEdgeCases(t *testing.T) {
 			// v5 the auth payload MUST be a JSON OBJECT. The current parser
 			// also accepts JSON arrays (and any other JSON value) because it
 			// performs no JSON-shape validation. Pin the current behaviour.
-			name: "json_array_as_auth_spec_violation",
-			in:   "[1,2,3]",
+			name:   "json_array_as_auth_spec_violation",
+			in:     "[1,2,3]",
 			wantNS: "", wantAuth: "[1,2,3]",
 			note: "spec says auth MUST be object; parser accepts arrays",
 		},
@@ -2519,9 +2583,9 @@ func TestSocketIOConcurrentEmitClose(t *testing.T) {
 	//     workersWg.Wait() so any in-flight Close() writer has finished
 	//     before the upgrade handler returns and the vendored websocket
 	//     package's deferred releaseConn() nils the embedded *fasthttp.Conn.
-	//   - Close()'s write branch additionally nil-checks kws.Conn.Conn
-	//     under kws.mu so a connection that lost its inner pointer is
-	//     skipped instead of panicking.
+	//   - Close() skips direct Conn writes once handlerDone marks that the
+	//     upgrade handler is returning and releaseConn may nil the embedded
+	//     *fasthttp.Conn without taking kws.mu.
 	resetSIOGlobals(t)
 
 	// Stable connect listener: stash kws handles as connections come in.
@@ -3266,7 +3330,7 @@ func TestSocketIOSendQueueOverflowDropMode(t *testing.T) {
 	})
 
 	var (
-		errFired      atomic.Int64
+		errFired       atomic.Int64
 		sawOverflowErr atomic.Bool
 	)
 	On(EventError, func(payload *EventPayload) {

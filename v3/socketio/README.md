@@ -25,7 +25,7 @@ This middleware implements the full Engine.IO v4 / Socket.IO v5 wire protocol. H
 - **EIO 0x1E batched frames.** Multi-packet WebSocket frames separated by ASCII RS (`0x1E`) are parsed correctly, with a hard cap (`MaxBatchPackets`) to prevent slice-header amplification.
 - **Reserved-event-name guard.** User code cannot register or emit names reserved by the protocol (e.g. `connect`, `disconnect`).
 - **EIO version validation.** Handshakes that advertise an unsupported `EIO` version are rejected.
-- **Auth payload validation.** The auth blob must be valid JSON and is bounded by `MaxAuthPayload`; oversize or malformed payloads are answered with CONNECT_ERROR.
+- **Auth payload validation.** The auth blob must be a JSON object and is bounded by `MaxAuthPayload`; oversize or malformed payloads are answered with CONNECT_ERROR.
 - **DoS hardening.** `MaxPayload`, `MaxBatchPackets`, `MaxEventNameLength`, and `MaxAuthPayload` bound every attacker-controlled length.
 - **Lock-free listener registry** plus `atomic.Bool isAlive`, removing the per-event mutex from the hot path.
 - **Optional drop-frames-on-overflow.** When `DropFramesOnOverflow` is true, a saturated send queue drops the offending frame and fires `EventError` instead of tearing down the connection.
@@ -113,12 +113,12 @@ All messages are exchanged as Socket.IO events.
 
 | Side            | API call                              | Wire format                        |
 |:----------------|:--------------------------------------|:-----------------------------------|
-| Server → Client | `kws.Emit([]byte(`"hello"`))` | `42["message","hello"]`            |
+| Server → Client | `kws.Emit([]byte("hello"))` | `42["message","hello"]`            |
 | Server → Client | `kws.EmitEvent("greet", data)` | `42["greet",<data>]`              |
 | Client → Server | `socket.emit("message", obj)` | fires `EventMessage` with `obj` |
 | Client → Server | `socket.emit("custom", obj)`  | fires the `"custom"` event     |
 
-> **Note:** `Emit` and `EmitEvent` expect the `data` argument to be **valid JSON** (an object, array, string literal, number, etc.).
+> **Note:** `Emit`, `EmitEvent`, `EmitArgs`, and ack-emitting variants pass valid JSON through unchanged. Raw text bytes are encoded as JSON strings for compatibility with older examples.
 
 ### Acks, namespaces, handshake auth
 
@@ -126,7 +126,7 @@ The middleware implements the full Socket.IO v5 ack flow and forwards the client
 
 #### Multi-argument emits
 
-`EmitArgs` and `EmitWithAckArgs` accept a variadic list of already-encoded JSON values, so you can send richer event tuples without manually concatenating arrays:
+`EmitArgs` and `EmitWithAckArgs` accept a variadic list of values, so you can send richer event tuples without manually concatenating arrays. Valid JSON is passed through unchanged; raw text is encoded as a JSON string.
 
 ```go
 // 42["greet","hi",{"id":1}]
@@ -167,7 +167,7 @@ The middleware honours the namespace negotiated during the Socket.IO CONNECT pac
 
 #### Handshake auth
 
-Whatever the client passes via `auth` (object, string, etc.) is parsed during the Socket.IO handshake and exposed to handlers as `EventPayload.HandshakeAuth` (raw JSON bytes). It is most commonly inspected on `EventConnect`:
+The client's `auth` payload must be a JSON object. It is parsed during the Socket.IO handshake and exposed to handlers as `EventPayload.HandshakeAuth` (raw JSON bytes). It is most commonly inspected on `EventConnect`:
 
 ```js
 // client
@@ -222,7 +222,7 @@ func Fire(event string, data []byte)
 ```
 
 ```go
-// Emit a named event with multiple already-encoded JSON arguments
+// Emit a named event with multiple arguments
 // (e.g. EmitArgs("greet", []byte(`"hi"`), []byte(`{"id":1}`)))
 func (kws *Websocket) EmitArgs(event string, args ...[]byte)
 ```
@@ -243,7 +243,7 @@ func (kws *Websocket) EmitWithAckTimeout(event string, data []byte, timeout time
 
 ```go
 // Multi-argument variant of EmitWithAck. The callback receives the slice of
-// raw-JSON ack arguments the client supplied (or an error on timeout /
+// raw ack arguments the client supplied (or an error on timeout /
 // disconnect). Uses OutboundAckTimeout.
 func (kws *Websocket) EmitWithAckArgs(event string, args [][]byte, cb func([][]byte, error))
 ```
@@ -390,7 +390,7 @@ func main() {
         newUserMsg, _ := json.Marshal(fmt.Sprintf("New user connected: %s and UUID: %s", userId, kws.UUID))
         kws.Broadcast(newUserMsg, true, socketio.TextMessage)
 
-        // Write welcome message (must be valid JSON)
+        // Write welcome message. Raw text is encoded as a JSON string.
         welcomeMsg, _ := json.Marshal(fmt.Sprintf("Hello user: %s with UUID: %s", userId, kws.UUID))
         kws.Emit(welcomeMsg, socketio.TextMessage)
     }))
@@ -473,9 +473,9 @@ Custom events map directly to the event name used in `socket.emit("myEvent", …
 | EmitTo              | `error`            | Emit to a specific socket connection                                                         |
 | Broadcast           | `void`             | Broadcast to all the active connections except broadcasting the message to itself            |
 | Fire                | `void`             | Fire custom event                                                                            |
-| Emit                | `void`             | Send data as a `"message"` socket.io event (data must be valid JSON)                         |
-| EmitEvent           | `void`             | Send a named socket.io event (data must be valid JSON)                                       |
-| EmitArgs            | `void`             | Emit a named event with multiple already-encoded JSON arguments                              |
+| Emit                | `void`             | Send data as a `"message"` socket.io event; valid JSON is passed through, raw text is JSON-encoded |
+| EmitEvent           | `void`             | Send a named socket.io event; valid JSON is passed through, raw text is JSON-encoded         |
+| EmitArgs            | `void`             | Emit a named event with multiple arguments; valid JSON is passed through, raw text is JSON-encoded |
 | EmitWithAck         | `void`             | Emit an event and invoke `cb(ack)` when the client acks (uses `OutboundAckTimeout`)          |
 | EmitWithAckTimeout  | `void`             | Like `EmitWithAck` but with a per-call timeout and a structured `AckCallback`                |
 | EmitWithAckArgs     | `void`             | Multi-arg variant; `cb([][]byte, error)` receives the ack tuple (uses `OutboundAckTimeout`)  |
@@ -488,4 +488,3 @@ Custom events map directly to the event name used in `socket.emit("myEvent", …
 ```go
 kws.Conn
 ```
-
