@@ -96,6 +96,11 @@ func (s *WebsocketMock) EmitWithAck(_ string, _ []byte, _ func([]byte)) {}
 func (s *WebsocketMock) EmitWithAckTimeout(_ string, _ []byte, _ time.Duration, _ AckCallback) {
 }
 
+// EmitArgs / EmitWithAckArgs: no-op stubs for the mock.
+func (s *WebsocketMock) EmitArgs(_ string, _ ...[]byte)                           {}
+func (s *WebsocketMock) EmitWithAckArgs(_ string, _ [][]byte, _ func([][]byte, error)) {
+}
+
 func (s *WebsocketMock) IsAlive() bool {
 	args := s.Called()
 	return args.Bool(0)
@@ -894,29 +899,32 @@ func TestSocketIOBuildSIOEvent(t *testing.T) {
 // TestSocketIOParseSIOEvent checks round-trip decoding of SIO EVENT payloads.
 func TestSocketIOParseSIOEvent(t *testing.T) {
 	t.Run("single string arg", func(t *testing.T) {
-		name, data, err := parseSIOEvent([]byte(`["message","hello"]`))
+		name, args, err := parseSIOEvent([]byte(`["message","hello"]`))
 		require.NoError(t, err)
 		require.Equal(t, "message", name)
-		require.Equal(t, `"hello"`, string(data))
+		require.Len(t, args, 1)
+		require.Equal(t, `"hello"`, string(args[0]))
 	})
 	t.Run("single object arg", func(t *testing.T) {
-		name, data, err := parseSIOEvent([]byte(`["update",{"k":"v"}]`))
+		name, args, err := parseSIOEvent([]byte(`["update",{"k":"v"}]`))
 		require.NoError(t, err)
 		require.Equal(t, "update", name)
-		require.Equal(t, `{"k":"v"}`, string(data))
+		require.Len(t, args, 1)
+		require.Equal(t, `{"k":"v"}`, string(args[0]))
 	})
 	t.Run("multiple args", func(t *testing.T) {
-		name, data, err := parseSIOEvent([]byte(`["event","a","b"]`))
+		name, args, err := parseSIOEvent([]byte(`["event","a","b"]`))
 		require.NoError(t, err)
 		require.Equal(t, "event", name)
-		// Multiple args are returned as a JSON array
-		require.True(t, strings.HasPrefix(string(data), "["))
+		require.Len(t, args, 2)
+		require.Equal(t, `"a"`, string(args[0]))
+		require.Equal(t, `"b"`, string(args[1]))
 	})
 	t.Run("no data arg", func(t *testing.T) {
-		name, data, err := parseSIOEvent([]byte(`["ping"]`))
+		name, args, err := parseSIOEvent([]byte(`["ping"]`))
 		require.NoError(t, err)
 		require.Equal(t, "ping", name)
-		require.Nil(t, data)
+		require.Nil(t, args)
 	})
 	t.Run("invalid JSON", func(t *testing.T) {
 		_, _, err := parseSIOEvent([]byte(`not json`))
@@ -1129,8 +1137,12 @@ func TestSocketIOSplitAckID(t *testing.T) {
 // TestSocketIOBuildSIOAck checks the wire format of ack frames.
 func TestSocketIOBuildSIOAck(t *testing.T) {
 	require.Equal(t, `431[]`, string(buildSIOAck(nil, 1, nil)))
-	require.Equal(t, `431["ok"]`, string(buildSIOAck(nil, 1, []byte(`"ok"`))))
-	require.Equal(t, `43/admin,7[{"x":1}]`, string(buildSIOAck([]byte("/admin"), 7, []byte(`{"x":1}`))))
+	require.Equal(t, `431["ok"]`, string(buildSIOAck(nil, 1, [][]byte{[]byte(`"ok"`)})))
+	require.Equal(t, `43/admin,7[{"x":1}]`, string(buildSIOAck([]byte("/admin"), 7, [][]byte{[]byte(`{"x":1}`)})))
+	// Multi-arg ack: each arg is comma-separated JSON inside the array.
+	require.Equal(t, `431["a","b",{"k":1}]`, string(buildSIOAck(nil, 1, [][]byte{
+		[]byte(`"a"`), []byte(`"b"`), []byte(`{"k":1}`),
+	})))
 }
 
 // TestSocketIOPingTimeoutIsAdvertised checks that the EIO OPEN packet exposes
@@ -1398,6 +1410,103 @@ func TestSocketIOEventPayloadAck_DoubleSend(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("listener never called Ack twice")
 	}
+}
+
+// TestSocketIOMultiArgEvent verifies that an inbound event with multiple
+// args is exposed as Args [][]byte and that Data still carries Args[0].
+func TestSocketIOMultiArgEvent(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	got := make(chan *EventPayload, 1)
+	On("multi", func(ep *EventPayload) {
+		got <- ep
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+
+	// Client emits multi(["a","b",{"k":1}]).
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage,
+		[]byte(`42["multi","a","b",{"k":1}]`)))
+
+	select {
+	case ep := <-got:
+		require.Len(t, ep.Args, 3)
+		require.Equal(t, `"a"`, string(ep.Args[0]))
+		require.Equal(t, `"b"`, string(ep.Args[1]))
+		require.Equal(t, `{"k":1}`, string(ep.Args[2]))
+		// Backwards compat: Data == Args[0].
+		require.Equal(t, `"a"`, string(ep.Data))
+	case <-time.After(2 * time.Second):
+		t.Fatal("multi-arg event not delivered")
+	}
+}
+
+// TestSocketIOEmitArgs verifies the multi-arg outbound API produces
+// the canonical wire frame.
+func TestSocketIOEmitArgs(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	ready := make(chan *Websocket, 1)
+	On(EventConnect, func(p *EventPayload) {
+		select {
+		case ready <- p.Kws:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+
+	var kws *Websocket
+	select {
+	case kws = <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no EventConnect")
+	}
+
+	kws.EmitArgs("update", []byte(`1`), []byte(`"two"`), []byte(`{"x":3}`))
+
+	tp, msg, err := sioReadSkipPings(conn)
+	require.NoError(t, err)
+	require.Equal(t, websocket.TextMessage, tp)
+	require.Equal(t, `42["update",1,"two",{"x":3}]`, string(msg))
+}
+
+// TestSocketIOAckMultiArg verifies that EventPayload.Ack accepts
+// multiple args and produces a canonical 43[...] frame.
+func TestSocketIOAckMultiArg(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	On(EventMessage, func(ep *EventPayload) {
+		_ = ep.Ack([]byte(`"ok"`), []byte(`42`), []byte(`{"k":"v"}`))
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage,
+		[]byte(`421["message",{"q":1}]`)))
+
+	tp, msg, err := sioReadSkipPings(conn)
+	require.NoError(t, err)
+	require.Equal(t, websocket.TextMessage, tp)
+	require.Equal(t, `431["ok",42,{"k":"v"}]`, string(msg))
 }
 
 // TestSocketIOInvalidNamespaceRejected verifies that a CONNECT with a

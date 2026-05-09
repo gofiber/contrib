@@ -148,6 +148,12 @@ type pendingAck struct {
 	timer *time.Timer
 }
 
+// eioPingFrame is the cached single-byte EIO PING packet that the
+// heartbeat goroutine puts on the wire. Sharing one slice across every
+// emit avoids a per-tick allocation; the underlying bytes are never
+// mutated by Conn.WriteMessage.
+var eioPingFrame = []byte{eioPing}
+
 // Raw form of websocket message
 type message struct {
 	// Message type
@@ -174,8 +180,13 @@ type EventPayload struct {
 	// - Disconnect
 	// - Error
 	Error error
-	// Data is used on Message and on Error event
+	// Data is the first event argument (if any). Kept for backwards
+	// compatibility; equivalent to Args[0] when len(Args) > 0, else nil.
 	Data []byte
+	// Args are the raw-JSON arguments the client sent with the event.
+	// Each entry is one JSON value; nil for events without args. Use this
+	// to consume socket.emit("event", a, b, c) from the JS client side.
+	Args [][]byte
 	// AckID is the Socket.IO ack id attached to this event by the client.
 	// It is meaningful only when HasAck is true. Use Ack() to respond.
 	AckID uint64
@@ -204,7 +215,7 @@ type EventPayload struct {
 //
 // Returns an error if the event has no ack id, the connection is closed,
 // or the ack has already been sent for this payload.
-func (ep *EventPayload) Ack(data []byte) error {
+func (ep *EventPayload) Ack(args ...[]byte) error {
 	if !ep.HasAck {
 		return ErrAckNotRequested
 	}
@@ -220,7 +231,7 @@ func (ep *EventPayload) Ack(data []byte) error {
 	if !ep.ackSent.CompareAndSwap(false, true) {
 		return ErrAckAlreadySent
 	}
-	ep.Kws.write(TextMessage, buildSIOAck(ep.Kws.getNamespace(), ep.AckID, data))
+	ep.Kws.write(TextMessage, buildSIOAck(ep.Kws.getNamespace(), ep.AckID, args))
 	return nil
 }
 
@@ -234,20 +245,34 @@ type eioOpenPacket struct {
 }
 
 // buildSIOEvent encodes a Socket.IO EVENT packet ready to send over the wire.
-// Format: 4 2 [/<namespace>,] [<ackID>] [ "<event>" , <data> ]
+// Format: 4 2 [/<namespace>,] [ "<event>" , <data> ]
 //
-// The data argument must be valid JSON (object, array, string, number, etc.).
-// namespace may be nil for the root namespace. When hasAck is true the
-// ackID is encoded between the namespace separator and the JSON array,
-// signalling that the server expects the client to respond with a "43".
+// data must be valid JSON (object, array, string, number, etc.) or nil.
+// namespace may be nil for the root namespace.
 func buildSIOEvent(namespace []byte, event string, data []byte) []byte {
-	return buildSIOEventWithAck(namespace, 0, false, event, data)
+	if len(data) == 0 {
+		return buildSIOEventWithAck(namespace, 0, false, event, nil)
+	}
+	return buildSIOEventWithAck(namespace, 0, false, event, [][]byte{data})
 }
 
-// buildSIOEventWithAck is the ack-id aware variant of buildSIOEvent.
-func buildSIOEventWithAck(namespace []byte, ackID uint64, hasAck bool, event string, data []byte) []byte {
+// buildSIOEventWithAck is the ack-id aware multi-arg variant of buildSIOEvent.
+//
+// args is the slice of raw-JSON arguments to encode after the event name
+// (matches the JS-side socket.emit("event", a, b, c) shape). Each entry
+// must be valid JSON; nil/empty entries are skipped.
+//
+// The output buffer is pre-sized so a typical event allocates exactly
+// once instead of growing through 8/16/32/... append boundaries.
+func buildSIOEventWithAck(namespace []byte, ackID uint64, hasAck bool, event string, args [][]byte) []byte {
 	name, _ := json.Marshal(event)
-	var buf []byte
+	size := 2 + len(namespace) + 1 + 20 + 2 + len(name)
+	for _, a := range args {
+		if len(a) > 0 {
+			size += 1 + len(a)
+		}
+	}
+	buf := make([]byte, 0, size)
 	buf = append(buf, eioMessage, sioEvent)
 	if len(namespace) > 0 {
 		buf = append(buf, namespace...)
@@ -258,9 +283,12 @@ func buildSIOEventWithAck(namespace []byte, ackID uint64, hasAck bool, event str
 	}
 	buf = append(buf, '[')
 	buf = append(buf, name...)
-	if len(data) > 0 {
+	for _, a := range args {
+		if len(a) == 0 {
+			continue
+		}
 		buf = append(buf, ',')
-		buf = append(buf, data...)
+		buf = append(buf, a...)
 	}
 	buf = append(buf, ']')
 	return buf
@@ -268,10 +296,17 @@ func buildSIOEventWithAck(namespace []byte, ackID uint64, hasAck bool, event str
 
 // buildSIOAck encodes a Socket.IO ACK ("43") packet.
 //
-// Format: 4 3 [/<namespace>,] <ackID> [ <data> ]
-// data may be nil to send an empty ack (`43<id>[]`).
-func buildSIOAck(namespace []byte, ackID uint64, data []byte) []byte {
-	var buf []byte
+// Format: 4 3 [/<namespace>,] <ackID> [ <args> ]
+// args may be nil/empty to send `43<id>[]`. Each non-empty arg is one
+// raw-JSON value, comma-separated.
+func buildSIOAck(namespace []byte, ackID uint64, args [][]byte) []byte {
+	size := 2 + len(namespace) + 1 + 20 + 2
+	for _, a := range args {
+		if len(a) > 0 {
+			size += 1 + len(a)
+		}
+	}
+	buf := make([]byte, 0, size)
 	buf = append(buf, eioMessage, sioAck)
 	if len(namespace) > 0 {
 		buf = append(buf, namespace...)
@@ -279,8 +314,16 @@ func buildSIOAck(namespace []byte, ackID uint64, data []byte) []byte {
 	}
 	buf = strconv.AppendUint(buf, ackID, 10)
 	buf = append(buf, '[')
-	if len(data) > 0 {
-		buf = append(buf, data...)
+	first := true
+	for _, a := range args {
+		if len(a) == 0 {
+			continue
+		}
+		if !first {
+			buf = append(buf, ',')
+		}
+		buf = append(buf, a...)
+		first = false
 	}
 	buf = append(buf, ']')
 	return buf
@@ -307,9 +350,11 @@ func splitSIOAckID(data []byte) (id uint64, has bool, rest []byte, err error) {
 // parseSIOEvent parses the JSON-array payload of a Socket.IO EVENT packet.
 //
 // payload is the bytes after the "42" prefix, e.g. `["message",{"key":"val"}]`.
-// It returns the event name and the raw JSON of the first data argument.
-// When the client sends multiple arguments they are returned as a JSON array.
-func parseSIOEvent(payload []byte) (string, []byte, error) {
+// It returns the event name and a slice of raw-JSON arguments (one entry
+// per element after the event name). args is nil for events without
+// arguments. The trailing args are NOT re-marshaled; they are sub-slices
+// of the original payload (zero-copy except for the slice header).
+func parseSIOEvent(payload []byte) (string, [][]byte, error) {
 	var arr []json.RawMessage
 	if err := json.Unmarshal(payload, &arr); err != nil {
 		return "", nil, fmt.Errorf("socketio: failed to parse event payload: %w", err)
@@ -324,15 +369,11 @@ func parseSIOEvent(payload []byte) (string, []byte, error) {
 	if len(arr) == 1 {
 		return eventName, nil, nil
 	}
-	if len(arr) == 2 {
-		return eventName, []byte(arr[1]), nil
+	args := make([][]byte, 0, len(arr)-1)
+	for _, raw := range arr[1:] {
+		args = append(args, []byte(raw))
 	}
-	// Multiple args: return remaining args as a JSON array
-	rest, err := json.Marshal(arr[1:])
-	if err != nil {
-		return "", nil, fmt.Errorf("socketio: failed to serialize event args: %w", err)
-	}
-	return eventName, rest, nil
+	return eventName, args, nil
 }
 
 type ws interface {
@@ -349,8 +390,10 @@ type ws interface {
 	Fire(event string, data []byte)
 	Emit(message []byte, mType ...int)
 	EmitEvent(event string, data []byte)
+	EmitArgs(event string, args ...[]byte)
 	EmitWithAck(event string, data []byte, cb func(ack []byte))
 	EmitWithAckTimeout(event string, data []byte, timeout time.Duration, cb AckCallback)
+	EmitWithAckArgs(event string, args [][]byte, cb func([][]byte, error))
 	Close()
 	pong(ctx context.Context)
 	write(messageType int, messageBytes []byte)
@@ -912,7 +955,18 @@ func (kws *Websocket) Emit(message []byte, mType ...int) {
 // EmitEvent sends a named socket.io event to the client.
 // The data parameter should be valid JSON.
 func (kws *Websocket) EmitEvent(event string, data []byte) {
-	kws.write(TextMessage, buildSIOEvent(kws.getNamespace(), event, data))
+	var args [][]byte
+	if len(data) > 0 {
+		args = [][]byte{data}
+	}
+	kws.write(TextMessage, buildSIOEventWithAck(kws.getNamespace(), 0, false, event, args))
+}
+
+// EmitArgs sends a named socket.io event with multiple raw-JSON arguments,
+// matching the JS-side call socket.emit("event", a, b, c). Each arg must
+// be valid JSON. Empty entries are skipped.
+func (kws *Websocket) EmitArgs(event string, args ...[]byte) {
+	kws.write(TextMessage, buildSIOEventWithAck(kws.getNamespace(), 0, false, event, args))
 }
 
 // EmitWithAck sends a named socket.io event and registers a callback that
@@ -967,7 +1021,68 @@ func (kws *Websocket) EmitWithAckTimeout(event string, data []byte, timeout time
 		p.timer = time.AfterFunc(timeout, func() { kws.fireAckTimeout(id) })
 	}
 
-	kws.write(TextMessage, buildSIOEventWithAck(kws.getNamespace(), id, true, event, data))
+	var args [][]byte
+	if len(data) > 0 {
+		args = [][]byte{data}
+	}
+	kws.write(TextMessage, buildSIOEventWithAck(kws.getNamespace(), id, true, event, args))
+}
+
+// EmitWithAckArgs is the multi-arg + structured-error variant of
+// EmitWithAck. It sends a named event carrying multiple raw-JSON arguments
+// and registers a callback invoked exactly once when the client acks, on
+// timeout (OutboundAckTimeout), or on connection close.
+//
+// On success cb is called with (args, nil) where args is the slice of
+// raw-JSON ack arguments the client sent. On timeout cb is called with
+// (nil, ErrAckTimeout); on disconnect (nil, ErrAckDisconnected).
+func (kws *Websocket) EmitWithAckArgs(event string, args [][]byte, cb func([][]byte, error)) {
+	if cb == nil {
+		kws.write(TextMessage, buildSIOEventWithAck(kws.getNamespace(), 0, false, event, args))
+		return
+	}
+	if !kws.IsAlive() {
+		cb(nil, ErrAckDisconnected)
+		return
+	}
+
+	kws.outboundAcksMu.Lock()
+	kws.outboundAckSeq++
+	id := kws.outboundAckSeq
+	// Adapt the user's [][]byte callback to the internal AckCallback shape.
+	// deliverOutboundAck encodes single-arg as the raw JSON value, multi-arg
+	// as a JSON array literal; this adapter restores the structured slice.
+	adapter := func(ack []byte, err error) {
+		if err != nil {
+			cb(nil, err)
+			return
+		}
+		if len(ack) == 0 {
+			cb(nil, nil)
+			return
+		}
+		if ack[0] == '[' {
+			var arr []json.RawMessage
+			if json.Unmarshal(ack, &arr) == nil {
+				out := make([][]byte, 0, len(arr))
+				for _, r := range arr {
+					out = append(out, []byte(r))
+				}
+				cb(out, nil)
+				return
+			}
+		}
+		cb([][]byte{ack}, nil)
+	}
+	p := &pendingAck{cb: adapter}
+	kws.outboundAcks[id] = p
+	kws.outboundAcksMu.Unlock()
+
+	if OutboundAckTimeout > 0 {
+		p.timer = time.AfterFunc(OutboundAckTimeout, func() { kws.fireAckTimeout(id) })
+	}
+
+	kws.write(TextMessage, buildSIOEventWithAck(kws.getNamespace(), id, true, event, args))
 }
 
 // deliverOutboundAck dispatches an incoming ACK to the registered callback,
@@ -1142,7 +1257,7 @@ func (kws *Websocket) pong(ctx context.Context) {
 				kws.disconnected(errors.New("socketio: heartbeat timeout"))
 				return
 			}
-			kws.write(TextMessage, []byte{eioPing})
+			kws.write(TextMessage, eioPingFrame)
 		case <-ctx.Done():
 			return
 		}
@@ -1367,12 +1482,12 @@ func (kws *Websocket) handleSIOPacket(payload []byte) {
 			kws.fireEvent(EventError, payload, err)
 			return
 		}
-		eventName, eventData, err := parseSIOEvent(rest)
+		eventName, eventArgs, err := parseSIOEvent(rest)
 		if err != nil {
 			kws.fireEvent(EventError, payload, err)
 			return
 		}
-		kws.fireEventWithAck(eventName, eventData, nil, ackID, hasAck)
+		kws.fireEventWithAck(eventName, eventArgs, nil, ackID, hasAck)
 
 	case sioDisconnect:
 		kws.disconnected(nil)
@@ -1499,16 +1614,22 @@ func fireGlobalEvent(event string, data []byte, error error) {
 // Checks if there is at least a listener for a given event
 // and loop over the callbacks registered
 func (kws *Websocket) fireEvent(event string, data []byte, error error) {
-	kws.fireEventWithAck(event, data, error, 0, false)
+	var args [][]byte
+	if data != nil {
+		args = [][]byte{data}
+	}
+	kws.fireEventWithAck(event, args, error, 0, false)
 }
 
-// fireEventWithAck is the ack-id aware variant. ackID/hasAck are forwarded
-// to listeners via EventPayload so handlers can call payload.Ack(...).
+// fireEventWithAck is the ack-id aware multi-arg variant. ackID/hasAck are
+// forwarded to listeners via EventPayload so handlers can call
+// payload.Ack(...).
 //
-// SocketAttributes is a defensive copy so listeners cannot race with
-// concurrent SetAttribute mutations (which would otherwise panic the
-// runtime on concurrent map read+write).
-func (kws *Websocket) fireEventWithAck(event string, data []byte, fireErr error, ackID uint64, hasAck bool) {
+// args holds the raw-JSON event arguments. Data is populated from args[0]
+// for backwards compatibility with handlers that consume the single-arg
+// shape. SocketAttributes is a defensive copy so listeners cannot race
+// with concurrent SetAttribute mutations.
+func (kws *Websocket) fireEventWithAck(event string, args [][]byte, fireErr error, ackID uint64, hasAck bool) {
 	callbacks := listeners.get(event)
 	if len(callbacks) == 0 {
 		return
@@ -1535,13 +1656,19 @@ func (kws *Websocket) fireEventWithAck(event string, data []byte, fireErr error,
 		ackGuard = new(atomic.Bool)
 	}
 
+	var firstArg []byte
+	if len(args) > 0 {
+		firstArg = args[0]
+	}
+
 	for _, callback := range callbacks {
 		callback(&EventPayload{
 			Kws:              kws,
 			Name:             event,
 			SocketUUID:       uuid,
 			SocketAttributes: attrs,
-			Data:             data,
+			Data:             firstArg,
+			Args:             args,
 			Error:            fireErr,
 			AckID:            ackID,
 			HasAck:           hasAck,
