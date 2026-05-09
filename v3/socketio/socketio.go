@@ -163,6 +163,15 @@ var (
 	// registered via EmitWithAck. Override with EmitWithAckTimeout for
 	// per-call timeouts.
 	OutboundAckTimeout = 30 * time.Second
+	// MaxBatchPackets caps the number of EIO packets accepted in a single
+	// 0x1E-batched WebSocket frame. Without this cap, a frame consisting
+	// almost entirely of record separators forces a multi-megabyte slice
+	// header allocation. 256 is comfortably above any legitimate batch.
+	MaxBatchPackets = 256
+	// MaxEventNameLength bounds inbound SIO event name strings so a hostile
+	// client cannot pin a multi-megabyte string per frame as part of the
+	// EventPayload it dispatches to user listeners.
+	MaxEventNameLength = 256
 )
 
 // AckCallback receives the result of a server-initiated EmitWithAck.
@@ -414,6 +423,9 @@ func parseSIOEvent(payload []byte) (string, [][]byte, error) {
 	var eventName string
 	if err := json.Unmarshal(arr[0], &eventName); err != nil {
 		return "", nil, fmt.Errorf("socketio: failed to parse event name: %w", err)
+	}
+	if MaxEventNameLength > 0 && len(eventName) > MaxEventNameLength {
+		return "", nil, fmt.Errorf("socketio: event name exceeds MaxEventNameLength (%d)", MaxEventNameLength)
 	}
 	if len(arr) == 1 {
 		return eventName, nil, nil
@@ -1282,11 +1294,13 @@ func (kws *Websocket) Close() {
 		return
 	}
 
-	// Build the SIO DISCONNECT frame. For non-root namespaces it must be
-	// "41/<ns>" with no trailing comma (no auth payload).
+	// Build the SIO DISCONNECT frame. Per socket.io-protocol v5, namespaced
+	// packets are "41/<ns>," with a trailing comma separating the namespace
+	// from the (empty) payload.
 	disconnect := []byte{eioMessage, sioDisconnect}
 	if ns := kws.getNamespace(); len(ns) > 0 {
 		disconnect = append(disconnect, ns...)
+		disconnect = append(disconnect, ',')
 	}
 
 	kws.mu.Lock()
@@ -1525,9 +1539,12 @@ func (kws *Websocket) read(ctx context.Context) {
 
 		mType, msg, err := kws.Conn.ReadMessage()
 
-		// Any successfully-received frame from the peer counts as proof
-		// of life for the heartbeat enforcer.
-		if err == nil {
+		// Any successful application-layer frame counts as proof of life
+		// for the heartbeat enforcer. RFC 6455 control frames (Ping/Pong)
+		// are answered by the underlying websocket library at the OS/TCP
+		// boundary even when the EIO peer is stuck, so excluding them
+		// prevents a wedged client from masking its own death.
+		if err == nil && mType != PingMessage && mType != PongMessage {
 			kws.lastPongNanos.Store(time.Now().UnixNano())
 		}
 
@@ -1572,16 +1589,32 @@ func (kws *Websocket) read(ctx context.Context) {
 
 		// EIO v4 supports batching multiple packets in one WebSocket
 		// frame, separated by ASCII RS (0x1E). Single-packet frames
-		// (no separator) take the zero-alloc fast path; only the rare
-		// batched form pays bytes.Split's slice header allocation.
+		// (no separator) take the zero-alloc fast path; the rare batched
+		// form is parsed with a hand-rolled scanner that walks msg with
+		// bytes.IndexByte so we never materialise a [][]byte for a
+		// frame that an attacker could fill with separators (which
+		// bytes.Split would amplify into millions of slice headers).
 		if bytes.IndexByte(msg, 0x1E) < 0 {
 			kws.dispatchEIOPacket(msg)
 		} else {
-			for _, packet := range bytes.Split(msg, []byte{0x1E}) {
+			rest, count := msg, 0
+			for len(rest) > 0 {
+				if count > MaxBatchPackets {
+					kws.fireEvent(EventError, nil, errors.New("socketio: batched frame exceeds MaxBatchPackets"))
+					break
+				}
+				idx := bytes.IndexByte(rest, 0x1E)
+				var packet []byte
+				if idx < 0 {
+					packet, rest = rest, nil
+				} else {
+					packet, rest = rest[:idx], rest[idx+1:]
+				}
 				if len(packet) == 0 {
 					continue
 				}
 				kws.dispatchEIOPacket(packet)
+				count++
 			}
 		}
 	}
@@ -1650,6 +1683,14 @@ func (kws *Websocket) handleSIOPacket(payload []byte) {
 			kws.fireEvent(EventError, payload, err)
 			return
 		}
+		// Reserved lifecycle event names ("connect", "disconnect",
+		// "connect_error") are fired by the framework only. A client
+		// emitting "42[\"connect\",...]" would otherwise double-fire
+		// EventConnect listeners and bypass our internal lifecycle.
+		if isReservedEventName(eventName) {
+			kws.fireEvent(EventError, payload, fmt.Errorf("socketio: client may not emit reserved event %q", eventName))
+			return
+		}
 		kws.fireEventWithAck(eventName, eventArgs, nil, ackID, hasAck)
 
 	case sioDisconnect:
@@ -1658,12 +1699,18 @@ func (kws *Websocket) handleSIOPacket(payload []byte) {
 	case sioConnect:
 		// Late namespace CONNECT (after the initial handshake): confirm via
 		// the send queue, mirroring the namespace, so we do not race the read
-		// loop.
+		// loop. The namespace is validated against the same grammar as the
+		// initial handshake so a malicious client cannot smuggle CRLF or
+		// commas back into the ACK frame.
+		ns := extractSIONamespace(payload[1:])
+		if !isValidNamespace(ns) {
+			_ = kws.writeConnectError(ns, `{"message":"Invalid namespace"}`)
+			return
+		}
 		ackPayload, err := json.Marshal(struct {
 			SID string `json:"sid"`
-		}{SID: kws.UUID})
+		}{SID: kws.GetUUID()})
 		if err == nil {
-			ns := extractSIONamespace(payload[1:])
 			kws.write(TextMessage, buildSIOConnectAck(ns, ackPayload))
 		}
 

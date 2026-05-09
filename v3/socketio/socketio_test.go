@@ -1774,3 +1774,139 @@ func TestSocketIOInvalidNamespaceRejected(t *testing.T) {
 		}
 	}
 }
+
+// TestSocketIOServerDisconnectNamespacedComma verifies that Close() on a
+// connection bound to a namespace emits "41/<ns>," with the trailing comma
+// required by socket.io-protocol v5. Without the comma, strict parsers
+// (including socket.io-client when DEBUG is enabled) reject the frame.
+func TestSocketIOServerDisconnectNamespacedComma(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	kwsCh := make(chan *Websocket, 1)
+	On(EventConnect, func(p *EventPayload) {
+		select {
+		case kwsCh <- p.Kws:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	// EIO OPEN
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatalf("read open: %v", err)
+	}
+	// CONNECT to /admin
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte("40/admin,")))
+	// CONNECT ACK
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatalf("read connect ack: %v", err)
+	}
+
+	var kws *Websocket
+	select {
+	case kws = <-kwsCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventConnect did not fire")
+	}
+
+	// Server-initiated close must emit "41/admin," with trailing comma.
+	go kws.Close()
+	for {
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		mType, msg, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("expected SIO DISCONNECT before close, got err=%v", err)
+		}
+		if mType == websocket.TextMessage && len(msg) >= 2 && msg[0] == eioMessage && msg[1] == sioDisconnect {
+			require.Equal(t, "41/admin,", string(msg))
+			return
+		}
+	}
+}
+
+// TestSocketIOClientReservedEventRejected verifies that a client-emitted
+// reserved lifecycle event (e.g. "connect") is dropped with EventError
+// instead of being dispatched to user listeners (which would otherwise
+// double-fire EventConnect handlers).
+func TestSocketIOClientReservedEventRejected(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	connectFires := atomic.Int32{}
+	On(EventConnect, func(_ *EventPayload) { connectFires.Add(1) })
+	errCh := make(chan error, 1)
+	On(EventError, func(p *EventPayload) {
+		select {
+		case errCh <- p.Error:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	require.NoError(t, sioHandshake(t, conn))
+
+	// Hostile client emits a reserved event name.
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`42["connect","x"]`)))
+
+	select {
+	case err := <-errCh:
+		require.ErrorContains(t, err, "reserved event")
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected EventError for reserved client emit")
+	}
+	// EventConnect must have fired exactly once (from the framework, not
+	// twice from the malicious client emit).
+	require.Equal(t, int32(1), connectFires.Load())
+}
+
+// TestSocketIOBatchedFrameOverflow verifies that a malicious frame composed
+// of more than MaxBatchPackets record separators surfaces an EventError
+// instead of allocating a multi-megabyte slice header.
+func TestSocketIOBatchedFrameOverflow(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	errCh := make(chan error, 1)
+	On(EventError, func(p *EventPayload) {
+		select {
+		case errCh <- p.Error:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	require.NoError(t, sioHandshake(t, conn))
+
+	// Build a batched frame of (MaxBatchPackets+5) tiny packets.
+	frame := make([]byte, 0, MaxBatchPackets*4)
+	for i := 0; i < MaxBatchPackets+5; i++ {
+		if i > 0 {
+			frame = append(frame, 0x1E)
+		}
+		frame = append(frame, '2') // EIO PING (cheap, ignored by handler)
+	}
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, frame))
+
+	select {
+	case err := <-errCh:
+		require.ErrorContains(t, err, "MaxBatchPackets")
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected EventError for over-batched frame")
+	}
+}
