@@ -2799,7 +2799,7 @@ func TestSocketIOAckRaceTimeoutVsDelivery(t *testing.T) {
 		kws.outboundAcksMu.Lock()
 		kws.outboundAckSeq++
 		id := kws.outboundAckSeq
-		p := &pendingAck{cb: func(_ []byte, err error) {
+		p := &pendingAck{cb: func(_ [][]byte, err error) {
 			fires.Add(1)
 			if err == ErrAckTimeout {
 				sawTimeout.Store(true)
@@ -2810,6 +2810,9 @@ func TestSocketIOAckRaceTimeoutVsDelivery(t *testing.T) {
 		}}
 		// Microsecond-class timer to maximise the race window.
 		p.timer = time.AfterFunc(50*time.Microsecond, func() { kws.fireAckTimeout(id) })
+		if kws.outboundAcks == nil {
+			kws.outboundAcks = make(map[uint64]*pendingAck)
+		}
 		kws.outboundAcks[id] = p
 		kws.outboundAcksMu.Unlock()
 
@@ -2819,7 +2822,7 @@ func TestSocketIOAckRaceTimeoutVsDelivery(t *testing.T) {
 			runtime.Gosched()
 		}
 
-		go kws.deliverOutboundAck(id, []byte(`"x"`))
+		go kws.deliverOutboundAck(id, [][]byte{[]byte(`"x"`)})
 
 		// Wait for at least one fire.
 		select {
@@ -2885,7 +2888,7 @@ func TestSocketIOAckRaceDisconnectVsDelivery(t *testing.T) {
 		kws.outboundAcksMu.Lock()
 		kws.outboundAckSeq++
 		id := kws.outboundAckSeq
-		p := &pendingAck{cb: func(_ []byte, _ error) {
+		p := &pendingAck{cb: func(_ [][]byte, _ error) {
 			fires.Add(1)
 			done <- struct{}{}
 		}}
@@ -2899,7 +2902,7 @@ func TestSocketIOAckRaceDisconnectVsDelivery(t *testing.T) {
 		for k := 0; k < spin; k++ {
 			runtime.Gosched()
 		}
-		go kws.deliverOutboundAck(id, []byte(`"x"`))
+		go kws.deliverOutboundAck(id, [][]byte{[]byte(`"x"`)})
 		go kws.disconnected(nil)
 
 		select {
@@ -3169,10 +3172,10 @@ func TestSocketIOEmitWithAck10000Concurrent(t *testing.T) {
 	// inserted directly into the registry. Both the timer-fire path and
 	// the disconnect drain path race through outboundAcksMu, so registering
 	// timers exercises the same map-delete-wins guard used in production.
-	cbFor := func(idx int) AckCallback {
+	cbFor := func(idx int) func(args [][]byte, err error) {
 		fired := &atomic.Bool{}
 		flags[idx] = fired
-		return func(_ []byte, err error) {
+		return func(_ [][]byte, err error) {
 			defer func() {
 				if r := recover(); r != nil {
 					panicCount.Add(1)

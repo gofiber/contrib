@@ -287,9 +287,12 @@ func logf(level, msg string, fields ...any) {
 
 // AckCallback receives the result of a server-initiated EmitWithAck.
 //
-// On a successful ack, ack holds the raw JSON of the client's first ack
-// argument (or a JSON-array of all args when the client called the ack
-// with multiple values) and err is nil.
+// On a successful ack, ack holds the raw JSON of the client's FIRST ack
+// argument (or nil when the client acked with no arguments) and err is nil.
+// Multi-argument acks are not surfaced through this single-arg shape; use
+// EmitWithAckArgs when the client may ack with more than one argument or
+// when "single arg that is itself a JSON array" must be distinguished from
+// "multiple args".
 //
 // On timeout err is ErrAckTimeout. On connection close err is
 // ErrAckDisconnected. In both error cases ack is nil.
@@ -308,7 +311,13 @@ type AckCallback func(ack []byte, err error)
 // invokes cb exactly once, the others bail out. This decouples the
 // at-most-once invariant from the timer-field publication ordering.
 type pendingAck struct {
-	cb    AckCallback
+	// cb receives the structured ack arguments as they arrived on the wire:
+	// "43<id>[a,b,c]" produces args = [a,b,c] (one entry per JSON value in
+	// the array). The single-arg AckCallback shape is preserved for the
+	// public API by adapting "args[0] or nil" inside EmitWithAckTimeout.
+	// Carrying [][]byte internally keeps multi-arg and "single arg that is
+	// itself an array" paths distinguishable for EmitWithAckArgs.
+	cb    func(args [][]byte, err error)
 	timer *time.Timer
 	fired atomic.Bool
 }
@@ -1412,7 +1421,7 @@ func (kws *Websocket) EmitWithAckTimeout(event string, data []byte, timeout time
 	}
 	kws.outboundAckSeq++
 	id := kws.outboundAckSeq
-	p := &pendingAck{cb: cb}
+	p := &pendingAck{cb: adaptSingleArgAck(cb)}
 	// Arm the timeout while still holding the lock so p.timer is published
 	// to every reader (deliverOutboundAck, fireAckTimeout, disconnected
 	// drain) under the same mutex that guards the map. Without this the
@@ -1469,32 +1478,11 @@ func (kws *Websocket) EmitWithAckArgs(event string, args [][]byte, cb func([][]b
 	}
 	kws.outboundAckSeq++
 	id := kws.outboundAckSeq
-	// Adapt the user's [][]byte callback to the internal AckCallback shape.
-	// deliverOutboundAck encodes single-arg as the raw JSON value, multi-arg
-	// as a JSON array literal; this adapter restores the structured slice.
-	adapter := func(ack []byte, err error) {
-		if err != nil {
-			cb(nil, err)
-			return
-		}
-		if len(ack) == 0 {
-			cb(nil, nil)
-			return
-		}
-		if ack[0] == '[' {
-			var arr []json.RawMessage
-			if json.Unmarshal(ack, &arr) == nil {
-				out := make([][]byte, 0, len(arr))
-				for _, r := range arr {
-					out = append(out, []byte(r))
-				}
-				cb(out, nil)
-				return
-			}
-		}
-		cb([][]byte{ack}, nil)
-	}
-	p := &pendingAck{cb: adapter}
+	// The internal pendingAck callback already takes [][]byte, matching the
+	// user signature exactly, so no lossy adapter is needed here. Wire-level
+	// "43<id>[a,b]" arrives as args=[a,b]; "43<id>[[a,b]]" arrives as
+	// args=[[a,b]]. The two cases are now distinguishable for callers.
+	p := &pendingAck{cb: cb}
 	// Arm the timeout under the same lock that guards the map (see the
 	// matching note in EmitWithAckTimeout) so p.timer is safely published
 	// to deliverOutboundAck / fireAckTimeout / the disconnected drain.
@@ -1511,14 +1499,18 @@ func (kws *Websocket) EmitWithAckArgs(event string, args [][]byte, cb func([][]b
 }
 
 // deliverOutboundAck dispatches an incoming ACK to the registered callback,
-// if any, and removes it from the pending map. Two guards collaborate to
-// enforce at-most-once delivery: (1) the map-delete-wins pattern under
-// outboundAcksMu serialises which path removes the entry, (2) the
-// pendingAck.fired atomic.Bool fences the callback invocation itself, so
-// a timer that already captured p before disconnected() drained the map
-// cannot race with the disconnect-path callback. fired is the
+// if any, and removes it from the pending map. args is the structured slice
+// of raw-JSON arguments parsed from "43<id>[a,b,...]"; passing it through as
+// [][]byte preserves the boundary between multi-arg acks and single-arg acks
+// whose only argument is itself a JSON array.
+//
+// Two guards collaborate to enforce at-most-once delivery: (1) the
+// map-delete-wins pattern under outboundAcksMu serialises which path removes
+// the entry, (2) the pendingAck.fired atomic.Bool fences the callback
+// invocation itself, so a timer that already captured p before disconnected()
+// drained the map cannot race with the disconnect-path callback. fired is the
 // authoritative single-fire guard; the mutex protects the map.
-func (kws *Websocket) deliverOutboundAck(id uint64, data []byte) {
+func (kws *Websocket) deliverOutboundAck(id uint64, args [][]byte) {
 	kws.outboundAcksMu.Lock()
 	p, ok := kws.outboundAcks[id]
 	if ok {
@@ -1537,7 +1529,7 @@ func (kws *Websocket) deliverOutboundAck(id uint64, data []byte) {
 	if p.cb != nil {
 		func() {
 			defer func() { _ = recover() }()
-			p.cb(data, nil)
+			p.cb(args, nil)
 		}()
 	}
 }
@@ -1563,6 +1555,20 @@ func (kws *Websocket) fireAckTimeout(id uint64) {
 	logf("warn", "ack_timeout", "uuid", kws.UUID, "ack_id", id)
 	defer func() { _ = recover() }()
 	p.cb(nil, ErrAckTimeout)
+}
+
+// adaptSingleArgAck returns an internal [][]byte-shaped ack callback that
+// delegates to the public single-arg AckCallback shape: args[0] (or nil if
+// args is empty) plus the error are passed through. Used by EmitWithAck and
+// EmitWithAckTimeout so the public AckCallback signature stays unchanged.
+func adaptSingleArgAck(cb AckCallback) func(args [][]byte, err error) {
+	return func(args [][]byte, err error) {
+		var ack []byte
+		if len(args) > 0 {
+			ack = args[0]
+		}
+		cb(ack, err)
+	}
 }
 
 // Close actively closes the connection from the server side.
@@ -2124,16 +2130,17 @@ func (kws *Websocket) handleSIOPacket(payload []byte) {
 		if err := json.Unmarshal(rest, &arr); err != nil {
 			return
 		}
-		var ackData []byte
-		switch {
-		case len(arr) == 0:
-			ackData = nil
-		case len(arr) == 1:
-			ackData = []byte(arr[0])
-		default:
-			ackData, _ = json.Marshal(arr)
+		var args [][]byte
+		if len(arr) > 0 {
+			args = make([][]byte, len(arr))
+			for i, raw := range arr {
+				// Copy each raw JSON value off the read buffer so callers may
+				// retain it past the next ReadMessage (the underlying
+				// websocket library reuses the read buffer between frames).
+				args[i] = append([]byte(nil), raw...)
+			}
 		}
-		kws.deliverOutboundAck(ackID, ackData)
+		kws.deliverOutboundAck(ackID, args)
 
 	default:
 		// Unknown SIO packet type: surface payload as a raw message.
@@ -2194,7 +2201,7 @@ func (kws *Websocket) disconnected(err error) {
 			p.timer.Stop()
 		}
 		if p.cb != nil {
-			func(cb AckCallback) {
+			func(cb func(args [][]byte, err error)) {
 				defer func() { _ = recover() }()
 				cb(nil, ErrAckDisconnected)
 			}(p.cb)

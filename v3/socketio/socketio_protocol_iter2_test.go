@@ -493,3 +493,103 @@ func TestSocketIOEIO3Rejected(t *testing.T) {
 		"unexpected error body: %q", string(body),
 	)
 }
+
+// TestSocketIOEmitWithAckArgsDistinguishesArrayArg verifies that a client ack
+// of "43<id>[[1,2]]" (single argument that IS a JSON array) and
+// "43<id>[1,2]" (two arguments) are surfaced distinctly to EmitWithAckArgs
+// callbacks. Earlier code collapsed both shapes into one []byte at the
+// internal callback boundary, making them indistinguishable; this test pins
+// the fix so future regressions are caught.
+func TestSocketIOEmitWithAckArgsDistinguishesArrayArg(t *testing.T) {
+	resetSIOGlobals(t)
+
+	type ackResult struct {
+		args [][]byte
+		err  error
+	}
+
+	cases := []struct {
+		name           string
+		clientAckFrame string
+		want           [][]byte
+	}{
+		{
+			name:           "single arg that is a JSON array",
+			clientAckFrame: `[[1,2]]`,
+			want:           [][]byte{[]byte(`[1,2]`)},
+		},
+		{
+			name:           "two scalar args",
+			clientAckFrame: `[1,2]`,
+			want:           [][]byte{[]byte(`1`), []byte(`2`)},
+		},
+		{
+			name:           "three args mixed",
+			clientAckFrame: `[1,"two",{"k":3}]`,
+			want:           [][]byte{[]byte(`1`), []byte(`"two"`), []byte(`{"k":3}`)},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetSIOGlobals(t)
+
+			kwsCh := make(chan *Websocket, 1)
+			On(EventConnect, func(p *EventPayload) {
+				select {
+				case kwsCh <- p.Kws:
+				default:
+				}
+			})
+
+			ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+			defer teardown()
+
+			conn := dialSIO(t, ln)
+			defer conn.Close()
+			require.NoError(t, sioHandshake(t, conn))
+
+			var kws *Websocket
+			select {
+			case kws = <-kwsCh:
+			case <-time.After(2 * time.Second):
+				t.Fatal("EventConnect did not fire")
+			}
+
+			result := make(chan ackResult, 1)
+			kws.EmitWithAckArgs("ping", [][]byte{[]byte(`"hello"`)}, func(args [][]byte, err error) {
+				result <- ackResult{args: args, err: err}
+			})
+
+			// Read the outbound EVENT to learn the assigned ack id.
+			tp, msg, err := sioReadSkipPings(conn)
+			require.NoError(t, err)
+			require.Equal(t, websocket.TextMessage, tp)
+			require.True(t, strings.HasPrefix(string(msg), "42"), "want '42<id>[...]' got %q", msg)
+
+			// Extract the ack id (digits between "42" and the next non-digit).
+			rest := string(msg)[2:]
+			i := 0
+			for i < len(rest) && rest[i] >= '0' && rest[i] <= '9' {
+				i++
+			}
+			require.Greater(t, i, 0, "no ack id in frame %q", msg)
+			ackID := rest[:i]
+
+			// Reply with the chosen ack-frame shape.
+			ackFrame := "43" + ackID + tc.clientAckFrame
+			require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(ackFrame)))
+
+			select {
+			case r := <-result:
+				require.NoError(t, r.err)
+				require.Equal(t, len(tc.want), len(r.args), "arg count mismatch")
+				for i := range tc.want {
+					require.Equal(t, string(tc.want[i]), string(r.args[i]), "arg %d", i)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("ack callback did not fire")
+			}
+		})
+	}
+}
