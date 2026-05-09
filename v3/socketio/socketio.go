@@ -65,6 +65,8 @@ const (
 	// EventPing More details here:
 	// @url https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API/Writing_WebSocket_servers#Pings_and_Pongs_The_Heartbeat_of_WebSockets
 	EventPing = "ping"
+	// EventPong is fired when a WebSocket pong control frame, or an
+	// Engine.IO PONG packet, is received from the peer.
 	EventPong = "pong"
 	// EventDisconnect Fired on disconnection
 	// The error provided in disconnection event
@@ -80,10 +82,11 @@ const (
 )
 
 var (
-	// ErrorInvalidConnection The addressed Conn connection is not available anymore
-	// error data is the uuid of that connection
+	// ErrorInvalidConnection is returned when the addressed Conn connection is no
+	// longer available; the error data carries the UUID of that connection.
 	ErrorInvalidConnection = errors.New("message cannot be delivered invalid/gone connection")
-	// ErrorUUIDDuplication The UUID already exists in the pool
+	// ErrorUUIDDuplication is returned when the requested UUID already exists in
+	// the active connections pool.
 	ErrorUUIDDuplication = errors.New("UUID already exists in the available connections pool")
 	// ErrAckNotRequested is returned by EventPayload.Ack when the event did
 	// not include an ack id (i.e. the client emitted without a callback).
@@ -98,16 +101,47 @@ var (
 	// ErrAckDisconnected is delivered to outbound ack callbacks when the
 	// connection is torn down before an ack arrives.
 	ErrAckDisconnected = errors.New("socketio: connection closed before ack")
+	// ErrReservedEventName is surfaced via EventError when user code tries
+	// to emit a name the JS socket.io client treats as a reserved
+	// lifecycle event (e.g. "connect", "disconnect"). The emit is dropped
+	// before the frame reaches the wire.
+	ErrReservedEventName = errors.New("socketio: reserved event name cannot be emitted")
 )
 
+// reservedEventNames is the set of outbound event names the JS socket.io
+// client treats as built-in lifecycle events. Emitting any of these by
+// name from the server would either be silently swallowed or trigger
+// spurious lifecycle handlers on the client.
+var reservedEventNames = map[string]struct{}{
+	"connect":        {},
+	"connect_error":  {},
+	"disconnect":     {},
+	"disconnecting":  {},
+	"newListener":    {},
+	"removeListener": {},
+}
+
+// isReservedEventName reports whether name is a reserved socket.io
+// lifecycle event name that must not be used as a custom event name.
+func isReservedEventName(name string) bool {
+	_, ok := reservedEventNames[name]
+	return ok
+}
+
 var (
-	// PongTimeout is deprecated. Use PingTimeout instead.
+	// PongTimeout is the legacy heartbeat timeout knob.
+	//
+	// Deprecated: PongTimeout is no longer consulted by the heartbeat
+	// implementation. Use PingTimeout instead.
 	PongTimeout = 20 * time.Second
-	// RetrySendTimeout retry after 20 ms if there is an error
+	// RetrySendTimeout is the back-off delay the send goroutine waits before
+	// retrying a failed write to a temporarily unavailable connection.
 	RetrySendTimeout = 20 * time.Millisecond
-	// MaxSendRetry define max retries if there are socket issues
+	// MaxSendRetry is the maximum number of times the send goroutine retries a
+	// frame against a missing connection before dropping it.
 	MaxSendRetry = 5
-	// ReadTimeout Instead of reading in a for loop, try to avoid full CPU load taking some pause
+	// ReadTimeout is the small pause inserted between read iterations to keep
+	// the read loop from saturating a CPU core under tight polling.
 	ReadTimeout = 10 * time.Millisecond
 	// PingInterval is how often the server sends Engine.IO PING packets to the client.
 	// The client must reply with a PONG packet to keep the connection alive.
@@ -164,9 +198,11 @@ type message struct {
 	retries int
 }
 
-// EventPayload Event Payload is the object that
-// stores all the information about the event and
-// the connection
+// EventPayload is the object passed to every event listener. It carries the
+// originating connection, the event arguments in Args (with Data kept as a
+// shortcut to the first arg), the ack bookkeeping fields AckID, HasAck and
+// Ack, and HandshakeAuth (the raw JSON auth payload supplied during the
+// initial SIO CONNECT, populated for EventConnect listeners).
 type EventPayload struct {
 	// The connection object
 	Kws *Websocket
@@ -205,16 +241,20 @@ type EventPayload struct {
 	ackSent *atomic.Bool
 }
 
-// Ack sends a Socket.IO ACK ("43") response back to the client for the
-// event represented by this payload. data must be valid JSON (object,
-// array, string literal, number, etc.) or nil for an empty ack.
+// Ack sends a Socket.IO ACK ("43") response back to the client for the event
+// represented by this payload. The variadic args ...[]byte signature accepts
+// zero arguments (empty ack), one argument (single value), or many arguments
+// that are emitted as comma-separated raw-JSON values, mirroring the JS-side
+// callback(a, b, c) shape. Each non-empty argument must be valid JSON; nil
+// or empty entries are skipped.
 //
-// Idempotent: subsequent calls return ErrAckAlreadySent so listeners that
-// dispatch on the same payload twice do not flood the wire with duplicate
-// 43 frames.
+// Ack is idempotent across all listeners dispatched for the same inbound
+// event: only the first invocation produces a wire frame, and subsequent
+// calls (whether on the same payload or on a sibling payload handed to
+// another listener) return ErrAckAlreadySent.
 //
-// Returns an error if the event has no ack id, the connection is closed,
-// or the ack has already been sent for this payload.
+// Returns an error if the event has no ack id, the connection is closed, or
+// the ack has already been sent for this payload.
 func (ep *EventPayload) Ack(args ...[]byte) error {
 	if !ep.HasAck {
 		return ErrAckNotRequested
@@ -405,6 +445,10 @@ type ws interface {
 	fireEvent(event string, data []byte, error error)
 }
 
+// Websocket represents a single Socket.IO connection on top of the underlying
+// Fiber WebSocket. It carries the per-connection state (UUID, namespace,
+// attributes, ack bookkeeping) and exposes the Emit/Broadcast/Close API that
+// user code interacts with from inside listener callbacks.
 type Websocket struct {
 	once sync.Once
 	mu   sync.RWMutex
@@ -447,15 +491,20 @@ type Websocket struct {
 	workersWg sync.WaitGroup
 	// Attributes map collection for the connection
 	attributes map[string]interface{}
-	// Unique id of the connection
+	// UUID is the unique identifier assigned to this connection and used as
+	// its key in the active connections pool.
 	UUID string
-	// Wrap Fiber Locals function
+	// Locals wraps the Fiber Locals lookup so listener callbacks can reach
+	// values stored on the originating request context.
 	Locals func(key string) interface{}
-	// Wrap Fiber Params function
+	// Params wraps the Fiber Params lookup so listener callbacks can read
+	// route parameters from the originating request.
 	Params func(key string, defaultValue ...string) string
-	// Wrap Fiber Query function
+	// Query wraps the Fiber Query lookup so listener callbacks can read
+	// query-string values from the originating request.
 	Query func(key string, defaultValue ...string) string
-	// Wrap Fiber Cookies function
+	// Cookies wraps the Fiber Cookies lookup so listener callbacks can read
+	// cookie values from the originating request.
 	Cookies func(key string, defaultValue ...string) string
 }
 
@@ -570,6 +619,10 @@ var listeners = func() *safeListeners {
 	return l
 }()
 
+// New returns a Fiber handler that upgrades the request to a Socket.IO-
+// compatible WebSocket, performs the Engine.IO / Socket.IO handshake, and
+// invokes callback with the established Websocket so user code can register
+// per-connection state before the read and heartbeat goroutines start.
 func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.Ctx) error {
 	return websocket.New(func(c *websocket.Conn) {
 		kws := &Websocket{
@@ -629,6 +682,8 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 	}, config...)
 }
 
+// GetUUID returns the unique identifier of this connection in a
+// concurrency-safe manner.
 func (kws *Websocket) GetUUID() string {
 	kws.mu.RLock()
 	defer kws.mu.RUnlock()
@@ -783,8 +838,8 @@ func isValidNamespace(ns []byte) bool {
 		return false
 	}
 	if len(ns) == 1 {
-		// Lone "/" is treated as root by socket.io but we reject it
-		// here so the caller can substitute nil.
+		// Lone "/" is treated as the root namespace by socket.io and is
+		// accepted here.
 		return true
 	}
 	for i := 1; i < len(ns); i++ {
@@ -811,6 +866,9 @@ func buildSIOConnectAck(namespace, payload []byte) []byte {
 	return append(out, payload...)
 }
 
+// SetUUID replaces this connection's UUID, updating the active connections
+// pool atomically. It returns ErrorUUIDDuplication when the requested UUID is
+// already taken by another live connection.
 func (kws *Websocket) SetUUID(uuid string) error {
 	pool.Lock()
 	defer pool.Unlock()
@@ -925,8 +983,11 @@ func EmitTo(uuid string, message []byte, mType ...int) error {
 	return nil
 }
 
-// Broadcast to all the active connections
-// except avoid broadcasting the message to itself
+// Broadcast sends message to every active connection in the pool. When except
+// is true the originating connection is skipped. The optional mType selects
+// the WebSocket frame type: omit it (or pass TextMessage) to wrap message as
+// a Socket.IO "message" event; pass BinaryMessage to send the bytes verbatim
+// as a binary frame.
 func (kws *Websocket) Broadcast(message []byte, except bool, mType ...int) {
 	for wsUUID := range pool.all() {
 		if except && kws.UUID == wsUUID {
@@ -939,7 +1000,10 @@ func (kws *Websocket) Broadcast(message []byte, except bool, mType ...int) {
 	}
 }
 
-// Broadcast to all the active connections
+// Broadcast sends message to every active connection in the pool. The
+// optional mType selects the WebSocket frame type: omit it (or pass
+// TextMessage) to wrap message as a Socket.IO "message" event; pass
+// BinaryMessage to send the bytes verbatim as a binary frame.
 func Broadcast(message []byte, mType ...int) {
 	for _, kws := range pool.all() {
 		kws.Emit(message, mType...)
@@ -958,7 +1022,8 @@ func Fire(event string, data []byte) {
 
 // Emit sends a message to the client as a socket.io "message" event.
 // The message parameter should be valid JSON (object, array, string literal, etc.).
-// For named events use EmitEvent instead.
+// For named events use EmitEvent instead. The connection's namespace
+// (captured during the handshake) is mirrored on the wire.
 func (kws *Websocket) Emit(message []byte, mType ...int) {
 	t := TextMessage
 	if len(mType) > 0 {
@@ -971,9 +1036,14 @@ func (kws *Websocket) Emit(message []byte, mType ...int) {
 	}
 }
 
-// EmitEvent sends a named socket.io event to the client.
-// The data parameter should be valid JSON.
+// EmitEvent sends a named socket.io event to the client. The data parameter
+// should be valid JSON. The connection's namespace (captured during the
+// handshake) is mirrored on the wire.
 func (kws *Websocket) EmitEvent(event string, data []byte) {
+	if isReservedEventName(event) {
+		kws.fireEvent(EventError, []byte(event), ErrReservedEventName)
+		return
+	}
 	var args [][]byte
 	if len(data) > 0 {
 		args = [][]byte{data}
@@ -983,13 +1053,19 @@ func (kws *Websocket) EmitEvent(event string, data []byte) {
 
 // EmitArgs sends a named socket.io event with multiple raw-JSON arguments,
 // matching the JS-side call socket.emit("event", a, b, c). Each arg must
-// be valid JSON. Empty entries are skipped.
+// be valid JSON. Empty entries are skipped. The connection's namespace
+// (captured during the handshake) is mirrored on the wire.
 func (kws *Websocket) EmitArgs(event string, args ...[]byte) {
+	if isReservedEventName(event) {
+		kws.fireEvent(EventError, []byte(event), ErrReservedEventName)
+		return
+	}
 	kws.write(TextMessage, buildSIOEventWithAck(kws.getNamespace(), 0, false, event, args))
 }
 
 // EmitWithAck sends a named socket.io event and registers a callback that
-// is invoked exactly once with the client's ack response.
+// is invoked exactly once with the client's ack response. The connection's
+// namespace (captured during the handshake) is mirrored on the wire.
 //
 // The data parameter must be valid JSON or nil. The callback receives the
 // raw JSON bytes from the client's ack ([] for an empty ack, the first
@@ -999,11 +1075,18 @@ func (kws *Websocket) EmitArgs(event string, args ...[]byte) {
 // On a healthy round-trip the callback fires with the ack bytes.
 // If the client does not respond within OutboundAckTimeout the callback
 // fires with nil. If the connection closes before any ack arrives the
-// callback fires with nil.
-//
-// For per-call control over the timeout and a structured error, see
-// EmitWithAckTimeout.
+// callback fires with nil. Because both error paths surface as a nil ack,
+// callers that need to distinguish "client never replied" from "connection
+// torn down" should use EmitWithAckTimeout, which delivers ErrAckTimeout
+// versus ErrAckDisconnected through its structured AckCallback.
 func (kws *Websocket) EmitWithAck(event string, data []byte, cb func(ack []byte)) {
+	if isReservedEventName(event) {
+		kws.fireEvent(EventError, []byte(event), ErrReservedEventName)
+		if cb != nil {
+			cb(nil)
+		}
+		return
+	}
 	if cb == nil {
 		kws.EmitEvent(event, data)
 		return
@@ -1015,11 +1098,19 @@ func (kws *Websocket) EmitWithAck(event string, data []byte, cb func(ack []byte)
 
 // EmitWithAckTimeout is the timeout-aware variant of EmitWithAck. Pass
 // timeout = 0 to disable the timeout (the callback only fires when the
-// client acks or the connection closes).
+// client acks or the connection closes). The connection's namespace
+// (captured during the handshake) is mirrored on the wire.
 //
 // The callback's err is one of: nil (ack received), ErrAckTimeout, or
 // ErrAckDisconnected.
 func (kws *Websocket) EmitWithAckTimeout(event string, data []byte, timeout time.Duration, cb AckCallback) {
+	if isReservedEventName(event) {
+		kws.fireEvent(EventError, []byte(event), ErrReservedEventName)
+		if cb != nil {
+			cb(nil, ErrReservedEventName)
+		}
+		return
+	}
 	if cb == nil {
 		kws.EmitEvent(event, data)
 		return
@@ -1050,12 +1141,20 @@ func (kws *Websocket) EmitWithAckTimeout(event string, data []byte, timeout time
 // EmitWithAckArgs is the multi-arg + structured-error variant of
 // EmitWithAck. It sends a named event carrying multiple raw-JSON arguments
 // and registers a callback invoked exactly once when the client acks, on
-// timeout (OutboundAckTimeout), or on connection close.
+// timeout (OutboundAckTimeout), or on connection close. The connection's
+// namespace (captured during the handshake) is mirrored on the wire.
 //
 // On success cb is called with (args, nil) where args is the slice of
 // raw-JSON ack arguments the client sent. On timeout cb is called with
 // (nil, ErrAckTimeout); on disconnect (nil, ErrAckDisconnected).
 func (kws *Websocket) EmitWithAckArgs(event string, args [][]byte, cb func([][]byte, error)) {
+	if isReservedEventName(event) {
+		kws.fireEvent(EventError, []byte(event), ErrReservedEventName)
+		if cb != nil {
+			cb(nil, ErrReservedEventName)
+		}
+		return
+	}
 	if cb == nil {
 		kws.write(TextMessage, buildSIOEventWithAck(kws.getNamespace(), 0, false, event, args))
 		return
@@ -1223,6 +1322,8 @@ func (kws *Websocket) writeConnectError(namespace []byte, jsonMessage string) er
 	return kws.Conn.WriteMessage(TextMessage, out)
 }
 
+// IsAlive reports whether the connection is still considered active and able
+// to deliver outbound frames.
 func (kws *Websocket) IsAlive() bool {
 	kws.mu.RLock()
 	defer kws.mu.RUnlock()
@@ -1727,7 +1828,46 @@ func (kws *Websocket) fireEventWithAck(event string, args [][]byte, fireErr erro
 
 type eventCallback func(payload *EventPayload)
 
-// On Add listener callback for an event into the listeners list
+// On registers a callback to be invoked whenever the named event fires on
+// any connection.
 func On(event string, callback eventCallback) {
 	listeners.set(event, callback)
+}
+
+// Shutdown closes every active socket.io connection in the pool and waits
+// for all of their per-connection goroutines (send, read, pong) to exit,
+// or until ctx is cancelled.
+//
+// Wire this into fiber.App.Shutdown / fiber.App.ShutdownWithContext so an
+// application shutdown deterministically tears down sockets instead of
+// relying on the framework to close the underlying transport.
+//
+// Returns ctx.Err() when ctx is cancelled before all connections finished
+// draining; otherwise returns nil.
+func Shutdown(ctx context.Context) error {
+	conns := pool.all()
+	if len(conns) == 0 {
+		return nil
+	}
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, c := range conns {
+		kws, ok := c.(*Websocket)
+		if !ok {
+			continue
+		}
+		wg.Add(1)
+		go func(k *Websocket) {
+			defer wg.Done()
+			k.Close()
+			k.workersWg.Wait()
+		}(kws)
+	}
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

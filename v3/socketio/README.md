@@ -25,7 +25,7 @@ go get -u github.com/gofiber/contrib/v3/socketio
 
 ## Protocol compatibility
 
-The middleware automatically handles the Engine.IO / Socket.IO handshake so you do **not** need any special server-side code – just point your `socket.io-client` at the WebSocket endpoint.
+The middleware automatically handles the Engine.IO / Socket.IO handshake so you do **not** need any special server-side code; just point your `socket.io-client` at the WebSocket endpoint.
 
 ### Required client configuration
 
@@ -40,6 +40,26 @@ const socket = io("http://localhost:3000", {
 });
 ```
 
+### Tunable globals
+
+These package-level variables can be overridden before the first connection is accepted (typically in `init()` or early in `main`). They control timing and limits for the Engine.IO / Socket.IO transport.
+
+| Variable            | Default            | Description                                                                                          |
+|:--------------------|:-------------------|:-----------------------------------------------------------------------------------------------------|
+| `PingInterval`      | `25 * time.Second` | Interval between Engine.IO PING frames sent by the server to keep the connection alive.              |
+| `PingTimeout`       | `20 * time.Second` | How long the server waits for the client's PONG before considering the connection dead.              |
+| `HandshakeTimeout`  | `10 * time.Second` | Maximum time allowed for the Engine.IO / Socket.IO handshake (including namespace CONNECT) to complete. |
+| `MaxPayload`        | `1 << 20` (1 MiB)  | Maximum size in bytes for a single inbound WebSocket frame; oversize messages close the socket.      |
+| `OutboundAckTimeout`| `30 * time.Second` | Default timeout used by `EmitWithAck` when no per-call timeout is supplied.                          |
+
+```go
+func init() {
+    socketio.PingInterval = 15 * time.Second
+    socketio.PingTimeout  = 10 * time.Second
+    socketio.MaxPayload   = 4 << 20 // 4 MiB
+}
+```
+
 ### Message format
 
 All messages are exchanged as Socket.IO events.
@@ -52,6 +72,73 @@ All messages are exchanged as Socket.IO events.
 | Client → Server | `socket.emit("custom", obj)`  | fires the `"custom"` event     |
 
 > **Note:** `Emit` and `EmitEvent` expect the `data` argument to be **valid JSON** (an object, array, string literal, number, etc.).
+
+### Acks, namespaces, handshake auth
+
+The middleware implements the full Socket.IO v5 ack flow and forwards the client's connect-time auth payload to your handlers.
+
+#### Multi-argument emits
+
+`EmitArgs` and `EmitWithAckArgs` accept a variadic list of already-encoded JSON values, so you can send richer event tuples without manually concatenating arrays:
+
+```go
+// 42["greet","hi",{"id":1}]
+kws.EmitArgs("greet", []byte(`"hi"`), []byte(`{"id":1}`))
+```
+
+#### Server-initiated acks
+
+`EmitWithAck` (and `EmitWithAckTimeout`) emit an event with an ack id and resolve once the client invokes its callback, or reject when the timeout expires. `EmitWithAck` uses `OutboundAckTimeout`; `EmitWithAckTimeout` takes a per-call duration.
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+args, err := kws.EmitWithAckTimeout(ctx, "ping", 3*time.Second, []byte(`"hello"`))
+if err != nil {
+    log.Printf("ack failed: %v", err)
+    return
+}
+// args is the JSON array the client passed to its callback.
+```
+
+#### Client-initiated acks
+
+When the client emits with a callback, the inbound event payload carries an ack id. Use `HasAck` and `AckID` to detect it, then send a single ack reply via `Kws.SendAck`:
+
+```go
+socketio.On("greet", func(ep *socketio.EventPayload) {
+    if ep.HasAck {
+        // ep.Args holds the raw JSON arguments the client sent.
+        ep.Kws.SendAck(ep.AckID, []byte(`"ok"`))
+    }
+})
+```
+
+#### Namespaces
+
+The middleware honours the namespace negotiated during the Socket.IO CONNECT packet. Events emitted from the server are routed back on the same namespace the client joined; no extra configuration is required on the Go side.
+
+#### Handshake auth
+
+Whatever the client passes via `auth` (object, string, etc.) is parsed during the Socket.IO handshake and exposed to handlers as `EventPayload.HandshakeAuth` (raw JSON bytes). It is most commonly inspected on `EventConnect`:
+
+```js
+// client
+const socket = io("http://localhost:3000", {
+  path: "/ws",
+  transports: ["websocket"],
+  auth: { token: "secret" },
+});
+```
+
+```go
+socketio.On(socketio.EventConnect, func(ep *socketio.EventPayload) {
+    // ep.HandshakeAuth == []byte(`{"token":"secret"}`)
+    var auth struct{ Token string `json:"token"` }
+    _ = json.Unmarshal(ep.HandshakeAuth, &auth)
+})
+```
 
 ## Signatures
 
@@ -87,6 +174,34 @@ func Broadcast(message []byte)
 ```go
 // Fire custom event on all connections
 func Fire(event string, data []byte) 
+```
+
+```go
+// Emit a named event with multiple already-encoded JSON arguments
+// (e.g. EmitArgs("greet", []byte(`"hi"`), []byte(`{"id":1}`)))
+func (kws *Websocket) EmitArgs(event string, args ...[]byte) error
+```
+
+```go
+// Emit a named event and wait for the client's ack, using OutboundAckTimeout.
+// Returns the ack arguments as raw JSON.
+func (kws *Websocket) EmitWithAck(ctx context.Context, event string, data []byte) ([]byte, error)
+```
+
+```go
+// Like EmitWithAck but with a per-call timeout that overrides OutboundAckTimeout.
+func (kws *Websocket) EmitWithAckTimeout(ctx context.Context, event string, timeout time.Duration, data []byte) ([]byte, error)
+```
+
+```go
+// Multi-argument variant of EmitWithAckTimeout.
+func (kws *Websocket) EmitWithAckArgs(ctx context.Context, event string, timeout time.Duration, args ...[]byte) ([]byte, error)
+```
+
+```go
+// HandshakeAuth returns the raw JSON auth payload sent by the client at
+// connect time (nil if the client did not provide one).
+func (kws *Websocket) HandshakeAuth() []byte
 ```
 
 ## Example
@@ -268,7 +383,7 @@ socket.on("disconnect", (reason) => {
 | EventPing       | `ping`       | Fired when an Engine.IO PING is received from the client                                                                                                   |
 | EventPong       | `pong`       | Fired when the client replies with an Engine.IO PONG to the server's heartbeat                                                                             |
 | EventDisconnect | `disconnect` | Fired on disconnection. The error provided in disconnection event as defined in RFC 6455, section 11.7.                                                    |
-| EventConnect    | `connect`    | Fired after the Engine.IO / Socket.IO handshake completes                                                                                                  |
+| EventConnect    | `connect`    | Fired after the Engine.IO / Socket.IO handshake completes; `ep.HandshakeAuth` is populated with the client's `auth` payload (raw JSON, nil if not provided) |
 | EventClose      | `close`      | Fired when the connection is actively closed from the server. Different from client disconnection                                                          |
 | EventError      | `error`      | Fired when some error appears useful also for debugging websockets                                                                                         |
 
@@ -276,30 +391,40 @@ Custom events map directly to the event name used in `socket.emit("myEvent", …
 
 ## Event Payload object
 
-| Variable         | Type                | Description                                                                     |
-|:-----------------|:--------------------|:--------------------------------------------------------------------------------|
-| Kws              | `*Websocket`        | The connection object                                                           |
-| Name             | `string`            | The name of the event                                                           |
-| SocketUUID       | `string`            | Unique connection UUID                                                          |
-| SocketAttributes | `map[string]string` | Optional websocket attributes                                                   |
-| Error            | `error`             | (optional) Fired from disconnection or error events                             |
-| Data             | `[]byte`            | Raw JSON of the event payload (first argument of `socket.emit`)                 |
+| Variable         | Type                | Description                                                                                       |
+|:-----------------|:--------------------|:--------------------------------------------------------------------------------------------------|
+| Kws              | `*Websocket`        | The connection object                                                                             |
+| Name             | `string`            | The name of the event                                                                             |
+| SocketUUID       | `string`            | Unique connection UUID                                                                            |
+| SocketAttributes | `map[string]any`    | Optional websocket attributes                                                                     |
+| Error            | `error`             | (optional) Fired from disconnection or error events                                               |
+| Data             | `[]byte`            | Raw JSON of the event payload (first argument of `socket.emit`)                                   |
+| Args             | `[][]byte`          | All raw JSON arguments after the event name; useful when the client emits multiple values         |
+| AckID            | `uint64`            | Ack id assigned by the client when it emitted with a callback (0 if `HasAck` is false)            |
+| HasAck           | `bool`              | True when the inbound event expects an ack reply; respond via `Kws.SendAck(AckID, ...)`           |
+| HandshakeAuth    | `[]byte`            | Raw JSON auth payload from the Socket.IO handshake; populated on `EventConnect` (and later events) |
 
 ## Socket instance functions
 
-| Name         | Type     | Description                                                                       |
-|:-------------|:---------|:----------------------------------------------------------------------------------|
-| SetAttribute | `void`   | Set a specific attribute for the specific socket connection                       |
-| GetUUID      | `string` | Get socket connection UUID                                                        |
-| SetUUID      | `error`  | Set socket connection UUID                                                        |
-| GetAttribute | `string` | Get a specific attribute from the socket attributes                               |
-| EmitToList   | `void`   | Emit the message to a specific socket uuids list                                  |
-| EmitTo       | `error`  | Emit to a specific socket connection                                              |
-| Broadcast    | `void`   | Broadcast to all the active connections except broadcasting the message to itself |
-| Fire         | `void`   | Fire custom event                                                                 |
-| Emit         | `void`   | Send data as a `"message"` socket.io event (data must be valid JSON)              |
-| EmitEvent    | `void`   | Send a named socket.io event (data must be valid JSON)                            |
-| Close        | `void`   | Actively close the connection from the server                                     |
+| Name                | Type               | Description                                                                                  |
+|:--------------------|:-------------------|:---------------------------------------------------------------------------------------------|
+| SetAttribute        | `void`             | Set a specific attribute for the specific socket connection                                  |
+| GetUUID             | `string`           | Get socket connection UUID                                                                   |
+| SetUUID             | `error`            | Set socket connection UUID                                                                   |
+| GetAttribute        | `string`           | Get a specific attribute from the socket attributes                                          |
+| EmitToList          | `void`             | Emit the message to a specific socket uuids list                                             |
+| EmitTo              | `error`            | Emit to a specific socket connection                                                         |
+| Broadcast           | `void`             | Broadcast to all the active connections except broadcasting the message to itself            |
+| Fire                | `void`             | Fire custom event                                                                            |
+| Emit                | `void`             | Send data as a `"message"` socket.io event (data must be valid JSON)                         |
+| EmitEvent           | `void`             | Send a named socket.io event (data must be valid JSON)                                       |
+| EmitArgs            | `error`            | Emit a named event with multiple already-encoded JSON arguments                              |
+| EmitWithAck         | `([]byte, error)`  | Emit an event and wait for the client's ack (uses `OutboundAckTimeout`)                      |
+| EmitWithAckTimeout  | `([]byte, error)`  | Like `EmitWithAck` but with a per-call timeout                                               |
+| EmitWithAckArgs     | `([]byte, error)`  | Multi-argument variant of `EmitWithAckTimeout`                                               |
+| HandshakeAuth       | `[]byte`           | Raw JSON auth payload sent by the client at connect time (nil if absent)                     |
+| IsAlive             | `bool`             | Reports whether the underlying connection is still open and the heartbeat loop is running    |
+| Close               | `void`             | Actively close the connection from the server                                                |
 
 **Note: the FastHTTP connection can be accessed directly from the instance**
 

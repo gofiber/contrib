@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1606,6 +1607,134 @@ func TestSocketIOEIOBatchedFrame(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("second batched event missing")
 	}
+}
+
+// TestSocketIOReservedNamesRejected verifies that EmitEvent on a
+// reserved socket.io lifecycle name surfaces ErrReservedEventName via
+// EventError and does NOT enqueue a frame on the wire.
+func TestSocketIOReservedNamesRejected(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	gotErr := make(chan error, 6)
+	On(EventError, func(p *EventPayload) {
+		if errors.Is(p.Error, ErrReservedEventName) {
+			select {
+			case gotErr <- p.Error:
+			default:
+			}
+		}
+	})
+	ready := make(chan *Websocket, 1)
+	On(EventConnect, func(p *EventPayload) {
+		select {
+		case ready <- p.Kws:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+
+	var kws *Websocket
+	select {
+	case kws = <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventConnect did not fire")
+	}
+
+	for _, n := range []string{"connect", "connect_error", "disconnect",
+		"disconnecting", "newListener", "removeListener"} {
+		kws.EmitEvent(n, []byte(`{"x":1}`))
+	}
+
+	// Read for a short window. Any frame that arrives must NOT carry one
+	// of the reserved names. (PINGs are auto-skipped by sioReadSkipPings.)
+	_ = conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	for {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+		require.Falsef(t,
+			strings.Contains(string(msg), `"connect"`) ||
+				strings.Contains(string(msg), `"disconnect"`) ||
+				strings.Contains(string(msg), `"connect_error"`) ||
+				strings.Contains(string(msg), `"disconnecting"`) ||
+				strings.Contains(string(msg), `"newListener"`) ||
+				strings.Contains(string(msg), `"removeListener"`),
+			"reserved name leaked onto wire: %q", msg,
+		)
+	}
+
+	// At least one EventError must have fired.
+	select {
+	case <-gotErr:
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("expected ErrReservedEventName via EventError")
+	}
+}
+
+// TestSocketIOPackageShutdown verifies the package-level Shutdown(ctx)
+// closes every connection in the pool, fires EventDisconnect on each,
+// and returns nil within the context deadline.
+//
+// Uses a real TCP listener (rather than fasthttputil.InmemoryListener)
+// because pipeConn.SetReadDeadline does not interrupt an already-blocked
+// Read; the netpoll-backed real TCP stack does.
+func TestSocketIOPackageShutdown(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	var disc, connd int32
+	On(EventConnect, func(_ *EventPayload) { atomic.AddInt32(&connd, 1) })
+	On(EventDisconnect, func(_ *EventPayload) { atomic.AddInt32(&disc, 1) })
+
+	app := fiber.New()
+	app.Use(upgradeMiddleware)
+	app.Get("/", New(func(_ *Websocket) {}))
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = app.Listener(ln) }()
+	defer func() { _ = app.Shutdown() }()
+
+	const n = 5
+	conns := make([]*websocket.Conn, 0, n)
+	defer func() {
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	}()
+
+	wsURL := "ws://" + ln.Addr().String() + "/"
+	for i := 0; i < n; i++ {
+		dialer := &websocket.Dialer{HandshakeTimeout: 5 * time.Second}
+		c, _, derr := dialer.Dial(wsURL, nil)
+		require.NoError(t, derr)
+		require.NoError(t, sioHandshake(t, c))
+		conns = append(conns, c)
+	}
+
+	// Wait until every handshake has fired EventConnect.
+	require.Eventually(t, func() bool {
+		return atomic.LoadInt32(&connd) == int32(n)
+	}, 2*time.Second, 10*time.Millisecond,
+		"only %d/%d connections completed handshake", atomic.LoadInt32(&connd), n)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, Shutdown(ctx))
+
+	// Each connection produced exactly one EventDisconnect.
+	require.Eventually(t, func() bool {
+		return atomic.LoadInt32(&disc) == int32(n)
+	}, 2*time.Second, 10*time.Millisecond,
+		"expected %d EventDisconnect, got %d", n, atomic.LoadInt32(&disc))
 }
 
 // TestSocketIOInvalidNamespaceRejected verifies that a CONNECT with a
