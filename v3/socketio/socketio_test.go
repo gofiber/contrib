@@ -403,8 +403,8 @@ func createWS() *Websocket {
 		},
 		queue:      make(chan message),
 		attributes: make(map[string]interface{}),
-		isAlive:    true,
 	}
+	kws.isAlive.Store(true)
 
 	kws.UUID = kws.createUUID()
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -372,19 +373,24 @@ func buildSIOAck(namespace []byte, ackID uint64, args [][]byte) []byte {
 // splitSIOAckID extracts the optional leading numeric ack ID from a SIO
 // EVENT or ACK payload (the bytes after any namespace stripping). It
 // returns the ID, a flag whether one was present, and the remaining bytes.
+//
+// Hand-rolled digit accumulation avoids the string allocation that
+// strconv.ParseUint(string(data[:i])) would force on the hot inbound path.
 func splitSIOAckID(data []byte) (id uint64, has bool, rest []byte, err error) {
+	var v uint64
 	i := 0
 	for i < len(data) && data[i] >= '0' && data[i] <= '9' {
+		d := uint64(data[i] - '0')
+		if v > (math.MaxUint64-d)/10 {
+			return 0, false, data, errors.New("socketio: ack id overflow")
+		}
+		v = v*10 + d
 		i++
 	}
 	if i == 0 {
 		return 0, false, data, nil
 	}
-	parsed, perr := strconv.ParseUint(string(data[:i]), 10, 64)
-	if perr != nil {
-		return 0, false, data, fmt.Errorf("socketio: invalid ack id: %w", perr)
-	}
-	return parsed, true, data[i:], nil
+	return v, true, data[i:], nil
 }
 
 // parseSIOEvent parses the JSON-array payload of a Socket.IO EVENT packet.
@@ -392,8 +398,11 @@ func splitSIOAckID(data []byte) (id uint64, has bool, rest []byte, err error) {
 // payload is the bytes after the "42" prefix, e.g. `["message",{"key":"val"}]`.
 // It returns the event name and a slice of raw-JSON arguments (one entry
 // per element after the event name). args is nil for events without
-// arguments. The trailing args are NOT re-marshaled; they are sub-slices
-// of the original payload (zero-copy except for the slice header).
+// arguments.
+//
+// Argument bytes are copied so callers may safely retain them past the
+// next ReadMessage() (the underlying read buffer in github.com/fasthttp/websocket
+// is reused on the next read). One pooled allocation amortises the copy.
 func parseSIOEvent(payload []byte) (string, [][]byte, error) {
 	var arr []json.RawMessage
 	if err := json.Unmarshal(payload, &arr); err != nil {
@@ -409,9 +418,19 @@ func parseSIOEvent(payload []byte) (string, [][]byte, error) {
 	if len(arr) == 1 {
 		return eventName, nil, nil
 	}
-	args := make([][]byte, 0, len(arr)-1)
+	// Allocate one contiguous backing buffer for all args and slice into it
+	// so we never alias the read buffer. One alloc total instead of N.
+	total := 0
 	for _, raw := range arr[1:] {
-		args = append(args, []byte(raw))
+		total += len(raw)
+	}
+	buf := make([]byte, total)
+	args := make([][]byte, 0, len(arr)-1)
+	off := 0
+	for _, raw := range arr[1:] {
+		n := copy(buf[off:], raw)
+		args = append(args, buf[off:off+n:off+n])
+		off += n
 	}
 	return eventName, args, nil
 }
@@ -454,8 +473,9 @@ type Websocket struct {
 	mu   sync.RWMutex
 	// The Fiber.Websocket connection
 	Conn *websocket.Conn
-	// Define if the connection is alive or not
-	isAlive bool
+	// isAlive reports whether the connection is alive. Accessed lock-free
+	// from every emit path (write/EmitTo/etc.) and the read goroutine.
+	isAlive atomic.Bool
 	// Queue of messages sent from the socket
 	queue chan message
 	// Channel to signal when this websocket is closed
@@ -643,8 +663,8 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 			done:         make(chan struct{}, 1),
 			attributes:   make(map[string]interface{}),
 			outboundAcks: make(map[uint64]*pendingAck),
-			isAlive:      true,
 		}
+		kws.isAlive.Store(true)
 		kws.lastPongNanos.Store(time.Now().UnixNano())
 
 		// Generate uuid
@@ -989,8 +1009,9 @@ func EmitTo(uuid string, message []byte, mType ...int) error {
 // a Socket.IO "message" event; pass BinaryMessage to send the bytes verbatim
 // as a binary frame.
 func (kws *Websocket) Broadcast(message []byte, except bool, mType ...int) {
+	selfUUID := kws.GetUUID()
 	for wsUUID := range pool.all() {
-		if except && kws.UUID == wsUUID {
+		if except && selfUUID == wsUUID {
 			continue
 		}
 		err := kws.EmitTo(wsUUID, message, mType...)
@@ -1281,15 +1302,16 @@ func (kws *Websocket) Close() {
 
 // getNamespace returns the Socket.IO namespace this connection is bound to,
 // or nil for the root namespace.
+//
+// The returned slice MUST NOT be mutated by callers. namespace is written
+// exactly once during handshake (under kws.mu.Lock) and never reassigned;
+// readers can therefore alias the underlying bytes safely. All internal
+// callers feed it into append() which never mutates the source.
 func (kws *Websocket) getNamespace() []byte {
 	kws.mu.RLock()
-	defer kws.mu.RUnlock()
-	if len(kws.namespace) == 0 {
-		return nil
-	}
-	out := make([]byte, len(kws.namespace))
-	copy(out, kws.namespace)
-	return out
+	ns := kws.namespace
+	kws.mu.RUnlock()
+	return ns
 }
 
 // HandshakeAuth returns the raw JSON auth payload supplied by the client in
@@ -1323,11 +1345,9 @@ func (kws *Websocket) writeConnectError(namespace []byte, jsonMessage string) er
 }
 
 // IsAlive reports whether the connection is still considered active and able
-// to deliver outbound frames.
+// to deliver outbound frames. Lock-free.
 func (kws *Websocket) IsAlive() bool {
-	kws.mu.RLock()
-	defer kws.mu.RUnlock()
-	return kws.isAlive
+	return kws.isAlive.Load()
 }
 
 func (kws *Websocket) hasConn() bool {
@@ -1337,15 +1357,13 @@ func (kws *Websocket) hasConn() bool {
 }
 
 func (kws *Websocket) setAlive(alive bool) {
-	kws.mu.Lock()
-	defer kws.mu.Unlock()
-	kws.isAlive = alive
+	kws.isAlive.Store(alive)
 }
 
 //nolint:all
 func (kws *Websocket) queueLength() int {
-	kws.mu.RLock()
-	defer kws.mu.RUnlock()
+	// kws.queue is a chan whose header is set once in New() and never
+	// reassigned; len(chan) is itself atomic. No lock needed.
 	return len(kws.queue)
 }
 
@@ -1538,8 +1556,12 @@ func (kws *Websocket) read(ctx context.Context) {
 		}
 
 		// Binary messages (socket.io binary events / raw binary data).
+		// Copy the bytes off the read buffer; listeners may spawn goroutines
+		// that observe payload.Data after the next ReadMessage() reuses msg.
 		if mType == BinaryMessage {
-			kws.fireEvent(EventMessage, msg, nil)
+			data := make([]byte, len(msg))
+			copy(data, msg)
+			kws.fireEvent(EventMessage, data, nil)
 			continue
 		}
 
@@ -1549,14 +1571,18 @@ func (kws *Websocket) read(ctx context.Context) {
 		}
 
 		// EIO v4 supports batching multiple packets in one WebSocket
-		// frame, separated by ASCII RS (0x1E). Split them and dispatch
-		// each through the same packet switch. Single-packet frames
-		// (no separator) take the fast path with zero allocations.
-		for _, packet := range bytes.Split(msg, []byte{0x1E}) {
-			if len(packet) == 0 {
-				continue
+		// frame, separated by ASCII RS (0x1E). Single-packet frames
+		// (no separator) take the zero-alloc fast path; only the rare
+		// batched form pays bytes.Split's slice header allocation.
+		if bytes.IndexByte(msg, 0x1E) < 0 {
+			kws.dispatchEIOPacket(msg)
+		} else {
+			for _, packet := range bytes.Split(msg, []byte{0x1E}) {
+				if len(packet) == 0 {
+					continue
+				}
+				kws.dispatchEIOPacket(packet)
 			}
-			kws.dispatchEIOPacket(packet)
 		}
 	}
 }
