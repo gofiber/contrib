@@ -91,6 +91,13 @@ var (
 	// ErrAckAlreadySent is returned by EventPayload.Ack when Ack() has
 	// already been called once for this payload.
 	ErrAckAlreadySent = errors.New("socketio: ack already sent")
+	// ErrAckTimeout is delivered to outbound ack callbacks (registered via
+	// EmitWithAckTimeout) when the client does not respond within the
+	// configured timeout.
+	ErrAckTimeout = errors.New("socketio: ack timeout")
+	// ErrAckDisconnected is delivered to outbound ack callbacks when the
+	// connection is torn down before an ack arrives.
+	ErrAckDisconnected = errors.New("socketio: connection closed before ack")
 )
 
 var (
@@ -117,7 +124,29 @@ var (
 	// SetReadLimit on the underlying connection. Frames exceeding this size
 	// are rejected and the connection is closed.
 	MaxPayload int64 = 1_000_000
+	// OutboundAckTimeout is the default deadline for ack callbacks
+	// registered via EmitWithAck. Override with EmitWithAckTimeout for
+	// per-call timeouts.
+	OutboundAckTimeout = 30 * time.Second
 )
+
+// AckCallback receives the result of a server-initiated EmitWithAck.
+//
+// On a successful ack, ack holds the raw JSON of the client's first ack
+// argument (or a JSON-array of all args when the client called the ack
+// with multiple values) and err is nil.
+//
+// On timeout err is ErrAckTimeout. On connection close err is
+// ErrAckDisconnected. In both error cases ack is nil.
+type AckCallback func(ack []byte, err error)
+
+// pendingAck tracks one outstanding outbound ack: the callback to invoke
+// and an optional timer that fires ErrAckTimeout if the client never
+// responds.
+type pendingAck struct {
+	cb    AckCallback
+	timer *time.Timer
+}
 
 // Raw form of websocket message
 type message struct {
@@ -158,8 +187,11 @@ type EventPayload struct {
 	// without an auth payload. Populated for EventConnect; for other
 	// events use Kws.HandshakeAuth() if needed.
 	HandshakeAuth json.RawMessage
-	// ackSent is the CAS guard that makes Ack() idempotent.
-	ackSent atomic.Bool
+	// ackSent is the CAS guard that makes Ack() idempotent. It is shared
+	// across all EventPayload instances dispatched for the same inbound
+	// SIO event (one per listener), so that two listeners both calling
+	// Ack on their own payload still produce only one wire frame.
+	ackSent *atomic.Bool
 }
 
 // Ack sends a Socket.IO ACK ("43") response back to the client for the
@@ -178,6 +210,12 @@ func (ep *EventPayload) Ack(data []byte) error {
 	}
 	if ep.Kws == nil || !ep.Kws.IsAlive() {
 		return ErrorInvalidConnection
+	}
+	if ep.ackSent == nil {
+		// Defensive: should always be set by fireEventWithAck. Treat a
+		// missing guard as if no ack has been sent yet.
+		var b atomic.Bool
+		ep.ackSent = &b
 	}
 	if !ep.ackSent.CompareAndSwap(false, true) {
 		return ErrAckAlreadySent
@@ -312,6 +350,7 @@ type ws interface {
 	Emit(message []byte, mType ...int)
 	EmitEvent(event string, data []byte)
 	EmitWithAck(event string, data []byte, cb func(ack []byte))
+	EmitWithAckTimeout(event string, data []byte, timeout time.Duration, cb AckCallback)
 	Close()
 	pong(ctx context.Context)
 	write(messageType int, messageBytes []byte)
@@ -355,8 +394,9 @@ type Websocket struct {
 	// via EmitWithAck. It is incremented under outboundAcksMu.
 	outboundAckSeq uint64
 	// outboundAcks tracks pending callbacks for server-initiated emits that
-	// asked for an ack from the client.
-	outboundAcks   map[uint64]func(data []byte)
+	// asked for an ack from the client. The map is keyed by ack id and
+	// holds a callback plus an optional timeout timer.
+	outboundAcks   map[uint64]*pendingAck
 	outboundAcksMu sync.Mutex
 	// workersWg tracks the send/pong/read goroutines so the upgrade handler
 	// does not return (and the framework does not release Conn) until every
@@ -487,7 +527,7 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 			queue:        make(chan message, 100),
 			done:         make(chan struct{}, 1),
 			attributes:   make(map[string]interface{}),
-			outboundAcks: make(map[uint64]func([]byte)),
+			outboundAcks: make(map[uint64]*pendingAck),
 			isAlive:      true,
 		}
 		kws.lastPongNanos.Store(time.Now().UnixNano())
@@ -876,36 +916,100 @@ func (kws *Websocket) EmitEvent(event string, data []byte) {
 }
 
 // EmitWithAck sends a named socket.io event and registers a callback that
-// is invoked with the client's ack response. The data parameter must be
-// valid JSON or nil. The callback receives the raw JSON bytes from the
-// client's ack ([] for an empty ack, the first arg as JSON, or a JSON
-// array when the client called the ack with multiple args).
+// is invoked exactly once with the client's ack response.
 //
-// The callback is invoked at most once. If the connection closes before
-// the ack arrives, the callback is dropped silently.
+// The data parameter must be valid JSON or nil. The callback receives the
+// raw JSON bytes from the client's ack ([] for an empty ack, the first
+// arg as JSON, or a JSON-array when the client called the ack with
+// multiple args).
+//
+// On a healthy round-trip the callback fires with the ack bytes.
+// If the client does not respond within OutboundAckTimeout the callback
+// fires with nil. If the connection closes before any ack arrives the
+// callback fires with nil.
+//
+// For per-call control over the timeout and a structured error, see
+// EmitWithAckTimeout.
 func (kws *Websocket) EmitWithAck(event string, data []byte, cb func(ack []byte)) {
 	if cb == nil {
 		kws.EmitEvent(event, data)
 		return
 	}
+	kws.EmitWithAckTimeout(event, data, OutboundAckTimeout, func(ack []byte, _ error) {
+		cb(ack)
+	})
+}
+
+// EmitWithAckTimeout is the timeout-aware variant of EmitWithAck. Pass
+// timeout = 0 to disable the timeout (the callback only fires when the
+// client acks or the connection closes).
+//
+// The callback's err is one of: nil (ack received), ErrAckTimeout, or
+// ErrAckDisconnected.
+func (kws *Websocket) EmitWithAckTimeout(event string, data []byte, timeout time.Duration, cb AckCallback) {
+	if cb == nil {
+		kws.EmitEvent(event, data)
+		return
+	}
+	if !kws.IsAlive() {
+		cb(nil, ErrAckDisconnected)
+		return
+	}
+
 	kws.outboundAcksMu.Lock()
 	kws.outboundAckSeq++
 	id := kws.outboundAckSeq
-	kws.outboundAcks[id] = cb
+	p := &pendingAck{cb: cb}
+	kws.outboundAcks[id] = p
 	kws.outboundAcksMu.Unlock()
+
+	if timeout > 0 {
+		p.timer = time.AfterFunc(timeout, func() { kws.fireAckTimeout(id) })
+	}
+
 	kws.write(TextMessage, buildSIOEventWithAck(kws.getNamespace(), id, true, event, data))
 }
 
 // deliverOutboundAck dispatches an incoming ACK to the registered callback,
-// if any, and removes it from the pending map.
+// if any, and removes it from the pending map. The map-delete is the
+// single source of truth: timer-fire and ack-arrival race through the
+// same mutex, so the callback is invoked exactly once.
 func (kws *Websocket) deliverOutboundAck(id uint64, data []byte) {
 	kws.outboundAcksMu.Lock()
-	cb, ok := kws.outboundAcks[id]
-	delete(kws.outboundAcks, id)
-	kws.outboundAcksMu.Unlock()
-	if ok && cb != nil {
-		cb(data)
+	p, ok := kws.outboundAcks[id]
+	if ok {
+		delete(kws.outboundAcks, id)
 	}
+	kws.outboundAcksMu.Unlock()
+	if !ok || p == nil {
+		return
+	}
+	if p.timer != nil {
+		p.timer.Stop()
+	}
+	if p.cb != nil {
+		func() {
+			defer func() { _ = recover() }()
+			p.cb(data, nil)
+		}()
+	}
+}
+
+// fireAckTimeout is called from time.AfterFunc when the configured ack
+// deadline elapses. The map-delete-wins pattern ensures a racing ack
+// arrival cannot also fire the callback.
+func (kws *Websocket) fireAckTimeout(id uint64) {
+	kws.outboundAcksMu.Lock()
+	p, ok := kws.outboundAcks[id]
+	if ok {
+		delete(kws.outboundAcks, id)
+	}
+	kws.outboundAcksMu.Unlock()
+	if !ok || p == nil || p.cb == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	p.cb(nil, ErrAckTimeout)
 }
 
 // Close Actively close the connection from the server.
@@ -1096,6 +1200,10 @@ func (kws *Websocket) send(ctx context.Context) {
 				continue
 			}
 
+			// Hold the kws.mu read-lock across the write so we serialise
+			// against Close()'s Lock(), which writes the SIO DISCONNECT +
+			// close frame directly. Multiple send goroutines do not exist
+			// (only this one), so RLock here only blocks Close().
 			kws.mu.RLock()
 			err := kws.Conn.WriteMessage(msg.mType, msg.data)
 			kws.mu.RUnlock()
@@ -1149,18 +1257,20 @@ func (kws *Websocket) run() {
 // Listen for incoming messages
 // and filter by message type
 func (kws *Websocket) read(ctx context.Context) {
-	// Cancellation: in-flight ReadMessage is unblocked when disconnected()
-	// pushes a past read deadline onto the conn. Loop iteration after that
-	// returns with i/o timeout, falls into the "err != nil" branch below
-	// and exits cleanly.
+	// Single-reader contract: only this goroutine ever calls ReadMessage on
+	// kws.Conn. We do NOT hold kws.mu around it because ReadMessage blocks
+	// indefinitely until a peer frame arrives, which would deadlock any
+	// goroutine that subsequently takes kws.mu.Lock (e.g. Close(),
+	// disconnected()). SetReadDeadline (called by disconnected to break
+	// us out of ReadMessage) is delegated to net.Conn.SetReadDeadline,
+	// which is safe to call concurrently with an in-flight Read per
+	// the net.Conn contract.
 	for {
 		if !kws.hasConn() {
 			return
 		}
 
-		kws.mu.RLock()
 		mType, msg, err := kws.Conn.ReadMessage()
-		kws.mu.RUnlock()
 
 		// Any successfully-received frame from the peer counts as proof
 		// of life for the heartbeat enforcer.
@@ -1319,14 +1429,14 @@ func (kws *Websocket) disconnected(err error) {
 		first = true
 		kws.setAlive(false)
 		// Push an immediate read deadline so any in-flight ReadMessage in
-		// the read goroutine returns and lets it exit. Held under the
-		// write lock so we do not race with the read goroutine's RLock'd
-		// ReadMessage call (the kws.mu pattern serialises them).
-		kws.mu.Lock()
-		if kws.Conn != nil {
-			_ = kws.Conn.SetReadDeadline(time.Unix(0, 1))
+		// the read goroutine returns and lets it exit. SetReadDeadline
+		// is delegated to net.Conn, whose contract guarantees concurrent
+		// callers are safe (it is the standard idiom for cancelling a
+		// blocking Read), so no kws.mu lock is required and we cannot
+		// deadlock against the read goroutine's blocking ReadMessage.
+		if c := kws.Conn; c != nil {
+			_ = c.SetReadDeadline(time.Unix(0, 1))
 		}
-		kws.mu.Unlock()
 	})
 	if !first {
 		return
@@ -1336,18 +1446,27 @@ func (kws *Websocket) disconnected(err error) {
 	// observing pool.all() do not see this dying connection.
 	pool.delete(kws.GetUUID())
 
-	// Drain pending outbound ack callbacks: invoke each with nil so callers
-	// can distinguish "ack received" from "connection closed".
+	// Drain pending outbound ack callbacks: invoke each with
+	// ErrAckDisconnected so callers can distinguish "ack received" (cb
+	// gets ack bytes, err nil) from "connection closed" (cb gets nil,
+	// err ErrAckDisconnected) from "client never replied" (cb gets nil,
+	// err ErrAckTimeout).
 	kws.outboundAcksMu.Lock()
 	pending := kws.outboundAcks
-	kws.outboundAcks = make(map[uint64]func([]byte))
+	kws.outboundAcks = make(map[uint64]*pendingAck)
 	kws.outboundAcksMu.Unlock()
-	for _, cb := range pending {
-		if cb != nil {
-			func() {
+	for _, p := range pending {
+		if p == nil {
+			continue
+		}
+		if p.timer != nil {
+			p.timer.Stop()
+		}
+		if p.cb != nil {
+			func(cb AckCallback) {
 				defer func() { _ = recover() }()
-				cb(nil)
-			}()
+				cb(nil, ErrAckDisconnected)
+			}(p.cb)
 		}
 	}
 
@@ -1408,6 +1527,14 @@ func (kws *Websocket) fireEventWithAck(event string, data []byte, fireErr error,
 	}
 	kws.mu.RUnlock()
 
+	// Single ack-sent guard shared across every listener dispatch for this
+	// event, so two listeners that both call payload.Ack(...) produce only
+	// one "43" frame on the wire.
+	var ackGuard *atomic.Bool
+	if hasAck {
+		ackGuard = new(atomic.Bool)
+	}
+
 	for _, callback := range callbacks {
 		callback(&EventPayload{
 			Kws:              kws,
@@ -1419,6 +1546,7 @@ func (kws *Websocket) fireEventWithAck(event string, data []byte, fireErr error,
 			AckID:            ackID,
 			HasAck:           hasAck,
 			HandshakeAuth:    auth,
+			ackSent:          ackGuard,
 		})
 	}
 }

@@ -3,6 +3,7 @@ package socketio
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"strconv"
 	"strings"
@@ -90,6 +91,10 @@ func (s *WebsocketMock) Emit(message []byte, _ ...int) {
 // model the ack callback dispatch; Tests should use the real *Websocket if
 // they want to exercise that path.
 func (s *WebsocketMock) EmitWithAck(_ string, _ []byte, _ func([]byte)) {}
+
+// EmitWithAckTimeout: same no-op for the mock.
+func (s *WebsocketMock) EmitWithAckTimeout(_ string, _ []byte, _ time.Duration, _ AckCallback) {
+}
 
 func (s *WebsocketMock) IsAlive() bool {
 	args := s.Called()
@@ -1151,4 +1156,284 @@ func TestSocketIOPingTimeoutIsAdvertised(t *testing.T) {
 	require.Equal(t, int(PingTimeout.Milliseconds()), open.PingTimeout)
 	require.GreaterOrEqual(t, open.PingTimeout, 1000,
 		"PingTimeout must be at least 1s, got %d ms", open.PingTimeout)
+}
+
+// TestSocketIOCloseDoesNotDeadlockOnQuietPeer is the regression test for
+// the iteration-1 read-RLock deadlock. Before the fix, Close() (which
+// takes kws.mu.Lock) would block forever waiting for the read goroutine
+// to release its RLock'd ReadMessage call. Verify that Close completes
+// even when the peer sends nothing.
+func TestSocketIOCloseDoesNotDeadlockOnQuietPeer(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	ready := make(chan *Websocket, 1)
+	On(EventConnect, func(p *EventPayload) {
+		select {
+		case ready <- p.Kws:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+
+	var kws *Websocket
+	select {
+	case kws = <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no EventConnect")
+	}
+
+	// From a goroutine that does NOT match the read goroutine, call
+	// Close. With the deadlock in place this would hang forever; with
+	// the fix it completes within milliseconds.
+	closed := make(chan struct{})
+	go func() {
+		kws.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close() deadlocked when peer was quiet")
+	}
+}
+
+// TestSocketIOMultipleListenersShareAckGuard verifies that two listeners
+// for the same event both calling payload.Ack(...) produce only ONE "43"
+// frame on the wire (the second call returns ErrAckAlreadySent).
+func TestSocketIOMultipleListenersShareAckGuard(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	first := make(chan error, 1)
+	second := make(chan error, 1)
+
+	On(EventMessage, func(ep *EventPayload) {
+		first <- ep.Ack([]byte(`"first"`))
+	})
+	On(EventMessage, func(ep *EventPayload) {
+		second <- ep.Ack([]byte(`"second"`))
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`421["message",{"k":"v"}]`)))
+
+	// Exactly one ack must reach the wire.
+	tp, msg, err := sioReadSkipPings(conn)
+	require.NoError(t, err)
+	require.Equal(t, websocket.TextMessage, tp)
+	require.Truef(t,
+		string(msg) == `431["first"]` || string(msg) == `431["second"]`,
+		"expected one of the listeners' acks, got %q", msg,
+	)
+
+	// And the other listener must have been told the ack was already sent.
+	collect := func() []error {
+		var errs []error
+		for i := 0; i < 2; i++ {
+			select {
+			case e := <-first:
+				errs = append(errs, e)
+			case e := <-second:
+				errs = append(errs, e)
+			case <-time.After(2 * time.Second):
+				t.Fatal("listeners did not finish")
+			}
+		}
+		return errs
+	}
+	errs := collect()
+	var nilCount, alreadyCount int
+	for _, e := range errs {
+		switch {
+		case e == nil:
+			nilCount++
+		case errors.Is(e, ErrAckAlreadySent):
+			alreadyCount++
+		default:
+			t.Fatalf("unexpected ack error: %v", e)
+		}
+	}
+	require.Equal(t, 1, nilCount, "exactly one Ack call should succeed")
+	require.Equal(t, 1, alreadyCount, "the other Ack call should report ErrAckAlreadySent")
+}
+
+// TestSocketIOEmitWithAckTimeout verifies that EmitWithAckTimeout fires
+// the callback with ErrAckTimeout when the client never replies.
+func TestSocketIOEmitWithAckTimeout(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	ready := make(chan *Websocket, 1)
+	On(EventConnect, func(p *EventPayload) {
+		select {
+		case ready <- p.Kws:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+
+	var kws *Websocket
+	select {
+	case kws = <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no EventConnect")
+	}
+
+	type ackResult struct {
+		data []byte
+		err  error
+	}
+	got := make(chan ackResult, 1)
+	kws.EmitWithAckTimeout("ping", []byte(`"hi"`), 100*time.Millisecond, func(ack []byte, err error) {
+		got <- ackResult{ack, err}
+	})
+
+	// Read the outgoing event so the conn buffer does not back up.
+	_, _, _ = sioReadSkipPings(conn)
+
+	select {
+	case r := <-got:
+		require.Nil(t, r.data)
+		require.ErrorIs(t, r.err, ErrAckTimeout)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout callback never fired")
+	}
+}
+
+// TestSocketIOEmitWithAckDisconnectDelivered verifies that pending ack
+// callbacks fire with ErrAckDisconnected when the connection closes
+// before the client replies.
+func TestSocketIOEmitWithAckDisconnectDelivered(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	ready := make(chan *Websocket, 1)
+	On(EventConnect, func(p *EventPayload) {
+		select {
+		case ready <- p.Kws:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	require.NoError(t, sioHandshake(t, conn))
+
+	var kws *Websocket
+	select {
+	case kws = <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no EventConnect")
+	}
+
+	type ackResult struct {
+		data []byte
+		err  error
+	}
+	got := make(chan ackResult, 1)
+	kws.EmitWithAckTimeout("ping", []byte(`"hi"`), 0, func(ack []byte, err error) {
+		got <- ackResult{ack, err}
+	})
+
+	// Drain the emit so the wire is clean, then close.
+	_, _, _ = sioReadSkipPings(conn)
+	conn.Close()
+
+	select {
+	case r := <-got:
+		require.Nil(t, r.data)
+		require.ErrorIs(t, r.err, ErrAckDisconnected)
+	case <-time.After(2 * time.Second):
+		t.Fatal("disconnect callback never fired")
+	}
+}
+
+// TestSocketIOEventPayloadAck_DoubleSend verifies a single listener
+// calling Ack twice gets ErrAckAlreadySent on the second call.
+func TestSocketIOEventPayloadAck_DoubleSend(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	results := make(chan []error, 1)
+	On(EventMessage, func(ep *EventPayload) {
+		first := ep.Ack([]byte(`"a"`))
+		second := ep.Ack([]byte(`"b"`))
+		results <- []error{first, second}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`421["message",{"k":"v"}]`)))
+
+	select {
+	case errs := <-results:
+		require.NoError(t, errs[0])
+		require.ErrorIs(t, errs[1], ErrAckAlreadySent)
+	case <-time.After(2 * time.Second):
+		t.Fatal("listener never called Ack twice")
+	}
+}
+
+// TestSocketIOInvalidNamespaceRejected verifies that a CONNECT with a
+// malformed namespace receives a "44" CONNECT_ERROR and the connection
+// is closed by the server.
+func TestSocketIOInvalidNamespaceRejected(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	// Read EIO OPEN so the server is in handshake-wait state.
+	_, _, err := conn.ReadMessage()
+	require.NoError(t, err)
+
+	// CONNECT to a namespace containing a forbidden character (',' would
+	// be the framing delimiter; spaces are also rejected by our charset).
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte("40/bad ns,")))
+
+	// Server should send 44/bad ns,{...} and close.
+	for {
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		mType, msg, rerr := conn.ReadMessage()
+		if rerr != nil {
+			// Closure is acceptable.
+			return
+		}
+		if mType == websocket.TextMessage && len(msg) >= 2 && msg[0] == eioMessage && msg[1] == sioConnectError {
+			require.Truef(t, strings.Contains(string(msg), "invalid namespace"),
+				"expected CONNECT_ERROR with 'invalid namespace', got %q", msg,
+			)
+			return
+		}
+	}
 }
