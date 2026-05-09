@@ -1,6 +1,7 @@
 package socketio
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1655,13 +1656,16 @@ func TestSocketIOReservedNamesRejected(t *testing.T) {
 		t.Fatal("EventConnect did not fire")
 	}
 
-	for _, n := range []string{"connect", "connect_error", "disconnect",
-		"disconnecting", "newListener", "removeListener"} {
+	// Only wire-level reserved names are blocked. Node EventEmitter
+	// internals (disconnecting, newListener, removeListener) are not
+	// reserved by socket.io on the wire and must remain emittable by
+	// users.
+	for _, n := range []string{"connect", "connect_error", "disconnect"} {
 		kws.EmitEvent(n, []byte(`{"x":1}`))
 	}
 
 	// Read for a short window. Any frame that arrives must NOT carry one
-	// of the reserved names. (PINGs are auto-skipped by sioReadSkipPings.)
+	// of the wire-reserved names. (PINGs are auto-skipped by sioReadSkipPings.)
 	_ = conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
 	for {
 		_, msg, err := conn.ReadMessage()
@@ -1671,10 +1675,7 @@ func TestSocketIOReservedNamesRejected(t *testing.T) {
 		require.Falsef(t,
 			strings.Contains(string(msg), `"connect"`) ||
 				strings.Contains(string(msg), `"disconnect"`) ||
-				strings.Contains(string(msg), `"connect_error"`) ||
-				strings.Contains(string(msg), `"disconnecting"`) ||
-				strings.Contains(string(msg), `"newListener"`) ||
-				strings.Contains(string(msg), `"removeListener"`),
+				strings.Contains(string(msg), `"connect_error"`),
 			"reserved name leaked onto wire: %q", msg,
 		)
 	}
@@ -2160,22 +2161,10 @@ func TestExtractSIOConnectAuthEdgeCases(t *testing.T) {
 }
 
 // TestSocketIOMalformedAuthRejected sends a CONNECT packet with a truncated
-// JSON auth payload (`40{"unclosed`) and verifies that the server either:
-//
-//	(a) closes the connection, OR
-//	(b) sends a CONNECT_ERROR ("44") frame.
-//
-// Documented current behaviour (pinned by this test): the parser does not
-// validate the JSON shape of the auth payload, so a truncated object flows
-// through extractSIOConnect verbatim. The server stores it as
-// kws.handshakeAuth and then sends back a regular CONNECT_ACK ("40{...sid...}")
-// because the handshake layer has no JSON-shape gate either. Therefore the
-// expected outcome today is NEITHER (a) nor (b): the handshake completes.
-//
-// We assert the looser, factual contract first (no panic / EOF on the read),
-// and then explicitly document the gap by failing iff the server unexpectedly
-// closes or emits CONNECT_ERROR (which would be a behavioural change worth
-// noticing). Flip the assertions when malformed-auth rejection is implemented.
+// JSON auth payload (`40{"unclosed`) and verifies that the server rejects
+// the handshake with a CONNECT_ERROR ("44") frame (and/or closes the
+// connection). The hardened handshake validates the auth payload via
+// isValidAuthPayload before storing it on kws.handshakeAuth.
 func TestSocketIOMalformedAuthRejected(t *testing.T) {
 	resetSIOGlobals(t)
 
@@ -2192,22 +2181,78 @@ func TestSocketIOMalformedAuthRejected(t *testing.T) {
 	// Truncated JSON auth, root namespace.
 	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`40{"unclosed`)))
 
+	assertConnectErrorOrClose(t, conn, "malformed auth")
+}
+
+// TestSocketIOAuthArrayRejected sends a CONNECT packet whose auth payload is
+// a JSON array (`40[1,2,3]`). Per socket.io-protocol v5 the auth field MUST
+// be a JSON object, so the server must reply with CONNECT_ERROR (or close).
+func TestSocketIOAuthArrayRejected(t *testing.T) {
+	resetSIOGlobals(t)
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	_, _, err := conn.ReadMessage()
+	require.NoError(t, err)
+
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`40[1,2,3]`)))
+
+	assertConnectErrorOrClose(t, conn, "array auth")
+}
+
+// TestSocketIOAuthOversizeRejected sends a CONNECT packet whose auth payload
+// is a syntactically valid JSON object but exceeds MaxAuthPayload by 1 byte.
+// The server must reject the handshake with CONNECT_ERROR (or close).
+func TestSocketIOAuthOversizeRejected(t *testing.T) {
+	resetSIOGlobals(t)
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	_, _, err := conn.ReadMessage()
+	require.NoError(t, err)
+
+	// Build `{"token":"<filler>"}` so the total auth payload length is
+	// exactly MaxAuthPayload + 1 bytes (one byte over the cap).
+	prefix := `{"token":"`
+	suffix := `"}`
+	overhead := len(prefix) + len(suffix)
+	fillerLen := MaxAuthPayload + 1 - overhead
+	require.Greater(t, fillerLen, 0)
+	filler := bytes.Repeat([]byte{'a'}, fillerLen)
+	auth := append([]byte(prefix), filler...)
+	auth = append(auth, []byte(suffix)...)
+	require.Equal(t, MaxAuthPayload+1, len(auth))
+
+	frame := append([]byte("40"), auth...)
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, frame))
+
+	assertConnectErrorOrClose(t, conn, "oversize auth")
+}
+
+// assertConnectErrorOrClose reads one frame from conn and asserts that the
+// server either (a) closed the connection or (b) emitted a Socket.IO
+// CONNECT_ERROR ("44") frame. Anything else (notably a CONNECT_ACK) is a
+// regression of the auth-payload validation and fails the test.
+func assertConnectErrorOrClose(t *testing.T, conn *websocket.Conn, label string) {
+	t.Helper()
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	mType, msg, rerr := conn.ReadMessage()
 
 	switch {
 	case rerr != nil:
-		// (a) connection closed/errored. Acceptable hardened behaviour.
-		t.Logf("BEHAVIOUR (a): server closed connection on malformed auth: %v", rerr)
+		t.Logf("%s: server closed connection: %v", label, rerr)
 	case mType == websocket.TextMessage && len(msg) >= 2 && msg[0] == eioMessage && msg[1] == sioConnectError:
-		// (b) CONNECT_ERROR. Also acceptable hardened behaviour.
-		t.Logf("BEHAVIOUR (b): server sent CONNECT_ERROR: %q", msg)
-	case mType == websocket.TextMessage && len(msg) >= 2 && msg[0] == eioMessage && msg[1] == sioConnect:
-		// CURRENT BEHAVIOUR: handshake completes. Document the gap.
-		t.Logf("CURRENT BEHAVIOUR: malformed auth NOT rejected; server replied with CONNECT_ACK: %q", msg)
-		t.Skip("malformed-auth rejection is not implemented; see TestExtractSIOConnectAuthEdgeCases for the underlying parser quirks")
+		t.Logf("%s: server sent CONNECT_ERROR: %q", label, msg)
 	default:
-		t.Fatalf("unexpected response: type=%d payload=%q", mType, msg)
+		t.Fatalf("%s: expected CONNECT_ERROR or close, got type=%d payload=%q", label, mType, msg)
 	}
 }
 
@@ -2460,18 +2505,16 @@ func TestSocketIOOnAfterFireDoesNotAffectInflight(t *testing.T) {
 //
 // Run under -race to surface any latent data race.
 func TestSocketIOConcurrentEmitClose(t *testing.T) {
-	// Iteration-2 race surfaced: Close() reads kws.Conn (socketio.go:1308-1309)
-	// while the upgrade handler's deferred releaseConn(c) writes c.Conn=nil
-	// in vendored websocket.go:226. Close still takes kws.mu.Lock around the
-	// dereference, but releaseConn does NOT take that lock; it nils the
-	// fasthttp.Conn pointer at handler exit. Two writers + one reader on the
-	// same word with no shared mutex => race.
-	//   read : socketio.go:1308 (Close, under kws.mu.Lock)
-	//   write: vendor/github.com/gofiber/contrib/v3/websocket/websocket.go:226
-	//          (releaseConn, deferred at handler return)
-	// Skip until iteration 9 per stress-test charter; do NOT fix in this pass.
-	t.Skip("iteration-2 data race: kws.Conn read in Close vs releaseConn write " +
-		"(socketio.go:1308-1309 vs vendor/.../websocket.go:226). Hold until iter 9.")
+	// Iteration-2 race fixed in socketio.go:
+	//   - Close() now gates its kws.mu-protected write block behind a
+	//     dedicated closeOnce so concurrent callers cannot double-write.
+	//   - run() now performs a kws.mu.Lock()/Unlock() barrier after
+	//     workersWg.Wait() so any in-flight Close() writer has finished
+	//     before the upgrade handler returns and the vendored websocket
+	//     package's deferred releaseConn() nils the embedded *fasthttp.Conn.
+	//   - Close()'s write branch additionally nil-checks kws.Conn.Conn
+	//     under kws.mu so a connection that lost its inner pointer is
+	//     skipped instead of panicking.
 	resetSIOGlobals(t)
 
 	// Stable connect listener: stash kws handles as connections come in.
@@ -2735,16 +2778,27 @@ func TestSocketIOAckRaceTimeoutVsDelivery(t *testing.T) {
 	kws.isAlive.Store(true)
 	kws.UUID = uuid.New().String()
 
+	var timeoutWins, deliveryWins atomic.Int32
+
 	for i := 0; i < iterations; i++ {
 		var fires atomic.Int32
+		var sawTimeout, sawDelivery atomic.Bool
 		done := make(chan struct{}, 2)
 
-		// Register the pending ack manually so we control the id.
+		// Register the pending ack manually so we control the id. The timer
+		// is armed under the same lock that guards the map, mirroring the
+		// production EmitWithAckTimeout path so the race-detector can flag
+		// any future regression that arms the timer outside the mutex.
 		kws.outboundAcksMu.Lock()
 		kws.outboundAckSeq++
 		id := kws.outboundAckSeq
-		p := &pendingAck{cb: func(_ []byte, _ error) {
+		p := &pendingAck{cb: func(_ []byte, err error) {
 			fires.Add(1)
+			if err == ErrAckTimeout {
+				sawTimeout.Store(true)
+			} else if err == nil {
+				sawDelivery.Store(true)
+			}
 			done <- struct{}{}
 		}}
 		// Microsecond-class timer to maximise the race window.
@@ -2775,12 +2829,83 @@ func TestSocketIOAckRaceTimeoutVsDelivery(t *testing.T) {
 		}
 
 		require.Equalf(t, int32(1), fires.Load(), "iter %d: expected exactly 1 fire", i)
+		if sawTimeout.Load() {
+			timeoutWins.Add(1)
+		}
+		if sawDelivery.Load() {
+			deliveryWins.Add(1)
+		}
 
 		// Map must be empty between iterations.
 		kws.outboundAcksMu.Lock()
 		size := len(kws.outboundAcks)
 		kws.outboundAcksMu.Unlock()
 		require.Equalf(t, 0, size, "iter %d: map not drained", i)
+	}
+
+	// Both arms must be exercised by the staggered schedule, otherwise the
+	// test only proves one half of the invariant and silently regresses
+	// when scheduling shifts.
+	require.Greater(t, timeoutWins.Load(), int32(0), "timeout path never won (test no longer races both arms)")
+	require.Greater(t, deliveryWins.Load(), int32(0), "delivery path never won (test no longer races both arms)")
+}
+
+// TestSocketIOAckRaceDisconnectVsDelivery hammers the third leg of the
+// at-most-once invariant: the disconnected() drain racing against
+// deliverOutboundAck and fireAckTimeout on the same id. Without the
+// pendingAck.fired CAS guard, a timer goroutine that already captured a
+// pending entry could double-fire after disconnected() drained the map.
+func TestSocketIOAckRaceDisconnectVsDelivery(t *testing.T) {
+	resetSIOGlobals(t)
+
+	const iterations = 500
+
+	for i := 0; i < iterations; i++ {
+		kws := &Websocket{
+			queue:        make(chan message, 16),
+			done:         make(chan struct{}, 1),
+			attributes:   make(map[string]any),
+			outboundAcks: make(map[uint64]*pendingAck),
+		}
+		kws.isAlive.Store(true)
+		kws.UUID = uuid.New().String()
+
+		var fires atomic.Int32
+		done := make(chan struct{}, 4)
+
+		kws.outboundAcksMu.Lock()
+		kws.outboundAckSeq++
+		id := kws.outboundAckSeq
+		p := &pendingAck{cb: func(_ []byte, _ error) {
+			fires.Add(1)
+			done <- struct{}{}
+		}}
+		p.timer = time.AfterFunc(40*time.Microsecond, func() { kws.fireAckTimeout(id) })
+		kws.outboundAcks[id] = p
+		kws.outboundAcksMu.Unlock()
+
+		// Race three callers against the same pending ack: the timer (already
+		// scheduled), an inbound delivery, and the disconnect drain.
+		spin := i % 16
+		for k := 0; k < spin; k++ {
+			runtime.Gosched()
+		}
+		go kws.deliverOutboundAck(id, []byte(`"x"`))
+		go kws.disconnected(nil)
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iter %d: callback never fired", i)
+		}
+
+		select {
+		case <-done:
+			t.Fatalf("iter %d: callback fired twice (race)", i)
+		case <-time.After(3 * time.Millisecond):
+		}
+
+		require.Equalf(t, int32(1), fires.Load(), "iter %d: expected exactly 1 fire", i)
 	}
 }
 
@@ -3099,4 +3224,206 @@ func TestSocketIOEmitWithAck10000Concurrent(t *testing.T) {
 	leftover := len(kws.outboundAcks)
 	kws.outboundAcksMu.Unlock()
 	require.Equal(t, 0, leftover, "outboundAcks must be fully drained after disconnect")
+}
+
+// TestSocketIOSendQueueOverflowDropMode verifies that when DropFramesOnOverflow
+// is enabled, a saturated send queue causes individual frames to be dropped
+// (with EventError firing) instead of tearing down the connection.
+//
+// We use a real WebSocket connection where the client side never reads, so
+// the server-side send goroutine eventually blocks writing to the wire.
+// Once that happens, write() can no longer drain the queue and the
+// configurable overflow path is exercised.
+func TestSocketIOSendQueueOverflowDropMode(t *testing.T) {
+	resetSIOGlobals(t)
+
+	// Tunables: tiny queue, drop-mode on. Restore on cleanup.
+	prevDrop := DropFramesOnOverflow
+	prevSize := SendQueueSize
+	DropFramesOnOverflow = true
+	SendQueueSize = 4
+	t.Cleanup(func() {
+		DropFramesOnOverflow = prevDrop
+		SendQueueSize = prevSize
+	})
+
+	var (
+		errFired      atomic.Int64
+		sawOverflowErr atomic.Bool
+	)
+	On(EventError, func(payload *EventPayload) {
+		errFired.Add(1)
+		if payload != nil && payload.Error != nil &&
+			errors.Is(payload.Error, ErrSendQueueOverflow) {
+			sawOverflowErr.Store(true)
+		}
+	})
+
+	// Capture the server-side *Websocket so the test can inject frames
+	// directly via Emit (which routes through write()).
+	kwsCh := make(chan *Websocket, 1)
+	ln, teardown := newSIOTestServer(t, func(kws *Websocket) {
+		select {
+		case kwsCh <- kws:
+		default:
+		}
+	})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	require.NoError(t, sioHandshake(t, conn))
+
+	var kws *Websocket
+	select {
+	case kws = <-kwsCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server-side Websocket was not handed to callback")
+	}
+
+	// The client deliberately never reads. To accelerate back-pressure on
+	// the server's send goroutine we shrink the wire-side write deadline
+	// indirectly by flooding with payloads large enough to fill the
+	// in-memory listener's pipe buffer quickly.
+	bigPayload := bytes.Repeat([]byte("x"), 64*1024)
+
+	// Emit ~100 frames. With SendQueueSize=4 and a stalled wire, the
+	// queue must overflow well before the loop ends.
+	const N = 100
+	for i := 0; i < N; i++ {
+		kws.Emit(bigPayload)
+	}
+
+	// Allow EventError dispatch to settle.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if errFired.Load() > 0 && sawOverflowErr.Load() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	require.True(t, sawOverflowErr.Load(),
+		"expected EventError with ErrSendQueueOverflow at least once")
+	require.Greater(t, errFired.Load(), int64(0),
+		"expected EventError to fire on queue overflow")
+	require.True(t, kws.IsAlive(),
+		"connection must stay alive in DropFramesOnOverflow mode")
+}
+
+// TestSocketIOAckCrossNamespaceDropped verifies that an inbound ACK frame
+// addressed to a foreign namespace ("43/admin,<id>[...]") arriving on a
+// connection bound to the root namespace ("/") does NOT fire the root
+// namespace's pending ack callback. ACK ids are per-namespace per the
+// socket.io v5 spec; without this guard a malicious client could trigger
+// any pending callback by tagging a foreign namespace.
+//
+// Sequence:
+//  1. Client connects to root (no /admin handshake).
+//  2. Server registers an outbound ack with EmitWithAckTimeout.
+//  3. Client replies with "43/admin,<id>[...]" instead of "43<id>[...]".
+//  4. The original callback must NOT fire; it should still be waiting for
+//     a properly-namespaced ack.
+func TestSocketIOAckCrossNamespaceDropped(t *testing.T) {
+	resetSIOGlobals(t)
+
+	ready := make(chan *Websocket, 1)
+	On(EventConnect, func(p *EventPayload) {
+		select {
+		case ready <- p.Kws:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	// Plain root-namespace handshake: NO "/admin" CONNECT.
+	require.NoError(t, sioHandshake(t, conn))
+
+	var kws *Websocket
+	select {
+	case kws = <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no EventConnect")
+	}
+	require.Empty(t, kws.getNamespace(), "connection must be bound to root")
+
+	// Register an outbound ack. Use a long timeout so the callback only
+	// fires on actual delivery, not on timeout.
+	gotAck := make(chan []byte, 1)
+	kws.EmitWithAckTimeout("ping", []byte(`"hi"`), 5*time.Second,
+		func(ack []byte, err error) {
+			// Either ack or timeout would push here; both are failures
+			// for this test (ack -> wrong-ns frame fired callback;
+			// timeout-with-data should not happen in 5s either).
+			if err == nil {
+				gotAck <- ack
+			}
+		})
+
+	// Read the outbound emit so we know the server-assigned id.
+	tp, msg, err := sioReadSkipPings(conn)
+	require.NoError(t, err)
+	require.Equal(t, websocket.TextMessage, tp)
+	// Wire format: "42<id>[\"ping\",\"hi\"]" (root namespace, no prefix).
+	require.True(t, bytes.HasPrefix(msg, []byte(`42`)),
+		"expected event frame, got %q", msg)
+	// Extract the id from "42<id>[".
+	rest := msg[2:]
+	bracket := bytes.IndexByte(rest, '[')
+	require.GreaterOrEqual(t, bracket, 1, "expected ack id before payload")
+	idStr := string(rest[:bracket])
+
+	// Inject the cross-namespace ack: "43/admin,<id>[\"pong\"]".
+	crossNS := []byte(`43/admin,` + idStr + `["pong"]`)
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, crossNS))
+
+	// Round-trip an EIO PING/PONG to ensure the read loop has processed
+	// the cross-namespace frame BEFORE we assert on the channel state.
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte{eioPing}))
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for {
+		mType, m, rerr := conn.ReadMessage()
+		if rerr != nil {
+			break
+		}
+		if mType == websocket.TextMessage && len(m) == 1 && m[0] == eioPong {
+			break
+		}
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+
+	// The callback MUST NOT have fired: cross-namespace ack should be
+	// dropped silently, leaving the pending callback registered.
+	select {
+	case ack := <-gotAck:
+		t.Fatalf("cross-namespace ack must not fire callback, got %q", ack)
+	case <-time.After(50 * time.Millisecond):
+		// Expected: no fire.
+	}
+
+	// Connection must still be alive.
+	require.True(t, kws.IsAlive(), "conn must survive cross-ns ack")
+
+	// The pending callback must still be registered, waiting for a
+	// properly-namespaced ack.
+	kws.outboundAcksMu.Lock()
+	pending := len(kws.outboundAcks)
+	kws.outboundAcksMu.Unlock()
+	require.Equal(t, 1, pending,
+		"original callback must still be waiting for a properly-namespaced ack")
+
+	// Sanity: a properly-namespaced ack DOES still deliver.
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage,
+		[]byte(`43`+idStr+`["pong"]`)))
+	select {
+	case ack := <-gotAck:
+		require.Equal(t, `"pong"`, string(ack))
+	case <-time.After(2 * time.Second):
+		t.Fatal("properly-namespaced ack failed to deliver after cross-ns drop")
+	}
 }

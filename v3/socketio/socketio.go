@@ -113,13 +113,14 @@ var (
 // client treats as built-in lifecycle events. Emitting any of these by
 // name from the server would either be silently swallowed or trigger
 // spurious lifecycle handlers on the client.
+//
+// Only wire-level reserved names are blocked here. Node EventEmitter
+// internals (disconnecting, newListener, removeListener) never appear
+// on the wire and must not constrain user event names.
 var reservedEventNames = map[string]struct{}{
-	"connect":        {},
-	"connect_error":  {},
-	"disconnect":     {},
-	"disconnecting":  {},
-	"newListener":    {},
-	"removeListener": {},
+	"connect":       {},
+	"connect_error": {},
+	"disconnect":    {},
 }
 
 // isReservedEventName reports whether name is a reserved socket.io
@@ -159,6 +160,12 @@ var (
 	// SetReadLimit on the underlying connection. Frames exceeding this size
 	// are rejected and the connection is closed.
 	MaxPayload int64 = 1_000_000
+	// MaxAuthPayload is the maximum size in bytes of the JSON auth payload
+	// supplied by the client in the SIO CONNECT ("40") packet. Per
+	// socket.io-protocol v5 the auth field is a JSON object (or absent);
+	// any payload exceeding this cap is rejected with CONNECT_ERROR and the
+	// handshake fails. Defaults to 8 KiB.
+	MaxAuthPayload int = 8 * 1024
 	// OutboundAckTimeout is the default deadline for ack callbacks
 	// registered via EmitWithAck. Override with EmitWithAckTimeout for
 	// per-call timeouts.
@@ -172,6 +179,20 @@ var (
 	// client cannot pin a multi-megabyte string per frame as part of the
 	// EventPayload it dispatches to user listeners.
 	MaxEventNameLength = 256
+	// SendQueueSize is the buffered capacity of the per-connection outbound
+	// frame queue. Must be tuned before connections are accepted; existing
+	// sockets retain the size in effect at New() time.
+	SendQueueSize = 100
+	// DropFramesOnOverflow controls behavior when the per-connection send
+	// queue is full. When false (default), the connection is torn down with
+	// a "send queue overflow" error (legacy behavior). When true, the
+	// individual frame is dropped and EventError fires with a descriptive
+	// error, allowing the connection to survive bursty producers.
+	DropFramesOnOverflow = false
+	// ErrSendQueueOverflow is surfaced via EventError when a frame is
+	// dropped because the send queue was full and DropFramesOnOverflow is
+	// enabled.
+	ErrSendQueueOverflow = errors.New("socketio: send queue overflow, frame dropped")
 )
 
 // AckCallback receives the result of a server-initiated EmitWithAck.
@@ -187,9 +208,19 @@ type AckCallback func(ack []byte, err error)
 // pendingAck tracks one outstanding outbound ack: the callback to invoke
 // and an optional timer that fires ErrAckTimeout if the client never
 // responds.
+//
+// The fired atomic.Bool is the authoritative single-fire guard. While the
+// outboundAcksMu map-delete-wins pattern already serialises which path
+// removes the entry, the timer is registered after the inserting goroutine
+// drops the lock, so a delivery that arrives in that window would race
+// with the timer-field write under the Go race detector. fired is the
+// source of truth: whichever caller wins fired.CompareAndSwap(false, true)
+// invokes cb exactly once, the others bail out. This decouples the
+// at-most-once invariant from the timer-field publication ordering.
 type pendingAck struct {
 	cb    AckCallback
 	timer *time.Timer
+	fired atomic.Bool
 }
 
 // eioPingFrame is the cached single-byte EIO PING packet that the
@@ -482,7 +513,15 @@ type ws interface {
 // user code interacts with from inside listener callbacks.
 type Websocket struct {
 	once sync.Once
-	mu   sync.RWMutex
+	// closeOnce guards the synchronous DISCONNECT + Close-frame write block
+	// in Close() so that exactly one goroutine ever performs those writes,
+	// regardless of how many concurrent Close() callers race in. Without
+	// this, a second Close() racing in could acquire kws.mu after the first
+	// released it but before disconnected() flipped isAlive=false, double-
+	// writing the close frames and (worse) racing the upgrade handler's
+	// deferred releaseConn() that nils the embedded *fasthttp.Conn.
+	closeOnce sync.Once
+	mu        sync.RWMutex
 	// The Fiber.Websocket connection
 	Conn *websocket.Conn
 	// isAlive reports whether the connection is alive. Accessed lock-free
@@ -651,12 +690,26 @@ var listeners = func() *safeListeners {
 	return l
 }()
 
+// unsupportedEIOVersionBody is the JSON body returned when a client requests
+// an Engine.IO protocol version other than v4. The shape (code 5, message
+// "Unsupported protocol version") matches the reference socket.io server so
+// that existing clients surface a recognisable error.
+const unsupportedEIOVersionBody = `{"code":5,"message":"Unsupported protocol version"}`
+
 // New returns a Fiber handler that upgrades the request to a Socket.IO-
 // compatible WebSocket, performs the Engine.IO / Socket.IO handshake, and
 // invokes callback with the established Websocket so user code can register
 // per-connection state before the read and heartbeat goroutines start.
+//
+// Before delegating to the WebSocket upgrader, the handler validates the
+// Engine.IO protocol version supplied via the "EIO" query parameter. Only
+// EIO v4 is supported; an empty value defaults to v4. Any other value is
+// rejected with HTTP 400 and a JSON error body matching the reference
+// socket.io server response, so older clients (e.g. EIO v3) surface a
+// recognisable, transport-level handshake error instead of being silently
+// upgraded into an incompatible session.
 func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.Ctx) error {
-	return websocket.New(func(c *websocket.Conn) {
+	wsHandler := websocket.New(func(c *websocket.Conn) {
 		kws := &Websocket{
 			Conn: c,
 			Locals: func(key string) interface{} {
@@ -671,7 +724,7 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 			Cookies: func(key string, defaultValue ...string) string {
 				return c.Cookies(key, defaultValue...)
 			},
-			queue:        make(chan message, 100),
+			queue:        make(chan message, SendQueueSize),
 			done:         make(chan struct{}, 1),
 			attributes:   make(map[string]interface{}),
 			outboundAcks: make(map[uint64]*pendingAck),
@@ -712,6 +765,22 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 		// 5. Read / heartbeat goroutines and block until the connection closes.
 		kws.run()
 	}, config...)
+
+	return func(c fiber.Ctx) error {
+		// Reject unsupported Engine.IO protocol versions BEFORE the
+		// WebSocket upgrade. The reference server returns HTTP 400 with
+		// {"code":5,"message":"Unsupported protocol version"} so socket.io
+		// clients surface the error instead of opening a half-broken
+		// session against an EIO v3 server expectation. An empty EIO
+		// query parameter is permitted and defaults to v4 to keep
+		// backwards compatibility with non-strict callers and tests
+		// that dial the WebSocket endpoint directly.
+		if eio := c.Query("EIO"); eio != "" && eio != "4" {
+			c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+			return c.Status(fiber.StatusBadRequest).SendString(unsupportedEIOVersionBody)
+		}
+		return wsHandler(c)
+	}
 }
 
 // GetUUID returns the unique identifier of this connection in a
@@ -788,6 +857,17 @@ func (kws *Websocket) handshake() error {
 	if !isValidNamespace(namespace) {
 		_ = kws.writeConnectError(namespace, `{"message":"invalid namespace"}`)
 		return errors.New("socketio: invalid namespace in SIO CONNECT")
+	}
+
+	// Validate the auth payload shape per socket.io-protocol v5: auth MUST
+	// be either absent (nil) or a syntactically valid JSON object. Reject
+	// non-object literals (arrays, scalars, strings) and malformed JSON
+	// (truncated, garbage). Also enforce a hard size cap so a malicious
+	// client cannot stage a large allocation through the handshake before
+	// any user code runs.
+	if !isValidAuthPayload(authPayload) {
+		_ = kws.writeConnectError(namespace, `{"message":"Invalid auth payload"}`)
+		return errors.New("socketio: invalid auth payload in SIO CONNECT")
 	}
 
 	// Store as a fresh slice (msg's backing buffer is owned by the read
@@ -886,6 +966,37 @@ func isValidNamespace(ns []byte) bool {
 		}
 	}
 	return true
+}
+
+// isValidAuthPayload returns true when the auth payload extracted from a
+// SIO CONNECT packet conforms to socket.io-protocol v5: either absent (nil
+// / empty), or a syntactically valid JSON object (i.e. first non-whitespace
+// byte is '{'). Arrays, scalars, strings, and malformed JSON are rejected.
+//
+// Also enforces the global MaxAuthPayload cap so an oversized auth payload
+// can never reach kws.handshakeAuth or user-visible state.
+func isValidAuthPayload(auth []byte) bool {
+	if len(auth) == 0 {
+		return true
+	}
+	if MaxAuthPayload > 0 && len(auth) > MaxAuthPayload {
+		return false
+	}
+	// First non-whitespace byte must be '{' (JSON object). RFC 8259
+	// whitespace: SP / HT / LF / CR.
+	first := byte(0)
+	for i := 0; i < len(auth); i++ {
+		c := auth[i]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			continue
+		}
+		first = c
+		break
+	}
+	if first != '{' {
+		return false
+	}
+	return json.Valid(auth)
 }
 
 // buildSIOConnectAck encodes a SIO CONNECT ack frame ("40[/ns,]<json>").
@@ -1157,12 +1268,18 @@ func (kws *Websocket) EmitWithAckTimeout(event string, data []byte, timeout time
 	kws.outboundAckSeq++
 	id := kws.outboundAckSeq
 	p := &pendingAck{cb: cb}
-	kws.outboundAcks[id] = p
-	kws.outboundAcksMu.Unlock()
-
+	// Arm the timeout while still holding the lock so p.timer is published
+	// to every reader (deliverOutboundAck, fireAckTimeout, disconnected
+	// drain) under the same mutex that guards the map. Without this the
+	// race detector flags the timer-field write against the pre-fire read
+	// in the deliver path. fireAckTimeout itself acquires the lock
+	// asynchronously inside the AfterFunc closure, so this cannot deadlock
+	// even if the timer fires immediately on a stalled scheduler.
 	if timeout > 0 {
 		p.timer = time.AfterFunc(timeout, func() { kws.fireAckTimeout(id) })
 	}
+	kws.outboundAcks[id] = p
+	kws.outboundAcksMu.Unlock()
 
 	var args [][]byte
 	if len(data) > 0 {
@@ -1226,20 +1343,26 @@ func (kws *Websocket) EmitWithAckArgs(event string, args [][]byte, cb func([][]b
 		cb([][]byte{ack}, nil)
 	}
 	p := &pendingAck{cb: adapter}
-	kws.outboundAcks[id] = p
-	kws.outboundAcksMu.Unlock()
-
+	// Arm the timeout under the same lock that guards the map (see the
+	// matching note in EmitWithAckTimeout) so p.timer is safely published
+	// to deliverOutboundAck / fireAckTimeout / the disconnected drain.
 	if OutboundAckTimeout > 0 {
 		p.timer = time.AfterFunc(OutboundAckTimeout, func() { kws.fireAckTimeout(id) })
 	}
+	kws.outboundAcks[id] = p
+	kws.outboundAcksMu.Unlock()
 
 	kws.write(TextMessage, buildSIOEventWithAck(kws.getNamespace(), id, true, event, args))
 }
 
 // deliverOutboundAck dispatches an incoming ACK to the registered callback,
-// if any, and removes it from the pending map. The map-delete is the
-// single source of truth: timer-fire and ack-arrival race through the
-// same mutex, so the callback is invoked exactly once.
+// if any, and removes it from the pending map. Two guards collaborate to
+// enforce at-most-once delivery: (1) the map-delete-wins pattern under
+// outboundAcksMu serialises which path removes the entry, (2) the
+// pendingAck.fired atomic.Bool fences the callback invocation itself, so
+// a timer that already captured p before disconnected() drained the map
+// cannot race with the disconnect-path callback. fired is the
+// authoritative single-fire guard; the mutex protects the map.
 func (kws *Websocket) deliverOutboundAck(id uint64, data []byte) {
 	kws.outboundAcksMu.Lock()
 	p, ok := kws.outboundAcks[id]
@@ -1248,6 +1371,9 @@ func (kws *Websocket) deliverOutboundAck(id uint64, data []byte) {
 	}
 	kws.outboundAcksMu.Unlock()
 	if !ok || p == nil {
+		return
+	}
+	if !p.fired.CompareAndSwap(false, true) {
 		return
 	}
 	if p.timer != nil {
@@ -1262,8 +1388,10 @@ func (kws *Websocket) deliverOutboundAck(id uint64, data []byte) {
 }
 
 // fireAckTimeout is called from time.AfterFunc when the configured ack
-// deadline elapses. The map-delete-wins pattern ensures a racing ack
-// arrival cannot also fire the callback.
+// deadline elapses. The map-delete-wins pattern under outboundAcksMu
+// removes the entry, and pendingAck.fired (CAS false -> true) is the
+// authoritative single-fire guard so a delivery-path callback that
+// captured p before us cannot let us double-fire.
 func (kws *Websocket) fireAckTimeout(id uint64) {
 	kws.outboundAcksMu.Lock()
 	p, ok := kws.outboundAcks[id]
@@ -1272,6 +1400,9 @@ func (kws *Websocket) fireAckTimeout(id uint64) {
 	}
 	kws.outboundAcksMu.Unlock()
 	if !ok || p == nil || p.cb == nil {
+		return
+	}
+	if !p.fired.CompareAndSwap(false, true) {
 		return
 	}
 	defer func() { _ = recover() }()
@@ -1289,28 +1420,45 @@ func (kws *Websocket) fireAckTimeout(id uint64) {
 // shuts down. The kws.mu write lock serialises with the send goroutine
 // (which writes under kws.mu.RLock) so the Conn is never written
 // concurrently.
+//
+// closeOnce gates the actual write block so concurrent Close() callers
+// do not double-write the disconnect frames and, more importantly, do
+// not race the upgrade handler's deferred releaseConn() that nils the
+// embedded *fasthttp.Conn the moment run() returns. The companion
+// kws.mu.Lock()/Unlock() fence at the tail of run() guarantees an
+// in-flight Close() write has completed before the handler returns
+// and releaseConn() fires.
 func (kws *Websocket) Close() {
 	if !kws.IsAlive() {
 		return
 	}
 
-	// Build the SIO DISCONNECT frame. Per socket.io-protocol v5, namespaced
-	// packets are "41/<ns>," with a trailing comma separating the namespace
-	// from the (empty) payload.
-	disconnect := []byte{eioMessage, sioDisconnect}
-	if ns := kws.getNamespace(); len(ns) > 0 {
-		disconnect = append(disconnect, ns...)
-		disconnect = append(disconnect, ',')
-	}
+	kws.closeOnce.Do(func() {
+		// Build the SIO DISCONNECT frame. Per socket.io-protocol v5,
+		// namespaced packets are "41/<ns>," with a trailing comma
+		// separating the namespace from the (empty) payload.
+		disconnect := []byte{eioMessage, sioDisconnect}
+		if ns := kws.getNamespace(); len(ns) > 0 {
+			disconnect = append(disconnect, ns...)
+			disconnect = append(disconnect, ',')
+		}
 
-	kws.mu.Lock()
-	if kws.Conn != nil {
-		_ = kws.Conn.WriteMessage(TextMessage, disconnect)
-		_ = kws.Conn.WriteMessage(CloseMessage, []byte("Connection closed"))
-	}
-	kws.mu.Unlock()
+		kws.mu.Lock()
+		// Defensive nil-check on the embedded *fasthttp.Conn pointer.
+		// The vendored websocket package nils it inside releaseConn()
+		// when the upgrade handler returns. Holding kws.mu here pairs
+		// with the run()-exit fence so that, in the steady state, this
+		// branch only skips on a connection that never finished the
+		// upgrade.
+		if kws.Conn != nil && kws.Conn.Conn != nil {
+			_ = kws.Conn.WriteMessage(TextMessage, disconnect)
+			_ = kws.Conn.WriteMessage(CloseMessage, []byte("Connection closed"))
+		}
+		kws.mu.Unlock()
 
-	kws.fireEvent(EventClose, nil, nil)
+		kws.fireEvent(EventClose, nil, nil)
+	})
+
 	kws.disconnected(nil)
 }
 
@@ -1395,6 +1543,13 @@ func (kws *Websocket) queueLength() int {
 // The interval is read once at goroutine start (handshake-completed time);
 // later mutations to the global PingInterval do not affect a live
 // connection, which keeps tests race-free.
+//
+// To bound dead-peer detection latency, the ticker fires at
+// min(PingInterval, PingTimeout) so the deadline check runs at least once
+// per PingTimeout. PINGs are still emitted only every PingInterval.
+// Worst-case detection latency is therefore at most
+// PingInterval + PingTimeout + tick (vs. up to 2*PingInterval+PingTimeout
+// when the tick equalled PingInterval).
 func (kws *Websocket) pong(ctx context.Context) {
 	interval := PingInterval
 	if interval <= 0 {
@@ -1406,8 +1561,15 @@ func (kws *Websocket) pong(ctx context.Context) {
 	}
 	deadline := interval + timeout
 
-	ticker := time.NewTicker(interval)
+	tick := interval
+	if timeout < tick {
+		tick = timeout
+	}
+
+	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
+
+	lastPing := time.Now()
 	for {
 		select {
 		case <-ticker.C:
@@ -1416,7 +1578,11 @@ func (kws *Websocket) pong(ctx context.Context) {
 				kws.disconnected(errors.New("socketio: heartbeat timeout"))
 				return
 			}
-			kws.write(TextMessage, eioPingFrame)
+			// Emit a PING only every PingInterval, regardless of tick rate.
+			if time.Since(lastPing) >= interval {
+				kws.write(TextMessage, eioPingFrame)
+				lastPing = time.Now()
+			}
 		case <-ctx.Done():
 			return
 		}
@@ -1425,9 +1591,11 @@ func (kws *Websocket) pong(ctx context.Context) {
 
 // write enqueues a message for the send goroutine.
 //
-// The queue is buffered (cap 100). When the queue is full, write returns
-// without blocking and surfaces an error event so the caller is not
-// deadlocked when the send goroutine has died (e.g. after disconnected
+// The queue is buffered (cap SendQueueSize). When the queue is full,
+// behavior is controlled by DropFramesOnOverflow: when false (default),
+// the connection is torn down (legacy behavior); when true, the frame is
+// dropped and EventError fires with ErrSendQueueOverflow so the caller is
+// not deadlocked when the send goroutine has died (e.g. after disconnected
 // fired). Calls on already-disconnected sockets are a no-op.
 func (kws *Websocket) write(messageType int, messageBytes []byte) {
 	if !kws.IsAlive() {
@@ -1437,6 +1605,12 @@ func (kws *Websocket) write(messageType int, messageBytes []byte) {
 	select {
 	case kws.queue <- msg:
 	default:
+		if DropFramesOnOverflow {
+			// Backpressure: drop the frame and surface an error event,
+			// keeping the connection alive for legitimate burst traffic.
+			kws.fireEvent(EventError, nil, ErrSendQueueOverflow)
+			return
+		}
 		// Queue is full and send is not draining; tear down rather than
 		// pin the calling goroutine.
 		kws.disconnected(errors.New("socketio: send queue overflow"))
@@ -1526,6 +1700,19 @@ func (kws *Websocket) run() {
 	// Wait for send / pong / read to actually exit before letting the
 	// upgrade handler return and the websocket framework release Conn.
 	kws.workersWg.Wait()
+
+	// Fence against any in-flight Close() that is still inside its
+	// kws.mu-protected write block. Close() is invoked from caller
+	// goroutines that are NOT tracked by workersWg, so workersWg.Wait()
+	// alone cannot guarantee they have finished writing to kws.Conn.
+	// Acquiring and immediately releasing kws.mu here blocks until
+	// every concurrent Close() writer has exited the critical section,
+	// ensuring no goroutine is still touching the embedded *fasthttp.Conn
+	// when this function returns and the vendored websocket package's
+	// deferred releaseConn() nils that pointer.
+	kws.mu.Lock()
+	//nolint:staticcheck // intentional empty-locked region; this is a barrier.
+	kws.mu.Unlock()
 }
 
 // Listen for incoming messages
@@ -1669,17 +1856,33 @@ func (kws *Websocket) handleSIOPacket(payload []byte) {
 	sioType := payload[0]
 	data := payload[1:]
 
-	// Strip optional namespace prefix (e.g., "/admin,")
+	// Capture optional namespace prefix (e.g., "/admin,") BEFORE stripping
+	// so we can verify it matches the namespace bound to this connection.
+	// ACK ids are per-namespace per the socket.io v5 spec, so a frame whose
+	// namespace does not match the connection's bound namespace must NOT be
+	// allowed to fire a pending callback (or event listener) registered on a
+	// different namespace.
+	var packetNS []byte
 	if len(data) > 0 && data[0] == '/' {
 		if idx := bytes.IndexByte(data, ','); idx >= 0 {
+			packetNS = data[:idx]
 			data = data[idx+1:]
 		} else {
+			packetNS = data
 			data = nil
 		}
 	}
 
 	switch sioType {
 	case sioEvent:
+		// Cross-namespace guard: reject events whose namespace prefix does
+		// not match the namespace bound to this connection. Otherwise a
+		// frame "42/admin,..." arriving on a "/" connection would fire
+		// listeners registered on the root namespace.
+		if !bytes.Equal(packetNS, kws.getNamespace()) {
+			kws.fireEvent(EventError, payload, fmt.Errorf("socketio: cross-namespace event dropped: packet=%q conn=%q", packetNS, kws.getNamespace()))
+			return
+		}
 		ackID, hasAck, rest, err := splitSIOAckID(data)
 		if err != nil {
 			kws.fireEvent(EventError, payload, err)
@@ -1701,6 +1904,19 @@ func (kws *Websocket) handleSIOPacket(payload []byte) {
 		kws.fireEventWithAck(eventName, eventArgs, nil, ackID, hasAck)
 
 	case sioDisconnect:
+		// Per socket.io-protocol v5, "41/<ns>," targets a single namespace and
+		// must NOT tear down sibling namespaces sharing the same EIO
+		// connection. This implementation is single-namespace-per-conn
+		// (kws.namespace is one slice), so we cannot detach a namespace
+		// without ending the conn. Compromise (iter 9): if the inbound
+		// namespace matches the bound one, treat as a real disconnect; if it
+		// does not match, ignore the frame so a malicious or buggy client
+		// cannot kill the conn by addressing a foreign namespace. A full
+		// per-conn namespaces map is deferred to a later iteration.
+		ns := extractSIONamespace(payload[1:])
+		if !bytes.Equal(ns, kws.getNamespace()) {
+			return
+		}
 		kws.disconnected(nil)
 
 	case sioConnect:
@@ -1723,6 +1939,14 @@ func (kws *Websocket) handleSIOPacket(payload []byte) {
 
 	case sioAck:
 		// 43[/ns,]<id>[<data>] - response to a server-initiated EmitWithAck.
+		// Cross-namespace guard: ACK ids are per-namespace per the
+		// socket.io v5 spec, so a frame "43/admin,7[...]" arriving on a
+		// connection bound to "/" must NOT fire the root-namespace
+		// pending callback id 7. Drop silently to keep the original
+		// callback waiting for a properly-namespaced ack.
+		if !bytes.Equal(packetNS, kws.getNamespace()) {
+			return
+		}
 		ackID, has, rest, err := splitSIOAckID(data)
 		if err != nil || !has {
 			return
@@ -1782,13 +2006,19 @@ func (kws *Websocket) disconnected(err error) {
 	// ErrAckDisconnected so callers can distinguish "ack received" (cb
 	// gets ack bytes, err nil) from "connection closed" (cb gets nil,
 	// err ErrAckDisconnected) from "client never replied" (cb gets nil,
-	// err ErrAckTimeout).
+	// err ErrAckTimeout). The pendingAck.fired CAS guards against a
+	// concurrent timer goroutine that already captured p before we
+	// swapped the map: whichever caller flips fired false -> true wins,
+	// so each callback fires exactly once.
 	kws.outboundAcksMu.Lock()
 	pending := kws.outboundAcks
 	kws.outboundAcks = make(map[uint64]*pendingAck)
 	kws.outboundAcksMu.Unlock()
 	for _, p := range pending {
 		if p == nil {
+			continue
+		}
+		if !p.fired.CompareAndSwap(false, true) {
 			continue
 		}
 		if p.timer != nil {

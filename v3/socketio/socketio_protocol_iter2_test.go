@@ -10,11 +10,15 @@ package socketio
 
 import (
 	"encoding/json"
+	"io"
+	"net"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/fasthttp/websocket"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
 )
 
@@ -383,4 +387,109 @@ func TestSocketIOEIOBatchEdges(t *testing.T) {
 	}
 	require.True(t, got[`"c"`], "first packet missing across double-RS split")
 	require.True(t, got[`"d"`], "second packet missing across double-RS split")
+}
+
+// TestSocketIONamespacedDisconnectMismatchIgnored verifies that an inbound
+// "41/<ns>," frame whose namespace does NOT match the bound namespace is
+// silently ignored instead of tearing down the EIO connection. Per
+// socket.io-protocol v5, a DISCONNECT only detaches the targeted namespace;
+// since this implementation is single-namespace-per-conn, sibling-namespace
+// disconnects must not kill the conn (otherwise a malicious client could
+// drop any session by sending "41/foreign,").
+func TestSocketIONamespacedDisconnectMismatchIgnored(t *testing.T) {
+	pool.reset()
+	listeners.reset()
+
+	ready := make(chan *Websocket, 1)
+	On(EventConnect, func(p *EventPayload) {
+		select {
+		case ready <- p.Kws:
+		default:
+		}
+	})
+	disconnected := make(chan struct{}, 1)
+	On(EventDisconnect, func(_ *EventPayload) {
+		select {
+		case disconnected <- struct{}{}:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	// 1. Client connects on the root namespace (kws.namespace == nil).
+	require.NoError(t, sioHandshake(t, conn))
+
+	var kws *Websocket
+	select {
+	case kws = <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventConnect did not fire within the timeout")
+	}
+
+	// 2. Client sends a mismatched DISCONNECT addressed at "/admin" while
+	//    the conn is bound to root. The handler must NOT call disconnected().
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage,
+		[]byte("41/admin,")))
+
+	// 3. EventDisconnect must NOT fire within a reasonable window.
+	select {
+	case <-disconnected:
+		t.Fatal("foreign-namespace DISCONNECT killed the conn")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// 4. The connection must still be alive: a server-side Emit reaches the
+	//    client, proving the read loop and send pipeline survived.
+	require.True(t, kws.IsAlive(), "kws must remain alive after mismatched DISCONNECT")
+	kws.Emit([]byte(`"still-here"`))
+
+	tp, raw, err := sioReadSkipPings(conn)
+	require.NoError(t, err)
+	require.Equal(t, websocket.TextMessage, tp)
+	require.Equal(t, `42["message","still-here"]`, string(raw))
+}
+
+// TestSocketIOEIO3Rejected verifies that a client requesting an unsupported
+// Engine.IO protocol version (e.g. "?EIO=3") is rejected with HTTP 400 and
+// the JSON error body shape used by the reference socket.io server, BEFORE
+// the WebSocket upgrade is attempted. This prevents older clients from
+// silently establishing a session against a v4-only server.
+//
+// Uses a real net.Listen("tcp") server (not InmemoryListener) so http.Get
+// can reach it via the OS networking stack. The standard upgradeMiddleware
+// helper used by the other tests is intentionally omitted here because it
+// short-circuits any non-WebSocket request with HTTP 426 before our EIO
+// check runs; the audit asks New() itself to perform the version gate so
+// applications can wire their own pre-upgrade middleware order.
+func TestSocketIOEIO3Rejected(t *testing.T) {
+	resetSIOGlobals(t)
+
+	app := fiber.New()
+	app.Get("/", New(func(_ *Websocket) {}))
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = app.Listener(ln) }()
+	defer func() { _ = app.Shutdown() }()
+
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	resp, err := httpClient.Get("http://" + ln.Addr().String() + "/?EIO=3")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode,
+		"EIO v3 must be rejected with 400, got %d", resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.JSONEq(t,
+		`{"code":5,"message":"Unsupported protocol version"}`,
+		string(body),
+		"unexpected error body: %q", string(body),
+	)
 }
