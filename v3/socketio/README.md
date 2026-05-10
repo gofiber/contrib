@@ -17,6 +17,7 @@ WebSocket wrapper for [Fiber](https://github.com/gofiber/fiber) that implements 
 This middleware implements the full Engine.IO v4 / Socket.IO v5 wire protocol. Highlights:
 
 - **Synchronous handshake.** The Engine.IO OPEN / Socket.IO CONNECT exchange completes before the user `New()` callback returns, so emits issued inside the callback are ordered after the handshake reply.
+- **HTTP long-polling fallback (opt-in).** Set `socketio.EnablePolling = true` and mount the same handler for `GET` and `POST` to accept `transport=polling` clients. Polling sessions speak the same Engine.IO v4 / Socket.IO v5 wire protocol over HTTP and route through the same listener API (Emit, Ack, Close, Broadcast). Polling-to-WebSocket transport upgrade is not yet implemented; sessions that connect via polling stay on polling.
 - **Namespaces and handshake auth.** The negotiated namespace is honoured for inbound and outbound packets; the client's connect-time `auth` payload is exposed via `Websocket.HandshakeAuth()` and `EventPayload.HandshakeAuth`.
 - **Inbound acks.** Client-initiated callbacks surface as `EventPayload.HasAck` / `AckID`; reply once with `payload.Ack(args...)`.
 - **Outbound acks.** Server-initiated `EmitWithAck`, `EmitWithAckTimeout`, and `EmitWithAckArgs` round-trip a callback id and invoke the supplied callback when the client acks (or on timeout/disconnect).
@@ -36,6 +37,9 @@ This middleware implements the full Engine.IO v4 / Socket.IO v5 wire protocol. H
 - **One namespace per Engine.IO connection.** Each WebSocket binds the namespace negotiated during the SIO CONNECT packet; multiplexing several namespaces over one EIO connection is not supported.
 - **No BINARY_EVENT (5) / BINARY_ACK (6).** Binary Socket.IO frames are passed through as raw `EventMessage` data; attachment reassembly is not implemented.
 - **No connection-state recovery.** Resume-on-reconnect (Socket.IO's `connectionStateRecovery` feature) is not implemented; reconnects always start a fresh session.
+- **No polling-to-WebSocket transport upgrade.** When polling is enabled, sessions that open with `transport=polling` advertise an empty `upgrades` array and stay on polling for the session lifetime. Clients that need WebSocket from the start should configure `transports: ['websocket']`.
+- **No JSONP polling fallback.** JSONP requests (`?j=N`) are rejected with engine.io error code 3. Modern browsers use XHR2/fetch; JSONP support is not planned.
+- **CORS is not handled by the middleware.** Mount `github.com/gofiber/fiber/v3/middleware/cors` (or your preferred CORS middleware) upstream of the polling route to control the policy. Long-poll holds connections open for up to ~25s by default, so reverse-proxy timeouts must accommodate (e.g. nginx `proxy_read_timeout >= 60s` and `proxy_buffering off`).
 
 ## Configuration
 
@@ -56,6 +60,9 @@ All tunables are package-level variables; override before the first connection i
 | `RetrySendTimeout`     | `20ms`             | Back-off between send retries.                                                |
 | `MaxSendRetry`         | `5`                | Max send retries before a frame is dropped.                                   |
 | `ReadTimeout`          | `10ms`             | Deprecated: no longer consulted by the read loop; kept for backward compatibility. |
+| `EnablePolling`        | `false`            | If true, the handler returned from `New` also serves Engine.IO HTTP long-polling on `GET`/`POST`. |
+| `PollingMaxBufferSize` | `1_000_000`        | Cap on a single polling HTTP body (request POST or response GET drain).        |
+| `MaxPollWait`          | `30s`              | Maximum time a long-poll GET blocks waiting for outbound frames.                |
 
 Use `socketio.Shutdown(ctx)` from `fiber.App.ShutdownWithContext` for a deterministic drain.
 
@@ -76,16 +83,43 @@ The middleware automatically handles the Engine.IO / Socket.IO handshake so you 
 
 ### Required client configuration
 
-The client **must** use `transports: ['websocket']` (polling transport is not supported):
+The default `socket.io-client` transport order is `['polling', 'websocket']`. The middleware supports both, but polling is **opt-in**:
+
+**WebSocket only (default):**
 
 ```js
 import { io } from "socket.io-client";
 
 const socket = io("http://localhost:3000", {
   path: "/ws",                 // match the Fiber route
-  transports: ["websocket"],   // WebSocket-only; polling is not supported
+  transports: ["websocket"],   // skip polling
 });
 ```
+
+**Polling (or polling + websocket fallback):** enable `EnablePolling` server-side and mount the handler for both `GET` and `POST`:
+
+```go
+socketio.EnablePolling = true
+h := socketio.New(func(kws *socketio.Websocket) { /* ... */ })
+app.Get("/ws", h)
+app.Post("/ws", h)
+// Optionally allow CORS preflight:
+// app.Options("/ws", h)
+```
+
+```js
+import { io } from "socket.io-client";
+
+// Default transport order: polling first, then upgrade attempt. Since this
+// implementation does not yet upgrade polling sessions to WebSocket, the
+// session stays on polling. For a forced WebSocket connect use
+// transports: ["websocket"]; for polling-only use transports: ["polling"].
+const socket = io("http://localhost:3000", {
+  path: "/ws",
+});
+```
+
+> CORS is not handled by the middleware. If your client connects from a different origin, mount your preferred CORS middleware (e.g. `github.com/gofiber/fiber/v3/middleware/cors`) upstream of the route. Long-polling holds a request open for up to ~25s by default, so reverse-proxy timeouts must accommodate (`proxy_read_timeout` >= 60s on nginx, `proxy_buffering off`).
 
 ### Tunable globals
 
@@ -98,6 +132,9 @@ These package-level variables can be overridden before the first connection is a
 | `HandshakeTimeout`  | `10 * time.Second` | Maximum time allowed for the Engine.IO / Socket.IO handshake (including namespace CONNECT) to complete. |
 | `MaxPayload`        | `1 << 20` (1 MiB)  | Maximum size in bytes for a single inbound WebSocket frame; oversize messages close the socket.      |
 | `OutboundAckTimeout`| `30 * time.Second` | Default timeout used by `EmitWithAck` when no per-call timeout is supplied.                          |
+| `EnablePolling`     | `false`            | If true, the handler also accepts Engine.IO HTTP long-polling on `GET`/`POST` (opt-in fallback).      |
+| `PollingMaxBufferSize` | `1_000_000`     | Cap on a single polling HTTP body (POST request body or GET drain response body), in bytes.           |
+| `MaxPollWait`       | `30 * time.Second` | Maximum time a long-poll GET blocks waiting for outbound frames before returning an empty 200.        |
 
 ```go
 func init() {
@@ -488,3 +525,5 @@ Custom events map directly to the event name used in `socket.emit("myEvent", …
 ```go
 kws.Conn
 ```
+
+`kws.Conn` is `nil` for HTTP long-polling sessions. Code that touches the underlying WebSocket directly should guard with `if kws.Conn != nil` or check the transport via the absence of `kws.Conn`. Listener APIs (`Emit`, `Ack`, `Close`, `Broadcast`, `EmitWithAck`, etc.) work transparently on both transports.

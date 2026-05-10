@@ -703,6 +703,28 @@ type Websocket struct {
 	// Cookies wraps the Fiber Cookies lookup so listener callbacks can read
 	// cookie values from the originating request.
 	Cookies func(key string, defaultValue ...string) string
+	// pollQ is the per-session outbound buffer for HTTP long-polling
+	// sessions. Non-nil identifies a polling session; nil means the
+	// session is bound to the WebSocket transport. See polling.go.
+	pollQ *pollQueue
+	// pollGate ensures at most one concurrent long-poll GET per polling
+	// session. Engine.IO mandates a single in-flight poll per sid; a
+	// second GET while another is blocked is rejected with HTTP 400 and
+	// engine.io error code 3.
+	pollGate atomic.Bool
+	// connectFired flips true after EventConnect has been dispatched for
+	// this session. Used by the polling first-CONNECT path to fire the
+	// listener exactly once when SIO CONNECT arrives via POST. Unused on
+	// the WebSocket path (handshake() fires EventConnect synchronously).
+	connectFired atomic.Bool
+	// postGate serialises polling POST handlers per session. Engine.IO
+	// clients send POSTs sequentially, but a misbehaving or hostile
+	// client could fire two simultaneously; without serialisation the
+	// dispatch order across the two POSTs would race and break the
+	// per-session FIFO guarantee that user listeners rely on. Held only
+	// for the duration of ingestPolling's parse loop; never held across
+	// other locks.
+	postGate sync.Mutex
 }
 
 type safePool struct {
@@ -914,6 +936,26 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 			logf("warn", "eio_version_mismatch", "requested", eio, "supported", "4", "remote", c.IP())
 			c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
 			return c.Status(fiber.StatusBadRequest).SendString(unsupportedEIOVersionBody)
+		}
+		// HTTP long-polling fallback: dispatch when the package-level
+		// EnablePolling switch is true and the request carries
+		// transport=polling. Polling-only sessions speak the same
+		// Engine.IO v4 / Socket.IO v5 protocol over HTTP GET/POST that
+		// the WebSocket transport carries over a single full-duplex
+		// frame stream. See polling.go.
+		if EnablePolling {
+			if handled, err := handlePolling(c, callback); handled {
+				return err
+			}
+			// Reject requests that carry an explicit transport value
+			// other than polling/websocket so a stray "transport=foo"
+			// query produces engine.io error code 0 instead of being
+			// silently routed to the WebSocket upgrader.
+			if t := c.Query("transport"); t != "" && t != "websocket" {
+				c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+				return c.Status(fiber.StatusBadRequest).
+					SendString(`{"code":0,"message":"Transport unknown"}`)
+			}
 		}
 		return wsHandler(c)
 	}
@@ -1635,22 +1677,34 @@ func (kws *Websocket) Close() {
 			disconnect = append(disconnect, ',')
 		}
 
-		kws.mu.Lock()
-		// Do not read kws.Conn.Conn here. The vendored websocket
-		// package nils that embedded pointer in releaseConn() after the
-		// upgrade handler returns, without taking our mutex. handlerDone
-		// is our race-free guard for that lifecycle boundary.
-		if kws.Conn != nil && !kws.handlerDone.Load() {
-			_ = kws.Conn.WriteMessage(TextMessage, disconnect)
-			// Per RFC 6455 a Close control frame's payload must start with
-			// a 2-byte big-endian status code optionally followed by a UTF-8
-			// reason. Writing the raw string would produce an invalid frame
-			// that strict clients (including socket.io-client's underlying
-			// engine.io transport) close with a protocol error.
-			_ = kws.Conn.WriteMessage(CloseMessage,
-				websocket.FormatCloseMessage(websocket.CloseNormalClosure, "Connection closed"))
+		if kws.pollQ != nil {
+			// Polling: enqueue SIO DISCONNECT and EIO CLOSE so the next
+			// drain (or any in-flight long-poll) delivers them; the
+			// queue is closed by disconnected() below, after which
+			// further enqueues are silent no-ops. There is no
+			// equivalent of the WebSocket Close control frame on
+			// polling - the EIO "1" packet is the protocol-level
+			// disconnect signal.
+			kws.pollQ.enqueue(disconnect)
+			kws.pollQ.enqueue([]byte{eioClose})
+		} else {
+			kws.mu.Lock()
+			// Do not read kws.Conn.Conn here. The vendored websocket
+			// package nils that embedded pointer in releaseConn() after the
+			// upgrade handler returns, without taking our mutex. handlerDone
+			// is our race-free guard for that lifecycle boundary.
+			if kws.Conn != nil && !kws.handlerDone.Load() {
+				_ = kws.Conn.WriteMessage(TextMessage, disconnect)
+				// Per RFC 6455 a Close control frame's payload must start with
+				// a 2-byte big-endian status code optionally followed by a UTF-8
+				// reason. Writing the raw string would produce an invalid frame
+				// that strict clients (including socket.io-client's underlying
+				// engine.io transport) close with a protocol error.
+				_ = kws.Conn.WriteMessage(CloseMessage,
+					websocket.FormatCloseMessage(websocket.CloseNormalClosure, "Connection closed"))
+			}
+			kws.mu.Unlock()
 		}
-		kws.mu.Unlock()
 
 		kws.fireEvent(EventClose, nil, nil)
 	})
@@ -1707,6 +1761,11 @@ func (kws *Websocket) writeConnectError(namespace []byte, jsonMessage string) er
 		out = append(out, ',')
 	}
 	out = append(out, jsonMessage...)
+	if kws.pollQ != nil {
+		// Polling: enqueue the CONNECT_ERROR frame for the next drain.
+		kws.pollQ.enqueue(out)
+		return nil
+	}
 	kws.mu.Lock()
 	defer kws.mu.Unlock()
 	// Do not inspect kws.Conn.Conn; releaseConn() mutates that embedded
@@ -1805,6 +1864,18 @@ func (kws *Websocket) pong(ctx context.Context) {
 // fired). Calls on already-disconnected sockets are a no-op.
 func (kws *Websocket) write(messageType int, messageBytes []byte) {
 	if !kws.IsAlive() {
+		return
+	}
+	if kws.pollQ != nil {
+		// Polling transport: append the encoded EIO/SIO frame bytes to
+		// the per-session outbound buffer. The next GET long-poll drains
+		// it; mType is irrelevant because the polling wire format
+		// represents binary as inline "b<base64>" text packets, not as a
+		// distinct frame type. Callers that need binary semantics over
+		// polling must encode "b<base64>" themselves; the standard Emit
+		// paths use TextMessage and pass valid JSON, which is forwarded
+		// verbatim.
+		kws.pollQ.enqueue(messageBytes)
 		return
 	}
 	msg := message{mType: messageType, data: messageBytes}
@@ -2139,16 +2210,52 @@ func (kws *Websocket) handleSIOPacket(payload []byte) {
 		kws.disconnected(nil)
 
 	case sioConnect:
-		// Late namespace CONNECT (after the initial handshake): confirm via
-		// the send queue, mirroring the namespace, so we do not race the read
-		// loop. The namespace is validated against the same grammar as the
-		// initial handshake so a malicious client cannot smuggle CRLF or
-		// commas back into the ACK frame.
-		ns := extractSIONamespace(payload[1:])
+		// CONNECT path. For polling sessions the SIO CONNECT packet
+		// arrives via the first POST after the OPEN handshake response;
+		// the WebSocket path performs CONNECT synchronously inside
+		// handshake() and never reaches this case for the initial
+		// CONNECT. The polling first-CONNECT branch below mirrors the
+		// validation, namespace/auth capture, and EventConnect dispatch
+		// that handshake() does for WebSocket sessions.
+		ns, auth := extractSIOConnect(payload[1:])
 		if !isValidNamespace(ns) {
 			_ = kws.writeConnectError(ns, `{"message":"Invalid namespace"}`)
+			if kws.pollQ != nil {
+				kws.disconnected(ErrInvalidNamespace)
+			}
 			return
 		}
+		if kws.pollQ != nil && !kws.connectFired.Load() {
+			// Polling first-CONNECT: validate auth, persist namespace +
+			// auth, send the CONNECT ack, then fire EventConnect once.
+			if !isValidAuthPayload(auth) {
+				logf("warn", "invalid_auth_payload", "uuid", kws.UUID, "namespace", string(ns), "size", len(auth))
+				_ = kws.writeConnectError(ns, `{"message":"Invalid auth payload"}`)
+				kws.disconnected(ErrInvalidAuthPayload)
+				return
+			}
+			nsCopy := append([]byte(nil), ns...)
+			kws.mu.Lock()
+			kws.namespace = nsCopy
+			if len(auth) > 0 {
+				kws.handshakeAuth = make(json.RawMessage, len(auth))
+				copy(kws.handshakeAuth, auth)
+			}
+			kws.mu.Unlock()
+			ackPayload, err := json.Marshal(struct {
+				SID string `json:"sid"`
+			}{SID: kws.UUID})
+			if err == nil {
+				kws.write(TextMessage, buildSIOConnectAck(nsCopy, ackPayload))
+			}
+			if kws.connectFiredCAS() {
+				kws.fireEvent(EventConnect, nil, nil)
+			}
+			return
+		}
+		// Late namespace CONNECT (after the initial handshake): confirm
+		// via the send queue, mirroring the namespace, so we do not race
+		// the read loop.
 		ackPayload, err := json.Marshal(struct {
 			SID string `json:"sid"`
 		}{SID: kws.GetUUID()})
@@ -2212,6 +2319,12 @@ func (kws *Websocket) disconnected(err error) {
 		// deadlock against the read goroutine's blocking ReadMessage.
 		if c := kws.Conn; c != nil {
 			_ = c.SetReadDeadline(time.Unix(0, 1))
+		}
+		// Polling: release any blocked long-poll drain. Frames already
+		// in the buffer are still drainable; subsequent enqueues become
+		// no-ops.
+		if kws.pollQ != nil {
+			kws.pollQ.close()
 		}
 	})
 	if !first {
