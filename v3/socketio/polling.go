@@ -303,8 +303,10 @@ func handlePolling(c fiber.Ctx, callback func(kws *Websocket)) (handled bool, er
 	}
 }
 
-// openPollingSession creates a fresh polling session, runs the user
-// callback, and writes the Engine.IO OPEN packet as the response body.
+// openPollingSession creates a fresh polling session and writes the Engine.IO
+// OPEN packet as the response body. The user callback is deferred until the
+// first SIO CONNECT POST so polling preserves the same callback ordering as
+// the WebSocket path: EIO OPEN -> SIO CONNECT -> SIO CONNECT ACK -> callback.
 func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 	kws := &Websocket{
 		queue: make(chan message, SendQueueSize),
@@ -367,6 +369,7 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 	kws.Params = newLookupFunc(paramsSnap)
 	kws.Query = newLookupFunc(queriesSnap)
 	kws.Cookies = newLookupFunc(cookiesSnap)
+	kws.pollCallback = callback
 
 	pool.set(kws)
 
@@ -405,34 +408,6 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 				kws.disconnected(ErrHandshakeClosed)
 			}
 		}))
-	}
-
-	// Recover panics via the shared helper. Without this, a panicking
-	// callback unwinds out of openPollingSession with the lifecycle
-	// goroutine still parked on <-kws.done; disconnected() never runs,
-	// so the session leaks (pool entry, pong goroutine, *Websocket
-	// graph). On panic we log, run disconnected to clean up, and
-	// respond with HTTP 500 without re-raising so Fiber's worker pool
-	// stays healthy.
-	if r := runUserCallback(callback, kws); r != nil {
-		logf("error", "polling_callback_panic", "uuid", kws.UUID, "panic", fmt.Sprintf("%v", r))
-		kws.disconnected(fmt.Errorf("socketio: polling callback panic: %v", r))
-		c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
-		return c.Status(http.StatusInternalServerError).
-			SendString(`{"code":3,"message":"Bad request"}`)
-	}
-
-	if !kws.IsAlive() {
-		// Callback rejected the session (typically by calling
-		// kws.Close() inside the callback). Close() already invokes
-		// disconnected() which closes the queue, removes the session
-		// from the pool, and wakes the lifecycle goroutine so
-		// finishRun runs. disconnected() is idempotent via kws.once,
-		// so calling it here defensively is safe and ensures cleanup
-		// also happens when callbacks reach the !IsAlive state
-		// through some future non-Close() path.
-		kws.disconnected(nil)
-		return writePollingError(c, 4)
 	}
 
 	c.Set(fiber.HeaderContentType, "text/plain; charset=UTF-8")
@@ -569,7 +544,7 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 	rest := body
 	count := 0
 	for len(rest) > 0 {
-		if count > MaxBatchPackets {
+		if count >= MaxBatchPackets {
 			kws.fireEvent(EventError, nil, ErrBatchPacketsExceeded)
 			break
 		}

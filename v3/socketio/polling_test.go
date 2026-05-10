@@ -219,6 +219,43 @@ func TestPollingConnectFiresEventConnect(t *testing.T) {
 	require.True(t, hasAck, "expected 40{\"sid\":...} ack frame in drain, got %q", frames)
 }
 
+// TestPollingCallbackEmitArrivesAfterConnectAck verifies polling preserves the
+// same callback ordering as WebSocket: the user's New callback runs only after
+// SIO CONNECT, so callback Emits are drained after the CONNECT ack.
+func TestPollingCallbackEmitArrivesAfterConnectAck(t *testing.T) {
+	resetSIOGlobals(t)
+
+	callbackAuth := make(chan json.RawMessage, 1)
+	_, c, td := newPollingTestServer(t, func(kws *Websocket) {
+		callbackAuth <- kws.HandshakeAuth()
+		kws.Emit([]byte("welcome raw text"))
+	})
+	defer td()
+
+	sid, _, status := pollOpen(t, c)
+	require.Equal(t, http.StatusOK, status)
+
+	resp, st := pollPost(t, c, sid, []byte(`40{"token":"abc"}`))
+	require.Equal(t, http.StatusOK, st)
+	require.Equal(t, "ok", string(resp))
+
+	select {
+	case auth := <-callbackAuth:
+		require.JSONEq(t, `{"token":"abc"}`, string(auth))
+	case <-time.After(2 * time.Second):
+		t.Fatal("polling callback did not run")
+	}
+
+	body, _ := pollGet(t, c, sid)
+	frames := splitPollFrames(body)
+	require.GreaterOrEqual(t, len(frames), 2, "expected CONNECT ack + callback emit, got %q", body)
+	require.Truef(t,
+		len(frames[0]) >= 2 && frames[0][0] == eioMessage && frames[0][1] == sioConnect,
+		"first frame must be SIO CONNECT ack, got %q in body %q", frames[0], body,
+	)
+	require.Equal(t, `42["message","welcome raw text"]`, string(frames[1]))
+}
+
 // TestPollingPostEventDispatch verifies a SIO event posted via polling
 // reaches the registered listener and that the listener can Emit a reply
 // that is delivered on the next GET drain.
@@ -677,7 +714,12 @@ func TestPollingBatchedEmitsRSSeparated(t *testing.T) {
 
 	sid, _, _ := pollOpen(t, c)
 	_, _ = pollPost(t, c, sid, []byte(`40`))
-	kws := <-kwsCh
+	var kws *Websocket
+	select {
+	case kws = <-kwsCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventConnect did not fire")
+	}
 	// Drain the connect ack first.
 	_, _ = pollGet(t, c, sid)
 
@@ -861,7 +903,12 @@ func TestPollingHeartbeatTimeoutTearsDown(t *testing.T) {
 
 	sid, _, _ := pollOpen(t, c)
 	_, _ = pollPost(t, c, sid, []byte(`40`))
-	kws := <-kwsCh
+	var kws *Websocket
+	select {
+	case kws = <-kwsCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventConnect did not fire")
+	}
 	// Drain the connect ack first so the next GET will block on the
 	// queue and be released by disconnected.
 	_, _ = pollGet(t, c, sid)
@@ -918,7 +965,12 @@ func TestPollingGateReleasedBeforeBodyWrite(t *testing.T) {
 
 	sid, _, _ := pollOpen(t, c)
 	_, _ = pollPost(t, c, sid, []byte(`40`))
-	kws := <-kwsCh
+	var kws *Websocket
+	select {
+	case kws = <-kwsCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventConnect did not fire")
+	}
 	_, _ = pollGet(t, c, sid) // drain CONNECT ack
 
 	// Start a long-poll, then enqueue a frame and immediately fire a
@@ -984,7 +1036,12 @@ func TestPollingBinaryOutboundEncoded(t *testing.T) {
 
 	sid, _, _ := pollOpen(t, c)
 	_, _ = pollPost(t, c, sid, []byte(`40`))
-	kws := <-kwsCh
+	var kws *Websocket
+	select {
+	case kws = <-kwsCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventConnect did not fire")
+	}
 	_, _ = pollGet(t, c, sid) // drain CONNECT ack
 
 	payload := []byte{0xDE, 0xAD, 0xBE, 0xEF}
@@ -1049,7 +1106,12 @@ func TestPollingQueueOverflowDrop(t *testing.T) {
 
 	sid, _, _ := pollOpen(t, c)
 	_, _ = pollPost(t, c, sid, []byte(`40`))
-	kws := <-kwsCh
+	var kws *Websocket
+	select {
+	case kws = <-kwsCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventConnect did not fire")
+	}
 	_, _ = pollGet(t, c, sid)
 
 	// Emit more frames than the queue can hold. Without GETs to drain
@@ -1098,7 +1160,12 @@ func TestPollingQueueOverflowDisconnect(t *testing.T) {
 
 	sid, _, _ := pollOpen(t, c)
 	_, _ = pollPost(t, c, sid, []byte(`40`))
-	kws := <-kwsCh
+	var kws *Websocket
+	select {
+	case kws = <-kwsCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventConnect did not fire")
+	}
 	_, _ = pollGet(t, c, sid)
 
 	for i := 0; i < 20; i++ {
@@ -1113,11 +1180,11 @@ func TestPollingQueueOverflowDisconnect(t *testing.T) {
 	}
 }
 
-// TestPollingHandshakeTimerStoppedOnGracefulClose verifies the polling
-// HandshakeTimeout AfterFunc is stopped when the session is gracefully
-// closed before the timer fires, so the closure does not pin the
-// *Websocket on the runtime timer heap for the full timeout.
-func TestPollingHandshakeTimerStoppedOnGracefulClose(t *testing.T) {
+// TestPollingHandshakeTimerStoppedAfterConnect verifies the polling
+// HandshakeTimeout AfterFunc is stopped as soon as SIO CONNECT arrives, so the
+// closure does not pin the *Websocket on the runtime timer heap after the
+// handshake has completed.
+func TestPollingHandshakeTimerStoppedAfterConnect(t *testing.T) {
 	resetSIOGlobals(t)
 
 	prevHS := HandshakeTimeout
@@ -1145,23 +1212,25 @@ func TestPollingHandshakeTimerStoppedOnGracefulClose(t *testing.T) {
 
 	sid, _, _ := pollOpen(t, c)
 	_, _ = pollPost(t, c, sid, []byte(`40`))
-	kws := <-kwsCh
+	var kws *Websocket
+	select {
+	case kws = <-kwsCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventConnect did not fire")
+	}
 	timer := kws.handshakeTimer.Load()
 	require.NotNil(t, timer, "polling session should schedule handshakeTimer")
 
 	kws.Close()
 	<-disconnected
 
-	// Stop returns false in two cases: timer was already stopped, OR
-	// it had already fired and run its closure. Calling Stop here a
-	// SECOND time discriminates: if disconnected() did Stop the timer,
-	// our first Stop call returns false (already stopped) AND the
-	// AfterFunc closure was never given a chance to run. We assert
+	// Stop returns false in two cases: timer was already stopped, OR it had
+	// already fired and run its closure. Calling Stop here after CONNECT and
+	// Close discriminates: if the CONNECT path stopped the timer, this returns
+	// false and the AfterFunc closure never gets a chance to run. We assert
 	// both: timer.Stop()==false AND no second EventDisconnect fired.
-	// The latter would happen if the closure ran (which calls
-	// disconnected(ErrHandshakeClosed)).
 	require.False(t, timer.Stop(),
-		"handshakeTimer should be stopped after disconnected()")
+		"handshakeTimer should be stopped after SIO CONNECT")
 	select {
 	case <-disconnected:
 		t.Fatal("handshakeTimer fired after Close; timer was not stopped")
@@ -1170,28 +1239,21 @@ func TestPollingHandshakeTimerStoppedOnGracefulClose(t *testing.T) {
 	}
 }
 
-// TestPollingCallbackPanicCleansUp verifies that a panic in the user
-// callback during openPollingSession runs disconnected() so the
-// lifecycle goroutine, pong goroutine, and pool entry do not leak.
+// TestPollingCallbackPanicCleansUp verifies that a panic in the user callback
+// during the first SIO CONNECT runs disconnected() so the lifecycle goroutine,
+// pong goroutine, and pool entry do not leak.
 func TestPollingCallbackPanicCleansUp(t *testing.T) {
 	resetSIOGlobals(t)
 
-	// We cannot easily catch the panic here because Fiber rethrows it
-	// internally; instead we observe the side effects: pool eventually
-	// empty, no leaked goroutines.
 	_, c, td := newPollingTestServer(t, func(_ *Websocket) {
 		panic("intentional callback panic")
 	})
 	defer td()
 
-	// The OPEN GET will return an error (HTTP 500 or a transport
-	// error). Either way is acceptable; the invariant we care about
-	// is that the session does not stick around in the pool.
-	req, _ := http.NewRequest(http.MethodGet, "http://test/?EIO=4&transport=polling", nil)
-	resp, err := c.Do(req)
-	if err == nil {
-		resp.Body.Close()
-	}
+	sid, _, status := pollOpen(t, c)
+	require.Equal(t, http.StatusOK, status)
+	_, status = pollPost(t, c, sid, []byte(`40`))
+	require.Equal(t, http.StatusOK, status)
 
 	require.Eventually(t, func() bool {
 		for _, w := range pool.all() {

@@ -755,6 +755,11 @@ type Websocket struct {
 	// Cookies wraps the Fiber Cookies lookup so listener callbacks can read
 	// cookie values from the originating request.
 	Cookies func(key string, defaultValue ...string) string
+	// pollCallback stores the user's New callback until the polling transport
+	// receives its first SIO CONNECT packet. This mirrors the WebSocket path:
+	// user code runs only after the Socket.IO namespace/auth handshake has
+	// completed, so Emits from the callback are ordered after the CONNECT ack.
+	pollCallback func(*Websocket)
 	// pollQ is the per-session outbound buffer for HTTP long-polling
 	// sessions. Non-nil identifies a polling session; nil means the
 	// session is bound to the WebSocket transport. See polling.go.
@@ -1323,14 +1328,11 @@ func (kws *Websocket) GetStringAttribute(key string) string {
 }
 
 // EmitToList sends message to every connection whose UUID appears in uuids.
-// Per-target failures are surfaced as EventError on kws (not returned). See
-// Websocket.Emit for the meaning of mType.
+// Per-target failures are surfaced as EventError on kws by EmitTo (not
+// returned). See Websocket.Emit for the meaning of mType.
 func (kws *Websocket) EmitToList(uuids []string, message []byte, mType ...int) {
 	for _, wsUUID := range uuids {
-		err := kws.EmitTo(wsUUID, message, mType...)
-		if err != nil {
-			kws.fireEvent(EventError, message, err)
-		}
+		_ = kws.EmitTo(wsUUID, message, mType...)
 	}
 }
 
@@ -1343,14 +1345,15 @@ func EmitToList(uuids []string, message []byte, mType ...int) {
 	}
 }
 
-// EmitTo sends message to the connection identified by uuid. Returns
-// ErrorInvalidConnection when the target is unknown or already closed; in
-// that case an EventError is also fired on kws. See Websocket.Emit for the
-// meaning of mType.
+// EmitTo sends message to the connection identified by uuid. Returns the
+// underlying pool error (typically ErrorInvalidConnection) when the target is
+// unknown or already closed; in either case an EventError is fired on kws so
+// fan-out callers (EmitToList, Broadcast) do not have to re-fire it. See
+// Websocket.Emit for the meaning of mType.
 func (kws *Websocket) EmitTo(uuid string, message []byte, mType ...int) error {
-
 	conn, err := pool.get(uuid)
 	if err != nil {
+		kws.fireEvent(EventError, []byte(uuid), err)
 		return err
 	}
 	// pool.get already returned a hit; we only need to verify the conn is
@@ -1393,10 +1396,8 @@ func (kws *Websocket) Broadcast(message []byte, except bool, mType ...int) {
 		if except && selfUUID == wsUUID {
 			continue
 		}
-		err := kws.EmitTo(wsUUID, message, mType...)
-		if err != nil {
-			kws.fireEvent(EventError, message, err)
-		}
+		// EmitTo fires EventError on failure; no need to re-fire here.
+		_ = kws.EmitTo(wsUUID, message, mType...)
 	}
 }
 
@@ -2159,7 +2160,7 @@ func (kws *Websocket) read(ctx context.Context) {
 		} else {
 			rest, count := msg, 0
 			for len(rest) > 0 {
-				if count > MaxBatchPackets {
+				if count >= MaxBatchPackets {
 					logf("warn", "batched_frame_overflow", "uuid", kws.UUID, "limit", MaxBatchPackets)
 					kws.fireEvent(EventError, nil, ErrBatchPacketsExceeded)
 					break
@@ -2304,12 +2305,19 @@ func (kws *Websocket) handleSIOPacket(payload []byte) {
 		}
 		if kws.pollQ != nil && !kws.connectFired.Load() {
 			// Polling first-CONNECT: validate auth, persist namespace +
-			// auth, send the CONNECT ack, then fire EventConnect once.
+			// auth, send the CONNECT ack, run the user callback, then fire
+			// EventConnect once. The callback intentionally runs after the
+			// CONNECT ack is queued, matching the WebSocket handshake order:
+			// Emit calls inside the callback cannot overtake the namespace
+			// connect confirmation.
 			if !isValidAuthPayload(auth) {
 				logf("warn", "invalid_auth_payload", "uuid", kws.UUID, "namespace", string(ns), "size", len(auth))
 				_ = kws.writeConnectError(ns, `{"message":"Invalid auth payload"}`)
 				kws.disconnected(ErrInvalidAuthPayload)
 				return
+			}
+			if t := kws.handshakeTimer.Load(); t != nil {
+				t.Stop()
 			}
 			nsCopy := append([]byte(nil), ns...)
 			kws.mu.Lock()
@@ -2324,6 +2332,17 @@ func (kws *Websocket) handleSIOPacket(payload []byte) {
 			}{SID: kws.UUID})
 			if err == nil {
 				kws.write(TextMessage, buildSIOConnectAck(nsCopy, ackPayload))
+			}
+			pollCallback := kws.pollCallback
+			kws.pollCallback = nil
+			if r := runUserCallback(pollCallback, kws); r != nil {
+				logf("error", "polling_callback_panic", "uuid", kws.UUID, "panic", fmt.Sprintf("%v", r))
+				kws.disconnected(fmt.Errorf("socketio: polling callback panic: %v", r))
+				return
+			}
+			if !kws.IsAlive() {
+				kws.disconnected(nil)
+				return
 			}
 			if kws.connectFired.CompareAndSwap(false, true) {
 				kws.fireEvent(EventConnect, nil, nil)
@@ -2394,6 +2413,15 @@ func (kws *Websocket) disconnected(err error) {
 		// callers are safe (it is the standard idiom for cancelling a
 		// blocking Read), so no kws.mu lock is required and we cannot
 		// deadlock against the read goroutine's blocking ReadMessage.
+		//
+		// We deliberately do NOT also push an immediate write deadline:
+		// fasthttp/websocket's SetWriteDeadline sets an unsynchronised
+		// struct field that flushFrame reads concurrently from the send
+		// goroutine, so calling it here under -race trips the detector
+		// (verified against TestSocketIOEmitWithAck10000Concurrent).
+		// In practice the writer unblocks via the queue close below,
+		// the read-side deadline tearing down the underlying socket, or
+		// fasthttp closing the request context, which is sufficient.
 		if c := kws.Conn; c != nil {
 			_ = c.SetReadDeadline(time.Unix(0, 1))
 		}
@@ -2529,12 +2557,17 @@ func (kws *Websocket) fireEventWithAck(event string, args [][]byte, fireErr erro
 		// Recover from listener panics so one buggy handler cannot kill
 		// the read goroutine (and therefore the whole connection). Surface
 		// the panic value as an EventError event so the user can wire it
-		// up to logging.
+		// up to logging. When the panicking handler is itself an EventError
+		// listener we skip the re-fire to avoid an unbounded recursion (a
+		// panicky EventError handler would otherwise keep refiring itself
+		// until the goroutine stack overflows).
 		func(cb eventCallback) {
 			defer func() {
 				if r := recover(); r != nil {
 					logf("error", "listener_panic", "uuid", uuid, "event", event, "panic", fmt.Sprintf("%v", r))
-					kws.fireEvent(EventError, nil, fmt.Errorf("socketio: listener panic on %q: %v", event, r))
+					if event != EventError {
+						kws.fireEvent(EventError, nil, fmt.Errorf("socketio: listener panic on %q: %v", event, r))
+					}
 				}
 			}()
 			cb(&EventPayload{
