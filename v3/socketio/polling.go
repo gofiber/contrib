@@ -574,6 +574,9 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 			}
 			kws.fireEvent(EventMessage, decoded[:n], nil)
 			count++
+			if !kws.IsAlive() {
+				break
+			}
 			continue
 		}
 		// packet is a sub-slice of the body buffer we already copied
@@ -582,6 +585,9 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 		// additional per-packet allocation.
 		kws.dispatchEIOPacket(packet)
 		count++
+		if !kws.IsAlive() {
+			break
+		}
 	}
 
 	c.Set(fiber.HeaderContentType, "text/html")
