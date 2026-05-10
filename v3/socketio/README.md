@@ -147,10 +147,17 @@ These package-level variables can be overridden before the first connection is a
 | `PingTimeout`       | `20 * time.Second` | How long the server waits for the client's PONG before considering the connection dead.              |
 | `HandshakeTimeout`  | `10 * time.Second` | Maximum time allowed for the Engine.IO / Socket.IO handshake (including namespace CONNECT) to complete. |
 | `MaxPayload`        | `1 << 20` (1 MiB)  | Maximum size in bytes for a single inbound WebSocket frame; oversize messages close the socket.      |
+| `MaxAuthPayload`    | `8 << 10` (8 KiB)  | Maximum size in bytes for the Socket.IO CONNECT auth JSON.                                           |
+| `MaxBatchPackets`   | `256`              | Maximum number of Engine.IO packets accepted in a single `0x1E`-batched frame.                       |
+| `MaxEventNameLength`| `256`              | Maximum length of an inbound Socket.IO event name.                                                   |
 | `OutboundAckTimeout`| `30 * time.Second` | Default timeout used by `EmitWithAck` when no per-call timeout is supplied.                          |
+| `DropFramesOnOverflow` | `false`         | If true, saturated outbound queues drop the offending frame and fire `EventError`.                   |
+| `RetrySendTimeout`  | `20 * time.Millisecond` | Back-off between WebSocket send retries.                                                        |
+| `MaxSendRetry`      | `5`                | Maximum number of WebSocket send retries before a frame is dropped.                                  |
 | `EnablePolling`     | `false`            | If true, the handler also accepts Engine.IO HTTP long-polling on `GET`/`POST` (opt-in fallback).      |
 | `PollingMaxBufferSize` | `1_000_000`     | Cap on a single polling HTTP body (POST request body or GET drain response body), in bytes.           |
 | `MaxPollWait`       | `30 * time.Second` | Maximum time a long-poll GET blocks waiting for outbound frames before returning an empty 200.        |
+| `PollQueueMaxFrames`| `1024`             | Maximum buffered outbound frames per polling session before overflow handling applies.               |
 
 ```go
 func init() {

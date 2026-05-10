@@ -332,6 +332,22 @@ func TestPollingJSONPRejected(t *testing.T) {
 	require.Contains(t, string(body), `"code":3`)
 }
 
+// TestPollingOptionsPreflight verifies the documented app.Options(path, h)
+// setup works for sid-less browser CORS preflight requests.
+func TestPollingOptionsPreflight(t *testing.T) {
+	resetSIOGlobals(t)
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	req, _ := http.NewRequest(http.MethodOptions, "http://test/?EIO=4&transport=polling", nil)
+	resp, err := c.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+	require.Empty(t, body)
+}
+
 // TestPollingConcurrentGetsRejected verifies that a second long-poll GET
 // while another is in flight is rejected with engine.io code 3.
 func TestPollingConcurrentGetsRejected(t *testing.T) {

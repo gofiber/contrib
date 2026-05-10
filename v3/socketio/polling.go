@@ -267,6 +267,15 @@ func handlePolling(c fiber.Ctx, callback func(kws *Websocket)) (handled bool, er
 	sid := c.Query("sid")
 	method := c.Method()
 
+	if method == fiber.MethodOptions {
+		// CORS preflight: respond 204 with no body. CORS allow headers
+		// are intentionally NOT set here; mount the user's preferred
+		// CORS middleware (e.g. github.com/gofiber/fiber/v3/middleware/cors)
+		// upstream of the polling route to control the policy.
+		c.Set(fiber.HeaderCacheControl, "no-store")
+		return true, c.SendStatus(http.StatusNoContent)
+	}
+
 	if sid == "" {
 		// New polling session.
 		if method != fiber.MethodGet {
@@ -291,13 +300,6 @@ func handlePolling(c fiber.Ctx, callback func(kws *Websocket)) (handled bool, er
 		return true, drainPolling(c, kws)
 	case fiber.MethodPost:
 		return true, ingestPolling(c, kws)
-	case fiber.MethodOptions:
-		// CORS preflight: respond 204 with no body. CORS allow headers
-		// are intentionally NOT set here; mount the user's preferred
-		// CORS middleware (e.g. github.com/gofiber/fiber/v3/middleware/cors)
-		// upstream of the polling route to control the policy.
-		c.Set(fiber.HeaderCacheControl, "no-store")
-		return true, c.SendStatus(http.StatusNoContent)
 	default:
 		return true, writePollingError(c, 2)
 	}
