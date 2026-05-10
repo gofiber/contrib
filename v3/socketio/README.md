@@ -41,6 +41,13 @@ This middleware implements the full Engine.IO v4 / Socket.IO v5 wire protocol. H
 - **No JSONP polling fallback.** JSONP requests (`?j=N`) are rejected with engine.io error code 3. Modern browsers use XHR2/fetch; JSONP support is not planned.
 - **CORS is not handled by the middleware.** Mount `github.com/gofiber/fiber/v3/middleware/cors` (or your preferred CORS middleware) upstream of the polling route to control the policy. Long-poll holds connections open for up to ~25s by default, so reverse-proxy timeouts must accommodate (e.g. nginx `proxy_read_timeout >= 60s` and `proxy_buffering off`).
 
+#### Production hardening notes
+
+- **Rate limiting**. Each polling open allocates a `*Websocket` plus 2 short-lived goroutines. With `EnablePolling = true` an unauthenticated client can create sessions until `HandshakeTimeout` reaps idle ones (10s default). Mount `github.com/gofiber/fiber/v3/middleware/limiter` upstream of the route to bound concurrent session creation.
+- **Write timeout**. A long-poll GET response that the client never reads pins a fasthttp worker on TCP backpressure. Configure `fiber.Config{WriteTimeout: ...}` (a few seconds is typically appropriate) so abandoned reads do not strand workers.
+- **Burst sizing**. `PollQueueMaxFrames` (default `1024`) bounds the per-session outbound buffer. With the default `DropFramesOnOverflow = false` a synchronous burst of more than 1024 emits inside a single listener call disconnects the session with `ErrSendQueueClosed`. Either pace large bursts across drains, raise `PollQueueMaxFrames`, or set `DropFramesOnOverflow = true` to tolerate overflow at the cost of dropped frames + `EventError`.
+- **Listener panics**. Both transports recover panics inside the `New()` callback and inside event listeners; the panic value is logged via the package `Logger` hook. Avoid `panic(string(attackerControlledBytes))` to prevent log injection in downstream consumers.
+
 ## Configuration
 
 All tunables are package-level variables; override before the first connection is accepted.

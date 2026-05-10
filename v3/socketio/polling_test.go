@@ -711,6 +711,47 @@ func TestPollingMaxBufferSizeRejected(t *testing.T) {
 	require.Contains(t, string(resp), `"code":3`)
 }
 
+// TestPollingMaxBufferSizeTearsDown verifies that an oversize POST body
+// not only returns 400 but also disconnects the session, matching the
+// WebSocket SetReadLimit behaviour. Without this, an attacker could
+// keep sessions alive by repeatedly posting oversize bodies.
+func TestPollingMaxBufferSizeTearsDown(t *testing.T) {
+	resetSIOGlobals(t)
+
+	prev := PollingMaxBufferSize
+	PollingMaxBufferSize = 64
+	t.Cleanup(func() { PollingMaxBufferSize = prev })
+
+	disconnectErr := make(chan error, 1)
+	On(EventDisconnect, func(p *EventPayload) {
+		select {
+		case disconnectErr <- p.Error:
+		default:
+		}
+	})
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	body := append([]byte("42[\"big\",\""), bytes.Repeat([]byte{'x'}, 200)...)
+	body = append(body, []byte("\"]")...)
+	resp, st := pollPost(t, c, sid, body)
+	require.Equal(t, http.StatusBadRequest, st)
+	require.Contains(t, string(resp), `"code":3`)
+
+	select {
+	case err := <-disconnectErr:
+		require.ErrorIs(t, err, ErrPollingBodyTooLarge)
+	case <-time.After(2 * time.Second):
+		t.Fatal("oversize POST did not tear session down")
+	}
+
+	// Subsequent GET sees the session gone.
+	_, status := pollGet(t, c, sid)
+	require.Equal(t, http.StatusBadRequest, status)
+}
+
 // TestPollingErrorBodyAllCodes covers the pollingErrorBody mapping for
 // every documented engine.io error code.
 func TestPollingErrorBodyAllCodes(t *testing.T) {
@@ -972,13 +1013,18 @@ func TestPollingBinaryOutboundEncoded(t *testing.T) {
 func TestPollingQueueOverflowDrop(t *testing.T) {
 	resetSIOGlobals(t)
 
+	// Restore via t.Cleanup (runs AFTER all defers, so AFTER td()
+	// shuts down the test server and AFTER resetSIOGlobals' workersWg
+	// wait). Plain defer here would restore globals BEFORE the pong
+	// goroutine has actually exited, racing it on PollQueueMaxFrames
+	// / DropFramesOnOverflow.
 	prevCap, prevDrop := PollQueueMaxFrames, DropFramesOnOverflow
 	PollQueueMaxFrames = 4
 	DropFramesOnOverflow = true
-	defer func() {
+	t.Cleanup(func() {
 		PollQueueMaxFrames = prevCap
 		DropFramesOnOverflow = prevDrop
-	}()
+	})
 
 	overflow := make(chan struct{}, 16)
 	On(EventError, func(p *EventPayload) {
@@ -1025,9 +1071,11 @@ func TestPollingQueueOverflowDrop(t *testing.T) {
 func TestPollingQueueOverflowDisconnect(t *testing.T) {
 	resetSIOGlobals(t)
 
+	// See TestPollingQueueOverflowDrop for why t.Cleanup is required
+	// instead of a plain defer.
 	prevCap := PollQueueMaxFrames
 	PollQueueMaxFrames = 4
-	defer func() { PollQueueMaxFrames = prevCap }()
+	t.Cleanup(func() { PollQueueMaxFrames = prevCap })
 
 	disconnectErr := make(chan error, 1)
 	On(EventDisconnect, func(p *EventPayload) {
@@ -1074,7 +1122,15 @@ func TestPollingHandshakeTimerStoppedOnGracefulClose(t *testing.T) {
 
 	prevHS := HandshakeTimeout
 	HandshakeTimeout = 5 * time.Second
-	defer func() { HandshakeTimeout = prevHS }()
+	t.Cleanup(func() { HandshakeTimeout = prevHS })
+
+	disconnected := make(chan struct{}, 1)
+	On(EventDisconnect, func(_ *EventPayload) {
+		select {
+		case disconnected <- struct{}{}:
+		default:
+		}
+	})
 
 	kwsCh := make(chan *Websocket, 1)
 	On(EventConnect, func(p *EventPayload) {
@@ -1091,15 +1147,27 @@ func TestPollingHandshakeTimerStoppedOnGracefulClose(t *testing.T) {
 	_, _ = pollPost(t, c, sid, []byte(`40`))
 	kws := <-kwsCh
 	timer := kws.handshakeTimer.Load()
-	require.NotNil(t, timer)
+	require.NotNil(t, timer, "polling session should schedule handshakeTimer")
 
 	kws.Close()
+	<-disconnected
 
-	// After Close, the timer should be stopped. Subsequent firing is a
-	// no-op because connectFired is true; what we verify here is that
-	// Stop() returns false (already stopped) on a second call.
+	// Stop returns false in two cases: timer was already stopped, OR
+	// it had already fired and run its closure. Calling Stop here a
+	// SECOND time discriminates: if disconnected() did Stop the timer,
+	// our first Stop call returns false (already stopped) AND the
+	// AfterFunc closure was never given a chance to run. We assert
+	// both: timer.Stop()==false AND no second EventDisconnect fired.
+	// The latter would happen if the closure ran (which calls
+	// disconnected(ErrHandshakeClosed)).
 	require.False(t, timer.Stop(),
-		"handshakeTimer should already be stopped after Close()")
+		"handshakeTimer should be stopped after disconnected()")
+	select {
+	case <-disconnected:
+		t.Fatal("handshakeTimer fired after Close; timer was not stopped")
+	case <-time.After(50 * time.Millisecond):
+		// expected: no second disconnect event
+	}
 }
 
 // TestPollingCallbackPanicCleansUp verifies that a panic in the user

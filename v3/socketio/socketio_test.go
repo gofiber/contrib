@@ -461,13 +461,24 @@ func resetSIOGlobals(t *testing.T) {
 		// happen-before from the previous test's goroutine reads (e.g.
 		// pong reading PingInterval/PingTimeout) to any mutation the
 		// next test performs on package-level tunables; without this,
-		// -race flags cross-test reads vs writes.
+		// -race flags cross-test reads vs writes. Each Wait is bounded
+		// so a leaked goroutine surfaces as a test failure rather
+		// than hanging the whole suite.
 		for _, w := range sessions {
-			if k, ok := w.(*Websocket); ok {
-				func() {
-					defer func() { _ = recover() }()
-					k.workersWg.Wait()
-				}()
+			k, ok := w.(*Websocket)
+			if !ok {
+				continue
+			}
+			done := make(chan struct{})
+			go func() {
+				defer func() { _ = recover() }()
+				defer close(done)
+				k.workersWg.Wait()
+			}()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Errorf("resetSIOGlobals: workersWg.Wait timed out for session %s; goroutine leak suspected", k.UUID)
 			}
 		}
 		pool.reset()
@@ -1084,6 +1095,55 @@ func TestSocketIONewCallbackCloseSuppressesEventConnect(t *testing.T) {
 		t.Fatal("EventConnect fired after New callback closed the socket")
 	case <-time.After(150 * time.Millisecond):
 	}
+}
+
+// TestSocketIONewCallbackPanicCleansUp verifies that a panic in the
+// user New() callback runs disconnected() so the send goroutine,
+// pool entry, and *Websocket graph do not leak. Mirrors the polling
+// path's TestPollingCallbackPanicCleansUp.
+func TestSocketIONewCallbackPanicCleansUp(t *testing.T) {
+	resetSIOGlobals(t)
+
+	disconnectErr := make(chan error, 1)
+	On(EventDisconnect, func(p *EventPayload) {
+		select {
+		case disconnectErr <- p.Error:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {
+		panic("intentional WS callback panic")
+	})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	// EIO OPEN is sent before the user callback. The handshake's SIO
+	// CONNECT step also runs synchronously before the callback, so we
+	// can complete the handshake from the client side; the panic
+	// happens on the server right after.
+	_ = sioHandshake(t, conn)
+
+	select {
+	case err := <-disconnectErr:
+		require.NotNil(t, err)
+		require.Contains(t, err.Error(), "callback panic")
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventDisconnect did not fire after WS callback panic")
+	}
+
+	// The pool no longer holds the session.
+	require.Eventually(t, func() bool {
+		for _, w := range pool.all() {
+			if k, ok := w.(*Websocket); ok && k.pollQ == nil {
+				return false
+			}
+		}
+		return true
+	}, 1*time.Second, 10*time.Millisecond,
+		"pool should not retain WS session after callback panic")
 }
 
 // TestSocketIONamespaceHandshake verifies that a client connecting to a

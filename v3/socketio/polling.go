@@ -545,6 +545,13 @@ func encodePollingFrames(frames [][]byte) []byte {
 func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 	body := c.Body()
 	if PollingMaxBufferSize > 0 && len(body) > PollingMaxBufferSize {
+		// Tear the session down: matching the WebSocket SetReadLimit
+		// behaviour, an oversized inbound payload is a protocol-level
+		// error, not just a single-request rejection. Without this an
+		// adversary could repeatedly POST oversized bodies to keep
+		// sessions alive in the pool until heartbeat reaps them.
+		kws.fireEvent(EventError, nil, ErrPollingBodyTooLarge)
+		kws.disconnected(ErrPollingBodyTooLarge)
 		return writePollingError(c, 3)
 	}
 

@@ -147,6 +147,12 @@ var (
 	// EIO frame contains more than MaxBatchPackets record-separated
 	// packets. Remaining packets in the frame are dropped.
 	ErrBatchPacketsExceeded = errors.New("socketio: batched frame exceeds MaxBatchPackets")
+	// ErrPollingBodyTooLarge is delivered to EventDisconnect when an
+	// inbound polling POST exceeds PollingMaxBufferSize. The session
+	// is torn down to mirror the WebSocket SetReadLimit behaviour;
+	// repeated oversized POSTs would otherwise keep sessions alive
+	// until heartbeat reaped them.
+	ErrPollingBodyTooLarge = errors.New("socketio: polling POST body exceeds PollingMaxBufferSize")
 	// ErrUnknownEIOPacket is surfaced via EventError when the inbound EIO
 	// packet type byte does not match any recognised Engine.IO opcode.
 	ErrUnknownEIOPacket = errors.New("socketio: unknown EIO packet type")
@@ -938,7 +944,28 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 		go func() { defer kws.workersWg.Done(); kws.send(ctx) }()
 
 		// 3. Execute the user callback on a fully established socket.
-		callback(kws)
+		//    Recover panics so the framework's worker pool stays
+		//    healthy and the session is torn down cleanly. Without
+		//    this, a panicking callback unwinds out of the upgrade
+		//    handler with the send goroutine still running and the
+		//    pool entry still present; the framework recovers but
+		//    the *Websocket leaks. Mirrors the polling path in
+		//    openPollingSession.
+		var callbackPanic interface{}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					callbackPanic = r
+				}
+			}()
+			callback(kws)
+		}()
+		if callbackPanic != nil {
+			logf("error", "ws_callback_panic", "uuid", kws.UUID, "panic", fmt.Sprintf("%v", callbackPanic))
+			kws.disconnected(fmt.Errorf("socketio: WebSocket callback panic: %v", callbackPanic))
+			kws.finishRun()
+			return
+		}
 
 		// If the callback actively closed the socket (for example after
 		// inspecting HandshakeAuth), do not emit EventConnect for a connection
