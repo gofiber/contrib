@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync"
@@ -118,7 +117,7 @@ func (q *pollQueue) drain(ctx context.Context, maxBytes int) ([][]byte, bool) {
 	for {
 		q.mu.Lock()
 		if len(q.frames) > 0 {
-			var taken [][]byte
+			taken := make([][]byte, 0, len(q.frames))
 			var size int
 			i := 0
 			for ; i < len(q.frames); i++ {
@@ -133,12 +132,20 @@ func (q *pollQueue) drain(ctx context.Context, maxBytes int) ([][]byte, bool) {
 				taken = append(taken, f)
 				size += add
 			}
+			// Truncate in place to retain the backing array across
+			// drain cycles. nil out the slots we are dropping so the
+			// frame []byte references can be GC'd.
 			if i >= len(q.frames) {
-				q.frames = nil
+				for j := range q.frames {
+					q.frames[j] = nil
+				}
+				q.frames = q.frames[:0]
 			} else {
-				rem := q.frames[i:]
-				q.frames = make([][]byte, len(rem))
-				copy(q.frames, rem)
+				n := copy(q.frames, q.frames[i:])
+				for j := n; j < len(q.frames); j++ {
+					q.frames[j] = nil
+				}
+				q.frames = q.frames[:n]
 			}
 			// If the buffer is empty, recycle the notify channel so a
 			// future enqueue starts a fresh signal cycle. If frames
@@ -280,68 +287,54 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 	// listener callbacks on later transports see those frozen values.
 	// Users needing per-connection mutable state should use
 	// SetAttribute, which is transport-agnostic.
-	queriesSnap := make(map[string]string)
-	for k, v := range c.Queries() {
+	queries := c.Queries()
+	queriesSnap := make(map[string]string, len(queries))
+	for k, v := range queries {
 		queriesSnap[k] = v
 	}
-	paramsSnap := make(map[string]string)
-	if route := c.Route(); route != nil {
+	var paramsSnap map[string]string
+	if route := c.Route(); route != nil && len(route.Params) > 0 {
+		paramsSnap = make(map[string]string, len(route.Params))
 		for _, k := range route.Params {
 			paramsSnap[k] = c.Params(k)
 		}
 	}
-	cookiesSnap := make(map[string]string)
+	// Locals and Cookies are usually empty for socket.io routes; lazy-
+	// init keeps the OPEN allocation budget low for the common case.
+	var cookiesSnap map[string]string
 	c.RequestCtx().Request.Header.VisitAllCookie(func(k, v []byte) {
+		if cookiesSnap == nil {
+			cookiesSnap = make(map[string]string)
+		}
 		cookiesSnap[string(k)] = string(v)
 	})
-	localsSnap := make(map[string]interface{})
+	var localsSnap map[string]interface{}
 	c.RequestCtx().VisitUserValues(func(k []byte, v interface{}) {
+		if localsSnap == nil {
+			localsSnap = make(map[string]interface{})
+		}
 		localsSnap[string(k)] = v
 	})
 
+	mkLookup := func(m map[string]string) func(string, ...string) string {
+		return func(key string, def ...string) string {
+			if v, ok := m[key]; ok {
+				return v
+			}
+			if len(def) > 0 {
+				return def[0]
+			}
+			return ""
+		}
+	}
 	kws.Locals = func(key string) interface{} { return localsSnap[key] }
-	kws.Params = func(key string, def ...string) string {
-		if v, ok := paramsSnap[key]; ok {
-			return v
-		}
-		if len(def) > 0 {
-			return def[0]
-		}
-		return ""
-	}
-	kws.Query = func(key string, def ...string) string {
-		if v, ok := queriesSnap[key]; ok {
-			return v
-		}
-		if len(def) > 0 {
-			return def[0]
-		}
-		return ""
-	}
-	kws.Cookies = func(key string, def ...string) string {
-		if v, ok := cookiesSnap[key]; ok {
-			return v
-		}
-		if len(def) > 0 {
-			return def[0]
-		}
-		return ""
-	}
+	kws.Params = mkLookup(paramsSnap)
+	kws.Query = mkLookup(queriesSnap)
+	kws.Cookies = mkLookup(cookiesSnap)
 
 	pool.set(kws)
 
-	maxPayload := int(MaxPayload)
-	if maxPayload <= 0 {
-		maxPayload = 1_000_000
-	}
-	open := eioOpenPacket{
-		SID:          kws.UUID,
-		Upgrades:     []string{},
-		PingInterval: int(PingInterval.Milliseconds()),
-		PingTimeout:  int(PingTimeout.Milliseconds()),
-		MaxPayload:   maxPayload,
-	}
-	data, err := json.Marshal(open)
+	frame, err := buildEIOOpenFrame(kws.UUID)
 	if err != nil {
 		kws.disconnected(err)
 		return writePollingError(c, 3)
@@ -359,7 +352,21 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 	// Lifecycle goroutine: blocks until disconnected fires, then runs
 	// finishRun to cancel the ctx and join the heartbeat goroutine. This
 	// substitutes for the run() loop used by the WebSocket path.
-	go kws.pollLifecycle()
+	go func() { <-kws.done; kws.finishRun() }()
+
+	// Handshake budget: enforce parity with the WebSocket path
+	// (handshake() uses HandshakeTimeout via SetReadDeadline). Without
+	// this, a polling client could open a session, never POST "40", and
+	// only the heartbeat enforcer (PingInterval+PingTimeout, default
+	// 45s) would tear it down. The timer is a no-op once the SIO
+	// CONNECT path flips connectFired.
+	if HandshakeTimeout > 0 {
+		time.AfterFunc(HandshakeTimeout, func() {
+			if !kws.connectFired.Load() {
+				kws.disconnected(ErrHandshakeClosed)
+			}
+		})
+	}
 
 	callback(kws)
 
@@ -376,18 +383,9 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 		return writePollingError(c, 4)
 	}
 
-	body := append([]byte{eioOpen}, data...)
 	c.Set(fiber.HeaderContentType, "text/plain; charset=UTF-8")
 	c.Set(fiber.HeaderCacheControl, "no-store")
-	return c.Send(body)
-}
-
-// pollLifecycle blocks until the session is torn down, then runs the
-// shared finishRun barrier so workersWg.Wait observers see the goroutines
-// drained.
-func (kws *Websocket) pollLifecycle() {
-	<-kws.done
-	kws.finishRun()
+	return c.Send(frame)
 }
 
 // drainPolling is the GET long-poll handler: blocks until queued frames
@@ -398,7 +396,6 @@ func drainPolling(c fiber.Ctx, kws *Websocket) error {
 	if !kws.pollGate.CompareAndSwap(false, true) {
 		return writePollingError(c, 3)
 	}
-	defer kws.pollGate.Store(false)
 
 	drainCtx := c.Context()
 	if MaxPollWait > 0 {
@@ -408,6 +405,15 @@ func drainPolling(c fiber.Ctx, kws *Websocket) error {
 	}
 
 	frames, closed := kws.pollQ.drain(drainCtx, PollingMaxBufferSize)
+
+	// Release the gate before writing the response body. Holding it
+	// across c.Send would strand a slow-client session for the duration
+	// of TCP backpressure on the response write, blocking subsequent
+	// legitimate polls with concurrent-GET errors. The drain has already
+	// taken its share of the queue, so a competing GET racing in here
+	// either drains new frames or blocks on its own context.
+	kws.pollGate.Store(false)
+
 	body := encodePollingFrames(frames)
 
 	c.Set(fiber.HeaderContentType, "text/plain; charset=UTF-8")
@@ -519,12 +525,3 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 	return c.Status(http.StatusOK).SendString("ok")
 }
 
-// connectFiredCAS atomically marks the session as having delivered its
-// EventConnect notification. Returns true on the first successful flip,
-// false on subsequent calls. Used to gate the polling first-CONNECT
-// branch in handleSIOPacket so the EventConnect listener fires exactly
-// once per session regardless of which transport delivered the SIO
-// CONNECT packet.
-func (kws *Websocket) connectFiredCAS() bool {
-	return kws.connectFired.CompareAndSwap(false, true)
-}

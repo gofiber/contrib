@@ -441,6 +441,29 @@ type eioOpenPacket struct {
 	MaxPayload   int      `json:"maxPayload"`
 }
 
+// buildEIOOpenFrame returns the full Engine.IO OPEN frame bytes
+// (`0{"sid":...,"upgrades":[],"pingInterval":N,"pingTimeout":N,"maxPayload":N}`)
+// for a freshly opened session. Used by both the WebSocket handshake
+// path and the polling open handler. The empty "upgrades" array
+// signals "no transport upgrade available" per Engine.IO v4.
+func buildEIOOpenFrame(sid string) ([]byte, error) {
+	maxPayload := int(MaxPayload)
+	if maxPayload <= 0 {
+		maxPayload = 1_000_000
+	}
+	data, err := json.Marshal(eioOpenPacket{
+		SID:          sid,
+		Upgrades:     []string{},
+		PingInterval: int(PingInterval.Milliseconds()),
+		PingTimeout:  int(PingTimeout.Milliseconds()),
+		MaxPayload:   maxPayload,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte{eioOpen}, data...), nil
+}
+
 // buildSIOEvent encodes a Socket.IO EVENT packet ready to send over the wire.
 // Format: 4 2 [/<namespace>,] [ "<event>" , <data> ]
 //
@@ -987,22 +1010,11 @@ func (kws *Websocket) handshake() error {
 	}
 
 	// 1. Send EIO OPEN
-	maxPayload := int(MaxPayload)
-	if maxPayload <= 0 {
-		maxPayload = 1_000_000
-	}
-	open := eioOpenPacket{
-		SID:          kws.UUID,
-		Upgrades:     []string{},
-		PingInterval: int(PingInterval.Milliseconds()),
-		PingTimeout:  int(PingTimeout.Milliseconds()),
-		MaxPayload:   maxPayload,
-	}
-	data, err := json.Marshal(open)
+	frame, err := buildEIOOpenFrame(kws.UUID)
 	if err != nil {
 		return fmt.Errorf("socketio: marshal EIO OPEN: %w", err)
 	}
-	if err := kws.Conn.WriteMessage(TextMessage, append([]byte{eioOpen}, data...)); err != nil {
+	if err := kws.Conn.WriteMessage(TextMessage, frame); err != nil {
 		return fmt.Errorf("socketio: write EIO OPEN: %w", err)
 	}
 
@@ -2248,7 +2260,7 @@ func (kws *Websocket) handleSIOPacket(payload []byte) {
 			if err == nil {
 				kws.write(TextMessage, buildSIOConnectAck(nsCopy, ackPayload))
 			}
-			if kws.connectFiredCAS() {
+			if kws.connectFired.CompareAndSwap(false, true) {
 				kws.fireEvent(EventConnect, nil, nil)
 			}
 			return

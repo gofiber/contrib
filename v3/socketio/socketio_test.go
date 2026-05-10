@@ -447,11 +447,26 @@ func resetSIOGlobals(t *testing.T) {
 	t.Cleanup(func() {
 		// Close every still-pooled connection so its read/send/pong
 		// goroutines exit before the next test snapshots them.
-		for _, w := range pool.all() {
+		sessions := pool.all()
+		for _, w := range sessions {
 			if k, ok := w.(*Websocket); ok {
 				func() {
 					defer func() { _ = recover() }()
 					k.Close()
+				}()
+			}
+		}
+		// Wait on workersWg per session so the goroutines have
+		// actually exited before the next test starts. Establishes
+		// happen-before from the previous test's goroutine reads (e.g.
+		// pong reading PingInterval/PingTimeout) to any mutation the
+		// next test performs on package-level tunables; without this,
+		// -race flags cross-test reads vs writes.
+		for _, w := range sessions {
+			if k, ok := w.(*Websocket); ok {
+				func() {
+					defer func() { _ = recover() }()
+					k.workersWg.Wait()
 				}()
 			}
 		}

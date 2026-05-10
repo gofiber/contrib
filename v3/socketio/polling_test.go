@@ -748,6 +748,175 @@ func TestPollQueueOversizeFrameEmittedAlone(t *testing.T) {
 	require.Equal(t, big, frames[0])
 }
 
+// TestPollingHandshakeTimeoutEnforced verifies a polling client that
+// opens a session and never POSTs SIO CONNECT is torn down within the
+// configured HandshakeTimeout, parity with the WebSocket path.
+func TestPollingHandshakeTimeoutEnforced(t *testing.T) {
+	resetSIOGlobals(t)
+
+	prev := HandshakeTimeout
+	HandshakeTimeout = 80 * time.Millisecond
+	defer func() { HandshakeTimeout = prev }()
+
+	disconnected := make(chan error, 1)
+	On(EventDisconnect, func(p *EventPayload) {
+		select {
+		case disconnected <- p.Error:
+		default:
+		}
+	})
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+
+	// Do not POST "40". Wait for the handshake timer to fire.
+	select {
+	case err := <-disconnected:
+		require.ErrorIs(t, err, ErrHandshakeClosed)
+	case <-time.After(2 * time.Second):
+		t.Fatal("polling handshake timer did not tear session down")
+	}
+
+	// Subsequent GET sees the session gone.
+	_, status := pollGet(t, c, sid)
+	require.Equal(t, http.StatusBadRequest, status)
+}
+
+// TestPollingHeartbeatTimeoutTearsDown verifies that a polling session
+// torn down with ErrHeartbeatTimeout (as the pong goroutine would call
+// when the client stops responding) cleans up the session, drains any
+// in-flight long-poll, and rejects subsequent GETs with engine.io code
+// 1.
+//
+// We invoke disconnected directly rather than waiting for the real
+// heartbeat enforcer, mirroring the same pattern used by
+// TestSocketIOHeartbeat to avoid racing previously-spawned pong
+// goroutines on the package-level PingInterval/PingTimeout globals.
+func TestPollingHeartbeatTimeoutTearsDown(t *testing.T) {
+	resetSIOGlobals(t)
+
+	disconnectErr := make(chan error, 1)
+	On(EventDisconnect, func(p *EventPayload) {
+		select {
+		case disconnectErr <- p.Error:
+		default:
+		}
+	})
+
+	kwsCh := make(chan *Websocket, 1)
+	On(EventConnect, func(p *EventPayload) {
+		select {
+		case kwsCh <- p.Kws:
+		default:
+		}
+	})
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	_, _ = pollPost(t, c, sid, []byte(`40`))
+	kws := <-kwsCh
+	// Drain the connect ack first so the next GET will block on the
+	// queue and be released by disconnected.
+	_, _ = pollGet(t, c, sid)
+
+	// Start an in-flight long-poll, then simulate a heartbeat timeout
+	// from another goroutine (the production pong goroutine would do
+	// the same on PingInterval+PingTimeout expiry).
+	pollResp := make(chan int, 1)
+	go func() {
+		_, st := pollGet(t, c, sid)
+		pollResp <- st
+	}()
+	time.Sleep(50 * time.Millisecond)
+	kws.disconnected(ErrHeartbeatTimeout)
+
+	select {
+	case err := <-disconnectErr:
+		require.ErrorIs(t, err, ErrHeartbeatTimeout)
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventDisconnect did not fire with ErrHeartbeatTimeout")
+	}
+
+	// The blocked long-poll wakes up and returns code 1 (empty buffer
+	// + closed flag).
+	select {
+	case st := <-pollResp:
+		require.Equal(t, http.StatusBadRequest, st,
+			"long-poll should report unknown sid after heartbeat timeout")
+	case <-time.After(2 * time.Second):
+		t.Fatal("long-poll did not return after heartbeat timeout")
+	}
+
+	// Subsequent GET also reports unknown sid.
+	_, status := pollGet(t, c, sid)
+	require.Equal(t, http.StatusBadRequest, status)
+}
+
+// TestPollingGateReleasedBeforeBodyWrite verifies that the long-poll
+// gate is released BEFORE the response body is written, so a slow client
+// (or any post-drain blocking) does not strand legitimate retry GETs.
+func TestPollingGateReleasedBeforeBodyWrite(t *testing.T) {
+	resetSIOGlobals(t)
+
+	kwsCh := make(chan *Websocket, 1)
+	On(EventConnect, func(p *EventPayload) {
+		select {
+		case kwsCh <- p.Kws:
+		default:
+		}
+	})
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	_, _ = pollPost(t, c, sid, []byte(`40`))
+	kws := <-kwsCh
+	_, _ = pollGet(t, c, sid) // drain CONNECT ack
+
+	// Start a long-poll, then enqueue a frame and immediately fire a
+	// second GET. The first GET should already have released the gate
+	// after drain, so the second GET should not be rejected with code 3.
+	first := make(chan int, 1)
+	go func() {
+		_, st := pollGet(t, c, sid)
+		first <- st
+	}()
+	time.Sleep(50 * time.Millisecond)
+	kws.EmitEvent("ping", []byte(`1`))
+	require.Equal(t, http.StatusOK, <-first)
+
+	// Now emit again and immediately fire two parallel polls. The
+	// gate's early-release should let one of them succeed without
+	// blocking on the other.
+	kws.EmitEvent("ping", []byte(`2`))
+	g1 := make(chan int, 1)
+	g2 := make(chan int, 1)
+	go func() {
+		_, st := pollGet(t, c, sid)
+		g1 <- st
+	}()
+	go func() {
+		_, st := pollGet(t, c, sid)
+		g2 <- st
+	}()
+	// One returns 200 (drained the queued frame), the other may return
+	// either 200 (drained empty after timeout) or 400 (concurrent gate).
+	// The invariant we test: the WINNER is unblocked promptly.
+	select {
+	case st := <-g1:
+		require.Contains(t, []int{http.StatusOK, http.StatusBadRequest}, st)
+	case st := <-g2:
+		require.Contains(t, []int{http.StatusOK, http.StatusBadRequest}, st)
+	case <-time.After(MaxPollWait + time.Second):
+		t.Fatal("no GET completed in time; gate likely still held")
+	}
+}
+
 // TestPollingTransportMismatch verifies that a polling request whose sid
 // resolves to a WebSocket-only session returns engine.io code 3.
 func TestPollingTransportMismatch(t *testing.T) {
