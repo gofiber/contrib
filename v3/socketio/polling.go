@@ -94,23 +94,23 @@ func (q *pollQueue) signalLocked() {
 type enqueueResult int
 
 const (
+	// enqueueOK indicates the frame was buffered (or silently dropped
+	// because the queue was already closed, to match post-disconnect
+	// best-effort semantics).
 	enqueueOK enqueueResult = iota
-	enqueueDropped
-	enqueueOverflow
+	// enqueueDroppedQueueFull indicates the queue is full and
+	// DropFramesOnOverflow is true: the offending frame was discarded
+	// and the caller should fire EventError(ErrSendQueueOverflow).
+	enqueueDroppedQueueFull
+	// enqueueRejectedDisconnect indicates the queue is full and
+	// DropFramesOnOverflow is false: the caller should tear the
+	// session down with ErrSendQueueClosed.
+	enqueueRejectedDisconnect
 )
 
 // enqueue appends a frame to the buffer. Caller transfers ownership of
-// frame; callers must not mutate it after the call.
-//
-// Returns:
-//   - enqueueOK when the frame was buffered (or the queue was closed,
-//     in which case the frame is silently dropped to match the
-//     post-disconnect "best effort" semantics);
-//   - enqueueDropped when the frame would exceed PollQueueMaxFrames AND
-//     DropFramesOnOverflow is true (caller fires EventError);
-//   - enqueueOverflow when the frame would exceed PollQueueMaxFrames
-//     and DropFramesOnOverflow is false (caller tears the session
-//     down).
+// frame; callers must not mutate it after the call. The return value
+// instructs the caller how to react to the queue's overflow policy.
 func (q *pollQueue) enqueue(frame []byte) enqueueResult {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -119,9 +119,9 @@ func (q *pollQueue) enqueue(frame []byte) enqueueResult {
 	}
 	if PollQueueMaxFrames > 0 && len(q.frames) >= PollQueueMaxFrames {
 		if DropFramesOnOverflow {
-			return enqueueDropped
+			return enqueueDroppedQueueFull
 		}
-		return enqueueOverflow
+		return enqueueRejectedDisconnect
 	}
 	q.frames = append(q.frames, frame)
 	q.signalLocked()
@@ -352,7 +352,7 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 		localsSnap[string(k)] = v
 	})
 
-	mkLookup := func(m map[string]string) func(string, ...string) string {
+	newLookupFunc := func(m map[string]string) func(string, ...string) string {
 		return func(key string, def ...string) string {
 			if v, ok := m[key]; ok {
 				return v
@@ -364,9 +364,9 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 		}
 	}
 	kws.Locals = func(key string) interface{} { return localsSnap[key] }
-	kws.Params = mkLookup(paramsSnap)
-	kws.Query = mkLookup(queriesSnap)
-	kws.Cookies = mkLookup(cookiesSnap)
+	kws.Params = newLookupFunc(paramsSnap)
+	kws.Query = newLookupFunc(queriesSnap)
+	kws.Cookies = newLookupFunc(cookiesSnap)
 
 	pool.set(kws)
 
@@ -407,25 +407,16 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 		}))
 	}
 
-	// Recover panics from the user callback. Without this, a panicking
+	// Recover panics via the shared helper. Without this, a panicking
 	// callback unwinds out of openPollingSession with the lifecycle
 	// goroutine still parked on <-kws.done; disconnected() never runs,
 	// so the session leaks (pool entry, pong goroutine, *Websocket
-	// graph). On panic we log, surface via EventError, run
-	// disconnected to clean up the session, and respond with HTTP 500
-	// without re-raising so Fiber's worker pool stays healthy.
-	var callbackPanic interface{}
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				callbackPanic = r
-			}
-		}()
-		callback(kws)
-	}()
-	if callbackPanic != nil {
-		logf("error", "polling_callback_panic", "uuid", kws.UUID, "panic", fmt.Sprintf("%v", callbackPanic))
-		kws.disconnected(fmt.Errorf("socketio: polling callback panic: %v", callbackPanic))
+	// graph). On panic we log, run disconnected to clean up, and
+	// respond with HTTP 500 without re-raising so Fiber's worker pool
+	// stays healthy.
+	if r := runUserCallback(callback, kws); r != nil {
+		logf("error", "polling_callback_panic", "uuid", kws.UUID, "panic", fmt.Sprintf("%v", r))
+		kws.disconnected(fmt.Errorf("socketio: polling callback panic: %v", r))
 		c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
 		return c.Status(http.StatusInternalServerError).
 			SendString(`{"code":3,"message":"Bad request"}`)
@@ -531,7 +522,7 @@ func encodePollingFrames(frames [][]byte) []byte {
 	buf := make([]byte, 0, size)
 	for i, f := range frames {
 		if i > 0 {
-			buf = append(buf, 0x1E)
+			buf = append(buf, eioPacketSeparator)
 		}
 		buf = append(buf, f...)
 	}
@@ -543,8 +534,8 @@ func encodePollingFrames(frames [][]byte) []byte {
 // pipeline used by the WebSocket read loop, and responds with the
 // engine.io literal "ok" body.
 func ingestPolling(c fiber.Ctx, kws *Websocket) error {
-	body := c.Body()
-	if PollingMaxBufferSize > 0 && len(body) > PollingMaxBufferSize {
+	src := c.Body()
+	if PollingMaxBufferSize > 0 && len(src) > PollingMaxBufferSize {
 		// Tear the session down: matching the WebSocket SetReadLimit
 		// behaviour, an oversized inbound payload is a protocol-level
 		// error, not just a single-request rejection. Without this an
@@ -554,6 +545,15 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 		kws.disconnected(ErrPollingBodyTooLarge)
 		return writePollingError(c, 3)
 	}
+
+	// Copy the body once into a fresh buffer. fasthttp recycles the
+	// request body buffer when the handler returns; without an owned
+	// copy, listener callbacks that stash EventPayload.Data into a
+	// goroutine could observe corrupted bytes. By copying once we
+	// avoid the per-packet copy and listeners can safely retain
+	// slices of body across goroutine boundaries.
+	body := make([]byte, len(src))
+	copy(body, src)
 
 	// Serialise POSTs per session so dispatched packets across
 	// overlapping POSTs preserve FIFO order. Held only for the parse
@@ -573,7 +573,7 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 			kws.fireEvent(EventError, nil, ErrBatchPacketsExceeded)
 			break
 		}
-		idx := bytes.IndexByte(rest, 0x1E)
+		idx := bytes.IndexByte(rest, eioPacketSeparator)
 		var packet []byte
 		if idx < 0 {
 			packet, rest = rest, nil
@@ -592,22 +592,18 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 			decoded := make([]byte, base64.StdEncoding.DecodedLen(len(packet)-1))
 			n, decErr := base64.StdEncoding.Decode(decoded, packet[1:])
 			if decErr != nil {
-				kws.fireEvent(EventError, append([]byte(nil), packet...), decErr)
+				kws.fireEvent(EventError, packet, decErr)
 				continue
 			}
 			kws.fireEvent(EventMessage, decoded[:n], nil)
 			count++
 			continue
 		}
-		// Copy the packet off c.Body() before dispatch: fasthttp
-		// reuses the request body buffer once the handler returns,
-		// and listener callbacks may stash EventPayload.Data /
-		// .Args into a goroutine outliving the request. The
-		// WebSocket read path already copies binary frames for the
-		// same reason; do the same here for parity.
-		owned := make([]byte, len(packet))
-		copy(owned, packet)
-		kws.dispatchEIOPacket(owned)
+		// packet is a sub-slice of the body buffer we already copied
+		// at the top of this function; safe to hand to the dispatcher
+		// (and through it to listener callbacks) without an
+		// additional per-packet allocation.
+		kws.dispatchEIOPacket(packet)
 		count++
 	}
 

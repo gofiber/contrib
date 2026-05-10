@@ -129,6 +129,14 @@ const socket = io("http://localhost:3000", {
 
 > CORS is not handled by the middleware. If your client connects from a different origin, mount your preferred CORS middleware (e.g. `github.com/gofiber/fiber/v3/middleware/cors`) upstream of the route. Long-polling holds a request open for up to ~25s by default, so reverse-proxy timeouts must accommodate (`proxy_read_timeout` >= 60s on nginx, `proxy_buffering off`).
 
+#### Polling pitfalls
+
+- **Forgot to mount POST.** Polling clients send packets via POST; without `app.Post(path, h)` (or `app.All(...)`) the server returns 404 and the client loops with `transport error`. Always mount both `GET` and `POST` for polling routes.
+- **`kws.Conn` is nil on polling.** Use `kws.IsPolling()` to branch, or stick to the transport-agnostic `Emit`, `EmitEvent`, `EmitArgs`, `EmitWithAck*`, `Broadcast`, `Ack`, and `Close` methods. They all work identically on both transports.
+- **Snapshot vs live request state.** `kws.Locals`, `kws.Params`, `kws.Query`, `kws.Cookies` are captured at session-open time on polling sessions (because fasthttp recycles the request context after the OPEN handler returns). Store mutable per-connection data via `kws.SetAttribute` instead.
+- **Burst bigger than `PollQueueMaxFrames`.** With the default `DropFramesOnOverflow = false`, emitting more than `PollQueueMaxFrames` (1024) frames before any GET drains them tears the session down with `ErrSendQueueClosed`. Either pace bursts, raise `PollQueueMaxFrames`, or set `DropFramesOnOverflow = true` to drop the offending frames + fire `EventError(ErrSendQueueOverflow)` instead.
+- **Body limit collision.** If your Fiber app sets `BodyLimit` lower than `PollingMaxBufferSize`, fasthttp rejects the POST before our handler runs. Keep `BodyLimit` >= `PollingMaxBufferSize`.
+
 ### Tunable globals
 
 These package-level variables can be overridden before the first connection is accepted (typically in `init()` or early in `main`). They control timing and limits for the Engine.IO / Socket.IO transport.
@@ -526,6 +534,7 @@ Custom events map directly to the event name used in `socket.emit("myEvent", …
 | EmitWithAckArgs     | `void`             | Multi-arg variant; `cb([][]byte, error)` receives the ack tuple (uses `OutboundAckTimeout`)  |
 | HandshakeAuth       | `json.RawMessage`  | Raw JSON auth payload sent by the client at connect time (nil if absent)                     |
 | IsAlive             | `bool`             | Reports whether the underlying connection is still open and the heartbeat loop is running    |
+| IsPolling           | `bool`             | Reports whether the session is bound to HTTP long-polling rather than WebSocket; when true, `Conn` is nil |
 | Close               | `void`             | Actively close the connection from the server                                                |
 
 **Note: the FastHTTP connection can be accessed directly from the instance**

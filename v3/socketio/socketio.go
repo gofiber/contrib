@@ -28,6 +28,18 @@ const (
 	eioNoop    = '6' // Either side: no-operation
 )
 
+// Engine.IO framing constants shared between WebSocket and HTTP polling.
+const (
+	// eioPacketSeparator is the ASCII record-separator (0x1E, RS) byte
+	// Engine.IO v4 uses to delimit multiple packets in one batched
+	// frame (WebSocket text frame or HTTP polling body).
+	eioPacketSeparator byte = 0x1E
+	// defaultMaxPayload is the fallback advertised in the EIO OPEN
+	// packet when MaxPayload is unset or non-positive. Matches the
+	// engine.io reference server default (1 MB).
+	defaultMaxPayload = 1_000_000
+)
+
 // Socket.IO v5 packet type bytes (carried inside an eioMessage payload)
 const (
 	sioConnect      = '0' // Client → Server: connect to a namespace
@@ -447,6 +459,17 @@ type eioOpenPacket struct {
 	MaxPayload   int      `json:"maxPayload"`
 }
 
+// runUserCallback invokes the user's New() callback inside a recover
+// block so a panicking callback cannot leak the session. Returns the
+// recovered panic value (nil on clean return). Used by both the
+// WebSocket and polling open paths so a single recover discipline
+// applies regardless of transport.
+func runUserCallback(callback func(*Websocket), kws *Websocket) (recovered interface{}) {
+	defer func() { recovered = recover() }()
+	callback(kws)
+	return nil
+}
+
 // buildEIOOpenFrame returns the full Engine.IO OPEN frame bytes
 // (`0{"sid":...,"upgrades":[],"pingInterval":N,"pingTimeout":N,"maxPayload":N}`)
 // for a freshly opened session. Used by both the WebSocket handshake
@@ -455,7 +478,7 @@ type eioOpenPacket struct {
 func buildEIOOpenFrame(sid string) ([]byte, error) {
 	maxPayload := int(MaxPayload)
 	if maxPayload <= 0 {
-		maxPayload = 1_000_000
+		maxPayload = defaultMaxPayload
 	}
 	data, err := json.Marshal(eioOpenPacket{
 		SID:          sid,
@@ -945,24 +968,11 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 
 		// 3. Execute the user callback on a fully established socket.
 		//    Recover panics so the framework's worker pool stays
-		//    healthy and the session is torn down cleanly. Without
-		//    this, a panicking callback unwinds out of the upgrade
-		//    handler with the send goroutine still running and the
-		//    pool entry still present; the framework recovers but
-		//    the *Websocket leaks. Mirrors the polling path in
-		//    openPollingSession.
-		var callbackPanic interface{}
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					callbackPanic = r
-				}
-			}()
-			callback(kws)
-		}()
-		if callbackPanic != nil {
-			logf("error", "ws_callback_panic", "uuid", kws.UUID, "panic", fmt.Sprintf("%v", callbackPanic))
-			kws.disconnected(fmt.Errorf("socketio: WebSocket callback panic: %v", callbackPanic))
+		//    healthy and the session is torn down cleanly. Mirrors
+		//    the polling path in openPollingSession.
+		if r := runUserCallback(callback, kws); r != nil {
+			logf("error", "ws_callback_panic", "uuid", kws.UUID, "panic", fmt.Sprintf("%v", r))
+			kws.disconnected(fmt.Errorf("socketio: WebSocket callback panic: %v", r))
 			kws.finishRun()
 			return
 		}
@@ -1831,6 +1841,15 @@ func (kws *Websocket) IsAlive() bool {
 	return kws.isAlive.Load()
 }
 
+// IsPolling reports whether this session is bound to the HTTP long-
+// polling transport rather than to a WebSocket. When true, kws.Conn is
+// nil; user code that touches kws.Conn directly must guard with this
+// check (or just use the transport-agnostic Emit / Broadcast / Ack /
+// Close API, which works on both transports).
+func (kws *Websocket) IsPolling() bool {
+	return kws.pollQ != nil
+}
+
 func (kws *Websocket) hasConn() bool {
 	kws.mu.RLock()
 	defer kws.mu.RUnlock()
@@ -1927,10 +1946,10 @@ func (kws *Websocket) write(messageType int, messageBytes []byte) {
 			frame = encodePollingBinary(messageBytes)
 		}
 		switch kws.pollQ.enqueue(frame) {
-		case enqueueDropped:
+		case enqueueDroppedQueueFull:
 			logf("warn", "poll_queue_overflow_drop", "uuid", kws.UUID, "cap", PollQueueMaxFrames)
 			kws.fireEvent(EventError, nil, ErrSendQueueOverflow)
-		case enqueueOverflow:
+		case enqueueRejectedDisconnect:
 			logf("error", "poll_queue_overflow_disconnect", "uuid", kws.UUID, "cap", PollQueueMaxFrames)
 			kws.disconnected(ErrSendQueueClosed)
 		}
@@ -2135,7 +2154,7 @@ func (kws *Websocket) read(ctx context.Context) {
 		// bytes.IndexByte so we never materialise a [][]byte for a
 		// frame that an attacker could fill with separators (which
 		// bytes.Split would amplify into millions of slice headers).
-		if bytes.IndexByte(msg, 0x1E) < 0 {
+		if bytes.IndexByte(msg, eioPacketSeparator) < 0 {
 			kws.dispatchEIOPacket(msg)
 		} else {
 			rest, count := msg, 0
@@ -2145,7 +2164,7 @@ func (kws *Websocket) read(ctx context.Context) {
 					kws.fireEvent(EventError, nil, ErrBatchPacketsExceeded)
 					break
 				}
-				idx := bytes.IndexByte(rest, 0x1E)
+				idx := bytes.IndexByte(rest, eioPacketSeparator)
 				var packet []byte
 				if idx < 0 {
 					packet, rest = rest, nil
