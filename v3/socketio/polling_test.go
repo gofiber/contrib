@@ -564,6 +564,43 @@ func TestPollingConnectInvalidAuth(t *testing.T) {
 	}
 }
 
+// TestPollingBatchedPostStopsAfterCallbackDisconnect verifies that when the
+// first CONNECT packet in an RS-separated polling POST is rejected by the
+// deferred New callback, later packets in that same POST are not dispatched.
+func TestPollingBatchedPostStopsAfterCallbackDisconnect(t *testing.T) {
+	resetSIOGlobals(t)
+
+	helloCh := make(chan []byte, 1)
+	On("hello", func(p *EventPayload) {
+		select {
+		case helloCh <- append([]byte(nil), p.Data...):
+		default:
+		}
+	})
+
+	_, c, td := newPollingTestServer(t, func(kws *Websocket) {
+		if string(kws.HandshakeAuth()) == `{"token":"deny"}` {
+			kws.Close()
+		}
+	})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+
+	body := append([]byte(`40{"token":"deny"}`), eioPacketSeparator)
+	body = append(body, []byte(`42["hello","world"]`)...)
+
+	resp, status := pollPost(t, c, sid, body)
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, "ok", string(resp))
+
+	select {
+	case data := <-helloCh:
+		t.Fatalf("batched event dispatched after callback disconnect: %q", data)
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
 // TestPollingConnectFiresOnceOnRepeat verifies the connectFired CAS
 // gates EventConnect to fire exactly once even if the client sends
 // multiple SIO CONNECT packets.
@@ -644,6 +681,56 @@ func TestPollingBinaryInbound(t *testing.T) {
 		require.Equal(t, "hello", string(data))
 	case <-time.After(2 * time.Second):
 		t.Fatal("binary inbound not surfaced as EventMessage")
+	}
+}
+
+// TestPollingBatchedBinaryStopsAfterDisconnect verifies that when a binary
+// polling packet listener closes the session, later packets in the same
+// RS-separated POST body are not dispatched.
+func TestPollingBatchedBinaryStopsAfterDisconnect(t *testing.T) {
+	resetSIOGlobals(t)
+
+	gotBinary := make(chan []byte, 1)
+	helloCh := make(chan []byte, 1)
+	On(EventMessage, func(p *EventPayload) {
+		select {
+		case gotBinary <- append([]byte(nil), p.Data...):
+		default:
+		}
+		p.Kws.Close()
+	})
+	On("hello", func(p *EventPayload) {
+		select {
+		case helloCh <- append([]byte(nil), p.Data...):
+		default:
+		}
+	})
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	_, _ = pollPost(t, c, sid, []byte(`40`))
+
+	body := append([]byte("b"), []byte(base64.StdEncoding.EncodeToString([]byte("hello")))...)
+	body = append(body, eioPacketSeparator)
+	body = append(body, []byte(`42["hello","world"]`)...)
+
+	resp, status := pollPost(t, c, sid, body)
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, "ok", string(resp))
+
+	select {
+	case data := <-gotBinary:
+		require.Equal(t, "hello", string(data))
+	case <-time.After(2 * time.Second):
+		t.Fatal("binary inbound not surfaced as EventMessage")
+	}
+
+	select {
+	case data := <-helloCh:
+		t.Fatalf("batched event dispatched after binary disconnect: %q", data)
+	case <-time.After(150 * time.Millisecond):
 	}
 }
 

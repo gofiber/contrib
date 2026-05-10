@@ -574,6 +574,9 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 			}
 			kws.fireEvent(EventMessage, decoded[:n], nil)
 			count++
+			if !kws.IsAlive() {
+				break
+			}
 			continue
 		}
 		// packet is a sub-slice of the body buffer we already copied
