@@ -582,6 +582,9 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 		// additional per-packet allocation.
 		kws.dispatchEIOPacket(packet)
 		count++
+		if !kws.IsAlive() {
+			break
+		}
 	}
 
 	c.Set(fiber.HeaderContentType, "text/html")
