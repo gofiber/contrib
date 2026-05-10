@@ -748,6 +748,15 @@ type Websocket struct {
 	// for the duration of ingestPolling's parse loop; never held across
 	// other locks.
 	postGate sync.Mutex
+	// handshakeTimer is the time.AfterFunc scheduled by openPollingSession
+	// to enforce HandshakeTimeout on polling sessions. Stopped in
+	// disconnected so a gracefully-closed session does not keep the
+	// closure (and therefore *Websocket) pinned on the runtime timer
+	// heap for the full HandshakeTimeout budget. Stored via
+	// atomic.Pointer so the disconnected() reader sees a consistent
+	// value even if the timer fires before the assignment in
+	// openPollingSession is visible.
+	handshakeTimer atomic.Pointer[time.Timer]
 }
 
 type safePool struct {
@@ -1881,13 +1890,23 @@ func (kws *Websocket) write(messageType int, messageBytes []byte) {
 	if kws.pollQ != nil {
 		// Polling transport: append the encoded EIO/SIO frame bytes to
 		// the per-session outbound buffer. The next GET long-poll drains
-		// it; mType is irrelevant because the polling wire format
-		// represents binary as inline "b<base64>" text packets, not as a
-		// distinct frame type. Callers that need binary semantics over
-		// polling must encode "b<base64>" themselves; the standard Emit
-		// paths use TextMessage and pass valid JSON, which is forwarded
-		// verbatim.
-		kws.pollQ.enqueue(messageBytes)
+		// it. Engine.IO v4 polling represents binary as the inline
+		// "b<base64>" text packet, not a distinct frame type, so binary
+		// outbound messages are encoded here so user code can call
+		// Emit(data, BinaryMessage) without knowing the active
+		// transport.
+		frame := messageBytes
+		if messageType == BinaryMessage {
+			frame = encodePollingBinary(messageBytes)
+		}
+		switch kws.pollQ.enqueue(frame) {
+		case enqueueDropped:
+			logf("warn", "poll_queue_overflow_drop", "uuid", kws.UUID, "cap", PollQueueMaxFrames)
+			kws.fireEvent(EventError, nil, ErrSendQueueOverflow)
+		case enqueueOverflow:
+			logf("error", "poll_queue_overflow_disconnect", "uuid", kws.UUID, "cap", PollQueueMaxFrames)
+			kws.disconnected(ErrSendQueueClosed)
+		}
 		return
 	}
 	msg := message{mType: messageType, data: messageBytes}
@@ -2337,6 +2356,13 @@ func (kws *Websocket) disconnected(err error) {
 		// no-ops.
 		if kws.pollQ != nil {
 			kws.pollQ.close()
+		}
+		// Stop the polling handshake timer if scheduled. Without this,
+		// the AfterFunc closure keeps the *Websocket alive on the
+		// runtime timer heap until HandshakeTimeout elapses (10s
+		// default), bloating live-set under churn.
+		if t := kws.handshakeTimer.Load(); t != nil {
+			t.Stop()
 		}
 	})
 	if !first {

@@ -63,6 +63,7 @@ All tunables are package-level variables; override before the first connection i
 | `EnablePolling`        | `false`            | If true, the handler returned from `New` also serves Engine.IO HTTP long-polling on `GET`/`POST`. |
 | `PollingMaxBufferSize` | `1_000_000`        | Cap on a single polling HTTP body (request POST or response GET drain).        |
 | `MaxPollWait`          | `30s`              | Maximum time a long-poll GET blocks waiting for outbound frames.                |
+| `PollQueueMaxFrames`   | `1024`             | Cap on buffered outbound frames per polling session; overflow honors `DropFramesOnOverflow`. |
 
 Use `socketio.Shutdown(ctx)` from `fiber.App.ShutdownWithContext` for a deterministic drain.
 

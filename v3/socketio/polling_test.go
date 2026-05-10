@@ -3,7 +3,9 @@ package socketio
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -906,15 +908,232 @@ func TestPollingGateReleasedBeforeBodyWrite(t *testing.T) {
 	}()
 	// One returns 200 (drained the queued frame), the other may return
 	// either 200 (drained empty after timeout) or 400 (concurrent gate).
-	// The invariant we test: the WINNER is unblocked promptly.
-	select {
-	case st := <-g1:
-		require.Contains(t, []int{http.StatusOK, http.StatusBadRequest}, st)
-	case st := <-g2:
-		require.Contains(t, []int{http.StatusOK, http.StatusBadRequest}, st)
-	case <-time.After(MaxPollWait + time.Second):
-		t.Fatal("no GET completed in time; gate likely still held")
+	// The invariant we test: the WINNER is unblocked promptly. Both
+	// channels MUST be drained so the goroutines do not outlive the
+	// test (writing to a closed t via require would race the runtime).
+	deadline := time.After(MaxPollWait + 2*time.Second)
+	for got := 0; got < 2; got++ {
+		select {
+		case st := <-g1:
+			require.Contains(t, []int{http.StatusOK, http.StatusBadRequest}, st)
+		case st := <-g2:
+			require.Contains(t, []int{http.StatusOK, http.StatusBadRequest}, st)
+		case <-deadline:
+			t.Fatalf("only %d/2 GETs completed; gate likely still held", got)
+		}
 	}
+}
+
+// TestPollingBinaryOutboundEncoded verifies that Emit(data, BinaryMessage)
+// on a polling session encodes the bytes as the engine.io v4 polling
+// "b<base64>" text packet rather than enqueuing raw binary.
+func TestPollingBinaryOutboundEncoded(t *testing.T) {
+	resetSIOGlobals(t)
+
+	kwsCh := make(chan *Websocket, 1)
+	On(EventConnect, func(p *EventPayload) {
+		select {
+		case kwsCh <- p.Kws:
+		default:
+		}
+	})
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	_, _ = pollPost(t, c, sid, []byte(`40`))
+	kws := <-kwsCh
+	_, _ = pollGet(t, c, sid) // drain CONNECT ack
+
+	payload := []byte{0xDE, 0xAD, 0xBE, 0xEF}
+	kws.Emit(payload, BinaryMessage)
+
+	body, _ := pollGet(t, c, sid)
+	frames := splitPollFrames(body)
+	var sawBinary bool
+	for _, f := range frames {
+		if len(f) > 1 && f[0] == 'b' {
+			dec := make([]byte, base64.StdEncoding.DecodedLen(len(f)-1))
+			n, derr := base64.StdEncoding.Decode(dec, f[1:])
+			require.NoError(t, derr)
+			require.Equal(t, payload, dec[:n])
+			sawBinary = true
+			break
+		}
+	}
+	require.Truef(t, sawBinary, "expected b<base64> frame in drain, got %q", body)
+}
+
+// TestPollingQueueOverflowDrop verifies that with DropFramesOnOverflow
+// true and PollQueueMaxFrames small, excess emits drop the offending
+// frame and surface ErrSendQueueOverflow without tearing the session
+// down.
+func TestPollingQueueOverflowDrop(t *testing.T) {
+	resetSIOGlobals(t)
+
+	prevCap, prevDrop := PollQueueMaxFrames, DropFramesOnOverflow
+	PollQueueMaxFrames = 4
+	DropFramesOnOverflow = true
+	defer func() {
+		PollQueueMaxFrames = prevCap
+		DropFramesOnOverflow = prevDrop
+	}()
+
+	overflow := make(chan struct{}, 16)
+	On(EventError, func(p *EventPayload) {
+		if errors.Is(p.Error, ErrSendQueueOverflow) {
+			select {
+			case overflow <- struct{}{}:
+			default:
+			}
+		}
+	})
+
+	kwsCh := make(chan *Websocket, 1)
+	On(EventConnect, func(p *EventPayload) {
+		select {
+		case kwsCh <- p.Kws:
+		default:
+		}
+	})
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	_, _ = pollPost(t, c, sid, []byte(`40`))
+	kws := <-kwsCh
+	_, _ = pollGet(t, c, sid)
+
+	// Emit more frames than the queue can hold. Without GETs to drain
+	// them, the queue saturates after PollQueueMaxFrames.
+	for i := 0; i < 20; i++ {
+		kws.EmitEvent("e", []byte(`1`))
+	}
+
+	require.Eventually(t, func() bool { return len(overflow) > 0 },
+		2*time.Second, 10*time.Millisecond,
+		"expected ErrSendQueueOverflow event after exceeding cap")
+	require.True(t, kws.IsAlive(),
+		"DropFramesOnOverflow=true must keep the session alive")
+}
+
+// TestPollingQueueOverflowDisconnect verifies that with the default
+// DropFramesOnOverflow=false, exceeding PollQueueMaxFrames tears the
+// session down with ErrSendQueueClosed.
+func TestPollingQueueOverflowDisconnect(t *testing.T) {
+	resetSIOGlobals(t)
+
+	prevCap := PollQueueMaxFrames
+	PollQueueMaxFrames = 4
+	defer func() { PollQueueMaxFrames = prevCap }()
+
+	disconnectErr := make(chan error, 1)
+	On(EventDisconnect, func(p *EventPayload) {
+		select {
+		case disconnectErr <- p.Error:
+		default:
+		}
+	})
+
+	kwsCh := make(chan *Websocket, 1)
+	On(EventConnect, func(p *EventPayload) {
+		select {
+		case kwsCh <- p.Kws:
+		default:
+		}
+	})
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	_, _ = pollPost(t, c, sid, []byte(`40`))
+	kws := <-kwsCh
+	_, _ = pollGet(t, c, sid)
+
+	for i := 0; i < 20; i++ {
+		kws.EmitEvent("e", []byte(`1`))
+	}
+
+	select {
+	case err := <-disconnectErr:
+		require.ErrorIs(t, err, ErrSendQueueClosed)
+	case <-time.After(2 * time.Second):
+		t.Fatal("queue overflow did not disconnect session")
+	}
+}
+
+// TestPollingHandshakeTimerStoppedOnGracefulClose verifies the polling
+// HandshakeTimeout AfterFunc is stopped when the session is gracefully
+// closed before the timer fires, so the closure does not pin the
+// *Websocket on the runtime timer heap for the full timeout.
+func TestPollingHandshakeTimerStoppedOnGracefulClose(t *testing.T) {
+	resetSIOGlobals(t)
+
+	prevHS := HandshakeTimeout
+	HandshakeTimeout = 5 * time.Second
+	defer func() { HandshakeTimeout = prevHS }()
+
+	kwsCh := make(chan *Websocket, 1)
+	On(EventConnect, func(p *EventPayload) {
+		select {
+		case kwsCh <- p.Kws:
+		default:
+		}
+	})
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	_, _ = pollPost(t, c, sid, []byte(`40`))
+	kws := <-kwsCh
+	timer := kws.handshakeTimer.Load()
+	require.NotNil(t, timer)
+
+	kws.Close()
+
+	// After Close, the timer should be stopped. Subsequent firing is a
+	// no-op because connectFired is true; what we verify here is that
+	// Stop() returns false (already stopped) on a second call.
+	require.False(t, timer.Stop(),
+		"handshakeTimer should already be stopped after Close()")
+}
+
+// TestPollingCallbackPanicCleansUp verifies that a panic in the user
+// callback during openPollingSession runs disconnected() so the
+// lifecycle goroutine, pong goroutine, and pool entry do not leak.
+func TestPollingCallbackPanicCleansUp(t *testing.T) {
+	resetSIOGlobals(t)
+
+	// We cannot easily catch the panic here because Fiber rethrows it
+	// internally; instead we observe the side effects: pool eventually
+	// empty, no leaked goroutines.
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {
+		panic("intentional callback panic")
+	})
+	defer td()
+
+	// The OPEN GET will return an error (HTTP 500 or a transport
+	// error). Either way is acceptable; the invariant we care about
+	// is that the session does not stick around in the pool.
+	req, _ := http.NewRequest(http.MethodGet, "http://test/?EIO=4&transport=polling", nil)
+	resp, err := c.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
+
+	require.Eventually(t, func() bool {
+		for _, w := range pool.all() {
+			if k, ok := w.(*Websocket); ok && k.pollQ != nil {
+				return false
+			}
+		}
+		return true
+	}, 2*time.Second, 10*time.Millisecond,
+		"pool should not retain polling session after callback panic")
 }
 
 // TestPollingTransportMismatch verifies that a polling request whose sid

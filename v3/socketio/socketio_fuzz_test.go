@@ -347,7 +347,7 @@ func FuzzBuildSIOAck(f *testing.F) {
 		{"", 0, []byte(`"ok"`)}, {"/admin", 42, []byte(`{"x":1}`)},
 		{"", 1, nil}, {"/n", ^uint64(0), []byte(`[1,2]`)},
 		{"", 0, []byte("not json")}, // malformed (will be rejected)
-		{"", 0, nil},                 // empty
+		{"", 0, nil},                // empty
 		{"", 7, append([]byte("["), append(oversize, ']')...)}, // oversize valid JSON arg
 	} {
 		f.Add([]byte(c.ns), c.id, c.data)

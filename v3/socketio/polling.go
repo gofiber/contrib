@@ -45,6 +45,16 @@ var PollingMaxBufferSize = 1_000_000
 // well before this deadline. Set to zero to disable (not recommended).
 var MaxPollWait = 30 * time.Second
 
+// PollQueueMaxFrames caps the number of frames buffered in a polling
+// session's outbound queue. When the cap is hit, behaviour mirrors the
+// WebSocket SendQueueSize backpressure: with DropFramesOnOverflow=true
+// the new frame is dropped and EventError fires with
+// ErrSendQueueOverflow; otherwise the session is torn down with
+// ErrSendQueueClosed. Without this cap, a slow or absent poller paired
+// with a steady server-side emit stream would grow the queue without
+// bound. Set to zero to disable the cap (not recommended).
+var PollQueueMaxFrames = 1024
+
 // pollQueue is the per-session outbound buffer for HTTP long-polling.
 // Frames enqueued by any write-path goroutine (Emit, pong heartbeat, late
 // SIO CONNECT ack, Close) are drained by the long-poll GET handler in
@@ -79,17 +89,43 @@ func (q *pollQueue) signalLocked() {
 	}
 }
 
+// enqueueResult is returned from enqueue to let the caller act on the
+// queue overflow policy without exposing pollQueue internals.
+type enqueueResult int
+
+const (
+	enqueueOK enqueueResult = iota
+	enqueueDropped
+	enqueueOverflow
+)
+
 // enqueue appends a frame to the buffer. Caller transfers ownership of
-// frame; callers must not mutate it after the call. A no-op when the
-// queue is already closed (drops silently rather than panicking).
-func (q *pollQueue) enqueue(frame []byte) {
+// frame; callers must not mutate it after the call.
+//
+// Returns:
+//   - enqueueOK when the frame was buffered (or the queue was closed,
+//     in which case the frame is silently dropped to match the
+//     post-disconnect "best effort" semantics);
+//   - enqueueDropped when the frame would exceed PollQueueMaxFrames AND
+//     DropFramesOnOverflow is true (caller fires EventError);
+//   - enqueueOverflow when the frame would exceed PollQueueMaxFrames
+//     and DropFramesOnOverflow is false (caller tears the session
+//     down).
+func (q *pollQueue) enqueue(frame []byte) enqueueResult {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.closed {
-		return
+		return enqueueOK
+	}
+	if PollQueueMaxFrames > 0 && len(q.frames) >= PollQueueMaxFrames {
+		if DropFramesOnOverflow {
+			return enqueueDropped
+		}
+		return enqueueOverflow
 	}
 	q.frames = append(q.frames, frame)
 	q.signalLocked()
+	return enqueueOK
 }
 
 // close releases any blocked drain and marks the queue terminal: future
@@ -359,26 +395,51 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 	// this, a polling client could open a session, never POST "40", and
 	// only the heartbeat enforcer (PingInterval+PingTimeout, default
 	// 45s) would tear it down. The timer is a no-op once the SIO
-	// CONNECT path flips connectFired.
+	// CONNECT path flips connectFired. We retain the *time.Timer on
+	// the session and Stop it in disconnected() so a graceful close
+	// does not pin the *Websocket for the full HandshakeTimeout
+	// budget on the runtime timer heap.
 	if HandshakeTimeout > 0 {
-		time.AfterFunc(HandshakeTimeout, func() {
+		kws.handshakeTimer.Store(time.AfterFunc(HandshakeTimeout, func() {
 			if !kws.connectFired.Load() {
 				kws.disconnected(ErrHandshakeClosed)
 			}
-		})
+		}))
 	}
 
-	callback(kws)
+	// Recover panics from the user callback. Without this, a panicking
+	// callback unwinds out of openPollingSession with the lifecycle
+	// goroutine still parked on <-kws.done; disconnected() never runs,
+	// so the session leaks (pool entry, pong goroutine, *Websocket
+	// graph). On panic we log, surface via EventError, run
+	// disconnected to clean up the session, and respond with HTTP 500
+	// without re-raising so Fiber's worker pool stays healthy.
+	var callbackPanic interface{}
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				callbackPanic = r
+			}
+		}()
+		callback(kws)
+	}()
+	if callbackPanic != nil {
+		logf("error", "polling_callback_panic", "uuid", kws.UUID, "panic", fmt.Sprintf("%v", callbackPanic))
+		kws.disconnected(fmt.Errorf("socketio: polling callback panic: %v", callbackPanic))
+		c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+		return c.Status(http.StatusInternalServerError).
+			SendString(`{"code":3,"message":"Bad request"}`)
+	}
 
 	if !kws.IsAlive() {
 		// Callback rejected the session (typically by calling
 		// kws.Close() inside the callback). Close() already invokes
 		// disconnected() which closes the queue, removes the session
-		// from the pool, and unblocks pollLifecycle so finishRun runs.
-		// disconnected() is idempotent via kws.once, so calling it
-		// here defensively is safe and ensures cleanup also happens
-		// when callbacks reach the !IsAlive state through some future
-		// non-Close() path.
+		// from the pool, and wakes the lifecycle goroutine so
+		// finishRun runs. disconnected() is idempotent via kws.once,
+		// so calling it here defensively is safe and ensures cleanup
+		// also happens when callbacks reach the !IsAlive state
+		// through some future non-Close() path.
 		kws.disconnected(nil)
 		return writePollingError(c, 4)
 	}
@@ -437,6 +498,19 @@ func drainPolling(c fiber.Ctx, kws *Websocket) error {
 		return c.Send(nil)
 	}
 	return c.Send(body)
+}
+
+// encodePollingBinary returns the Engine.IO v4 polling text encoding of
+// a binary payload: a single 'b' byte followed by the standard-base64
+// representation of data. Used by the polling write path to wrap raw
+// bytes that user code intends to send as a BinaryMessage; the
+// WebSocket transport uses a binary frame instead.
+func encodePollingBinary(data []byte) []byte {
+	enc := base64.StdEncoding
+	out := make([]byte, 1+enc.EncodedLen(len(data)))
+	out[0] = 'b'
+	enc.Encode(out[1:], data)
+	return out
 }
 
 // encodePollingFrames serialises frames into a single HTTP body using
@@ -504,19 +578,29 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 		}
 		// Binary packet encoding: "b" prefix + base64 payload. Decode
 		// inline and surface as an EventMessage with the raw bytes,
-		// matching the WebSocket BinaryMessage path in read().
+		// matching the WebSocket BinaryMessage path in read(). The
+		// decoded slice owns its memory; safe to surface to listeners
+		// even after fasthttp recycles the request body.
 		if packet[0] == 'b' {
 			decoded := make([]byte, base64.StdEncoding.DecodedLen(len(packet)-1))
 			n, decErr := base64.StdEncoding.Decode(decoded, packet[1:])
 			if decErr != nil {
-				kws.fireEvent(EventError, packet, decErr)
+				kws.fireEvent(EventError, append([]byte(nil), packet...), decErr)
 				continue
 			}
 			kws.fireEvent(EventMessage, decoded[:n], nil)
 			count++
 			continue
 		}
-		kws.dispatchEIOPacket(packet)
+		// Copy the packet off c.Body() before dispatch: fasthttp
+		// reuses the request body buffer once the handler returns,
+		// and listener callbacks may stash EventPayload.Data /
+		// .Args into a goroutine outliving the request. The
+		// WebSocket read path already copies binary frames for the
+		// same reason; do the same here for parity.
+		owned := make([]byte, len(packet))
+		copy(owned, packet)
+		kws.dispatchEIOPacket(owned)
 		count++
 	}
 
@@ -524,4 +608,3 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 	c.Set(fiber.HeaderCacheControl, "no-store")
 	return c.Status(http.StatusOK).SendString("ok")
 }
-
