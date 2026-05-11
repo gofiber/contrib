@@ -13,7 +13,7 @@ require (
 	github.com/go-json-experiment/json v0.0.0-20260504200034-64a0a05799db // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/gofiber/schema v1.7.1 // indirect
-	github.com/gofiber/utils/v2 v2.0.4 // indirect
+	github.com/gofiber/utils/v2 v2.0.5 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/kaptinlin/go-i18n v0.4.7 // indirect
 	github.com/kaptinlin/jsonpointer v0.4.22 // indirect
