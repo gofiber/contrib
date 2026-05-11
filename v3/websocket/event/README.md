@@ -35,6 +35,18 @@ func Broadcast(message []byte, mType ...int)
 func Fire(name string, data []byte)
 ```
 
+## Configuration
+
+Set these package-level variables before accepting connections.
+
+| Variable           | Default | Description |
+|:-------------------|:--------|:------------|
+| `PongTimeout`      | `1s`    | Interval for server-sent WebSocket pong frames. |
+| `RetrySendTimeout` | `20ms`  | Backoff between retries while the connection is not ready. |
+| `MaxSendRetry`     | `5`     | Max retries for transient socket write readiness issues. |
+| `SendQueueSize`    | `100`   | Per-connection outbound message queue capacity. |
+| `ReadTimeout`      | `10ms`  | Deprecated; reads now block until a frame arrives or the connection closes. |
+
 ## Example
 
 ```go

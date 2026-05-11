@@ -64,7 +64,10 @@ var (
 	RetrySendTimeout = 20 * time.Millisecond
 	// MaxSendRetry defines the max retries for transient socket write issues.
 	MaxSendRetry = 5
-	// ReadTimeout controls the pause between read attempts.
+	// SendQueueSize controls the per-connection outbound message queue size.
+	SendQueueSize = 100
+	// ReadTimeout is deprecated and no longer used; reads block until a
+	// message arrives or the connection is closed.
 	ReadTimeout = 10 * time.Millisecond
 )
 
@@ -214,9 +217,7 @@ func (l *safeListeners) get(event string) []eventCallback {
 		return make([]eventCallback, 0)
 	}
 
-	ret := make([]eventCallback, 0, len(l.list[event]))
-	ret = append(ret, l.list[event]...)
-	return ret
+	return append([]eventCallback(nil), l.list[event]...)
 }
 
 var listeners = safeListeners{
@@ -241,7 +242,7 @@ func New(callback func(kws *Websocket), config ...websocket.Config) fiber.Handle
 			Cookies: func(key string, defaultValue ...string) string {
 				return c.Cookies(key, defaultValue...)
 			},
-			queue:      make(chan message, 100),
+			queue:      make(chan message, sendQueueSize()),
 			done:       make(chan struct{}, 1),
 			attributes: make(map[string]interface{}),
 			isAlive:    true,
@@ -422,6 +423,7 @@ func (kws *Websocket) Emit(message []byte, mType ...int) {
 func (kws *Websocket) Close() {
 	kws.write(CloseMessage, []byte("Connection closed"))
 	kws.fireEvent(EventClose, nil, nil)
+	kws.disconnected(nil)
 }
 
 // IsAlive reports whether the connection is active.
@@ -475,15 +477,25 @@ func (kws *Websocket) send(ctx context.Context) {
 		case msg := <-kws.queue:
 			if !kws.hasConn() {
 				if msg.retries <= MaxSendRetry {
-					go func(msg message) {
-						time.Sleep(RetrySendTimeout)
-						msg.retries++
-						select {
-						case kws.queue <- msg:
-						case <-ctx.Done():
-						case <-kws.done:
-						}
-					}(msg)
+					retryTimer := time.NewTimer(RetrySendTimeout)
+					select {
+					case <-retryTimer.C:
+					case <-ctx.Done():
+						stopTimer(retryTimer)
+						return
+					case <-kws.done:
+						stopTimer(retryTimer)
+						return
+					}
+
+					msg.retries++
+					select {
+					case kws.queue <- msg:
+					case <-ctx.Done():
+						return
+					case <-kws.done:
+						return
+					}
 				}
 				continue
 			}
@@ -522,42 +534,35 @@ func (kws *Websocket) run() {
 	wg.Wait()
 }
 
-func (kws *Websocket) read(ctx context.Context) {
-	timeoutTicker := time.NewTicker(ReadTimeout)
-	defer timeoutTicker.Stop()
+func (kws *Websocket) read(_ context.Context) {
 	for {
-		select {
-		case <-timeoutTicker.C:
-			if !kws.hasConn() {
-				continue
-			}
-
-			mType, msg, err := kws.Conn.ReadMessage()
-
-			if mType == PingMessage {
-				kws.fireEvent(EventPing, nil, nil)
-				continue
-			}
-
-			if mType == PongMessage {
-				kws.fireEvent(EventPong, nil, nil)
-				continue
-			}
-
-			if mType == CloseMessage {
-				kws.disconnected(nil)
-				return
-			}
-
-			if err != nil {
-				kws.disconnected(err)
-				return
-			}
-
-			kws.fireEvent(EventMessage, msg, nil)
-		case <-ctx.Done():
+		if !kws.hasConn() {
 			return
 		}
+
+		mType, msg, err := kws.Conn.ReadMessage()
+
+		if mType == PingMessage {
+			kws.fireEvent(EventPing, nil, nil)
+			continue
+		}
+
+		if mType == PongMessage {
+			kws.fireEvent(EventPong, nil, nil)
+			continue
+		}
+
+		if mType == CloseMessage {
+			kws.disconnected(nil)
+			return
+		}
+
+		if err != nil {
+			kws.disconnected(err)
+			return
+		}
+
+		kws.fireEvent(EventMessage, msg, nil)
 	}
 }
 
@@ -595,6 +600,22 @@ func (kws *Websocket) createUUID() string {
 
 func (kws *Websocket) randomUUID() string {
 	return uuid.New().String()
+}
+
+func sendQueueSize() int {
+	if SendQueueSize <= 0 {
+		return 1
+	}
+	return SendQueueSize
+}
+
+func stopTimer(timer *time.Timer) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
 }
 
 func fireGlobalEvent(event string, data []byte, err error) {

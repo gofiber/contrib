@@ -5,8 +5,6 @@
 package legacy
 
 import (
-	"time"
-
 	"github.com/gofiber/contrib/v3/websocket"
 	wsevent "github.com/gofiber/contrib/v3/websocket/event"
 	"github.com/gofiber/fiber/v3"
@@ -41,18 +39,10 @@ var (
 	ErrorUUIDDuplication   = wsevent.ErrorUUIDDuplication
 )
 
-var (
-	PongTimeout      = wsevent.PongTimeout
-	RetrySendTimeout = wsevent.RetrySendTimeout
-	MaxSendRetry     = wsevent.MaxSendRetry
-	ReadTimeout      = wsevent.ReadTimeout
-)
-
 // New returns the legacy plain WebSocket event handler.
 //
 // Deprecated: use github.com/gofiber/contrib/v3/websocket/event.New directly.
 func New(callback func(kws *Websocket), config ...websocket.Config) fiber.Handler {
-	syncConfig()
 	return wsevent.New(callback, config...)
 }
 
@@ -89,18 +79,4 @@ func Broadcast(message []byte, mType ...int) {
 // Deprecated: use github.com/gofiber/contrib/v3/websocket/event.Fire directly.
 func Fire(event string, data []byte) {
 	wsevent.Fire(event, data)
-}
-
-func syncConfig() {
-	wsevent.PongTimeout = durationOrDefault(PongTimeout, wsevent.PongTimeout)
-	wsevent.RetrySendTimeout = durationOrDefault(RetrySendTimeout, wsevent.RetrySendTimeout)
-	wsevent.MaxSendRetry = MaxSendRetry
-	wsevent.ReadTimeout = durationOrDefault(ReadTimeout, wsevent.ReadTimeout)
-}
-
-func durationOrDefault(value, fallback time.Duration) time.Duration {
-	if value == 0 {
-		return fallback
-	}
-	return value
 }

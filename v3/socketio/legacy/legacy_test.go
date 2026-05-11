@@ -1,6 +1,7 @@
 package legacy
 
 import (
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -47,7 +48,7 @@ func TestLegacyPlainWebSocketEventShim(t *testing.T) {
 		},
 		HandshakeTimeout: 5 * time.Second,
 	}
-	conn, _, err := dialer.Dial("ws://"+ln.Addr().String(), nil)
+	conn, err := dialWebSocket(t, dialer, "ws://"+ln.Addr().String())
 	require.NoError(t, err)
 	defer func() { _ = conn.Close() }()
 
@@ -57,4 +58,22 @@ func TestLegacyPlainWebSocketEventShim(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, TextMessage, messageType)
 	require.Equal(t, "legacy:ping", string(message))
+}
+
+func dialWebSocket(t *testing.T, dialer *websocket.Dialer, url string) (*websocket.Conn, error) {
+	t.Helper()
+
+	var lastErr error
+	for range 20 {
+		conn, _, err := dialer.Dial(url, nil)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		time.Sleep(10 * time.Millisecond)
+	}
+	if lastErr == nil {
+		lastErr = errors.New("websocket dial did not run")
+	}
+	return nil, lastErr
 }

@@ -306,6 +306,19 @@ func TestWebsocketSetUUIDUpdatesPool(t *testing.T) {
 	require.Equal(t, kws, poolEntry)
 }
 
+func TestWebsocketCloseRemovesConnectionFromPool(t *testing.T) {
+	resetState()
+
+	kws := createWS()
+	pool.set(kws)
+
+	kws.Close()
+
+	require.False(t, kws.IsAlive())
+	_, err := pool.get(kws.GetUUID())
+	require.ErrorIs(t, err, ErrorInvalidConnection)
+}
+
 func createWS() *Websocket {
 	kws := &Websocket{
 		Conn: nil,
@@ -321,7 +334,7 @@ func createWS() *Websocket {
 		Cookies: func(key string, defaultValue ...string) string {
 			return ""
 		},
-		queue:      make(chan message),
+		queue:      make(chan message, 1),
 		done:       make(chan struct{}, 1),
 		attributes: make(map[string]interface{}),
 		isAlive:    true,

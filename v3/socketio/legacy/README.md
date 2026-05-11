@@ -31,3 +31,5 @@ legacy.On(legacy.EventMessage, func(ep *legacy.EventPayload) {
 
 app.Get("/ws", legacy.New(func(kws *legacy.Websocket) {}))
 ```
+
+Set tuning globals such as `PongTimeout`, `SendQueueSize`, or `MaxSendRetry` on `github.com/gofiber/contrib/v3/websocket/event` directly before accepting connections.
