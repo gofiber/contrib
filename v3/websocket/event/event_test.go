@@ -18,7 +18,20 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp/fasthttputil"
+	"go.uber.org/goleak"
 )
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m,
+		// fasthttp keeps a worker pool and a server-date refresher that
+		// drain lazily after Server.Shutdown. The top of stack is
+		// time.Sleep, so match these by any-frame.
+		goleak.IgnoreAnyFunction("github.com/valyala/fasthttp.(*workerPool).Start.func1"),
+		goleak.IgnoreAnyFunction("github.com/valyala/fasthttp.(*workerPool).Start.func2"),
+		goleak.IgnoreAnyFunction("github.com/valyala/fasthttp.(*workerPool).workerFunc"),
+		goleak.IgnoreAnyFunction("github.com/valyala/fasthttp.updateServerDate.func1"),
+	)
+}
 
 const (
 	numTestConn         = 10
