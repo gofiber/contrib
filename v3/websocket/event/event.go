@@ -619,6 +619,10 @@ func (kws *Websocket) send(ctx context.Context) {
 }
 
 func (kws *Websocket) run() {
+	if kws.Conn != nil && kws.settings.maxMessageSize > 0 {
+		kws.Conn.SetReadLimit(kws.settings.maxMessageSize)
+	}
+
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 
