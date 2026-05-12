@@ -93,6 +93,96 @@ type EventPayload struct {
 	Data []byte
 }
 
+// Config tunes a single event helper instance. Zero values fall back to the
+// matching deprecated package-level var, which itself falls back to the
+// historical default. Pass via NewWithConfig.
+type Config struct {
+	// PingInterval is the interval between server-originated Ping frames.
+	// Must be less than any upstream proxy or load balancer idle timeout.
+	// Zero falls back to PongTimeout, then 1s.
+	PingInterval time.Duration
+	// ReadIdleTimeout bounds how long a connection may stay silent before
+	// it is considered dead. Zero falls back to 3 * PingInterval.
+	ReadIdleTimeout time.Duration
+	// WriteTimeout bounds a single WriteMessage or WriteControl call. Zero
+	// falls back to 10s.
+	WriteTimeout time.Duration
+	// MaxMessageSize bounds the largest inbound frame in bytes. Zero falls
+	// back to 1 MiB. To opt out, set math.MaxInt64.
+	MaxMessageSize int64
+	// SendQueueSize is the per-connection outbound buffer. Zero falls back
+	// to SendQueueSize package var, then 100.
+	SendQueueSize int
+	// MaxSendRetry caps retries for transient socket write issues. Zero
+	// falls back to MaxSendRetry package var, then 5.
+	MaxSendRetry int
+	// RetrySendTimeout is the wait between retries. Zero falls back to
+	// RetrySendTimeout package var, then 20ms.
+	RetrySendTimeout time.Duration
+	// RecoverHandler is called on a panic inside a user On callback. If
+	// nil, panics are recovered silently.
+	RecoverHandler func(event string, r any)
+}
+
+// settings is the per-connection immutable snapshot.
+type settings struct {
+	pingInterval     time.Duration
+	readIdleTimeout  time.Duration
+	writeTimeout     time.Duration
+	maxMessageSize   int64
+	sendQueueSize    int
+	maxSendRetry     int
+	retrySendTimeout time.Duration
+	recover          func(event string, r any)
+}
+
+func resolveSettings(cfg Config) settings {
+	s := settings{
+		pingInterval:     cfg.PingInterval,
+		readIdleTimeout:  cfg.ReadIdleTimeout,
+		writeTimeout:     cfg.WriteTimeout,
+		maxMessageSize:   cfg.MaxMessageSize,
+		sendQueueSize:    cfg.SendQueueSize,
+		maxSendRetry:     cfg.MaxSendRetry,
+		retrySendTimeout: cfg.RetrySendTimeout,
+		recover:          cfg.RecoverHandler,
+	}
+	if s.pingInterval <= 0 {
+		s.pingInterval = PongTimeout
+		if s.pingInterval <= 0 {
+			s.pingInterval = time.Second
+		}
+	}
+	if s.readIdleTimeout <= 0 {
+		s.readIdleTimeout = 3 * s.pingInterval
+	}
+	if s.writeTimeout <= 0 {
+		s.writeTimeout = 10 * time.Second
+	}
+	if s.maxMessageSize <= 0 {
+		s.maxMessageSize = 1 << 20
+	}
+	if s.sendQueueSize <= 0 {
+		s.sendQueueSize = SendQueueSize
+		if s.sendQueueSize <= 0 {
+			s.sendQueueSize = 1
+		}
+	}
+	if s.maxSendRetry <= 0 {
+		s.maxSendRetry = MaxSendRetry
+		if s.maxSendRetry <= 0 {
+			s.maxSendRetry = 5
+		}
+	}
+	if s.retrySendTimeout <= 0 {
+		s.retrySendTimeout = RetrySendTimeout
+		if s.retrySendTimeout <= 0 {
+			s.retrySendTimeout = 20 * time.Millisecond
+		}
+	}
+	return s
+}
+
 type ws interface {
 	IsAlive() bool
 	GetUUID() string
@@ -124,6 +214,8 @@ type Websocket struct {
 	mu        sync.RWMutex
 	// Conn is the underlying Fiber websocket connection.
 	Conn *websocket.Conn
+	// settings holds the per-connection immutable tuning snapshot.
+	settings settings
 	// isAlive defines if the connection is alive or not.
 	isAlive bool
 	// queue stores outbound messages.
@@ -213,11 +305,20 @@ var listeners = safeListeners{
 }
 
 // New returns a Fiber handler that upgrades the request to WebSocket and wraps
-// it with the event helper.
+// it with the event helper using default tuning. For per-instance tuning use
+// NewWithConfig.
 func New(callback func(kws *Websocket), config ...websocket.Config) fiber.Handler {
+	return NewWithConfig(callback, Config{}, config...)
+}
+
+// NewWithConfig returns a Fiber handler that upgrades the request to WebSocket
+// and wraps it with the event helper, using the supplied per-instance tuning.
+func NewWithConfig(callback func(kws *Websocket), eventCfg Config, wsConfig ...websocket.Config) fiber.Handler {
+	s := resolveSettings(eventCfg)
 	return websocket.New(func(c *websocket.Conn) {
 		kws := &Websocket{
-			Conn: c,
+			Conn:     c,
+			settings: s,
 			Locals: func(key string) interface{} {
 				return c.Locals(key)
 			},
@@ -230,8 +331,8 @@ func New(callback func(kws *Websocket), config ...websocket.Config) fiber.Handle
 			Cookies: func(key string, defaultValue ...string) string {
 				return c.Cookies(key, defaultValue...)
 			},
-			queue:      make(chan message, sendQueueSize()),
-			done:       make(chan struct{}, 1),
+			queue:      make(chan message, s.sendQueueSize),
+			done:       make(chan struct{}),
 			attributes: make(map[string]interface{}),
 			isAlive:    true,
 		}
@@ -242,7 +343,7 @@ func New(callback func(kws *Websocket), config ...websocket.Config) fiber.Handle
 		callback(kws)
 		kws.fireEvent(EventConnect, nil, nil)
 		kws.run()
-	}, config...)
+	}, wsConfig...)
 }
 
 // GetUUID returns the connection UUID.
@@ -440,7 +541,7 @@ func (kws *Websocket) setAlive(alive bool) {
 }
 
 func (kws *Websocket) pong(ctx context.Context) {
-	timeoutTicker := time.NewTicker(PongTimeout)
+	timeoutTicker := time.NewTicker(kws.settings.pingInterval)
 	defer timeoutTicker.Stop()
 	for {
 		select {
@@ -483,8 +584,8 @@ func (kws *Websocket) send(ctx context.Context) {
 		select {
 		case msg := <-kws.queue:
 			if !kws.hasConn() {
-				if msg.retries <= MaxSendRetry {
-					retryTimer := time.NewTimer(RetrySendTimeout)
+				if msg.retries <= kws.settings.maxSendRetry {
+					retryTimer := time.NewTimer(kws.settings.retrySendTimeout)
 					select {
 					case <-retryTimer.C:
 					case <-ctx.Done():
