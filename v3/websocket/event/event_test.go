@@ -368,6 +368,58 @@ func TestWebsocketCloseDoesNotBlockOnFullQueue(t *testing.T) {
 	require.False(t, kws.IsAlive())
 }
 
+func TestCloseSendsFormatCloseMessage(t *testing.T) {
+	resetState()
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	upgraded := make(chan *Websocket, 1)
+	app.Use(upgradeMiddleware)
+	app.Get("/", New(func(kws *Websocket) {
+		upgraded <- kws
+	}))
+
+	go func() { _ = app.Listener(ln) }()
+
+	dialer := &websocket.Dialer{
+		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+		HandshakeTimeout: 5 * time.Second,
+	}
+	conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+
+	var kws *Websocket
+	select {
+	case kws = <-upgraded:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upgrade did not complete")
+	}
+
+	go kws.Close()
+
+	_, _, err = conn.ReadMessage()
+	require.Error(t, err)
+	ce, ok := err.(*websocket.CloseError)
+	require.True(t, ok, "expected *websocket.CloseError, got %T (%v)", err, err)
+	require.Equal(t, websocket.CloseNormalClosure, ce.Code)
+	require.Equal(t, "Connection closed", ce.Text)
+}
+
+func TestCloseConnNilsConnField(t *testing.T) {
+	kws := createWS()
+	kws.settings = resolveSettings(Config{})
+	kws.closeConn()
+	kws.mu.RLock()
+	defer kws.mu.RUnlock()
+	require.Nil(t, kws.Conn)
+}
+
 func TestPingIsSentAtInterval(t *testing.T) {
 	resetState()
 

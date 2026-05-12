@@ -519,6 +519,11 @@ func (kws *Websocket) Emit(message []byte, mType ...int) {
 	kws.write(t, message)
 }
 
+// closeFrameMaxReason caps the reason payload in a close frame so the
+// combined control frame stays within RFC 6455 §5.5's 125-byte limit
+// (2 bytes status code + up to 123 bytes reason).
+const closeFrameMaxReason = 123
+
 // Close actively closes the current connection from the server.
 func (kws *Websocket) Close() {
 	if !kws.IsAlive() {
@@ -526,10 +531,28 @@ func (kws *Websocket) Close() {
 	}
 
 	kws.closeOnce.Do(func() {
-		kws.tryWrite(CloseMessage, []byte("Connection closed"))
+		kws.writeClose(websocket.CloseNormalClosure, "Connection closed")
 		kws.fireEvent(EventClose, nil, nil)
 		kws.disconnected(nil)
 	})
+}
+
+// writeClose sends an RFC 6455 compliant close control frame using
+// WriteControl with a write deadline so shutdown cannot block on a slow
+// peer.
+func (kws *Websocket) writeClose(code int, reason string) {
+	if len(reason) > closeFrameMaxReason {
+		reason = reason[:closeFrameMaxReason]
+	}
+	kws.mu.RLock()
+	conn := kws.Conn
+	kws.mu.RUnlock()
+	if conn == nil {
+		return
+	}
+	payload := websocket.FormatCloseMessage(code, reason)
+	deadline := time.Now().Add(kws.settings.writeTimeout)
+	_ = conn.WriteControl(CloseMessage, payload, deadline)
 }
 
 // IsAlive reports whether the connection is active.
@@ -635,11 +658,32 @@ func (kws *Websocket) send(ctx context.Context) {
 				continue
 			}
 
-			err := kws.Conn.WriteMessage(msg.mType, msg.data)
+			kws.mu.RLock()
+			conn := kws.Conn
+			kws.mu.RUnlock()
+			if conn == nil {
+				continue
+			}
+			_ = conn.SetWriteDeadline(time.Now().Add(kws.settings.writeTimeout))
+			err := conn.WriteMessage(msg.mType, msg.data)
 			if err != nil {
+				kws.drainQueue()
 				kws.disconnected(err)
+				return
 			}
 		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// drainQueue discards all remaining queued messages so a closed connection
+// does not pin payload memory until the channel is garbage collected.
+func (kws *Websocket) drainQueue() {
+	for {
+		select {
+		case <-kws.queue:
+		default:
 			return
 		}
 	}
@@ -690,8 +734,8 @@ func (kws *Websocket) run() {
 
 	<-kws.done
 	cancelFunc()
-	kws.closeConn()
 	wg.Wait()
+	kws.closeConn()
 }
 
 func (kws *Websocket) read(ctx context.Context) {
@@ -755,9 +799,10 @@ func (kws *Websocket) disconnected(err error) {
 }
 
 func (kws *Websocket) closeConn() {
-	kws.mu.RLock()
+	kws.mu.Lock()
 	conn := kws.Conn
-	kws.mu.RUnlock()
+	kws.Conn = nil
+	kws.mu.Unlock()
 	if conn != nil {
 		_ = conn.Close()
 	}
