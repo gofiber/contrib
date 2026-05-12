@@ -65,7 +65,7 @@ func resetState() {
 	listeners.Lock()
 	listeners.list = make(map[string][]eventCallback)
 	listeners.Unlock()
-	undrain()
+	draining.Store(false)
 }
 
 func (s *WebsocketMock) SetUUID(uuid string) error {
@@ -387,7 +387,7 @@ func TestDrainFlag(t *testing.T) {
 	require.False(t, IsDraining())
 	Drain()
 	require.True(t, IsDraining())
-	undrain()
+	draining.Store(false)
 	require.False(t, IsDraining())
 }
 

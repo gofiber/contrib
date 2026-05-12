@@ -617,19 +617,6 @@ func (kws *Websocket) write(messageType int, messageBytes []byte) {
 	}
 }
 
-func (kws *Websocket) tryWrite(messageType int, messageBytes []byte) {
-	msg := message{
-		mType:   messageType,
-		data:    messageBytes,
-		retries: 0,
-	}
-
-	select {
-	case kws.queue <- msg:
-	default:
-	}
-}
-
 func (kws *Websocket) send(ctx context.Context) {
 	for {
 		select {
@@ -817,13 +804,6 @@ func (kws *Websocket) randomUUID() string {
 	return uuid.New().String()
 }
 
-func sendQueueSize() int {
-	if SendQueueSize <= 0 {
-		return 1
-	}
-	return SendQueueSize
-}
-
 func stopTimer(timer *time.Timer) {
 	if !timer.Stop() {
 		select {
@@ -908,11 +888,6 @@ func IsDraining() bool {
 // middleware that checks IsDraining and returns 503).
 func Drain() {
 	draining.Store(true)
-}
-
-// undrain is intentionally unexported. Tests reset state via resetState.
-func undrain() {
-	draining.Store(false)
 }
 
 // CloseAll iterates every active connection in the in-process pool and
