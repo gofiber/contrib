@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -365,6 +366,52 @@ func TestWebsocketCloseDoesNotBlockOnFullQueue(t *testing.T) {
 	}, time.Second, time.Millisecond)
 	require.False(t, kws.IsAlive())
 }
+
+func TestListenerPanicIsRecovered(t *testing.T) {
+	resetState()
+
+	kws := createWS()
+	kws.settings = resolveSettings(Config{
+		RecoverHandler: func(event string, r any) {
+			atomic.AddInt32(panicCounter, 1)
+		},
+	})
+	atomic.StoreInt32(panicCounter, 0)
+	pool.set(kws)
+
+	On(EventMessage, func(*EventPayload) {
+		panic("listener boom")
+	})
+	survived := 0
+	On(EventMessage, func(*EventPayload) {
+		survived++
+	})
+
+	kws.fireEvent(EventMessage, []byte("ignored"), nil)
+
+	require.Equal(t, int32(1), atomic.LoadInt32(panicCounter))
+	require.Equal(t, 1, survived)
+}
+
+func TestEventPayloadDataIsIndependentOfReadBuffer(t *testing.T) {
+	resetState()
+
+	kws := createWS()
+	pool.set(kws)
+
+	var captured []byte
+	On(EventMessage, func(p *EventPayload) {
+		captured = p.Data
+	})
+
+	buf := []byte("first")
+	kws.fireEvent(EventMessage, buf, nil)
+	buf[0] = 'x'
+
+	require.Equal(t, "first", string(captured))
+}
+
+var panicCounter = new(int32)
 
 func TestWebsocketDisconnectedFiresOnce(t *testing.T) {
 	resetState()

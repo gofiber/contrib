@@ -736,6 +736,9 @@ func fireGlobalEvent(event string, data []byte, err error) {
 
 func (kws *Websocket) fireEvent(event string, data []byte, err error) {
 	callbacks := listeners.get(event)
+	if len(callbacks) == 0 {
+		return
+	}
 
 	kws.mu.RLock()
 	attrs := make(map[string]any, len(kws.attributes))
@@ -744,16 +747,39 @@ func (kws *Websocket) fireEvent(event string, data []byte, err error) {
 	}
 	kws.mu.RUnlock()
 
+	// Clone payload bytes once before fan-out so listeners that retain the
+	// slice are not exposed to the read buffer being reused by the next
+	// frame.
+	var payloadData []byte
+	if data != nil {
+		payloadData = make([]byte, len(data))
+		copy(payloadData, data)
+	}
+
+	uuid := kws.GetUUID()
 	for _, callback := range callbacks {
-		callback(&EventPayload{
+		kws.invokeCallback(event, callback, &EventPayload{
 			Kws:              kws,
 			Name:             event,
-			SocketUUID:       kws.GetUUID(),
+			SocketUUID:       uuid,
 			SocketAttributes: attrs,
-			Data:             data,
+			Data:             payloadData,
 			Error:            err,
 		})
 	}
+}
+
+// invokeCallback runs a single listener callback with panic recovery so a
+// faulty user listener cannot tear down the read or send goroutine.
+func (kws *Websocket) invokeCallback(event string, cb eventCallback, p *EventPayload) {
+	defer func() {
+		if r := recover(); r != nil {
+			if kws.settings.recover != nil {
+				kws.settings.recover(event, r)
+			}
+		}
+	}()
+	cb(p)
 }
 
 type eventCallback func(payload *EventPayload)
