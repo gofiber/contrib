@@ -52,6 +52,7 @@ func resetState() {
 	listeners.Lock()
 	listeners.list = make(map[string][]eventCallback)
 	listeners.Unlock()
+	undrain()
 }
 
 func (s *WebsocketMock) SetUUID(uuid string) error {
@@ -366,6 +367,70 @@ func TestWebsocketCloseDoesNotBlockOnFullQueue(t *testing.T) {
 		}
 	}, time.Second, time.Millisecond)
 	require.False(t, kws.IsAlive())
+}
+
+func TestDrainFlag(t *testing.T) {
+	resetState()
+	require.False(t, IsDraining())
+	Drain()
+	require.True(t, IsDraining())
+	undrain()
+	require.False(t, IsDraining())
+}
+
+func TestCloseAllSendsGoingAway(t *testing.T) {
+	resetState()
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	app.Use(upgradeMiddleware)
+	app.Get("/", New(func(_ *Websocket) {}))
+
+	go func() { _ = app.Listener(ln) }()
+
+	dialer := &websocket.Dialer{
+		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+		HandshakeTimeout: 5 * time.Second,
+	}
+
+	const numConn = 5
+	clients := make([]*websocket.Conn, 0, numConn)
+	defer func() {
+		for _, c := range clients {
+			_ = c.Close()
+		}
+	}()
+
+	for i := 0; i < numConn; i++ {
+		conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+		require.NoError(t, err)
+		clients = append(clients, conn)
+	}
+
+	// Give upgrades a moment to register in the pool.
+	require.Eventually(t, func() bool {
+		return len(pool.all()) == numConn
+	}, 2*time.Second, 10*time.Millisecond, "expected %d pool entries", numConn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	require.NoError(t, CloseAll(ctx, websocket.CloseGoingAway, "bye"))
+
+	for _, c := range clients {
+		_, _, err := c.ReadMessage()
+		require.Error(t, err)
+		ce, ok := err.(*websocket.CloseError)
+		require.True(t, ok, "expected *websocket.CloseError, got %T", err)
+		require.Equal(t, websocket.CloseGoingAway, ce.Code)
+		require.Equal(t, "bye", ce.Text)
+	}
+
+	require.Empty(t, pool.all())
 }
 
 func TestCloseSendsFormatCloseMessage(t *testing.T) {

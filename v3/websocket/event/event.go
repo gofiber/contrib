@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gofiber/contrib/v3/websocket"
@@ -891,4 +892,84 @@ type eventCallback func(payload *EventPayload)
 // On adds a listener callback for an event.
 func On(event string, callback eventCallback) {
 	listeners.set(event, callback)
+}
+
+var draining atomic.Bool
+
+// IsDraining reports whether the package is in draining mode. Upgrade
+// handlers can poll this to refuse new connections during a graceful
+// shutdown.
+func IsDraining() bool {
+	return draining.Load()
+}
+
+// Drain marks the package as draining. New connections are not refused
+// automatically; the upgrade gate is the caller's responsibility (a
+// middleware that checks IsDraining and returns 503).
+func Drain() {
+	draining.Store(true)
+}
+
+// undrain is intentionally unexported. Tests reset state via resetState.
+func undrain() {
+	draining.Store(false)
+}
+
+// CloseAll iterates every active connection in the in-process pool and
+// sends a close control frame with the supplied code and reason, then
+// waits for each helper's run() loop to exit. If ctx expires first,
+// remaining connections are force closed via Conn.Close.
+//
+// The typical usage is from a Fiber shutdown hook:
+//
+//	app.Hooks().OnShutdown(func() error {
+//	    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+//	    defer cancel()
+//	    event.Drain()
+//	    return event.CloseAll(ctx, websocket.CloseGoingAway, "server shutting down")
+//	})
+//
+// Reason is capped at 123 bytes per RFC 6455.
+func CloseAll(ctx context.Context, code int, reason string) error {
+	snapshot := pool.all()
+	if len(snapshot) == 0 {
+		return nil
+	}
+
+	var wg sync.WaitGroup
+	for _, c := range snapshot {
+		kws, ok := c.(*Websocket)
+		if !ok {
+			continue
+		}
+		wg.Add(1)
+		go func(kws *Websocket) {
+			defer wg.Done()
+			kws.closeOnce.Do(func() {
+				kws.writeClose(code, reason)
+				kws.fireEvent(EventClose, nil, nil)
+				kws.disconnected(nil)
+			})
+		}(kws)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		for _, c := range pool.all() {
+			kws, ok := c.(*Websocket)
+			if !ok {
+				continue
+			}
+			kws.closeConn()
+		}
+		return ctx.Err()
+	}
 }

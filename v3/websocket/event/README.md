@@ -22,6 +22,7 @@ go get -u github.com/gofiber/contrib/v3/websocket
 
 ```go
 func New(callback func(kws *event.Websocket), config ...websocket.Config) fiber.Handler
+func NewWithConfig(callback func(kws *event.Websocket), eventCfg event.Config, wsConfig ...websocket.Config) fiber.Handler
 ```
 
 ```go
@@ -35,17 +36,52 @@ func Broadcast(message []byte, mType ...int)
 func Fire(name string, data []byte)
 ```
 
+```go
+func Drain()
+func IsDraining() bool
+func CloseAll(ctx context.Context, code int, reason string) error
+```
+
 ## Configuration
 
-Set these package-level variables before accepting connections.
+Per-instance tuning via `event.Config` passed to `NewWithConfig`. Zero values
+fall back to the matching package-level var, which itself falls back to the
+hard default.
 
-| Variable           | Default | Description |
-|:-------------------|:--------|:------------|
-| `PongTimeout`      | `1s`    | Interval for server-sent WebSocket pong frames. |
-| `RetrySendTimeout` | `20ms`  | Backoff between retries while the connection is not ready. |
-| `MaxSendRetry`     | `5`     | Max retries for transient socket write readiness issues. |
-| `SendQueueSize`    | `100`   | Per-connection outbound message queue capacity. |
-| `ReadTimeout`      | `10ms`  | Deprecated; reads now block until a frame arrives or the connection closes. |
+| Config field        | Default | Description |
+|:--------------------|:--------|:------------|
+| `PingInterval`      | `1s`    | Interval between server-originated Ping frames. Must be less than any upstream proxy or load balancer idle timeout. |
+| `ReadIdleTimeout`   | `3 * PingInterval` | Maximum silence before the read deadline fires and the connection is disconnected. |
+| `WriteTimeout`      | `10s`   | Bounds a single `WriteMessage` / `WriteControl` call. |
+| `MaxMessageSize`    | `1 MiB` | Inbound frame size limit. Set to `math.MaxInt64` to opt out. |
+| `SendQueueSize`     | `100`   | Per-connection outbound message queue capacity. |
+| `MaxSendRetry`      | `5`     | Max retries for transient socket write readiness issues. |
+| `RetrySendTimeout`  | `20ms`  | Backoff between retries while the connection is not ready. |
+| `RecoverHandler`    | `nil`   | Called on a panic inside a user `On` callback. If `nil`, panics are recovered silently. |
+
+The legacy package-level vars (`PongTimeout`, `RetrySendTimeout`,
+`MaxSendRetry`, `SendQueueSize`, `ReadTimeout`) are still read once per
+connection at upgrade time for backwards compatibility, but mutating them
+after a connection is established has no effect on running goroutines.
+Prefer `NewWithConfig` for new code.
+
+## Graceful Shutdown
+
+The helper keeps an in-process pool of active connections. Use `event.Drain`
+and `event.CloseAll` together with a Fiber shutdown hook so clients receive a
+clean `1001 Going Away` close frame instead of an abrupt TCP reset:
+
+```go
+app.Hooks().OnShutdown(func() error {
+    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+    defer cancel()
+    event.Drain()
+    return event.CloseAll(ctx, websocket.CloseGoingAway, "server shutting down")
+})
+```
+
+If `ctx` expires before every goroutine exits, `CloseAll` force-closes the
+remaining underlying connections and returns `ctx.Err()`.
 
 ## Example
 
