@@ -256,6 +256,8 @@ func TestWebsocketGetIntAttribute(t *testing.T) {
 	kws.SetAttribute("int", 3)
 
 	require.Equal(t, 3, kws.GetIntAttribute("int"))
+	require.Equal(t, 0, kws.GetIntAttribute("notInt"))
+	require.Equal(t, 0, kws.GetIntAttribute("missing"))
 }
 
 func TestWebsocketGetStringAttribute(t *testing.T) {
@@ -267,6 +269,8 @@ func TestWebsocketGetStringAttribute(t *testing.T) {
 	kws.SetAttribute("str", "3")
 
 	require.Equal(t, "3", kws.GetStringAttribute("str"))
+	require.Equal(t, "", kws.GetStringAttribute("notString"))
+	require.Equal(t, "", kws.GetStringAttribute("missing"))
 }
 
 func TestWebsocketSetUUIDUpdatesPool(t *testing.T) {

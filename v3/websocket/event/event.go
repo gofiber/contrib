@@ -203,7 +203,7 @@ type safeListeners struct {
 
 func (l *safeListeners) set(event string, callback eventCallback) {
 	l.Lock()
-	listeners.list[event] = append(listeners.list[event], callback)
+	l.list[event] = append(l.list[event], callback)
 	l.Unlock()
 }
 
@@ -312,7 +312,9 @@ func (kws *Websocket) GetIntAttribute(key string) int {
 	defer kws.mu.RUnlock()
 	value, ok := kws.attributes[key]
 	if ok {
-		return value.(int)
+		if v, ok := value.(int); ok {
+			return v
+		}
 	}
 	return 0
 }
@@ -323,7 +325,9 @@ func (kws *Websocket) GetStringAttribute(key string) string {
 	defer kws.mu.RUnlock()
 	value, ok := kws.attributes[key]
 	if ok {
-		return value.(string)
+		if v, ok := value.(string); ok {
+			return v
+		}
 	}
 	return ""
 }
@@ -349,9 +353,10 @@ func EmitToList(uuids []string, message []byte, mType ...int) {
 func (kws *Websocket) EmitTo(uuid string, message []byte, mType ...int) error {
 	conn, err := pool.get(uuid)
 	if err != nil {
-		return err
+		kws.fireEvent(EventError, []byte(uuid), ErrorInvalidConnection)
+		return ErrorInvalidConnection
 	}
-	if !pool.contains(uuid) || !conn.IsAlive() {
+	if !conn.IsAlive() {
 		kws.fireEvent(EventError, []byte(uuid), ErrorInvalidConnection)
 		return ErrorInvalidConnection
 	}
@@ -364,9 +369,9 @@ func (kws *Websocket) EmitTo(uuid string, message []byte, mType ...int) error {
 func EmitTo(uuid string, message []byte, mType ...int) error {
 	conn, err := pool.get(uuid)
 	if err != nil {
-		return err
+		return ErrorInvalidConnection
 	}
-	if !pool.contains(uuid) || !conn.IsAlive() {
+	if !conn.IsAlive() {
 		return ErrorInvalidConnection
 	}
 
@@ -436,12 +441,6 @@ func (kws *Websocket) setAlive(alive bool) {
 	kws.mu.Lock()
 	defer kws.mu.Unlock()
 	kws.isAlive = alive
-}
-
-func (kws *Websocket) queueLength() int {
-	kws.mu.RLock()
-	defer kws.mu.RUnlock()
-	return len(kws.queue)
 }
 
 func (kws *Websocket) pong(ctx context.Context) {
