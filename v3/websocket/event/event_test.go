@@ -2,6 +2,7 @@ package event
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strconv"
 	"sync"
@@ -43,7 +44,9 @@ type WebsocketMock struct {
 }
 
 func resetState() {
-	pool.reset()
+	pool.Lock()
+	pool.conn = make(map[string]ws)
+	pool.Unlock()
 	listeners.Lock()
 	listeners.list = make(map[string][]eventCallback)
 	listeners.Unlock()
@@ -53,7 +56,7 @@ func (s *WebsocketMock) SetUUID(uuid string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if pool.contains(uuid) {
+	if _, err := pool.get(uuid); err == nil {
 		return ErrorUUIDDuplication
 	}
 	s.UUID = uuid
@@ -311,12 +314,84 @@ func TestWebsocketCloseRemovesConnectionFromPool(t *testing.T) {
 
 	kws := createWS()
 	pool.set(kws)
+	closeEvents := 0
+	disconnectEvents := 0
+	On(EventClose, func(*EventPayload) {
+		closeEvents++
+	})
+	On(EventDisconnect, func(*EventPayload) {
+		disconnectEvents++
+	})
 
 	kws.Close()
+	kws.Close()
+	var wg sync.WaitGroup
+	wg.Add(numTestConn)
+	for range numTestConn {
+		go func() {
+			defer wg.Done()
+			kws.Close()
+		}()
+	}
+	wg.Wait()
 
 	require.False(t, kws.IsAlive())
 	_, err := pool.get(kws.GetUUID())
 	require.ErrorIs(t, err, ErrorInvalidConnection)
+	require.Equal(t, 1, closeEvents)
+	require.Equal(t, 1, disconnectEvents)
+}
+
+func TestWebsocketCloseDoesNotBlockOnFullQueue(t *testing.T) {
+	resetState()
+
+	kws := createWS()
+	pool.set(kws)
+	kws.queue <- message{mType: TextMessage, data: []byte("queued")}
+
+	done := make(chan struct{})
+	go func() {
+		kws.Close()
+		close(done)
+	}()
+
+	require.Eventually(t, func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, time.Millisecond)
+	require.False(t, kws.IsAlive())
+}
+
+func TestWebsocketDisconnectedFiresOnce(t *testing.T) {
+	resetState()
+
+	kws := createWS()
+	pool.set(kws)
+	disconnectEvents := 0
+	errorEvents := 0
+	On(EventDisconnect, func(payload *EventPayload) {
+		require.Error(t, payload.Error)
+		disconnectEvents++
+	})
+	On(EventError, func(payload *EventPayload) {
+		require.Error(t, payload.Error)
+		errorEvents++
+	})
+
+	testErr := errors.New("disconnect")
+	kws.disconnected(testErr)
+	kws.disconnected(testErr)
+	kws.disconnected(nil)
+
+	require.False(t, kws.IsAlive())
+	_, err := pool.get(kws.GetUUID())
+	require.ErrorIs(t, err, ErrorInvalidConnection)
+	require.Equal(t, 1, disconnectEvents)
+	require.Equal(t, 1, errorEvents)
 }
 
 func createWS() *Websocket {

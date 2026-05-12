@@ -119,8 +119,9 @@ type ws interface {
 
 // Websocket wraps a websocket.Conn with event-bus helpers.
 type Websocket struct {
-	once sync.Once
-	mu   sync.RWMutex
+	once      sync.Once
+	closeOnce sync.Once
+	mu        sync.RWMutex
 	// Conn is the underlying Fiber websocket connection.
 	Conn *websocket.Conn
 	// isAlive defines if the connection is alive or not.
@@ -180,22 +181,9 @@ func (p *safePool) get(key string) (ws, error) {
 	return ret, nil
 }
 
-func (p *safePool) contains(key string) bool {
-	p.RLock()
-	_, ok := p.conn[key]
-	p.RUnlock()
-	return ok
-}
-
 func (p *safePool) delete(key string) {
 	p.Lock()
 	delete(p.conn, key)
-	p.Unlock()
-}
-
-func (p *safePool) reset() {
-	p.Lock()
-	p.conn = make(map[string]ws)
 	p.Unlock()
 }
 
@@ -421,9 +409,15 @@ func (kws *Websocket) Emit(message []byte, mType ...int) {
 
 // Close actively closes the current connection from the server.
 func (kws *Websocket) Close() {
-	kws.write(CloseMessage, []byte("Connection closed"))
-	kws.fireEvent(EventClose, nil, nil)
-	kws.disconnected(nil)
+	if !kws.IsAlive() {
+		return
+	}
+
+	kws.closeOnce.Do(func() {
+		kws.tryWrite(CloseMessage, []byte("Connection closed"))
+		kws.fireEvent(EventClose, nil, nil)
+		kws.disconnected(nil)
+	})
 }
 
 // IsAlive reports whether the connection is active.
@@ -468,6 +462,19 @@ func (kws *Websocket) write(messageType int, messageBytes []byte) {
 	select {
 	case kws.queue <- msg:
 	case <-kws.done:
+	}
+}
+
+func (kws *Websocket) tryWrite(messageType int, messageBytes []byte) {
+	msg := message{
+		mType:   messageType,
+		data:    messageBytes,
+		retries: 0,
+	}
+
+	select {
+	case kws.queue <- msg:
+	default:
 	}
 }
 
@@ -567,22 +574,24 @@ func (kws *Websocket) read(_ context.Context) {
 }
 
 func (kws *Websocket) disconnected(err error) {
-	kws.fireEvent(EventDisconnect, nil, err)
-
-	if kws.IsAlive() {
-		kws.once.Do(func() {
-			kws.setAlive(false)
-			kws.doneOnce.Do(func() {
-				close(kws.done)
-			})
+	disconnected := false
+	kws.once.Do(func() {
+		disconnected = true
+		kws.setAlive(false)
+		kws.doneOnce.Do(func() {
+			close(kws.done)
 		})
+		pool.delete(kws.UUID)
+	})
+
+	if !disconnected {
+		return
 	}
 
+	kws.fireEvent(EventDisconnect, nil, err)
 	if err != nil {
 		kws.fireEvent(EventError, nil, err)
 	}
-
-	pool.delete(kws.UUID)
 }
 
 func (kws *Websocket) closeConn() {
