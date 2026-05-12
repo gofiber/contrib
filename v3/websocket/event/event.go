@@ -5,6 +5,7 @@ package event
 import (
 	"context"
 	"errors"
+	"net"
 	"sync"
 	"time"
 
@@ -58,7 +59,14 @@ var (
 )
 
 var (
-	// PongTimeout controls how often this helper sends a WebSocket pong frame.
+	// PongTimeout is the interval between server-originated Ping frames.
+	// Despite its name, this helper uses Ping for liveness; the historical
+	// name is preserved for backwards compatibility. The value must be less
+	// than any upstream proxy or load balancer idle timeout.
+	//
+	// Deprecated: prefer Config.PingInterval passed to NewWithConfig. The
+	// package-level value is read once per connection at upgrade time;
+	// mutating it after that has no effect on running connections.
 	PongTimeout = time.Second
 	// RetrySendTimeout controls how long a queued message waits before retrying.
 	RetrySendTimeout = 20 * time.Millisecond
@@ -68,6 +76,9 @@ var (
 	SendQueueSize = 100
 	// ReadTimeout is deprecated and no longer used; reads block until a
 	// message arrives or the connection is closed.
+	//
+	// Deprecated: ReadTimeout is a no-op. Configure Config.ReadIdleTimeout
+	// on NewWithConfig for the actual read deadline behaviour.
 	ReadTimeout = 10 * time.Millisecond
 )
 
@@ -540,14 +551,30 @@ func (kws *Websocket) setAlive(alive bool) {
 	kws.isAlive = alive
 }
 
+// pong sends server-originated Ping control frames at PingInterval. The
+// method is named "pong" purely to preserve the unexported ws interface; the
+// frame type was corrected from Pong to Ping for RFC 6455 compliant
+// liveness.
 func (kws *Websocket) pong(ctx context.Context) {
-	timeoutTicker := time.NewTicker(kws.settings.pingInterval)
-	defer timeoutTicker.Stop()
+	ticker := time.NewTicker(kws.settings.pingInterval)
+	defer ticker.Stop()
 	for {
 		select {
-		case <-timeoutTicker.C:
-			kws.write(PongMessage, []byte{})
+		case <-ticker.C:
+			kws.mu.RLock()
+			conn := kws.Conn
+			kws.mu.RUnlock()
+			if conn == nil {
+				return
+			}
+			deadline := time.Now().Add(kws.settings.writeTimeout)
+			if err := conn.WriteControl(PingMessage, nil, deadline); err != nil {
+				kws.disconnected(err)
+				return
+			}
 		case <-ctx.Done():
+			return
+		case <-kws.done:
 			return
 		}
 	}
@@ -623,6 +650,27 @@ func (kws *Websocket) run() {
 		kws.Conn.SetReadLimit(kws.settings.maxMessageSize)
 	}
 
+	if kws.Conn != nil {
+		_ = kws.Conn.SetReadDeadline(time.Now().Add(kws.settings.readIdleTimeout))
+		kws.Conn.SetPongHandler(func(string) error {
+			_ = kws.Conn.SetReadDeadline(time.Now().Add(kws.settings.readIdleTimeout))
+			kws.fireEvent(EventPong, nil, nil)
+			return nil
+		})
+		kws.Conn.SetPingHandler(func(data string) error {
+			kws.fireEvent(EventPing, []byte(data), nil)
+			deadline := time.Now().Add(kws.settings.writeTimeout)
+			err := kws.Conn.WriteControl(PongMessage, []byte(data), deadline)
+			if errors.Is(err, websocket.ErrCloseSent) {
+				return nil
+			}
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				return nil
+			}
+			return err
+		})
+	}
+
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 
@@ -646,35 +694,42 @@ func (kws *Websocket) run() {
 	wg.Wait()
 }
 
-func (kws *Websocket) read(_ context.Context) {
+func (kws *Websocket) read(ctx context.Context) {
 	for {
-		if !kws.hasConn() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-kws.done:
+			return
+		default:
+		}
+
+		kws.mu.RLock()
+		conn := kws.Conn
+		kws.mu.RUnlock()
+		if conn == nil {
 			return
 		}
 
-		mType, msg, err := kws.Conn.ReadMessage()
-
-		if mType == PingMessage {
-			kws.fireEvent(EventPing, nil, nil)
-			continue
-		}
-
-		if mType == PongMessage {
-			kws.fireEvent(EventPong, nil, nil)
-			continue
-		}
-
-		if mType == CloseMessage {
-			kws.disconnected(nil)
-			return
-		}
-
+		mType, msg, err := conn.ReadMessage()
 		if err != nil {
+			// Control frames (Ping, Pong, Close) are handled by the
+			// library's Set*Handler hooks above. An orderly client close
+			// surfaces as a *CloseError here.
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				kws.disconnected(nil)
+				return
+			}
 			kws.disconnected(err)
 			return
 		}
 
-		kws.fireEvent(EventMessage, msg, nil)
+		switch mType {
+		case TextMessage, BinaryMessage:
+			kws.fireEvent(EventMessage, msg, nil)
+		default:
+			// Defensive: ReadMessage should not deliver control frames.
+		}
 	}
 }
 

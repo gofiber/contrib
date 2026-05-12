@@ -368,6 +368,114 @@ func TestWebsocketCloseDoesNotBlockOnFullQueue(t *testing.T) {
 	require.False(t, kws.IsAlive())
 }
 
+func TestPingIsSentAtInterval(t *testing.T) {
+	resetState()
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	app.Use(upgradeMiddleware)
+	app.Get("/", NewWithConfig(func(_ *Websocket) {},
+		Config{PingInterval: 50 * time.Millisecond}))
+
+	go func() { _ = app.Listener(ln) }()
+
+	dialer := &websocket.Dialer{
+		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+		HandshakeTimeout: 5 * time.Second,
+	}
+	conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+
+	pings := make(chan struct{}, 4)
+	conn.SetPingHandler(func(_ string) error {
+		select {
+		case pings <- struct{}{}:
+		default:
+		}
+		return nil
+	})
+
+	go func() {
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-pings:
+		case <-deadline:
+			t.Fatalf("expected at least 2 pings within 2s, got %d", i)
+		}
+	}
+}
+
+func TestReadDeadlineFiresDisconnectOnSilentPeer(t *testing.T) {
+	resetState()
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	disconnected := make(chan error, 1)
+	On(EventDisconnect, func(p *EventPayload) {
+		select {
+		case disconnected <- p.Error:
+		default:
+		}
+	})
+
+	app.Use(upgradeMiddleware)
+	app.Get("/", NewWithConfig(func(_ *Websocket) {},
+		Config{
+			PingInterval:    50 * time.Millisecond,
+			ReadIdleTimeout: 150 * time.Millisecond,
+		}))
+
+	go func() { _ = app.Listener(ln) }()
+
+	dialer := &websocket.Dialer{
+		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+		HandshakeTimeout: 5 * time.Second,
+	}
+	conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+	require.NoError(t, err)
+	// Suppress automatic pong response so the server's read deadline fires.
+	conn.SetPingHandler(func(_ string) error { return nil })
+	defer func() { _ = conn.Close() }()
+
+	go func() {
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
+	select {
+	case discErr := <-disconnected:
+		require.Error(t, discErr)
+		type timeoutErr interface{ Timeout() bool }
+		te, ok := discErr.(timeoutErr)
+		require.True(t, ok, "expected error with Timeout() method, got %T", discErr)
+		require.True(t, te.Timeout(), "expected timeout error, got %v", discErr)
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected disconnect after read deadline")
+	}
+}
+
 func TestReadLimitRejectsOversizedFrame(t *testing.T) {
 	resetState()
 
