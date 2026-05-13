@@ -10,13 +10,13 @@ require (
 require (
 	github.com/andybalholm/brotli v1.2.1 // indirect
 	github.com/corazawaf/libinjection-go v0.3.2 // indirect
-	github.com/go-json-experiment/json v0.0.0-20260504200034-64a0a05799db // indirect
+	github.com/go-json-experiment/json v0.0.0-20260505212615-e40f80bf6836 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/gofiber/schema v1.7.1 // indirect
-	github.com/gofiber/utils/v2 v2.0.4 // indirect
+	github.com/gofiber/utils/v2 v2.0.5 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/kaptinlin/go-i18n v0.4.7 // indirect
-	github.com/kaptinlin/jsonpointer v0.4.22 // indirect
+	github.com/kaptinlin/go-i18n v0.4.8 // indirect
+	github.com/kaptinlin/jsonpointer v0.4.23 // indirect
 	github.com/kaptinlin/jsonschema v0.7.13 // indirect
 	github.com/kaptinlin/messageformat-go v0.6.4 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
@@ -25,7 +25,7 @@ require (
 	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/petar-dambovaliev/aho-corasick v0.0.0-20250424160509-463d218d4745 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
-	github.com/tidwall/gjson v1.18.0 // indirect
+	github.com/tidwall/gjson v1.19.0 // indirect
 	github.com/tidwall/match v1.2.0 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect
