@@ -742,7 +742,9 @@ func TestDefaultOnCloseDoesNotAdvanceChainTwice(t *testing.T) {
 		return c.SendString("SECRET")
 	})
 
+	cb.transitionToOpen()
 	cb.transitionToHalfOpen()
+	require.Equal(t, StateHalfOpen, cb.GetState())
 
 	req := httptest.NewRequest("GET", "/protected", nil)
 	resp, err := app.Test(req)
