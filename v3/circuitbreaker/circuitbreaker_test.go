@@ -719,3 +719,35 @@ func TestHealthHandler(t *testing.T) {
 	// Clean up
 	cb.Stop()
 }
+
+func TestDefaultOnCloseDoesNotAdvanceChainTwice(t *testing.T) {
+	cb := New(Config{
+		FailureThreshold:  1,
+		SuccessThreshold:  1,
+		HalfOpenMaxConcurrent: 1,
+	})
+	defer cb.Stop()
+
+	app := fiber.New()
+	app.Use(Middleware(cb))
+
+	protectedCalled := int32(0)
+
+	app.Use(func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusUnauthorized)
+	})
+
+	app.Get("/protected", func(c fiber.Ctx) error {
+		atomic.AddInt32(&protectedCalled, 1)
+		return c.SendString("SECRET")
+	})
+
+	cb.transitionToHalfOpen()
+
+	req := httptest.NewRequest("GET", "/protected", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	require.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
+	require.Equal(t, int32(0), atomic.LoadInt32(&protectedCalled))
+	require.Equal(t, StateClosed, cb.GetState())
+}
