@@ -57,7 +57,7 @@ var DefaultConfig = Config{
 		})
 	},
 	OnClose: func(c fiber.Ctx) error {
-		return c.Next()
+		return nil
 	},
 }
 
