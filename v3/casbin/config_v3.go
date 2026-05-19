@@ -1,25 +1,25 @@
 package casbin
 
 import (
-	"github.com/casbin/casbin/v2"
-	"github.com/casbin/casbin/v2/persist"
-	fileadapter "github.com/casbin/casbin/v2/persist/file-adapter"
+	casbinv3 "github.com/casbin/casbin/v3"
+	casbinv3persist "github.com/casbin/casbin/v3/persist"
+	casbinv3fileadapter "github.com/casbin/casbin/v3/persist/file-adapter"
 	"github.com/gofiber/fiber/v3"
 )
 
-// Config holds the configuration for the middleware
-type Config struct {
+// ConfigV3 holds the configuration for the middleware when using Casbin v3.
+type ConfigV3 struct {
 	// ModelFilePath is path to model file for Casbin.
 	// Optional. Default: "./model.conf".
 	ModelFilePath string
 
-	// PolicyAdapter is an interface for different persistent providers.
+	// PolicyAdapter is an interface for different persistent providers (v3).
 	// Optional. Default: fileadapter.NewAdapter("./policy.csv").
-	PolicyAdapter persist.Adapter
+	PolicyAdapter casbinv3persist.Adapter
 
-	// Enforcer is a Casbin v2 enforcer. If you want to use your own enforcer.
+	// Enforcer is a Casbin v3 enforcer. If provided, ModelFilePath and PolicyAdapter are ignored.
 	// Optional. Default: nil (one is created from ModelFilePath and PolicyAdapter).
-	Enforcer *casbin.Enforcer
+	Enforcer *casbinv3.Enforcer
 
 	// Lookup is a function that is used to look up current subject.
 	// An empty string is considered as unauthenticated user.
@@ -35,34 +35,32 @@ type Config struct {
 	Forbidden fiber.Handler
 }
 
-var ConfigDefault = Config{
+var ConfigV3Default = ConfigV3{
 	ModelFilePath: "./model.conf",
-	PolicyAdapter: fileadapter.NewAdapter("./policy.csv"),
+	PolicyAdapter: casbinv3fileadapter.NewAdapter("./policy.csv"),
 	Lookup:        func(c fiber.Ctx) string { return "" },
 	Unauthorized:  func(c fiber.Ctx) error { return c.SendStatus(fiber.StatusUnauthorized) },
 	Forbidden:     func(c fiber.Ctx) error { return c.SendStatus(fiber.StatusForbidden) },
 }
 
-// Helper function to set default values
-func configDefault(config ...Config) (Config, error) {
-	// Return default config if nothing provided
+// configDefaultV3 applies defaults and creates a v3 enforcer if none is provided.
+func configDefaultV3(config ...ConfigV3) (ConfigV3, error) {
 	if len(config) < 1 {
-		return ConfigDefault, nil
+		return ConfigV3Default, nil
 	}
 
-	// Override default config
 	cfg := config[0]
 
 	if cfg.Enforcer == nil {
 		if cfg.ModelFilePath == "" {
-			cfg.ModelFilePath = ConfigDefault.ModelFilePath
+			cfg.ModelFilePath = ConfigV3Default.ModelFilePath
 		}
 
 		if cfg.PolicyAdapter == nil {
-			cfg.PolicyAdapter = ConfigDefault.PolicyAdapter
+			cfg.PolicyAdapter = ConfigV3Default.PolicyAdapter
 		}
 
-		enforcer, err := casbin.NewEnforcer(cfg.ModelFilePath, cfg.PolicyAdapter)
+		enforcer, err := casbinv3.NewEnforcer(cfg.ModelFilePath, cfg.PolicyAdapter)
 		if err != nil {
 			return cfg, err
 		}
@@ -71,15 +69,15 @@ func configDefault(config ...Config) (Config, error) {
 	}
 
 	if cfg.Lookup == nil {
-		cfg.Lookup = ConfigDefault.Lookup
+		cfg.Lookup = ConfigV3Default.Lookup
 	}
 
 	if cfg.Unauthorized == nil {
-		cfg.Unauthorized = ConfigDefault.Unauthorized
+		cfg.Unauthorized = ConfigV3Default.Unauthorized
 	}
 
 	if cfg.Forbidden == nil {
-		cfg.Forbidden = ConfigDefault.Forbidden
+		cfg.Forbidden = ConfigV3Default.Forbidden
 	}
 
 	return cfg, nil
