@@ -17,7 +17,7 @@ type ConfigV3 struct {
 	// Optional. Default: fileadapter.NewAdapter("./policy.csv").
 	PolicyAdapter casbinv3persist.Adapter
 
-	// Enforcer is a Casbin v3 enforcer. If provided, ModelFilePath and PolicyAdapter are ignored.
+	// Enforcer is a Casbin v3 enforcer. If you want to use your own enforcer.
 	// Optional. Default: nil (one is created from ModelFilePath and PolicyAdapter).
 	Enforcer *casbinv3.Enforcer
 
@@ -43,12 +43,14 @@ var ConfigV3Default = ConfigV3{
 	Forbidden:     func(c fiber.Ctx) error { return c.SendStatus(fiber.StatusForbidden) },
 }
 
-// configDefaultV3 applies defaults and creates a v3 enforcer if none is provided.
+// Helper function to set default values
 func configDefaultV3(config ...ConfigV3) (ConfigV3, error) {
+	// Return default config if nothing provided
 	if len(config) < 1 {
 		return ConfigV3Default, nil
 	}
 
+	// Override default config
 	cfg := config[0]
 
 	if cfg.Enforcer == nil {
