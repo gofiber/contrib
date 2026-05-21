@@ -9,7 +9,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/go-openapi/runtime/middleware"
+	"github.com/go-openapi/runtime/server-middleware/docui"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/adaptor"
 	"gopkg.in/yaml.v2"
@@ -162,31 +162,28 @@ func New(config ...Config) fiber.Handler {
 	})
 
 	// Define UI Options
-	swaggerUIOpts := middleware.SwaggerUIOpts{
-		BasePath: cfg.BasePath,
-		SpecURL:  specURL,
-		Path:     cfg.Path,
-		Title:    cfg.Title,
+	uiOpts := []docui.Option{
+		docui.WithUIBasePath(cfg.BasePath),
+		docui.WithSpecURL(specURL),
+		docui.WithUIPath(cfg.Path),
+		docui.WithUITitle(cfg.Title),
+	}
+	if cfg.SwaggerURL != "" {
+		uiOpts = append(uiOpts, docui.WithUIAssetsURL(cfg.SwaggerURL))
 	}
 
-	if cfg.SwaggerURL != "" {
-		swaggerUIOpts.SwaggerURL = cfg.SwaggerURL
+	swaggerOpts := docui.SwaggerUIOptions{
+		SwaggerPresetURL: cfg.SwaggerPresetURL,
+		SwaggerStylesURL: cfg.SwaggerStylesURL,
+		Favicon32:        cfg.Favicon32,
+		Favicon16:        cfg.Favicon16,
 	}
-	if cfg.SwaggerPresetURL != "" {
-		swaggerUIOpts.SwaggerPresetURL = cfg.SwaggerPresetURL
-	}
-	if cfg.SwaggerStylesURL != "" {
-		swaggerUIOpts.SwaggerStylesURL = cfg.SwaggerStylesURL
-	}
-	if cfg.Favicon32 != "" {
-		swaggerUIOpts.Favicon32 = cfg.Favicon32
-	}
-	if cfg.Favicon16 != "" {
-		swaggerUIOpts.Favicon16 = cfg.Favicon16
+	if swaggerOpts != (docui.SwaggerUIOptions{}) {
+		uiOpts = append(uiOpts, docui.WithSwaggerUIOptions(swaggerOpts))
 	}
 
 	// Create UI middleware
-	middlewareHandler := adaptor.HTTPHandler(middleware.SwaggerUI(swaggerUIOpts, swaggerSpecHandler))
+	middlewareHandler := adaptor.HTTPHandler(docui.SwaggerUI(swaggerSpecHandler, uiOpts...))
 
 	// Return new handler
 	return func(c fiber.Ctx) error {
