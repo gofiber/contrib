@@ -12,7 +12,7 @@ import (
 	"github.com/go-openapi/runtime/server-middleware/docui"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/adaptor"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 // Config defines the config for middleware.
