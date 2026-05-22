@@ -20,11 +20,6 @@ func New(config ...Config) fiber.Handler {
 
 	// Return new handler
 	return func(c *fiber.Ctx) error {
-		// skip uri
-		if _, ok := skipURIs[c.Path()]; ok {
-			return c.Next()
-		}
-
 		start := time.Now()
 
 		// Handle request, store err for logging
@@ -34,6 +29,11 @@ func New(config ...Config) fiber.Handler {
 			if err := c.App().ErrorHandler(c, chainErr); err != nil {
 				_ = c.SendStatus(fiber.StatusInternalServerError)
 			}
+		}
+
+		// skip uri
+		if _, ok := skipURIs[c.Path()]; ok {
+			return nil
 		}
 
 		// Skip logging if Next returns true (request already processed)

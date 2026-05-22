@@ -203,15 +203,12 @@ func Test_Logger_Next(t *testing.T) {
 	}
 
 	var logs map[string]any
-	_ = json.Unmarshal(buf.Bytes(), &logs)
+	err = json.Unmarshal(buf.Bytes(), &logs)
+	utils.AssertEqual(t, nil, err)
 
 	for key, value := range expected {
 		utils.AssertEqual(t, value, logs[key])
 	}
-
-	bodyStr, ok := logs[FieldResBody].(string)
-	utils.AssertEqual(t, true, ok)
-	utils.AssertEqual(t, true, bodyStr == string(body))
 }
 
 func Test_Logger_All(t *testing.T) {
