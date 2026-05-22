@@ -16,7 +16,6 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/requestid"
 	"github.com/gofiber/fiber/v2/utils"
 	"github.com/rs/zerolog"
-	"github.com/stretchr/testify/assert"
 )
 
 func Test_GetResBody(t *testing.T) {
@@ -193,9 +192,11 @@ func Test_Logger_Next(t *testing.T) {
 	resp, err := app.Test(httptest.NewRequest("GET", "/", nil))
 	utils.AssertEqual(t, nil, err)
 	utils.AssertEqual(t, fiber.StatusNotFound, resp.StatusCode)
-	assert.Equal(t, 0, len(buf.Bytes()))
+	utils.AssertEqual(t, 0, len(buf.Bytes()))
 
 	resp, err = app.Test(httptest.NewRequest("GET", "/log", nil))
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
 
 	expected := map[string]any{
 		FieldResBody: string(body),
@@ -205,14 +206,12 @@ func Test_Logger_Next(t *testing.T) {
 	_ = json.Unmarshal(buf.Bytes(), &logs)
 
 	for key, value := range expected {
-		assert.Equal(t, value, logs[key])
+		utils.AssertEqual(t, value, logs[key])
 	}
 
-	assert.Equal(t, nil, err)
-
 	bodyStr, ok := logs[FieldResBody].(string)
-	assert.Equal(t, true, ok)
-	assert.Equal(t, true, bodyStr == string(body))
+	utils.AssertEqual(t, true, ok)
+	utils.AssertEqual(t, true, bodyStr == string(body))
 }
 
 func Test_Logger_All(t *testing.T) {
