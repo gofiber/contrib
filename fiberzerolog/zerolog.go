@@ -20,11 +20,6 @@ func New(config ...Config) fiber.Handler {
 
 	// Return new handler
 	return func(c *fiber.Ctx) error {
-		// Don't execute middleware if Next returns true
-		if cfg.Next != nil && cfg.Next(c) {
-			return c.Next()
-		}
-
 		// skip uri
 		if _, ok := skipURIs[c.Path()]; ok {
 			return c.Next()
@@ -39,6 +34,11 @@ func New(config ...Config) fiber.Handler {
 			if err := c.App().ErrorHandler(c, chainErr); err != nil {
 				_ = c.SendStatus(fiber.StatusInternalServerError)
 			}
+		}
+
+		// Skip logging if Next returns true (request already processed)
+		if cfg.Next != nil && cfg.Next(c) {
+			return nil
 		}
 
 		latency := time.Since(start)

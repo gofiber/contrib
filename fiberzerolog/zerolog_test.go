@@ -16,6 +16,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/requestid"
 	"github.com/gofiber/fiber/v2/utils"
 	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/assert"
 )
 
 func Test_GetResBody(t *testing.T) {
@@ -160,16 +161,58 @@ func Test_Latency(t *testing.T) {
 func Test_Logger_Next(t *testing.T) {
 	t.Parallel()
 
+	type skipKey struct{}
+	skipLog := func(c *fiber.Ctx) error {
+		c.Locals(skipKey{}, skipKey{})
+		return c.Next()
+	}
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
 	app := fiber.New()
 	app.Use(New(Config{
-		Next: func(_ *fiber.Ctx) bool {
-			return true
+		Logger: &logger,
+		Next: func(c *fiber.Ctx) bool {
+			return c.Locals(skipKey{}) != nil
+		},
+		Fields: []string{
+			FieldResBody,
 		},
 	}))
+
+	app.Get("/", skipLog, func(c *fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusNotFound)
+	})
+
+	body := []byte("HELLO")
+	app.Get("/log", func(c *fiber.Ctx) error {
+		return c.Send(body)
+	})
 
 	resp, err := app.Test(httptest.NewRequest("GET", "/", nil))
 	utils.AssertEqual(t, nil, err)
 	utils.AssertEqual(t, fiber.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, 0, len(buf.Bytes()))
+
+	resp, err = app.Test(httptest.NewRequest("GET", "/log", nil))
+
+	expected := map[string]any{
+		FieldResBody: string(body),
+	}
+
+	var logs map[string]any
+	_ = json.Unmarshal(buf.Bytes(), &logs)
+
+	for key, value := range expected {
+		assert.Equal(t, value, logs[key])
+	}
+
+	assert.Equal(t, nil, err)
+
+	bodyStr, ok := logs[FieldResBody].(string)
+	assert.Equal(t, true, ok)
+	assert.Equal(t, true, bodyStr == string(body))
 }
 
 func Test_Logger_All(t *testing.T) {
