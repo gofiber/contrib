@@ -25,7 +25,7 @@ func New(config ...Config) fiber.Handler {
 			}
 		}
 
-		// Don't execute middleware if Next returns true
+		// Skip logging if Next returns true (request already processed)
 		if cfg.Next != nil && cfg.Next(c) {
 			return nil
 		}
