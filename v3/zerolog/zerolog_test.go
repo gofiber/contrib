@@ -195,6 +195,8 @@ func Test_Logger_Next(t *testing.T) {
 	assert.Equal(t, 0, len(buf.Bytes()))
 
 	resp, err = app.Test(httptest.NewRequest("GET", "/log", nil))
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 
 	expected := map[string]any{
 		FieldResBody: string(body),
@@ -207,10 +209,8 @@ func Test_Logger_Next(t *testing.T) {
 		assert.Equal(t, value, logs[key])
 	}
 
-	assert.Equal(t, nil, err)
-
 	bodyStr, ok := logs[FieldResBody].(string)
-	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+
 	assert.Equal(t, true, ok)
 	assert.Equal(t, true, bodyStr == string(body))
 }
