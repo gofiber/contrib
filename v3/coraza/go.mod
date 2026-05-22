@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/corazawaf/coraza/v3 v3.7.0
-	github.com/gofiber/fiber/v3 v3.2.0
+	github.com/gofiber/fiber/v3 v3.3.0
 )
 
 require (
