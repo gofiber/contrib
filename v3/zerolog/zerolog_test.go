@@ -210,6 +210,7 @@ func Test_Logger_Next(t *testing.T) {
 	assert.Equal(t, nil, err)
 
 	bodyStr, ok := logs[FieldResBody].(string)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 	assert.Equal(t, true, ok)
 	assert.Equal(t, true, bodyStr == string(body))
 }
