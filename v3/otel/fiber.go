@@ -276,6 +276,13 @@ func Middleware(opts ...Option) fiber.Handler {
 		spanStatus, spanMessage := internal.SpanStatusFromHTTPStatusCodeAndSpanKind(c.Response().StatusCode(), oteltrace.SpanKindServer)
 		span.SetStatus(spanStatus, spanMessage)
 
+		if cfg.TraceResponseHeader != "" {
+			traceID := span.SpanContext().TraceID()
+			if traceID.IsValid() {
+				c.Set(cfg.TraceResponseHeader, traceID.String())
+			}
+		}
+
 		//Propagate tracing context as headers in outbound response
 		tracingHeaders := make(propagation.HeaderCarrier)
 		cfg.Propagators.Inject(c.Context(), tracingHeaders)
