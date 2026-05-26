@@ -601,11 +601,13 @@ func TestTraceResponseHeaderUsesInboundTraceID(t *testing.T) {
 	sr := new(tracetest.SpanRecorder)
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 	otel.SetTracerProvider(provider)
+	previousPropagator := otel.GetTextMapPropagator()
 	otel.SetTextMapPropagator(propagation.TraceContext{})
-	defer otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator())
+	defer otel.SetTextMapPropagator(previousPropagator)
 
 	req := httptest.NewRequest(http.MethodGet, "/foo", nil)
 	ctx, span := provider.Tracer(instrumentationName).Start(context.Background(), "test")
+	defer span.End()
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
 
 	app := fiber.New()
