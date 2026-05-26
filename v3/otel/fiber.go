@@ -283,7 +283,7 @@ func Middleware(opts ...Option) fiber.Handler {
 			}
 		}
 
-		//Propagate tracing context as headers in outbound response
+		// Propagate tracing context as headers in outbound response
 		tracingHeaders := make(propagation.HeaderCarrier)
 		cfg.Propagators.Inject(c.Context(), tracingHeaders)
 		for _, headerKey := range tracingHeaders.Keys() {
