@@ -15,7 +15,7 @@ require (
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/rogpeppe/go-internal v1.14.1 // indirect
+	github.com/rogpeppe/go-internal v1.15.0 // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/valyala/fasthttp v1.71.0 // indirect
 	golang.org/x/crypto v0.52.0 // indirect
