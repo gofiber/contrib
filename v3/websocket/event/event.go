@@ -41,13 +41,18 @@ const (
 	EventPing = "ping"
 	// EventPong is fired when a WebSocket pong control frame is received.
 	EventPong = "pong"
-	// EventDisconnect is fired when the connection is closed.
+	// EventDisconnect is fired when the connection is closed. When the close is
+	// caused by an error, EventError is fired as well (with the same error).
 	EventDisconnect = "disconnect"
-	// EventConnect is fired when the connection is initialized.
+	// EventConnect is fired when the connection is initialized, immediately
+	// after the New / NewWithConfig callback has run and before the read loop
+	// starts.
 	EventConnect = "connect"
-	// EventClose is fired when the server actively closes the connection.
+	// EventClose is fired when the server actively closes the connection (for
+	// example via Close or CloseAll).
 	EventClose = "close"
-	// EventError is fired when an error occurs.
+	// EventError is fired when an error occurs, including a failed EmitTo, a
+	// dropped outbound message, and error-driven disconnects.
 	EventError = "error"
 )
 
@@ -238,6 +243,10 @@ type Websocket struct {
 	doneOnce sync.Once
 	// attributes stores optional connection-scoped values.
 	attributes map[string]interface{}
+	// localListeners holds listeners registered for this connection only via
+	// the On method. They fire in addition to the process-global listeners and
+	// are discarded when the connection disconnects.
+	localListeners safeListeners
 	// UUID is the unique connection identifier.
 	UUID string
 	// Locals wraps Fiber Locals.
@@ -293,27 +302,36 @@ func (p *safePool) delete(key string) {
 
 type safeListeners struct {
 	sync.RWMutex
-	list map[string][]eventCallback
+	list map[string][]EventCallback
 }
 
-func (l *safeListeners) set(event string, callback eventCallback) {
+func (l *safeListeners) set(event string, callback EventCallback) {
 	l.Lock()
+	if l.list == nil {
+		l.list = make(map[string][]EventCallback)
+	}
 	l.list[event] = append(l.list[event], callback)
 	l.Unlock()
 }
 
-func (l *safeListeners) get(event string) []eventCallback {
+func (l *safeListeners) get(event string) []EventCallback {
 	l.RLock()
 	defer l.RUnlock()
 	if _, ok := l.list[event]; !ok {
-		return make([]eventCallback, 0)
+		return make([]EventCallback, 0)
 	}
 
-	return append([]eventCallback(nil), l.list[event]...)
+	return append([]EventCallback(nil), l.list[event]...)
+}
+
+func (l *safeListeners) remove(event string) {
+	l.Lock()
+	delete(l.list, event)
+	l.Unlock()
 }
 
 var listeners = safeListeners{
-	list: make(map[string][]eventCallback),
+	list: make(map[string][]EventCallback),
 }
 
 // New returns a Fiber handler that upgrades the request to WebSocket and wraps
@@ -441,10 +459,9 @@ func (kws *Websocket) GetStringAttribute(key string) string {
 // EmitToList, errors are not silently ignored.
 func (kws *Websocket) EmitToList(uuids []string, message []byte, mType ...int) {
 	for _, wsUUID := range uuids {
-		err := kws.EmitTo(wsUUID, message, mType...)
-		if err != nil {
-			kws.fireEvent(EventError, message, err)
-		}
+		// EmitTo already fires EventError on failure, so it is not fired again
+		// here to avoid a duplicate event per failed UUID.
+		_ = kws.EmitTo(wsUUID, message, mType...)
 	}
 }
 
@@ -491,17 +508,17 @@ func EmitTo(uuid string, message []byte, mType ...int) error {
 	return nil
 }
 
-// Broadcast emits to all active connections except itself when except is true.
+// Broadcast emits to all active connections, skipping the originating
+// connection (kws) when except is true. Each failed target fires EventError on
+// kws; the package-level Broadcast does not.
 func (kws *Websocket) Broadcast(message []byte, except bool, mType ...int) {
 	selfUUID := kws.GetUUID()
 	for wsUUID := range pool.all() {
 		if except && selfUUID == wsUUID {
 			continue
 		}
-		err := kws.EmitTo(wsUUID, message, mType...)
-		if err != nil {
-			kws.fireEvent(EventError, message, err)
-		}
+		// EmitTo already fires EventError on failure.
+		_ = kws.EmitTo(wsUUID, message, mType...)
 	}
 }
 
@@ -510,6 +527,21 @@ func Broadcast(message []byte, mType ...int) {
 	for _, kws := range pool.all() {
 		kws.Emit(message, mType...)
 	}
+}
+
+// On registers a listener for the event on this connection only. Unlike the
+// package-level On, which is process-global, these listeners fire only for
+// events on this connection and are discarded when it disconnects. Both
+// per-connection and global listeners fire for a given event.
+func (kws *Websocket) On(event string, callback EventCallback) {
+	kws.localListeners.set(event, callback)
+}
+
+// Off removes all listeners registered for the event on this connection via the
+// On method. It does not affect process-global listeners registered with the
+// package-level On.
+func (kws *Websocket) Off(event string) {
+	kws.localListeners.remove(event)
 }
 
 // Fire fires a custom event on the current connection.
@@ -653,7 +685,13 @@ func (kws *Websocket) send(ctx context.Context) {
 					case <-kws.done:
 						return
 					}
+					continue
 				}
+				// Retries exhausted while the connection is not ready: drop the
+				// message and fire EventError so the caller is not left
+				// believing it was delivered. The dequeue above freed a slot,
+				// so a single Emit from the handler will not block.
+				kws.fireEvent(EventError, msg.data, ErrorInvalidConnection)
 				continue
 			}
 
@@ -831,7 +869,9 @@ func fireGlobalEvent(event string, data []byte, err error) {
 }
 
 func (kws *Websocket) fireEvent(event string, data []byte, err error) {
-	callbacks := listeners.get(event)
+	// listeners.get returns a fresh slice, so appending the per-connection
+	// listeners to it does not mutate the global registry.
+	callbacks := append(listeners.get(event), kws.localListeners.get(event)...)
 	if len(callbacks) == 0 {
 		return
 	}
@@ -867,7 +907,7 @@ func (kws *Websocket) fireEvent(event string, data []byte, err error) {
 
 // invokeCallback runs a single listener callback with panic recovery so a
 // faulty user listener cannot tear down the read or send goroutine.
-func (kws *Websocket) invokeCallback(event string, cb eventCallback, p *EventPayload) {
+func (kws *Websocket) invokeCallback(event string, cb EventCallback, p *EventPayload) {
 	defer func() {
 		if r := recover(); r != nil {
 			if kws.settings.recover != nil {
@@ -878,11 +918,22 @@ func (kws *Websocket) invokeCallback(event string, cb eventCallback, p *EventPay
 	cb(p)
 }
 
-type eventCallback func(payload *EventPayload)
+// EventCallback is the listener signature invoked when an event fires.
+type EventCallback func(payload *EventPayload)
 
-// On adds a listener callback for an event.
-func On(event string, callback eventCallback) {
+// On registers a process-global listener for an event. The callback fires for
+// that event on every connection created by New / NewWithConfig, regardless of
+// route or Config, and stays registered until removed with Off. For listeners
+// scoped to a single connection use the (*Websocket).On method instead.
+func On(event string, callback EventCallback) {
 	listeners.set(event, callback)
+}
+
+// Off removes all process-global listeners registered for the event via On. It
+// is the counterpart to On and does not affect per-connection listeners
+// registered through (*Websocket).On.
+func Off(event string) {
+	listeners.remove(event)
 }
 
 var draining atomic.Bool

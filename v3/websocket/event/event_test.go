@@ -63,7 +63,7 @@ func resetState() {
 	pool.conn = make(map[string]ws)
 	pool.Unlock()
 	listeners.Lock()
-	listeners.list = make(map[string][]eventCallback)
+	listeners.list = make(map[string][]EventCallback)
 	listeners.Unlock()
 	draining.Store(false)
 }
@@ -716,6 +716,108 @@ func TestEventPayloadDataIsIndependentOfReadBuffer(t *testing.T) {
 	buf[0] = 'x'
 
 	require.Equal(t, "first", string(captured))
+}
+
+func TestOffRemovesGlobalListener(t *testing.T) {
+	resetState()
+
+	var calls int32
+	On(EventMessage, func(*EventPayload) { atomic.AddInt32(&calls, 1) })
+
+	kws := createWS()
+	kws.fireEvent(EventMessage, nil, nil)
+	require.Equal(t, int32(1), atomic.LoadInt32(&calls))
+
+	Off(EventMessage)
+	kws.fireEvent(EventMessage, nil, nil)
+	require.Equal(t, int32(1), atomic.LoadInt32(&calls))
+}
+
+func TestConnectionScopedListeners(t *testing.T) {
+	resetState()
+
+	var calls int32
+	kws1 := createWS()
+	kws2 := createWS()
+	kws1.On(EventMessage, func(*EventPayload) { atomic.AddInt32(&calls, 1) })
+
+	// A per-connection listener does not fire for other connections.
+	kws2.fireEvent(EventMessage, nil, nil)
+	require.Equal(t, int32(0), atomic.LoadInt32(&calls))
+
+	// It fires for its own connection.
+	kws1.fireEvent(EventMessage, nil, nil)
+	require.Equal(t, int32(1), atomic.LoadInt32(&calls))
+
+	// Off removes the per-connection listener.
+	kws1.Off(EventMessage)
+	kws1.fireEvent(EventMessage, nil, nil)
+	require.Equal(t, int32(1), atomic.LoadInt32(&calls))
+}
+
+func TestGlobalAndScopedListenersBothFire(t *testing.T) {
+	resetState()
+
+	var global, local int32
+	On(EventMessage, func(*EventPayload) { atomic.AddInt32(&global, 1) })
+
+	kws := createWS()
+	kws.On(EventMessage, func(*EventPayload) { atomic.AddInt32(&local, 1) })
+	kws.fireEvent(EventMessage, nil, nil)
+
+	require.Equal(t, int32(1), atomic.LoadInt32(&global))
+	require.Equal(t, int32(1), atomic.LoadInt32(&local))
+}
+
+func TestSendDropFiresEventErrorAfterRetries(t *testing.T) {
+	resetState()
+
+	var errs int32
+	On(EventError, func(p *EventPayload) {
+		if errors.Is(p.Error, ErrorInvalidConnection) {
+			atomic.AddInt32(&errs, 1)
+		}
+	})
+
+	// createWS leaves Conn nil, so hasConn() is false and zero settings give
+	// maxSendRetry 0: the message is requeued once and then dropped.
+	kws := createWS()
+	kws.queue <- message{mType: TextMessage, data: []byte("x")}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go kws.send(ctx)
+
+	require.Eventually(t, func() bool {
+		return atomic.LoadInt32(&errs) == 1
+	}, time.Second, time.Millisecond)
+}
+
+func TestMethodEmitToFiresEventError(t *testing.T) {
+	resetState()
+
+	var errs int32
+	On(EventError, func(p *EventPayload) {
+		if errors.Is(p.Error, ErrorInvalidConnection) {
+			atomic.AddInt32(&errs, 1)
+		}
+	})
+
+	kws := createWS()
+	err := kws.EmitTo("does-not-exist", []byte("x"))
+	require.ErrorIs(t, err, ErrorInvalidConnection)
+	require.Equal(t, int32(1), atomic.LoadInt32(&errs))
+}
+
+func TestMethodEmitToListFiresEventError(t *testing.T) {
+	resetState()
+
+	var errs int32
+	On(EventError, func(*EventPayload) { atomic.AddInt32(&errs, 1) })
+
+	kws := createWS()
+	kws.EmitToList([]string{"missing-1", "missing-2"}, []byte("x"))
+	require.Equal(t, int32(2), atomic.LoadInt32(&errs))
 }
 
 var panicCounter = new(int32)
