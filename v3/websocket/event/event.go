@@ -376,13 +376,15 @@ func (kws *Websocket) SetUUID(uuid string) error {
 	if prevUUID == uuid {
 		return nil
 	}
-	kws.UUID = uuid
 
+	// Validate before mutating so a duplicate leaves kws untouched and no
+	// rollback is needed. On conflict kws keeps prevUUID and stays in the
+	// pool exactly as before.
 	if existing, ok := pool.conn[uuid]; ok && existing != kws {
-		kws.UUID = prevUUID
 		return ErrorUUIDDuplication
 	}
 
+	kws.UUID = uuid
 	if prevUUID != "" {
 		delete(pool.conn, prevUUID)
 	}
@@ -434,7 +436,9 @@ func (kws *Websocket) GetStringAttribute(key string) string {
 	return ""
 }
 
-// EmitToList emits a message to a list of connection UUIDs.
+// EmitToList emits a message to a list of connection UUIDs. Each failed UUID
+// fires EventError on the originating connection (kws); unlike the package-level
+// EmitToList, errors are not silently ignored.
 func (kws *Websocket) EmitToList(uuids []string, message []byte, mType ...int) {
 	for _, wsUUID := range uuids {
 		err := kws.EmitTo(wsUUID, message, mType...)
@@ -444,14 +448,18 @@ func (kws *Websocket) EmitToList(uuids []string, message []byte, mType ...int) {
 	}
 }
 
-// EmitToList emits a message to a list of connection UUIDs and ignores errors.
+// EmitToList emits a message to a list of connection UUIDs. Per-UUID errors are
+// silently ignored and, unlike the (*Websocket).EmitToList method form, no
+// EventError is fired.
 func EmitToList(uuids []string, message []byte, mType ...int) {
 	for _, wsUUID := range uuids {
 		_ = EmitTo(wsUUID, message, mType...)
 	}
 }
 
-// EmitTo emits a message to a connection UUID.
+// EmitTo emits a message to a connection UUID. On an invalid or dead target it
+// fires EventError on the originating connection (kws) and returns the error;
+// the package-level EmitTo does not fire EventError.
 func (kws *Websocket) EmitTo(uuid string, message []byte, mType ...int) error {
 	conn, err := pool.get(uuid)
 	if err != nil {
@@ -467,7 +475,9 @@ func (kws *Websocket) EmitTo(uuid string, message []byte, mType ...int) error {
 	return nil
 }
 
-// EmitTo emits a message to a connection UUID.
+// EmitTo emits a message to a connection UUID. It returns the error to the
+// caller and, unlike the (*Websocket).EmitTo method form, does not fire
+// EventError.
 func EmitTo(uuid string, message []byte, mType ...int) error {
 	conn, err := pool.get(uuid)
 	if err != nil {
@@ -483,8 +493,9 @@ func EmitTo(uuid string, message []byte, mType ...int) error {
 
 // Broadcast emits to all active connections except itself when except is true.
 func (kws *Websocket) Broadcast(message []byte, except bool, mType ...int) {
+	selfUUID := kws.GetUUID()
 	for wsUUID := range pool.all() {
-		if except && kws.UUID == wsUUID {
+		if except && selfUUID == wsUUID {
 			continue
 		}
 		err := kws.EmitTo(wsUUID, message, mType...)
@@ -773,7 +784,7 @@ func (kws *Websocket) disconnected(err error) {
 		kws.doneOnce.Do(func() {
 			close(kws.done)
 		})
-		pool.delete(kws.UUID)
+		pool.delete(kws.GetUUID())
 	})
 
 	if !disconnected {
@@ -943,6 +954,9 @@ func CloseAll(ctx context.Context, code int, reason string) error {
 			if !ok {
 				continue
 			}
+			// Mark disconnected (clears isAlive, removes from pool) before the
+			// force close so later emits cannot target a closed connection.
+			kws.disconnected(ctx.Err())
 			kws.closeConn()
 		}
 		return ctx.Err()

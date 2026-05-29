@@ -363,11 +363,22 @@ func TestWebsocketCloseDoesNotBlockOnFullQueue(t *testing.T) {
 
 	kws := createWS()
 	pool.set(kws)
-	kws.queue <- message{mType: TextMessage, data: []byte("queued")}
 
+	// Fill the send queue to capacity so any further write would block on the
+	// queue channel if it were not guarded by the done channel.
+	for i := 0; i < cap(kws.queue); i++ {
+		kws.queue <- message{mType: TextMessage, data: []byte("queued")}
+	}
+
+	kws.Close()
+	require.False(t, kws.IsAlive())
+
+	// write() is the path that genuinely interacts with the queue. After Close
+	// the done channel is closed, so write must return immediately via its
+	// <-kws.done case instead of blocking on the full queue.
 	done := make(chan struct{})
 	go func() {
-		kws.Close()
+		kws.write(TextMessage, []byte("after close"))
 		close(done)
 	}()
 
@@ -379,7 +390,6 @@ func TestWebsocketCloseDoesNotBlockOnFullQueue(t *testing.T) {
 			return false
 		}
 	}, time.Second, time.Millisecond)
-	require.False(t, kws.IsAlive())
 }
 
 func TestDrainFlag(t *testing.T) {
