@@ -211,6 +211,59 @@ func Test_Logger_Next(t *testing.T) {
 	}
 }
 
+func Test_Logger_Skip(t *testing.T) {
+	t.Parallel()
+
+	type skipKey struct{}
+	skipLog := func(c fiber.Ctx) error {
+		c.Locals(skipKey{}, skipKey{})
+		return c.Next()
+	}
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	app := fiber.New()
+	app.Use(New(Config{
+		Logger: &logger,
+		Skip: func(c fiber.Ctx) bool {
+			return c.Locals(skipKey{}) != nil
+		},
+		Fields: []string{
+			FieldResBody,
+		},
+	}))
+	app.Get("/", skipLog, func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusNotFound)
+	})
+
+	body := []byte("HELLO")
+	app.Get("/log", func(c fiber.Ctx) error {
+		return c.Send(body)
+	})
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/", nil))
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, 0, len(buf.Bytes()))
+
+	resp, err = app.Test(httptest.NewRequest("GET", "/log", nil))
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+
+	expected := map[string]any{
+		FieldResBody: string(body),
+	}
+
+	var logs map[string]any
+	err = json.Unmarshal(buf.Bytes(), &logs)
+	assert.Equal(t, nil, err)
+
+	for key, value := range expected {
+		assert.Equal(t, value, logs[key])
+	}
+}
+
 func Test_Logger_All(t *testing.T) {
 	t.Parallel()
 

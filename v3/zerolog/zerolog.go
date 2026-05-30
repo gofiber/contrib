@@ -14,6 +14,11 @@ func New(config ...Config) fiber.Handler {
 
 	// Return new handler
 	return func(c fiber.Ctx) error {
+		// Don't execute middleware if Next returns true
+		if cfg.Next != nil && cfg.Next(c) {
+			return c.Next()
+		}
+
 		start := time.Now()
 
 		// Handle request, store err for logging
@@ -25,8 +30,8 @@ func New(config ...Config) fiber.Handler {
 			}
 		}
 
-		// Skip logging if Next returns true (request already processed)
-		if cfg.Next != nil && cfg.Next(c) {
+		// New: Skip check AFTER c.Next() but BEFORE log assembly
+		if cfg.Skip != nil && cfg.Skip(c) {
 			return nil
 		}
 
