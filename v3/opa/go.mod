@@ -3,9 +3,9 @@ module github.com/gofiber/contrib/v3/opa
 go 1.25.0
 
 require (
-	github.com/gofiber/fiber/v3 v3.2.0
-	github.com/gofiber/utils/v2 v2.0.6
-	github.com/open-policy-agent/opa v1.16.2
+	github.com/gofiber/fiber/v3 v3.3.0
+	github.com/gofiber/utils/v2 v2.1.0
+	github.com/open-policy-agent/opa v1.17.0
 	github.com/stretchr/testify v1.11.1
 )
 
@@ -27,7 +27,7 @@ require (
 	github.com/lestrrat-go/httprc/v3 v3.0.5 // indirect
 	github.com/lestrrat-go/jwx/v3 v3.1.1 // indirect
 	github.com/lestrrat-go/option/v2 v2.0.0 // indirect
-	github.com/mattn/go-colorable v0.1.14 // indirect
+	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
@@ -45,8 +45,8 @@ require (
 	github.com/yashtewari/glob-intersection v0.2.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/crypto v0.51.0 // indirect
-	golang.org/x/net v0.54.0 // indirect
+	golang.org/x/crypto v0.52.0 // indirect
+	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
