@@ -8,7 +8,7 @@ require (
 )
 
 require (
-	github.com/agentable/go-intl v0.2.5 // indirect
+	github.com/agentable/go-intl v0.2.6 // indirect
 	github.com/andybalholm/brotli v1.2.1 // indirect
 	github.com/cockroachdb/apd/v3 v3.2.3 // indirect
 	github.com/corazawaf/libinjection-go v0.3.2 // indirect
