@@ -30,6 +30,11 @@ func New(config ...Config) fiber.Handler {
 			}
 		}
 
+		// New: Skip check AFTER c.Next() but BEFORE log assembly
+		if cfg.Skip != nil && cfg.Skip(c) {
+			return nil
+		}
+
 		latency := time.Since(start)
 
 		status := c.Response().StatusCode()
