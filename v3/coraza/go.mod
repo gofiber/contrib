@@ -17,7 +17,7 @@ require (
 	github.com/gofiber/schema v1.7.2 // indirect
 	github.com/gofiber/utils/v2 v2.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/kaptinlin/go-i18n v0.4.9 // indirect
+	github.com/kaptinlin/go-i18n v0.4.10 // indirect
 	github.com/kaptinlin/jsonpointer v0.4.26 // indirect
 	github.com/kaptinlin/jsonschema v0.7.17 // indirect
 	github.com/kaptinlin/messageformat-go v0.6.5 // indirect
