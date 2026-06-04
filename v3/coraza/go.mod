@@ -1,6 +1,6 @@
 module github.com/gofiber/contrib/v3/coraza
 
-go 1.26.3
+go 1.26.4
 
 require (
 	github.com/corazawaf/coraza/v3 v3.7.0
@@ -12,12 +12,12 @@ require (
 	github.com/andybalholm/brotli v1.2.1 // indirect
 	github.com/cockroachdb/apd/v3 v3.2.3 // indirect
 	github.com/corazawaf/libinjection-go v0.3.2 // indirect
-	github.com/go-json-experiment/json v0.0.0-20260520185125-572e7c383686 // indirect
+	github.com/go-json-experiment/json v0.0.0-20260601182631-00ed12fed2a6 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/gofiber/schema v1.7.2 // indirect
 	github.com/gofiber/utils/v2 v2.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/kaptinlin/go-i18n v0.4.9 // indirect
+	github.com/kaptinlin/go-i18n v0.4.10 // indirect
 	github.com/kaptinlin/jsonpointer v0.4.26 // indirect
 	github.com/kaptinlin/jsonschema v0.7.15 // indirect
 	github.com/kaptinlin/messageformat-go v0.6.5 // indirect
