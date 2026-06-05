@@ -1,0 +1,26 @@
+name: Sync Sponsors
+
+# Thin wrapper around the org-level reusable workflow.
+# The reusable workflow expects a SPONSORS_TOKEN secret with read:user + read:org.
+# contrib hosts two top-level READMEs (root + v3 canonical), kept in sync via matrix.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        file: [README.md, v3/README.md]
+    uses: gofiber/.github/.github/workflows/sync-sponsors.yml@main
+    with:
+      file: ${{ matrix.file }}
+    secrets:
+      sponsors-token: ${{ secrets.SPONSORS_TOKEN }}

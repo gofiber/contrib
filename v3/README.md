@@ -43,3 +43,9 @@ Repository for third party middlewares and service implementations, with depende
 ## 🥡 Service Implementations
 
 * [testcontainers](./testcontainers/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Test+Testcontainers%22"> <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test-testcontainers.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" alt="testcontainers workflow status" /> </a>
+
+## ☕ Supporters
+
+Fiber is an open-source project that runs on donations to pay the bills, e.g., our domain name, hosting, and serverless infrastructure. If you want to support Fiber, please become a [GitHub Sponsor](https://github.com/sponsors/gofiber).
+
+<!-- sponsors --><!-- sponsors -->
