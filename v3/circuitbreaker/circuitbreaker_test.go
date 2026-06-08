@@ -716,6 +716,19 @@ func TestInterval(t *testing.T) {
 		require.Equal(t, int64(1), atomic.LoadInt64(&cb.failureCount))
 	})
 
+	t.Run("Failures spaced multiple intervals apart do not accumulate", func(t *testing.T) {
+		cb, mockClock := newIntervalCB(t, defaultInterval)
+
+		cb.ReportFailure()
+		require.Equal(t, int64(1), atomic.LoadInt64(&cb.failureCount))
+
+		mockClock.Add(3 * defaultInterval)
+
+		// Each failure after a full interval elapses should start a fresh window
+		cb.ReportFailure()
+		require.Equal(t, int64(1), atomic.LoadInt64(&cb.failureCount))
+	})
+
 	t.Run("Interval does not reset Failure Count prematurely", func(t *testing.T) {
 		cb, mockClock := newIntervalCB(t, defaultInterval)
 
@@ -796,8 +809,8 @@ func TestHealthHandler(t *testing.T) {
 
 func TestDefaultOnCloseDoesNotAdvanceChainTwice(t *testing.T) {
 	cb := New(Config{
-		FailureThreshold:  1,
-		SuccessThreshold:  1,
+		FailureThreshold:      1,
+		SuccessThreshold:      1,
 		HalfOpenMaxConcurrent: 1,
 	})
 	defer cb.Stop()

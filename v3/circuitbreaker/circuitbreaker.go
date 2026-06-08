@@ -270,14 +270,15 @@ func (cb *CircuitBreaker) transitionToClosed() {
 	defer cb.mutex.Unlock()
 
 	if cb.state == StateHalfOpen {
+		now := cb.now()
 		cb.state = StateClosed
-		cb.lastStateChange = cb.now()
+		cb.lastStateChange = now
 
 		// Reset counters
 		atomic.StoreInt64(&cb.failureCount, 0)
 		atomic.StoreInt64(&cb.successCount, 0)
 		if cb.interval > 0 {
-			cb.expiry = cb.now().Add(cb.interval)
+			cb.expiry = now.Add(cb.interval)
 		}
 	}
 }
@@ -288,9 +289,10 @@ func (cb *CircuitBreaker) resetFromExpiry() {
 	}
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
-	if cb.expiry.Before(cb.now()) {
+	now := cb.now()
+	if cb.expiry.Before(now) {
 		atomic.StoreInt64(&cb.failureCount, 0)
-		cb.expiry = cb.expiry.Add(cb.interval)
+		cb.expiry = now.Add(cb.interval)
 	}
 }
 
