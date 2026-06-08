@@ -29,6 +29,9 @@ type Config struct {
 	SuccessThreshold int
 	// Maximum concurrent requests allowed in half-open state
 	HalfOpenMaxConcurrent int
+	// Interval for resetting failure counts in closed state.
+	// Zero means failures accumulate until the circuit opens.
+	Interval time.Duration
 	// Custom failure detector function (return true if response should count as failure)
 	IsFailure func(c *fiber.Ctx, err error) bool
 	// Callbacks for state transitions
@@ -43,6 +46,7 @@ var DefaultConfig = Config{
 	Timeout:               5 * time.Second,
 	SuccessThreshold:      1,
 	HalfOpenMaxConcurrent: 1,
+	Interval:              0,
 	IsFailure: func(c *fiber.Ctx, err error) bool {
 		return err != nil || c.Response().StatusCode() >= http.StatusInternalServerError
 	},
@@ -79,6 +83,8 @@ type CircuitBreaker struct {
 	now               func() time.Time   // Function for getting current time (useful for testing)
 	halfOpenSemaphore chan struct{}      // Controls limited requests in half-open state
 	lastStateChange   time.Time          // Time of last state change
+	interval          time.Duration      // Interval for resetting failure counts
+	expiry            time.Time          // Time when the failure count will be reset
 }
 
 // New initializes a circuit breaker with the given configuration
@@ -112,6 +118,11 @@ func New(config Config) *CircuitBreaker {
 	ctx, cancel := context.WithCancel(context.Background())
 	now := time.Now()
 
+	var expiry time.Time
+	if config.Interval > 0 {
+		expiry = now.Add(config.Interval)
+	}
+
 	return &CircuitBreaker{
 		failureThreshold:  config.FailureThreshold,
 		timeout:           config.Timeout,
@@ -125,6 +136,8 @@ func New(config Config) *CircuitBreaker {
 		lastStateChange:   now,
 		totalRequests:     0,
 		rejectedRequests:  0,
+		interval:          config.Interval,
+		expiry:            expiry,
 	}
 }
 
@@ -161,8 +174,12 @@ func (cb *CircuitBreaker) Reset() {
 	atomic.StoreInt64(&cb.successCount, 0)
 
 	// Reset state
+	now := cb.now()
 	cb.state = StateClosed
-	cb.lastStateChange = cb.now()
+	cb.lastStateChange = now
+	if cb.interval > 0 {
+		cb.expiry = now.Add(cb.interval)
+	}
 
 	// Cancel any pending state transitions
 	if cb.openTimer != nil {
@@ -180,11 +197,15 @@ func (cb *CircuitBreaker) ForceClose() {
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
 
+	now := cb.now()
 	cb.state = StateClosed
-	cb.lastStateChange = cb.now()
+	cb.lastStateChange = now
 	atomic.StoreInt64(&cb.failureCount, 0)
 	atomic.StoreInt64(&cb.successCount, 0)
 
+	if cb.interval > 0 {
+		cb.expiry = now.Add(cb.interval)
+	}
 	if cb.openTimer != nil {
 		cb.openTimer.Stop()
 	}
@@ -255,6 +276,21 @@ func (cb *CircuitBreaker) transitionToClosed() {
 		// Reset counters
 		atomic.StoreInt64(&cb.failureCount, 0)
 		atomic.StoreInt64(&cb.successCount, 0)
+		if cb.interval > 0 {
+			cb.expiry = cb.now().Add(cb.interval)
+		}
+	}
+}
+
+func (cb *CircuitBreaker) resetFromExpiry() {
+	if cb.interval <= 0 {
+		return
+	}
+	cb.mutex.Lock()
+	defer cb.mutex.Unlock()
+	if cb.expiry.Before(cb.now()) {
+		atomic.StoreInt64(&cb.failureCount, 0)
+		cb.expiry = cb.expiry.Add(cb.interval)
 	}
 }
 
@@ -316,6 +352,7 @@ func (cb *CircuitBreaker) ReportFailure() {
 		// In half-open, a single failure trips the circuit
 		cb.transitionToOpen()
 	case StateClosed:
+		cb.resetFromExpiry()
 		newFailureCount := atomic.AddInt64(&cb.failureCount, 1)
 		if int(newFailureCount) >= cb.failureThreshold {
 			cb.transitionToOpen()
@@ -336,7 +373,10 @@ func (cb *CircuitBreaker) Metrics() fiber.Map {
 
 // GetStateStats returns detailed statistics about the circuit breaker
 func (cb *CircuitBreaker) GetStateStats() fiber.Map {
-	state := cb.GetState()
+	cb.mutex.RLock()
+	defer cb.mutex.RUnlock()
+	state := cb.state
+	expiry := cb.expiry
 
 	return fiber.Map{
 		"state":            state,
@@ -348,6 +388,7 @@ func (cb *CircuitBreaker) GetStateStats() fiber.Map {
 		"openDuration":     cb.timeout,
 		"failureThreshold": cb.failureThreshold,
 		"successThreshold": cb.successThreshold,
+		"expiry":           expiry,
 	}
 }
 

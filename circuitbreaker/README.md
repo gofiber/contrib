@@ -53,6 +53,7 @@ circuitbreaker.New(config ...circuitbreaker.Config) *circuitbreaker.Middleware
 | Timeout | `time.Duration` | Timeout for the circuit breaker | `10 * time.Second` |
 | SuccessThreshold | `int` | Number of successful requests required to close the circuit | `5` |
 | HalfOpenMaxConcurrent | `int` | Max concurrent requests in half-open state | `1` |
+| Interval | `time.Duration` | Period after which failure counts reset in closed state. Zero means failures accumulate until the circuit opens. | `0` |
 | IsFailure | `func(error) bool` | Custom function to determine if an error is a failure | `Status >= 500` |
 | OnOpen | `func(*fiber.Ctx)` | Callback function when the circuit is opened | `503 response` |
 | OnClose | `func(*fiber.Ctx)` | Callback function when the circuit is closed | `Continue request` |
@@ -218,7 +219,23 @@ cb := circuitbreaker.New(circuitbreaker.Config{
 
 ✅ Logs when the circuit opens & increments Prometheus metrics.
 
-### 7. Advanced: Multiple Circuit Breakers for Different Services
+### 7. Circuit Breaker with Failure Count Reset Interval
+
+Use `Interval` to automatically reset the failure count after a fixed window. Without it, failures accumulate indefinitely in the closed state until the threshold is reached.
+
+```go
+cb := circuitbreaker.New(circuitbreaker.Config{
+	FailureThreshold: 5,
+	Timeout:          10 * time.Second,
+	Interval:         30 * time.Second, // Reset failure count every 30 seconds
+})
+
+app.Use(circuitbreaker.Middleware(cb))
+```
+
+✅ If 4 failures occur within a 30-second window and then recovers, the count resets at the next window boundary. The circuit only opens if 5 failures happen within the same window.
+
+### 8. Advanced: Multiple Circuit Breakers for Different Services
 
 Use different Circuit Breakers for different services.
 
