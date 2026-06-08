@@ -49,6 +49,14 @@ type Config struct {
 	// Optional. Default: nil
 	Next func(c fiber.Ctx) bool
 
+	// Skip defines a function that is called after the request has been processed
+	// but before the log entry is assembled. If it returns true, logging is skipped
+	// entirely. This allows access to the full request context set by downstream
+	// middlewares.
+	//
+	// Optional. Default: nil
+	Skip func(c fiber.Ctx) bool
+
 	// SkipField defines a function that returns true if a specific field should be skipped from logging.
 	//
 	// Optional. Default: nil

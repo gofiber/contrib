@@ -342,12 +342,12 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 	// Locals and Cookies are usually empty for socket.io routes; lazy-
 	// init keeps the OPEN allocation budget low for the common case.
 	var cookiesSnap map[string]string
-	c.RequestCtx().Request.Header.VisitAllCookie(func(k, v []byte) {
+	for k, v := range c.RequestCtx().Request.Header.Cookies() {
 		if cookiesSnap == nil {
 			cookiesSnap = make(map[string]string)
 		}
 		cookiesSnap[string(k)] = string(v)
-	})
+	}
 	var localsSnap map[string]interface{}
 	c.RequestCtx().VisitUserValues(func(k []byte, v interface{}) {
 		if localsSnap == nil {

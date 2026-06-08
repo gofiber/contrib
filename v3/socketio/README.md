@@ -10,6 +10,8 @@ id: socketio
 
 WebSocket wrapper for [Fiber](https://github.com/gofiber/fiber) that implements the [Engine.IO v4](https://github.com/socketio/engine.io-protocol) / [Socket.IO v5](https://github.com/socketio/socket.io-protocol) wire protocol, making it fully compatible with the official [`socket.io-client`](https://socket.io/docs/v4/client-api/) library.
 
+For applications that used older `socketio` releases as a plain WebSocket event bus, migrate to `github.com/gofiber/contrib/v3/websocket/event`. A deprecated compatibility shim is available at `github.com/gofiber/contrib/v3/socketio/legacy`.
+
 **Compatible with Fiber v3.**
 
 ## Features
