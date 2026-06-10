@@ -227,7 +227,7 @@ cb := circuitbreaker.New(circuitbreaker.Config{
 
 ### 7. Circuit Breaker with Failure Count Reset Interval
 
-Use `Interval` to reset the failure count after a period of inactivity. Without it, failures accumulate indefinitely in the closed state until the threshold is reached. With it, a burst of errors followed by a quiet period won't carry over into the next window.
+Use `Interval` to reset the failure count once the interval has elapsed in the closed state. The reset is applied lazily: the next failure reported after the interval has elapsed starts a fresh count instead of carrying the old one over. Without `Interval`, failures accumulate indefinitely in the closed state until the threshold is reached.
 
 ```go
 cb := circuitbreaker.New(circuitbreaker.Config{
@@ -239,7 +239,7 @@ cb := circuitbreaker.New(circuitbreaker.Config{
 app.Use(circuitbreaker.Middleware(cb))
 ```
 
-✅ If 4 failures occur and then traffic is healthy for 30+ seconds, the count resets on the next failure. The circuit only opens if 5 failures happen within the same 30-second window.
+✅ If 4 failures occur and the next failure is reported more than 30 seconds after the window started, the count restarts at 1 instead of reaching the threshold. The circuit only opens when 5 failures accumulate within one 30-second window.
 
 ### 8. Advanced: Multiple Circuit Breakers for Different Services
 

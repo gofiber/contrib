@@ -592,7 +592,8 @@ func TestCircuitBreakerReset(t *testing.T) {
 		cb.Reset()
 		require.True(t, cb.expiry.Equal(mockClock.Now().Add(cb.config.Interval)))
 
-		// Advance time past original expiry
+		// Advance the mock clock by 6s (still before the original 10s expiry)
+		// to verify that Reset recalculates expiry from the current time.
 		mockClock.Add(6 * time.Second)
 
 		cb.Reset()
@@ -690,9 +691,14 @@ func newIntervalCB(t *testing.T, interval time.Duration) (*CircuitBreaker, *mock
 func TestInterval(t *testing.T) {
 	defaultInterval := 10 * time.Second
 	t.Run("Init Sets Expiry", func(t *testing.T) {
+		// New() derives the initial expiry from the real clock, so bound it
+		// between two real timestamps instead of asserting with a tolerance.
+		before := time.Now()
 		cb, _ := newIntervalCB(t, defaultInterval)
+		after := time.Now()
 		require.False(t, cb.expiry.IsZero())
-		require.WithinDuration(t, time.Now().Add(cb.config.Interval), cb.expiry, 100*time.Millisecond)
+		require.False(t, cb.expiry.Before(before.Add(defaultInterval)))
+		require.False(t, cb.expiry.After(after.Add(defaultInterval)))
 	})
 
 	t.Run("Init with 0 interval does not set expiry", func(t *testing.T) {

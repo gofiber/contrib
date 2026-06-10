@@ -290,7 +290,8 @@ func (cb *CircuitBreaker) resetFromExpiry() {
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
 	now := cb.now()
-	if cb.expiry.Before(now) {
+	// Reset when the window has elapsed (now >= expiry), including the boundary instant.
+	if !cb.expiry.After(now) {
 		atomic.StoreInt64(&cb.failureCount, 0)
 		cb.expiry = now.Add(cb.interval)
 	}
