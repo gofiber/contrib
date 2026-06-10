@@ -3,23 +3,32 @@ package coraza
 
 import (
 	"math"
-	"runtime"
 	"sync/atomic"
 	"time"
 )
 
 const metricsEWMAAlpha = 0.2
 
-const (
-	ewmaStateUninitialized uint32 = iota
-	ewmaStateSeeding
-	ewmaStateReady
-)
+// ewmaUninitializedBits is a quiet-NaN bit pattern used as the "no samples
+// yet" sentinel inside the atomic EWMA words. Real samples are always finite
+// (durations and 0/1 outcomes), so their bit patterns can never collide with
+// it, and keeping the sentinel in the same word as the value makes seeding,
+// updating, and resetting a single atomic operation.
+const ewmaUninitializedBits = 0x7ff8_0000_0000_0001
 
 // MetricsCollector records lightweight request metrics for a Coraza Engine.
+// Implementations must be safe for concurrent use.
 type MetricsCollector interface {
+	// ObserveRequest records one request handled by the middleware. duration
+	// covers the full downstream handler chain, not just WAF inspection, and
+	// can be negative on wall-clock adjustments. blocked reports whether the
+	// WAF interrupted the request.
 	ObserveRequest(duration time.Duration, blocked bool)
+	// GetMetrics returns a snapshot of the collected metrics.
 	GetMetrics() *MetricsSnapshot
+	// Reset clears the collected metrics. It does not need to be atomic with
+	// respect to concurrent ObserveRequest calls; snapshots taken around a
+	// reset are eventually consistent.
 	Reset()
 }
 
@@ -31,9 +40,14 @@ type MetricsSnapshot struct {
 	BlockedRequests uint64 `json:"blocked_requests"`
 	// BlockRate is the cumulative ratio of blocked requests to total requests.
 	BlockRate float64 `json:"block_rate"`
-	// RecentLatencyMs is the EWMA of recent middleware latency in milliseconds.
+	// RecentLatencyMs is the smoothed latency of recent requests in
+	// milliseconds, measured across the full downstream handler chain. The
+	// built-in collector uses a per-request EWMA, so the window is request
+	// based, not time based. It is 0 until the first request is observed.
 	RecentLatencyMs float64 `json:"recent_latency_ms"`
-	// RecentBlockRate is the EWMA of recent blocked-request outcomes.
+	// RecentBlockRate is the smoothed rate of blocked outcomes over recent
+	// requests, with the same request-based weighting as RecentLatencyMs.
+	// It is 0 until the first request is observed.
 	RecentBlockRate float64 `json:"recent_block_rate"`
 	// Timestamp is when the snapshot was generated.
 	Timestamp time.Time `json:"timestamp"`
@@ -77,15 +91,18 @@ type defaultMetricsCollector struct {
 	totalRequests   atomic.Uint64
 	blockedRequests atomic.Uint64
 
-	recentLatencyBits        atomic.Uint64
-	recentBlockRateBits      atomic.Uint64
-	recentLatencyInitialized atomic.Uint32
-	recentBlockInitialized   atomic.Uint32
+	recentLatencyBits   atomic.Uint64
+	recentBlockRateBits atomic.Uint64
 }
 
 // NewDefaultMetricsCollector creates the built-in in-memory metrics collector.
+// Its recent-trend metrics use a per-request EWMA with alpha 0.2, so roughly
+// the last 20 requests dominate the reported values.
 func NewDefaultMetricsCollector() MetricsCollector {
-	return &defaultMetricsCollector{}
+	m := &defaultMetricsCollector{}
+	m.recentLatencyBits.Store(ewmaUninitializedBits)
+	m.recentBlockRateBits.Store(ewmaUninitializedBits)
+	return m
 }
 
 func (m *defaultMetricsCollector) ObserveRequest(duration time.Duration, blocked bool) {
@@ -122,15 +139,13 @@ func (m *defaultMetricsCollector) GetMetrics() *MetricsSnapshot {
 func (m *defaultMetricsCollector) Reset() {
 	m.totalRequests.Store(0)
 	m.blockedRequests.Store(0)
-	m.recentLatencyBits.Store(0)
-	m.recentBlockRateBits.Store(0)
-	m.recentLatencyInitialized.Store(ewmaStateUninitialized)
-	m.recentBlockInitialized.Store(ewmaStateUninitialized)
+	m.recentLatencyBits.Store(ewmaUninitializedBits)
+	m.recentBlockRateBits.Store(ewmaUninitializedBits)
 }
 
 func (m *defaultMetricsCollector) updateRecentLatency(duration time.Duration) {
 	sample := float64(duration.Nanoseconds()) / 1e6
-	m.updateEWMA(sample, &m.recentLatencyBits, &m.recentLatencyInitialized)
+	updateEWMA(&m.recentLatencyBits, sample)
 }
 
 func (m *defaultMetricsCollector) updateRecentBlockRate(blocked bool) {
@@ -138,51 +153,42 @@ func (m *defaultMetricsCollector) updateRecentBlockRate(blocked bool) {
 	if blocked {
 		sample = 1.0
 	}
-	m.updateEWMA(sample, &m.recentBlockRateBits, &m.recentBlockInitialized)
+	updateEWMA(&m.recentBlockRateBits, sample)
 }
 
-func (m *defaultMetricsCollector) updateEWMA(sample float64, bits *atomic.Uint64, initialized *atomic.Uint32) {
+// updateEWMA folds sample into the EWMA word: the first finite sample seeds
+// the value, later ones are blended with metricsEWMAAlpha. Sentinel handling
+// and the update share one CAS, so a concurrent Reset either happens before
+// (this sample re-seeds) or after (the reset wins) - no half-applied states.
+func updateEWMA(bits *atomic.Uint64, sample float64) {
 	for {
-		switch initialized.Load() {
-		case ewmaStateReady:
-			for {
-				currentBits := bits.Load()
-				current := math.Float64frombits(currentBits)
-				next := current + metricsEWMAAlpha*(sample-current)
-				if bits.CompareAndSwap(currentBits, math.Float64bits(next)) {
-					return
-				}
-			}
-		case ewmaStateUninitialized:
-			if initialized.CompareAndSwap(ewmaStateUninitialized, ewmaStateSeeding) {
-				bits.Store(math.Float64bits(sample))
-				initialized.Store(ewmaStateReady)
-				return
-			}
-		case ewmaStateSeeding:
-			runtime.Gosched()
-		default:
-			bits.Store(math.Float64bits(sample))
-			initialized.Store(ewmaStateReady)
+		currentBits := bits.Load()
+		next := sample
+		if currentBits != ewmaUninitializedBits {
+			current := math.Float64frombits(currentBits)
+			next = current + metricsEWMAAlpha*(sample-current)
+		}
+		if bits.CompareAndSwap(currentBits, math.Float64bits(next)) {
 			return
 		}
 	}
 }
 
 func (m *defaultMetricsCollector) loadRecentLatencyMs() float64 {
-	if m.recentLatencyInitialized.Load() != ewmaStateReady {
-		return 0
-	}
-
-	return math.Float64frombits(m.recentLatencyBits.Load())
+	return loadEWMA(&m.recentLatencyBits)
 }
 
 func (m *defaultMetricsCollector) loadRecentBlockRate() float64 {
-	if m.recentBlockInitialized.Load() != ewmaStateReady {
+	return loadEWMA(&m.recentBlockRateBits)
+}
+
+func loadEWMA(bits *atomic.Uint64) float64 {
+	current := bits.Load()
+	if current == ewmaUninitializedBits {
 		return 0
 	}
 
-	return math.Float64frombits(m.recentBlockRateBits.Load())
+	return math.Float64frombits(current)
 }
 
 // MetricsSnapshot returns a copy of the Engine's current request metrics.

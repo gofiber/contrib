@@ -134,12 +134,8 @@ type Engine struct {
 }
 
 type runtimeState struct {
-	waf             coraza.WAF
-	wafWithOptions  experimental.WAFWithOptions
-	supportsOptions bool
-	metrics         MetricsCollector
-	blockMessage    string
-	inflight        sync.WaitGroup
+	waf      coraza.WAF
+	inflight sync.WaitGroup
 }
 
 type middlewareSnapshot struct {
@@ -186,7 +182,10 @@ func NewEngine(cfg Config) (*Engine, error) {
 // Init replaces the Engine's WAF instance using the provided configuration.
 //
 // On failure, the last working WAF instance is kept in place and the failure is
-// recorded for observability.
+// recorded for observability. On success, Init blocks until requests still
+// being inspected by the replaced WAF finish inspection, then closes it.
+// Inspection ends before downstream handlers run, so the wait is bounded by
+// WAF processing time, not by handler lifetimes.
 func (e *Engine) Init(cfg Config) error {
 	resolvedCfg := resolveConfig(cfg)
 	metrics := resolveMetricsCollector(resolvedCfg.MetricsCollector)
@@ -206,11 +205,8 @@ func (e *Engine) Init(cfg Config) error {
 	}
 
 	oldState := e.state
-	if oldState == nil || oldState.waf != e.waf {
-		oldState = newRuntimeState(e.waf, e.metrics, e.blockMessage)
-	}
 	blockMessage := resolveBlockMessage(resolvedCfg.BlockMessage)
-	newState := newRuntimeState(newWAF, metrics, blockMessage)
+	newState := newRuntimeState(newWAF)
 	e.waf = newWAF
 	e.initErr = nil
 	e.setWAFOptionsStateLocked(newWAF)
@@ -234,9 +230,6 @@ func (e *Engine) SetBlockMessage(msg string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.blockMessage = resolveBlockMessage(msg)
-	if e.state != nil {
-		e.state.blockMessage = e.blockMessage
-	}
 }
 
 // Metrics returns the Engine's metrics collector.
@@ -262,10 +255,23 @@ func (e *Engine) Middleware(config ...MiddlewareConfig) fiber.Handler {
 		state := e.middlewareSnapshot()
 		blocked := false
 
-		defer func() {
-			if state.runtime != nil {
-				state.runtime.inflight.Done()
+		// The in-flight registration must only cover actual WAF usage, which
+		// ends when inspectRequest returns (the transaction is closed there).
+		// Holding it across c.Next() would make Init/Reload drains wait on
+		// downstream handlers and self-deadlock when Reload is called from a
+		// handler running behind this middleware.
+		released := false
+		releaseInflight := func() {
+			if !released {
+				released = true
+				if state.runtime != nil {
+					state.runtime.inflight.Done()
+				}
 			}
+		}
+
+		defer func() {
+			releaseInflight()
 			if state.metrics != nil {
 				state.metrics.ObserveRequest(time.Since(startTime), blocked)
 			}
@@ -289,6 +295,7 @@ func (e *Engine) Middleware(config ...MiddlewareConfig) fiber.Handler {
 		}
 
 		it, mwErr := e.inspectRequest(c, state.waf, state.supportsOptions, state.wafWithOptions)
+		releaseInflight()
 		if mwErr != nil {
 			return e.handleError(c, mwCfg, *mwErr)
 		}
@@ -410,6 +417,11 @@ func (e *Engine) finishTransaction(c fiber.Ctx, tx types.Transaction, mwErr **Mi
 }
 
 // Reload rebuilds the current WAF instance using the active configuration.
+//
+// On success, Reload blocks until requests still being inspected by the
+// replaced WAF finish inspection, then closes it. Inspection ends before
+// downstream handlers run, so the wait is bounded by WAF processing time and
+// it is safe to call Reload from a handler running behind this middleware.
 func (e *Engine) Reload() error {
 	e.mu.RLock()
 	cfg := cloneConfig(e.activeCfg)
@@ -429,10 +441,7 @@ func (e *Engine) Reload() error {
 
 	e.mu.Lock()
 	oldState := e.state
-	if oldState == nil || oldState.waf != e.waf {
-		oldState = newRuntimeState(e.waf, e.metrics, e.blockMessage)
-	}
-	newState := newRuntimeState(newWAF, e.metrics, e.blockMessage)
+	newState := newRuntimeState(newWAF)
 	e.waf = newWAF
 	e.initErr = nil
 	e.setWAFOptionsStateLocked(newWAF)
@@ -488,9 +497,7 @@ func (e *Engine) middlewareSnapshot() middlewareSnapshot {
 			blockMessage:    e.blockMessage,
 		}
 	}
-	if state != nil {
-		state.inflight.Add(1)
-	}
+	state.inflight.Add(1)
 
 	return middlewareSnapshot{
 		runtime:         state,
@@ -528,23 +535,12 @@ func newEngine(collector MetricsCollector) *Engine {
 		blockMessage: defaultBlockMessage,
 		logLevel:     fiberlog.LevelInfo,
 		metrics:      metrics,
-		state:        newRuntimeState(nil, metrics, defaultBlockMessage),
+		state:        newRuntimeState(nil),
 	}
 }
 
-func newRuntimeState(waf coraza.WAF, metrics MetricsCollector, blockMessage string) *runtimeState {
-	state := &runtimeState{
-		waf:          waf,
-		metrics:      metrics,
-		blockMessage: blockMessage,
-	}
-
-	if wafWithOptions, ok := waf.(experimental.WAFWithOptions); ok {
-		state.wafWithOptions = wafWithOptions
-		state.supportsOptions = true
-	}
-
-	return state
+func newRuntimeState(waf coraza.WAF) *runtimeState {
+	return &runtimeState{waf: waf}
 }
 
 func isNilMetricsCollector(collector MetricsCollector) bool {

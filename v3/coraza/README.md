@@ -107,6 +107,10 @@ app.Use(engine.Middleware(coraza.MiddlewareConfig{
 For production deployments, avoid returning rule identifiers or detailed match data to clients.
 Prefer a generic error body and log the matched rule metadata server-side when needed.
 
+Note that the built-in block handler sets an `X-WAF-Blocked: true` response header and a
+message naming the Web Application Firewall. If you want to avoid WAF fingerprinting,
+provide a custom `BlockHandler` (or `BlockMessage`) that returns a neutral response.
+
 ## Engine observability
 
 The middleware does not open operational routes for you, but `Engine` exposes data-oriented methods that can be used to build your own endpoints:
@@ -116,8 +120,21 @@ The middleware does not open operational routes for you, but `Engine` exposes da
 - `engine.Snapshot()`
 - `engine.Report()`
 
+`Snapshot()` and `Report()` include server filesystem paths (directive files) and raw
+initialization error details. Only expose such endpoints internally or behind
+authentication, never to untrusted clients.
+
+`Reload()` swaps in the new WAF instance immediately and then waits until requests still
+being inspected by the previous instance finish inspection before closing it. Inspection
+ends before downstream handlers run, so the wait is bounded by WAF processing time and it
+is safe to call `Reload()` from a handler running behind the middleware.
+
 `BlockRate` is cumulative since process start or the most recent collector reset.
-`RecentLatencyMs` and `RecentBlockRate` are EWMA-based recent-trend metrics with a fixed alpha of `0.2`.
+`RecentLatencyMs` and `RecentBlockRate` are EWMA-based recent-trend metrics with a fixed
+alpha of `0.2`. The EWMA is weighted per request, not per time unit: roughly the last 20
+requests dominate the value, so under high traffic "recent" covers a very short time span
+and under low traffic a long one. The measured latency covers the full downstream handler
+chain, not just WAF inspection.
 
 ## Reverse proxy / trusted proxy notes
 

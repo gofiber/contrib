@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -250,6 +251,10 @@ func TestEngineMiddlewareBlocksMaliciousRequest(t *testing.T) {
 	}
 	if !strings.Contains(string(body), defaultBlockMessage) {
 		t.Fatalf("expected block message in response body, got %q", string(body))
+	}
+	// The default handler must not leak rule identifiers or match data.
+	if strings.Contains(string(body), "1001") || strings.Contains(string(body), "attack detected") {
+		t.Fatalf("expected rule details to be suppressed in response body, got %q", string(body))
 	}
 
 	metrics := engine.MetricsSnapshot()
@@ -540,6 +545,7 @@ func TestEngineInitClosesPreviousWAFOnSuccess(t *testing.T) {
 
 	engine.mu.Lock()
 	engine.waf = oldWAF
+	engine.state = newRuntimeState(oldWAF)
 	engine.mu.Unlock()
 
 	path := writeRuleFile(t, t.TempDir(), "reinit.conf", testRules)
@@ -557,7 +563,10 @@ func TestEngineInitClosesPreviousWAFOnSuccess(t *testing.T) {
 
 func TestMiddlewareFailsClosedWhenWAFPanicOccurs(t *testing.T) {
 	engine := newEngine(NewDefaultMetricsCollector())
+	engine.mu.Lock()
 	engine.waf = fakePanicWAF{}
+	engine.state = newRuntimeState(engine.waf)
+	engine.mu.Unlock()
 
 	app := newInstanceApp(engine, MiddlewareConfig{})
 	resp := performRequest(t, app, httptest.NewRequest(http.MethodGet, "/?name=safe", nil))
@@ -612,6 +621,7 @@ func TestEngineReloadClosesPreviousWAFOnSuccess(t *testing.T) {
 	engine.mu.Lock()
 	engine.waf = oldWAF
 	engine.setWAFOptionsStateLocked(oldWAF)
+	engine.state = newRuntimeState(oldWAF)
 	engine.mu.Unlock()
 
 	if err := engine.Reload(); err != nil {
@@ -629,28 +639,29 @@ func TestReloadWaitsForInflightRequestsBeforeClosingPreviousWAF(t *testing.T) {
 		t.Fatalf("failed to create engine: %v", err)
 	}
 
-	oldWAF := &fakeDrainingWAF{closed: make(chan struct{})}
+	requestEntered := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	oldWAF := &fakeDrainingWAF{
+		closed:  make(chan struct{}),
+		entered: requestEntered,
+		release: releaseRequest,
+	}
 	engine.mu.Lock()
 	engine.waf = oldWAF
 	engine.setWAFOptionsStateLocked(oldWAF)
-	engine.state = newRuntimeState(oldWAF, engine.metrics, engine.blockMessage)
+	engine.state = newRuntimeState(oldWAF)
 	engine.mu.Unlock()
 
 	app := fiber.New()
 	app.Use(engine.Middleware())
-
-	requestEntered := make(chan struct{})
-	releaseRequest := make(chan struct{})
 	app.Get("/", func(c fiber.Ctx) error {
-		close(requestEntered)
-		<-releaseRequest
 		return c.SendString("ok")
 	})
 
 	requestDone := make(chan *http.Response, 1)
 	requestErr := make(chan error, 1)
 	go func() {
-		resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+		resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil), fiber.TestConfig{Timeout: 5 * time.Second})
 		if err != nil {
 			requestErr <- err
 			return
@@ -658,10 +669,11 @@ func TestReloadWaitsForInflightRequestsBeforeClosingPreviousWAF(t *testing.T) {
 		requestDone <- resp
 	}()
 
+	// The fake WAF blocks inside inspection; the drain must wait for it.
 	select {
 	case <-requestEntered:
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for request to enter handler")
+		t.Fatal("timed out waiting for request to enter WAF inspection")
 	}
 
 	reloadDone := make(chan error, 1)
@@ -716,6 +728,34 @@ func TestReloadWaitsForInflightRequestsBeforeClosingPreviousWAF(t *testing.T) {
 
 	if oldWAF.closeCalls.Load() != 1 {
 		t.Fatalf("expected previous WAF to be closed once after request drain, got %d", oldWAF.closeCalls.Load())
+	}
+}
+
+func TestReloadFromHandlerBehindMiddlewareDoesNotDeadlock(t *testing.T) {
+	engine, err := newTestEngine(t)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	app := fiber.New()
+	app.Use(engine.Middleware())
+	app.Get("/reload", func(c fiber.Ctx) error {
+		// The drain must not wait on this request: its inspection finished
+		// before the handler ran. A regression here hangs forever.
+		if err := engine.Reload(); err != nil {
+			return c.Status(http.StatusInternalServerError).SendString(err.Error())
+		}
+		return c.SendString("reloaded")
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/reload", nil), fiber.TestConfig{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("reload request failed (deadlock regression?): %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200 from reload handler, got %d", resp.StatusCode)
 	}
 }
 
@@ -914,6 +954,68 @@ func TestDefaultMetricsCollectorObserveRequestTracksRecentMetrics(t *testing.T) 
 		t.Fatalf("expected negative latency sample to leave recent latency unchanged, got %v want %v", third.RecentLatencyMs, second.RecentLatencyMs)
 	}
 	assertFloat64Within(t, third.RecentBlockRate, 0.16, "recent block rate EWMA")
+
+	collector.Reset()
+	afterReset := collector.GetMetrics()
+	if afterReset.TotalRequests != 0 || afterReset.BlockedRequests != 0 || afterReset.BlockRate != 0 {
+		t.Fatalf("unexpected counts after reset: %+v", afterReset)
+	}
+	if afterReset.RecentLatencyMs != 0 || afterReset.RecentBlockRate != 0 {
+		t.Fatalf("expected recent metrics to be 0 after reset, got %+v", afterReset)
+	}
+
+	// The first sample after a reset must seed exactly, not blend against 0.
+	collector.ObserveRequest(2*time.Millisecond, true)
+	reseeded := collector.GetMetrics()
+	if reseeded.RecentLatencyMs != 2 {
+		t.Fatalf("expected recent latency to re-seed at 2ms after reset, got %v", reseeded.RecentLatencyMs)
+	}
+	if reseeded.RecentBlockRate != 1 {
+		t.Fatalf("expected recent block rate to re-seed at 1 after reset, got %v", reseeded.RecentBlockRate)
+	}
+}
+
+func TestDefaultMetricsCollectorConcurrentObserveRequest(t *testing.T) {
+	collector := NewDefaultMetricsCollector().(*defaultMetricsCollector)
+
+	const (
+		workers            = 8
+		requestsPerWorker  = 200
+		minLatency         = time.Millisecond
+		maxLatency         = 4 * time.Millisecond
+		totalRequestsCount = workers * requestsPerWorker
+	)
+
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for i := 0; i < requestsPerWorker; i++ {
+				latency := minLatency + time.Duration(i%4)*time.Millisecond
+				collector.ObserveRequest(latency, worker%2 == 0)
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	snapshot := collector.GetMetrics()
+	if snapshot.TotalRequests != totalRequestsCount {
+		t.Fatalf("expected %d total requests, got %d", totalRequestsCount, snapshot.TotalRequests)
+	}
+	if snapshot.BlockedRequests != totalRequestsCount/2 {
+		t.Fatalf("expected %d blocked requests, got %d", totalRequestsCount/2, snapshot.BlockedRequests)
+	}
+	// The EWMA is a convex combination of samples, so it must stay within the
+	// sample envelope regardless of interleaving.
+	minMs := float64(minLatency.Milliseconds())
+	maxMs := float64(maxLatency.Milliseconds())
+	if snapshot.RecentLatencyMs < minMs || snapshot.RecentLatencyMs > maxMs {
+		t.Fatalf("expected recent latency within [%v, %v], got %v", minMs, maxMs, snapshot.RecentLatencyMs)
+	}
+	if snapshot.RecentBlockRate < 0 || snapshot.RecentBlockRate > 1 {
+		t.Fatalf("expected recent block rate within [0, 1], got %v", snapshot.RecentBlockRate)
+	}
 }
 
 func newInstanceApp(engine *Engine, cfg MiddlewareConfig) *fiber.App {
@@ -1028,14 +1130,34 @@ func (w *fakeClosableWAF) Close() error {
 type fakeDrainingWAF struct {
 	closeCalls atomic.Int32
 	closed     chan struct{}
+	entered    chan struct{}
+	release    chan struct{}
 }
 
-func (*fakeDrainingWAF) NewTransaction() types.Transaction {
-	return fakeAllowTransaction{}
+func (w *fakeDrainingWAF) NewTransaction() types.Transaction {
+	return fakeBlockingTransaction{entered: w.entered, release: w.release}
 }
 
-func (*fakeDrainingWAF) NewTransactionWithID(string) types.Transaction {
-	return fakeAllowTransaction{}
+func (w *fakeDrainingWAF) NewTransactionWithID(string) types.Transaction {
+	return fakeBlockingTransaction{entered: w.entered, release: w.release}
+}
+
+// fakeBlockingTransaction blocks inside inspection so tests can hold a request
+// in the WAF while asserting drain behavior.
+type fakeBlockingTransaction struct {
+	fakeAllowTransaction
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (t fakeBlockingTransaction) ProcessRequestHeaders() *types.Interruption {
+	if t.entered != nil {
+		close(t.entered)
+	}
+	if t.release != nil {
+		<-t.release
+	}
+	return nil
 }
 
 func (w *fakeDrainingWAF) Close() error {
