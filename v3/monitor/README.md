@@ -38,7 +38,7 @@ monitor.New(config ...monitor.Config) fiber.Handler
 | Title      | `string`                  | Metrics page title.                                                                  | `Fiber Monitor`                                                             |
 | Refresh    | `time.Duration`           | Refresh period.                                                                      | `3 seconds`                                                                 |
 | APIOnly    | `bool`                    | Whether the service should expose only the montioring API.                           | `false`                                                                     |
-| Next       | `func(c fiber.Ctx) bool` | Define a function to add custom fields.                                              | `nil`                                                                       |
+| Next       | `func(c fiber.Ctx) bool` | Define a function to skip this middleware when returned true.                        | `nil`                                                                       |
 | CustomHead | `string`                  | Custom HTML code to Head Section(Before End).                                        | `empty`                                                                     |
 | FontURL    | `string`                  | FontURL for specilt font resource path or URL. also you can use relative path.       | `https://fonts.googleapis.com/css2?family=Roboto:wght@400;900&display=swap` |
 | ChartJsURL | `string`                  | ChartJsURL for specilt chartjs library, path or URL, also you can use relative path. | `https://cdn.jsdelivr.net/npm/chart.js@2.9/dist/Chart.bundle.min.js`        |
@@ -68,6 +68,19 @@ func main() {
 
     log.Fatal(app.Listen(":3000"))
 }
+```
+
+### Counting all application requests
+
+The dashboard's "Total Requests" metric counts every request that passes through the monitor handler. When the middleware is mounted on a single route (as in the example above), it only counts hits on the monitor endpoint itself. To make the counter reflect the traffic of the whole application, mount it app-wide and use `Next` to limit the dashboard to a dedicated path:
+
+```go
+app.Use(monitor.New(monitor.Config{
+    Next: func(c fiber.Ctx) bool {
+        // Requests to all other paths are counted and passed through.
+        return c.Path() != "/metrics"
+    },
+}))
 ```
 
 ## Default Config
