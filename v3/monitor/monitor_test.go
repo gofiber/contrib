@@ -124,7 +124,9 @@ func Test_Monitor_JSON(t *testing.T) {
 	req.Header.Set(fiber.HeaderAccept, fiber.MIMEApplicationJSON)
 	resp, err := app.Test(req)
 	assert.Equal(t, nil, err)
-	defer resp.Body.Close()
+	t.Cleanup(func() {
+		assert.NoError(t, resp.Body.Close())
+	})
 	assert.Equal(t, 200, resp.StatusCode)
 	assert.Equal(t, fiber.MIMEApplicationJSONCharsetUTF8, resp.Header.Get(fiber.HeaderContentType))
 
@@ -249,7 +251,9 @@ func Test_Monitor_Requests(t *testing.T) {
 	resp, err := app.Test(req)
 	assert.Equal(t, nil, err)
 	assert.Equal(t, 200, resp.StatusCode)
-	defer resp.Body.Close() //nolint:errcheck
+	t.Cleanup(func() {
+		assert.NoError(t, resp.Body.Close())
+	})
 
 	var result struct {
 		PID struct {
@@ -264,4 +268,37 @@ func Test_Monitor_Requests(t *testing.T) {
 	// The counter is a global atomic shared across all parallel tests; assert >= the
 	// minimum number of requests we know we made (nRequests + this final request).
 	assert.GreaterOrEqual(t, count, uint64(nRequests+1))
+}
+
+// go test -run Test_Monitor_Requests_NextFiltered -race
+func Test_Monitor_Requests_NextFiltered(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+
+	// Mounted app-wide as a traffic collector: Next skips everything except
+	// /metrics, but skipped requests must still be counted.
+	app.Use(New(Config{
+		APIOnly: true,
+		Next: func(c fiber.Ctx) bool {
+			return c.Path() != "/metrics"
+		},
+	}))
+	app.Get("/other", func(c fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	before := monitTotalRequests.Load()
+
+	const nRequests = 3
+	for i := 0; i < nRequests; i++ {
+		resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/other", nil))
+		assert.Equal(t, nil, err)
+		assert.Equal(t, 200, resp.StatusCode)
+		assert.NoError(t, resp.Body.Close())
+	}
+
+	// The counter is global and shared with parallel tests; it only grows, so
+	// assert that at least the requests made here were counted.
+	assert.GreaterOrEqual(t, monitTotalRequests.Load(), before+nRequests)
 }

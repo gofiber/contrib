@@ -105,7 +105,7 @@ $CUSTOM_HEAD
 </head>
 <body>
 	<section class="wrapper">
-	<div class="title"><h1>$TITLE</h1><div class="uptime">Uptime: <span id="uptimeMetric">—</span></div></div>
+	<div class="title"><h1>$TITLE</h1><div class="uptime">Uptime: <span id="uptimeMetric">0s</span></div></div>
 	<section class="charts">
 		<div class="row">
 			<div class="column">
@@ -272,9 +272,9 @@ $CUSTOM_HEAD
 			'<span><span> / </span><span class="ram_total">' + formatBytes(json.os.total_ram) + '</span>';
 		rtimeMetric.innerHTML = rtime + 'ms <span>client</span>';
 		connsMetric.innerHTML = json.pid.conns + ' <span>' + json.os.conns + '</span>';
-		reqsMetric.innerHTML = json.pid.requests;
-		goroutinesMetric.innerHTML = json.pid.goroutines;
-		uptimeMetric.innerHTML = formatUptime(json.pid.uptime);
+		reqsMetric.textContent = json.pid.requests;
+		goroutinesMetric.textContent = json.pid.goroutines;
+		uptimeMetric.textContent = formatUptime(json.pid.uptime);
 
 		cpuChart.data.datasets[0].data.push(cpu);
 		ramChart.data.datasets[2].data.push((json.os.total_ram / 1e6).toFixed(2));
@@ -283,7 +283,13 @@ $CUSTOM_HEAD
 		rtimeChart.data.datasets[0].data.push(rtime);
 		connsChart.data.datasets[0].data.push(json.pid.conns);
 		const reqsBig = BigInt(json.pid.requests);
-		const reqsDelta = reqsChart.data.datasets[0].data.length === 0 ? 0 : Number(reqsBig - prevRequestsBig);
+		// Clamp the delta to [0, MAX_SAFE_INTEGER]: a negative delta means the
+		// server restarted, a larger one would lose precision in Number().
+		let deltaBig = reqsBig - prevRequestsBig;
+		if (deltaBig < 0n) deltaBig = 0n;
+		const maxSafe = BigInt(Number.MAX_SAFE_INTEGER);
+		if (deltaBig > maxSafe) deltaBig = maxSafe;
+		const reqsDelta = reqsChart.data.datasets[0].data.length === 0 ? 0 : Number(deltaBig);
 		reqsChart.data.datasets[0].data.push(reqsDelta);
 		prevRequestsBig = reqsBig;
 		goroutinesChart.data.datasets[0].data.push(json.pid.goroutines);

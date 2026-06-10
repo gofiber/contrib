@@ -105,13 +105,15 @@ func New(config ...Config) fiber.Handler {
 
 	// Return new handler
 	return func(c fiber.Ctx) error {
+		// Increment the absolute request counter before the Next check so that,
+		// when the middleware is mounted app-wide with a Next filter (see README),
+		// every request passing through is counted, not only monitor endpoint hits.
+		monitTotalRequests.Add(1)
+
 		// Don't execute middleware if Next returns true
 		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
 		}
-
-		// Increment the absolute request counter
-		monitTotalRequests.Add(1)
 
 		if c.Method() != fiber.MethodGet {
 			return fiber.ErrMethodNotAllowed
