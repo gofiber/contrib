@@ -2,9 +2,11 @@ package monitor
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -122,13 +124,37 @@ func Test_Monitor_JSON(t *testing.T) {
 	req.Header.Set(fiber.HeaderAccept, fiber.MIMEApplicationJSON)
 	resp, err := app.Test(req)
 	assert.Equal(t, nil, err)
+	t.Cleanup(func() {
+		assert.NoError(t, resp.Body.Close())
+	})
 	assert.Equal(t, 200, resp.StatusCode)
 	assert.Equal(t, fiber.MIMEApplicationJSONCharsetUTF8, resp.Header.Get(fiber.HeaderContentType))
 
-	b, err := io.ReadAll(resp.Body)
+	var result struct {
+		PID struct {
+			CPU        float64 `json:"cpu"`
+			RAM        uint64  `json:"ram"`
+			Conns      int     `json:"conns"`
+			Goroutines int     `json:"goroutines"`
+			Requests   string  `json:"requests"`
+			Uptime     float64 `json:"uptime"`
+		} `json:"pid"`
+		OS struct {
+			CPU      float64 `json:"cpu"`
+			RAM      uint64  `json:"ram"`
+			TotalRAM uint64  `json:"total_ram"`
+			LoadAvg  float64 `json:"load_avg"`
+			Conns    int     `json:"conns"`
+		} `json:"os"`
+	}
+	err = json.NewDecoder(resp.Body).Decode(&result)
 	assert.Equal(t, nil, err)
-	assert.Equal(t, true, bytes.Contains(b, []byte("pid")))
-	assert.Equal(t, true, bytes.Contains(b, []byte("os")))
+
+	// Validate new field types and expected value ranges.
+	_, parseErr := strconv.ParseUint(result.PID.Requests, 10, 64)
+	assert.NoError(t, parseErr, "pid.requests must be a string containing a non-negative integer")
+	assert.GreaterOrEqual(t, result.PID.Uptime, float64(0), "pid.uptime must be >= 0")
+	assert.Greater(t, result.PID.Goroutines, 0, "pid.goroutines must be > 0")
 }
 
 // go test -v -run=^$ -bench=Benchmark_Monitor -benchmem -count=4
@@ -195,4 +221,84 @@ func Test_Monitor_APIOnly(t *testing.T) {
 	assert.Equal(t, nil, err)
 	assert.Equal(t, true, bytes.Contains(b, []byte("pid")))
 	assert.Equal(t, true, bytes.Contains(b, []byte("os")))
+}
+
+// go test -run Test_Monitor_Requests -race
+func Test_Monitor_Requests(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+
+	app.Get("/metrics", New(Config{
+		APIOnly: true,
+	}))
+
+	const nRequests = 5
+
+	// Make several requests
+	for i := 0; i < nRequests; i++ {
+		req := httptest.NewRequest(fiber.MethodGet, "/metrics", nil)
+		req.Header.Set(fiber.HeaderAccept, fiber.MIMEApplicationJSON)
+		resp, err := app.Test(req)
+		assert.Equal(t, nil, err)
+		assert.Equal(t, 200, resp.StatusCode)
+		assert.NoError(t, resp.Body.Close())
+	}
+
+	// Decode the final response and verify the counter reflects actual traffic.
+	req := httptest.NewRequest(fiber.MethodGet, "/metrics", nil)
+	req.Header.Set(fiber.HeaderAccept, fiber.MIMEApplicationJSON)
+	resp, err := app.Test(req)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, 200, resp.StatusCode)
+	t.Cleanup(func() {
+		assert.NoError(t, resp.Body.Close())
+	})
+
+	var result struct {
+		PID struct {
+			Requests string `json:"requests"`
+		} `json:"pid"`
+	}
+	err = json.NewDecoder(resp.Body).Decode(&result)
+	assert.Equal(t, nil, err)
+
+	count, err := strconv.ParseUint(result.PID.Requests, 10, 64)
+	assert.Equal(t, nil, err)
+	// The counter is a global atomic shared across all parallel tests; assert >= the
+	// minimum number of requests we know we made (nRequests + this final request).
+	assert.GreaterOrEqual(t, count, uint64(nRequests+1))
+}
+
+// go test -run Test_Monitor_Requests_NextFiltered -race
+func Test_Monitor_Requests_NextFiltered(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+
+	// Mounted app-wide as a traffic collector: Next skips everything except
+	// /metrics, but skipped requests must still be counted.
+	app.Use(New(Config{
+		APIOnly: true,
+		Next: func(c fiber.Ctx) bool {
+			return c.Path() != "/metrics"
+		},
+	}))
+	app.Get("/other", func(c fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	before := monitTotalRequests.Load()
+
+	const nRequests = 3
+	for i := 0; i < nRequests; i++ {
+		resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/other", nil))
+		assert.Equal(t, nil, err)
+		assert.Equal(t, 200, resp.StatusCode)
+		assert.NoError(t, resp.Body.Close())
+	}
+
+	// The counter is global and shared with parallel tests; it only grows, so
+	// assert that at least the requests made here were counted.
+	assert.GreaterOrEqual(t, monitTotalRequests.Load(), before+nRequests)
 }
