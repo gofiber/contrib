@@ -112,6 +112,8 @@ type ErrorHandler func(fiber.Ctx, MiddlewareError) error
 type Engine struct {
 	mu sync.RWMutex
 
+	state *runtimeState
+
 	waf             coraza.WAF
 	wafWithOptions  experimental.WAFWithOptions
 	supportsOptions bool
@@ -129,6 +131,21 @@ type Engine struct {
 	initFailureCount   uint64
 	reloadSuccessCount uint64
 	reloadFailureCount uint64
+}
+
+type runtimeState struct {
+	waf      coraza.WAF
+	inflight sync.WaitGroup
+}
+
+type middlewareSnapshot struct {
+	runtime         *runtimeState
+	waf             coraza.WAF
+	wafWithOptions  experimental.WAFWithOptions
+	supportsOptions bool
+	initErr         error
+	metrics         MetricsCollector
+	blockMessage    string
 }
 
 // New constructs Coraza Fiber middleware.
@@ -165,7 +182,10 @@ func NewEngine(cfg Config) (*Engine, error) {
 // Init replaces the Engine's WAF instance using the provided configuration.
 //
 // On failure, the last working WAF instance is kept in place and the failure is
-// recorded for observability.
+// recorded for observability. On success, Init blocks until requests still
+// being inspected by the replaced WAF finish inspection, then closes it.
+// Inspection ends before downstream handlers run, so the wait is bounded by
+// WAF processing time, not by handler lifetimes.
 func (e *Engine) Init(cfg Config) error {
 	resolvedCfg := resolveConfig(cfg)
 	metrics := resolveMetricsCollector(resolvedCfg.MetricsCollector)
@@ -174,28 +194,34 @@ func (e *Engine) Init(cfg Config) error {
 	logLevel := normalizeLogLevel(resolvedCfg.LogLevel)
 
 	e.mu.Lock()
-	defer e.mu.Unlock()
-
 	e.lastAttemptCfg = cloneConfig(resolvedCfg)
 
 	if err != nil {
 		e.initErr = err
 		e.initFailureCount++
+		e.mu.Unlock()
 		logWithLevel(logLevel, fiberlog.LevelError, "Coraza initialization failed", "error", err.Error())
 		return err
 	}
 
+	oldState := e.state
+	blockMessage := resolveBlockMessage(resolvedCfg.BlockMessage)
+	newState := newRuntimeState(newWAF)
 	e.waf = newWAF
 	e.initErr = nil
 	e.setWAFOptionsStateLocked(newWAF)
 	e.activeCfg = cloneConfig(resolvedCfg)
 	e.lastLoadedAt = time.Now()
 	e.initSuccessCount++
-	e.blockMessage = resolveBlockMessage(resolvedCfg.BlockMessage)
+	e.blockMessage = blockMessage
 	e.logLevel = logLevel
 	e.metrics = metrics
+	e.state = newState
+	supportsOptions := e.supportsOptions
+	e.mu.Unlock()
 
-	logWithLevel(logLevel, fiberlog.LevelInfo, "Coraza initialized successfully", "supports_options", e.supportsOptions)
+	drainAndCloseState(oldState, logLevel)
+	logWithLevel(logLevel, fiberlog.LevelInfo, "Coraza initialized successfully", "supports_options", supportsOptions)
 	return nil
 }
 
@@ -226,21 +252,38 @@ func (e *Engine) Middleware(config ...MiddlewareConfig) fiber.Handler {
 		}
 
 		startTime := time.Now()
-		metrics := e.Metrics()
-		metrics.RecordRequest()
+		state := e.middlewareSnapshot()
+		blocked := false
+
+		// The in-flight registration must only cover actual WAF usage, which
+		// ends when inspectRequest returns (the transaction is closed there).
+		// Holding it across c.Next() would make Init/Reload drains wait on
+		// downstream handlers and self-deadlock when Reload is called from a
+		// handler running behind this middleware.
+		released := false
+		releaseInflight := func() {
+			if !released {
+				released = true
+				if state.runtime != nil {
+					state.runtime.inflight.Done()
+				}
+			}
+		}
 
 		defer func() {
-			metrics.RecordLatency(time.Since(startTime))
+			releaseInflight()
+			if state.metrics != nil {
+				state.metrics.ObserveRequest(time.Since(startTime), blocked)
+			}
 		}()
 
-		currentWAF, currentSupportsOptions, currentWAFWithOptions, currentErr := e.snapshot()
-		if currentWAF == nil {
-			if currentErr != nil {
+		if state.waf == nil {
+			if state.initErr != nil {
 				return e.handleError(c, mwCfg, MiddlewareError{
 					StatusCode: http.StatusInternalServerError,
 					Code:       "waf_init_failed",
 					Message:    "WAF initialization failed",
-					Err:        currentErr,
+					Err:        state.initErr,
 				})
 			}
 
@@ -251,20 +294,21 @@ func (e *Engine) Middleware(config ...MiddlewareConfig) fiber.Handler {
 			})
 		}
 
-		it, mwErr := e.inspectRequest(c, currentWAF, currentSupportsOptions, currentWAFWithOptions)
+		it, mwErr := e.inspectRequest(c, state.waf, state.supportsOptions, state.wafWithOptions)
+		releaseInflight()
 		if mwErr != nil {
 			return e.handleError(c, mwCfg, *mwErr)
 		}
 
 		if it != nil {
-			metrics.RecordBlock()
+			blocked = true
 
 			details := InterruptionDetails{
 				StatusCode: obtainStatusCodeFromInterruptionOrDefault(it, http.StatusForbidden),
 				Action:     it.Action,
 				RuleID:     it.RuleID,
 				Data:       it.Data,
-				Message:    e.blockMessageValue(),
+				Message:    state.blockMessage,
 			}
 			e.log(fiberlog.LevelWarn, "Coraza request interrupted",
 				"rule_id", details.RuleID,
@@ -373,6 +417,11 @@ func (e *Engine) finishTransaction(c fiber.Ctx, tx types.Transaction, mwErr **Mi
 }
 
 // Reload rebuilds the current WAF instance using the active configuration.
+//
+// On success, Reload blocks until requests still being inspected by the
+// replaced WAF finish inspection, then closes it. Inspection ends before
+// downstream handlers run, so the wait is bounded by WAF processing time and
+// it is safe to call Reload from a handler running behind this middleware.
 func (e *Engine) Reload() error {
 	e.mu.RLock()
 	cfg := cloneConfig(e.activeCfg)
@@ -391,6 +440,8 @@ func (e *Engine) Reload() error {
 	}
 
 	e.mu.Lock()
+	oldState := e.state
+	newState := newRuntimeState(newWAF)
 	e.waf = newWAF
 	e.initErr = nil
 	e.setWAFOptionsStateLocked(newWAF)
@@ -399,17 +450,64 @@ func (e *Engine) Reload() error {
 	e.lastLoadedAt = time.Now()
 	reloadCount := e.reloadCount
 	e.logLevel = logLevel
+	e.state = newState
 	e.mu.Unlock()
 
+	drainAndCloseState(oldState, logLevel)
 	logWithLevel(logLevel, fiberlog.LevelInfo, "Coraza reload completed successfully", "reload_count", reloadCount)
 	return nil
 }
 
-func (e *Engine) snapshot() (coraza.WAF, bool, experimental.WAFWithOptions, error) {
+func closeWAF(waf coraza.WAF, logLevel fiberlog.Level) {
+	if waf == nil {
+		return
+	}
+
+	closer, ok := waf.(experimental.WAFCloser)
+	if !ok {
+		return
+	}
+
+	if err := closer.Close(); err != nil {
+		logWithLevel(logLevel, fiberlog.LevelWarn, "Coraza WAF close failed", "error", err.Error())
+	}
+}
+
+func drainAndCloseState(state *runtimeState, logLevel fiberlog.Level) {
+	if state == nil || state.waf == nil {
+		return
+	}
+
+	state.inflight.Wait()
+	closeWAF(state.waf, logLevel)
+}
+
+func (e *Engine) middlewareSnapshot() middlewareSnapshot {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	return e.waf, e.supportsOptions, e.wafWithOptions, e.initErr
+	state := e.state
+	if state == nil {
+		return middlewareSnapshot{
+			initErr:         e.initErr,
+			waf:             e.waf,
+			wafWithOptions:  e.wafWithOptions,
+			supportsOptions: e.supportsOptions,
+			metrics:         e.metrics,
+			blockMessage:    e.blockMessage,
+		}
+	}
+	state.inflight.Add(1)
+
+	return middlewareSnapshot{
+		runtime:         state,
+		waf:             e.waf,
+		wafWithOptions:  e.wafWithOptions,
+		supportsOptions: e.supportsOptions,
+		initErr:         e.initErr,
+		metrics:         e.metrics,
+		blockMessage:    e.blockMessage,
+	}
 }
 
 func (e *Engine) setWAFOptionsStateLocked(waf coraza.WAF) {
@@ -423,12 +521,6 @@ func (e *Engine) setWAFOptionsStateLocked(waf coraza.WAF) {
 	e.supportsOptions = false
 }
 
-func (e *Engine) blockMessageValue() string {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.blockMessage
-}
-
 func (e *Engine) handleError(c fiber.Ctx, cfg MiddlewareConfig, mwErr MiddlewareError) error {
 	if cfg.ErrorHandler != nil {
 		return cfg.ErrorHandler(c, mwErr)
@@ -438,11 +530,17 @@ func (e *Engine) handleError(c fiber.Ctx, cfg MiddlewareConfig, mwErr Middleware
 }
 
 func newEngine(collector MetricsCollector) *Engine {
+	metrics := resolveMetricsCollector(collector)
 	return &Engine{
 		blockMessage: defaultBlockMessage,
 		logLevel:     fiberlog.LevelInfo,
-		metrics:      resolveMetricsCollector(collector),
+		metrics:      metrics,
+		state:        newRuntimeState(nil),
 	}
+}
+
+func newRuntimeState(waf coraza.WAF) *runtimeState {
+	return &runtimeState{waf: waf}
 }
 
 func isNilMetricsCollector(collector MetricsCollector) bool {
