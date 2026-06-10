@@ -574,6 +574,75 @@ func TestOutboundTracingPropagationWithInboundContext(t *testing.T) {
 	assert.Equal(t, "1", resp.Header.Get("X-B3-Sampled"))
 }
 
+func TestTraceResponseHeader(t *testing.T) {
+	sr := new(tracetest.SpanRecorder)
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+
+	app := fiber.New()
+	app.Use(fiberotel.Middleware(
+		fiberotel.WithTracerProvider(provider),
+		fiberotel.WithTraceResponseHeader("X-Trace-Id"),
+	))
+	app.Get("/foo", func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(http.StatusNoContent)
+	})
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/foo", nil), fiber.TestConfig{Timeout: 3 * time.Second})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+
+	assert.Equal(t, spans[0].SpanContext().TraceID().String(), resp.Header.Get("X-Trace-Id"))
+}
+
+func TestTraceResponseHeaderDisabledByDefault(t *testing.T) {
+	sr := new(tracetest.SpanRecorder)
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+
+	app := fiber.New()
+	app.Use(fiberotel.Middleware(
+		fiberotel.WithTracerProvider(provider),
+	))
+	app.Get("/foo", func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(http.StatusNoContent)
+	})
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/foo", nil), fiber.TestConfig{Timeout: 3 * time.Second})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	assert.Empty(t, resp.Header.Get("X-Trace-Id"))
+}
+
+func TestTraceResponseHeaderUsesInboundTraceID(t *testing.T) {
+	sr := new(tracetest.SpanRecorder)
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	propagator := propagation.TraceContext{}
+
+	req := httptest.NewRequest(http.MethodGet, "/foo", nil)
+	ctx, span := provider.Tracer(instrumentationName).Start(context.Background(), "test")
+	defer span.End()
+	propagator.Inject(ctx, propagation.HeaderCarrier(req.Header))
+
+	app := fiber.New()
+	app.Use(fiberotel.Middleware(
+		fiberotel.WithTracerProvider(provider),
+		fiberotel.WithPropagators(propagator),
+		fiberotel.WithTraceResponseHeader("X-Trace-Id"),
+	))
+	app.Get("/foo", func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(http.StatusNoContent)
+	})
+
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 3 * time.Second})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	assert.Equal(t, span.SpanContext().TraceID().String(), resp.Header.Get("X-Trace-Id"))
+}
+
 func TestCollectClientIP(t *testing.T) {
 	t.Parallel()
 

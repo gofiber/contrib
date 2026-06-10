@@ -3,30 +3,36 @@ name: After Release
 on:
   release:
     types: [published]
+  repository_dispatch:
+    types: [after-release]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  # When websocket is released, trigger dependabot in self (for socketio dep)
+  # Websocket releases update socketio dep in same repo (manual releases only).
+  # During weekly releases, the intra-wave hook in release-plan.yml handles this.
   self-update:
-    if: contains(github.event.release.tag_name, 'websocket')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: gofiber/.github/.github/actions/trigger-dependabot@main
-        with:
-          reason: 'websocket ${{ github.event.release.tag_name }} released'
+    if: >-
+      github.event_name == 'release' &&
+      github.actor != 'github-actions[bot]' &&
+      contains(github.event.release.tag_name, 'websocket')
+    uses: gofiber/.github/.github/workflows/after-release.yml@main
+    with:
+      skip-wait: ${{ github.event_name == 'workflow_dispatch' }}
+      repos: |
+        - gofiber/contrib
+    secrets:
+      dispatch-token: ${{ secrets.DISPATCH_TOKEN }}
 
-  # Trigger dependabot in dependent repos for any contrib module release
+  # Notify downstream repos. Runs for manual releases and weekly batch dispatch.
   notify-dependents:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        repo:
-          - gofiber/recipes
-    steps:
-      - uses: gofiber/.github/.github/actions/trigger-dependabot@main
-        with:
-          repo: ${{ matrix.repo }}
-          reason: 'contrib ${{ github.event.release.tag_name }} released'
-          token: ${{ secrets.DISPATCH_TOKEN }}
+    if: github.event_name != 'release' || github.actor != 'github-actions[bot]'
+    uses: gofiber/.github/.github/workflows/after-release.yml@main
+    with:
+      skip-wait: ${{ github.event_name == 'workflow_dispatch' }}
+      repos: |
+        - gofiber/recipes
+    secrets:
+      dispatch-token: ${{ secrets.DISPATCH_TOKEN }}

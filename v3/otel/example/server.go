@@ -10,7 +10,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 
 	"github.com/gofiber/contrib/v3/otel"
-	"go.opentelemetry.io/otel"
+	otelApi "go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	stdout "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 
@@ -21,7 +21,7 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
-var tracer = otel.Tracer("fiber-server")
+var tracer = otelApi.Tracer("fiber-server")
 
 func main() {
 	tp := initTracer()
@@ -68,8 +68,8 @@ func initTracer() *sdktrace.TracerProvider {
 				semconv.ServiceNameKey.String("my-service"),
 			)),
 	)
-	otel.SetTracerProvider(tp)
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
+	otelApi.SetTracerProvider(tp)
+	otelApi.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 	return tp
 }
 
