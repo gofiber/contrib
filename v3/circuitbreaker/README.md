@@ -59,6 +59,7 @@ circuitbreaker.New(config ...circuitbreaker.Config) *circuitbreaker.Middleware
 | Timeout | `time.Duration` | Timeout for the circuit breaker | `10 * time.Second` |
 | SuccessThreshold | `int` | Number of successful requests required to close the circuit | `5` |
 | HalfOpenMaxConcurrent | `int` | Max concurrent requests in half-open state | `1` |
+| Interval | `time.Duration` | Period after which failure counts reset in closed state. Zero means failures accumulate until the circuit opens. | `0` |
 | IsFailure | `func(error) bool` | Custom function to determine if an error is a failure | `Status >= 500` |
 | OnOpen | `func(fiber.Ctx) error` | Callback function when the circuit is opened | `503 response` |
 | OnClose | `func(fiber.Ctx) error` | Callback function when the circuit is closed | `Continue request` |
@@ -224,7 +225,23 @@ cb := circuitbreaker.New(circuitbreaker.Config{
 
 ✅ Logs when the circuit opens & increments Prometheus metrics.
 
-### 7. Advanced: Multiple Circuit Breakers for Different Services
+### 7. Circuit Breaker with Failure Count Reset Interval
+
+Use `Interval` to reset the failure count once the interval has elapsed in the closed state. The reset is applied lazily: the next failure reported after the interval has elapsed starts a fresh count instead of carrying the old one over. Without `Interval`, failures accumulate indefinitely in the closed state until the threshold is reached.
+
+```go
+cb := circuitbreaker.New(circuitbreaker.Config{
+	FailureThreshold: 5,
+	Timeout:          10 * time.Second,
+	Interval:         30 * time.Second, // Reset failure count every 30 seconds
+})
+
+app.Use(circuitbreaker.Middleware(cb))
+```
+
+✅ If 4 failures occur and the next failure is reported more than 30 seconds after the window started, the count restarts at 1 instead of reaching the threshold. The circuit only opens when 5 failures accumulate within one 30-second window.
+
+### 8. Advanced: Multiple Circuit Breakers for Different Services
 
 Use different Circuit Breakers for different services.
 

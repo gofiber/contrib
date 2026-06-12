@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/v3/sentry
 go 1.25.0
 
 require (
-	github.com/getsentry/sentry-go v0.45.1
+	github.com/getsentry/sentry-go v0.46.2
 	github.com/gofiber/fiber/v3 v3.3.0
 	github.com/gofiber/utils/v2 v2.1.0
 )
@@ -19,7 +19,7 @@ require (
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/valyala/fasthttp v1.71.0 // indirect
 	golang.org/x/crypto v0.53.0 // indirect
-	golang.org/x/net v0.55.0 // indirect
+	golang.org/x/net v0.56.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 

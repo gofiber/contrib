@@ -2,17 +2,33 @@
 package coraza
 
 import (
-	"sync"
+	"math"
 	"sync/atomic"
 	"time"
 )
 
+const metricsEWMAAlpha = 0.2
+
+// ewmaUninitializedBits is a quiet-NaN bit pattern used as the "no samples
+// yet" sentinel inside the atomic EWMA words. Real samples are always finite
+// (durations and 0/1 outcomes), so their bit patterns can never collide with
+// it, and keeping the sentinel in the same word as the value makes seeding,
+// updating, and resetting a single atomic operation.
+const ewmaUninitializedBits = 0x7ff8_0000_0000_0001
+
 // MetricsCollector records lightweight request metrics for a Coraza Engine.
+// Implementations must be safe for concurrent use.
 type MetricsCollector interface {
-	RecordRequest()
-	RecordBlock()
-	RecordLatency(duration time.Duration)
+	// ObserveRequest records one request handled by the middleware. duration
+	// covers the full downstream handler chain, not just WAF inspection, and
+	// can be negative on wall-clock adjustments. blocked reports whether the
+	// WAF interrupted the request.
+	ObserveRequest(duration time.Duration, blocked bool)
+	// GetMetrics returns a snapshot of the collected metrics.
 	GetMetrics() *MetricsSnapshot
+	// Reset clears the collected metrics. It does not need to be atomic with
+	// respect to concurrent ObserveRequest calls; snapshots taken around a
+	// reset are eventually consistent.
 	Reset()
 }
 
@@ -22,10 +38,17 @@ type MetricsSnapshot struct {
 	TotalRequests uint64 `json:"total_requests"`
 	// BlockedRequests is the number of requests interrupted by the WAF.
 	BlockedRequests uint64 `json:"blocked_requests"`
-	// AvgLatencyMs is the average middleware latency in milliseconds.
-	AvgLatencyMs float64 `json:"avg_latency_ms"`
-	// BlockRate is the ratio of blocked requests to total requests.
+	// BlockRate is the cumulative ratio of blocked requests to total requests.
 	BlockRate float64 `json:"block_rate"`
+	// RecentLatencyMs is the smoothed latency of recent requests in
+	// milliseconds, measured across the full downstream handler chain. The
+	// built-in collector uses a per-request EWMA, so the window is request
+	// based, not time based. It is 0 until the first request is observed.
+	RecentLatencyMs float64 `json:"recent_latency_ms"`
+	// RecentBlockRate is the smoothed rate of blocked outcomes over recent
+	// requests, with the same request-based weighting as RecentLatencyMs.
+	// It is 0 until the first request is observed.
+	RecentBlockRate float64 `json:"recent_block_rate"`
 	// Timestamp is when the snapshot was generated.
 	Timestamp time.Time `json:"timestamp"`
 }
@@ -68,47 +91,35 @@ type defaultMetricsCollector struct {
 	totalRequests   atomic.Uint64
 	blockedRequests atomic.Uint64
 
-	latencyMutex sync.RWMutex
-	avgLatencyNs float64
-	latencyCount uint64
+	recentLatencyBits   atomic.Uint64
+	recentBlockRateBits atomic.Uint64
 }
 
 // NewDefaultMetricsCollector creates the built-in in-memory metrics collector.
+// Its recent-trend metrics use a per-request EWMA with alpha 0.2, so roughly
+// the last 20 requests dominate the reported values.
 func NewDefaultMetricsCollector() MetricsCollector {
-	return &defaultMetricsCollector{}
+	m := &defaultMetricsCollector{}
+	m.recentLatencyBits.Store(ewmaUninitializedBits)
+	m.recentBlockRateBits.Store(ewmaUninitializedBits)
+	return m
 }
 
-func (m *defaultMetricsCollector) RecordRequest() {
+func (m *defaultMetricsCollector) ObserveRequest(duration time.Duration, blocked bool) {
 	m.totalRequests.Add(1)
-}
-
-func (m *defaultMetricsCollector) RecordBlock() {
-	m.blockedRequests.Add(1)
-}
-
-func (m *defaultMetricsCollector) RecordLatency(duration time.Duration) {
-	if duration < 0 {
-		return
+	if blocked {
+		m.blockedRequests.Add(1)
 	}
 
-	m.latencyMutex.Lock()
-	defer m.latencyMutex.Unlock()
-
-	m.latencyCount++
-	count := float64(m.latencyCount)
-	m.avgLatencyNs += (float64(duration.Nanoseconds()) - m.avgLatencyNs) / count
+	m.updateRecentBlockRate(blocked)
+	if duration >= 0 {
+		m.updateRecentLatency(duration)
+	}
 }
 
 func (m *defaultMetricsCollector) GetMetrics() *MetricsSnapshot {
 	totalReqs := m.totalRequests.Load()
 	blockedReqs := m.blockedRequests.Load()
-
-	m.latencyMutex.RLock()
-	var avgLatencyMs float64
-	if m.latencyCount > 0 {
-		avgLatencyMs = m.avgLatencyNs / 1e6
-	}
-	m.latencyMutex.RUnlock()
 
 	var blockRate float64
 	if totalReqs > 0 {
@@ -118,8 +129,9 @@ func (m *defaultMetricsCollector) GetMetrics() *MetricsSnapshot {
 	return &MetricsSnapshot{
 		TotalRequests:   totalReqs,
 		BlockedRequests: blockedReqs,
-		AvgLatencyMs:    avgLatencyMs,
 		BlockRate:       blockRate,
+		RecentLatencyMs: m.loadRecentLatencyMs(),
+		RecentBlockRate: m.loadRecentBlockRate(),
 		Timestamp:       time.Now(),
 	}
 }
@@ -127,11 +139,56 @@ func (m *defaultMetricsCollector) GetMetrics() *MetricsSnapshot {
 func (m *defaultMetricsCollector) Reset() {
 	m.totalRequests.Store(0)
 	m.blockedRequests.Store(0)
+	m.recentLatencyBits.Store(ewmaUninitializedBits)
+	m.recentBlockRateBits.Store(ewmaUninitializedBits)
+}
 
-	m.latencyMutex.Lock()
-	defer m.latencyMutex.Unlock()
-	m.avgLatencyNs = 0
-	m.latencyCount = 0
+func (m *defaultMetricsCollector) updateRecentLatency(duration time.Duration) {
+	sample := float64(duration.Nanoseconds()) / 1e6
+	updateEWMA(&m.recentLatencyBits, sample)
+}
+
+func (m *defaultMetricsCollector) updateRecentBlockRate(blocked bool) {
+	sample := 0.0
+	if blocked {
+		sample = 1.0
+	}
+	updateEWMA(&m.recentBlockRateBits, sample)
+}
+
+// updateEWMA folds sample into the EWMA word: the first finite sample seeds
+// the value, later ones are blended with metricsEWMAAlpha. Sentinel handling
+// and the update share one CAS, so a concurrent Reset either happens before
+// (this sample re-seeds) or after (the reset wins) - no half-applied states.
+func updateEWMA(bits *atomic.Uint64, sample float64) {
+	for {
+		currentBits := bits.Load()
+		next := sample
+		if currentBits != ewmaUninitializedBits {
+			current := math.Float64frombits(currentBits)
+			next = current + metricsEWMAAlpha*(sample-current)
+		}
+		if bits.CompareAndSwap(currentBits, math.Float64bits(next)) {
+			return
+		}
+	}
+}
+
+func (m *defaultMetricsCollector) loadRecentLatencyMs() float64 {
+	return loadEWMA(&m.recentLatencyBits)
+}
+
+func (m *defaultMetricsCollector) loadRecentBlockRate() float64 {
+	return loadEWMA(&m.recentBlockRateBits)
+}
+
+func loadEWMA(bits *atomic.Uint64) float64 {
+	current := bits.Load()
+	if current == ewmaUninitializedBits {
+		return 0
+	}
+
+	return math.Float64frombits(current)
 }
 
 // MetricsSnapshot returns a copy of the Engine's current request metrics.
