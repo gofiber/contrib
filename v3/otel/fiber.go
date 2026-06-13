@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,6 +36,7 @@ const (
 	UnitDimensionless = "1"
 	UnitBytes         = "By"
 	UnitSeconds       = "s"
+	UnitRequest       = "{request}"
 
 	// Deprecated: use MetricNameHTTPServerRequestDuration.
 	MetricNameHttpServerDuration = MetricNameHTTPServerRequestDuration
@@ -138,7 +140,7 @@ func Middleware(opts ...Option) fiber.Handler {
 		if err != nil {
 			otel.Handle(err)
 		}
-		httpServerActiveRequests, err = meter.Int64UpDownCounter(MetricNameHTTPServerActiveRequests, metric.WithUnit(UnitDimensionless), metric.WithDescription("Number of active HTTP server requests."))
+		httpServerActiveRequests, err = meter.Int64UpDownCounter(MetricNameHTTPServerActiveRequests, metric.WithUnit(UnitRequest), metric.WithDescription("Number of active HTTP server requests."))
 		if err != nil {
 			otel.Handle(err)
 		}
@@ -222,6 +224,10 @@ func Middleware(opts ...Option) fiber.Handler {
 			semconv.HTTPRouteKey.String(c.Route().Path), // no need to copy c.Route().Path: route strings should be immutable across app lifecycle
 		}
 
+		if c.Response().StatusCode() >= 500 {
+			responseAttrs = append(responseAttrs, semconv.ErrorTypeKey.String(strconv.Itoa(c.Response().StatusCode())))
+		}
+
 		response := c.Response()
 		isSSE := c.GetRespHeader("Content-Type") == "text/event-stream"
 		responseSize := int64(0)
@@ -297,5 +303,9 @@ func Middleware(opts ...Option) fiber.Handler {
 // defaultSpanNameFormatter is the default formatter for spans created with the fiber
 // integration. Returns the route pathRaw
 func defaultSpanNameFormatter(ctx fiber.Ctx) string {
-	return ctx.Route().Path
+	route := ctx.Route().Path
+	if route == "" {
+		return utils.CopyString(ctx.Method())
+	}
+	return utils.CopyString(ctx.Method()) + " " + route
 }
