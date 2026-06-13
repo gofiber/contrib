@@ -6,12 +6,20 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// Middleware ...
+// Middleware holds the enforce and role-lookup functions resolved at construction
+// time from either a Casbin v2 or v3 enforcer, plus the shared handler config.
 type Middleware struct {
-	config Config
+	lookup       func(fiber.Ctx) string
+	unauthorized fiber.Handler
+	forbidden    fiber.Handler
+
+	// enforce and getRolesForUser are set by New/NewV3 to call the appropriate
+	// enforcer version without exposing a shared interface.
+	enforce         func(rvals ...interface{}) (bool, error)
+	getRolesForUser func(name string, domain ...string) ([]string, error)
 }
 
-// New creates an authorization middleware for use in Fiber
+// New creates an authorization middleware for use in Fiber with Casbin v2.
 func New(config ...Config) *Middleware {
 	cfg, err := configDefault(config...)
 	if err != nil {
@@ -19,7 +27,27 @@ func New(config ...Config) *Middleware {
 	}
 
 	return &Middleware{
-		config: cfg,
+		lookup:          cfg.Lookup,
+		unauthorized:    cfg.Unauthorized,
+		forbidden:       cfg.Forbidden,
+		enforce:         cfg.Enforcer.Enforce,
+		getRolesForUser: cfg.Enforcer.GetRolesForUser,
+	}
+}
+
+// NewV3 creates an authorization middleware for use in Fiber with Casbin v3.
+func NewV3(config ...ConfigV3) *Middleware {
+	cfg, err := configDefaultV3(config...)
+	if err != nil {
+		panic(fmt.Errorf("fiber: casbin middleware error -> %w", err))
+	}
+
+	return &Middleware{
+		lookup:          cfg.Lookup,
+		unauthorized:    cfg.Unauthorized,
+		forbidden:       cfg.Forbidden,
+		enforce:         cfg.Enforcer.Enforce,
+		getRolesForUser: cfg.Enforcer.GetRolesForUser,
 	}
 }
 
@@ -33,32 +61,32 @@ func (m *Middleware) RequiresPermissions(permissions []string, opts ...Option) f
 			return c.Next()
 		}
 
-		sub := m.config.Lookup(c)
+		sub := m.lookup(c)
 		if len(sub) == 0 {
-			return m.config.Unauthorized(c)
+			return m.unauthorized(c)
 		}
 
 		switch options.ValidationRule {
 		case MatchAllRule:
 			for _, permission := range permissions {
 				vals := append([]string{sub}, options.PermissionParser(permission)...)
-				if ok, err := m.config.Enforcer.Enforce(stringSliceToInterfaceSlice(vals)...); err != nil {
+				if ok, err := m.enforce(stringSliceToInterfaceSlice(vals)...); err != nil {
 					return c.SendStatus(fiber.StatusInternalServerError)
 				} else if !ok {
-					return m.config.Forbidden(c)
+					return m.forbidden(c)
 				}
 			}
 			return c.Next()
 		case AtLeastOneRule:
 			for _, permission := range permissions {
 				vals := append([]string{sub}, options.PermissionParser(permission)...)
-				if ok, err := m.config.Enforcer.Enforce(stringSliceToInterfaceSlice(vals)...); err != nil {
+				if ok, err := m.enforce(stringSliceToInterfaceSlice(vals)...); err != nil {
 					return c.SendStatus(fiber.StatusInternalServerError)
 				} else if ok {
 					return c.Next()
 				}
 			}
-			return m.config.Forbidden(c)
+			return m.forbidden(c)
 		}
 
 		return c.Next()
@@ -70,15 +98,15 @@ func (m *Middleware) RequiresPermissions(permissions []string, opts ...Option) f
 // This method uses http Path and Method as object and action.
 func (m *Middleware) RoutePermission() fiber.Handler {
 	return func(c fiber.Ctx) error {
-		sub := m.config.Lookup(c)
+		sub := m.lookup(c)
 		if len(sub) == 0 {
-			return m.config.Unauthorized(c)
+			return m.unauthorized(c)
 		}
 
-		if ok, err := m.config.Enforcer.Enforce(sub, c.Path(), c.Method()); err != nil {
+		if ok, err := m.enforce(sub, c.Path(), c.Method()); err != nil {
 			return c.SendStatus(fiber.StatusInternalServerError)
 		} else if !ok {
-			return m.config.Forbidden(c)
+			return m.forbidden(c)
 		}
 
 		return c.Next()
@@ -95,12 +123,12 @@ func (m *Middleware) RequiresRoles(roles []string, opts ...Option) fiber.Handler
 			return c.Next()
 		}
 
-		sub := m.config.Lookup(c)
+		sub := m.lookup(c)
 		if len(sub) == 0 {
-			return m.config.Unauthorized(c)
+			return m.unauthorized(c)
 		}
 
-		userRoles, err := m.config.Enforcer.GetRolesForUser(sub)
+		userRoles, err := m.getRolesForUser(sub)
 		if err != nil {
 			return c.SendStatus(fiber.StatusInternalServerError)
 		}
@@ -109,7 +137,7 @@ func (m *Middleware) RequiresRoles(roles []string, opts ...Option) fiber.Handler
 		case MatchAllRule:
 			for _, role := range roles {
 				if !containsString(userRoles, role) {
-					return m.config.Forbidden(c)
+					return m.forbidden(c)
 				}
 			}
 			return c.Next()
@@ -119,9 +147,10 @@ func (m *Middleware) RequiresRoles(roles []string, opts ...Option) fiber.Handler
 					return c.Next()
 				}
 			}
-			return m.config.Forbidden(c)
+			return m.forbidden(c)
 		}
 
 		return c.Next()
 	}
 }
+
