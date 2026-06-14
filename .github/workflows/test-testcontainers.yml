@@ -45,5 +45,9 @@ jobs:
           cache-dependency-path: v3/testcontainers/go.sum
 
       - name: Run Test
-        working-directory: ./v3/testcontainers
-        run: go test -v -race ./...
+        uses: gofiber/.github/.github/actions/gotestsum@main
+        with:
+          working-directory: ./v3/testcontainers
+          packages: ./...
+          rerun-fails: '2'
+          args: -race -count=1
