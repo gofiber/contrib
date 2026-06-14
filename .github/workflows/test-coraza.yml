@@ -8,12 +8,18 @@ on:
     paths:
       - 'v3/coraza/**/*.go'
       - 'v3/coraza/go.mod'
+      - 'v3/coraza/go.sum'
   pull_request:
     paths:
       - 'v3/coraza/**/*.go'
       - 'v3/coraza/go.mod'
+      - 'v3/coraza/go.sum'
 
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -21,6 +27,7 @@ permissions:
 jobs:
   Tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       GOWORK: off
     strategy:
@@ -34,6 +41,11 @@ jobs:
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
           go-version: '${{ matrix.go-version }}'
+          cache-dependency-path: v3/coraza/go.sum
       - name: Run Test
-        working-directory: ./v3/coraza
-        run: go test -v -race ./...
+        uses: gofiber/.github/.github/actions/gotestsum@main
+        with:
+          working-directory: ./v3/coraza
+          packages: ./...
+          rerun-fails: '2'
+          args: -race -count=1

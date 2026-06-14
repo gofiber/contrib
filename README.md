@@ -23,6 +23,7 @@ Repository for third party middlewares and service implementations, with depende
 
 * [casbin](./v3/casbin/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Test+Casbin%22"> <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test-casbin.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" alt="casbin workflow status" /> </a>
 * [circuitbreaker](./v3/circuitbreaker/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Test+CircuitBreaker%22"> <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test-circuitbreaker.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" alt="circuitbreaker workflow status" /> </a>
+* [coraza](./v3/coraza/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Test+Coraza%22"> <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test-coraza.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" alt="coraza workflow status" /> </a>
 * [fgprof](./v3/fgprof/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Test+Fgprof%22"> <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test-fgprof.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" alt="fgprof workflow status" /> </a>
 * [i18n](./v3/i18n/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Test+i18n%22"> <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test-i18n.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" alt="i18n workflow status" /> </a>
 * [sentry](./v3/sentry/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Test+sentry%22"> <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test-sentry.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" alt="sentry workflow status" /> </a>
@@ -50,5 +51,20 @@ Repository for third party middlewares and service implementations, with depende
 
 Fiber is an open-source project that runs on donations to pay the bills, e.g., our domain name, hosting, and serverless infrastructure. If you want to support Fiber, please become a [GitHub Sponsor](https://github.com/sponsors/gofiber).
 
-<!-- sponsors --><!-- sponsors -->
+<!-- sponsors -->
+
+### 📅 Monthly Sponsors
+
+<table>
+<tr><td valign="top"><strong>🔥 Fiber Guardian</strong></td><td><a href="https://www.coderabbit.ai/?utm_source=cr_org&amp;utm_medium=github" title="@coderabbitai"><img src="https://github.com/coderabbitai.png" width="50" alt="@coderabbitai" /></a></td></tr>
+<tr><td valign="top"><strong>☕ Fiber Supporter</strong></td><td><a href="https://ndole.studio" title="@NdoleStudio"><img src="https://github.com/NdoleStudio.png" width="34" alt="@NdoleStudio" /></a>&nbsp;<a href="https://cyberapper.ai" title="@petercool"><img src="https://github.com/petercool.png" width="34" alt="@petercool" /></a></td></tr>
+<tr><td valign="top"><strong>🪴 Fiber Friend</strong></td><td><a href="https://github.com/simonheisstpeter" title="@simonheisstpeter"><img src="https://github.com/simonheisstpeter.png" width="32" alt="@simonheisstpeter" /></a>&nbsp;<a href="https://github.com/bsdrop" title="@bsdrop"><img src="https://github.com/bsdrop.png" width="32" alt="@bsdrop" /></a></td></tr>
+</table>
+
+### 🎁 One-time Sponsors
+
+<table>
+<tr><td valign="top"><strong>🚀 Fiber Hero</strong></td><td><a href="https://www.thanks.dev" title="@thnxdev"><img src="https://github.com/thnxdev.png" width="40" alt="@thnxdev" /></a></td></tr>
+</table>
+<!-- sponsors -->
 <!-- skip-docs -->
