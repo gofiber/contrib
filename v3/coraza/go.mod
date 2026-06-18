@@ -5,6 +5,7 @@ go 1.26.4
 require (
 	github.com/corazawaf/coraza/v3 v3.7.0
 	github.com/gofiber/fiber/v3 v3.3.0
+	github.com/valyala/fasthttp v1.71.0
 )
 
 require (
@@ -16,7 +17,7 @@ require (
 	github.com/gofiber/utils/v2 v2.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/kaptinlin/jsonpointer v0.4.26 // indirect
-	github.com/kaptinlin/jsonschema v0.8.0 // indirect
+	github.com/kaptinlin/jsonschema v0.8.1 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/magefile/mage v1.17.2 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
@@ -29,7 +30,6 @@ require (
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/valllabh/ocsf-schema-golang v1.0.3 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
-	github.com/valyala/fasthttp v1.71.0 // indirect
 	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
