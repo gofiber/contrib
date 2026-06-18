@@ -6,22 +6,63 @@ import (
 	"strings"
 	"testing"
 
-	casbinv3 "github.com/casbin/casbin/v3"
-	casbinv3model "github.com/casbin/casbin/v3/model"
-	casbinv3persist "github.com/casbin/casbin/v3/persist"
+	"github.com/casbin/casbin/v3"
+	"github.com/casbin/casbin/v3/model"
+	"github.com/casbin/casbin/v3/persist"
 	"github.com/gofiber/fiber/v3"
 )
 
-// mockAdapterV3 is a v3-compatible in-memory policy adapter for testing.
-type mockAdapterV3 struct {
+var (
+	subjectAlice = func(c fiber.Ctx) string { return "alice" }
+	subjectBob   = func(c fiber.Ctx) string { return "bob" }
+	subjectEmpty = func(c fiber.Ctx) string { return "" }
+)
+
+const (
+	modelConf = `
+	[request_definition]
+	r = sub, obj, act
+
+	[policy_definition]
+	p = sub, obj, act
+
+	[role_definition]
+	g = _, _
+
+	[policy_effect]
+	e = some(where (p.eft == allow))
+
+	[matchers]
+	m = g(r.sub, p.sub) && r.obj == p.obj && r.act == p.act`
+
+	policyList = `
+	p,admin,blog,create
+	p,admin,blog,update
+	p,admin,blog,delete
+	p,user,comment,create
+	p,user,comment,delete
+
+	p,admin,/blog,POST
+	p,admin,/blog/1,PUT
+	p,admin,/blog/1,DELETE
+	p,user,/comment,POST
+
+
+	g,alice,admin
+	g,alice,user
+	g,bob,user`
+)
+
+// mockAdapter is an in-memory policy adapter for testing.
+type mockAdapter struct {
 	text string
 }
 
-func newMockAdapterV3(text string) *mockAdapterV3 {
-	return &mockAdapterV3{text: text}
+func newMockAdapter(text string) *mockAdapter {
+	return &mockAdapter{text: text}
 }
 
-func (ma *mockAdapterV3) LoadPolicy(model casbinv3model.Model) error {
+func (ma *mockAdapter) LoadPolicy(model model.Model) error {
 	if ma.text == "" {
 		return errors.New("text is required")
 	}
@@ -30,7 +71,7 @@ func (ma *mockAdapterV3) LoadPolicy(model casbinv3model.Model) error {
 		if str == "" {
 			continue
 		}
-		if err := casbinv3persist.LoadPolicyLine(str, model); err != nil {
+		if err := persist.LoadPolicyLine(str, model); err != nil {
 			return err
 		}
 	}
@@ -38,29 +79,29 @@ func (ma *mockAdapterV3) LoadPolicy(model casbinv3model.Model) error {
 	return nil
 }
 
-func (ma *mockAdapterV3) SavePolicy(model casbinv3model.Model) error {
+func (ma *mockAdapter) SavePolicy(model model.Model) error {
 	return errors.New("not implemented")
 }
 
-func (ma *mockAdapterV3) AddPolicy(sec string, ptype string, rule []string) error {
+func (ma *mockAdapter) AddPolicy(sec string, ptype string, rule []string) error {
 	return errors.New("not implemented")
 }
 
-func (ma *mockAdapterV3) RemovePolicy(sec string, ptype string, rule []string) error {
+func (ma *mockAdapter) RemovePolicy(sec string, ptype string, rule []string) error {
 	return errors.New("not implemented")
 }
 
-func (ma *mockAdapterV3) RemoveFilteredPolicy(sec string, ptype string, fieldIndex int, fieldValues ...string) error {
+func (ma *mockAdapter) RemoveFilteredPolicy(sec string, ptype string, fieldIndex int, fieldValues ...string) error {
 	return errors.New("not implemented")
 }
 
-func setupV3() (*casbinv3.Enforcer, error) {
-	m, err := casbinv3model.NewModelFromString(modelConf)
+func setup() (*casbin.Enforcer, error) {
+	m, err := model.NewModelFromString(modelConf)
 	if err != nil {
 		return nil, err
 	}
 
-	enf, err := casbinv3.NewEnforcer(m, newMockAdapterV3(policyList))
+	enf, err := casbin.NewEnforcer(m, newMockAdapter(policyList))
 	if err != nil {
 		return nil, err
 	}
@@ -68,8 +109,8 @@ func setupV3() (*casbinv3.Enforcer, error) {
 	return enf, nil
 }
 
-func Test_RequiresPermission_V3(t *testing.T) {
-	enf, err := setupV3()
+func Test_RequiresPermission(t *testing.T) {
+	enf, err := setup()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +190,7 @@ func Test_RequiresPermission_V3(t *testing.T) {
 	for _, tC := range testCases {
 		app := fiber.New()
 
-		authz := NewV3(ConfigV3{
+		authz := New(Config{
 			Enforcer: enf,
 			Lookup:   tC.lookup,
 		})
@@ -180,8 +221,8 @@ func Test_RequiresPermission_V3(t *testing.T) {
 	}
 }
 
-func Test_RequiresRoles_V3(t *testing.T) {
-	enf, err := setupV3()
+func Test_RequiresRoles(t *testing.T) {
+	enf, err := setup()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +302,7 @@ func Test_RequiresRoles_V3(t *testing.T) {
 	for _, tC := range testCases {
 		app := fiber.New()
 
-		authz := NewV3(ConfigV3{
+		authz := New(Config{
 			Enforcer: enf,
 			Lookup:   tC.lookup,
 		})
@@ -292,8 +333,8 @@ func Test_RequiresRoles_V3(t *testing.T) {
 	}
 }
 
-func Test_RoutePermission_V3(t *testing.T) {
-	enf, err := setupV3()
+func Test_RoutePermission(t *testing.T) {
+	enf, err := setup()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +392,7 @@ func Test_RoutePermission_V3(t *testing.T) {
 
 	app := fiber.New()
 
-	authz := NewV3(ConfigV3{
+	authz := New(Config{
 		Enforcer: enf,
 		Lookup: func(c fiber.Ctx) string {
 			return c.Get("x-subject")

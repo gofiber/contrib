@@ -7,7 +7,10 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// Config holds the configuration for the middleware
+// Config holds the configuration for the middleware.
+//
+// Deprecated: this module targets Casbin v2, which is frozen upstream. Use
+// github.com/gofiber/contrib/v3/casbin/v2, which targets Casbin v3.
 type Config struct {
 	// ModelFilePath is path to model file for Casbin.
 	// Optional. Default: "./model.conf".
@@ -17,8 +20,8 @@ type Config struct {
 	// Optional. Default: fileadapter.NewAdapter("./policy.csv").
 	PolicyAdapter persist.Adapter
 
-	// Enforcer is a Casbin v2 enforcer. If you want to use your own enforcer.
-	// Optional. Default: nil (one is created from ModelFilePath and PolicyAdapter).
+	// Enforcer is an enforcer. If you want to use your own enforcer.
+	// Optional. Default: nil
 	Enforcer *casbin.Enforcer
 
 	// Lookup is a function that is used to look up current subject.
