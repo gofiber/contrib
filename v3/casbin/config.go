@@ -17,7 +17,7 @@ type Config struct {
 	// Optional. Default: fileadapter.NewAdapter("./policy.csv").
 	PolicyAdapter persist.Adapter
 
-	// Enforcer is a Casbin v3 enforcer. If you want to use your own enforcer.
+	// Enforcer is a Casbin enforcer. If you want to use your own enforcer.
 	// Optional. Default: nil (one is created from ModelFilePath and PolicyAdapter).
 	Enforcer *casbin.Enforcer
 

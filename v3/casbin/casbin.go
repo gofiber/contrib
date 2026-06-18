@@ -7,7 +7,7 @@ import (
 )
 
 // Middleware holds the enforce and role-lookup functions resolved at
-// construction time from a Casbin v3 enforcer, plus the shared handler config.
+// construction time from a Casbin enforcer, plus the shared handler config.
 type Middleware struct {
 	lookup       func(fiber.Ctx) string
 	unauthorized fiber.Handler

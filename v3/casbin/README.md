@@ -43,7 +43,7 @@ casbin.New(config ...casbin.Config) *casbin.Middleware
 |:--------------|:--------------------------|:-----------------------------------------|:--------------------------------------------------------------|
 | ModelFilePath | `string`                  | Model file path                        | `"./model.conf"`                                                    |
 | PolicyAdapter | `persist.Adapter`         | Database adapter for policies            | `./policy.csv`                                                      |
-| Enforcer      | `*casbin.Enforcer`        | Custom casbin v3 enforcer                | `Middleware generated enforcer using ModelFilePath & PolicyAdapter` |
+| Enforcer      | `*casbin.Enforcer`        | Custom casbin enforcer                   | `Middleware generated enforcer using ModelFilePath & PolicyAdapter` |
 | Lookup        | `func(fiber.Ctx) string`  | Look up for current subject              | `""`                                                              |
 | Unauthorized  | `func(fiber.Ctx) error`   | Response body for unauthorized responses | `Unauthorized`                                                      |
 | Forbidden     | `func(fiber.Ctx) error`   | Response body for forbidden responses    | `Forbidden`                                                         |
