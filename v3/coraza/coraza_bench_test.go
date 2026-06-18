@@ -28,18 +28,27 @@ SecRule REQUEST_BODY "@contains attack" "id:1002,phase:2,deny,status:403,msg:'bo
 const benchBodyLimit = 4 * 1024 * 1024
 
 var (
-	benchBody1KBAllow   = bytes.Repeat([]byte("payload=safe&"), 78)
+	// "payload=safe&" is 13 bytes; the repeat counts size each body to the
+	// labelled order of magnitude (78*13 ~= 1KB, 5041*13 ~= 64KB).
+	benchBody1KBAllow = bytes.Repeat([]byte("payload=safe&"), 78)
+	// benchBody1KBBlock ends in "payload=attack" so it triggers benchBodyRules.
 	benchBody1KBBlock   = append(bytes.Repeat([]byte("payload=safe&"), 77), []byte("payload=attack")...)
 	benchBody64KBAllow  = bytes.Repeat([]byte("payload=safe&"), 5041)
 	benchObserveLatency = 2 * time.Millisecond
 )
 
+// BenchmarkFiberBaseline_GET measures a plain Fiber app driven through the
+// app.Test harness with no Coraza middleware attached. The Coraza_* app-level
+// benchmarks share that same harness, so this baseline is the reference to
+// subtract when reading their numbers as middleware overhead. The lower-level
+// BenchmarkProcessRequest_* / BenchmarkCorazaTransaction_* benchmarks isolate
+// the middleware cost without the harness.
 func BenchmarkFiberBaseline_GET(b *testing.B) {
 	b.ReportAllocs()
 
 	app := newBenchmarkApp(b, nil)
 	req := httptest.NewRequest(http.MethodGet, "/?name=safe", nil)
-	benchmarkAppRequest(b, app, func() *http.Request {
+	benchmarkAppRequest(b, app, http.StatusOK, func() *http.Request {
 		return req
 	})
 }
@@ -50,7 +59,7 @@ func BenchmarkCoraza_NoRules_GET(b *testing.B) {
 	engine := newBenchmarkEngine(b, "")
 	app := newBenchmarkApp(b, engine)
 	req := httptest.NewRequest(http.MethodGet, "/?name=safe", nil)
-	benchmarkAppRequest(b, app, func() *http.Request {
+	benchmarkAppRequest(b, app, http.StatusOK, func() *http.Request {
 		return req
 	})
 }
@@ -61,7 +70,7 @@ func BenchmarkCoraza_QueryRule_GET_Allow(b *testing.B) {
 	engine := newBenchmarkEngine(b, benchQueryRules)
 	app := newBenchmarkApp(b, engine)
 	req := httptest.NewRequest(http.MethodGet, "/?name=safe", nil)
-	benchmarkAppRequest(b, app, func() *http.Request {
+	benchmarkAppRequest(b, app, http.StatusOK, func() *http.Request {
 		return req
 	})
 }
@@ -72,7 +81,7 @@ func BenchmarkCoraza_QueryRule_GET_Block(b *testing.B) {
 	engine := newBenchmarkEngine(b, benchQueryRules)
 	app := newBenchmarkApp(b, engine)
 	req := httptest.NewRequest(http.MethodGet, "/?attack=1", nil)
-	benchmarkAppRequest(b, app, func() *http.Request {
+	benchmarkAppRequest(b, app, http.StatusForbidden, func() *http.Request {
 		return req
 	})
 }
@@ -82,7 +91,7 @@ func BenchmarkCoraza_BodyRule_POST_1KB_Allow(b *testing.B) {
 
 	engine := newBenchmarkEngine(b, benchBodyRules)
 	app := newBenchmarkApp(b, engine)
-	benchmarkAppRequest(b, app, func() *http.Request {
+	benchmarkAppRequest(b, app, http.StatusOK, func() *http.Request {
 		return newBenchmarkPostRequest(benchBody1KBAllow)
 	})
 }
@@ -92,7 +101,7 @@ func BenchmarkCoraza_BodyRule_POST_1KB_Block(b *testing.B) {
 
 	engine := newBenchmarkEngine(b, benchBodyRules)
 	app := newBenchmarkApp(b, engine)
-	benchmarkAppRequest(b, app, func() *http.Request {
+	benchmarkAppRequest(b, app, http.StatusForbidden, func() *http.Request {
 		return newBenchmarkPostRequest(benchBody1KBBlock)
 	})
 }
@@ -102,7 +111,7 @@ func BenchmarkCoraza_BodyRule_POST_64KB_Allow(b *testing.B) {
 
 	engine := newBenchmarkEngine(b, benchBodyRules)
 	app := newBenchmarkApp(b, engine)
-	benchmarkAppRequest(b, app, func() *http.Request {
+	benchmarkAppRequest(b, app, http.StatusOK, func() *http.Request {
 		return newBenchmarkPostRequest(benchBody64KBAllow)
 	})
 }
@@ -115,7 +124,7 @@ func BenchmarkCoraza_ManyHeaders_GET(b *testing.B) {
 	req := httptest.NewRequest(http.MethodGet, "/?name=safe", nil)
 	addBenchmarkHeaders(req.Header, 64)
 
-	benchmarkAppRequest(b, app, func() *http.Request {
+	benchmarkAppRequest(b, app, http.StatusOK, func() *http.Request {
 		return req
 	})
 }
@@ -195,7 +204,7 @@ func BenchmarkCorazaTransaction_Direct_GET(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		tx := waf.NewTransaction()
-		processDirectRequest(b, tx, http.MethodGet, "/?name=safe", nil, 1)
+		processDirectRequest(b, tx, http.MethodGet, "/?name=safe", nil)
 		closeTransaction(b, tx)
 	}
 }
@@ -208,7 +217,7 @@ func BenchmarkCorazaTransaction_Direct_POST_1KB(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		tx := waf.NewTransaction()
-		processDirectRequest(b, tx, http.MethodPost, "/", benchBody1KBAllow, 1)
+		processDirectRequest(b, tx, http.MethodPost, "/", benchBody1KBAllow)
 		closeTransaction(b, tx)
 	}
 }
@@ -299,12 +308,18 @@ func newBenchmarkApp(b *testing.B, engine *Engine) *fiber.App {
 	return app
 }
 
-func benchmarkAppRequest(b *testing.B, app *fiber.App, newReq func() *http.Request) {
+func benchmarkAppRequest(b *testing.B, app *fiber.App, wantStatus int, newReq func() *http.Request) {
 	b.Helper()
 
+	// Warm-up request, asserting the path actually exercised matches the
+	// benchmark label (e.g. a "_Block" case must really return 403, otherwise
+	// a broken rule would silently turn it into an allow-path measurement).
 	resp, err := app.Test(newReq())
 	if err != nil {
 		b.Fatal(err)
+	}
+	if resp.StatusCode != wantStatus {
+		b.Fatalf("unexpected status code: got %d, want %d", resp.StatusCode, wantStatus)
 	}
 	closeResponseBody(b, resp)
 
@@ -346,16 +361,13 @@ func newBenchmarkCtx(b *testing.B, method, uri string, body []byte) (*fiber.App,
 	return app, app.AcquireCtx(fctx)
 }
 
-func processDirectRequest(b *testing.B, tx types.Transaction, method, uri string, body []byte, headerCount int) {
+func processDirectRequest(b *testing.B, tx types.Transaction, method, uri string, body []byte) {
 	b.Helper()
 
 	tx.ProcessConnection("127.0.0.1", 1234, "", 0)
 	tx.ProcessURI(uri, method, "HTTP/1.1")
 	tx.AddRequestHeader("Host", "example.com")
 	tx.SetServerName("example.com")
-	for i := 0; i < headerCount; i++ {
-		tx.AddRequestHeader("X-Bench-"+strconv.Itoa(i), "value-"+strconv.Itoa(i))
-	}
 	if it := tx.ProcessRequestHeaders(); it != nil {
 		return
 	}
