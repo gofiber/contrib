@@ -28,8 +28,17 @@ go get -u github.com/casbin/xorm-adapter
 
 ## Signature
 ```go
+// Casbin v2
 casbin.New(config ...casbin.Config) *casbin.Middleware
+
+// Casbin v3
+casbin.NewV3(config ...casbin.ConfigV3) *casbin.Middleware
 ```
+
+Both constructors return the same `*casbin.Middleware`, so `RequiresPermissions`,
+`RoutePermission` and `RequiresRoles` are used identically regardless of the
+Casbin version. Pick `New` for a `casbin/v2` enforcer or `NewV3` for a
+`casbin/v3` enforcer.
 
 ## Config
 
@@ -41,6 +50,30 @@ casbin.New(config ...casbin.Config) *casbin.Middleware
 | Lookup        | `func(fiber.Ctx) string`  | Look up for current subject              | `""`                                                              |
 | Unauthorized  | `func(fiber.Ctx) error`   | Response body for unauthorized responses | `Unauthorized`                                                      |
 | Forbidden     | `func(fiber.Ctx) error`   | Response body for forbidden responses    | `Forbidden`                                                         |
+
+## ConfigV3
+
+`ConfigV3` mirrors `Config` but targets a Casbin v3 enforcer and adapter.
+
+| Property      | Type                        | Description                              | Default                                                             |
+|:--------------|:----------------------------|:-----------------------------------------|:--------------------------------------------------------------------|
+| ModelFilePath | `string`                    | Model file path                          | `"./model.conf"`                                                    |
+| PolicyAdapter | `casbin/v3/persist.Adapter` | Database adapter for policies            | `./policy.csv`                                                      |
+| Enforcer      | `*casbinv3.Enforcer`        | Custom casbin v3 enforcer                | `Middleware generated enforcer using ModelFilePath & PolicyAdapter` |
+| Lookup        | `func(fiber.Ctx) string`    | Look up for current subject              | `""`                                                                |
+| Unauthorized  | `func(fiber.Ctx) error`     | Response body for unauthorized responses | `Unauthorized`                                                      |
+| Forbidden     | `func(fiber.Ctx) error`     | Response body for forbidden responses    | `Forbidden`                                                         |
+
+```go
+import casbinv3 "github.com/casbin/casbin/v3"
+
+authz := casbin.NewV3(casbin.ConfigV3{
+    Enforcer: enforcer, // *casbinv3.Enforcer
+    Lookup: func(c fiber.Ctx) string {
+        return "" // fetch authenticated user subject
+    },
+})
+```
 
 ### Examples
 - [Gorm Adapter](https://github.com/svcg/-fiber_casbin_demo)

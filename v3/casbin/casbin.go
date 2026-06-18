@@ -153,4 +153,3 @@ func (m *Middleware) RequiresRoles(roles []string, opts ...Option) fiber.Handler
 		return c.Next()
 	}
 }
-
