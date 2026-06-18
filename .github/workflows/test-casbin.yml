@@ -9,13 +9,11 @@ on:
       - 'v3/casbin/**/*.go'
       - 'v3/casbin/go.mod'
       - 'v3/casbin/go.sum'
-      - '!v3/casbin/v2/**'
   pull_request:
     paths:
       - 'v3/casbin/**/*.go'
       - 'v3/casbin/go.mod'
       - 'v3/casbin/go.sum'
-      - '!v3/casbin/v2/**'
 
   workflow_dispatch:
 
