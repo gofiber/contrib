@@ -124,7 +124,7 @@ was reported by heartbeat, maintenance, or snapshot reads.
 | IDGenerator | `uptime.IDGenerator` | Custom instance ID generator. | `nil` |
 | SQLite | `uptime.SQLiteConfig` | SQLite store settings. | `Path: "./data/uptime.db"` |
 | Snapshot | `uptime.SnapshotConfig` | Snapshot cache settings. | Cache enabled, `CacheTTL: SampleInterval` |
-| UI | `uptime.UIConfig` | Dashboard copy and thresholds. | Light English UI |
+| UI | `uptime.UIConfig` | Dashboard copy and thresholds. | Light English UI, green at `99.9%`, yellow at `99%` |
 
 ## Handler behavior
 

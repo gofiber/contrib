@@ -12,8 +12,8 @@ const (
 	defaultSampleInterval  = 3 * time.Second
 	defaultRetentionDays   = 90
 	defaultDaysToShow      = 30
-	defaultGreenThreshold  = 0.99
-	defaultYellowThreshold = 0.95
+	defaultGreenThreshold  = 0.999
+	defaultYellowThreshold = 0.99
 	defaultUIPath          = "/uptime"
 	defaultUITitle         = "Fiber Uptime"
 	defaultUIDescription   = "Historical uptime for Fiber services."
