@@ -30,7 +30,7 @@ go get -u github.com/gofiber/contrib/v3/uptime
 uptime.New(config ...uptime.Config) (*uptime.Uptime, error)
 up.Handler() fiber.Handler
 up.Close() error
-up.LastError() (error, time.Time)
+up.LastError() (time.Time, error)
 up.Snapshot(ctx context.Context) (uptime.Snapshot, error)
 up.CachedSnapshot(ctx context.Context) (uptime.Snapshot, error)
 ```

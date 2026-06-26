@@ -375,7 +375,7 @@ func TestBuildStatusDoesNotClearRuntimeError(t *testing.T) {
 	requireEqual(t, "degraded", status.Storage.Status)
 	requireContains(t, status.Storage.LastError, "write heartbeat failed")
 
-	lastErr, _ := u.LastError()
+	_, lastErr := u.LastError()
 	if !errors.Is(lastErr, runtimeErr) {
 		t.Fatalf("last error = %v, want %v", lastErr, runtimeErr)
 	}
@@ -469,7 +469,7 @@ func TestLastErrorAllowsNilReceiver(t *testing.T) {
 	t.Parallel()
 
 	var nilUptime *Uptime
-	err, at := nilUptime.LastError()
+	at, err := nilUptime.LastError()
 	if err != nil {
 		t.Fatalf("last error = %v, want nil", err)
 	}

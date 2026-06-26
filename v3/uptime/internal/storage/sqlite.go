@@ -141,7 +141,7 @@ GROUP BY service_id, day
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 
 	type rollupRow struct {
 		serviceID string
@@ -172,7 +172,7 @@ ON CONFLICT(service_id, day) DO UPDATE SET
 	if err != nil {
 		return err
 	}
-	defer stmt.Close()
+	defer closeStmt(stmt)
 
 	for _, row := range rowsToWrite {
 		expected := 0
@@ -218,7 +218,7 @@ ORDER BY service_id
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 
 	var services []Service
 	for rows.Next() {
@@ -245,7 +245,7 @@ ORDER BY service_id, day
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 
 	var statuses []DailyStatus
 	for rows.Next() {
@@ -271,7 +271,7 @@ ORDER BY service_id
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 
 	var statuses []TodaySampleStatus
 	for rows.Next() {
@@ -384,4 +384,12 @@ func rate(upSlots, expectedSlots int) float64 {
 
 func rollback(tx *sql.Tx) {
 	_ = tx.Rollback()
+}
+
+func closeRows(rows *sql.Rows) {
+	_ = rows.Close()
+}
+
+func closeStmt(stmt *sql.Stmt) {
+	_ = stmt.Close()
 }

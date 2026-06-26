@@ -286,7 +286,7 @@ func dayRange(now time.Time, count int, loc *time.Location) []string {
 }
 
 func (u *Uptime) storageStatus() StorageResponse {
-	err, at := u.LastError()
+	at, err := u.LastError()
 	storage := StorageResponse{
 		Driver: storeDriver(u.store),
 		Status: "ok",
@@ -331,10 +331,6 @@ func slotOf(t time.Time, interval time.Duration, loc *time.Location) int64 {
 		return 0
 	}
 	return int64(elapsed / interval)
-}
-
-func expectedSlotsSoFar(now time.Time, interval time.Duration, loc *time.Location) int {
-	return expectedSlotsSoFarSince(now, time.Time{}, interval, loc)
 }
 
 func expectedSlotsSoFarSince(now, createdAt time.Time, interval time.Duration, loc *time.Location) int {

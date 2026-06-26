@@ -153,13 +153,13 @@ func (u *Uptime) Close() error {
 }
 
 // LastError returns the most recent runtime store error, if any.
-func (u *Uptime) LastError() (error, time.Time) {
+func (u *Uptime) LastError() (time.Time, error) {
 	if u == nil {
-		return nil, time.Time{}
+		return time.Time{}, nil
 	}
 	u.errMu.RLock()
 	defer u.errMu.RUnlock()
-	return u.lastErr, u.lastErrAt
+	return u.lastErrAt, u.lastErr
 }
 
 // Handler returns a Fiber-native handler for the dashboard and JSON API.
