@@ -122,7 +122,17 @@ func TestHandlerDashboardHTML(t *testing.T) {
 	requireEqual(t, fiber.MIMETextHTMLCharsetUTF8, resp.Header.Get(fiber.HeaderContentType))
 	requireContains(t, bodyText, "<title>Fiber Uptime</title>")
 	requireContains(t, bodyText, `const apiPath = "/uptime/api/status";`)
+	requireContains(t, bodyText, `id="summary-services"`)
+	requireContains(t, bodyText, `id="summary-up"`)
+	requireContains(t, bodyText, `id="summary-down"`)
+	requireContains(t, bodyText, `const refreshMS =`)
+	requireContains(t, bodyText, `10000`)
+	requireContains(t, bodyText, `date.getFullYear() + "-" + pad(date.getDate()) + "-" + pad(date.getMonth() + 1)`)
 	requireContains(t, bodyText, up.config.ServiceID)
+	requireNotContains(t, bodyText, `data-theme=`)
+	requireNotContains(t, bodyText, `data-background=`)
+	requireNotContains(t, bodyText, `lang-toggle`)
+	requireNotContains(t, bodyText, `theme-toggle`)
 }
 
 func TestHandlerHeadDashboard(t *testing.T) {
@@ -438,5 +448,12 @@ func requireContains(t *testing.T, got, want string) {
 	t.Helper()
 	if !strings.Contains(got, want) {
 		t.Fatalf("%q does not contain %q", got, want)
+	}
+}
+
+func requireNotContains(t *testing.T, got, want string) {
+	t.Helper()
+	if strings.Contains(got, want) {
+		t.Fatalf("%q contains %q", got, want)
 	}
 }

@@ -117,7 +117,7 @@ Use `Snapshot(ctx)` when you need a fresh store read.
 | ServiceDescription | `string` | Display description. | `""` |
 | SampleInterval | `time.Duration` | Heartbeat interval. | `3 * time.Second` |
 | RetentionDays | `int` | Number of days to retain daily history. | `90` |
-| DaysToShow | `int` | Number of days shown in snapshots and dashboard. | `90` |
+| DaysToShow | `int` | Number of days shown in snapshots and dashboard. | `30` |
 | Timezone | `*time.Location` | Timezone for day and slot boundaries. | `time.Local` |
 | NodeID | `int64` | Optional node value used for generated instance IDs. | `0` |
 | InstanceID | `int64` | Explicit process instance ID. | Generated |

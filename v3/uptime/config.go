@@ -11,7 +11,7 @@ import (
 const (
 	defaultSampleInterval  = 3 * time.Second
 	defaultRetentionDays   = 90
-	defaultDaysToShow      = 90
+	defaultDaysToShow      = 30
 	defaultGreenThreshold  = 0.99
 	defaultYellowThreshold = 0.95
 	defaultUIPath          = "/uptime"

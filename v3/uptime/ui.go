@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"html/template"
-	"strconv"
 	"time"
 )
 
@@ -14,17 +13,10 @@ type dashboardPage struct {
 	Footer      string
 	APIPathJSON template.JS
 	RefreshMS   int64
-	Status      StatusResponse
 	StatusJSON  template.JS
 }
 
-var dashboardTemplate = template.Must(template.New("uptime").Funcs(template.FuncMap{
-	"formatTime":     formatTime,
-	"formatRate":     formatRate,
-	"formatDowntime": formatDowntime,
-	"statusClass":    statusClass,
-	"dayTitle":       dayTitle,
-}).Parse(dashboardHTML))
+var dashboardTemplate = template.Must(template.New("uptime").Parse(dashboardHTML))
 
 func renderDashboardHTML(config Config, status StatusResponse) (string, error) {
 	statusJSON, err := json.Marshal(status)
@@ -40,8 +32,7 @@ func renderDashboardHTML(config Config, status StatusResponse) (string, error) {
 		Description: config.UI.Description,
 		Footer:      config.UI.Footer,
 		APIPathJSON: template.JS(apiPathJSON),
-		RefreshMS:   maxInt64(int64(config.SampleInterval/time.Millisecond), 3000),
-		Status:      status,
+		RefreshMS:   maxInt64(int64(config.SampleInterval/time.Millisecond), 10000),
 		StatusJSON:  template.JS(statusJSON),
 	}
 	var buf bytes.Buffer
@@ -58,244 +49,874 @@ func maxInt64(a, b int64) int64 {
 	return b
 }
 
-func formatTime(t time.Time) string {
-	if t.IsZero() {
-		return "never"
-	}
-	return t.UTC().Format("2006-01-02 15:04:05 UTC")
-}
-
-func formatRate(rate float64) string {
-	return strconv.FormatFloat(rate*100, 'f', 2, 64) + "%"
-}
-
-func formatDowntime(seconds int64) string {
-	if seconds <= 0 {
-		return "0s"
-	}
-	d := time.Duration(seconds) * time.Second
-	hours := int64(d / time.Hour)
-	d -= time.Duration(hours) * time.Hour
-	minutes := int64(d / time.Minute)
-	d -= time.Duration(minutes) * time.Minute
-	secs := int64(d / time.Second)
-	if hours > 0 {
-		return strconv.FormatInt(hours, 10) + "h " + strconv.FormatInt(minutes, 10) + "m"
-	}
-	if minutes > 0 {
-		return strconv.FormatInt(minutes, 10) + "m " + strconv.FormatInt(secs, 10) + "s"
-	}
-	return strconv.FormatInt(secs, 10) + "s"
-}
-
-func statusClass(status string) string {
-	switch status {
-	case "green", "up":
-		return "ok"
-	case "yellow":
-		return "warn"
-	case "red", "down":
-		return "down"
-	default:
-		return "none"
-	}
-}
-
-func dayTitle(day DayStatus) string {
-	if !day.HasData {
-		return day.Day + ": no data"
-	}
-	return day.Day + ": " + formatRate(day.UptimeRate) + " uptime, " + formatDowntime(day.EstimatedDowntimeSeconds) + " estimated downtime"
-}
-
-const dashboardHTML = `<!DOCTYPE html>
-<html lang="en">
+const dashboardHTML = `<!doctype html>
+<html>
 <head>
-	<meta charset="UTF-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>{{ .Title }}</title>
-	<style>
-		:root {
-			color: #172033;
-			background: #f7f9fc;
-			font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-		}
-		* { box-sizing: border-box; }
-		body { margin: 0; min-width: 320px; }
-		main {
-			width: min(1120px, calc(100% - 32px));
-			margin: 0 auto;
-			padding: 32px 0;
-		}
-		header {
-			display: flex;
-			justify-content: space-between;
-			gap: 24px;
-			align-items: flex-start;
-			margin-bottom: 24px;
-		}
-		h1 { margin: 0 0 8px; font-size: 32px; line-height: 1.1; font-weight: 750; }
-		p { margin: 0; color: #5f6b7a; }
-		.meta { text-align: right; font-size: 14px; color: #5f6b7a; }
-		.meta strong { color: #172033; }
-		.service-list { display: grid; gap: 12px; }
-		.service {
-			background: #ffffff;
-			border: 1px solid #d9e0ea;
-			border-radius: 8px;
-			padding: 16px;
-			box-shadow: 0 8px 24px rgba(31, 45, 61, 0.06);
-		}
-		.service-head {
-			display: grid;
-			grid-template-columns: minmax(0, 1fr) auto;
-			gap: 16px;
-			align-items: start;
-			margin-bottom: 14px;
-		}
-		h2 { margin: 0; font-size: 18px; line-height: 1.25; }
-		.service-id { margin-top: 2px; font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; color: #748094; }
-		.badge {
-			display: inline-flex;
-			align-items: center;
-			min-width: 72px;
-			height: 28px;
-			justify-content: center;
-			border-radius: 999px;
-			font-size: 13px;
-			font-weight: 700;
-			text-transform: uppercase;
-		}
-		.badge.ok { color: #0f6b3f; background: #dff7ea; }
-		.badge.warn { color: #8a5a00; background: #fff1c7; }
-		.badge.down { color: #a42525; background: #ffe0e0; }
-		.badge.none { color: #596579; background: #ecf0f5; }
-		.stats {
-			display: grid;
-			grid-template-columns: repeat(3, minmax(0, 1fr));
-			gap: 10px;
-			margin-bottom: 14px;
-		}
-		.stat {
-			border: 1px solid #e5eaf1;
-			border-radius: 6px;
-			padding: 10px;
-			min-width: 0;
-		}
-		.stat span { display: block; color: #748094; font-size: 12px; margin-bottom: 4px; }
-		.stat strong { font-size: 14px; overflow-wrap: anywhere; }
-		.days {
-			display: grid;
-			grid-template-columns: repeat(auto-fit, minmax(8px, 1fr));
-			gap: 3px;
-			height: 34px;
-			align-items: stretch;
-		}
-		.day {
-			border-radius: 3px;
-			background: #dce3ed;
-		}
-		.day.ok { background: #24a267; }
-		.day.warn { background: #f3ba2f; }
-		.day.down { background: #d94d4d; }
-		.day.none { background: #dce3ed; }
-		.empty {
-			background: #ffffff;
-			border: 1px dashed #cbd5e1;
-			border-radius: 8px;
-			padding: 24px;
-			color: #5f6b7a;
-		}
-		footer { margin-top: 24px; color: #748094; font-size: 13px; }
-		@media (max-width: 720px) {
-			main { width: min(100% - 24px, 1120px); padding: 20px 0; }
-			header { display: block; }
-			.meta { text-align: left; margin-top: 12px; }
-			.service-head { grid-template-columns: 1fr; }
-			.stats { grid-template-columns: 1fr; }
-		}
-	</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="{{ .Description }}">
+  <title>{{ .Title }}</title>
+  <style>
+:root {
+  color-scheme: light;
+  --bg: #f3f6fa;
+  --panel: rgba(255, 255, 255, 0.72);
+  --panel-soft: rgba(235, 241, 248, 0.62);
+  --text: #0f172a;
+  --muted: #52657f;
+  --border: rgba(139, 156, 181, 0.42);
+  --accent: #0f8aa3;
+  --accent-soft: rgba(15, 138, 163, 0.1);
+  --good-rgb: 37 190 133;
+  --warn-rgb: 224 173 70;
+  --bad-rgb: 226 92 112;
+  --none-rgb: 142 157 178;
+  --bar-alpha: 0.68;
+  --bar-hover-alpha: 0.88;
+  --dot-good-rgb: 37 190 133;
+  --dot-warn-rgb: 224 173 70;
+  --dot-bad-rgb: 226 92 112;
+  --good: rgb(var(--good-rgb) / var(--bar-alpha));
+  --warn: rgb(var(--warn-rgb) / var(--bar-alpha));
+  --bad: rgb(var(--bad-rgb) / var(--bar-alpha));
+  --none: rgb(var(--none-rgb) / 0.36);
+  --shadow: 0 10px 26px rgba(40, 54, 74, 0.07);
+  --divider-line: #c46a1b;
+  --divider-glow: #f28c28;
+  --dock-fill: rgba(249, 115, 22, 0.9);
+  --dock-track: rgba(148, 79, 24, 0.12);
+  --dock-face-start: rgba(255, 247, 237, 0.78);
+  --dock-face-end: rgba(255, 237, 213, 0.64);
+  --dock-ring: rgba(154, 52, 18, 0.16);
+  --dock-text: rgba(67, 32, 12, 0.84);
+}
+* { box-sizing: border-box; }
+html, body { scrollbar-width: none; }
+html::-webkit-scrollbar, body::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+body {
+  margin: 0;
+  min-height: 100vh;
+  position: relative;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  line-height: 1.45;
+  letter-spacing: 0;
+}
+main {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  width: min(1360px, calc(100% - 32px));
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 20px 0 22px;
+}
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding-bottom: 0;
+}
+.header-main { min-width: 0; }
+h1 {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: clamp(1.7rem, 3.2vw, 2.7rem);
+  line-height: 1.05;
+  letter-spacing: 0;
+  font-weight: 780;
+}
+.header-side {
+  display: grid;
+  justify-items: end;
+  gap: 12px;
+}
+button {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+button:hover:not(.bar) {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+.status-box {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px;
+  grid-template-areas:
+    "summary state"
+    "updated response";
+  align-items: center;
+  justify-content: stretch;
+  gap: 7px 18px;
+  color: var(--muted);
+  text-align: right;
+  font-size: 0.92rem;
+  font-variant-numeric: tabular-nums;
+  min-width: 360px;
+  width: 360px;
+}
+.summary-metrics {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  grid-area: summary;
+  justify-self: start;
+  min-width: 0;
+}
+.summary-metric {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+.summary-metric strong {
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+.summary-metric.up strong { color: rgb(var(--dot-good-rgb) / 0.98); }
+.summary-metric.down strong { color: rgb(var(--dot-bad-rgb) / 0.98); }
+.status-line {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+  grid-area: state;
+  color: var(--text);
+  font-weight: 800;
+  justify-self: stretch;
+}
+.status-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+#live-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: rgb(var(--dot-good-rgb) / 0.96);
+  box-shadow: 0 0 0 4px rgb(var(--dot-good-rgb) / 0.2);
+}
+#live-dot[data-status="stale"] {
+  background: rgb(var(--dot-warn-rgb) / 0.96);
+  box-shadow: 0 0 0 4px rgb(var(--dot-warn-rgb) / 0.2);
+}
+#live-dot[data-status="error"] {
+  background: rgb(var(--dot-bad-rgb) / 0.96);
+  box-shadow: 0 0 0 4px rgb(var(--dot-bad-rgb) / 0.2);
+}
+#updated-at {
+  grid-area: updated;
+  justify-self: start;
+  white-space: nowrap;
+}
+#response-time {
+  grid-area: response;
+  justify-self: stretch;
+  text-align: left;
+  white-space: nowrap;
+}
+.header-divider {
+  position: relative;
+  height: 38px;
+  overflow: hidden;
+  margin: 4px 0;
+}
+.header-divider:before {
+  content: "";
+  position: absolute;
+  left: 6%;
+  right: 6%;
+  top: 50%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--divider-line), transparent 78%), transparent);
+}
+.header-divider:after {
+  content: "";
+  top: 50%;
+  position: absolute;
+  left: 6%;
+  width: 18%;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--divider-glow), transparent 24%), transparent);
+  box-shadow: 0 0 22px color-mix(in srgb, var(--divider-glow), transparent 64%);
+  animation: moveGlow 3.2s ease-in-out infinite;
+}
+@keyframes moveGlow {
+  0% { transform: translateX(-30%); opacity: 0; }
+  18%, 82% { opacity: 1; }
+  100% { transform: translateX(470%); opacity: 0; }
+}
+.description-card {
+  margin-top: 4px;
+  padding: 12px 14px 12px 16px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  background: color-mix(in srgb, var(--panel), transparent 36%);
+  color: var(--muted);
+  font-size: 0.93rem;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--border), transparent 65%);
+}
+.description-card p {
+  margin: 0;
+  max-width: 78ch;
+}
+.services {
+  display: grid;
+  gap: 14px;
+  margin-top: 20px;
+}
+.service {
+  display: grid;
+  grid-template-columns: minmax(180px, 270px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: center;
+  min-width: 0;
+  padding: 15px;
+  background: var(--panel);
+  border: 3px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  overflow: visible;
+}
+.service-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.service-dot {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: rgb(var(--dot-bad-rgb) / 0.96);
+  box-shadow: 0 0 0 4px rgb(var(--dot-bad-rgb) / 0.18);
+}
+.service-dot.up {
+  background: rgb(var(--dot-good-rgb) / 0.96);
+  box-shadow: 0 0 0 4px rgb(var(--dot-good-rgb) / 0.18);
+}
+.name {
+  min-width: 0;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+.description {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.86rem;
+  overflow-wrap: anywhere;
+}
+.last-seen {
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.bars {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(7px, 1fr);
+  gap: 4px;
+  align-items: end;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 44px;
+  overflow: visible;
+}
+.bar {
+  position: relative;
+  height: 38px;
+  min-width: 7px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: var(--none);
+  cursor: pointer;
+  transition: background-color 120ms ease, filter 120ms ease;
+}
+.bar:hover,
+.bar:focus-visible,
+.bar.is-active {
+  outline: none;
+  box-shadow: none;
+  transform: none;
+  filter: saturate(1.04) brightness(.9);
+}
+.bar.green { background-color: rgb(var(--good-rgb) / var(--bar-alpha)); }
+.bar.yellow { background-color: rgb(var(--warn-rgb) / var(--bar-alpha)); }
+.bar.red { background-color: rgb(var(--bad-rgb) / var(--bar-alpha)); }
+.bar.gray {
+  background-color: var(--none);
+  opacity: .72;
+}
+.bar.green:hover,
+.bar.green:focus-visible,
+.bar.green.is-active {
+  background-color: rgb(var(--good-rgb) / var(--bar-hover-alpha));
+}
+.bar.yellow:hover,
+.bar.yellow:focus-visible,
+.bar.yellow.is-active {
+  background-color: rgb(var(--warn-rgb) / var(--bar-hover-alpha));
+}
+.bar.red:hover,
+.bar.red:focus-visible,
+.bar.red.is-active {
+  background-color: rgb(var(--bad-rgb) / var(--bar-hover-alpha));
+}
+.bar.gray:hover,
+.bar.gray:focus-visible,
+.bar.gray.is-active {
+  background-color: rgb(var(--none-rgb) / 0.52);
+}
+.empty {
+  margin-top: 28px;
+  padding: 18px 0;
+  color: var(--muted);
+}
+.storage-error {
+  margin-top: 16px;
+  padding: 12px 14px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--warn), transparent 84%);
+  border: 1px solid color-mix(in srgb, var(--warn), var(--border) 36%);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.hovercard {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 1000;
+  display: block;
+  width: min(286px, calc(100vw - 24px));
+  padding: 12px;
+  text-align: left;
+  background: rgba(248, 250, 252, 0.88);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 14px 34px rgba(45, 59, 78, 0.16);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  backdrop-filter: blur(10px);
+  transition: opacity 120ms ease, visibility 120ms ease;
+}
+.hovercard[hidden] {
+  display: none;
+}
+.hovercard.is-visible {
+  opacity: 1;
+  visibility: visible;
+}
+.hovercard-title {
+  display: block;
+  margin-bottom: 9px;
+  color: var(--accent);
+  font-weight: 800;
+}
+.hovercard-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 4px 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+.hovercard-row strong {
+  color: var(--text);
+  font-weight: 800;
+  text-align: right;
+}
+.hovercard-note {
+  display: block;
+  padding: 2px 0 1px;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+footer {
+  margin-top: auto;
+  padding-top: 20px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  text-align: center;
+}
+.page-scroll-dock {
+  --scroll-progress: 0%;
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 85;
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border: 0;
+  border-radius: 999px;
+  padding: 0;
+  background:
+    conic-gradient(from 220deg, var(--dock-fill) var(--scroll-progress), var(--dock-track) 0),
+    radial-gradient(circle at 32% 28%, rgba(255, 255, 255, 0.14), transparent 48%);
+  color: var(--dock-text);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  box-shadow:
+    0 12px 32px rgba(8, 14, 20, 0.2),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  transition: opacity 180ms ease, box-shadow 180ms ease, filter 180ms ease, transform 180ms ease;
+}
+.page-scroll-dock--visible {
+  opacity: 0.78;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+.page-scroll-dock:before {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: inherit;
+  background: linear-gradient(180deg, var(--dock-face-start), var(--dock-face-end));
+}
+.page-scroll-dock:after {
+  content: "";
+  position: absolute;
+  inset: 11px;
+  border-radius: inherit;
+  border: 1px solid var(--dock-ring);
+  opacity: 0.7;
+}
+.page-scroll-dock:hover {
+  opacity: 0.93;
+  box-shadow:
+    0 14px 34px rgba(8, 14, 20, 0.24),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  filter: saturate(1.06);
+}
+.page-scroll-dock__core {
+  position: relative;
+  z-index: 1;
+  font-size: 0.64rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+@media (max-width: 760px) {
+  main {
+    width: min(100% - 24px, 1360px);
+    padding-top: 22px;
+  }
+  .header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .header-main { text-align: center; }
+  .header-side,
+  .status-box {
+    text-align: left;
+    min-width: 0;
+    width: 100%;
+  }
+  .summary-metrics {
+    flex-wrap: wrap;
+  }
+  .status-line { justify-self: end; }
+  .service { grid-template-columns: 1fr; }
+  .bars {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    min-height: 0;
+    gap: 3px;
+  }
+  .bar {
+    flex: 0 0 6px;
+    width: 6px;
+    height: 24px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .header-divider:after { animation: none; }
+  .bar,
+  .hovercard,
+  button { transition: none; }
+}
+  </style>
 </head>
 <body>
-	<main>
-		<header>
-			<div>
-				<h1>{{ .Title }}</h1>
-				<p>{{ .Description }}</p>
-			</div>
-			<div class="meta">
-				<div>Generated <strong id="generated-at">{{ formatTime .Status.GeneratedAt }}</strong></div>
-				<div>Storage <strong id="storage-status">{{ .Status.Storage.Driver }} / {{ .Status.Storage.Status }}</strong></div>
-			</div>
-		</header>
-		<section class="service-list" id="services">
-			{{ if .Status.Services }}
-			{{ range .Status.Services }}
-			<article class="service" data-service-id="{{ .ID }}">
-				<div class="service-head">
-					<div>
-						<h2>{{ .Name }}</h2>
-						<div class="service-id">{{ .ID }}</div>
-						{{ if .Description }}<p>{{ .Description }}</p>{{ end }}
-					</div>
-					<span class="badge {{ statusClass .CurrentStatus }}" data-role="status">{{ .CurrentStatus }}</span>
-				</div>
-				<div class="stats">
-					<div class="stat"><span>Last seen</span><strong data-role="last-seen">{{ formatTime .LastSeenAt }}</strong></div>
-					<div class="stat"><span>Sample interval</span><strong>{{ .SampleIntervalSeconds }}s</strong></div>
-					<div class="stat"><span>Window</span><strong>{{ len .Daily }} days</strong></div>
-				</div>
-				<div class="days" aria-label="Daily uptime history">
-					{{ range .Daily }}
-					<div class="day {{ statusClass .Status }}" title="{{ dayTitle . }}" aria-label="{{ dayTitle . }}"></div>
-					{{ end }}
-				</div>
-			</article>
-			{{ end }}
-			{{ else }}
-			<div class="empty">No services have reported uptime yet.</div>
-			{{ end }}
-		</section>
-		<footer>{{ .Footer }}</footer>
-	</main>
-	<script>
-		const initialStatus = {{ .StatusJSON }};
-		const apiPath = {{ .APIPathJSON }};
-		const refreshMS = {{ .RefreshMS }};
-		function formatTime(value) {
-			if (!value || value === "0001-01-01T00:00:00Z") return "never";
-			const date = new Date(value);
-			if (Number.isNaN(date.getTime())) return "never";
-			return date.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC").replace("Z", " UTC");
-		}
-		function statusClass(status) {
-			if (status === "up" || status === "green") return "ok";
-			if (status === "yellow") return "warn";
-			if (status === "down" || status === "red") return "down";
-			return "none";
-		}
-		function update(data) {
-			document.getElementById("generated-at").textContent = formatTime(data.generated_at);
-			document.getElementById("storage-status").textContent = data.storage.driver + " / " + data.storage.status;
-			for (const service of data.services || []) {
-				for (const row of document.querySelectorAll(".service")) {
-					if (row.dataset.serviceId !== service.id) continue;
-					const badge = row.querySelector('[data-role="status"]');
-					badge.textContent = service.current_status;
-					badge.className = "badge " + statusClass(service.current_status);
-					row.querySelector('[data-role="last-seen"]').textContent = formatTime(service.last_seen_at);
-				}
-			}
-		}
-		async function refresh() {
-			try {
-				const response = await fetch(apiPath, { headers: { Accept: "application/json" }, credentials: "same-origin" });
-				if (!response.ok) return;
-				update(await response.json());
-			} catch (_) {}
-		}
-		update(initialStatus);
-		setInterval(refresh, refreshMS);
-	</script>
+  <main>
+    <header class="header">
+      <div class="header-main">
+        <h1>{{ .Title }}</h1>
+      </div>
+      <div class="header-side">
+        <div class="status-box">
+          <span class="summary-metrics" aria-label="Service summary">
+            <span class="summary-metric"><strong id="summary-services">0</strong> services</span>
+            <span class="summary-metric up"><strong id="summary-up">0</strong> up</span>
+            <span class="summary-metric down"><strong id="summary-down">0</strong> down</span>
+          </span>
+          <div class="status-line">
+            <span class="status-state">
+              <span id="live-dot" data-status="live"></span>
+              <span id="live-text">LIVE</span>
+            </span>
+          </div>
+          <span id="updated-at">-</span>
+          <span id="response-time">-</span>
+        </div>
+      </div>
+    </header>
+    <div class="header-divider" aria-hidden="true"></div>
+    <aside class="description-card" aria-label="Page description">
+      <p>{{ .Description }}</p>
+    </aside>
+
+    <section class="services" id="services" aria-label="Services"></section>
+    <footer>{{ .Footer }}</footer>
+  </main>
+
+  <button id="page-scroll-dock" class="page-scroll-dock" type="button" title="Scroll up" aria-label="Scroll progress 0%" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+    <span id="page-scroll-dock-value" class="page-scroll-dock__core">0%</span>
+  </button>
+  <div id="uptime-hovercard" class="hovercard" role="tooltip" hidden></div>
+  <script>
+const initialStatus = {{ .StatusJSON }};
+const apiPath = {{ .APIPathJSON }};
+const refreshMS = {{.RefreshMS}};
+const messages = {
+  live: "LIVE",
+  stale: "STALE",
+  error: "ERROR",
+  noServices: "No services have reported heartbeats yet.",
+  storageError: "Storage error",
+  uptime: "Uptime",
+  slots: "Up slots",
+  downtime: "Estimated downtime",
+  noData: "No data"
+};
+window.uptimeConfig = { apiPath, refreshMS };
+window.uptimeInitialStatus = initialStatus;
+
+const $ = (id) => document.getElementById(id);
+let currentStatus = "live";
+let lastStatus = initialStatus;
+let lastSuccessAt = initialStatus ? Date.now() : 0;
+let activeBar = null;
+
+function t(key) {
+  return messages[key] || key;
+}
+
+function setStatus(status) {
+  currentStatus = status;
+  $("live-text").textContent = t(status);
+  $("live-dot").dataset.status = status;
+}
+
+function formatTime(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  const pad = (item) => String(item).padStart(2, "0");
+  return date.getFullYear() + "-" + pad(date.getDate()) + "-" + pad(date.getMonth() + 1) + " " +
+    pad(date.getHours()) + ":" + pad(date.getMinutes()) + ":" + pad(date.getSeconds());
+}
+
+function cardRow(label, value) {
+  const item = document.createElement("span");
+  item.className = "hovercard-row";
+  const left = document.createElement("span");
+  left.textContent = label;
+  const right = document.createElement("strong");
+  right.textContent = value;
+  item.append(left, right);
+  return item;
+}
+
+function cardNote(value) {
+  const item = document.createElement("span");
+  item.className = "hovercard-note";
+  item.textContent = value;
+  return item;
+}
+
+function dayMarkup(day) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "bar " + day.status;
+  button.setAttribute("aria-label", day.day + " " + percent(day.uptime_rate));
+  button.dataset.day = day.day;
+  button.dataset.rate = percent(day.uptime_rate);
+  button.dataset.upSlots = String(day.up_slots);
+  button.dataset.expectedSlots = String(day.expected_slots);
+  button.dataset.downtime = formatSeconds(day.estimated_downtime_seconds);
+  button.dataset.finalized = String(day.finalized);
+  button.dataset.hasData = String(day.has_data);
+  return button;
+}
+
+function hoverCard() {
+  return $("uptime-hovercard");
+}
+
+function renderHoverCard(bar) {
+  const card = hoverCard();
+  if (!card) return;
+  card.replaceChildren();
+  const title = document.createElement("span");
+  title.className = "hovercard-title";
+  title.textContent = bar.dataset.day || "";
+  card.appendChild(title);
+  if (bar.dataset.hasData !== "true") {
+    card.appendChild(cardNote(t("noData")));
+    return;
+  }
+  card.appendChild(cardRow(t("uptime"), bar.dataset.rate || "0.00%"));
+  card.appendChild(cardRow(t("slots"), (bar.dataset.upSlots || "0") + " / " + (bar.dataset.expectedSlots || "0")));
+  card.appendChild(cardRow(t("downtime"), bar.dataset.downtime || "0s"));
+}
+
+function placeHoverCard(bar) {
+  const card = hoverCard();
+  if (!card || !bar || card.hidden) return;
+  const rect = bar.getBoundingClientRect();
+  const gap = 12;
+  const margin = 12;
+  const width = card.offsetWidth;
+  const height = card.offsetHeight;
+  let left = rect.left + rect.width / 2 - width / 2;
+  let top = rect.bottom + gap;
+
+  left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
+  if (top + height > window.innerHeight - margin) {
+    top = rect.top - height - gap;
+  }
+  top = Math.max(margin, Math.min(top, window.innerHeight - height - margin));
+
+  card.style.left = left + "px";
+  card.style.top = top + "px";
+}
+
+function showHoverCard(bar) {
+  const card = hoverCard();
+  if (!card) return;
+  activeBar = bar;
+  renderHoverCard(bar);
+  card.hidden = false;
+  placeHoverCard(bar);
+  card.classList.add("is-visible");
+}
+
+function hideHoverCard() {
+  const card = hoverCard();
+  if (!card) return;
+  card.classList.remove("is-visible");
+  card.hidden = true;
+  activeBar = null;
+}
+
+function repositionHoverCard() {
+  if (activeBar) placeHoverCard(activeBar);
+}
+
+function activateBar(bar) {
+  document.querySelectorAll(".bar.is-active").forEach(function(active) {
+    if (active !== bar) active.classList.remove("is-active");
+  });
+  bar.classList.add("is-active");
+  showHoverCard(bar);
+}
+
+function deactivateBar(bar) {
+  bar.classList.remove("is-active");
+  if (activeBar === bar) hideHoverCard();
+}
+
+function bindBars() {
+  document.querySelectorAll(".bar").forEach(function(bar) {
+    bar.addEventListener("pointerenter", function() { activateBar(bar); });
+    bar.addEventListener("pointerleave", function() { deactivateBar(bar); });
+    bar.addEventListener("focus", function() { activateBar(bar); });
+    bar.addEventListener("blur", function() { deactivateBar(bar); });
+    bar.addEventListener("click", function() { activateBar(bar); });
+  });
+}
+
+function renderStatus(status) {
+  if (!status) return;
+  lastStatus = status;
+  hideHoverCard();
+
+  $("updated-at").textContent = formatTime(status.generated_at);
+  setStatus(status.storage && status.storage.status === "ok" ? "live" : "error");
+  updateSummary(status.services || []);
+
+  const oldError = document.querySelector(".storage-error");
+  if (oldError) oldError.remove();
+  if (status.storage && status.storage.status !== "ok") {
+    const err = document.createElement("div");
+    err.className = "storage-error";
+    err.textContent = t("storageError") + ": " + (status.storage.last_error || status.storage.status);
+    document.querySelector(".description-card").after(err);
+  }
+
+  const root = $("services");
+  root.replaceChildren();
+  if (!status.services || !status.services.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = t("noServices");
+    root.appendChild(empty);
+    return;
+  }
+  status.services.forEach(function(service) {
+    const article = document.createElement("article");
+    article.className = "service";
+
+    const info = document.createElement("div");
+    const nameLine = document.createElement("div");
+    nameLine.className = "service-name";
+    const dot = document.createElement("span");
+    dot.className = "service-dot " + service.current_status;
+    dot.setAttribute("aria-label", service.current_status);
+    const name = document.createElement("div");
+    name.className = "name";
+    name.textContent = service.name;
+    nameLine.append(dot, name);
+    info.appendChild(nameLine);
+
+    if (service.description) {
+      const description = document.createElement("div");
+      description.className = "description";
+      description.textContent = service.description;
+      info.appendChild(description);
+    }
+    const last = document.createElement("div");
+    last.className = "last-seen";
+    last.textContent = formatTime(service.last_seen_at);
+    info.appendChild(last);
+
+    const bars = document.createElement("div");
+    bars.className = "bars";
+    bars.setAttribute("aria-label", service.name + " daily uptime");
+    (service.daily || []).forEach(function(day) {
+      bars.appendChild(dayMarkup(day));
+    });
+
+    article.append(info, bars);
+    root.appendChild(article);
+  });
+  bindBars();
+}
+
+function updateSummary(services) {
+  let up = 0;
+  let down = 0;
+  services.forEach(function(service) {
+    if (service.current_status === "up") {
+      up++;
+    } else if (service.current_status === "down") {
+      down++;
+    }
+  });
+  $("summary-services").textContent = String(services.length);
+  $("summary-up").textContent = String(up);
+  $("summary-down").textContent = String(down);
+}
+
+function percent(rate) {
+  if (!Number.isFinite(Number(rate))) return "0.00%";
+  return (Number(rate) * 100).toFixed(2) + "%";
+}
+
+function formatSeconds(seconds) {
+  const value = Math.max(0, Number(seconds || 0));
+  if (value < 60) return Math.round(value) + "s";
+  if (value < 3600) return Math.floor(value / 60) + "m";
+  const hours = Math.floor(value / 3600);
+  const minutes = Math.floor((value % 3600) / 60);
+  return minutes ? hours + "h " + minutes + "m" : hours + "h";
+}
+
+async function refresh() {
+  const started = performance.now();
+  try {
+    const res = await fetch(apiPath, {
+      headers: { Accept: "application/json" },
+      cache: "no-store"
+    });
+    if (!res.ok) throw new Error("bad status: " + res.status);
+    const data = await res.json();
+    renderStatus(data);
+    $("response-time").textContent = (performance.now() - started).toFixed(1) + " ms";
+    lastSuccessAt = Date.now();
+  } catch (err) {
+    setStatus("error");
+  }
+}
+
+function updateScrollDock() {
+  const dock = $("page-scroll-dock");
+  const value = $("page-scroll-dock-value");
+  if (!dock || !value) return;
+  const doc = document.documentElement;
+  const maxScroll = Math.max(0, doc.scrollHeight - window.innerHeight);
+  const top = window.scrollY || doc.scrollTop || document.body.scrollTop || 0;
+  const progress = maxScroll ? Math.min(100, Math.max(0, (top / maxScroll) * 100)) : 0;
+  const rounded = Math.round(progress);
+  const shouldShow = window.innerWidth >= 768 && maxScroll > 320 && top > 72;
+  dock.style.setProperty("--scroll-progress", rounded + "%");
+  dock.setAttribute("aria-valuenow", String(rounded));
+  dock.setAttribute("aria-label", "Scroll progress " + rounded + "%");
+  dock.classList.toggle("page-scroll-dock--visible", shouldShow);
+  value.textContent = rounded + "%";
+}
+
+function scrollUpQuarter() {
+  const doc = document.documentElement;
+  const maxScroll = Math.max(0, doc.scrollHeight - window.innerHeight);
+  const top = window.scrollY || doc.scrollTop || document.body.scrollTop || 0;
+  window.scrollTo({ top: Math.max(0, top - maxScroll * 0.25), behavior: "smooth" });
+}
+
+$("page-scroll-dock").addEventListener("click", scrollUpQuarter);
+window.addEventListener("scroll", function() {
+  updateScrollDock();
+  repositionHoverCard();
+}, { passive: true });
+window.addEventListener("resize", function() {
+  updateScrollDock();
+  repositionHoverCard();
+});
+setInterval(updateScrollDock, 250);
+setInterval(function() {
+  if (!lastSuccessAt || currentStatus === "error") return;
+  if (Date.now() - lastSuccessAt > Number(refreshMS || 10000) * 3) setStatus("stale");
+}, 1000);
+
+setStatus("live");
+renderStatus(initialStatus);
+updateScrollDock();
+refresh();
+setInterval(refresh, Math.max(Number(refreshMS || 10000), 10000));
+  </script>
 </body>
 </html>`
