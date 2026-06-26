@@ -13,6 +13,10 @@ in-process heartbeat history and serves a lightweight status page.
 
 **Compatible with Fiber v3.**
 
+## Preview
+
+![Uptime dashboard preview](https://raw.githubusercontent.com/gofurry/images/refs/heads/main/github/uptime/preview.png)
+
 ## Install
 
 ```sh
