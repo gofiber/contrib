@@ -13,10 +13,6 @@ in-process heartbeat history and serves a lightweight status page.
 
 **Compatible with Fiber v3.**
 
-## Go version support
-
-We only support the latest two versions of Go. Visit [https://go.dev/doc/devel/release](https://go.dev/doc/devel/release) for more information.
-
 ## Install
 
 ```sh
@@ -166,5 +162,4 @@ and close the store.
 
 Mount the dashboard on an internal or protected route when uptime history should
 not be public. The middleware does not log request bodies, response bodies,
-authorization headers, cookies, or query strings. Runtime middleware logs use
-Fiber's official `github.com/gofiber/fiber/v3/log` package.
+authorization headers, cookies, or query strings.
