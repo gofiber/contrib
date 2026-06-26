@@ -160,7 +160,6 @@ func (u *Uptime) buildStatus(ctx context.Context, now time.Time) (StatusResponse
 		resp.Services = append(resp.Services, serviceStatus)
 	}
 
-	u.clearLastError()
 	return resp, nil
 }
 

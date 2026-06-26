@@ -362,6 +362,25 @@ func TestRollupExpectedSlotsUsesServiceCreatedAt(t *testing.T) {
 	requireEqual(t, 0, store.rollupOptions.ExpectedSlotsForServiceDay("api", "2026-06-24"))
 }
 
+func TestBuildStatusDoesNotClearRuntimeError(t *testing.T) {
+	t.Parallel()
+
+	store := newSnapshotStore()
+	u := newSnapshotUptime(store)
+	runtimeErr := errors.New("write heartbeat failed")
+	u.setLastError(runtimeErr)
+
+	status, err := u.buildStatus(context.Background(), store.now)
+	requireNoError(t, err)
+	requireEqual(t, "degraded", status.Storage.Status)
+	requireContains(t, status.Storage.LastError, "write heartbeat failed")
+
+	lastErr, _ := u.LastError()
+	if !errors.Is(lastErr, runtimeErr) {
+		t.Fatalf("last error = %v, want %v", lastErr, runtimeErr)
+	}
+}
+
 func TestNewReturnsErrorWhenInitialHeartbeatFails(t *testing.T) {
 	t.Parallel()
 
@@ -444,6 +463,19 @@ func TestCloseAllowsNilAndZeroValue(t *testing.T) {
 
 	var zero Uptime
 	requireNoError(t, zero.Close())
+}
+
+func TestLastErrorAllowsNilReceiver(t *testing.T) {
+	t.Parallel()
+
+	var nilUptime *Uptime
+	err, at := nilUptime.LastError()
+	if err != nil {
+		t.Fatalf("last error = %v, want nil", err)
+	}
+	if !at.IsZero() {
+		t.Fatalf("last error time = %v, want zero", at)
+	}
 }
 
 func newTestApp(t *testing.T) (*Uptime, *fiber.App) {

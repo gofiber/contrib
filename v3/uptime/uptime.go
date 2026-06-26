@@ -154,6 +154,9 @@ func (u *Uptime) Close() error {
 
 // LastError returns the most recent runtime store error, if any.
 func (u *Uptime) LastError() (error, time.Time) {
+	if u == nil {
+		return nil, time.Time{}
+	}
 	u.errMu.RLock()
 	defer u.errMu.RUnlock()
 	return u.lastErr, u.lastErrAt
