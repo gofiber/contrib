@@ -68,6 +68,7 @@ func New(config ...Config) (*Uptime, error) {
 func newWithStore(cfg Config, store storage.Store, now time.Time) (*Uptime, error) {
 	ctx := context.Background()
 	if err := store.Init(ctx); err != nil {
+		_ = store.Close()
 		return nil, fmt.Errorf("uptime: init store: %w", err)
 	}
 
@@ -195,15 +196,15 @@ func (u *Uptime) serveStatusJSON(c fiber.Ctx) error {
 	c.Set(headerCacheControl, "no-store")
 	c.Set(headerXContentTypeOptions, "nosniff")
 	c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSONCharsetUTF8)
-	if c.Method() == fiber.MethodHead {
-		c.Status(fiber.StatusOK)
-		return nil
-	}
 
 	status, err := u.CachedSnapshot(c.Context())
 	if err != nil {
 		fiberlog.Errorf("uptime: status unavailable: %v", err)
 		return fiber.NewError(fiber.StatusInternalServerError, "uptime status unavailable")
+	}
+	if c.Method() == fiber.MethodHead {
+		c.Status(fiber.StatusOK)
+		return nil
 	}
 	return c.Status(fiber.StatusOK).JSON(&status)
 }
@@ -212,10 +213,6 @@ func (u *Uptime) serveDashboard(c fiber.Ctx) error {
 	c.Set(headerCacheControl, "no-store")
 	c.Set(headerXContentTypeOptions, "nosniff")
 	c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
-	if c.Method() == fiber.MethodHead {
-		c.Status(fiber.StatusOK)
-		return nil
-	}
 
 	status, err := u.CachedSnapshot(c.Context())
 	if err != nil {
@@ -226,6 +223,10 @@ func (u *Uptime) serveDashboard(c fiber.Ctx) error {
 	if err != nil {
 		fiberlog.Errorf("uptime: dashboard render failed: %v", err)
 		return fiber.NewError(fiber.StatusInternalServerError, "uptime dashboard render failed")
+	}
+	if c.Method() == fiber.MethodHead {
+		c.Status(fiber.StatusOK)
+		return nil
 	}
 	return c.Status(fiber.StatusOK).SendString(html)
 }

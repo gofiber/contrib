@@ -81,6 +81,26 @@ func TestConfigValidation(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "green threshold below range",
+			config: Config{
+				ServiceID: "api",
+				UI: UIConfig{
+					GreenThreshold:  -0.1,
+					YellowThreshold: 0.9,
+				},
+			},
+		},
+		{
+			name: "yellow threshold above range",
+			config: Config{
+				ServiceID: "api",
+				UI: UIConfig{
+					GreenThreshold:  1,
+					YellowThreshold: 1.1,
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -127,7 +147,11 @@ func TestHandlerDashboardHTML(t *testing.T) {
 	requireContains(t, bodyText, `id="summary-down"`)
 	requireContains(t, bodyText, `const refreshMS =`)
 	requireContains(t, bodyText, `10000`)
-	requireContains(t, bodyText, `date.getFullYear() + "-" + pad(date.getDate()) + "-" + pad(date.getMonth() + 1)`)
+	requireContains(t, bodyText, `date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate())`)
+	requireContains(t, bodyText, `aria-label="Scroll up; scroll progress 0%"`)
+	requireContains(t, bodyText, `let refreshInFlight = false;`)
+	requireContains(t, bodyText, `signal: controller.signal`)
+	requireContains(t, bodyText, `.bar:focus-visible`)
 	requireContains(t, bodyText, up.config.ServiceID)
 	requireNotContains(t, bodyText, `data-theme=`)
 	requireNotContains(t, bodyText, `data-background=`)
@@ -149,6 +173,24 @@ func TestHandlerHeadDashboard(t *testing.T) {
 
 	requireEqual(t, fiber.StatusOK, resp.StatusCode)
 	requireEqual(t, fiber.MIMETextHTMLCharsetUTF8, resp.Header.Get(fiber.HeaderContentType))
+	requireEqual(t, 0, len(body))
+}
+
+func TestHandlerHeadDashboardSurfacesSnapshotError(t *testing.T) {
+	t.Parallel()
+
+	store := newSnapshotStore()
+	store.fail = true
+	app := newSnapshotApp(newSnapshotUptime(store))
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodHead, "/uptime", nil))
+	requireNoError(t, err)
+	t.Cleanup(func() { requireNoError(t, resp.Body.Close()) })
+
+	body, err := io.ReadAll(resp.Body)
+	requireNoError(t, err)
+
+	requireEqual(t, fiber.StatusInternalServerError, resp.StatusCode)
 	requireEqual(t, 0, len(body))
 }
 
@@ -185,6 +227,24 @@ func TestHandlerStatusHead(t *testing.T) {
 
 	requireEqual(t, fiber.StatusOK, resp.StatusCode)
 	requireEqual(t, fiber.MIMEApplicationJSONCharsetUTF8, resp.Header.Get(fiber.HeaderContentType))
+	requireEqual(t, 0, len(body))
+}
+
+func TestHandlerStatusHeadSurfacesSnapshotError(t *testing.T) {
+	t.Parallel()
+
+	store := newSnapshotStore()
+	store.fail = true
+	app := newSnapshotApp(newSnapshotUptime(store))
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodHead, "/uptime/api/status", nil))
+	requireNoError(t, err)
+	t.Cleanup(func() { requireNoError(t, resp.Body.Close()) })
+
+	body, err := io.ReadAll(resp.Body)
+	requireNoError(t, err)
+
+	requireEqual(t, fiber.StatusInternalServerError, resp.StatusCode)
 	requireEqual(t, 0, len(body))
 }
 
@@ -404,6 +464,29 @@ func TestNewReturnsErrorWhenInitialHeartbeatFails(t *testing.T) {
 	requireEqual(t, 1, store.closeCalls)
 }
 
+func TestNewClosesStoreWhenInitFails(t *testing.T) {
+	t.Parallel()
+
+	store := newSnapshotStore()
+	store.initErr = errors.New("init failed")
+	cfg, err := Config{
+		ServiceID:      "api",
+		SampleInterval: time.Second,
+		DaysToShow:     1,
+		RetentionDays:  1,
+		Timezone:       time.UTC,
+	}.normalized()
+	requireNoError(t, err)
+
+	up, err := newWithStore(cfg, store, store.now)
+	requireError(t, err)
+	if up != nil {
+		t.Fatal("uptime instance should be nil")
+	}
+	requireContains(t, err.Error(), "init store")
+	requireEqual(t, 1, store.closeCalls)
+}
+
 func TestSQLiteStoreRecordsHeartbeat(t *testing.T) {
 	t.Parallel()
 
@@ -496,6 +579,13 @@ func newTestApp(t *testing.T) (*Uptime, *fiber.App) {
 	return up, app
 }
 
+func newSnapshotApp(up *Uptime) *fiber.App {
+	app := fiber.New()
+	app.All("/uptime", up.Handler())
+	app.All("/uptime/*", up.Handler())
+	return app
+}
+
 func newSnapshotUptime(store *snapshotStore) *Uptime {
 	return newSnapshotUptimeWithConfig(store, Config{
 		ServiceID:      "api",
@@ -523,6 +613,7 @@ func newSnapshotUptimeWithConfig(store *snapshotStore, config Config) *Uptime {
 
 type snapshotStore struct {
 	fail              bool
+	initErr           error
 	now               time.Time
 	services          []storage.Service
 	daily             []storage.DailyStatus
@@ -553,7 +644,7 @@ func newSnapshotStore() *snapshotStore {
 	}
 }
 
-func (s *snapshotStore) Init(context.Context) error { return nil }
+func (s *snapshotStore) Init(context.Context) error { return s.initErr }
 func (s *snapshotStore) UpsertService(_ context.Context, service storage.Service) error {
 	for i := range s.services {
 		if s.services[i].ID == service.ID {

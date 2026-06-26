@@ -151,6 +151,12 @@ func (c Config) normalized() (Config, error) {
 	if c.UI.YellowThreshold == 0 {
 		c.UI.YellowThreshold = defaultYellowThreshold
 	}
+	if c.UI.GreenThreshold < 0 || c.UI.GreenThreshold > 1 {
+		return Config{}, errors.New("uptime: green threshold must be between 0 and 1")
+	}
+	if c.UI.YellowThreshold < 0 || c.UI.YellowThreshold > 1 {
+		return Config{}, errors.New("uptime: yellow threshold must be between 0 and 1")
+	}
 	if c.UI.GreenThreshold < c.UI.YellowThreshold {
 		return Config{}, errors.New("uptime: green threshold must be greater than or equal to yellow threshold")
 	}

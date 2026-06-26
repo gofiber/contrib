@@ -351,9 +351,15 @@ button:hover:not(.bar) {
   transition: background-color 120ms ease, filter 120ms ease;
 }
 .bar:hover,
-.bar:focus-visible,
 .bar.is-active {
   outline: none;
+  box-shadow: none;
+  transform: none;
+  filter: saturate(1.04) brightness(.9);
+}
+.bar:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
   box-shadow: none;
   transform: none;
   filter: saturate(1.04) brightness(.9);
@@ -593,7 +599,7 @@ footer {
     <footer>{{ .Footer }}</footer>
   </main>
 
-  <button id="page-scroll-dock" class="page-scroll-dock" type="button" title="Scroll up" aria-label="Scroll progress 0%" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+  <button id="page-scroll-dock" class="page-scroll-dock" type="button" title="Scroll up" aria-label="Scroll up; scroll progress 0%" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
     <span id="page-scroll-dock-value" class="page-scroll-dock__core">0%</span>
   </button>
   <div id="uptime-hovercard" class="hovercard" role="tooltip" hidden></div>
@@ -620,6 +626,7 @@ let currentStatus = "live";
 let lastStatus = initialStatus;
 let lastSuccessAt = initialStatus ? Date.now() : 0;
 let activeBar = null;
+let refreshInFlight = false;
 
 function t(key) {
   return messages[key] || key;
@@ -636,7 +643,7 @@ function formatTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
   const pad = (item) => String(item).padStart(2, "0");
-  return date.getFullYear() + "-" + pad(date.getDate()) + "-" + pad(date.getMonth() + 1) + " " +
+  return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate()) + " " +
     pad(date.getHours()) + ":" + pad(date.getMinutes()) + ":" + pad(date.getSeconds());
 }
 
@@ -857,11 +864,17 @@ function formatSeconds(seconds) {
 }
 
 async function refresh() {
+  if (refreshInFlight) return;
+  refreshInFlight = true;
   const started = performance.now();
+  const timeoutMS = Math.max(Number(refreshMS) || 10000, 10000);
+  const controller = new AbortController();
+  const timeoutID = window.setTimeout(() => controller.abort(), timeoutMS);
   try {
     const res = await fetch(apiPath, {
       headers: { Accept: "application/json" },
-      cache: "no-store"
+      cache: "no-store",
+      signal: controller.signal
     });
     if (!res.ok) throw new Error("bad status: " + res.status);
     const data = await res.json();
@@ -870,6 +883,9 @@ async function refresh() {
     lastSuccessAt = Date.now();
   } catch (err) {
     setStatus("error");
+  } finally {
+    window.clearTimeout(timeoutID);
+    refreshInFlight = false;
   }
 }
 
@@ -885,7 +901,7 @@ function updateScrollDock() {
   const shouldShow = window.innerWidth >= 768 && maxScroll > 320 && top > 72;
   dock.style.setProperty("--scroll-progress", rounded + "%");
   dock.setAttribute("aria-valuenow", String(rounded));
-  dock.setAttribute("aria-label", "Scroll progress " + rounded + "%");
+  dock.setAttribute("aria-label", "Scroll up; scroll progress " + rounded + "%");
   dock.classList.toggle("page-scroll-dock--visible", shouldShow);
   value.textContent = rounded + "%";
 }

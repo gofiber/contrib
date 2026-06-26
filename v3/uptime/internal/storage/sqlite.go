@@ -294,7 +294,11 @@ func (s *SQLiteStore) Close() error {
 }
 
 func ensureSQLiteDir(path string) error {
-	if path == ":memory:" || strings.HasPrefix(path, "file:") {
+	if path == ":memory:" {
+		return nil
+	}
+	path = sqliteFilePath(path)
+	if path == "" || path == ":memory:" {
 		return nil
 	}
 	dir := filepath.Dir(path)
@@ -302,6 +306,26 @@ func ensureSQLiteDir(path string) error {
 		return nil
 	}
 	return os.MkdirAll(dir, 0o755)
+}
+
+func sqliteFilePath(path string) string {
+	if !strings.HasPrefix(path, "file:") {
+		return path
+	}
+	path = strings.TrimPrefix(path, "file:")
+	if queryIndex := strings.Index(path, "?"); queryIndex >= 0 {
+		path = path[:queryIndex]
+	}
+	if strings.HasPrefix(path, "//") {
+		withoutSlashes := strings.TrimPrefix(path, "//")
+		if slashIndex := strings.Index(withoutSlashes, "/"); slashIndex >= 0 {
+			host := withoutSlashes[:slashIndex]
+			if host == "" || host == "localhost" {
+				path = withoutSlashes[slashIndex:]
+			}
+		}
+	}
+	return path
 }
 
 var sqlitePragmaStatements = []string{
