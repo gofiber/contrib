@@ -98,10 +98,6 @@ func (u *Uptime) CachedSnapshot(ctx context.Context) (Snapshot, error) {
 }
 
 func (u *Uptime) buildStatus(ctx context.Context, now time.Time) (StatusResponse, error) {
-	if err := u.runMaintenance(ctx, now, false); err != nil {
-		return StatusResponse{}, err
-	}
-
 	services, err := u.store.ListServices(ctx)
 	if err != nil {
 		u.setLastError(err)
@@ -159,7 +155,7 @@ func (u *Uptime) buildStatus(ctx context.Context, now time.Time) (StatusResponse
 		}
 		createdDay := dayOf(service.CreatedAt, u.config.Timezone)
 		for _, day := range days {
-			serviceStatus.Daily = append(serviceStatus.Daily, u.dayStatus(service.ID, day, today, createdDay, now, interval, dailyByService, todayByService))
+			serviceStatus.Daily = append(serviceStatus.Daily, u.dayStatus(service.ID, day, today, createdDay, service.CreatedAt, now, interval, dailyByService, todayByService))
 		}
 		resp.Services = append(resp.Services, serviceStatus)
 	}
@@ -168,7 +164,7 @@ func (u *Uptime) buildStatus(ctx context.Context, now time.Time) (StatusResponse
 	return resp, nil
 }
 
-func (u *Uptime) dayStatus(serviceID, day, today, createdDay string, now time.Time, interval time.Duration, daily map[string]map[string]storage.DailyStatus, todayRows map[string]storage.TodaySampleStatus) DayStatus {
+func (u *Uptime) dayStatus(serviceID, day, today, createdDay string, createdAt, now time.Time, interval time.Duration, daily map[string]map[string]storage.DailyStatus, todayRows map[string]storage.TodaySampleStatus) DayStatus {
 	if day < createdDay {
 		return DayStatus{
 			Day:     day,
@@ -179,7 +175,7 @@ func (u *Uptime) dayStatus(serviceID, day, today, createdDay string, now time.Ti
 
 	if day == today {
 		row := todayRows[serviceID]
-		expected := expectedSlotsSoFar(now, interval, u.config.Timezone)
+		expected := expectedSlotsSoFarSince(now, createdAt, interval, u.config.Timezone)
 		return makeDayStatus(day, row.UpSlots, expected, false, true, interval, u.config.UI)
 	}
 
@@ -189,7 +185,7 @@ func (u *Uptime) dayStatus(serviceID, day, today, createdDay string, now time.Ti
 		}
 	}
 
-	expected := expectedSlotsForDay(day, interval, u.config.Timezone)
+	expected := expectedSlotsForServiceDay(day, createdAt, interval, u.config.Timezone)
 	return makeDayStatus(day, 0, expected, true, true, interval, u.config.UI)
 }
 
@@ -339,11 +335,11 @@ func slotOf(t time.Time, interval time.Duration, loc *time.Location) int64 {
 }
 
 func expectedSlotsSoFar(now time.Time, interval time.Duration, loc *time.Location) int {
-	slot := slotOf(now, interval, loc)
-	if slot < 0 {
-		return 1
-	}
-	return int(slot) + 1
+	return expectedSlotsSoFarSince(now, time.Time{}, interval, loc)
+}
+
+func expectedSlotsSoFarSince(now, createdAt time.Time, interval time.Duration, loc *time.Location) int {
+	return expectedSlotsForWindow(dayOf(now, loc), createdAt, now, interval, loc, true)
 }
 
 func expectedSlotsForDay(day string, interval time.Duration, loc *time.Location) int {
@@ -353,6 +349,73 @@ func expectedSlotsForDay(day string, interval time.Duration, loc *time.Location)
 	}
 	end := start.AddDate(0, 0, 1)
 	return ceilDuration(end.Sub(start), interval)
+}
+
+func expectedSlotsForServiceDay(day string, createdAt time.Time, interval time.Duration, loc *time.Location) int {
+	return expectedSlotsForWindow(day, createdAt, time.Time{}, interval, loc, false)
+}
+
+func expectedSlotsForWindow(day string, createdAt, endAt time.Time, interval time.Duration, loc *time.Location, includeEnd bool) int {
+	dayStart, err := parseDay(day, loc)
+	if err != nil || interval <= 0 {
+		return 0
+	}
+	dayEnd := dayStart.AddDate(0, 0, 1)
+	slotsInDay := ceilDuration(dayEnd.Sub(dayStart), interval)
+	if slotsInDay <= 0 {
+		return 0
+	}
+
+	start := dayStart
+	if !createdAt.IsZero() && createdAt.After(start) {
+		start = createdAt
+	}
+	if !start.Before(dayEnd) {
+		return 0
+	}
+
+	end := dayEnd
+	if !endAt.IsZero() && endAt.Before(end) {
+		end = endAt
+	}
+	if includeEnd {
+		if end.Before(start) {
+			return 0
+		}
+	} else if !end.After(start) {
+		return 0
+	}
+
+	firstSlot := int(slotOf(start, interval, loc))
+	if firstSlot < 0 {
+		firstSlot = 0
+	}
+	if firstSlot >= slotsInDay {
+		return 0
+	}
+
+	lastSlot := slotsInDay - 1
+	if end.Before(dayEnd) {
+		lastSlot = int(slotOf(end, interval, loc))
+		if !includeEnd && isSlotBoundary(end, interval, loc) {
+			lastSlot--
+		}
+	}
+	if lastSlot >= slotsInDay {
+		lastSlot = slotsInDay - 1
+	}
+	if lastSlot < firstSlot {
+		return 0
+	}
+	return lastSlot - firstSlot + 1
+}
+
+func isSlotBoundary(t time.Time, interval time.Duration, loc *time.Location) bool {
+	if interval <= 0 {
+		return false
+	}
+	elapsed := t.In(loc).Sub(startOfDay(t, loc))
+	return elapsed%interval == 0
 }
 
 func ceilDuration(duration, interval time.Duration) int {

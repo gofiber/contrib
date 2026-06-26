@@ -62,12 +62,15 @@ func New(config ...Config) (*Uptime, error) {
 	}
 
 	store := storage.NewSQLiteStore(cfg.SQLite)
+	return newWithStore(cfg, store, time.Now())
+}
+
+func newWithStore(cfg Config, store storage.Store, now time.Time) (*Uptime, error) {
 	ctx := context.Background()
 	if err := store.Init(ctx); err != nil {
 		return nil, fmt.Errorf("uptime: init store: %w", err)
 	}
 
-	now := time.Now()
 	instanceID := cfg.InstanceID
 	if instanceID == 0 && cfg.IDGenerator != nil {
 		instanceID = cfg.IDGenerator.NextID()
@@ -115,10 +118,15 @@ func New(config ...Config) (*Uptime, error) {
 	}
 
 	if err := u.runMaintenance(ctx, now, true); err != nil {
+		cancel()
 		_ = store.Close()
 		return nil, fmt.Errorf("uptime: maintenance: %w", err)
 	}
-	_ = u.writeHeartbeat(ctx, now)
+	if err := u.writeHeartbeat(ctx, now); err != nil {
+		cancel()
+		_ = store.Close()
+		return nil, fmt.Errorf("uptime: initial heartbeat: %w", err)
+	}
 
 	go u.loop()
 	return u, nil
@@ -131,9 +139,15 @@ func (u *Uptime) Close() error {
 	}
 	var err error
 	u.closeOnce.Do(func() {
-		u.cancel()
-		<-u.done
-		err = u.store.Close()
+		if u.cancel != nil {
+			u.cancel()
+			if u.done != nil {
+				<-u.done
+			}
+		}
+		if u.store != nil {
+			err = u.store.Close()
+		}
 	})
 	return err
 }
@@ -268,18 +282,18 @@ func (u *Uptime) runMaintenance(ctx context.Context, now time.Time, force bool) 
 	expected := func(day string) int {
 		return expectedSlotsForDay(day, u.config.SampleInterval, u.config.Timezone)
 	}
-	serviceIntervals, err := u.serviceIntervals(ctx)
+	services, err := u.serviceRollupMetadata(ctx)
 	if err != nil {
 		u.setLastError(err)
 		fiberlog.Errorf("uptime: list services for maintenance: %v", err)
 		return err
 	}
 	expectedForService := func(serviceID, day string) int {
-		interval := serviceIntervals[serviceID]
-		if interval < time.Second {
-			interval = u.config.SampleInterval
+		service, ok := services[serviceID]
+		if !ok {
+			return expected(day)
 		}
-		return expectedSlotsForDay(day, interval, u.config.Timezone)
+		return expectedSlotsForServiceDay(day, service.createdAt, service.interval, u.config.Timezone)
 	}
 	if err := u.store.RollupDaily(ctx, storage.RollupOptions{
 		BeforeDay:                  today,
@@ -307,16 +321,24 @@ func (u *Uptime) runMaintenance(ctx context.Context, now time.Time, force bool) 
 	return nil
 }
 
-func (u *Uptime) serviceIntervals(ctx context.Context) (map[string]time.Duration, error) {
+type serviceRollupMetadata struct {
+	createdAt time.Time
+	interval  time.Duration
+}
+
+func (u *Uptime) serviceRollupMetadata(ctx context.Context) (map[string]serviceRollupMetadata, error) {
 	services, err := u.store.ListServices(ctx)
 	if err != nil {
 		return nil, err
 	}
-	intervals := make(map[string]time.Duration, len(services))
+	metadata := make(map[string]serviceRollupMetadata, len(services))
 	for _, service := range services {
-		intervals[service.ID] = u.serviceSampleInterval(service)
+		metadata[service.ID] = serviceRollupMetadata{
+			createdAt: service.CreatedAt,
+			interval:  u.serviceSampleInterval(service),
+		}
 	}
-	return intervals, nil
+	return metadata, nil
 }
 
 func (u *Uptime) setLastError(err error) {

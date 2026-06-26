@@ -279,6 +279,112 @@ func TestCachedSnapshotReturnsStaleOnRefreshError(t *testing.T) {
 	}
 }
 
+func TestCachedSnapshotDoesNotRunMaintenance(t *testing.T) {
+	t.Parallel()
+
+	store := newSnapshotStore()
+	u := newSnapshotUptime(store)
+
+	_, err := u.CachedSnapshot(context.Background())
+	requireNoError(t, err)
+
+	requireEqual(t, 0, store.rollupCalls)
+	requireEqual(t, 0, store.cleanupCalls)
+}
+
+func TestDayStatusUsesServiceCreatedAtForToday(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 26, 16, 0, 0, 0, time.UTC)
+	createdAt := time.Date(2026, 6, 26, 15, 0, 0, 0, time.UTC)
+	store := newSnapshotStore()
+	store.services = []storage.Service{
+		{
+			ID:             "api",
+			Name:           "API",
+			CreatedAt:      createdAt,
+			LastSeenAt:     now,
+			SampleInterval: time.Minute,
+		},
+	}
+	store.today = []storage.TodaySampleStatus{
+		{ServiceID: "api", Day: dayOf(now, time.UTC), UpSlots: 61},
+	}
+	u := newSnapshotUptimeWithConfig(store, Config{
+		ServiceID:      "api",
+		SampleInterval: time.Minute,
+		DaysToShow:     1,
+		RetentionDays:  1,
+		Timezone:       time.UTC,
+	})
+
+	status, err := u.buildStatus(context.Background(), now)
+	requireNoError(t, err)
+	requireLen(t, status.Services, 1)
+	requireLen(t, status.Services[0].Daily, 1)
+
+	day := status.Services[0].Daily[0]
+	requireEqual(t, 61, day.ExpectedSlots)
+	requireEqual(t, 61, day.UpSlots)
+	requireEqual(t, "green", day.Status)
+}
+
+func TestRollupExpectedSlotsUsesServiceCreatedAt(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 26, 10, 0, 0, 0, time.UTC)
+	createdAt := time.Date(2026, 6, 25, 15, 0, 0, 0, time.UTC)
+	store := newSnapshotStore()
+	store.services = []storage.Service{
+		{
+			ID:             "api",
+			Name:           "API",
+			CreatedAt:      createdAt,
+			LastSeenAt:     now,
+			SampleInterval: time.Minute,
+		},
+	}
+	u := newSnapshotUptimeWithConfig(store, Config{
+		ServiceID:      "api",
+		SampleInterval: time.Minute,
+		DaysToShow:     2,
+		RetentionDays:  2,
+		Timezone:       time.UTC,
+	})
+
+	requireNoError(t, u.runMaintenance(context.Background(), now, true))
+	requireEqual(t, 1, store.rollupCalls)
+	if store.rollupOptions.ExpectedSlotsForServiceDay == nil {
+		t.Fatal("service-aware expected slots callback is nil")
+	}
+
+	requireEqual(t, 540, store.rollupOptions.ExpectedSlotsForServiceDay("api", "2026-06-25"))
+	requireEqual(t, 0, store.rollupOptions.ExpectedSlotsForServiceDay("api", "2026-06-24"))
+}
+
+func TestNewReturnsErrorWhenInitialHeartbeatFails(t *testing.T) {
+	t.Parallel()
+
+	store := newSnapshotStore()
+	store.writeHeartbeatErr = errors.New("write heartbeat failed")
+	cfg, err := Config{
+		ServiceID:      "api",
+		SampleInterval: time.Second,
+		DaysToShow:     1,
+		RetentionDays:  1,
+		Timezone:       time.UTC,
+	}.normalized()
+	requireNoError(t, err)
+
+	up, err := newWithStore(cfg, store, store.now)
+	requireError(t, err)
+	if up != nil {
+		t.Fatal("uptime instance should be nil")
+	}
+	requireContains(t, err.Error(), "initial heartbeat")
+	requireEqual(t, 1, store.closeCalls)
+}
+
 func TestSQLiteStoreRecordsHeartbeat(t *testing.T) {
 	t.Parallel()
 
@@ -330,6 +436,16 @@ func TestCloseIsIdempotent(t *testing.T) {
 	requireNoError(t, up.Close())
 }
 
+func TestCloseAllowsNilAndZeroValue(t *testing.T) {
+	t.Parallel()
+
+	var nilUptime *Uptime
+	requireNoError(t, nilUptime.Close())
+
+	var zero Uptime
+	requireNoError(t, zero.Close())
+}
+
 func newTestApp(t *testing.T) (*Uptime, *fiber.App) {
 	t.Helper()
 
@@ -349,18 +465,24 @@ func newTestApp(t *testing.T) (*Uptime, *fiber.App) {
 }
 
 func newSnapshotUptime(store *snapshotStore) *Uptime {
-	cfg, _ := Config{
+	return newSnapshotUptimeWithConfig(store, Config{
 		ServiceID:      "api",
 		SampleInterval: time.Second,
 		DaysToShow:     1,
 		RetentionDays:  1,
 		Timezone:       time.UTC,
 		Snapshot:       SnapshotConfig{CacheTTL: time.Minute},
-		UI: UIConfig{
-			GreenThreshold:  defaultGreenThreshold,
-			YellowThreshold: defaultYellowThreshold,
-		},
-	}.normalized()
+	})
+}
+
+func newSnapshotUptimeWithConfig(store *snapshotStore, config Config) *Uptime {
+	if config.UI.GreenThreshold == 0 {
+		config.UI.GreenThreshold = defaultGreenThreshold
+	}
+	if config.UI.YellowThreshold == 0 {
+		config.UI.YellowThreshold = defaultYellowThreshold
+	}
+	cfg, _ := config.normalized()
 	return &Uptime{
 		config: cfg,
 		store:  store,
@@ -368,45 +490,99 @@ func newSnapshotUptime(store *snapshotStore) *Uptime {
 }
 
 type snapshotStore struct {
-	fail bool
-	now  time.Time
+	fail              bool
+	now               time.Time
+	services          []storage.Service
+	daily             []storage.DailyStatus
+	today             []storage.TodaySampleStatus
+	writeHeartbeatErr error
+	rollupCalls       int
+	cleanupCalls      int
+	rollupOptions     storage.RollupOptions
+	closeCalls        int
 }
 
 func newSnapshotStore() *snapshotStore {
-	return &snapshotStore{now: time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)}
+	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
+	return &snapshotStore{
+		now: now,
+		services: []storage.Service{
+			{
+				ID:             "api",
+				Name:           "API",
+				CreatedAt:      now.Add(-time.Hour),
+				LastSeenAt:     now,
+				SampleInterval: time.Second,
+			},
+		},
+		today: []storage.TodaySampleStatus{
+			{ServiceID: "api", Day: dayOf(now, time.UTC), UpSlots: 1},
+		},
+	}
 }
 
-func (s *snapshotStore) Init(context.Context) error                           { return nil }
-func (s *snapshotStore) UpsertService(context.Context, storage.Service) error { return nil }
+func (s *snapshotStore) Init(context.Context) error { return nil }
+func (s *snapshotStore) UpsertService(_ context.Context, service storage.Service) error {
+	for i := range s.services {
+		if s.services[i].ID == service.ID {
+			s.services[i] = service
+			return nil
+		}
+	}
+	s.services = append(s.services, service)
+	return nil
+}
 func (s *snapshotStore) UpsertInstance(context.Context, storage.Instance) error {
 	return nil
 }
 func (s *snapshotStore) WriteHeartbeat(context.Context, storage.Heartbeat) error {
+	if s.writeHeartbeatErr != nil {
+		return s.writeHeartbeatErr
+	}
 	return nil
 }
-func (s *snapshotStore) RollupDaily(context.Context, storage.RollupOptions) error { return nil }
-func (s *snapshotStore) Cleanup(context.Context, storage.CleanupOptions) error    { return nil }
+func (s *snapshotStore) RollupDaily(_ context.Context, options storage.RollupOptions) error {
+	s.rollupCalls++
+	s.rollupOptions = options
+	return nil
+}
+func (s *snapshotStore) Cleanup(context.Context, storage.CleanupOptions) error {
+	s.cleanupCalls++
+	return nil
+}
 func (s *snapshotStore) ListServices(context.Context) ([]storage.Service, error) {
 	if s.fail {
 		return nil, errors.New("store failed")
 	}
-	return []storage.Service{
-		{
-			ID:             "api",
-			Name:           "API",
-			CreatedAt:      s.now.Add(-time.Hour),
-			LastSeenAt:     s.now,
-			SampleInterval: time.Second,
-		},
-	}, nil
+	return append([]storage.Service(nil), s.services...), nil
 }
-func (s *snapshotStore) QueryDaily(context.Context, storage.QueryDailyOptions) ([]storage.DailyStatus, error) {
-	return nil, nil
+func (s *snapshotStore) QueryDaily(_ context.Context, options storage.QueryDailyOptions) ([]storage.DailyStatus, error) {
+	var statuses []storage.DailyStatus
+	for _, status := range s.daily {
+		if options.FromDay != "" && status.Day < options.FromDay {
+			continue
+		}
+		if options.ToDay != "" && status.Day > options.ToDay {
+			continue
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, nil
 }
-func (s *snapshotStore) QueryTodaySamples(context.Context, storage.QueryTodaySamplesOptions) ([]storage.TodaySampleStatus, error) {
-	return []storage.TodaySampleStatus{{ServiceID: "api", Day: dayOf(time.Now(), time.UTC), UpSlots: 1}}, nil
+func (s *snapshotStore) QueryTodaySamples(_ context.Context, options storage.QueryTodaySamplesOptions) ([]storage.TodaySampleStatus, error) {
+	var statuses []storage.TodaySampleStatus
+	for _, status := range s.today {
+		if options.Day != "" && status.Day != options.Day {
+			continue
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, nil
 }
-func (s *snapshotStore) Close() error { return nil }
+func (s *snapshotStore) Close() error {
+	s.closeCalls++
+	return nil
+}
 
 type staticIDGenerator struct {
 	value int64
