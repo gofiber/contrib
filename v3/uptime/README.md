@@ -75,8 +75,8 @@ Open:
 
 ## SQLite
 
-SQLite is the default store. When `Config.Store` is nil, the middleware creates a
-SQLite store at `./data/uptime.db`.
+SQLite is the built-in store. By default, the middleware creates a SQLite
+database at `./data/uptime.db`.
 
 ```go
 up, err := uptime.New(uptime.Config{
@@ -89,45 +89,6 @@ up, err := uptime.New(uptime.Config{
 
 SQLite uses the pure-Go `modernc.org/sqlite` driver and configures WAL mode,
 normal synchronous mode, a busy timeout, and one open connection.
-
-## PostgreSQL
-
-Use PostgreSQL when multiple processes or machines should share one uptime
-store.
-
-```go
-up, err := uptime.New(uptime.Config{
-	ServiceID: "api",
-	Postgres: uptime.PostgresConfig{
-		DSN:         "postgres://postgres:password@localhost:5432/postgres?sslmode=disable",
-		Schema:      "public",
-		TablePrefix: "uptime_",
-	},
-})
-```
-
-The PostgreSQL store creates its schema, tables, and indexes automatically.
-
-## Alert hook
-
-Alerts are optional and disabled by default. Configure `Alert.Hook` to receive
-deduplicated service status transitions.
-
-```go
-up, err := uptime.New(uptime.Config{
-	ServiceID: "api",
-	Alert: uptime.AlertConfig{
-		NotifyOnFirstDown: true,
-		Hook: func(ctx context.Context, event uptime.AlertEvent) error {
-			log.Infof("%s changed from %s to %s", event.ServiceID, event.PreviousStatus, event.CurrentStatus)
-			return nil
-		},
-	},
-})
-```
-
-SQLite and PostgreSQL persist alert state, so shared deployments avoid duplicate
-notifications for the same transition.
 
 ## Snapshots and custom UI
 
@@ -161,10 +122,7 @@ Use `Snapshot(ctx)` when you need a fresh store read.
 | NodeID | `int64` | Optional node value used for generated instance IDs. | `0` |
 | InstanceID | `int64` | Explicit process instance ID. | Generated |
 | IDGenerator | `uptime.IDGenerator` | Custom instance ID generator. | `nil` |
-| Store | `uptime.Store` | Custom store implementation. | SQLite |
 | SQLite | `uptime.SQLiteConfig` | SQLite store settings. | `Path: "./data/uptime.db"` |
-| Postgres | `uptime.PostgresConfig` | PostgreSQL store settings. | Empty |
-| Alert | `uptime.AlertConfig` | Optional alert hook settings. | Disabled |
 | Snapshot | `uptime.SnapshotConfig` | Snapshot cache settings. | Cache enabled |
 | UI | `uptime.UIConfig` | Dashboard copy and thresholds. | Light English UI |
 
@@ -193,8 +151,9 @@ fresh store read.
 ## Concurrency safety
 
 `Uptime` instances are safe for concurrent use after construction. The snapshot
-cache is protected by a mutex and returns cloned payloads. Store implementations
-are designed for concurrent use by the background recorder and Fiber handlers.
+cache is protected by a mutex and returns cloned payloads. The built-in SQLite
+store is designed for concurrent use by the background recorder and Fiber
+handlers.
 
 Always call `Close` during application shutdown to stop the heartbeat goroutine
 and close the store.

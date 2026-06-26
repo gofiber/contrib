@@ -89,21 +89,3 @@ type QueryDailyOptions struct {
 type QueryTodaySamplesOptions struct {
 	Day string
 }
-
-type AlertState struct {
-	ServiceID         string
-	Status            string
-	LastSeenAt        time.Time
-	CheckedAt         time.Time
-	NotifyOnFirstDown bool
-}
-
-type AlertDecision struct {
-	Notify         bool
-	PreviousStatus string
-}
-
-// AlertStateStore persists alert state for cross-instance de-duplication.
-type AlertStateStore interface {
-	ClaimAlertEvent(ctx context.Context, state AlertState) (AlertDecision, error)
-}

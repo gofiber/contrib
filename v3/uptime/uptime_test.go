@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gofiber/contrib/v3/uptime/internal/storage"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -32,9 +33,6 @@ func TestConfigDefaults(t *testing.T) {
 	requireEqual(t, defaultGreenThreshold, cfg.UI.GreenThreshold)
 	requireEqual(t, defaultYellowThreshold, cfg.UI.YellowThreshold)
 	requireEqual(t, cfg.SampleInterval, cfg.Snapshot.CacheTTL)
-	if _, ok := cfg.Store.(*SQLiteStore); !ok {
-		t.Fatalf("store type = %T, want *SQLiteStore", cfg.Store)
-	}
 }
 
 func TestConfigValidation(t *testing.T) {
@@ -80,16 +78,6 @@ func TestConfigValidation(t *testing.T) {
 				UI: UIConfig{
 					GreenThreshold:  0.90,
 					YellowThreshold: 0.95,
-				},
-			},
-		},
-		{
-			name: "alert store missing alert state",
-			config: Config{
-				ServiceID: "api",
-				Store:     &noAlertStore{},
-				Alert: AlertConfig{
-					Hook: func(context.Context, AlertEvent) error { return nil },
 				},
 			},
 		},
@@ -221,7 +209,7 @@ func TestHandlerNext(t *testing.T) {
 	up, err := New(Config{
 		ServiceID:      "api",
 		SampleInterval: time.Second,
-		Store:          NewSQLiteStore(SQLiteConfig{Path: filepath.Join(t.TempDir(), "uptime.db")}),
+		SQLite:         SQLiteConfig{Path: filepath.Join(t.TempDir(), "uptime.db")},
 		Next: func(fiber.Ctx) bool {
 			return true
 		},
@@ -288,7 +276,7 @@ func TestSQLiteStoreRecordsHeartbeat(t *testing.T) {
 		ServiceID:      "api",
 		ServiceName:    "API",
 		SampleInterval: time.Second,
-		Store:          NewSQLiteStore(SQLiteConfig{Path: filepath.Join(t.TempDir(), "uptime.db")}),
+		SQLite:         SQLiteConfig{Path: filepath.Join(t.TempDir(), "uptime.db")},
 	})
 	requireNoError(t, err)
 	t.Cleanup(func() { requireNoError(t, up.Close()) })
@@ -303,49 +291,19 @@ func TestSQLiteStoreRecordsHeartbeat(t *testing.T) {
 	}
 }
 
-func TestSQLiteAlertStateDeduplicates(t *testing.T) {
+func TestCustomIDGenerator(t *testing.T) {
 	t.Parallel()
 
-	store := NewSQLiteStore(SQLiteConfig{Path: filepath.Join(t.TempDir(), "uptime.db")})
-	requireNoError(t, store.Init(context.Background()))
-	t.Cleanup(func() { requireNoError(t, store.Close()) })
-
-	now := time.Now()
-	first, err := store.ClaimAlertEvent(context.Background(), AlertState{
-		ServiceID:         "api",
-		Status:            AlertStatusDown,
-		LastSeenAt:        now.Add(-time.Minute),
-		CheckedAt:         now,
-		NotifyOnFirstDown: true,
+	up, err := New(Config{
+		ServiceID:      "api",
+		SampleInterval: time.Second,
+		IDGenerator:    staticIDGenerator{value: 42},
+		SQLite:         SQLiteConfig{Path: filepath.Join(t.TempDir(), "uptime.db")},
 	})
 	requireNoError(t, err)
-	if !first.Notify {
-		t.Fatal("first alert should notify")
-	}
+	t.Cleanup(func() { requireNoError(t, up.Close()) })
 
-	second, err := store.ClaimAlertEvent(context.Background(), AlertState{
-		ServiceID:         "api",
-		Status:            AlertStatusDown,
-		LastSeenAt:        now.Add(-time.Minute),
-		CheckedAt:         now.Add(time.Second),
-		NotifyOnFirstDown: true,
-	})
-	requireNoError(t, err)
-	if second.Notify {
-		t.Fatal("duplicate alert should not notify")
-	}
-
-	third, err := store.ClaimAlertEvent(context.Background(), AlertState{
-		ServiceID:  "api",
-		Status:     AlertStatusUp,
-		LastSeenAt: now,
-		CheckedAt:  now.Add(2 * time.Second),
-	})
-	requireNoError(t, err)
-	if !third.Notify {
-		t.Fatal("transition alert should notify")
-	}
-	requireEqual(t, AlertStatusDown, third.PreviousStatus)
+	requireEqual(t, int64(42), up.instance.ID)
 }
 
 func TestCloseIsIdempotent(t *testing.T) {
@@ -354,7 +312,7 @@ func TestCloseIsIdempotent(t *testing.T) {
 	up, err := New(Config{
 		ServiceID:      "api",
 		SampleInterval: time.Second,
-		Store:          NewSQLiteStore(SQLiteConfig{Path: filepath.Join(t.TempDir(), "uptime.db")}),
+		SQLite:         SQLiteConfig{Path: filepath.Join(t.TempDir(), "uptime.db")},
 	})
 	requireNoError(t, err)
 
@@ -369,7 +327,7 @@ func newTestApp(t *testing.T) (*Uptime, *fiber.App) {
 		ServiceID:      "api",
 		ServiceName:    "API",
 		SampleInterval: time.Second,
-		Store:          NewSQLiteStore(SQLiteConfig{Path: filepath.Join(t.TempDir(), "uptime.db")}),
+		SQLite:         SQLiteConfig{Path: filepath.Join(t.TempDir(), "uptime.db")},
 	})
 	requireNoError(t, err)
 	t.Cleanup(func() { requireNoError(t, up.Close()) })
@@ -387,7 +345,6 @@ func newSnapshotUptime(store *snapshotStore) *Uptime {
 		DaysToShow:     1,
 		RetentionDays:  1,
 		Timezone:       time.UTC,
-		Store:          store,
 		Snapshot:       SnapshotConfig{CacheTTL: time.Minute},
 		UI: UIConfig{
 			GreenThreshold:  defaultGreenThreshold,
@@ -409,19 +366,21 @@ func newSnapshotStore() *snapshotStore {
 	return &snapshotStore{now: time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)}
 }
 
-func (s *snapshotStore) Init(context.Context) error                     { return nil }
-func (s *snapshotStore) UpsertService(context.Context, Service) error   { return nil }
-func (s *snapshotStore) UpsertInstance(context.Context, Instance) error { return nil }
-func (s *snapshotStore) WriteHeartbeat(context.Context, Heartbeat) error {
+func (s *snapshotStore) Init(context.Context) error                           { return nil }
+func (s *snapshotStore) UpsertService(context.Context, storage.Service) error { return nil }
+func (s *snapshotStore) UpsertInstance(context.Context, storage.Instance) error {
 	return nil
 }
-func (s *snapshotStore) RollupDaily(context.Context, RollupOptions) error { return nil }
-func (s *snapshotStore) Cleanup(context.Context, CleanupOptions) error    { return nil }
-func (s *snapshotStore) ListServices(context.Context) ([]Service, error) {
+func (s *snapshotStore) WriteHeartbeat(context.Context, storage.Heartbeat) error {
+	return nil
+}
+func (s *snapshotStore) RollupDaily(context.Context, storage.RollupOptions) error { return nil }
+func (s *snapshotStore) Cleanup(context.Context, storage.CleanupOptions) error    { return nil }
+func (s *snapshotStore) ListServices(context.Context) ([]storage.Service, error) {
 	if s.fail {
 		return nil, errors.New("store failed")
 	}
-	return []Service{
+	return []storage.Service{
 		{
 			ID:             "api",
 			Name:           "API",
@@ -431,34 +390,21 @@ func (s *snapshotStore) ListServices(context.Context) ([]Service, error) {
 		},
 	}, nil
 }
-func (s *snapshotStore) QueryDaily(context.Context, QueryDailyOptions) ([]DailyStatus, error) {
+func (s *snapshotStore) QueryDaily(context.Context, storage.QueryDailyOptions) ([]storage.DailyStatus, error) {
 	return nil, nil
 }
-func (s *snapshotStore) QueryTodaySamples(context.Context, QueryTodaySamplesOptions) ([]TodaySampleStatus, error) {
-	return []TodaySampleStatus{{ServiceID: "api", Day: dayOf(time.Now(), time.UTC), UpSlots: 1}}, nil
+func (s *snapshotStore) QueryTodaySamples(context.Context, storage.QueryTodaySamplesOptions) ([]storage.TodaySampleStatus, error) {
+	return []storage.TodaySampleStatus{{ServiceID: "api", Day: dayOf(time.Now(), time.UTC), UpSlots: 1}}, nil
 }
 func (s *snapshotStore) Close() error { return nil }
 
-type noAlertStore struct{}
+type staticIDGenerator struct {
+	value int64
+}
 
-func (s *noAlertStore) Init(context.Context) error                     { return nil }
-func (s *noAlertStore) UpsertService(context.Context, Service) error   { return nil }
-func (s *noAlertStore) UpsertInstance(context.Context, Instance) error { return nil }
-func (s *noAlertStore) WriteHeartbeat(context.Context, Heartbeat) error {
-	return nil
+func (g staticIDGenerator) NextID() int64 {
+	return g.value
 }
-func (s *noAlertStore) RollupDaily(context.Context, RollupOptions) error { return nil }
-func (s *noAlertStore) Cleanup(context.Context, CleanupOptions) error    { return nil }
-func (s *noAlertStore) ListServices(context.Context) ([]Service, error) {
-	return nil, errors.New("not implemented")
-}
-func (s *noAlertStore) QueryDaily(context.Context, QueryDailyOptions) ([]DailyStatus, error) {
-	return nil, nil
-}
-func (s *noAlertStore) QueryTodaySamples(context.Context, QueryTodaySamplesOptions) ([]TodaySampleStatus, error) {
-	return nil, nil
-}
-func (s *noAlertStore) Close() error { return nil }
 
 func requireNoError(t *testing.T, err error) {
 	t.Helper()

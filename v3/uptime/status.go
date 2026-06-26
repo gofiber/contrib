@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math"
 	"time"
+
+	"github.com/gofiber/contrib/v3/uptime/internal/storage"
 )
 
 // Snapshot is the current uptime status payload used by the JSON API.
@@ -46,6 +48,11 @@ type DayStatus struct {
 	HasData                  bool    `json:"has_data"`
 	Status                   string  `json:"status"`
 }
+
+const (
+	statusUp   = "up"
+	statusDown = "down"
+)
 
 // Snapshot queries the store and returns a fresh status snapshot.
 func (u *Uptime) Snapshot(ctx context.Context) (Snapshot, error) {
@@ -106,27 +113,27 @@ func (u *Uptime) buildStatus(ctx context.Context, now time.Time) (StatusResponse
 	toDay := days[len(days)-1]
 	today := dayOf(now, u.config.Timezone)
 
-	dailyRows, err := u.store.QueryDaily(ctx, QueryDailyOptions{FromDay: fromDay, ToDay: toDay})
+	dailyRows, err := u.store.QueryDaily(ctx, storage.QueryDailyOptions{FromDay: fromDay, ToDay: toDay})
 	if err != nil {
 		u.setLastError(err)
 		return StatusResponse{}, err
 	}
-	todayRows, err := u.store.QueryTodaySamples(ctx, QueryTodaySamplesOptions{Day: today})
+	todayRows, err := u.store.QueryTodaySamples(ctx, storage.QueryTodaySamplesOptions{Day: today})
 	if err != nil {
 		u.setLastError(err)
 		return StatusResponse{}, err
 	}
 
-	dailyByService := make(map[string]map[string]DailyStatus)
+	dailyByService := make(map[string]map[string]storage.DailyStatus)
 	for _, row := range dailyRows {
 		byDay := dailyByService[row.ServiceID]
 		if byDay == nil {
-			byDay = make(map[string]DailyStatus)
+			byDay = make(map[string]storage.DailyStatus)
 			dailyByService[row.ServiceID] = byDay
 		}
 		byDay[row.Day] = row
 	}
-	todayByService := make(map[string]TodaySampleStatus)
+	todayByService := make(map[string]storage.TodaySampleStatus)
 	for _, row := range todayRows {
 		todayByService[row.ServiceID] = row
 	}
@@ -161,7 +168,7 @@ func (u *Uptime) buildStatus(ctx context.Context, now time.Time) (StatusResponse
 	return resp, nil
 }
 
-func (u *Uptime) dayStatus(serviceID, day, today, createdDay string, now time.Time, interval time.Duration, daily map[string]map[string]DailyStatus, todayRows map[string]TodaySampleStatus) DayStatus {
+func (u *Uptime) dayStatus(serviceID, day, today, createdDay string, now time.Time, interval time.Duration, daily map[string]map[string]storage.DailyStatus, todayRows map[string]storage.TodaySampleStatus) DayStatus {
 	if day < createdDay {
 		return DayStatus{
 			Day:     day,
@@ -186,7 +193,7 @@ func (u *Uptime) dayStatus(serviceID, day, today, createdDay string, now time.Ti
 	return makeDayStatus(day, 0, expected, true, true, interval, u.config.UI)
 }
 
-func (u *Uptime) serviceSampleInterval(service Service) time.Duration {
+func (u *Uptime) serviceSampleInterval(service storage.Service) time.Duration {
 	if service.SampleInterval >= time.Second {
 		return service.SampleInterval
 	}
@@ -263,12 +270,12 @@ func colorFor(rate float64, hasData bool, ui UIConfig) string {
 
 func currentStatus(now, lastSeen time.Time, interval time.Duration) string {
 	if lastSeen.IsZero() {
-		return AlertStatusDown
+		return statusDown
 	}
 	if now.Sub(lastSeen) <= interval*2 {
-		return AlertStatusUp
+		return statusUp
 	}
-	return AlertStatusDown
+	return statusDown
 }
 
 func dayRange(now time.Time, count int, loc *time.Location) []string {
@@ -297,7 +304,7 @@ func (u *Uptime) storageStatus() StorageResponse {
 	return storage
 }
 
-func storeDriver(store Store) string {
+func storeDriver(store storage.Store) string {
 	type named interface {
 		Name() string
 	}

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gofiber/contrib/v3/uptime/internal/storage"
 	"github.com/gofiber/fiber/v3"
 	fiberlog "github.com/gofiber/fiber/v3/log"
 )
@@ -22,10 +23,10 @@ type IDGenerator interface {
 // Uptime records service heartbeats and serves uptime history.
 type Uptime struct {
 	config Config
-	store  Store
+	store  storage.Store
 
-	service  Service
-	instance Instance
+	service  storage.Service
+	instance storage.Instance
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -40,9 +41,6 @@ type Uptime struct {
 	maintenanceMu      sync.Mutex
 	lastMaintenance    time.Time
 	lastMaintenanceDay string
-
-	alertMu        sync.Mutex
-	lastAlertCheck time.Time
 
 	snapshotMu       sync.Mutex
 	snapshotCache    Snapshot
@@ -63,8 +61,9 @@ func New(config ...Config) (*Uptime, error) {
 		return nil, err
 	}
 
+	store := storage.NewSQLiteStore(cfg.SQLite)
 	ctx := context.Background()
-	if err := cfg.Store.Init(ctx); err != nil {
+	if err := store.Init(ctx); err != nil {
 		return nil, fmt.Errorf("uptime: init store: %w", err)
 	}
 
@@ -78,7 +77,7 @@ func New(config ...Config) (*Uptime, error) {
 	}
 
 	hostname, _ := os.Hostname()
-	service := Service{
+	service := storage.Service{
 		ID:             cfg.ServiceID,
 		Name:           cfg.ServiceName,
 		Description:    cfg.ServiceDescription,
@@ -86,7 +85,7 @@ func New(config ...Config) (*Uptime, error) {
 		LastSeenAt:     now,
 		SampleInterval: cfg.SampleInterval,
 	}
-	instance := Instance{
+	instance := storage.Instance{
 		ID:         instanceID,
 		ServiceID:  cfg.ServiceID,
 		Hostname:   hostname,
@@ -95,19 +94,19 @@ func New(config ...Config) (*Uptime, error) {
 		LastSeenAt: now,
 	}
 
-	if err := cfg.Store.UpsertService(ctx, service); err != nil {
-		_ = cfg.Store.Close()
+	if err := store.UpsertService(ctx, service); err != nil {
+		_ = store.Close()
 		return nil, fmt.Errorf("uptime: upsert service: %w", err)
 	}
-	if err := cfg.Store.UpsertInstance(ctx, instance); err != nil {
-		_ = cfg.Store.Close()
+	if err := store.UpsertInstance(ctx, instance); err != nil {
+		_ = store.Close()
 		return nil, fmt.Errorf("uptime: upsert instance: %w", err)
 	}
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	u := &Uptime{
 		config:   cfg,
-		store:    cfg.Store,
+		store:    store,
 		service:  service,
 		instance: instance,
 		ctx:      runCtx,
@@ -116,7 +115,7 @@ func New(config ...Config) (*Uptime, error) {
 	}
 
 	if err := u.runMaintenance(ctx, now, true); err != nil {
-		_ = cfg.Store.Close()
+		_ = store.Close()
 		return nil, fmt.Errorf("uptime: maintenance: %w", err)
 	}
 	_ = u.writeHeartbeat(ctx, now)
@@ -237,7 +236,7 @@ func (u *Uptime) writeHeartbeat(ctx context.Context, now time.Time) error {
 	default:
 	}
 
-	heartbeat := Heartbeat{
+	heartbeat := storage.Heartbeat{
 		ServiceID:  u.config.ServiceID,
 		InstanceID: u.instance.ID,
 		Day:        dayOf(now, u.config.Timezone),
@@ -252,7 +251,6 @@ func (u *Uptime) writeHeartbeat(ctx context.Context, now time.Time) error {
 	if err := u.runMaintenance(ctx, now, false); err != nil {
 		return err
 	}
-	u.evaluateAlerts(ctx, now)
 	u.clearLastError()
 	return nil
 }
@@ -283,7 +281,7 @@ func (u *Uptime) runMaintenance(ctx context.Context, now time.Time, force bool) 
 		}
 		return expectedSlotsForDay(day, interval, u.config.Timezone)
 	}
-	if err := u.store.RollupDaily(ctx, RollupOptions{
+	if err := u.store.RollupDaily(ctx, storage.RollupOptions{
 		BeforeDay:                  today,
 		ExpectedSlotsForDay:        expected,
 		ExpectedSlotsForServiceDay: expectedForService,
@@ -295,7 +293,7 @@ func (u *Uptime) runMaintenance(ctx context.Context, now time.Time, force bool) 
 
 	dailyBefore := addDays(today, -u.config.RetentionDays, u.config.Timezone)
 	samplesBefore := addDays(today, -1, u.config.Timezone)
-	if err := u.store.Cleanup(ctx, CleanupOptions{
+	if err := u.store.Cleanup(ctx, storage.CleanupOptions{
 		DailyBeforeDay:   dailyBefore,
 		SamplesBeforeDay: samplesBefore,
 	}); err != nil {
@@ -319,66 +317,6 @@ func (u *Uptime) serviceIntervals(ctx context.Context) (map[string]time.Duration
 		intervals[service.ID] = u.serviceSampleInterval(service)
 	}
 	return intervals, nil
-}
-
-func (u *Uptime) evaluateAlerts(ctx context.Context, now time.Time) {
-	if u.config.Alert.Hook == nil {
-		return
-	}
-
-	u.alertMu.Lock()
-	if !u.lastAlertCheck.IsZero() && now.Sub(u.lastAlertCheck) < u.config.Alert.CheckInterval {
-		u.alertMu.Unlock()
-		return
-	}
-	u.lastAlertCheck = now
-	u.alertMu.Unlock()
-
-	stateStore, ok := u.store.(AlertStateStore)
-	if !ok {
-		fiberlog.Errorf("uptime: alert hook requires alert state support")
-		return
-	}
-
-	services, err := u.store.ListServices(ctx)
-	if err != nil {
-		fiberlog.Errorf("uptime: list services for alerts: %v", err)
-		return
-	}
-	for _, service := range services {
-		interval := u.serviceSampleInterval(service)
-		status := currentStatus(now, service.LastSeenAt, interval)
-		decision, err := stateStore.ClaimAlertEvent(ctx, AlertState{
-			ServiceID:         service.ID,
-			Status:            status,
-			LastSeenAt:        service.LastSeenAt,
-			CheckedAt:         now,
-			NotifyOnFirstDown: u.config.Alert.NotifyOnFirstDown,
-		})
-		if err != nil {
-			fiberlog.Errorf("uptime: claim alert event for %s: %v", service.ID, err)
-			continue
-		}
-		if !decision.Notify {
-			continue
-		}
-		event := AlertEvent{
-			ServiceID:      service.ID,
-			ServiceName:    service.Name,
-			Description:    service.Description,
-			PreviousStatus: decision.PreviousStatus,
-			CurrentStatus:  status,
-			LastSeenAt:     service.LastSeenAt.UTC(),
-			DetectedAt:     now.UTC(),
-			SampleInterval: interval,
-		}
-		if status == AlertStatusDown && !service.LastSeenAt.IsZero() {
-			event.DownFor = now.Sub(service.LastSeenAt)
-		}
-		if err := u.config.Alert.Hook(ctx, event); err != nil {
-			fiberlog.Errorf("uptime: alert hook for %s: %v", service.ID, err)
-		}
-	}
 }
 
 func (u *Uptime) setLastError(err error) {

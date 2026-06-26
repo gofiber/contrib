@@ -284,64 +284,6 @@ ORDER BY service_id
 	return statuses, rows.Err()
 }
 
-func (s *SQLiteStore) ClaimAlertEvent(ctx context.Context, state AlertState) (AlertDecision, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return AlertDecision{}, err
-	}
-	defer rollback(tx)
-
-	var previous string
-	err = tx.QueryRowContext(ctx, `
-SELECT status
-FROM uptime_alert_state
-WHERE service_id = ?
-`, state.ServiceID).Scan(&previous)
-	if errors.Is(err, sql.ErrNoRows) {
-		if _, err := tx.ExecContext(ctx, `
-INSERT INTO uptime_alert_state (service_id, status, last_seen_at, updated_at)
-VALUES (?, ?, ?, ?)
-`, state.ServiceID, state.Status, unixNano(state.LastSeenAt), unixNano(state.CheckedAt)); err != nil {
-			return AlertDecision{}, err
-		}
-		if err := tx.Commit(); err != nil {
-			return AlertDecision{}, err
-		}
-		return AlertDecision{
-			Notify: state.NotifyOnFirstDown && state.Status == "down",
-		}, nil
-	}
-	if err != nil {
-		return AlertDecision{}, err
-	}
-
-	if previous == state.Status {
-		if _, err := tx.ExecContext(ctx, `
-UPDATE uptime_alert_state
-SET last_seen_at = ?, updated_at = ?
-WHERE service_id = ?
-`, unixNano(state.LastSeenAt), unixNano(state.CheckedAt), state.ServiceID); err != nil {
-			return AlertDecision{}, err
-		}
-		return AlertDecision{}, tx.Commit()
-	}
-
-	if _, err := tx.ExecContext(ctx, `
-UPDATE uptime_alert_state
-SET status = ?, last_seen_at = ?, updated_at = ?
-WHERE service_id = ?
-`, state.Status, unixNano(state.LastSeenAt), unixNano(state.CheckedAt), state.ServiceID); err != nil {
-		return AlertDecision{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return AlertDecision{}, err
-	}
-	return AlertDecision{
-		Notify:         true,
-		PreviousStatus: previous,
-	}, nil
-}
-
 func (s *SQLiteStore) Close() error {
 	if s.db == nil {
 		return nil
@@ -401,12 +343,6 @@ var sqliteSchemaStatements = []string{
 		uptime_rate REAL NOT NULL,
 		finalized INTEGER NOT NULL,
 		PRIMARY KEY (service_id, day)
-	)`,
-	`CREATE TABLE IF NOT EXISTS uptime_alert_state (
-		service_id TEXT PRIMARY KEY,
-		status TEXT NOT NULL,
-		last_seen_at BIGINT NOT NULL,
-		updated_at BIGINT NOT NULL
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_instances_service
 		ON instances(service_id)`,
