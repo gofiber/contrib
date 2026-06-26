@@ -30,6 +30,7 @@ go get -u github.com/gofiber/contrib/v3/uptime
 uptime.New(config ...uptime.Config) (*uptime.Uptime, error)
 up.Handler() fiber.Handler
 up.Close() error
+up.LastError() (error, time.Time)
 up.Snapshot(ctx context.Context) (uptime.Snapshot, error)
 up.CachedSnapshot(ctx context.Context) (uptime.Snapshot, error)
 ```
@@ -107,6 +108,9 @@ app.Get("/custom-uptime", func(c fiber.Ctx) error {
 
 Use `Snapshot(ctx)` when you need a fresh store read.
 
+Use `LastError()` when you need to inspect the latest runtime store error that
+was reported by heartbeat, maintenance, or snapshot reads.
+
 ## Config
 
 | Property | Type | Description | Default |
@@ -123,7 +127,7 @@ Use `Snapshot(ctx)` when you need a fresh store read.
 | InstanceID | `int64` | Explicit process instance ID. | Generated |
 | IDGenerator | `uptime.IDGenerator` | Custom instance ID generator. | `nil` |
 | SQLite | `uptime.SQLiteConfig` | SQLite store settings. | `Path: "./data/uptime.db"` |
-| Snapshot | `uptime.SnapshotConfig` | Snapshot cache settings. | Cache enabled |
+| Snapshot | `uptime.SnapshotConfig` | Snapshot cache settings. | Cache enabled, `CacheTTL: SampleInterval` |
 | UI | `uptime.UIConfig` | Dashboard copy and thresholds. | Light English UI |
 
 ## Handler behavior
