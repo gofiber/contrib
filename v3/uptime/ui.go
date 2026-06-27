@@ -89,6 +89,46 @@ const dashboardHTML = `<!doctype html>
   --dock-face-end: rgba(255, 237, 213, 0.64);
   --dock-ring: rgba(154, 52, 18, 0.16);
   --dock-text: rgba(67, 32, 12, 0.84);
+  --hovercard-bg: rgba(248, 250, 252, 0.88);
+  --hovercard-label: #8ea0b4;
+  --hovercard-value: #0f172a;
+  --hovercard-shadow: 0 14px 34px rgba(45, 59, 78, 0.16);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #0c1118;
+    --panel: rgba(21, 28, 38, 0.72);
+    --panel-soft: rgba(15, 22, 31, 0.56);
+    --text: #eef3f8;
+    --muted: #a5b4c3;
+    --border: rgba(128, 148, 171, 0.32);
+    --accent: #67e8f9;
+    --accent-soft: rgba(103, 232, 249, 0.12);
+    --good-rgb: 52 211 153;
+    --warn-rgb: 245 194 82;
+    --bad-rgb: 244 100 124;
+    --none-rgb: 116 131 151;
+    --bar-alpha: 0.72;
+    --bar-hover-alpha: 0.92;
+    --good: rgb(var(--good-rgb) / var(--bar-alpha));
+    --warn: rgb(var(--warn-rgb) / var(--bar-alpha));
+    --bad: rgb(var(--bad-rgb) / var(--bar-alpha));
+    --none: rgb(var(--none-rgb) / 0.34);
+    --shadow: none;
+    --divider-line: #3b82f6;
+    --divider-glow: #38bdf8;
+    --dock-fill: rgba(122, 228, 255, 0.88);
+    --dock-track: rgba(255, 255, 255, 0.08);
+    --dock-face-start: rgba(13, 22, 30, 0.78);
+    --dock-face-end: rgba(17, 28, 36, 0.64);
+    --dock-ring: rgba(132, 226, 255, 0.16);
+    --dock-text: rgba(235, 248, 255, 0.88);
+    --hovercard-bg: rgba(18, 26, 36, 0.94);
+    --hovercard-label: #b8c8da;
+    --hovercard-value: #f4f8fb;
+    --hovercard-shadow: 0 18px 42px rgba(0, 0, 0, 0.34);
+  }
 }
 * { box-sizing: border-box; }
 html, body { scrollbar-width: none; }
@@ -414,10 +454,10 @@ button:hover:not(.bar) {
   width: min(286px, calc(100vw - 24px));
   padding: 12px;
   text-align: left;
-  background: rgba(248, 250, 252, 0.88);
+  background: var(--hovercard-bg);
   border: 1px solid var(--border);
   border-radius: 8px;
-  box-shadow: 0 14px 34px rgba(45, 59, 78, 0.16);
+  box-shadow: var(--hovercard-shadow);
   pointer-events: none;
   opacity: 0;
   visibility: hidden;
@@ -443,18 +483,18 @@ button:hover:not(.bar) {
   justify-content: space-between;
   gap: 14px;
   padding: 4px 0;
-  color: var(--muted);
+  color: var(--hovercard-label);
   font-size: 0.86rem;
 }
 .hovercard-row strong {
-  color: var(--text);
+  color: var(--hovercard-value);
   font-weight: 800;
   text-align: right;
 }
 .hovercard-note {
   display: block;
   padding: 2px 0 1px;
-  color: var(--muted);
+  color: var(--hovercard-label);
   font-size: 0.86rem;
 }
 footer {

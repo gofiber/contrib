@@ -152,6 +152,7 @@ func TestHandlerDashboardHTML(t *testing.T) {
 	requireContains(t, bodyText, `let refreshInFlight = false;`)
 	requireContains(t, bodyText, `signal: controller.signal`)
 	requireContains(t, bodyText, `.bar:focus-visible`)
+	requireContains(t, bodyText, `@media (prefers-color-scheme: dark)`)
 	requireContains(t, bodyText, up.config.ServiceID)
 	requireNotContains(t, bodyText, `data-theme=`)
 	requireNotContains(t, bodyText, `data-background=`)
