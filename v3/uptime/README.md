@@ -77,7 +77,9 @@ Open:
 ## SQLite
 
 SQLite is the built-in store. By default, the middleware creates a SQLite
-database at `./data/uptime.db`.
+database at `./data/uptime.db`. This path is relative to the process working
+directory, so prefer an absolute path in containers or when the working
+directory is not writable.
 
 ```go
 up, err := uptime.New(uptime.Config{
@@ -140,6 +142,10 @@ The Fiber handler serves:
 
 `GET` and `HEAD` are supported. Other methods return `405 Method Not Allowed`.
 Unknown uptime subpaths return `404 Not Found`.
+
+The handler matches request paths against `UI.Path`, so the mount path must
+match `UI.Path` (default `/uptime`). If you change one, change both, otherwise
+every request returns `404 Not Found`.
 
 The middleware does not read request bodies, capture response bodies, or wrap
 business handlers. Heartbeats are written by a background ticker owned by the

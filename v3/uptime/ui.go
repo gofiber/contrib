@@ -33,7 +33,7 @@ func renderDashboardHTML(config Config, status StatusResponse) (string, error) {
 		Description: config.UI.Description,
 		Footer:      config.UI.Footer,
 		APIPathJSON: template.JS(apiPathJSON),
-		RefreshMS:   maxInt64(int64(config.SampleInterval/time.Millisecond), 10000),
+		RefreshMS:   max(int64(config.SampleInterval/time.Millisecond), 10000),
 		StatusJSON:  template.JS(statusJSON),
 	}
 	var buf bytes.Buffer
@@ -41,13 +41,6 @@ func renderDashboardHTML(config Config, status StatusResponse) (string, error) {
 		return "", err
 	}
 	return buf.String(), nil
-}
-
-func maxInt64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 //go:embed dashboard.gohtml
