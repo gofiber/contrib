@@ -13,40 +13,68 @@ import (
 // Snapshot is the current uptime status payload used by the JSON API.
 type Snapshot = StatusResponse
 
+// StatusResponse is the top-level JSON payload returned by the status API.
 type StatusResponse struct {
-	GeneratedAt           time.Time       `json:"generated_at"`
-	SampleIntervalSeconds int64           `json:"sample_interval_seconds"`
-	Days                  int             `json:"days"`
-	Storage               StorageResponse `json:"storage"`
-	Services              []ServiceStatus `json:"services"`
+	// GeneratedAt is the time when this response was built.
+	GeneratedAt time.Time `json:"generated_at"`
+	// SampleIntervalSeconds is the heartbeat interval used to compute uptime slots.
+	SampleIntervalSeconds int64 `json:"sample_interval_seconds"`
+	// Days is the number of local days included in each service history.
+	Days int `json:"days"`
+	// Storage reports the current backing store health.
+	Storage StorageResponse `json:"storage"`
+	// Services contains one entry per tracked service.
+	Services []ServiceStatus `json:"services"`
 }
 
+// StorageResponse reports the current uptime store health.
 type StorageResponse struct {
-	Driver      string     `json:"driver"`
-	Status      string     `json:"status"`
-	LastError   string     `json:"last_error,omitempty"`
+	// Driver is the storage backend name.
+	Driver string `json:"driver"`
+	// Status is "ok" when the store is currently healthy.
+	Status string `json:"status"`
+	// LastError is the latest runtime storage error, if any.
+	LastError string `json:"last_error,omitempty"`
+	// LastErrorAt is when LastError was recorded.
 	LastErrorAt *time.Time `json:"last_error_at,omitempty"`
 }
 
+// ServiceStatus is the JSON status for one logical service.
 type ServiceStatus struct {
-	ID                    string      `json:"id"`
-	Name                  string      `json:"name"`
-	Description           string      `json:"description,omitempty"`
-	LastSeenAt            time.Time   `json:"last_seen_at"`
-	CurrentStatus         string      `json:"current_status"`
-	SampleIntervalSeconds int64       `json:"sample_interval_seconds"`
-	Daily                 []DayStatus `json:"daily"`
+	// ID is the stable service identifier.
+	ID string `json:"id"`
+	// Name is the display name shown in the dashboard.
+	Name string `json:"name"`
+	// Description is optional service detail text.
+	Description string `json:"description,omitempty"`
+	// LastSeenAt is the latest heartbeat time recorded for the service.
+	LastSeenAt time.Time `json:"last_seen_at"`
+	// CurrentStatus is "up" or "down" based on the latest heartbeat freshness.
+	CurrentStatus string `json:"current_status"`
+	// SampleIntervalSeconds is this service's heartbeat interval.
+	SampleIntervalSeconds int64 `json:"sample_interval_seconds"`
+	// Daily contains per-day uptime history.
+	Daily []DayStatus `json:"daily"`
 }
 
+// DayStatus is the service uptime summary for one local day.
 type DayStatus struct {
-	Day                      string  `json:"day"`
-	UptimeRate               float64 `json:"uptime_rate"`
-	UpSlots                  int     `json:"up_slots"`
-	ExpectedSlots            int     `json:"expected_slots"`
-	EstimatedDowntimeSeconds int64   `json:"estimated_downtime_seconds"`
-	Finalized                bool    `json:"finalized"`
-	HasData                  bool    `json:"has_data"`
-	Status                   string  `json:"status"`
+	// Day is the local date in YYYY-MM-DD format.
+	Day string `json:"day"`
+	// UptimeRate is UpSlots divided by ExpectedSlots.
+	UptimeRate float64 `json:"uptime_rate"`
+	// UpSlots is the number of heartbeat slots with at least one sample.
+	UpSlots int `json:"up_slots"`
+	// ExpectedSlots is the number of slots expected for the day.
+	ExpectedSlots int `json:"expected_slots"`
+	// EstimatedDowntimeSeconds is the missing-slot downtime estimate.
+	EstimatedDowntimeSeconds int64 `json:"estimated_downtime_seconds"`
+	// Finalized reports whether the day has been rolled up.
+	Finalized bool `json:"finalized"`
+	// HasData reports whether the day has enough data to calculate uptime.
+	HasData bool `json:"has_data"`
+	// Status is "green", "yellow", "red", or "gray" for dashboard rendering.
+	Status string `json:"status"`
 }
 
 const (

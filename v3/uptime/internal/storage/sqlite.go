@@ -15,6 +15,7 @@ import (
 )
 
 type SQLiteConfig struct {
+	// Path is the SQLite database path or DSN.
 	Path string
 }
 

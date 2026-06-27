@@ -23,9 +23,11 @@ const (
 )
 
 var (
+	// ErrMissingServiceID is returned when Config.ServiceID is empty.
 	ErrMissingServiceID = errors.New("uptime: service id is required")
 )
 
+// SQLiteConfig controls the default SQLite-backed uptime store.
 type SQLiteConfig = storage.SQLiteConfig
 
 // Config defines the configuration for the uptime middleware.
@@ -33,39 +35,61 @@ type Config struct {
 	// Next defines a function to skip this middleware when returned true.
 	Next func(c fiber.Ctx) bool
 
-	ServiceID          string
-	ServiceName        string
+	// ServiceID is the stable logical service identifier. It is required.
+	ServiceID string
+	// ServiceName is the display name shown in the dashboard. It defaults to ServiceID.
+	ServiceName string
+	// ServiceDescription is optional text shown under the service name.
 	ServiceDescription string
 
+	// SampleInterval is the heartbeat interval and uptime slot size.
 	SampleInterval time.Duration
-	RetentionDays  int
-	DaysToShow     int
-	Timezone       *time.Location
+	// RetentionDays controls how many days of heartbeat data are kept.
+	RetentionDays int
+	// DaysToShow controls how many days are returned by the API and dashboard.
+	DaysToShow int
+	// Timezone is used to compute day boundaries. It defaults to time.Local.
+	Timezone *time.Location
 
-	NodeID      int64
-	InstanceID  int64
+	// NodeID identifies this node when the default ID generator is used.
+	NodeID int64
+	// InstanceID overrides the generated process instance ID when non-zero.
+	InstanceID int64
+	// IDGenerator generates instance IDs when InstanceID is zero.
 	IDGenerator IDGenerator
 
-	SQLite   SQLiteConfig
+	// SQLite configures the default SQLite store.
+	SQLite SQLiteConfig
+	// Snapshot configures snapshot caching.
 	Snapshot SnapshotConfig
-	UI       UIConfig
+	// UI configures the built-in dashboard.
+	UI UIConfig
 }
 
 // UIConfig controls the built-in status page.
 type UIConfig struct {
-	Title       string
-	Path        string
+	// Title is used for the dashboard heading and document title.
+	Title string
+	// Path is the dashboard mount path. The JSON API is served below Path + "/api/status".
+	Path string
+	// Description is shown below the dashboard header.
 	Description string
-	Footer      string
+	// Footer is shown at the bottom of the dashboard.
+	Footer string
 
-	GreenThreshold  float64
+	// GreenThreshold is the minimum uptime ratio for a green day, in the range [0, 1].
+	GreenThreshold float64
+	// YellowThreshold is the minimum uptime ratio for a yellow day, in the range [0, 1].
 	YellowThreshold float64
 }
 
 // SnapshotConfig controls the in-memory snapshot cache.
 type SnapshotConfig struct {
-	CacheTTL            time.Duration
-	DisableCache        bool
+	// CacheTTL is the maximum age of a cached status snapshot.
+	CacheTTL time.Duration
+	// DisableCache forces every status request to query fresh storage data.
+	DisableCache bool
+	// DisableStaleIfError disables returning the previous cached snapshot after a refresh error.
 	DisableStaleIfError bool
 }
 
