@@ -588,7 +588,7 @@ footer {
     <footer>{{ .Footer }}</footer>
   </main>
 
-  <button id="page-scroll-dock" class="page-scroll-dock" type="button" title="Scroll up" aria-label="Scroll up; scroll progress 0%" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+  <button id="page-scroll-dock" class="page-scroll-dock" type="button" title="Scroll up" aria-label="Scroll up; scroll progress 0%">
     <span id="page-scroll-dock-value" class="page-scroll-dock__core">0%</span>
   </button>
   <div id="uptime-hovercard" class="hovercard" role="tooltip" hidden></div>
@@ -889,7 +889,6 @@ function updateScrollDock() {
   const rounded = Math.round(progress);
   const shouldShow = window.innerWidth >= 768 && maxScroll > 320 && top > 72;
   dock.style.setProperty("--scroll-progress", rounded + "%");
-  dock.setAttribute("aria-valuenow", String(rounded));
   dock.setAttribute("aria-label", "Scroll up; scroll progress " + rounded + "%");
   dock.classList.toggle("page-scroll-dock--visible", shouldShow);
   value.textContent = rounded + "%";
@@ -899,7 +898,8 @@ function scrollUpQuarter() {
   const doc = document.documentElement;
   const maxScroll = Math.max(0, doc.scrollHeight - window.innerHeight);
   const top = window.scrollY || doc.scrollTop || document.body.scrollTop || 0;
-  window.scrollTo({ top: Math.max(0, top - maxScroll * 0.25), behavior: "smooth" });
+  const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+  window.scrollTo({ top: Math.max(0, top - maxScroll * 0.25), behavior });
 }
 
 $("page-scroll-dock").addEventListener("click", scrollUpQuarter);
