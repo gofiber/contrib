@@ -723,7 +723,7 @@ func TestCustomIDGenerator(t *testing.T) {
 	requireNoError(t, err)
 	t.Cleanup(func() { requireNoError(t, up.Close()) })
 
-	requireEqual(t, int64(42), up.instance.ID)
+	requireEqual(t, int64(42), up.targets[0].instance.ID)
 }
 
 func TestCloseIsIdempotent(t *testing.T) {

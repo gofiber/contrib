@@ -434,6 +434,15 @@ func (p *fakeRedisPipeline) SCard(ctx context.Context, key string) *redis.IntCmd
 	return cmd
 }
 
+func (p *fakeRedisPipeline) ZRangeByScore(ctx context.Context, key string, opt *redis.ZRangeBy) *redis.StringSliceCmd {
+	if ctx == nil {
+		ctx = p.ctx
+	}
+	cmd := p.client.ZRangeByScore(ctx, key, opt)
+	p.cmds = append(p.cmds, cmd)
+	return cmd
+}
+
 func redisScoreInRange(score float64, minRaw, maxRaw string) bool {
 	min, minExclusive := parseRedisBoundary(minRaw, true)
 	max, maxExclusive := parseRedisBoundary(maxRaw, false)

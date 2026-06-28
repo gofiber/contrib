@@ -16,6 +16,9 @@ import (
 
 const defaultRedisKeyPrefix = "fiber:uptime"
 
+// setMaxNanoScript stores ARGV[2] in hash field ARGV[1] on KEYS[1] when
+// the current value is missing or lower. Keeping the comparison inside Redis
+// prevents older concurrent heartbeats from moving last_seen_at backwards.
 const setMaxNanoScript = `
 local current = redis.call("HGET", KEYS[1], ARGV[1])
 if (not current) or tonumber(current) < tonumber(ARGV[2]) then
@@ -259,14 +262,31 @@ func (s *RedisStore) QueryDaily(ctx context.Context, options QueryDailyOptions) 
 	if err != nil {
 		return nil, err
 	}
+	if len(services) == 0 {
+		return nil, nil
+	}
 
 	type dailyQuery struct {
 		serviceID string
 		day       string
 	}
 	queries := make([]dailyQuery, 0)
-	for _, service := range services {
-		days, err := s.daysBetween(ctx, s.dailyDaysKey(service.ID), options.FromDay, options.ToDay)
+
+	dayCommands := make([]*redis.StringSliceCmd, len(services))
+	if _, err := s.client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		for i, service := range services {
+			cmd, err := s.daysBetweenPipe(ctx, pipe, s.dailyDaysKey(service.ID), options.FromDay, options.ToDay)
+			if err != nil {
+				return err
+			}
+			dayCommands[i] = cmd
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	for i, service := range services {
+		days, err := dayCommands[i].Result()
 		if err != nil {
 			return nil, err
 		}
@@ -407,6 +427,14 @@ func (s *RedisStore) daysBefore(ctx context.Context, key, beforeDay string) ([]s
 }
 
 func (s *RedisStore) daysBetween(ctx context.Context, key, fromDay, toDay string) ([]string, error) {
+	cmd, err := s.daysBetweenPipe(ctx, nil, key, fromDay, toDay)
+	if err != nil {
+		return nil, err
+	}
+	return cmd.Result()
+}
+
+func (s *RedisStore) daysBetweenPipe(ctx context.Context, pipe redis.Pipeliner, key, fromDay, toDay string) (*redis.StringSliceCmd, error) {
 	min := "-inf"
 	if fromDay != "" {
 		score, err := redisDayScore(fromDay)
@@ -423,10 +451,16 @@ func (s *RedisStore) daysBetween(ctx context.Context, key, fromDay, toDay string
 		}
 		max = strconv.FormatInt(score, 10)
 	}
-	return s.client.ZRangeByScore(ctx, key, &redis.ZRangeBy{
+	if pipe == nil {
+		return s.client.ZRangeByScore(ctx, key, &redis.ZRangeBy{
+			Min: min,
+			Max: max,
+		}), nil
+	}
+	return pipe.ZRangeByScore(ctx, key, &redis.ZRangeBy{
 		Min: min,
 		Max: max,
-	}).Result()
+	}), nil
 }
 
 func (s *RedisStore) cleanupDays(ctx context.Context, zsetKey, beforeDay string, keyForDay func(string) string) error {

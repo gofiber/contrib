@@ -27,9 +27,7 @@ type Uptime struct {
 	config Config
 	store  storage.Store
 
-	service  storage.Service
-	instance storage.Instance
-	targets  []recordTarget
+	targets []recordTarget
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -123,8 +121,6 @@ func newWithStore(cfg Config, store storage.Store, now time.Time) (*Uptime, erro
 	u := &Uptime{
 		config:     cfg,
 		store:      store,
-		service:    targets[0].service,
-		instance:   targets[0].instance,
 		targets:    targets,
 		ctx:        runCtx,
 		cancel:     cancel,
