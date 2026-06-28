@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -31,6 +32,33 @@ func TestConfigDefaults(t *testing.T) {
 	requireEqual(t, defaultUIFooter, cfg.UI.Footer)
 	requireEqual(t, defaultGreenThreshold, cfg.UI.GreenThreshold)
 	requireEqual(t, defaultYellowThreshold, cfg.UI.YellowThreshold)
+}
+
+func TestConfigEndpointDefaults(t *testing.T) {
+	t.Parallel()
+
+	headers := map[string]string{"X-Probe": "uptime"}
+	cfg, err := Config{
+		Endpoints: []EndpointConfig{
+			{
+				ID:      "health",
+				URL:     "https://example.com/health",
+				Headers: headers,
+			},
+		},
+	}.normalized()
+	requireNoError(t, err)
+
+	requireEqual(t, "", cfg.ServiceID)
+	requireLen(t, cfg.Endpoints, 1)
+	requireEqual(t, "health", cfg.Endpoints[0].Name)
+	requireEqual(t, http.MethodGet, cfg.Endpoints[0].Method)
+	requireEqual(t, defaultSampleInterval, cfg.Endpoints[0].Interval)
+	requireEqual(t, defaultEndpointTimeout, cfg.Endpoints[0].Timeout)
+	requireLen(t, cfg.Endpoints[0].ExpectedStatusCodes, 0)
+
+	headers["X-Probe"] = "changed"
+	requireEqual(t, "uptime", cfg.Endpoints[0].Headers["X-Probe"])
 }
 
 func TestConfigValidation(t *testing.T) {
@@ -89,6 +117,60 @@ func TestConfigValidation(t *testing.T) {
 				UI: UIConfig{
 					GreenThreshold:  1,
 					YellowThreshold: 1.1,
+				},
+			},
+		},
+		{
+			name: "endpoint id missing",
+			config: Config{
+				Endpoints: []EndpointConfig{{URL: "https://example.com/health"}},
+			},
+		},
+		{
+			name: "endpoint url missing",
+			config: Config{
+				Endpoints: []EndpointConfig{{ID: "health"}},
+			},
+		},
+		{
+			name: "endpoint url scheme invalid",
+			config: Config{
+				Endpoints: []EndpointConfig{{ID: "health", URL: "ftp://example.com/health"}},
+			},
+		},
+		{
+			name: "endpoint interval too small",
+			config: Config{
+				Endpoints: []EndpointConfig{{ID: "health", URL: "https://example.com/health", Interval: time.Millisecond}},
+			},
+		},
+		{
+			name: "endpoint timeout invalid",
+			config: Config{
+				Endpoints: []EndpointConfig{{ID: "health", URL: "https://example.com/health", Timeout: -time.Second}},
+			},
+		},
+		{
+			name: "endpoint expected status invalid",
+			config: Config{
+				Endpoints: []EndpointConfig{{ID: "health", URL: "https://example.com/health", ExpectedStatusCodes: []int{99}}},
+			},
+		},
+		{
+			name: "endpoint duplicates service id",
+			config: Config{
+				ServiceID: "api",
+				Endpoints: []EndpointConfig{
+					{ID: "api", URL: "https://example.com/health"},
+				},
+			},
+		},
+		{
+			name: "endpoint duplicate id",
+			config: Config{
+				Endpoints: []EndpointConfig{
+					{ID: "health", URL: "https://example.com/health"},
+					{ID: "health", URL: "https://example.com/ready"},
 				},
 			},
 		},
@@ -514,6 +596,112 @@ func TestRuntimeRecordsInitialHeartbeat(t *testing.T) {
 	requireEqual(t, "up", status.Services[0].CurrentStatus)
 	if len(status.Services[0].Daily) == 0 {
 		t.Fatal("daily status is empty")
+	}
+}
+
+func TestEndpointProbeWritesHeartbeatOnExpectedStatus(t *testing.T) {
+	t.Parallel()
+
+	seen := make(chan [2]string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- [2]string{r.Method, r.Header.Get("X-Probe")}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	store := newSnapshotStore()
+	service := storage.Service{
+		ID:             "health",
+		Name:           "Health",
+		CreatedAt:      store.now.Add(-time.Hour),
+		SampleInterval: time.Second,
+	}
+	store.services = []storage.Service{service}
+	store.today = nil
+	cfg, err := Config{
+		Endpoints: []EndpointConfig{
+			{
+				ID:                  "health",
+				Name:                "Health",
+				URL:                 server.URL,
+				Method:              http.MethodHead,
+				Headers:             map[string]string{"X-Probe": "uptime"},
+				ExpectedStatusCodes: []int{http.StatusNoContent},
+				Interval:            time.Second,
+				Timeout:             time.Second,
+			},
+		},
+		DaysToShow:    1,
+		RetentionDays: 1,
+		Timezone:      time.UTC,
+	}.normalized()
+	requireNoError(t, err)
+
+	u := newSnapshotUptimeWithConfig(store, cfg)
+	u.httpClient = server.Client()
+	target := recordTarget{
+		service:  service,
+		instance: storage.Instance{ID: 7, ServiceID: "health"},
+		interval: service.SampleInterval,
+		probe:    newEndpointProbe(cfg.Endpoints[0]),
+	}
+
+	requireNoError(t, u.recordTarget(context.Background(), target, store.now))
+	got := <-seen
+	requireEqual(t, http.MethodHead, got[0])
+	requireEqual(t, "uptime", got[1])
+
+	status, err := u.buildStatus(context.Background(), store.now)
+	requireNoError(t, err)
+	requireLen(t, status.Services, 1)
+	requireEqual(t, "health", status.Services[0].ID)
+	requireEqual(t, statusUp, status.Services[0].CurrentStatus)
+}
+
+func TestEndpointProbeSkipsHeartbeatOnUnexpectedStatus(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	store := newSnapshotStore()
+	service := storage.Service{
+		ID:             "health",
+		Name:           "Health",
+		CreatedAt:      store.now.Add(-time.Hour),
+		SampleInterval: time.Second,
+	}
+	store.services = []storage.Service{service}
+	store.today = nil
+	cfg, err := Config{
+		Endpoints: []EndpointConfig{
+			{
+				ID:       "health",
+				URL:      server.URL,
+				Interval: time.Second,
+				Timeout:  time.Second,
+			},
+		},
+		DaysToShow:    1,
+		RetentionDays: 1,
+		Timezone:      time.UTC,
+	}.normalized()
+	requireNoError(t, err)
+
+	u := newSnapshotUptimeWithConfig(store, cfg)
+	u.httpClient = server.Client()
+	target := recordTarget{
+		service:  service,
+		instance: storage.Instance{ID: 7, ServiceID: "health"},
+		interval: service.SampleInterval,
+		probe:    newEndpointProbe(cfg.Endpoints[0]),
+	}
+
+	requireNoError(t, u.recordTarget(context.Background(), target, store.now))
+	if len(store.today) != 0 {
+		t.Fatalf("endpoint failure wrote heartbeat rows: %+v", store.today)
 	}
 }
 

@@ -68,6 +68,33 @@ Open:
 - `http://localhost:3000/uptime`
 - `http://localhost:3000/uptime/api/status`
 
+## Endpoint probes
+
+By default, uptime records a heartbeat for the current process identified by
+`ServiceID`. You can also configure HTTP endpoints. Each endpoint is shown as a
+separate service on the dashboard and in the JSON API.
+
+```go
+app.Use(uptime.New(uptime.Config{
+	App: app,
+	Endpoints: []uptime.EndpointConfig{
+		{
+			ID:                  "api-health",
+			Name:                "API Health",
+			URL:                 "https://api.example.com/health",
+			Method:              "GET",
+			Interval:            10 * time.Second,
+			Timeout:             3 * time.Second,
+			ExpectedStatusCodes: []int{200, 204},
+		},
+	},
+}))
+```
+
+When `ExpectedStatusCodes` is empty, any `2xx` or `3xx` response is considered
+up. Failed probes do not write heartbeat slots, so the endpoint naturally moves
+to yellow, red, or down as slots are missed.
+
 ## Redis
 
 Redis is the built-in store and is created through
@@ -125,9 +152,10 @@ was reported by heartbeat, maintenance, or snapshot reads.
 |:--|:--|:--|:--|
 | App | `*fiber.App` | Optional Fiber app used to register a shutdown hook that closes the uptime runtime. | `nil` |
 | Next | `func(fiber.Ctx) bool` | Skip the uptime handler when true. | `nil` |
-| ServiceID | `string` | Stable service identifier. | Required |
+| ServiceID | `string` | Stable service identifier for the current process. Required only when `Endpoints` is empty. | `""` |
 | ServiceName | `string` | Display name. | `ServiceID` |
 | ServiceDescription | `string` | Display description. | `""` |
+| Endpoints | `[]uptime.EndpointConfig` | Optional HTTP endpoints to probe as tracked services. | `nil` |
 | SampleInterval | `time.Duration` | Heartbeat interval. | `3 * time.Second` |
 | RetentionDays | `int` | Number of days to retain daily history. | `90` |
 | DaysToShow | `int` | Number of days shown in snapshots and dashboard. | `30` |
@@ -138,6 +166,20 @@ was reported by heartbeat, maintenance, or snapshot reads.
 | Redis | `uptime.RedisConfig` | Redis store settings from `github.com/gofiber/storage/redis/v3`. | Fiber Redis storage defaults |
 | StorageKeyPrefix | `string` | Prefix for all uptime Redis keys. | `"fiber:uptime"` |
 | UI | `uptime.UIConfig` | Dashboard copy and thresholds. | Light English UI, green at `99.9%`, yellow at `99%` |
+
+### EndpointConfig
+
+| Property | Type | Description | Default |
+|:--|:--|:--|:--|
+| ID | `string` | Stable endpoint identifier. | Required |
+| Name | `string` | Display name. | `ID` |
+| Description | `string` | Display description. | `""` |
+| URL | `string` | Absolute `http` or `https` URL to probe. | Required |
+| Method | `string` | HTTP method used for the probe. | `GET` |
+| Headers | `map[string]string` | Optional request headers sent with each probe. | `nil` |
+| ExpectedStatusCodes | `[]int` | Status codes that mark the endpoint up. Empty means any `2xx` or `3xx`. | `nil` |
+| Interval | `time.Duration` | Endpoint heartbeat interval. | `Config.SampleInterval` |
+| Timeout | `time.Duration` | Maximum duration for one probe. | `5 * time.Second` |
 
 ## Handler behavior
 
@@ -154,14 +196,14 @@ subpaths return `404 Not Found`.
 The handler matches request paths against `UI.Path` (default `/uptime`).
 
 The middleware does not read request bodies, capture response bodies, or wrap
-business handlers. Heartbeats are written by a background ticker owned by the
-uptime runtime.
+business handlers. Process heartbeats and endpoint probes are run by background
+tickers owned by the uptime runtime.
 
 ## Performance notes
 
-Store writes happen on the heartbeat ticker, not on every business request.
-Status requests read the backing store to build the response. Use Fiber's cache
-middleware if the dashboard or JSON API should be cached.
+Store writes and endpoint probes happen on background tickers, not on every
+business request. Status requests read the backing store to build the response.
+Use Fiber's cache middleware if the dashboard or JSON API should be cached.
 
 ## Concurrency safety
 
@@ -178,4 +220,6 @@ during application shutdown to stop the heartbeat goroutine and close the store.
 
 Mount the dashboard on an internal or protected route when uptime history should
 not be public. The middleware does not log request bodies, response bodies,
-authorization headers, cookies, or query strings.
+authorization headers, cookies, or query strings. Endpoint probe response bodies
+are closed without being read. Avoid putting secrets in endpoint URLs because
+URLs may still appear in upstream infrastructure logs outside this middleware.

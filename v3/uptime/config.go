@@ -2,6 +2,9 @@ package uptime
 
 import (
 	"errors"
+	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -19,12 +22,13 @@ const (
 	defaultUIDescription    = "Historical uptime for Fiber services."
 	defaultUIFooter         = "Powered by github.com/gofiber/contrib/v3/uptime."
 	defaultStorageKeyPrefix = "fiber:uptime"
+	defaultEndpointTimeout  = 5 * time.Second
 	maintenanceInterval     = time.Minute
 )
 
 var (
-	// ErrMissingServiceID is returned when Config.ServiceID is empty.
-	ErrMissingServiceID = errors.New("uptime: service id is required")
+	// ErrMissingServiceID is returned when neither Config.ServiceID nor Config.Endpoints is set.
+	ErrMissingServiceID = errors.New("uptime: service id or endpoint is required")
 )
 
 // RedisConfig controls the default Redis-backed uptime store.
@@ -38,12 +42,16 @@ type Config struct {
 	// Next defines a function to skip this middleware when returned true.
 	Next func(c fiber.Ctx) bool
 
-	// ServiceID is the stable logical service identifier. It is required.
+	// ServiceID is the stable logical service identifier for the current process.
+	// It is required only when Endpoints is empty.
 	ServiceID string
 	// ServiceName is the display name shown in the dashboard. It defaults to ServiceID.
 	ServiceName string
 	// ServiceDescription is optional text shown under the service name.
 	ServiceDescription string
+
+	// Endpoints defines optional HTTP endpoints to probe as tracked services.
+	Endpoints []EndpointConfig
 
 	// SampleInterval is the heartbeat interval and uptime slot size.
 	SampleInterval time.Duration
@@ -67,6 +75,31 @@ type Config struct {
 	StorageKeyPrefix string
 	// UI configures the built-in dashboard.
 	UI UIConfig
+}
+
+// EndpointConfig defines one HTTP endpoint to probe as an uptime service.
+type EndpointConfig struct {
+	// ID is the stable logical endpoint identifier. It is required.
+	ID string
+	// Name is the display name shown in the dashboard. It defaults to ID.
+	Name string
+	// Description is optional text shown under the endpoint name.
+	Description string
+
+	// URL is the absolute HTTP or HTTPS URL to probe. It is required.
+	URL string
+	// Method is the HTTP method used for the probe. It defaults to GET.
+	Method string
+	// Headers are optional request headers sent with each probe.
+	Headers map[string]string
+	// ExpectedStatusCodes lists status codes that mark the endpoint up.
+	// When empty, any 2xx or 3xx response is considered up.
+	ExpectedStatusCodes []int
+
+	// Interval is the endpoint heartbeat interval. It defaults to Config.SampleInterval.
+	Interval time.Duration
+	// Timeout is the maximum duration for one probe. It defaults to 5 seconds.
+	Timeout time.Duration
 }
 
 // UIConfig controls the built-in status page.
@@ -111,18 +144,23 @@ func configDefault(config ...Config) Config {
 }
 
 func (c Config) normalized() (Config, error) {
-	if c.ServiceID == "" {
-		return Config{}, ErrMissingServiceID
-	}
-	if c.ServiceName == "" {
-		c.ServiceName = c.ServiceID
-	}
 	if c.SampleInterval == 0 {
 		c.SampleInterval = defaultSampleInterval
 	}
 	if c.SampleInterval < time.Second {
 		return Config{}, errors.New("uptime: sample interval must be at least 1s")
 	}
+	if c.ServiceID == "" && len(c.Endpoints) == 0 {
+		return Config{}, ErrMissingServiceID
+	}
+	if c.ServiceID != "" && c.ServiceName == "" {
+		c.ServiceName = c.ServiceID
+	}
+	endpoints, err := normalizeEndpoints(c.ServiceID, c.Endpoints, c.SampleInterval)
+	if err != nil {
+		return Config{}, err
+	}
+	c.Endpoints = endpoints
 	if c.RetentionDays == 0 {
 		c.RetentionDays = defaultRetentionDays
 	}
@@ -173,6 +211,104 @@ func (c Config) normalized() (Config, error) {
 		c.StorageKeyPrefix = defaultStorageKeyPrefix
 	}
 	return c, nil
+}
+
+func normalizeEndpoints(serviceID string, endpoints []EndpointConfig, sampleInterval time.Duration) ([]EndpointConfig, error) {
+	if len(endpoints) == 0 {
+		return nil, nil
+	}
+
+	seen := make(map[string]struct{}, len(endpoints)+1)
+	if serviceID != "" {
+		seen[serviceID] = struct{}{}
+	}
+	normalized := make([]EndpointConfig, len(endpoints))
+	for i, endpoint := range endpoints {
+		endpoint.ID = strings.TrimSpace(endpoint.ID)
+		if endpoint.ID == "" {
+			return nil, errors.New("uptime: endpoint id is required")
+		}
+		if _, ok := seen[endpoint.ID]; ok {
+			return nil, errors.New("uptime: endpoint id must be unique")
+		}
+		seen[endpoint.ID] = struct{}{}
+
+		endpoint.URL = strings.TrimSpace(endpoint.URL)
+		if endpoint.URL == "" {
+			return nil, errors.New("uptime: endpoint url is required")
+		}
+		if err := validateEndpointURL(endpoint.URL); err != nil {
+			return nil, err
+		}
+		if endpoint.Name == "" {
+			endpoint.Name = endpoint.ID
+		}
+		if endpoint.Method == "" {
+			endpoint.Method = http.MethodGet
+		}
+		endpoint.Method = strings.ToUpper(endpoint.Method)
+		if !validHTTPMethod(endpoint.Method) {
+			return nil, errors.New("uptime: endpoint method is invalid")
+		}
+		if endpoint.Interval == 0 {
+			endpoint.Interval = sampleInterval
+		}
+		if endpoint.Interval < time.Second {
+			return nil, errors.New("uptime: endpoint interval must be at least 1s")
+		}
+		if endpoint.Timeout == 0 {
+			endpoint.Timeout = defaultEndpointTimeout
+		}
+		if endpoint.Timeout < time.Millisecond {
+			return nil, errors.New("uptime: endpoint timeout must be at least 1ms")
+		}
+		for _, statusCode := range endpoint.ExpectedStatusCodes {
+			if statusCode < 100 || statusCode > 599 {
+				return nil, errors.New("uptime: endpoint expected status code must be between 100 and 599")
+			}
+		}
+		endpoint.Headers = copyStringMap(endpoint.Headers)
+		endpoint.ExpectedStatusCodes = append([]int(nil), endpoint.ExpectedStatusCodes...)
+		normalized[i] = endpoint
+	}
+	return normalized, nil
+}
+
+func validateEndpointURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return errors.New("uptime: endpoint url is invalid")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return errors.New("uptime: endpoint url must use http or https")
+	}
+	if parsed.Host == "" {
+		return errors.New("uptime: endpoint url host is required")
+	}
+	return nil
+}
+
+func validHTTPMethod(method string) bool {
+	if method == "" {
+		return false
+	}
+	for _, r := range method {
+		if r <= ' ' || r >= 127 || strings.ContainsRune("()<>@,;:\\\"/[]?={}", r) {
+			return false
+		}
+	}
+	return true
+}
+
+func copyStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
 }
 
 func normalizePath(path string) string {

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/fnv"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -28,10 +29,13 @@ type Uptime struct {
 
 	service  storage.Service
 	instance storage.Instance
+	targets  []recordTarget
 
 	ctx    context.Context
 	cancel context.CancelFunc
 	done   chan struct{}
+
+	httpClient *http.Client
 
 	closeOnce sync.Once
 
@@ -42,6 +46,21 @@ type Uptime struct {
 	maintenanceMu      sync.Mutex
 	lastMaintenance    time.Time
 	lastMaintenanceDay string
+}
+
+type recordTarget struct {
+	service  storage.Service
+	instance storage.Instance
+	interval time.Duration
+	probe    *endpointProbe
+}
+
+type endpointProbe struct {
+	method              string
+	url                 string
+	headers             map[string]string
+	timeout             time.Duration
+	expectedStatusCodes map[int]struct{}
 }
 
 const (
@@ -59,7 +78,7 @@ func New(config ...Config) fiber.Handler {
 	return u.Handler()
 }
 
-// NewRuntime initializes the store, writes the first heartbeat, and starts recording.
+// NewRuntime initializes the store and starts recording uptime.
 func NewRuntime(config ...Config) (*Uptime, error) {
 	cfg, err := configDefault(config...).normalized()
 	if err != nil {
@@ -88,42 +107,29 @@ func newWithStore(cfg Config, store storage.Store, now time.Time) (*Uptime, erro
 		instanceID = instanceIDForNode(cfg.NodeID)
 	}
 
-	hostname, _ := os.Hostname()
-	service := storage.Service{
-		ID:             cfg.ServiceID,
-		Name:           cfg.ServiceName,
-		Description:    cfg.ServiceDescription,
-		CreatedAt:      now,
-		LastSeenAt:     now,
-		SampleInterval: cfg.SampleInterval,
-	}
-	instance := storage.Instance{
-		ID:         instanceID,
-		ServiceID:  cfg.ServiceID,
-		Hostname:   hostname,
-		PID:        os.Getpid(),
-		StartedAt:  now,
-		LastSeenAt: now,
-	}
-
-	if err := store.UpsertService(ctx, service); err != nil {
-		_ = store.Close()
-		return nil, fmt.Errorf("uptime: upsert service: %w", err)
-	}
-	if err := store.UpsertInstance(ctx, instance); err != nil {
-		_ = store.Close()
-		return nil, fmt.Errorf("uptime: upsert instance: %w", err)
+	targets := buildRecordTargets(cfg, now, instanceID)
+	for _, target := range targets {
+		if err := store.UpsertService(ctx, target.service); err != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("uptime: upsert service: %w", err)
+		}
+		if err := store.UpsertInstance(ctx, target.instance); err != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("uptime: upsert instance: %w", err)
+		}
 	}
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	u := &Uptime{
-		config:   cfg,
-		store:    store,
-		service:  service,
-		instance: instance,
-		ctx:      runCtx,
-		cancel:   cancel,
-		done:     make(chan struct{}),
+		config:     cfg,
+		store:      store,
+		service:    targets[0].service,
+		instance:   targets[0].instance,
+		targets:    targets,
+		ctx:        runCtx,
+		cancel:     cancel,
+		done:       make(chan struct{}),
+		httpClient: &http.Client{},
 	}
 
 	if err := u.runMaintenance(ctx, now, true); err != nil {
@@ -131,15 +137,93 @@ func newWithStore(cfg Config, store storage.Store, now time.Time) (*Uptime, erro
 		_ = store.Close()
 		return nil, fmt.Errorf("uptime: maintenance: %w", err)
 	}
-	if err := u.writeHeartbeat(ctx, now); err != nil {
-		cancel()
-		_ = store.Close()
-		return nil, fmt.Errorf("uptime: initial heartbeat: %w", err)
+	for _, target := range targets {
+		if target.probe != nil {
+			continue
+		}
+		if err := u.recordTarget(ctx, target, now); err != nil {
+			cancel()
+			_ = store.Close()
+			return nil, fmt.Errorf("uptime: initial heartbeat: %w", err)
+		}
 	}
 
 	go u.loop()
 	registerShutdownHook(cfg.App, u)
 	return u, nil
+}
+
+func buildRecordTargets(cfg Config, now time.Time, firstInstanceID int64) []recordTarget {
+	hostname, _ := os.Hostname()
+	targets := make([]recordTarget, 0, len(cfg.Endpoints)+1)
+	nextInstanceID := func(index int) int64 {
+		if index == 0 && firstInstanceID != 0 {
+			return firstInstanceID
+		}
+		if cfg.InstanceID != 0 {
+			return cfg.InstanceID + int64(index)
+		}
+		if cfg.IDGenerator != nil {
+			if id := cfg.IDGenerator.NextID(); id != 0 {
+				return id
+			}
+		}
+		return instanceIDForNode(cfg.NodeID + int64(index))
+	}
+	addTarget := func(index int, service storage.Service, probe *endpointProbe) {
+		instance := storage.Instance{
+			ID:         nextInstanceID(index),
+			ServiceID:  service.ID,
+			Hostname:   hostname,
+			PID:        os.Getpid(),
+			StartedAt:  now,
+			LastSeenAt: service.LastSeenAt,
+		}
+		targets = append(targets, recordTarget{
+			service:  service,
+			instance: instance,
+			interval: service.SampleInterval,
+			probe:    probe,
+		})
+	}
+
+	index := 0
+	if cfg.ServiceID != "" {
+		addTarget(index, storage.Service{
+			ID:             cfg.ServiceID,
+			Name:           cfg.ServiceName,
+			Description:    cfg.ServiceDescription,
+			CreatedAt:      now,
+			LastSeenAt:     now,
+			SampleInterval: cfg.SampleInterval,
+		}, nil)
+		index++
+	}
+	for _, endpoint := range cfg.Endpoints {
+		addTarget(index, storage.Service{
+			ID:             endpoint.ID,
+			Name:           endpoint.Name,
+			Description:    endpoint.Description,
+			CreatedAt:      now,
+			SampleInterval: endpoint.Interval,
+		}, newEndpointProbe(endpoint))
+		index++
+	}
+	return targets
+}
+
+func newEndpointProbe(endpoint EndpointConfig) *endpointProbe {
+	expectedStatusCodes := make(map[int]struct{}, len(endpoint.ExpectedStatusCodes))
+	for _, statusCode := range endpoint.ExpectedStatusCodes {
+		expectedStatusCodes[statusCode] = struct{}{}
+	}
+	return &endpointProbe{
+		method:              endpoint.Method,
+		url:                 endpoint.URL,
+		headers:             copyStringMap(endpoint.Headers),
+		timeout:             endpoint.Timeout,
+		expectedStatusCodes: expectedStatusCodes,
+	}
 }
 
 func registerShutdownHook(app *fiber.App, u *Uptime) {
@@ -263,7 +347,26 @@ func (u *Uptime) serveDashboard(c fiber.Ctx) error {
 func (u *Uptime) loop() {
 	defer close(u.done)
 
-	ticker := time.NewTicker(u.config.SampleInterval)
+	var wg sync.WaitGroup
+	for _, target := range u.targets {
+		target := target
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			u.recordLoop(target)
+		}()
+	}
+
+	<-u.ctx.Done()
+	wg.Wait()
+}
+
+func (u *Uptime) recordLoop(target recordTarget) {
+	if target.probe != nil {
+		_ = u.recordTarget(u.ctx, target, time.Now())
+	}
+
+	ticker := time.NewTicker(target.interval)
 	defer ticker.Stop()
 
 	for {
@@ -271,23 +374,44 @@ func (u *Uptime) loop() {
 		case <-u.ctx.Done():
 			return
 		case now := <-ticker.C:
-			_ = u.writeHeartbeat(u.ctx, now)
+			_ = u.recordTarget(u.ctx, target, now)
 		}
 	}
 }
 
 func (u *Uptime) writeHeartbeat(ctx context.Context, now time.Time) error {
+	if len(u.targets) == 0 {
+		return nil
+	}
+	return u.recordTarget(ctx, u.targets[0], now)
+}
+
+func (u *Uptime) recordTarget(ctx context.Context, target recordTarget, now time.Time) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
 	}
 
+	if target.probe != nil && !u.probeEndpoint(ctx, target.probe) {
+		if err := u.runMaintenance(ctx, now, false); err != nil {
+			return err
+		}
+		u.clearLastError()
+		return nil
+	}
+	if err := u.writeTargetHeartbeat(ctx, target, now); err != nil {
+		return err
+	}
+	return u.runMaintenance(ctx, now, false)
+}
+
+func (u *Uptime) writeTargetHeartbeat(ctx context.Context, target recordTarget, now time.Time) error {
 	heartbeat := storage.Heartbeat{
-		ServiceID:  u.config.ServiceID,
-		InstanceID: u.instance.ID,
+		ServiceID:  target.service.ID,
+		InstanceID: target.instance.ID,
 		Day:        dayOf(now, u.config.Timezone),
-		Slot:       slotOf(now, u.config.SampleInterval, u.config.Timezone),
+		Slot:       slotOf(now, target.interval, u.config.Timezone),
 		SeenAt:     now,
 	}
 	if err := u.store.WriteHeartbeat(ctx, heartbeat); err != nil {
@@ -295,11 +419,41 @@ func (u *Uptime) writeHeartbeat(ctx context.Context, now time.Time) error {
 		fiberlog.Errorf("uptime: write heartbeat: %v", err)
 		return err
 	}
-	if err := u.runMaintenance(ctx, now, false); err != nil {
-		return err
-	}
 	u.clearLastError()
 	return nil
+}
+
+func (u *Uptime) probeEndpoint(ctx context.Context, probe *endpointProbe) bool {
+	probeCtx, cancel := context.WithTimeout(ctx, probe.timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(probeCtx, probe.method, probe.url, nil)
+	if err != nil {
+		return false
+	}
+	for key, value := range probe.headers {
+		req.Header.Set(key, value)
+	}
+
+	client := u.httpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	statusCode := resp.StatusCode
+	_ = resp.Body.Close()
+	return probe.statusAllowed(statusCode)
+}
+
+func (p *endpointProbe) statusAllowed(statusCode int) bool {
+	if len(p.expectedStatusCodes) == 0 {
+		return statusCode >= 200 && statusCode < 400
+	}
+	_, ok := p.expectedStatusCodes[statusCode]
+	return ok
 }
 
 func (u *Uptime) runMaintenance(ctx context.Context, now time.Time, force bool) error {
