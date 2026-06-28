@@ -4,22 +4,22 @@ import (
 	"errors"
 	"time"
 
-	"github.com/gofiber/contrib/v3/uptime/internal/storage"
 	"github.com/gofiber/fiber/v3"
+	fiberredis "github.com/gofiber/storage/redis/v3"
 )
 
 const (
-	defaultSampleInterval  = 3 * time.Second
-	defaultRetentionDays   = 90
-	defaultDaysToShow      = 30
-	defaultGreenThreshold  = 0.999
-	defaultYellowThreshold = 0.99
-	defaultUIPath          = "/uptime"
-	defaultUITitle         = "Fiber Uptime"
-	defaultUIDescription   = "Historical uptime for Fiber services."
-	defaultUIFooter        = "Powered by github.com/gofiber/contrib/v3/uptime."
-	defaultSQLitePath      = "./data/uptime.db"
-	maintenanceInterval    = time.Minute
+	defaultSampleInterval   = 3 * time.Second
+	defaultRetentionDays    = 90
+	defaultDaysToShow       = 30
+	defaultGreenThreshold   = 0.999
+	defaultYellowThreshold  = 0.99
+	defaultUIPath           = "/uptime"
+	defaultUITitle          = "Fiber Uptime"
+	defaultUIDescription    = "Historical uptime for Fiber services."
+	defaultUIFooter         = "Powered by github.com/gofiber/contrib/v3/uptime."
+	defaultStorageKeyPrefix = "fiber:uptime"
+	maintenanceInterval     = time.Minute
 )
 
 var (
@@ -27,8 +27,8 @@ var (
 	ErrMissingServiceID = errors.New("uptime: service id is required")
 )
 
-// SQLiteConfig controls the default SQLite-backed uptime store.
-type SQLiteConfig = storage.SQLiteConfig
+// RedisConfig controls the default Redis-backed uptime store.
+type RedisConfig = fiberredis.Config
 
 // Config defines the configuration for the uptime middleware.
 type Config struct {
@@ -61,8 +61,10 @@ type Config struct {
 	// IDGenerator generates instance IDs when InstanceID is zero.
 	IDGenerator IDGenerator
 
-	// SQLite configures the default SQLite store.
-	SQLite SQLiteConfig
+	// Redis configures the default Redis store.
+	Redis RedisConfig
+	// StorageKeyPrefix namespaces all uptime keys inside the selected Redis database.
+	StorageKeyPrefix string
 	// UI configures the built-in dashboard.
 	UI UIConfig
 }
@@ -86,13 +88,11 @@ type UIConfig struct {
 
 // ConfigDefault is the default configuration.
 var ConfigDefault = Config{
-	SampleInterval: defaultSampleInterval,
-	RetentionDays:  defaultRetentionDays,
-	DaysToShow:     defaultDaysToShow,
-	Timezone:       time.Local,
-	SQLite: SQLiteConfig{
-		Path: defaultSQLitePath,
-	},
+	SampleInterval:   defaultSampleInterval,
+	RetentionDays:    defaultRetentionDays,
+	DaysToShow:       defaultDaysToShow,
+	Timezone:         time.Local,
+	StorageKeyPrefix: defaultStorageKeyPrefix,
 	UI: UIConfig{
 		Title:           defaultUITitle,
 		Path:            defaultUIPath,
@@ -169,8 +169,8 @@ func (c Config) normalized() (Config, error) {
 	if c.UI.GreenThreshold < c.UI.YellowThreshold {
 		return Config{}, errors.New("uptime: green threshold must be greater than or equal to yellow threshold")
 	}
-	if c.SQLite.Path == "" {
-		c.SQLite.Path = defaultSQLitePath
+	if c.StorageKeyPrefix == "" {
+		c.StorageKeyPrefix = defaultStorageKeyPrefix
 	}
 	return c, nil
 }

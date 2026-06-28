@@ -66,7 +66,10 @@ func NewRuntime(config ...Config) (*Uptime, error) {
 		return nil, err
 	}
 
-	store := storage.NewSQLiteStore(cfg.SQLite)
+	store := storage.NewRedisStore(storage.RedisConfig{
+		Config:    cfg.Redis,
+		KeyPrefix: cfg.StorageKeyPrefix,
+	})
 	return newWithStore(cfg, store, time.Now())
 }
 

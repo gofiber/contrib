@@ -68,25 +68,28 @@ Open:
 - `http://localhost:3000/uptime`
 - `http://localhost:3000/uptime/api/status`
 
-## SQLite
+## Redis
 
-SQLite is the built-in store. By default, the middleware creates a SQLite
-database at `./data/uptime.db`. This path is relative to the process working
-directory, so prefer an absolute path in containers or when the working
-directory is not writable.
+Redis is the built-in store and is created through
+`github.com/gofiber/storage/redis/v3`. By default, that storage package connects
+to `127.0.0.1:6379` and database `0`.
 
 ```go
 app.Use(uptime.New(uptime.Config{
 	App:       app,
 	ServiceID: "api",
-	SQLite: uptime.SQLiteConfig{
-		Path: "./data/uptime.db",
+	Redis: uptime.RedisConfig{
+		Addrs:    []string{"127.0.0.1:6379"},
+		Password: "",
+		Database: 0,
 	},
+	StorageKeyPrefix: "fiber:uptime",
 }))
 ```
 
-SQLite uses the pure-Go `modernc.org/sqlite` driver and configures WAL mode,
-normal synchronous mode, a busy timeout, and one open connection.
+The middleware uses `Conn()` from the Fiber Redis storage to run the uptime
+queries it needs. Use a dedicated Redis database or a distinct
+`StorageKeyPrefix` when multiple environments share the same Redis server.
 
 ## Snapshots and custom UI
 
@@ -132,7 +135,8 @@ was reported by heartbeat, maintenance, or snapshot reads.
 | NodeID | `int64` | Optional node value used for generated instance IDs. | `0` |
 | InstanceID | `int64` | Explicit process instance ID. | Generated |
 | IDGenerator | `uptime.IDGenerator` | Custom instance ID generator. | `nil` |
-| SQLite | `uptime.SQLiteConfig` | SQLite store settings. | `Path: "./data/uptime.db"` |
+| Redis | `uptime.RedisConfig` | Redis store settings from `github.com/gofiber/storage/redis/v3`. | Fiber Redis storage defaults |
+| StorageKeyPrefix | `string` | Prefix for all uptime Redis keys. | `"fiber:uptime"` |
 | UI | `uptime.UIConfig` | Dashboard copy and thresholds. | Light English UI, green at `99.9%`, yellow at `99%` |
 
 ## Handler behavior
@@ -162,8 +166,9 @@ middleware if the dashboard or JSON API should be cached.
 ## Concurrency safety
 
 Uptime runtimes are safe for concurrent use after construction. The snapshot
-payload is built from fresh store reads. The built-in SQLite store is designed
-for concurrent use by the background recorder and Fiber handlers.
+payload is built from fresh store reads. Redis commands are issued through the
+Fiber Redis storage connection and are safe for concurrent use by the background
+recorder and Fiber handlers.
 
 When `Config.App` is set, `New` and `NewRuntime` register a Fiber shutdown hook
 that calls `Close`. If you create a runtime without `Config.App`, call `Close`

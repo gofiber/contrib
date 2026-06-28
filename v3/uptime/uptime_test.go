@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -25,7 +24,7 @@ func TestConfigDefaults(t *testing.T) {
 	requireEqual(t, defaultSampleInterval, cfg.SampleInterval)
 	requireEqual(t, defaultRetentionDays, cfg.RetentionDays)
 	requireEqual(t, defaultDaysToShow, cfg.DaysToShow)
-	requireEqual(t, defaultSQLitePath, cfg.SQLite.Path)
+	requireEqual(t, defaultStorageKeyPrefix, cfg.StorageKeyPrefix)
 	requireEqual(t, defaultUIPath, cfg.UI.Path)
 	requireEqual(t, defaultUITitle, cfg.UI.Title)
 	requireEqual(t, defaultUIDescription, cfg.UI.Description)
@@ -269,16 +268,13 @@ func TestHandlerNotFound(t *testing.T) {
 func TestHandlerNext(t *testing.T) {
 	t.Parallel()
 
-	up, err := NewRuntime(Config{
+	up := newSnapshotUptimeWithConfig(newSnapshotStore(), Config{
 		ServiceID:      "api",
 		SampleInterval: time.Second,
-		SQLite:         SQLiteConfig{Path: filepath.Join(t.TempDir(), "uptime.db")},
 		Next: func(fiber.Ctx) bool {
 			return true
 		},
 	})
-	requireNoError(t, err)
-	t.Cleanup(func() { requireNoError(t, up.Close()) })
 
 	app := fiber.New()
 	app.All("/uptime", up.Handler())
@@ -293,13 +289,10 @@ func TestHandlerNext(t *testing.T) {
 func TestHandlerPassesThroughOutsideUIPath(t *testing.T) {
 	t.Parallel()
 
-	up, err := NewRuntime(Config{
+	up := newSnapshotUptimeWithConfig(newSnapshotStore(), Config{
 		ServiceID:      "api",
 		SampleInterval: time.Second,
-		SQLite:         SQLiteConfig{Path: filepath.Join(t.TempDir(), "uptime.db")},
 	})
-	requireNoError(t, err)
-	t.Cleanup(func() { requireNoError(t, up.Close()) })
 
 	app := fiber.New()
 	app.Use(up.Handler())
@@ -494,19 +487,27 @@ func TestNewClosesStoreWhenInitFails(t *testing.T) {
 	requireEqual(t, 1, store.closeCalls)
 }
 
-func TestSQLiteStoreRecordsHeartbeat(t *testing.T) {
+func TestRuntimeRecordsInitialHeartbeat(t *testing.T) {
 	t.Parallel()
 
-	up, err := NewRuntime(Config{
+	store := newSnapshotStore()
+	store.services = nil
+	store.today = nil
+	cfg, err := Config{
 		ServiceID:      "api",
 		ServiceName:    "API",
 		SampleInterval: time.Second,
-		SQLite:         SQLiteConfig{Path: filepath.Join(t.TempDir(), "uptime.db")},
-	})
+		DaysToShow:     1,
+		RetentionDays:  1,
+		Timezone:       time.UTC,
+	}.normalized()
+	requireNoError(t, err)
+
+	up, err := newWithStore(cfg, store, store.now)
 	requireNoError(t, err)
 	t.Cleanup(func() { requireNoError(t, up.Close()) })
 
-	status, err := up.Snapshot(context.Background())
+	status, err := up.buildStatus(context.Background(), store.now)
 	requireNoError(t, err)
 	requireLen(t, status.Services, 1)
 	requireEqual(t, "api", status.Services[0].ID)
@@ -519,12 +520,17 @@ func TestSQLiteStoreRecordsHeartbeat(t *testing.T) {
 func TestCustomIDGenerator(t *testing.T) {
 	t.Parallel()
 
-	up, err := NewRuntime(Config{
+	cfg, err := Config{
 		ServiceID:      "api",
 		SampleInterval: time.Second,
 		IDGenerator:    staticIDGenerator{value: 42},
-		SQLite:         SQLiteConfig{Path: filepath.Join(t.TempDir(), "uptime.db")},
-	})
+		DaysToShow:     1,
+		RetentionDays:  1,
+		Timezone:       time.UTC,
+	}.normalized()
+	requireNoError(t, err)
+
+	up, err := newWithStore(cfg, newSnapshotStore(), time.Now())
 	requireNoError(t, err)
 	t.Cleanup(func() { requireNoError(t, up.Close()) })
 
@@ -534,11 +540,16 @@ func TestCustomIDGenerator(t *testing.T) {
 func TestCloseIsIdempotent(t *testing.T) {
 	t.Parallel()
 
-	up, err := NewRuntime(Config{
+	cfg, err := Config{
 		ServiceID:      "api",
 		SampleInterval: time.Second,
-		SQLite:         SQLiteConfig{Path: filepath.Join(t.TempDir(), "uptime.db")},
-	})
+		DaysToShow:     1,
+		RetentionDays:  1,
+		Timezone:       time.UTC,
+	}.normalized()
+	requireNoError(t, err)
+
+	up, err := newWithStore(cfg, newSnapshotStore(), time.Now())
 	requireNoError(t, err)
 
 	requireNoError(t, up.Close())
@@ -571,14 +582,11 @@ func TestLastErrorAllowsNilReceiver(t *testing.T) {
 func newTestApp(t *testing.T) (*Uptime, *fiber.App) {
 	t.Helper()
 
-	up, err := NewRuntime(Config{
+	up := newSnapshotUptimeWithConfig(newSnapshotStore(), Config{
 		ServiceID:      "api",
 		ServiceName:    "API",
 		SampleInterval: time.Second,
-		SQLite:         SQLiteConfig{Path: filepath.Join(t.TempDir(), "uptime.db")},
 	})
-	requireNoError(t, err)
-	t.Cleanup(func() { requireNoError(t, up.Close()) })
 
 	app := fiber.New()
 	app.All("/uptime", up.Handler())
@@ -624,6 +632,7 @@ type snapshotStore struct {
 	services          []storage.Service
 	daily             []storage.DailyStatus
 	today             []storage.TodaySampleStatus
+	sampleSlots       map[string]map[int64]struct{}
 	writeHeartbeatErr error
 	rollupCalls       int
 	cleanupCalls      int
@@ -664,10 +673,36 @@ func (s *snapshotStore) UpsertService(_ context.Context, service storage.Service
 func (s *snapshotStore) UpsertInstance(context.Context, storage.Instance) error {
 	return nil
 }
-func (s *snapshotStore) WriteHeartbeat(context.Context, storage.Heartbeat) error {
+func (s *snapshotStore) WriteHeartbeat(_ context.Context, heartbeat storage.Heartbeat) error {
 	if s.writeHeartbeatErr != nil {
 		return s.writeHeartbeatErr
 	}
+	for i := range s.services {
+		if s.services[i].ID == heartbeat.ServiceID && s.services[i].LastSeenAt.Before(heartbeat.SeenAt) {
+			s.services[i].LastSeenAt = heartbeat.SeenAt
+		}
+	}
+	if s.sampleSlots == nil {
+		s.sampleSlots = make(map[string]map[int64]struct{})
+	}
+	key := heartbeat.ServiceID + "\x00" + heartbeat.Day
+	slots := s.sampleSlots[key]
+	if slots == nil {
+		slots = make(map[int64]struct{})
+		s.sampleSlots[key] = slots
+	}
+	slots[heartbeat.Slot] = struct{}{}
+	for i := range s.today {
+		if s.today[i].ServiceID == heartbeat.ServiceID && s.today[i].Day == heartbeat.Day {
+			s.today[i].UpSlots = len(slots)
+			return nil
+		}
+	}
+	s.today = append(s.today, storage.TodaySampleStatus{
+		ServiceID: heartbeat.ServiceID,
+		Day:       heartbeat.Day,
+		UpSlots:   len(slots),
+	})
 	return nil
 }
 func (s *snapshotStore) RollupDaily(_ context.Context, options storage.RollupOptions) error {
