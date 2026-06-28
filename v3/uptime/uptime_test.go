@@ -221,6 +221,7 @@ func TestHandlerDashboardHTML(t *testing.T) {
 	requireContains(t, bodyText, `const refreshMS =`)
 	requireContains(t, bodyText, `10000`)
 	requireContains(t, bodyText, `date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate())`)
+	requireContains(t, bodyText, `if (isZeroTime(value)) return "Never";`)
 	requireContains(t, bodyText, `aria-label="Scroll up; scroll progress 0%"`)
 	requireContains(t, bodyText, `let refreshInFlight = false;`)
 	requireContains(t, bodyText, `signal: controller.signal`)

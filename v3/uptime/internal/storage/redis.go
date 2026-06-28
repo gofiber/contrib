@@ -16,6 +16,15 @@ import (
 
 const defaultRedisKeyPrefix = "fiber:uptime"
 
+const setMaxNanoScript = `
+local current = redis.call("HGET", KEYS[1], ARGV[1])
+if (not current) or tonumber(current) < tonumber(ARGV[2]) then
+	redis.call("HSET", KEYS[1], ARGV[1], ARGV[2])
+	return 1
+end
+return 0
+`
+
 // RedisConfig controls the Redis-backed uptime store.
 type RedisConfig struct {
 	// Config is passed to github.com/gofiber/storage/redis/v3.
@@ -38,12 +47,13 @@ type redisClient interface {
 	SCard(ctx context.Context, key string) *redis.IntCmd
 	HSet(ctx context.Context, key string, values ...interface{}) *redis.IntCmd
 	HSetNX(ctx context.Context, key, field string, value interface{}) *redis.BoolCmd
-	HGet(ctx context.Context, key, field string) *redis.StringCmd
 	HGetAll(ctx context.Context, key string) *redis.MapStringStringCmd
 	ZAdd(ctx context.Context, key string, members ...redis.Z) *redis.IntCmd
 	ZRangeByScore(ctx context.Context, key string, opt *redis.ZRangeBy) *redis.StringSliceCmd
 	ZRem(ctx context.Context, key string, members ...interface{}) *redis.IntCmd
 	Del(ctx context.Context, keys ...string) *redis.IntCmd
+	Eval(ctx context.Context, script string, keys []string, args ...interface{}) *redis.Cmd
+	Pipelined(ctx context.Context, fn func(redis.Pipeliner) error) ([]redis.Cmder, error)
 	Close() error
 }
 
@@ -212,10 +222,23 @@ func (s *RedisStore) ListServices(ctx context.Context) ([]Service, error) {
 		return nil, err
 	}
 	sort.Strings(serviceIDs)
+	if len(serviceIDs) == 0 {
+		return nil, nil
+	}
+
+	cmds := make([]*redis.MapStringStringCmd, len(serviceIDs))
+	if _, err := s.client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		for i, serviceID := range serviceIDs {
+			cmds[i] = pipe.HGetAll(ctx, s.serviceKey(serviceID))
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 
 	services := make([]Service, 0, len(serviceIDs))
-	for _, serviceID := range serviceIDs {
-		fields, err := s.client.HGetAll(ctx, s.serviceKey(serviceID)).Result()
+	for i, serviceID := range serviceIDs {
+		fields, err := cmds[i].Result()
 		if err != nil {
 			return nil, err
 		}
@@ -237,26 +260,48 @@ func (s *RedisStore) QueryDaily(ctx context.Context, options QueryDailyOptions) 
 		return nil, err
 	}
 
-	statuses := make([]DailyStatus, 0)
+	type dailyQuery struct {
+		serviceID string
+		day       string
+	}
+	queries := make([]dailyQuery, 0)
 	for _, service := range services {
 		days, err := s.daysBetween(ctx, s.dailyDaysKey(service.ID), options.FromDay, options.ToDay)
 		if err != nil {
 			return nil, err
 		}
 		for _, day := range days {
-			fields, err := s.client.HGetAll(ctx, s.dailyKey(service.ID, day)).Result()
-			if err != nil {
-				return nil, err
-			}
-			if len(fields) == 0 {
-				continue
-			}
-			status, err := dailyFromRedisHash(service.ID, day, fields)
-			if err != nil {
-				return nil, err
-			}
-			statuses = append(statuses, status)
+			queries = append(queries, dailyQuery{serviceID: service.ID, day: day})
 		}
+	}
+	if len(queries) == 0 {
+		return nil, nil
+	}
+
+	cmds := make([]*redis.MapStringStringCmd, len(queries))
+	if _, err := s.client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		for i, query := range queries {
+			cmds[i] = pipe.HGetAll(ctx, s.dailyKey(query.serviceID, query.day))
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	statuses := make([]DailyStatus, 0, len(queries))
+	for i, query := range queries {
+		fields, err := cmds[i].Result()
+		if err != nil {
+			return nil, err
+		}
+		if len(fields) == 0 {
+			continue
+		}
+		status, err := dailyFromRedisHash(query.serviceID, query.day, fields)
+		if err != nil {
+			return nil, err
+		}
+		statuses = append(statuses, status)
 	}
 	return statuses, nil
 }
@@ -270,9 +315,23 @@ func (s *RedisStore) QueryTodaySamples(ctx context.Context, options QueryTodaySa
 	if err != nil {
 		return nil, err
 	}
+	if len(services) == 0 {
+		return nil, nil
+	}
+
+	cmds := make([]*redis.IntCmd, len(services))
+	if _, err := s.client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		for i, service := range services {
+			cmds[i] = pipe.SCard(ctx, s.sampleKey(service.ID, options.Day))
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
 	statuses := make([]TodaySampleStatus, 0, len(services))
-	for _, service := range services {
-		upSlots, err := s.client.SCard(ctx, s.sampleKey(service.ID, options.Day)).Result()
+	for i, service := range services {
+		upSlots, err := cmds[i].Result()
 		if err != nil {
 			return nil, err
 		}
@@ -307,20 +366,7 @@ func (s *RedisStore) setMaxNano(ctx context.Context, key, field string, value in
 	if value == 0 {
 		return nil
 	}
-	current, err := s.client.HGet(ctx, key, field).Result()
-	if err != nil && !errors.Is(err, redis.Nil) {
-		return err
-	}
-	if current != "" {
-		currentValue, err := strconv.ParseInt(current, 10, 64)
-		if err != nil {
-			return fmt.Errorf("redis uptime store: parse %s: %w", field, err)
-		}
-		if currentValue >= value {
-			return nil
-		}
-	}
-	return s.client.HSet(ctx, key, field, value).Err()
+	return s.client.Eval(ctx, setMaxNanoScript, []string{key}, field, value).Err()
 }
 
 func (s *RedisStore) writeDaily(ctx context.Context, status DailyStatus) error {

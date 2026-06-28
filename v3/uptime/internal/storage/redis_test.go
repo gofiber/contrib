@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -96,6 +97,53 @@ func TestRedisStoreKeepsMaxLastSeenAt(t *testing.T) {
 	}
 }
 
+func TestRedisStoreKeepsMaxLastSeenAtConcurrently(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := newRedisStoreWithClient(RedisConfig{KeyPrefix: "test:uptime"}, newFakeRedisClient())
+	mustNoErr(t, store.Init(ctx))
+	t.Cleanup(func() { mustNoErr(t, store.Close()) })
+
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	latest := base.Add(500 * time.Minute)
+	mustNoErr(t, store.UpsertService(ctx, Service{ID: "api", Name: "API", CreatedAt: base, LastSeenAt: base, SampleInterval: time.Minute}))
+	mustNoErr(t, store.UpsertInstance(ctx, Instance{ID: 1, ServiceID: "api", StartedAt: base, LastSeenAt: base}))
+
+	var wg sync.WaitGroup
+	for i := 0; i <= 500; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			seenAt := base.Add(time.Duration(i) * time.Minute)
+			if i%3 == 0 {
+				seenAt = latest.Add(-time.Duration(i) * time.Second)
+			}
+			if i == 250 {
+				seenAt = latest
+			}
+			mustNoErr(t, store.WriteHeartbeat(ctx, Heartbeat{
+				ServiceID:  "api",
+				InstanceID: 1,
+				Day:        seenAt.Format("2006-01-02"),
+				Slot:       int64(i),
+				SeenAt:     seenAt,
+			}))
+		}()
+	}
+	wg.Wait()
+
+	services, err := store.ListServices(ctx)
+	mustNoErr(t, err)
+	if len(services) != 1 {
+		t.Fatalf("services len = %d, want 1", len(services))
+	}
+	if !services[0].LastSeenAt.Equal(latest) {
+		t.Fatalf("last seen = %s, want %s", services[0].LastSeenAt, latest)
+	}
+}
+
 func queryDailyMap(t *testing.T, store *RedisStore) map[string]DailyStatus {
 	t.Helper()
 
@@ -116,6 +164,7 @@ func mustNoErr(t *testing.T, err error) {
 }
 
 type fakeRedisClient struct {
+	mu     sync.Mutex
 	hashes map[string]map[string]string
 	sets   map[string]map[string]struct{}
 	zsets  map[string]map[string]float64
@@ -135,6 +184,9 @@ func (c *fakeRedisClient) Ping(context.Context) *redis.StatusCmd {
 }
 
 func (c *fakeRedisClient) SAdd(_ context.Context, key string, members ...interface{}) *redis.IntCmd {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	set := c.sets[key]
 	if set == nil {
 		set = make(map[string]struct{})
@@ -152,6 +204,9 @@ func (c *fakeRedisClient) SAdd(_ context.Context, key string, members ...interfa
 }
 
 func (c *fakeRedisClient) SMembers(_ context.Context, key string) *redis.StringSliceCmd {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	set := c.sets[key]
 	values := make([]string, 0, len(set))
 	for value := range set {
@@ -162,10 +217,16 @@ func (c *fakeRedisClient) SMembers(_ context.Context, key string) *redis.StringS
 }
 
 func (c *fakeRedisClient) SCard(_ context.Context, key string) *redis.IntCmd {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	return redis.NewIntResult(int64(len(c.sets[key])), nil)
 }
 
 func (c *fakeRedisClient) HSet(_ context.Context, key string, values ...interface{}) *redis.IntCmd {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	hash := c.hashes[key]
 	if hash == nil {
 		hash = make(map[string]string)
@@ -178,6 +239,9 @@ func (c *fakeRedisClient) HSet(_ context.Context, key string, values ...interfac
 }
 
 func (c *fakeRedisClient) HSetNX(_ context.Context, key, field string, value interface{}) *redis.BoolCmd {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	hash := c.hashes[key]
 	if hash == nil {
 		hash = make(map[string]string)
@@ -191,6 +255,9 @@ func (c *fakeRedisClient) HSetNX(_ context.Context, key, field string, value int
 }
 
 func (c *fakeRedisClient) HGet(_ context.Context, key, field string) *redis.StringCmd {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	hash := c.hashes[key]
 	if hash == nil {
 		return redis.NewStringResult("", redis.Nil)
@@ -203,6 +270,9 @@ func (c *fakeRedisClient) HGet(_ context.Context, key, field string) *redis.Stri
 }
 
 func (c *fakeRedisClient) HGetAll(_ context.Context, key string) *redis.MapStringStringCmd {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	hash := c.hashes[key]
 	out := make(map[string]string, len(hash))
 	for field, value := range hash {
@@ -212,6 +282,9 @@ func (c *fakeRedisClient) HGetAll(_ context.Context, key string) *redis.MapStrin
 }
 
 func (c *fakeRedisClient) ZAdd(_ context.Context, key string, members ...redis.Z) *redis.IntCmd {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	zset := c.zsets[key]
 	if zset == nil {
 		zset = make(map[string]float64)
@@ -229,6 +302,9 @@ func (c *fakeRedisClient) ZAdd(_ context.Context, key string, members ...redis.Z
 }
 
 func (c *fakeRedisClient) ZRangeByScore(_ context.Context, key string, opt *redis.ZRangeBy) *redis.StringSliceCmd {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	zset := c.zsets[key]
 	values := make([]string, 0, len(zset))
 	for member, score := range zset {
@@ -248,6 +324,9 @@ func (c *fakeRedisClient) ZRangeByScore(_ context.Context, key string, opt *redi
 }
 
 func (c *fakeRedisClient) ZRem(_ context.Context, key string, members ...interface{}) *redis.IntCmd {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	zset := c.zsets[key]
 	var removed int64
 	for _, member := range members {
@@ -261,6 +340,9 @@ func (c *fakeRedisClient) ZRem(_ context.Context, key string, members ...interfa
 }
 
 func (c *fakeRedisClient) Del(_ context.Context, keys ...string) *redis.IntCmd {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	var removed int64
 	for _, key := range keys {
 		if _, ok := c.hashes[key]; ok {
@@ -279,9 +361,77 @@ func (c *fakeRedisClient) Del(_ context.Context, keys ...string) *redis.IntCmd {
 	return redis.NewIntResult(removed, nil)
 }
 
+func (c *fakeRedisClient) Eval(_ context.Context, _ string, keys []string, args ...interface{}) *redis.Cmd {
+	if len(keys) != 1 || len(args) != 2 {
+		return redis.NewCmdResult(nil, fmt.Errorf("unexpected eval call"))
+	}
+	field := fmt.Sprint(args[0])
+	value, err := strconv.ParseInt(fmt.Sprint(args[1]), 10, 64)
+	if err != nil {
+		return redis.NewCmdResult(nil, err)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	hash := c.hashes[keys[0]]
+	if hash == nil {
+		hash = make(map[string]string)
+		c.hashes[keys[0]] = hash
+	}
+	current := hash[field]
+	if current != "" {
+		currentValue, err := strconv.ParseInt(current, 10, 64)
+		if err != nil {
+			return redis.NewCmdResult(nil, err)
+		}
+		if currentValue >= value {
+			return redis.NewCmdResult(int64(0), nil)
+		}
+	}
+	hash[field] = strconv.FormatInt(value, 10)
+	return redis.NewCmdResult(int64(1), nil)
+}
+
+func (c *fakeRedisClient) Pipelined(ctx context.Context, fn func(redis.Pipeliner) error) ([]redis.Cmder, error) {
+	pipe := &fakeRedisPipeline{ctx: ctx, client: c}
+	if err := fn(pipe); err != nil {
+		return nil, err
+	}
+	return pipe.cmds, nil
+}
+
 func (c *fakeRedisClient) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	c.closed = true
 	return nil
+}
+
+type fakeRedisPipeline struct {
+	redis.Pipeliner
+	ctx    context.Context
+	client *fakeRedisClient
+	cmds   []redis.Cmder
+}
+
+func (p *fakeRedisPipeline) HGetAll(ctx context.Context, key string) *redis.MapStringStringCmd {
+	if ctx == nil {
+		ctx = p.ctx
+	}
+	cmd := p.client.HGetAll(ctx, key)
+	p.cmds = append(p.cmds, cmd)
+	return cmd
+}
+
+func (p *fakeRedisPipeline) SCard(ctx context.Context, key string) *redis.IntCmd {
+	if ctx == nil {
+		ctx = p.ctx
+	}
+	cmd := p.client.SCard(ctx, key)
+	p.cmds = append(p.cmds, cmd)
+	return cmd
 }
 
 func redisScoreInRange(score float64, minRaw, maxRaw string) bool {
