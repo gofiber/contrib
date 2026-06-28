@@ -65,10 +65,6 @@ func NewRedisStore(config RedisConfig) *RedisStore {
 	return &RedisStore{config: config}
 }
 
-func newRedisStoreWithClient(config RedisConfig, client redisClient) *RedisStore {
-	return &RedisStore{config: config, client: client}
-}
-
 func (s *RedisStore) Name() string {
 	return "redis"
 }
@@ -424,14 +420,6 @@ func (s *RedisStore) daysBefore(ctx context.Context, key, beforeDay string) ([]s
 		Min: "-inf",
 		Max: "(" + strconv.FormatInt(score, 10),
 	}).Result()
-}
-
-func (s *RedisStore) daysBetween(ctx context.Context, key, fromDay, toDay string) ([]string, error) {
-	cmd, err := s.daysBetweenPipe(ctx, nil, key, fromDay, toDay)
-	if err != nil {
-		return nil, err
-	}
-	return cmd.Result()
 }
 
 func (s *RedisStore) daysBetweenPipe(ctx context.Context, pipe redis.Pipeliner, key, fromDay, toDay string) (*redis.StringSliceCmd, error) {

@@ -375,13 +375,6 @@ func (u *Uptime) recordLoop(target recordTarget) {
 	}
 }
 
-func (u *Uptime) writeHeartbeat(ctx context.Context, now time.Time) error {
-	if len(u.targets) == 0 {
-		return nil
-	}
-	return u.recordTarget(ctx, u.targets[0], now)
-}
-
 func (u *Uptime) recordTarget(ctx context.Context, target recordTarget, now time.Time) error {
 	select {
 	case <-ctx.Done():

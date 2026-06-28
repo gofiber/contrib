@@ -19,7 +19,7 @@ func TestRedisStoreRollupAndCleanupLifecycle(t *testing.T) {
 
 	ctx := context.Background()
 	client := newFakeRedisClient()
-	store := newRedisStoreWithClient(RedisConfig{KeyPrefix: "test:uptime"}, client)
+	store := &RedisStore{config: RedisConfig{KeyPrefix: "test:uptime"}, client: client}
 	mustNoErr(t, store.Init(ctx))
 	t.Cleanup(func() { mustNoErr(t, store.Close()) })
 
@@ -78,7 +78,7 @@ func TestRedisStoreKeepsMaxLastSeenAt(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	store := newRedisStoreWithClient(RedisConfig{KeyPrefix: "test:uptime"}, newFakeRedisClient())
+	store := &RedisStore{config: RedisConfig{KeyPrefix: "test:uptime"}, client: newFakeRedisClient()}
 	mustNoErr(t, store.Init(ctx))
 	t.Cleanup(func() { mustNoErr(t, store.Close()) })
 
@@ -101,7 +101,7 @@ func TestRedisStoreKeepsMaxLastSeenAtConcurrently(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	store := newRedisStoreWithClient(RedisConfig{KeyPrefix: "test:uptime"}, newFakeRedisClient())
+	store := &RedisStore{config: RedisConfig{KeyPrefix: "test:uptime"}, client: newFakeRedisClient()}
 	mustNoErr(t, store.Init(ctx))
 	t.Cleanup(func() { mustNoErr(t, store.Close()) })
 
