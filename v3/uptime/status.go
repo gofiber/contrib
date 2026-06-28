@@ -82,15 +82,14 @@ const (
 	statusDown = "down"
 )
 
-// Snapshot queries the store and returns a fresh status snapshot.
-func (u *Uptime) Snapshot(ctx context.Context) (Snapshot, error) {
+func (u *runtime) snapshot(ctx context.Context) (Snapshot, error) {
 	if u == nil {
-		return Snapshot{}, errors.New("uptime: nil uptime")
+		return Snapshot{}, errors.New("uptime: nil runtime")
 	}
 	return u.buildStatus(ctx, time.Now())
 }
 
-func (u *Uptime) buildStatus(ctx context.Context, now time.Time) (StatusResponse, error) {
+func (u *runtime) buildStatus(ctx context.Context, now time.Time) (StatusResponse, error) {
 	services, err := u.store.ListServices(ctx)
 	if err != nil {
 		u.setLastError(err)
@@ -156,7 +155,7 @@ func (u *Uptime) buildStatus(ctx context.Context, now time.Time) (StatusResponse
 	return resp, nil
 }
 
-func (u *Uptime) dayStatus(serviceID, day, today, createdDay string, createdAt, now time.Time, interval time.Duration, daily map[string]map[string]storage.DailyStatus, todayRows map[string]storage.TodaySampleStatus) DayStatus {
+func (u *runtime) dayStatus(serviceID, day, today, createdDay string, createdAt, now time.Time, interval time.Duration, daily map[string]map[string]storage.DailyStatus, todayRows map[string]storage.TodaySampleStatus) DayStatus {
 	if day < createdDay {
 		return DayStatus{
 			Day:     day,
@@ -181,7 +180,7 @@ func (u *Uptime) dayStatus(serviceID, day, today, createdDay string, createdAt, 
 	return makeDayStatus(day, 0, expected, true, true, interval, u.config.UI)
 }
 
-func (u *Uptime) serviceSampleInterval(service storage.Service) time.Duration {
+func (u *runtime) serviceSampleInterval(service storage.Service) time.Duration {
 	if service.SampleInterval >= time.Second {
 		return service.SampleInterval
 	}
@@ -255,8 +254,8 @@ func dayRange(now time.Time, count int, loc *time.Location) []string {
 	return days
 }
 
-func (u *Uptime) storageStatus() StorageResponse {
-	at, err := u.LastError()
+func (u *runtime) storageStatus() StorageResponse {
+	at, err := u.lastError()
 	storage := StorageResponse{
 		Driver: storeDriver(u.store),
 		Status: "ok",

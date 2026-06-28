@@ -22,8 +22,8 @@ type IDGenerator interface {
 	NextID() int64
 }
 
-// Uptime records service heartbeats and serves uptime history.
-type Uptime struct {
+// runtime records service heartbeats and serves uptime history.
+type runtime struct {
 	config Config
 	store  storage.Store
 
@@ -69,28 +69,30 @@ const (
 
 // New creates a Fiber handler that records uptime and serves the dashboard/API.
 func New(config ...Config) fiber.Handler {
-	u, err := NewRuntime(config...)
+	u, err := newRuntime(config...)
 	if err != nil {
 		panic(fmt.Errorf("fiber: uptime middleware error -> %w", err))
 	}
-	return u.Handler()
+	return u.handler()
 }
 
-// NewRuntime initializes the store and starts recording uptime.
-func NewRuntime(config ...Config) (*Uptime, error) {
+func newRuntime(config ...Config) (*runtime, error) {
 	cfg, err := configDefault(config...).normalized()
 	if err != nil {
 		return nil, err
 	}
+	if cfg.Store == nil {
+		return nil, ErrMissingStore
+	}
 
 	store := storage.NewRedisStore(storage.RedisConfig{
-		Config:    cfg.Redis,
+		Storage:   cfg.Store,
 		KeyPrefix: cfg.StorageKeyPrefix,
 	})
 	return newWithStore(cfg, store, time.Now())
 }
 
-func newWithStore(cfg Config, store storage.Store, now time.Time) (*Uptime, error) {
+func newWithStore(cfg Config, store storage.Store, now time.Time) (*runtime, error) {
 	ctx := context.Background()
 	if err := store.Init(ctx); err != nil {
 		_ = store.Close()
@@ -118,7 +120,7 @@ func newWithStore(cfg Config, store storage.Store, now time.Time) (*Uptime, erro
 	}
 
 	runCtx, cancel := context.WithCancel(context.Background())
-	u := &Uptime{
+	u := &runtime{
 		config:     cfg,
 		store:      store,
 		targets:    targets,
@@ -222,15 +224,14 @@ func newEndpointProbe(endpoint EndpointConfig) *endpointProbe {
 	}
 }
 
-func registerShutdownHook(app *fiber.App, u *Uptime) {
+func registerShutdownHook(app *fiber.App, u *runtime) {
 	if app == nil || u == nil {
 		return
 	}
-	app.Hooks().OnPreShutdown(u.Close)
+	app.Hooks().OnPreShutdown(u.close)
 }
 
-// Close stops background work and closes the store.
-func (u *Uptime) Close() error {
+func (u *runtime) close() error {
 	if u == nil {
 		return nil
 	}
@@ -249,8 +250,7 @@ func (u *Uptime) Close() error {
 	return err
 }
 
-// LastError returns the most recent runtime store error, if any.
-func (u *Uptime) LastError() (time.Time, error) {
+func (u *runtime) lastError() (time.Time, error) {
 	if u == nil {
 		return time.Time{}, nil
 	}
@@ -259,8 +259,7 @@ func (u *Uptime) LastError() (time.Time, error) {
 	return u.lastErrAt, u.lastErr
 }
 
-// Handler returns a Fiber-native handler for the dashboard and JSON API.
-func (u *Uptime) Handler() fiber.Handler {
+func (u *runtime) handler() fiber.Handler {
 	return func(c fiber.Ctx) error {
 		if u == nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "uptime unavailable")
@@ -301,12 +300,12 @@ func (u *Uptime) Handler() fiber.Handler {
 	}
 }
 
-func (u *Uptime) serveStatusJSON(c fiber.Ctx) error {
+func (u *runtime) serveStatusJSON(c fiber.Ctx) error {
 	c.Set(headerCacheControl, "no-store")
 	c.Set(headerXContentTypeOptions, "nosniff")
 	c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSONCharsetUTF8)
 
-	status, err := u.Snapshot(c.Context())
+	status, err := u.snapshot(c.Context())
 	if err != nil {
 		fiberlog.Errorf("uptime: status unavailable: %v", err)
 		return fiber.NewError(fiber.StatusInternalServerError, "uptime status unavailable")
@@ -318,12 +317,12 @@ func (u *Uptime) serveStatusJSON(c fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(&status)
 }
 
-func (u *Uptime) serveDashboard(c fiber.Ctx) error {
+func (u *runtime) serveDashboard(c fiber.Ctx) error {
 	c.Set(headerCacheControl, "no-store")
 	c.Set(headerXContentTypeOptions, "nosniff")
 	c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
 
-	status, err := u.Snapshot(c.Context())
+	status, err := u.snapshot(c.Context())
 	if err != nil {
 		fiberlog.Errorf("uptime: dashboard unavailable: %v", err)
 		return fiber.NewError(fiber.StatusInternalServerError, "uptime dashboard unavailable")
@@ -340,7 +339,7 @@ func (u *Uptime) serveDashboard(c fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).SendString(html)
 }
 
-func (u *Uptime) loop() {
+func (u *runtime) loop() {
 	defer close(u.done)
 
 	var wg sync.WaitGroup
@@ -357,7 +356,7 @@ func (u *Uptime) loop() {
 	wg.Wait()
 }
 
-func (u *Uptime) recordLoop(target recordTarget) {
+func (u *runtime) recordLoop(target recordTarget) {
 	if target.probe != nil {
 		_ = u.recordTarget(u.ctx, target, time.Now())
 	}
@@ -375,7 +374,7 @@ func (u *Uptime) recordLoop(target recordTarget) {
 	}
 }
 
-func (u *Uptime) recordTarget(ctx context.Context, target recordTarget, now time.Time) error {
+func (u *runtime) recordTarget(ctx context.Context, target recordTarget, now time.Time) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -395,7 +394,7 @@ func (u *Uptime) recordTarget(ctx context.Context, target recordTarget, now time
 	return u.runMaintenance(ctx, now, false)
 }
 
-func (u *Uptime) writeTargetHeartbeat(ctx context.Context, target recordTarget, now time.Time) error {
+func (u *runtime) writeTargetHeartbeat(ctx context.Context, target recordTarget, now time.Time) error {
 	heartbeat := storage.Heartbeat{
 		ServiceID:  target.service.ID,
 		InstanceID: target.instance.ID,
@@ -412,7 +411,7 @@ func (u *Uptime) writeTargetHeartbeat(ctx context.Context, target recordTarget, 
 	return nil
 }
 
-func (u *Uptime) probeEndpoint(ctx context.Context, probe *endpointProbe) bool {
+func (u *runtime) probeEndpoint(ctx context.Context, probe *endpointProbe) bool {
 	probeCtx, cancel := context.WithTimeout(ctx, probe.timeout)
 	defer cancel()
 
@@ -445,7 +444,7 @@ func (p *endpointProbe) statusAllowed(statusCode int) bool {
 	return ok
 }
 
-func (u *Uptime) runMaintenance(ctx context.Context, now time.Time, force bool) error {
+func (u *runtime) runMaintenance(ctx context.Context, now time.Time, force bool) error {
 	today := dayOf(now, u.config.Timezone)
 
 	u.maintenanceMu.Lock()
@@ -502,7 +501,7 @@ type serviceRollupMetadata struct {
 	interval  time.Duration
 }
 
-func (u *Uptime) serviceRollupMetadata(ctx context.Context) (map[string]serviceRollupMetadata, error) {
+func (u *runtime) serviceRollupMetadata(ctx context.Context) (map[string]serviceRollupMetadata, error) {
 	services, err := u.store.ListServices(ctx)
 	if err != nil {
 		return nil, err
@@ -517,7 +516,7 @@ func (u *Uptime) serviceRollupMetadata(ctx context.Context) (map[string]serviceR
 	return metadata, nil
 }
 
-func (u *Uptime) setLastError(err error) {
+func (u *runtime) setLastError(err error) {
 	if err == nil {
 		return
 	}
@@ -527,7 +526,7 @@ func (u *Uptime) setLastError(err error) {
 	u.errMu.Unlock()
 }
 
-func (u *Uptime) clearLastError() {
+func (u *runtime) clearLastError() {
 	u.errMu.Lock()
 	u.lastErr = nil
 	u.lastErrAt = time.Time{}

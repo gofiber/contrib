@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -360,7 +361,7 @@ func TestHandlerNext(t *testing.T) {
 	})
 
 	app := fiber.New()
-	app.All("/uptime", up.Handler())
+	app.All("/uptime", up.handler())
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/uptime", nil))
 	requireNoError(t, err)
@@ -378,7 +379,7 @@ func TestHandlerPassesThroughOutsideUIPath(t *testing.T) {
 	})
 
 	app := fiber.New()
-	app.Use(up.Handler())
+	app.Use(up.handler())
 	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendString("ok")
 	})
@@ -405,18 +406,33 @@ func TestNewPanicsOnInvalidConfig(t *testing.T) {
 	_ = New(Config{})
 }
 
+func TestNewPanicsWithoutStore(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			t.Fatal("expected panic")
+		}
+		if !strings.Contains(fmt.Sprint(recovered), ErrMissingStore.Error()) {
+			t.Fatalf("panic = %v, want %v", recovered, ErrMissingStore)
+		}
+	}()
+	_ = New(Config{ServiceID: "api"})
+}
+
 func TestSnapshotBuildsFreshStatus(t *testing.T) {
 	t.Parallel()
 
 	store := newSnapshotStore()
 	u := newSnapshotUptime(store)
 
-	first, err := u.Snapshot(context.Background())
+	first, err := u.snapshot(context.Background())
 	requireNoError(t, err)
 	requireLen(t, first.Services, 1)
 
 	store.services[0].Name = "Updated API"
-	second, err := u.Snapshot(context.Background())
+	second, err := u.snapshot(context.Background())
 	requireNoError(t, err)
 	requireLen(t, second.Services, 1)
 	requireEqual(t, "API", first.Services[0].Name)
@@ -430,7 +446,7 @@ func TestSnapshotReturnsStoreError(t *testing.T) {
 	u := newSnapshotUptime(store)
 	store.fail = true
 
-	_, err := u.Snapshot(context.Background())
+	_, err := u.snapshot(context.Background())
 	requireError(t, err)
 	requireContains(t, err.Error(), "store failed")
 }
@@ -518,7 +534,7 @@ func TestBuildStatusDoesNotClearRuntimeError(t *testing.T) {
 	requireEqual(t, "degraded", status.Storage.Status)
 	requireContains(t, status.Storage.LastError, "write heartbeat failed")
 
-	_, lastErr := u.LastError()
+	_, lastErr := u.lastError()
 	if !errors.Is(lastErr, runtimeErr) {
 		t.Fatalf("last error = %v, want %v", lastErr, runtimeErr)
 	}
@@ -541,7 +557,7 @@ func TestNewReturnsErrorWhenInitialHeartbeatFails(t *testing.T) {
 	up, err := newWithStore(cfg, store, store.now)
 	requireError(t, err)
 	if up != nil {
-		t.Fatal("uptime instance should be nil")
+		t.Fatal("runtime instance should be nil")
 	}
 	requireContains(t, err.Error(), "initial heartbeat")
 	requireEqual(t, 1, store.closeCalls)
@@ -564,7 +580,7 @@ func TestNewClosesStoreWhenInitFails(t *testing.T) {
 	up, err := newWithStore(cfg, store, store.now)
 	requireError(t, err)
 	if up != nil {
-		t.Fatal("uptime instance should be nil")
+		t.Fatal("runtime instance should be nil")
 	}
 	requireContains(t, err.Error(), "init store")
 	requireEqual(t, 1, store.closeCalls)
@@ -588,7 +604,7 @@ func TestRuntimeRecordsInitialHeartbeat(t *testing.T) {
 
 	up, err := newWithStore(cfg, store, store.now)
 	requireNoError(t, err)
-	t.Cleanup(func() { requireNoError(t, up.Close()) })
+	t.Cleanup(func() { requireNoError(t, up.close()) })
 
 	status, err := up.buildStatus(context.Background(), store.now)
 	requireNoError(t, err)
@@ -721,7 +737,7 @@ func TestCustomIDGenerator(t *testing.T) {
 
 	up, err := newWithStore(cfg, newSnapshotStore(), time.Now())
 	requireNoError(t, err)
-	t.Cleanup(func() { requireNoError(t, up.Close()) })
+	t.Cleanup(func() { requireNoError(t, up.close()) })
 
 	requireEqual(t, int64(42), up.targets[0].instance.ID)
 }
@@ -741,25 +757,25 @@ func TestCloseIsIdempotent(t *testing.T) {
 	up, err := newWithStore(cfg, newSnapshotStore(), time.Now())
 	requireNoError(t, err)
 
-	requireNoError(t, up.Close())
-	requireNoError(t, up.Close())
+	requireNoError(t, up.close())
+	requireNoError(t, up.close())
 }
 
 func TestCloseAllowsNilAndZeroValue(t *testing.T) {
 	t.Parallel()
 
-	var nilUptime *Uptime
-	requireNoError(t, nilUptime.Close())
+	var nilUptime *runtime
+	requireNoError(t, nilUptime.close())
 
-	var zero Uptime
-	requireNoError(t, zero.Close())
+	var zero runtime
+	requireNoError(t, zero.close())
 }
 
 func TestLastErrorAllowsNilReceiver(t *testing.T) {
 	t.Parallel()
 
-	var nilUptime *Uptime
-	at, err := nilUptime.LastError()
+	var nilUptime *runtime
+	at, err := nilUptime.lastError()
 	if err != nil {
 		t.Fatalf("last error = %v, want nil", err)
 	}
@@ -768,7 +784,7 @@ func TestLastErrorAllowsNilReceiver(t *testing.T) {
 	}
 }
 
-func newTestApp(t *testing.T) (*Uptime, *fiber.App) {
+func newTestApp(t *testing.T) (*runtime, *fiber.App) {
 	t.Helper()
 
 	up := newSnapshotUptimeWithConfig(newSnapshotStore(), Config{
@@ -778,19 +794,19 @@ func newTestApp(t *testing.T) (*Uptime, *fiber.App) {
 	})
 
 	app := fiber.New()
-	app.All("/uptime", up.Handler())
-	app.All("/uptime/*", up.Handler())
+	app.All("/uptime", up.handler())
+	app.All("/uptime/*", up.handler())
 	return up, app
 }
 
-func newSnapshotApp(up *Uptime) *fiber.App {
+func newSnapshotApp(up *runtime) *fiber.App {
 	app := fiber.New()
-	app.All("/uptime", up.Handler())
-	app.All("/uptime/*", up.Handler())
+	app.All("/uptime", up.handler())
+	app.All("/uptime/*", up.handler())
 	return app
 }
 
-func newSnapshotUptime(store *snapshotStore) *Uptime {
+func newSnapshotUptime(store *snapshotStore) *runtime {
 	return newSnapshotUptimeWithConfig(store, Config{
 		ServiceID:      "api",
 		SampleInterval: time.Second,
@@ -800,7 +816,7 @@ func newSnapshotUptime(store *snapshotStore) *Uptime {
 	})
 }
 
-func newSnapshotUptimeWithConfig(store *snapshotStore, config Config) *Uptime {
+func newSnapshotUptimeWithConfig(store *snapshotStore, config Config) *runtime {
 	if config.UI.GreenThreshold == 0 {
 		config.UI.GreenThreshold = defaultGreenThreshold
 	}
@@ -808,7 +824,7 @@ func newSnapshotUptimeWithConfig(store *snapshotStore, config Config) *Uptime {
 		config.UI.YellowThreshold = defaultYellowThreshold
 	}
 	cfg, _ := config.normalized()
-	return &Uptime{
+	return &runtime{
 		config: cfg,
 		store:  store,
 	}

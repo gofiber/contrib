@@ -29,10 +29,9 @@ const (
 var (
 	// ErrMissingServiceID is returned when neither Config.ServiceID nor Config.Endpoints is set.
 	ErrMissingServiceID = errors.New("uptime: service id or endpoint is required")
+	// ErrMissingStore is returned when Config.Store is not set.
+	ErrMissingStore = errors.New("uptime: redis storage is required")
 )
-
-// RedisConfig controls the default Redis-backed uptime store.
-type RedisConfig = fiberredis.Config
 
 // Config defines the configuration for the uptime middleware.
 type Config struct {
@@ -69,8 +68,9 @@ type Config struct {
 	// IDGenerator generates instance IDs when InstanceID is zero.
 	IDGenerator IDGenerator
 
-	// Redis configures the default Redis store.
-	Redis RedisConfig
+	// Store is the Fiber Redis storage instance used for uptime state.
+	// The caller owns the storage lifecycle and should close it when the app stops.
+	Store *fiberredis.Storage
 	// StorageKeyPrefix namespaces all uptime keys inside the selected Redis database.
 	StorageKeyPrefix string
 	// UI configures the built-in dashboard.

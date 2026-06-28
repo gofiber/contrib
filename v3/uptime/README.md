@@ -22,17 +22,13 @@ in-process heartbeat history and serves a lightweight status page.
 ```sh
 go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/v3/uptime
+go get -u github.com/gofiber/storage/redis/v3
 ```
 
 ## Signature
 
 ```go
 uptime.New(config ...uptime.Config) fiber.Handler
-uptime.NewRuntime(config ...uptime.Config) (*uptime.Uptime, error)
-up.Handler() fiber.Handler
-up.Close() error
-up.LastError() (time.Time, error)
-up.Snapshot(ctx context.Context) (uptime.Snapshot, error)
 ```
 
 ## Basic usage
@@ -44,13 +40,17 @@ import (
 	"github.com/gofiber/contrib/v3/uptime"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/log"
+	fiberredis "github.com/gofiber/storage/redis/v3"
 )
 
 func main() {
 	app := fiber.New()
+	store := fiberredis.New()
+	app.Hooks().OnPreShutdown(store.Close)
 
 	app.Use(uptime.New(uptime.Config{
 		App:         app,
+		Store:       store,
 		ServiceID:   "api",
 		ServiceName: "API",
 	}))
@@ -76,7 +76,8 @@ separate service on the dashboard and in the JSON API.
 
 ```go
 app.Use(uptime.New(uptime.Config{
-	App: app,
+	App:   app,
+	Store: store,
 	Endpoints: []uptime.EndpointConfig{
 		{
 			ID:                  "api-health",
@@ -97,54 +98,37 @@ to yellow, red, or down as slots are missed.
 
 ## Redis
 
-Redis is the built-in store and is created through
-`github.com/gofiber/storage/redis/v3`. By default, that storage package connects
-to `127.0.0.1:6379` and database `0`.
+Redis state is stored through `github.com/gofiber/storage/redis/v3`. Create the
+Fiber Redis storage in your app and pass it to the uptime config. By default,
+that storage package connects to `127.0.0.1:6379` and database `0`.
 
 ```go
+store := fiberredis.New(fiberredis.Config{
+	Addrs:    []string{"127.0.0.1:6379"},
+	Password: "",
+	Database: 0,
+})
+app.Hooks().OnPreShutdown(store.Close)
+
 app.Use(uptime.New(uptime.Config{
-	App:       app,
-	ServiceID: "api",
-	Redis: uptime.RedisConfig{
-		Addrs:    []string{"127.0.0.1:6379"},
-		Password: "",
-		Database: 0,
-	},
+	App:              app,
+	Store:            store,
+	ServiceID:        "api",
 	StorageKeyPrefix: "fiber:uptime",
 }))
 ```
 
 The middleware uses `Conn()` from the Fiber Redis storage to run the uptime
 queries it needs. Use a dedicated Redis database or a distinct
-`StorageKeyPrefix` when multiple environments share the same Redis server.
+`StorageKeyPrefix` when multiple environments share the same Redis server. The
+caller owns the Redis storage lifecycle.
 
 ## Snapshots and custom UI
 
 The dashboard and JSON API build a fresh `Snapshot` from the backing store on
 each request. Use Fiber's cache middleware around the uptime route if you want
-HTTP-level caching.
-
-```go
-up, err := uptime.NewRuntime(uptime.Config{
-	App:       app,
-	ServiceID: "api",
-})
-if err != nil {
-	log.Fatal(err)
-}
-app.Use(up.Handler())
-
-app.Get("/custom-uptime", func(c fiber.Ctx) error {
-	snapshot, err := up.Snapshot(c.Context())
-	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "uptime unavailable")
-	}
-	return c.JSON(snapshot)
-})
-```
-
-Use `LastError()` when you need to inspect the latest runtime store error that
-was reported by heartbeat, maintenance, or snapshot reads.
+HTTP-level caching. The same snapshot payload is available at
+`UI.Path + "/api/status"` for custom dashboards.
 
 ## Config
 
@@ -163,7 +147,7 @@ was reported by heartbeat, maintenance, or snapshot reads.
 | NodeID | `int64` | Optional node value used for generated instance IDs. | `0` |
 | InstanceID | `int64` | Explicit process instance ID. | Generated |
 | IDGenerator | `uptime.IDGenerator` | Custom instance ID generator. | `nil` |
-| Redis | `uptime.RedisConfig` | Redis store settings from `github.com/gofiber/storage/redis/v3`. | Fiber Redis storage defaults |
+| Store | `*fiberredis.Storage` | Fiber Redis storage instance from `github.com/gofiber/storage/redis/v3`. | Required |
 | StorageKeyPrefix | `string` | Prefix for all uptime Redis keys. | `"fiber:uptime"` |
 | UI | `uptime.UIConfig` | Dashboard copy and thresholds. | Light English UI, green at `99.9%`, yellow at `99%` |
 
@@ -207,14 +191,14 @@ Use Fiber's cache middleware if the dashboard or JSON API should be cached.
 
 ## Concurrency safety
 
-Uptime runtimes are safe for concurrent use after construction. The snapshot
+Uptime middleware instances are safe for concurrent use after construction. The snapshot
 payload is built from fresh store reads. Redis commands are issued through the
 Fiber Redis storage connection and are safe for concurrent use by the background
 recorder and Fiber handlers.
 
-When `Config.App` is set, `New` and `NewRuntime` register a Fiber shutdown hook
-that calls `Close`. If you create a runtime without `Config.App`, call `Close`
-during application shutdown to stop the heartbeat goroutine and close the store.
+When `Config.App` is set, `New` registers a Fiber shutdown hook that stops the
+uptime runtime. The caller owns the Redis storage lifecycle and should close it
+from an app hook or signal handler.
 
 ## Security notes
 

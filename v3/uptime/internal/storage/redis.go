@@ -30,8 +30,8 @@ return 0
 
 // RedisConfig controls the Redis-backed uptime store.
 type RedisConfig struct {
-	// Config is passed to github.com/gofiber/storage/redis/v3.
-	Config fiberredis.Config
+	// Storage is the Fiber Redis storage instance used for uptime state.
+	Storage *fiberredis.Storage
 	// KeyPrefix namespaces all uptime keys inside the selected Redis database.
 	KeyPrefix string
 }
@@ -74,15 +74,15 @@ func (s *RedisStore) Init(ctx context.Context) (err error) {
 		return s.client.Ping(ctx).Err()
 	}
 
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("redis uptime store: init: %v", recovered)
-		}
-	}()
-
-	s.storage = fiberredis.NewWithContext(ctx, s.config.Config)
+	if s.config.Storage == nil {
+		return errors.New("redis uptime store: storage is required")
+	}
+	s.storage = s.config.Storage
 	s.client = s.storage.Conn()
-	return nil
+	if s.client == nil {
+		return errors.New("redis uptime store: client is required")
+	}
+	return s.client.Ping(ctx).Err()
 }
 
 func (s *RedisStore) UpsertService(ctx context.Context, service Service) error {
@@ -364,17 +364,8 @@ func (s *RedisStore) QueryTodaySamples(ctx context.Context, options QueryTodaySa
 }
 
 func (s *RedisStore) Close() error {
-	if s.storage != nil {
-		err := s.storage.Close()
-		s.storage = nil
-		s.client = nil
-		return err
-	}
-	if s.client != nil {
-		err := s.client.Close()
-		s.client = nil
-		return err
-	}
+	s.storage = nil
+	s.client = nil
 	return nil
 }
 
