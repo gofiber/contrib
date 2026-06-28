@@ -47,3 +47,14 @@ func TestExpectedSlotsForDayCountsWholeDay(t *testing.T) {
 	requireEqual(t, 1440, expectedSlotsForDay("2026-06-26", time.Minute, time.UTC))
 	requireEqual(t, 0, expectedSlotsForDay("not-a-day", time.Minute, time.UTC))
 }
+
+func TestExpectedSlotsForDayHandlesDSTTransitions(t *testing.T) {
+	t.Parallel()
+
+	loc, err := time.LoadLocation("America/New_York")
+	requireNoError(t, err)
+
+	requireEqual(t, 23, expectedSlotsForDay("2026-03-08", time.Hour, loc))
+	requireEqual(t, 25, expectedSlotsForDay("2026-11-01", time.Hour, loc))
+	requireEqual(t, 24, expectedSlotsForDay("2026-06-26", time.Hour, loc))
+}
