@@ -27,7 +27,8 @@ go get -u github.com/gofiber/contrib/v3/uptime
 ## Signature
 
 ```go
-uptime.New(config ...uptime.Config) (*uptime.Uptime, error)
+uptime.New(config ...uptime.Config) fiber.Handler
+uptime.NewRuntime(config ...uptime.Config) (*uptime.Uptime, error)
 up.Handler() fiber.Handler
 up.Close() error
 up.LastError() (time.Time, error)
@@ -49,17 +50,11 @@ import (
 func main() {
 	app := fiber.New()
 
-	up, err := uptime.New(uptime.Config{
+	app.Use(uptime.New(uptime.Config{
+		App:         app,
 		ServiceID:   "api",
 		ServiceName: "API",
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer up.Close()
-
-	app.All("/uptime", up.Handler())
-	app.All("/uptime/*", up.Handler())
+	}))
 
 	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendString("ok")
@@ -82,12 +77,13 @@ directory, so prefer an absolute path in containers or when the working
 directory is not writable.
 
 ```go
-up, err := uptime.New(uptime.Config{
+app.Use(uptime.New(uptime.Config{
+	App:       app,
 	ServiceID: "api",
 	SQLite: uptime.SQLiteConfig{
 		Path: "./data/uptime.db",
 	},
-})
+}))
 ```
 
 SQLite uses the pure-Go `modernc.org/sqlite` driver and configures WAL mode,
@@ -99,6 +95,15 @@ The dashboard and JSON API use `CachedSnapshot` to avoid querying the store on
 every request.
 
 ```go
+up, err := uptime.NewRuntime(uptime.Config{
+	App:       app,
+	ServiceID: "api",
+})
+if err != nil {
+	log.Fatal(err)
+}
+app.Use(up.Handler())
+
 app.Get("/custom-uptime", func(c fiber.Ctx) error {
 	snapshot, err := up.CachedSnapshot(c.Context())
 	if err != nil {
@@ -117,6 +122,7 @@ was reported by heartbeat, maintenance, or snapshot reads.
 
 | Property | Type | Description | Default |
 |:--|:--|:--|:--|
+| App | `*fiber.App` | Optional Fiber app used to register a shutdown hook that closes the uptime runtime. | `nil` |
 | Next | `func(fiber.Ctx) bool` | Skip the uptime handler when true. | `nil` |
 | ServiceID | `string` | Stable service identifier. | Required |
 | ServiceName | `string` | Display name. | `ServiceID` |
@@ -141,15 +147,14 @@ The Fiber handler serves:
 - `/uptime/api/status`
 
 `GET` and `HEAD` are supported. Other methods return `405 Method Not Allowed`.
-Unknown uptime subpaths return `404 Not Found`.
+Requests outside `UI.Path` are passed to the next handler. Unknown uptime
+subpaths return `404 Not Found`.
 
-The handler matches request paths against `UI.Path`, so the mount path must
-match `UI.Path` (default `/uptime`). If you change one, change both, otherwise
-every request returns `404 Not Found`.
+The handler matches request paths against `UI.Path` (default `/uptime`).
 
 The middleware does not read request bodies, capture response bodies, or wrap
 business handlers. Heartbeats are written by a background ticker owned by the
-`Uptime` instance.
+uptime runtime.
 
 ## Performance notes
 
@@ -160,13 +165,14 @@ fresh store read.
 
 ## Concurrency safety
 
-`Uptime` instances are safe for concurrent use after construction. The snapshot
+Uptime runtimes are safe for concurrent use after construction. The snapshot
 cache is protected by a mutex and returns cloned payloads. The built-in SQLite
 store is designed for concurrent use by the background recorder and Fiber
 handlers.
 
-Always call `Close` during application shutdown to stop the heartbeat goroutine
-and close the store.
+When `Config.App` is set, `New` and `NewRuntime` register a Fiber shutdown hook
+that calls `Close`. If you create a runtime without `Config.App`, call `Close`
+during application shutdown to stop the heartbeat goroutine and close the store.
 
 ## Security notes
 

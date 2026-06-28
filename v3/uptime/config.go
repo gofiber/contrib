@@ -32,6 +32,9 @@ type SQLiteConfig = storage.SQLiteConfig
 
 // Config defines the configuration for the uptime middleware.
 type Config struct {
+	// App registers a shutdown hook to close the uptime runtime when the Fiber app stops.
+	App *fiber.App
+
 	// Next defines a function to skip this middleware when returned true.
 	Next func(c fiber.Ctx) bool
 

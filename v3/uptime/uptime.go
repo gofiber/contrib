@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -54,8 +55,17 @@ const (
 	headerAllow               = "Allow"
 )
 
-// New initializes the store, writes the first heartbeat, and starts recording.
-func New(config ...Config) (*Uptime, error) {
+// New creates a Fiber handler that records uptime and serves the dashboard/API.
+func New(config ...Config) fiber.Handler {
+	u, err := NewRuntime(config...)
+	if err != nil {
+		panic(fmt.Errorf("fiber: uptime middleware error -> %w", err))
+	}
+	return u.Handler()
+}
+
+// NewRuntime initializes the store, writes the first heartbeat, and starts recording.
+func NewRuntime(config ...Config) (*Uptime, error) {
 	cfg, err := configDefault(config...).normalized()
 	if err != nil {
 		return nil, err
@@ -130,7 +140,15 @@ func newWithStore(cfg Config, store storage.Store, now time.Time) (*Uptime, erro
 	}
 
 	go u.loop()
+	registerShutdownHook(cfg.App, u)
 	return u, nil
+}
+
+func registerShutdownHook(app *fiber.App, u *Uptime) {
+	if app == nil || u == nil {
+		return
+	}
+	app.Hooks().OnPreShutdown(u.Close)
 }
 
 // Close stops background work and closes the store.
@@ -173,18 +191,31 @@ func (u *Uptime) Handler() fiber.Handler {
 			return c.Next()
 		}
 
+		path := c.Path()
+		uiPath := u.config.UI.Path
+		route := ""
+		switch path {
+		case uiPath, uiPath + "/":
+			route = "dashboard"
+		case uiPath + "/api/status":
+			route = "status"
+		default:
+			if strings.HasPrefix(path, uiPath+"/") {
+				return fiber.ErrNotFound
+			}
+			return c.Next()
+		}
+
 		method := c.Method()
 		if method != fiber.MethodGet && method != fiber.MethodHead {
 			c.Set(headerAllow, "GET, HEAD")
 			return fiber.ErrMethodNotAllowed
 		}
 
-		path := c.Path()
-		uiPath := u.config.UI.Path
-		switch path {
-		case uiPath, uiPath + "/":
+		switch route {
+		case "dashboard":
 			return u.serveDashboard(c)
-		case uiPath + "/api/status":
+		case "status":
 			return u.serveStatusJSON(c)
 		default:
 			return fiber.ErrNotFound

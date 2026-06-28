@@ -277,7 +277,7 @@ func TestHandlerNotFound(t *testing.T) {
 func TestHandlerNext(t *testing.T) {
 	t.Parallel()
 
-	up, err := New(Config{
+	up, err := NewRuntime(Config{
 		ServiceID:      "api",
 		SampleInterval: time.Second,
 		SQLite:         SQLiteConfig{Path: filepath.Join(t.TempDir(), "uptime.db")},
@@ -296,6 +296,45 @@ func TestHandlerNext(t *testing.T) {
 	t.Cleanup(func() { requireNoError(t, resp.Body.Close()) })
 
 	requireEqual(t, fiber.StatusNotFound, resp.StatusCode)
+}
+
+func TestHandlerPassesThroughOutsideUIPath(t *testing.T) {
+	t.Parallel()
+
+	up, err := NewRuntime(Config{
+		ServiceID:      "api",
+		SampleInterval: time.Second,
+		SQLite:         SQLiteConfig{Path: filepath.Join(t.TempDir(), "uptime.db")},
+	})
+	requireNoError(t, err)
+	t.Cleanup(func() { requireNoError(t, up.Close()) })
+
+	app := fiber.New()
+	app.Use(up.Handler())
+	app.Get("/", func(c fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
+	requireNoError(t, err)
+	t.Cleanup(func() { requireNoError(t, resp.Body.Close()) })
+
+	body, err := io.ReadAll(resp.Body)
+	requireNoError(t, err)
+
+	requireEqual(t, fiber.StatusOK, resp.StatusCode)
+	requireEqual(t, "ok", string(body))
+}
+
+func TestNewPanicsOnInvalidConfig(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic")
+		}
+	}()
+	_ = New(Config{})
 }
 
 func TestCachedSnapshotReturnsClones(t *testing.T) {
@@ -491,7 +530,7 @@ func TestNewClosesStoreWhenInitFails(t *testing.T) {
 func TestSQLiteStoreRecordsHeartbeat(t *testing.T) {
 	t.Parallel()
 
-	up, err := New(Config{
+	up, err := NewRuntime(Config{
 		ServiceID:      "api",
 		ServiceName:    "API",
 		SampleInterval: time.Second,
@@ -513,7 +552,7 @@ func TestSQLiteStoreRecordsHeartbeat(t *testing.T) {
 func TestCustomIDGenerator(t *testing.T) {
 	t.Parallel()
 
-	up, err := New(Config{
+	up, err := NewRuntime(Config{
 		ServiceID:      "api",
 		SampleInterval: time.Second,
 		IDGenerator:    staticIDGenerator{value: 42},
@@ -528,7 +567,7 @@ func TestCustomIDGenerator(t *testing.T) {
 func TestCloseIsIdempotent(t *testing.T) {
 	t.Parallel()
 
-	up, err := New(Config{
+	up, err := NewRuntime(Config{
 		ServiceID:      "api",
 		SampleInterval: time.Second,
 		SQLite:         SQLiteConfig{Path: filepath.Join(t.TempDir(), "uptime.db")},
@@ -565,7 +604,7 @@ func TestLastErrorAllowsNilReceiver(t *testing.T) {
 func newTestApp(t *testing.T) (*Uptime, *fiber.App) {
 	t.Helper()
 
-	up, err := New(Config{
+	up, err := NewRuntime(Config{
 		ServiceID:      "api",
 		ServiceName:    "API",
 		SampleInterval: time.Second,
