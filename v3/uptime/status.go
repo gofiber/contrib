@@ -90,41 +90,6 @@ func (u *Uptime) Snapshot(ctx context.Context) (Snapshot, error) {
 	return u.buildStatus(ctx, time.Now())
 }
 
-// CachedSnapshot returns a status snapshot through Uptime's in-memory cache.
-func (u *Uptime) CachedSnapshot(ctx context.Context) (Snapshot, error) {
-	if u == nil {
-		return Snapshot{}, errors.New("uptime: nil uptime")
-	}
-	if u.config.Snapshot.DisableCache {
-		return u.Snapshot(ctx)
-	}
-
-	now := time.Now()
-
-	u.snapshotMu.Lock()
-	defer u.snapshotMu.Unlock()
-
-	if u.snapshotHasCache && now.Sub(u.snapshotCachedAt) < u.config.Snapshot.CacheTTL {
-		return cloneSnapshot(u.snapshotCache), nil
-	}
-
-	snapshot, err := u.buildStatus(ctx, now)
-	if err != nil {
-		if u.snapshotHasCache && !u.config.Snapshot.DisableStaleIfError {
-			stale := cloneSnapshot(u.snapshotCache)
-			markSnapshotRefreshError(&stale, err, time.Now())
-			return stale, nil
-		}
-		return Snapshot{}, err
-	}
-
-	u.snapshotCache = cloneSnapshot(snapshot)
-	u.snapshotCachedAt = now
-	u.snapshotHasCache = true
-
-	return cloneSnapshot(snapshot), nil
-}
-
 func (u *Uptime) buildStatus(ctx context.Context, now time.Time) (StatusResponse, error) {
 	services, err := u.store.ListServices(ctx)
 	if err != nil {
@@ -239,29 +204,6 @@ func makeDayStatus(day string, upSlots, expectedSlots int, finalized, hasData bo
 		HasData:                  hasData,
 		Status:                   colorFor(rate, hasData, ui),
 	}
-}
-
-func cloneSnapshot(in Snapshot) Snapshot {
-	out := in
-	if in.Storage.LastErrorAt != nil {
-		lastErrorAt := *in.Storage.LastErrorAt
-		out.Storage.LastErrorAt = &lastErrorAt
-	}
-	out.Services = append([]ServiceStatus(nil), in.Services...)
-	for i := range out.Services {
-		out.Services[i].Daily = append([]DayStatus(nil), in.Services[i].Daily...)
-	}
-	return out
-}
-
-func markSnapshotRefreshError(snapshot *Snapshot, err error, at time.Time) {
-	if snapshot == nil || err == nil {
-		return
-	}
-	snapshot.Storage.Status = "degraded"
-	snapshot.Storage.LastError = err.Error()
-	errorAt := at.UTC()
-	snapshot.Storage.LastErrorAt = &errorAt
 }
 
 func uptimeRate(upSlots, expectedSlots int) float64 {

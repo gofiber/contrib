@@ -63,8 +63,6 @@ type Config struct {
 
 	// SQLite configures the default SQLite store.
 	SQLite SQLiteConfig
-	// Snapshot configures snapshot caching.
-	Snapshot SnapshotConfig
 	// UI configures the built-in dashboard.
 	UI UIConfig
 }
@@ -84,16 +82,6 @@ type UIConfig struct {
 	GreenThreshold float64
 	// YellowThreshold is the minimum uptime ratio for a yellow day, in the range [0, 1].
 	YellowThreshold float64
-}
-
-// SnapshotConfig controls the in-memory snapshot cache.
-type SnapshotConfig struct {
-	// CacheTTL is the maximum age of a cached status snapshot.
-	CacheTTL time.Duration
-	// DisableCache forces every status request to query fresh storage data.
-	DisableCache bool
-	// DisableStaleIfError disables returning the previous cached snapshot after a refresh error.
-	DisableStaleIfError bool
 }
 
 // ConfigDefault is the default configuration.
@@ -152,12 +140,6 @@ func (c Config) normalized() (Config, error) {
 	}
 	if c.Timezone == nil {
 		c.Timezone = time.Local
-	}
-	if c.Snapshot.CacheTTL == 0 {
-		c.Snapshot.CacheTTL = c.SampleInterval
-	}
-	if !c.Snapshot.DisableCache && c.Snapshot.CacheTTL < time.Second {
-		return Config{}, errors.New("uptime: snapshot cache ttl must be at least 1s")
 	}
 	if c.UI.Path == "" {
 		c.UI.Path = defaultUIPath

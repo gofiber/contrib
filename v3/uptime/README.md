@@ -33,7 +33,6 @@ up.Handler() fiber.Handler
 up.Close() error
 up.LastError() (time.Time, error)
 up.Snapshot(ctx context.Context) (uptime.Snapshot, error)
-up.CachedSnapshot(ctx context.Context) (uptime.Snapshot, error)
 ```
 
 ## Basic usage
@@ -91,8 +90,9 @@ normal synchronous mode, a busy timeout, and one open connection.
 
 ## Snapshots and custom UI
 
-The dashboard and JSON API use `CachedSnapshot` to avoid querying the store on
-every request.
+The dashboard and JSON API build a fresh `Snapshot` from the backing store on
+each request. Use Fiber's cache middleware around the uptime route if you want
+HTTP-level caching.
 
 ```go
 up, err := uptime.NewRuntime(uptime.Config{
@@ -105,15 +105,13 @@ if err != nil {
 app.Use(up.Handler())
 
 app.Get("/custom-uptime", func(c fiber.Ctx) error {
-	snapshot, err := up.CachedSnapshot(c.Context())
+	snapshot, err := up.Snapshot(c.Context())
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "uptime unavailable")
 	}
 	return c.JSON(snapshot)
 })
 ```
-
-Use `Snapshot(ctx)` when you need a fresh store read.
 
 Use `LastError()` when you need to inspect the latest runtime store error that
 was reported by heartbeat, maintenance, or snapshot reads.
@@ -135,7 +133,6 @@ was reported by heartbeat, maintenance, or snapshot reads.
 | InstanceID | `int64` | Explicit process instance ID. | Generated |
 | IDGenerator | `uptime.IDGenerator` | Custom instance ID generator. | `nil` |
 | SQLite | `uptime.SQLiteConfig` | SQLite store settings. | `Path: "./data/uptime.db"` |
-| Snapshot | `uptime.SnapshotConfig` | Snapshot cache settings. | Cache enabled, `CacheTTL: SampleInterval` |
 | UI | `uptime.UIConfig` | Dashboard copy and thresholds. | Light English UI, green at `99.9%`, yellow at `99%` |
 
 ## Handler behavior
@@ -158,17 +155,15 @@ uptime runtime.
 
 ## Performance notes
 
-Request handling reads from the snapshot cache by default. Store writes happen
-on the heartbeat ticker, not on every business request. Set
-`Snapshot.DisableCache` only when every dashboard or API request must perform a
-fresh store read.
+Store writes happen on the heartbeat ticker, not on every business request.
+Status requests read the backing store to build the response. Use Fiber's cache
+middleware if the dashboard or JSON API should be cached.
 
 ## Concurrency safety
 
 Uptime runtimes are safe for concurrent use after construction. The snapshot
-cache is protected by a mutex and returns cloned payloads. The built-in SQLite
-store is designed for concurrent use by the background recorder and Fiber
-handlers.
+payload is built from fresh store reads. The built-in SQLite store is designed
+for concurrent use by the background recorder and Fiber handlers.
 
 When `Config.App` is set, `New` and `NewRuntime` register a Fiber shutdown hook
 that calls `Close`. If you create a runtime without `Config.App`, call `Close`

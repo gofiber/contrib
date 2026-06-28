@@ -32,7 +32,6 @@ func TestConfigDefaults(t *testing.T) {
 	requireEqual(t, defaultUIFooter, cfg.UI.Footer)
 	requireEqual(t, defaultGreenThreshold, cfg.UI.GreenThreshold)
 	requireEqual(t, defaultYellowThreshold, cfg.UI.YellowThreshold)
-	requireEqual(t, cfg.SampleInterval, cfg.Snapshot.CacheTTL)
 }
 
 func TestConfigValidation(t *testing.T) {
@@ -62,13 +61,6 @@ func TestConfigValidation(t *testing.T) {
 			config: Config{
 				ServiceID:  "api",
 				DaysToShow: -1,
-			},
-		},
-		{
-			name: "snapshot ttl too small",
-			config: Config{
-				ServiceID: "api",
-				Snapshot:  SnapshotConfig{CacheTTL: time.Millisecond},
 			},
 		},
 		{
@@ -337,59 +329,34 @@ func TestNewPanicsOnInvalidConfig(t *testing.T) {
 	_ = New(Config{})
 }
 
-func TestCachedSnapshotReturnsClones(t *testing.T) {
+func TestSnapshotBuildsFreshStatus(t *testing.T) {
 	t.Parallel()
 
 	store := newSnapshotStore()
 	u := newSnapshotUptime(store)
 
-	first, err := u.CachedSnapshot(context.Background())
+	first, err := u.Snapshot(context.Background())
 	requireNoError(t, err)
 	requireLen(t, first.Services, 1)
-	first.Services[0].Name = "changed"
-	first.Services[0].Daily[0].UpSlots = 99
 
-	second, err := u.CachedSnapshot(context.Background())
+	store.services[0].Name = "Updated API"
+	second, err := u.Snapshot(context.Background())
 	requireNoError(t, err)
 	requireLen(t, second.Services, 1)
-	requireEqual(t, "API", second.Services[0].Name)
-	if second.Services[0].Daily[0].UpSlots == 99 {
-		t.Fatalf("cached snapshot was mutated by caller")
-	}
+	requireEqual(t, "API", first.Services[0].Name)
+	requireEqual(t, "Updated API", second.Services[0].Name)
 }
 
-func TestCachedSnapshotReturnsStaleOnRefreshError(t *testing.T) {
+func TestSnapshotReturnsStoreError(t *testing.T) {
 	t.Parallel()
 
 	store := newSnapshotStore()
 	u := newSnapshotUptime(store)
-
-	_, err := u.CachedSnapshot(context.Background())
-	requireNoError(t, err)
-
-	u.snapshotCachedAt = time.Now().Add(-2 * time.Minute)
 	store.fail = true
 
-	stale, err := u.CachedSnapshot(context.Background())
-	requireNoError(t, err)
-	requireEqual(t, "degraded", stale.Storage.Status)
-	requireContains(t, stale.Storage.LastError, "store failed")
-	if stale.Storage.LastErrorAt == nil {
-		t.Fatal("last error time is nil")
-	}
-}
-
-func TestCachedSnapshotDoesNotRunMaintenance(t *testing.T) {
-	t.Parallel()
-
-	store := newSnapshotStore()
-	u := newSnapshotUptime(store)
-
-	_, err := u.CachedSnapshot(context.Background())
-	requireNoError(t, err)
-
-	requireEqual(t, 0, store.rollupCalls)
-	requireEqual(t, 0, store.cleanupCalls)
+	_, err := u.Snapshot(context.Background())
+	requireError(t, err)
+	requireContains(t, err.Error(), "store failed")
 }
 
 func TestDayStatusUsesServiceCreatedAtForToday(t *testing.T) {
@@ -633,7 +600,6 @@ func newSnapshotUptime(store *snapshotStore) *Uptime {
 		DaysToShow:     1,
 		RetentionDays:  1,
 		Timezone:       time.UTC,
-		Snapshot:       SnapshotConfig{CacheTTL: time.Minute},
 	})
 }
 
