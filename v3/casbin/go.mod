@@ -8,7 +8,7 @@ require (
 )
 
 require (
-	github.com/andybalholm/brotli v1.2.1 // indirect
+	github.com/andybalholm/brotli v1.2.2 // indirect
 	github.com/bmatcuk/doublestar/v4 v4.10.0 // indirect
 	github.com/casbin/govaluate v1.10.0 // indirect
 	github.com/gofiber/schema v1.8.0 // indirect
