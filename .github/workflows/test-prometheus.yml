@@ -12,6 +12,9 @@ on:
       - 'v3/prometheus/**/*.go'
       - 'v3/prometheus/go.mod'
 
+permissions:
+  contents: read
+
 jobs:
   Tests:
     runs-on: ubuntu-latest
