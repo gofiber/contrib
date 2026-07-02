@@ -4,7 +4,7 @@ go 1.26.4
 
 require (
 	github.com/corazawaf/coraza/v3 v3.7.0
-	github.com/gofiber/fiber/v3 v3.3.0
+	github.com/gofiber/fiber/v3 v3.4.0
 	github.com/valyala/fasthttp v1.72.0
 )
 
