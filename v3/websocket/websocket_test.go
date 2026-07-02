@@ -4,10 +4,12 @@ import (
 	"net"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/fasthttp/websocket"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestWebSocketMiddlewareDefaultConfig(t *testing.T) {
@@ -348,6 +350,80 @@ func TestWebSocketConnIP(t *testing.T) {
 	err = conn.ReadJSON(&msg)
 	assert.NoError(t, err)
 	assert.Equal(t, "hello websocket", msg["message"])
+}
+
+// TestWebSocketConnIPSafeCopy verifies that conn.IP() returns a safe copy
+// that is not corrupted when fasthttp reuses its internal buffer for
+// subsequent requests. See: gofiber/fiber#4208, gofiber/contrib#1800
+func TestWebSocketConnIPSafeCopy(t *testing.T) {
+	const iterations = 5
+	ips := make(chan string, iterations)
+
+	app := setupTestApp(Config{}, func(c *Conn) {
+		// Read the IP and send it back; the value must remain "127.0.0.1"
+		// even after fasthttp recycles the underlying request buffer.
+		ips <- c.IP()
+		c.WriteJSON(fiber.Map{"ip": c.IP()})
+	})
+	defer app.Shutdown()
+
+	for i := 0; i < iterations; i++ {
+		conn, _, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
+		require.NoError(t, err)
+		var msg fiber.Map
+		err = conn.ReadJSON(&msg)
+		require.NoError(t, err)
+		assert.Equal(t, "127.0.0.1", msg["ip"])
+		conn.Close()
+	}
+
+	close(ips)
+	for ip := range ips {
+		assert.Equal(t, "127.0.0.1", ip, "conn.IP() must be a safe copy, not a reference to recycled fasthttp buffer")
+	}
+}
+
+func TestWebSocketCompressionAfterHandlerReturns(t *testing.T) {
+	writeErr := make(chan error, 1)
+	handlerReturning := make(chan struct{})
+	app := setupTestApp(Config{
+		EnableCompression: true,
+	}, func(c *Conn) {
+		defer close(handlerReturning)
+		conn := c.Conn
+		go func() {
+			<-handlerReturning
+			conn.EnableWriteCompression(true)
+			if err := conn.SetCompressionLevel(2); err != nil {
+				writeErr <- err
+				return
+			}
+			writeErr <- conn.WriteJSON(fiber.Map{"message": "hello websocket"})
+		}()
+	})
+	defer app.Shutdown()
+
+	dialer := websocket.Dialer{
+		EnableCompression: true,
+	}
+	conn, resp, err := dialer.Dial("ws://localhost:3000/ws/message", nil)
+	require.NoError(t, err)
+	defer conn.Close()
+	assert.Equal(t, 101, resp.StatusCode)
+	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
+	assert.Contains(t, resp.Header.Get("Sec-WebSocket-Extensions"), "permessage-deflate")
+
+	var msg fiber.Map
+	err = conn.ReadJSON(&msg)
+	require.NoError(t, err)
+	assert.Equal(t, "hello websocket", msg["message"])
+
+	select {
+	case err := <-writeErr:
+		assert.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for async compressed write")
+	}
 }
 
 func setupTestApp(cfg Config, h func(c *Conn)) *fiber.App {

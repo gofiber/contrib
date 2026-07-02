@@ -8,28 +8,46 @@ on:
     paths:
       - 'v3/testcontainers/**/*.go'
       - 'v3/testcontainers/go.mod'
+      - 'v3/testcontainers/go.sum'
   pull_request:
     paths:
       - 'v3/testcontainers/**/*.go'
       - 'v3/testcontainers/go.mod'
+      - 'v3/testcontainers/go.sum'
 
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   Tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GOWORK: off
     strategy:
       matrix:
         go-version:
           - 1.25.x
     steps:
       - name: Fetch Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '${{ matrix.go-version }}'
+          cache-dependency-path: v3/testcontainers/go.sum
 
       - name: Run Test
-        working-directory: ./v3/testcontainers
-        run: go test -v -race ./...
+        uses: gofiber/.github/.github/actions/gotestsum@main
+        with:
+          working-directory: ./v3/testcontainers
+          packages: ./...
+          rerun-fails: '2'
+          args: -race -count=1

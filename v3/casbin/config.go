@@ -1,9 +1,9 @@
 package casbin
 
 import (
-	"github.com/casbin/casbin/v2"
-	"github.com/casbin/casbin/v2/persist"
-	fileadapter "github.com/casbin/casbin/v2/persist/file-adapter"
+	"github.com/casbin/casbin/v3"
+	"github.com/casbin/casbin/v3/persist"
+	fileadapter "github.com/casbin/casbin/v3/persist/file-adapter"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -17,8 +17,8 @@ type Config struct {
 	// Optional. Default: fileadapter.NewAdapter("./policy.csv").
 	PolicyAdapter persist.Adapter
 
-	// Enforcer is an enforcer. If you want to use your own enforcer.
-	// Optional. Default: nil
+	// Enforcer is a Casbin enforcer. If you want to use your own enforcer.
+	// Optional. Default: nil (one is created from ModelFilePath and PolicyAdapter).
 	Enforcer *casbin.Enforcer
 
 	// Lookup is a function that is used to look up current subject.
