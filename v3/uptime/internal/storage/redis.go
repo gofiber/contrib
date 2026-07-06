@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,7 +35,7 @@ return 0
 const writeDailyIfUnfinalizedScript = `
 local finalized = redis.call("HGET", KEYS[1], "finalized")
 if finalized and finalized ~= "0" then
-	redis.call("ZADD", KEYS[2], ARGV[7], ARGV[2])
+	redis.call("ZADD", KEYS[2], ARGV[6], ARGV[2])
 	return 0
 end
 redis.call("HSET", KEYS[1],
@@ -44,9 +43,8 @@ redis.call("HSET", KEYS[1],
 	"day", ARGV[2],
 	"up_slots", ARGV[3],
 	"expected_slots", ARGV[4],
-	"uptime_rate", ARGV[5],
-	"finalized", ARGV[6])
-redis.call("ZADD", KEYS[2], ARGV[7], ARGV[2])
+	"finalized", ARGV[5])
+redis.call("ZADD", KEYS[2], ARGV[6], ARGV[2])
 return 1
 `
 
@@ -224,7 +222,6 @@ func (s *RedisStore) RollupDaily(ctx context.Context, options RollupOptions) err
 				Day:           day,
 				UpSlots:       int(upSlots64),
 				ExpectedSlots: expectedSlots,
-				UptimeRate:    rate(int(upSlots64), expectedSlots),
 				Finalized:     true,
 			}); err != nil {
 				return err
@@ -484,7 +481,6 @@ func (s *RedisStore) writeDaily(ctx context.Context, status DailyStatus) error {
 		status.Day,
 		status.UpSlots,
 		status.ExpectedSlots,
-		strconv.FormatFloat(status.UptimeRate, 'f', -1, 64),
 		finalized,
 		score,
 	).Err()
@@ -695,16 +691,11 @@ func dailyFromRedisHash(serviceID, day string, fields map[string]string) (DailyS
 	if err != nil {
 		return DailyStatus{}, err
 	}
-	uptimeRate, err := floatField(fields, "uptime_rate")
-	if err != nil {
-		return DailyStatus{}, err
-	}
 	return DailyStatus{
 		ServiceID:     serviceID,
 		Day:           day,
 		UpSlots:       upSlots,
 		ExpectedSlots: expectedSlots,
-		UptimeRate:    uptimeRate,
 		Finalized:     finalized != 0,
 	}, nil
 }
@@ -720,18 +711,6 @@ func int64Field(fields map[string]string, name string) (int64, error) {
 		return 0, nil
 	}
 	value, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("redis uptime store: parse %s: %w", name, err)
-	}
-	return value, nil
-}
-
-func floatField(fields map[string]string, name string) (float64, error) {
-	raw := fields[name]
-	if raw == "" {
-		return 0, nil
-	}
-	value, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
 		return 0, fmt.Errorf("redis uptime store: parse %s: %w", name, err)
 	}
@@ -758,18 +737,4 @@ func fromUnixNano(v int64) time.Time {
 		return time.Time{}
 	}
 	return time.Unix(0, v).UTC()
-}
-
-func rate(upSlots, expectedSlots int) float64 {
-	if expectedSlots <= 0 {
-		return 0
-	}
-	value := float64(upSlots) / float64(expectedSlots)
-	if value > 1 {
-		return 1
-	}
-	if value < 0 || math.IsNaN(value) {
-		return 0
-	}
-	return value
 }

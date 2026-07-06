@@ -160,7 +160,6 @@ func TestRedisStoreQueriesUseProvidedServiceIDs(t *testing.T) {
 		Day:           "2026-06-25",
 		UpSlots:       2,
 		ExpectedSlots: 1440,
-		UptimeRate:    rate(2, 1440),
 		Finalized:     true,
 	}))
 	mustNoErr(t, client.SAdd(ctx, store.sampleKey("api", "2026-06-26"), "1", "2").Err())
@@ -699,7 +698,7 @@ func (c *fakeRedisClient) evalCleanupExpiredInstance(keys []string, args ...inte
 }
 
 func (c *fakeRedisClient) evalWriteDailyIfUnfinalized(keys []string, args ...interface{}) *redis.Cmd {
-	if len(keys) != 2 || len(args) != 7 {
+	if len(keys) != 2 || len(args) != 6 {
 		return redis.NewCmdResult(nil, fmt.Errorf("unexpected write daily eval call"))
 	}
 
@@ -709,9 +708,8 @@ func (c *fakeRedisClient) evalWriteDailyIfUnfinalized(keys []string, args ...int
 	day := fmt.Sprint(args[1])
 	upSlots := fmt.Sprint(args[2])
 	expectedSlots := fmt.Sprint(args[3])
-	uptimeRate := fmt.Sprint(args[4])
-	finalized := fmt.Sprint(args[5])
-	score, err := strconv.ParseFloat(fmt.Sprint(args[6]), 64)
+	finalized := fmt.Sprint(args[4])
+	score, err := strconv.ParseFloat(fmt.Sprint(args[5]), 64)
 	if err != nil {
 		return redis.NewCmdResult(nil, err)
 	}
@@ -735,7 +733,6 @@ func (c *fakeRedisClient) evalWriteDailyIfUnfinalized(keys []string, args ...int
 	hash["day"] = day
 	hash["up_slots"] = upSlots
 	hash["expected_slots"] = expectedSlots
-	hash["uptime_rate"] = uptimeRate
 	hash["finalized"] = finalized
 	c.zaddLocked(daysKey, day, score)
 	return redis.NewCmdResult(int64(1), nil)

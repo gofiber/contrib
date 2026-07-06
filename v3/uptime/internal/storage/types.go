@@ -59,7 +59,6 @@ type DailyStatus struct {
 	Day           string
 	UpSlots       int
 	ExpectedSlots int
-	UptimeRate    float64
 	Finalized     bool
 }
 
