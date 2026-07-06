@@ -188,6 +188,18 @@ func (u *runtime) serviceSampleInterval(service storage.Service) time.Duration {
 }
 
 func makeDayStatus(day string, upSlots, expectedSlots int, finalized, hasData bool, interval time.Duration, ui UIConfig) DayStatus {
+	if expectedSlots <= 0 {
+		expectedSlots = 0
+		upSlots = 0
+		hasData = false
+	}
+	if upSlots > expectedSlots {
+		upSlots = expectedSlots
+	}
+	if upSlots < 0 {
+		upSlots = 0
+	}
+
 	rate := uptimeRate(upSlots, expectedSlots)
 	downSlots := expectedSlots - upSlots
 	if downSlots < 0 {
@@ -303,7 +315,7 @@ func slotOf(t time.Time, interval time.Duration, loc *time.Location) int64 {
 }
 
 func expectedSlotsSoFarSince(now, createdAt time.Time, interval time.Duration, loc *time.Location) int {
-	return expectedSlotsForWindow(dayOf(now, loc), createdAt, now, interval, loc, true)
+	return expectedSlotsForWindow(dayOf(now, loc), createdAt, currentSlotStart(now, interval, loc), interval, loc, false)
 }
 
 func expectedSlotsForDay(day string, interval time.Duration, loc *time.Location) int {
@@ -380,6 +392,18 @@ func isSlotBoundary(t time.Time, interval time.Duration, loc *time.Location) boo
 	}
 	elapsed := t.In(loc).Sub(startOfDay(t, loc))
 	return elapsed%interval == 0
+}
+
+func currentSlotStart(t time.Time, interval time.Duration, loc *time.Location) time.Time {
+	if interval <= 0 {
+		return t
+	}
+	start := startOfDay(t, loc)
+	elapsed := t.In(loc).Sub(start)
+	if elapsed <= 0 {
+		return start
+	}
+	return start.Add((elapsed / interval) * interval)
 }
 
 func ceilDuration(duration, interval time.Duration) int {

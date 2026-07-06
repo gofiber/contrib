@@ -40,6 +40,54 @@ func TestExpectedSlotsForWindow(t *testing.T) {
 	}
 }
 
+func TestExpectedSlotsSoFarSinceExcludesInProgressSlot(t *testing.T) {
+	t.Parallel()
+
+	loc := time.UTC
+	createdAt := time.Date(2026, 6, 26, 0, 0, 0, 0, loc)
+
+	tests := []struct {
+		name     string
+		now      time.Time
+		interval time.Duration
+		want     int
+	}{
+		{
+			name:     "one second after midnight",
+			now:      time.Date(2026, 6, 26, 0, 0, 1, 0, loc),
+			interval: 3 * time.Second,
+			want:     0,
+		},
+		{
+			name:     "first slot boundary",
+			now:      time.Date(2026, 6, 26, 0, 0, 3, 0, loc),
+			interval: 3 * time.Second,
+			want:     1,
+		},
+		{
+			name:     "inside second slot",
+			now:      time.Date(2026, 6, 26, 0, 0, 4, 0, loc),
+			interval: 3 * time.Second,
+			want:     1,
+		},
+		{
+			name:     "thirty seconds after midnight",
+			now:      time.Date(2026, 6, 26, 0, 0, 30, 0, loc),
+			interval: 3 * time.Second,
+			want:     10,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := expectedSlotsSoFarSince(tt.now, createdAt, tt.interval, loc)
+			requireEqual(t, tt.want, got)
+		})
+	}
+}
+
 func TestExpectedSlotsForDayCountsWholeDay(t *testing.T) {
 	t.Parallel()
 

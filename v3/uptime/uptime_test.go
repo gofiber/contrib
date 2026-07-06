@@ -541,9 +541,47 @@ func TestDayStatusUsesServiceCreatedAtForToday(t *testing.T) {
 	requireLen(t, status.Services[0].Daily, 1)
 
 	day := status.Services[0].Daily[0]
-	requireEqual(t, 61, day.ExpectedSlots)
-	requireEqual(t, 61, day.UpSlots)
+	requireEqual(t, 60, day.ExpectedSlots)
+	requireEqual(t, 60, day.UpSlots)
 	requireEqual(t, "green", day.Status)
+}
+
+func TestTodayStatusIsGrayBeforeFirstSlotCompletes(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 26, 0, 0, 1, 0, time.UTC)
+	createdAt := time.Date(2026, 6, 25, 23, 59, 0, 0, time.UTC)
+	store := newSnapshotStore()
+	store.services = []storage.Service{
+		{
+			ID:             "api",
+			Name:           "API",
+			CreatedAt:      createdAt,
+			LastSeenAt:     now,
+			SampleInterval: 3 * time.Second,
+		},
+	}
+	store.today = []storage.TodaySampleStatus{
+		{ServiceID: "api", Day: dayOf(now, time.UTC), UpSlots: 1},
+	}
+	u := newSnapshotUptimeWithConfig(store, Config{
+		ServiceID:      "api",
+		SampleInterval: 3 * time.Second,
+		DaysToShow:     1,
+		RetentionDays:  1,
+		Timezone:       time.UTC,
+	})
+
+	status, err := u.buildStatus(context.Background(), now)
+	requireNoError(t, err)
+	requireLen(t, status.Services, 1)
+	requireLen(t, status.Services[0].Daily, 1)
+
+	day := status.Services[0].Daily[0]
+	requireEqual(t, 0, day.ExpectedSlots)
+	requireEqual(t, 0, day.UpSlots)
+	requireEqual(t, false, day.HasData)
+	requireEqual(t, "gray", day.Status)
 }
 
 func TestRollupExpectedSlotsUsesServiceCreatedAt(t *testing.T) {
