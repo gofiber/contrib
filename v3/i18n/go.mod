@@ -7,7 +7,7 @@ require (
 	github.com/gofiber/utils/v2 v2.1.1
 	github.com/nicksnyder/go-i18n/v2 v2.6.1
 	github.com/stretchr/testify v1.11.1
-	golang.org/x/text v0.38.0
+	golang.org/x/text v0.39.0
 	gopkg.in/yaml.v2 v2.4.0
 )
 
