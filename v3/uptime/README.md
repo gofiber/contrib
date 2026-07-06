@@ -134,7 +134,7 @@ HTTP-level caching. The same snapshot payload is available at
 
 | Property | Type | Description | Default |
 |:--|:--|:--|:--|
-| App | `*fiber.App` | Optional Fiber app used to register a shutdown hook that closes the uptime runtime. | `nil` |
+| App | `*fiber.App` | Fiber app used to register the shutdown hook that closes the uptime runtime. | Required |
 | Next | `func(fiber.Ctx) bool` | Skip the uptime handler when true. | `nil` |
 | ServiceID | `string` | Stable service identifier for the current process. Required only when `Endpoints` is empty. | `""` |
 | ServiceName | `string` | Display name. | `ServiceID` |
@@ -196,9 +196,9 @@ payload is built from fresh store reads. Redis commands are issued through the
 Fiber Redis storage connection and are safe for concurrent use by the background
 recorder and Fiber handlers.
 
-When `Config.App` is set, `New` registers a Fiber shutdown hook that stops the
-uptime runtime. The caller owns the Redis storage lifecycle and should close it
-from an app hook or signal handler.
+`Config.App` is required so `New` can register a Fiber shutdown hook that stops
+the uptime runtime. The caller owns the Redis storage lifecycle and should close
+it from an app hook or signal handler.
 
 ## Security notes
 

@@ -31,11 +31,14 @@ var (
 	ErrMissingServiceID = errors.New("uptime: service id or endpoint is required")
 	// ErrMissingStore is returned when Config.Store is not set.
 	ErrMissingStore = errors.New("uptime: redis storage is required")
+	// ErrMissingApp is returned when Config.App is not set.
+	ErrMissingApp = errors.New("uptime: fiber app is required")
 )
 
 // Config defines the configuration for the uptime middleware.
 type Config struct {
 	// App registers a shutdown hook to close the uptime runtime when the Fiber app stops.
+	// It is required because New only returns the Fiber handler.
 	App *fiber.App
 
 	// Next defines a function to skip this middleware when returned true.
@@ -144,6 +147,9 @@ func configDefault(config ...Config) Config {
 }
 
 func (c Config) normalized() (Config, error) {
+	if c.App == nil {
+		return Config{}, ErrMissingApp
+	}
 	if c.SampleInterval == 0 {
 		c.SampleInterval = defaultSampleInterval
 	}

@@ -19,8 +19,7 @@ import (
 func TestConfigDefaults(t *testing.T) {
 	t.Parallel()
 
-	cfg, err := Config{ServiceID: "api"}.normalized()
-	requireNoError(t, err)
+	cfg := normalizedTestConfig(t, Config{ServiceID: "api"})
 
 	requireEqual(t, "api", cfg.ServiceName)
 	requireEqual(t, defaultSampleInterval, cfg.SampleInterval)
@@ -39,7 +38,7 @@ func TestConfigEndpointDefaults(t *testing.T) {
 	t.Parallel()
 
 	headers := map[string]string{"X-Probe": "uptime"}
-	cfg, err := Config{
+	cfg := normalizedTestConfig(t, Config{
 		Endpoints: []EndpointConfig{
 			{
 				ID:      "health",
@@ -47,8 +46,7 @@ func TestConfigEndpointDefaults(t *testing.T) {
 				Headers: headers,
 			},
 		},
-	}.normalized()
-	requireNoError(t, err)
+	})
 
 	requireEqual(t, "", cfg.ServiceID)
 	requireLen(t, cfg.Endpoints, 1)
@@ -69,6 +67,7 @@ func TestConfigValidation(t *testing.T) {
 		name   string
 		config Config
 	}{
+		{name: "missing app", config: Config{ServiceID: "api"}},
 		{name: "missing service id", config: Config{}},
 		{
 			name: "sample interval too small",
@@ -181,6 +180,9 @@ func TestConfigValidation(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			if tt.name != "missing app" {
+				tt.config.App = fiber.New()
+			}
 			_, err := tt.config.normalized()
 			requireError(t, err)
 		})
@@ -190,12 +192,11 @@ func TestConfigValidation(t *testing.T) {
 func TestConfigClampsDaysToShow(t *testing.T) {
 	t.Parallel()
 
-	cfg, err := Config{
+	cfg := normalizedTestConfig(t, Config{
 		ServiceID:     "api",
 		RetentionDays: 7,
 		DaysToShow:    30,
-	}.normalized()
-	requireNoError(t, err)
+	})
 	requireEqual(t, 7, cfg.DaysToShow)
 }
 
@@ -406,6 +407,21 @@ func TestNewPanicsOnInvalidConfig(t *testing.T) {
 	_ = New(Config{})
 }
 
+func TestNewPanicsWithoutApp(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			t.Fatal("expected panic")
+		}
+		if !strings.Contains(fmt.Sprint(recovered), ErrMissingApp.Error()) {
+			t.Fatalf("panic = %v, want %v", recovered, ErrMissingApp)
+		}
+	}()
+	_ = New(Config{ServiceID: "api"})
+}
+
 func TestNewPanicsWithoutStore(t *testing.T) {
 	t.Parallel()
 
@@ -418,7 +434,7 @@ func TestNewPanicsWithoutStore(t *testing.T) {
 			t.Fatalf("panic = %v, want %v", recovered, ErrMissingStore)
 		}
 	}()
-	_ = New(Config{ServiceID: "api"})
+	_ = New(Config{App: fiber.New(), ServiceID: "api"})
 }
 
 func TestSnapshotBuildsFreshStatus(t *testing.T) {
@@ -545,14 +561,13 @@ func TestNewReturnsErrorWhenInitialHeartbeatFails(t *testing.T) {
 
 	store := newSnapshotStore()
 	store.writeHeartbeatErr = errors.New("write heartbeat failed")
-	cfg, err := Config{
+	cfg := normalizedTestConfig(t, Config{
 		ServiceID:      "api",
 		SampleInterval: time.Second,
 		DaysToShow:     1,
 		RetentionDays:  1,
 		Timezone:       time.UTC,
-	}.normalized()
-	requireNoError(t, err)
+	})
 
 	up, err := newWithStore(cfg, store, store.now)
 	requireError(t, err)
@@ -568,14 +583,13 @@ func TestNewClosesStoreWhenInitFails(t *testing.T) {
 
 	store := newSnapshotStore()
 	store.initErr = errors.New("init failed")
-	cfg, err := Config{
+	cfg := normalizedTestConfig(t, Config{
 		ServiceID:      "api",
 		SampleInterval: time.Second,
 		DaysToShow:     1,
 		RetentionDays:  1,
 		Timezone:       time.UTC,
-	}.normalized()
-	requireNoError(t, err)
+	})
 
 	up, err := newWithStore(cfg, store, store.now)
 	requireError(t, err)
@@ -592,15 +606,14 @@ func TestRuntimeRecordsInitialHeartbeat(t *testing.T) {
 	store := newSnapshotStore()
 	store.services = nil
 	store.today = nil
-	cfg, err := Config{
+	cfg := normalizedTestConfig(t, Config{
 		ServiceID:      "api",
 		ServiceName:    "API",
 		SampleInterval: time.Second,
 		DaysToShow:     1,
 		RetentionDays:  1,
 		Timezone:       time.UTC,
-	}.normalized()
-	requireNoError(t, err)
+	})
 
 	up, err := newWithStore(cfg, store, store.now)
 	requireNoError(t, err)
@@ -614,6 +627,33 @@ func TestRuntimeRecordsInitialHeartbeat(t *testing.T) {
 	if len(status.Services[0].Daily) == 0 {
 		t.Fatal("daily status is empty")
 	}
+}
+
+func TestNewRegistersShutdownHook(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	store := newSnapshotStore()
+	cfg := normalizedTestConfig(t, Config{
+		App:            app,
+		ServiceID:      "api",
+		SampleInterval: time.Hour,
+		DaysToShow:     1,
+		RetentionDays:  1,
+		Timezone:       time.UTC,
+	})
+
+	up, err := newWithStore(cfg, store, store.now)
+	requireNoError(t, err)
+	t.Cleanup(func() { requireNoError(t, up.close()) })
+
+	requireNoError(t, app.Shutdown())
+	select {
+	case <-up.done:
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not stop after app shutdown")
+	}
+	requireEqual(t, 1, store.closeCalls)
 }
 
 func TestEndpointProbeWritesHeartbeatOnExpectedStatus(t *testing.T) {
@@ -635,7 +675,7 @@ func TestEndpointProbeWritesHeartbeatOnExpectedStatus(t *testing.T) {
 	}
 	store.services = []storage.Service{service}
 	store.today = nil
-	cfg, err := Config{
+	cfg := normalizedTestConfig(t, Config{
 		Endpoints: []EndpointConfig{
 			{
 				ID:                  "health",
@@ -651,8 +691,7 @@ func TestEndpointProbeWritesHeartbeatOnExpectedStatus(t *testing.T) {
 		DaysToShow:    1,
 		RetentionDays: 1,
 		Timezone:      time.UTC,
-	}.normalized()
-	requireNoError(t, err)
+	})
 
 	u := newSnapshotUptimeWithConfig(store, cfg)
 	u.httpClient = server.Client()
@@ -692,7 +731,7 @@ func TestEndpointProbeSkipsHeartbeatOnUnexpectedStatus(t *testing.T) {
 	}
 	store.services = []storage.Service{service}
 	store.today = nil
-	cfg, err := Config{
+	cfg := normalizedTestConfig(t, Config{
 		Endpoints: []EndpointConfig{
 			{
 				ID:       "health",
@@ -704,8 +743,7 @@ func TestEndpointProbeSkipsHeartbeatOnUnexpectedStatus(t *testing.T) {
 		DaysToShow:    1,
 		RetentionDays: 1,
 		Timezone:      time.UTC,
-	}.normalized()
-	requireNoError(t, err)
+	})
 
 	u := newSnapshotUptimeWithConfig(store, cfg)
 	u.httpClient = server.Client()
@@ -739,7 +777,7 @@ func TestEndpointProbeFailureDoesNotClearStorageErrorWhenMaintenanceSkipped(t *t
 	}
 	store.services = []storage.Service{service}
 	store.today = nil
-	cfg, err := Config{
+	cfg := normalizedTestConfig(t, Config{
 		Endpoints: []EndpointConfig{
 			{
 				ID:       "health",
@@ -751,8 +789,7 @@ func TestEndpointProbeFailureDoesNotClearStorageErrorWhenMaintenanceSkipped(t *t
 		DaysToShow:    1,
 		RetentionDays: 1,
 		Timezone:      time.UTC,
-	}.normalized()
-	requireNoError(t, err)
+	})
 
 	u := newSnapshotUptimeWithConfig(store, cfg)
 	u.httpClient = server.Client()
@@ -784,15 +821,14 @@ func TestEndpointProbeFailureDoesNotClearStorageErrorWhenMaintenanceSkipped(t *t
 func TestCustomIDGenerator(t *testing.T) {
 	t.Parallel()
 
-	cfg, err := Config{
+	cfg := normalizedTestConfig(t, Config{
 		ServiceID:      "api",
 		SampleInterval: time.Second,
 		IDGenerator:    staticIDGenerator{value: 42},
 		DaysToShow:     1,
 		RetentionDays:  1,
 		Timezone:       time.UTC,
-	}.normalized()
-	requireNoError(t, err)
+	})
 
 	up, err := newWithStore(cfg, newSnapshotStore(), time.Now())
 	requireNoError(t, err)
@@ -804,14 +840,13 @@ func TestCustomIDGenerator(t *testing.T) {
 func TestCloseIsIdempotent(t *testing.T) {
 	t.Parallel()
 
-	cfg, err := Config{
+	cfg := normalizedTestConfig(t, Config{
 		ServiceID:      "api",
 		SampleInterval: time.Second,
 		DaysToShow:     1,
 		RetentionDays:  1,
 		Timezone:       time.UTC,
-	}.normalized()
-	requireNoError(t, err)
+	})
 
 	up, err := newWithStore(cfg, newSnapshotStore(), time.Now())
 	requireNoError(t, err)
@@ -875,7 +910,20 @@ func newSnapshotUptime(store *snapshotStore) *runtime {
 	})
 }
 
+func normalizedTestConfig(t *testing.T, config Config) Config {
+	t.Helper()
+	if config.App == nil {
+		config.App = fiber.New()
+	}
+	cfg, err := config.normalized()
+	requireNoError(t, err)
+	return cfg
+}
+
 func newSnapshotUptimeWithConfig(store *snapshotStore, config Config) *runtime {
+	if config.App == nil {
+		config.App = fiber.New()
+	}
 	if config.UI.GreenThreshold == 0 {
 		config.UI.GreenThreshold = defaultGreenThreshold
 	}
