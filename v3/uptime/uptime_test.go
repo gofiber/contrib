@@ -794,6 +794,55 @@ func TestEndpointProbeWritesHeartbeatOnExpectedStatus(t *testing.T) {
 	requireEqual(t, statusUp, status.Services[0].CurrentStatus)
 }
 
+func TestEndpointProbeDoesNotFollowRedirects(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/target" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.Redirect(w, r, "/target", http.StatusMovedPermanently)
+	}))
+	t.Cleanup(server.Close)
+
+	store := newSnapshotStore()
+	service := storage.Service{
+		ID:             "redirect",
+		Name:           "Redirect",
+		CreatedAt:      store.now.Add(-time.Hour),
+		SampleInterval: time.Second,
+	}
+	store.services = []storage.Service{service}
+	store.today = nil
+	cfg := normalizedTestConfig(t, Config{
+		Endpoints: []EndpointConfig{
+			{
+				ID:                  "redirect",
+				URL:                 server.URL,
+				ExpectedStatusCodes: []int{http.StatusMovedPermanently},
+				Interval:            time.Second,
+				Timeout:             time.Second,
+			},
+		},
+		DaysToShow:    1,
+		RetentionDays: 1,
+		Timezone:      time.UTC,
+	})
+
+	u := newSnapshotUptimeWithConfig(store, cfg)
+	target := recordTarget{
+		service:  service,
+		instance: storage.Instance{ID: 7, ServiceID: "redirect"},
+		interval: service.SampleInterval,
+		probe:    newEndpointProbe(cfg.Endpoints[0]),
+	}
+
+	requireNoError(t, u.recordTarget(context.Background(), target, store.now))
+	requireLen(t, store.today, 1)
+	requireEqual(t, 1, store.today[0].UpSlots)
+}
+
 func TestEndpointProbeSkipsHeartbeatOnUnexpectedStatus(t *testing.T) {
 	t.Parallel()
 

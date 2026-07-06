@@ -127,7 +127,7 @@ func newWithStore(cfg Config, store storage.Store, now time.Time) (*runtime, err
 		ctx:        runCtx,
 		cancel:     cancel,
 		done:       make(chan struct{}),
-		httpClient: &http.Client{},
+		httpClient: newProbeHTTPClient(),
 	}
 
 	if err := u.runMaintenance(ctx, now, true); err != nil {
@@ -221,6 +221,14 @@ func newEndpointProbe(endpoint EndpointConfig) *endpointProbe {
 		headers:             copyStringMap(endpoint.Headers),
 		timeout:             endpoint.Timeout,
 		expectedStatusCodes: expectedStatusCodes,
+	}
+}
+
+func newProbeHTTPClient() *http.Client {
+	return &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
 }
 
@@ -467,7 +475,7 @@ func (u *runtime) probeEndpoint(ctx context.Context, probe *endpointProbe) bool 
 
 	client := u.httpClient
 	if client == nil {
-		client = http.DefaultClient
+		client = newProbeHTTPClient()
 	}
 	resp, err := client.Do(req)
 	if err != nil {
