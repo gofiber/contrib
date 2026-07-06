@@ -32,9 +32,9 @@ func renderDashboardHTML(config Config, status StatusResponse, apiPath string) (
 		Title:       config.UI.Title,
 		Description: config.UI.Description,
 		Footer:      config.UI.Footer,
-		APIPathJSON: template.JS(apiPathJSON),
+		APIPathJSON: template.JS(string(apiPathJSON)),
 		RefreshMS:   max(int64(config.SampleInterval/time.Millisecond), 10000),
-		StatusJSON:  template.JS(statusJSON),
+		StatusJSON:  template.JS(string(statusJSON)),
 	}
 	var buf bytes.Buffer
 	if err := dashboardTemplate.Execute(&buf, page); err != nil {
