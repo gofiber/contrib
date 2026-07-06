@@ -149,7 +149,7 @@ HTTP-level caching. The same snapshot payload is available at
 | IDGenerator | `uptime.IDGenerator` | Custom instance ID generator. | `nil` |
 | Store | `*fiberredis.Storage` | Fiber Redis storage instance from `github.com/gofiber/storage/redis/v3`. | Required |
 | StorageKeyPrefix | `string` | Prefix for all uptime Redis keys. | `"fiber:uptime"` |
-| UI | `uptime.UIConfig` | Dashboard copy and thresholds. | Light English UI, green at `99.9%`, yellow at `99%` |
+| UI | `uptime.UIConfig` | Dashboard copy and thresholds. Threshold values are configurable in `(0, 1]`; zero uses the defaults. | Light English UI, green at `99.9%`, yellow at `99%` |
 
 ### EndpointConfig
 

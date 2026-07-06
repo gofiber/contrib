@@ -34,6 +34,21 @@ func TestConfigDefaults(t *testing.T) {
 	requireEqual(t, defaultYellowThreshold, cfg.UI.YellowThreshold)
 }
 
+func TestConfigZeroThresholdsUseDefaults(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizedTestConfig(t, Config{
+		ServiceID: "api",
+		UI: UIConfig{
+			GreenThreshold:  0,
+			YellowThreshold: 0,
+		},
+	})
+
+	requireEqual(t, defaultGreenThreshold, cfg.UI.GreenThreshold)
+	requireEqual(t, defaultYellowThreshold, cfg.UI.YellowThreshold)
+}
+
 func TestConfigEndpointDefaults(t *testing.T) {
 	t.Parallel()
 

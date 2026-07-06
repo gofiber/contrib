@@ -116,9 +116,11 @@ type UIConfig struct {
 	// Footer is shown at the bottom of the dashboard.
 	Footer string
 
-	// GreenThreshold is the minimum uptime ratio for a green day, in the range [0, 1].
+	// GreenThreshold is the minimum uptime ratio for a green day.
+	// Configurable values must be in (0, 1]; zero uses the default.
 	GreenThreshold float64
-	// YellowThreshold is the minimum uptime ratio for a yellow day, in the range [0, 1].
+	// YellowThreshold is the minimum uptime ratio for a yellow day.
+	// Configurable values must be in (0, 1]; zero uses the default.
 	YellowThreshold float64
 }
 
@@ -205,10 +207,10 @@ func (c Config) normalized() (Config, error) {
 		c.UI.YellowThreshold = defaultYellowThreshold
 	}
 	if c.UI.GreenThreshold < 0 || c.UI.GreenThreshold > 1 {
-		return Config{}, errors.New("uptime: green threshold must be between 0 and 1")
+		return Config{}, errors.New("uptime: green threshold must be greater than 0 and less than or equal to 1")
 	}
 	if c.UI.YellowThreshold < 0 || c.UI.YellowThreshold > 1 {
-		return Config{}, errors.New("uptime: yellow threshold must be between 0 and 1")
+		return Config{}, errors.New("uptime: yellow threshold must be greater than 0 and less than or equal to 1")
 	}
 	if c.UI.GreenThreshold < c.UI.YellowThreshold {
 		return Config{}, errors.New("uptime: green threshold must be greater than or equal to yellow threshold")
