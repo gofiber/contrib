@@ -28,6 +28,27 @@ end
 return 0
 `
 
+// writeDailyIfUnfinalizedScript writes a finalized daily row only while the
+// row is not already finalized. This keeps late concurrent rollups from
+// replacing a previously finalized day after another instance has cleaned up
+// the raw samples.
+const writeDailyIfUnfinalizedScript = `
+local finalized = redis.call("HGET", KEYS[1], "finalized")
+if finalized and finalized ~= "0" then
+	redis.call("ZADD", KEYS[2], ARGV[7], ARGV[2])
+	return 0
+end
+redis.call("HSET", KEYS[1],
+	"service_id", ARGV[1],
+	"day", ARGV[2],
+	"up_slots", ARGV[3],
+	"expected_slots", ARGV[4],
+	"uptime_rate", ARGV[5],
+	"finalized", ARGV[6])
+redis.call("ZADD", KEYS[2], ARGV[7], ARGV[2])
+return 1
+`
+
 // RedisConfig controls the Redis-backed uptime store.
 type RedisConfig struct {
 	// Storage is the Fiber Redis storage instance used for uptime state.
@@ -49,6 +70,7 @@ type redisClient interface {
 	SCard(ctx context.Context, key string) *redis.IntCmd
 	HSet(ctx context.Context, key string, values ...interface{}) *redis.IntCmd
 	HSetNX(ctx context.Context, key, field string, value interface{}) *redis.BoolCmd
+	HGet(ctx context.Context, key, field string) *redis.StringCmd
 	HGetAll(ctx context.Context, key string) *redis.MapStringStringCmd
 	ZAdd(ctx context.Context, key string, members ...redis.Z) *redis.IntCmd
 	ZRangeByScore(ctx context.Context, key string, opt *redis.ZRangeBy) *redis.StringSliceCmd
@@ -194,16 +216,14 @@ func (s *RedisStore) Cleanup(ctx context.Context, options CleanupOptions) error 
 		return err
 	}
 	for _, service := range services {
-		if options.DailyBeforeDay != "" {
-			if err := s.cleanupDays(ctx, s.dailyDaysKey(service.ID), options.DailyBeforeDay, func(day string) string {
-				return s.dailyKey(service.ID, day)
-			}); err != nil {
+		if options.SamplesBeforeDay != "" {
+			if err := s.cleanupSampleDays(ctx, service.ID, options.SamplesBeforeDay); err != nil {
 				return err
 			}
 		}
-		if options.SamplesBeforeDay != "" {
-			if err := s.cleanupDays(ctx, s.sampleDaysKey(service.ID), options.SamplesBeforeDay, func(day string) string {
-				return s.sampleKey(service.ID, day)
+		if options.DailyBeforeDay != "" {
+			if err := s.cleanupDays(ctx, s.dailyDaysKey(service.ID), options.DailyBeforeDay, func(day string) string {
+				return s.dailyKey(service.ID, day)
 			}); err != nil {
 				return err
 			}
@@ -377,17 +397,20 @@ func (s *RedisStore) writeDaily(ctx context.Context, status DailyStatus) error {
 	if status.Finalized {
 		finalized = 1
 	}
-	if err := s.client.HSet(ctx, s.dailyKey(status.ServiceID, status.Day),
-		"service_id", status.ServiceID,
-		"day", status.Day,
-		"up_slots", status.UpSlots,
-		"expected_slots", status.ExpectedSlots,
-		"uptime_rate", strconv.FormatFloat(status.UptimeRate, 'f', -1, 64),
-		"finalized", finalized,
-	).Err(); err != nil {
+	score, err := redisDayScore(status.Day)
+	if err != nil {
 		return err
 	}
-	return s.addDay(ctx, s.dailyDaysKey(status.ServiceID), status.Day)
+	return s.client.Eval(ctx, writeDailyIfUnfinalizedScript,
+		[]string{s.dailyKey(status.ServiceID, status.Day), s.dailyDaysKey(status.ServiceID)},
+		status.ServiceID,
+		status.Day,
+		status.UpSlots,
+		status.ExpectedSlots,
+		strconv.FormatFloat(status.UptimeRate, 'f', -1, 64),
+		finalized,
+		score,
+	).Err()
 }
 
 func (s *RedisStore) addDay(ctx context.Context, key, day string) error {
@@ -452,6 +475,40 @@ func (s *RedisStore) cleanupDays(ctx context.Context, zsetKey, beforeDay string,
 		}
 	}
 	return nil
+}
+
+func (s *RedisStore) cleanupSampleDays(ctx context.Context, serviceID, beforeDay string) error {
+	days, err := s.daysBefore(ctx, s.sampleDaysKey(serviceID), beforeDay)
+	if err != nil {
+		return err
+	}
+	for _, day := range days {
+		finalized, err := s.dailyFinalized(ctx, serviceID, day)
+		if err != nil {
+			return err
+		}
+		if !finalized {
+			continue
+		}
+		if err := s.client.Del(ctx, s.sampleKey(serviceID, day)).Err(); err != nil {
+			return err
+		}
+		if err := s.client.ZRem(ctx, s.sampleDaysKey(serviceID), day).Err(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *RedisStore) dailyFinalized(ctx context.Context, serviceID, day string) (bool, error) {
+	raw, err := s.client.HGet(ctx, s.dailyKey(serviceID, day), "finalized").Result()
+	if errors.Is(err, redis.Nil) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return raw != "" && raw != "0", nil
 }
 
 func (s *RedisStore) servicesKey() string {

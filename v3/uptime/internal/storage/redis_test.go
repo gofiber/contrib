@@ -74,6 +74,78 @@ func TestRedisStoreRollupAndCleanupLifecycle(t *testing.T) {
 	}
 }
 
+func TestRedisStoreRollupDoesNotOverwriteFinalizedDailyWhenSamplesAreGone(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client := newFakeRedisClient()
+	first := &RedisStore{config: RedisConfig{KeyPrefix: "test:uptime"}, client: client}
+	second := &RedisStore{config: RedisConfig{KeyPrefix: "test:uptime"}, client: client}
+	mustNoErr(t, first.Init(ctx))
+	mustNoErr(t, second.Init(ctx))
+	t.Cleanup(func() { mustNoErr(t, first.Close()) })
+	t.Cleanup(func() { mustNoErr(t, second.Close()) })
+
+	created := time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC)
+	service := Service{ID: "api", Name: "API", CreatedAt: created, LastSeenAt: created, SampleInterval: time.Minute}
+	mustNoErr(t, first.UpsertService(ctx, service))
+	mustNoErr(t, first.WriteHeartbeat(ctx, Heartbeat{ServiceID: "api", InstanceID: 1, Day: "2026-06-25", Slot: 0, SeenAt: created}))
+	mustNoErr(t, first.WriteHeartbeat(ctx, Heartbeat{ServiceID: "api", InstanceID: 1, Day: "2026-06-25", Slot: 1, SeenAt: created}))
+
+	mustNoErr(t, first.RollupDaily(ctx, RollupOptions{
+		BeforeDay:                  "2026-06-26",
+		ExpectedSlotsForServiceDay: func(string, string) int { return 1440 },
+	}))
+	before := queryDailyMap(t, first)["2026-06-25"]
+	if before.UpSlots != 2 || before.ExpectedSlots != 1440 || !before.Finalized {
+		t.Fatalf("daily before stale rollup = %+v, want up=2 expected=1440 finalized=true", before)
+	}
+
+	mustNoErr(t, client.Del(ctx, first.sampleKey("api", "2026-06-25")).Err())
+	mustNoErr(t, second.RollupDaily(ctx, RollupOptions{
+		BeforeDay:                  "2026-06-26",
+		ExpectedSlotsForServiceDay: func(string, string) int { return 1440 },
+	}))
+
+	after := queryDailyMap(t, first)["2026-06-25"]
+	if after.UpSlots != 2 || after.ExpectedSlots != 1440 || !after.Finalized {
+		t.Fatalf("daily after stale rollup = %+v, want original finalized row", after)
+	}
+}
+
+func TestRedisStoreCleanupKeepsSamplesUntilDailyFinalized(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := &RedisStore{config: RedisConfig{KeyPrefix: "test:uptime"}, client: newFakeRedisClient()}
+	mustNoErr(t, store.Init(ctx))
+	t.Cleanup(func() { mustNoErr(t, store.Close()) })
+
+	created := time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC)
+	mustNoErr(t, store.UpsertService(ctx, Service{ID: "api", Name: "API", CreatedAt: created, LastSeenAt: created, SampleInterval: time.Minute}))
+	mustNoErr(t, store.WriteHeartbeat(ctx, Heartbeat{ServiceID: "api", InstanceID: 1, Day: "2026-06-25", Slot: 7, SeenAt: created}))
+
+	mustNoErr(t, store.Cleanup(ctx, CleanupOptions{SamplesBeforeDay: "2026-06-26"}))
+
+	today, err := store.QueryTodaySamples(ctx, QueryTodaySamplesOptions{Day: "2026-06-25"})
+	mustNoErr(t, err)
+	if len(today) != 1 || today[0].UpSlots != 1 {
+		t.Fatalf("samples before finalized daily = %+v, want retained sample", today)
+	}
+
+	mustNoErr(t, store.RollupDaily(ctx, RollupOptions{
+		BeforeDay:                  "2026-06-26",
+		ExpectedSlotsForServiceDay: func(string, string) int { return 1440 },
+	}))
+	mustNoErr(t, store.Cleanup(ctx, CleanupOptions{SamplesBeforeDay: "2026-06-26"}))
+
+	today, err = store.QueryTodaySamples(ctx, QueryTodaySamplesOptions{Day: "2026-06-25"})
+	mustNoErr(t, err)
+	if len(today) != 0 {
+		t.Fatalf("samples after finalized daily should be removed, got %+v", today)
+	}
+}
+
 func TestRedisStoreCloseDoesNotInvalidateConcurrentReaders(t *testing.T) {
 	t.Parallel()
 
@@ -428,7 +500,18 @@ func (c *fakeRedisClient) Del(_ context.Context, keys ...string) *redis.IntCmd {
 	return redis.NewIntResult(removed, nil)
 }
 
-func (c *fakeRedisClient) Eval(_ context.Context, _ string, keys []string, args ...interface{}) *redis.Cmd {
+func (c *fakeRedisClient) Eval(_ context.Context, script string, keys []string, args ...interface{}) *redis.Cmd {
+	switch script {
+	case setMaxNanoScript:
+		return c.evalSetMaxNano(keys, args...)
+	case writeDailyIfUnfinalizedScript:
+		return c.evalWriteDailyIfUnfinalized(keys, args...)
+	default:
+		return redis.NewCmdResult(nil, fmt.Errorf("unexpected eval script"))
+	}
+}
+
+func (c *fakeRedisClient) evalSetMaxNano(keys []string, args ...interface{}) *redis.Cmd {
 	if len(keys) != 1 || len(args) != 2 {
 		return redis.NewCmdResult(nil, fmt.Errorf("unexpected eval call"))
 	}
@@ -458,6 +541,58 @@ func (c *fakeRedisClient) Eval(_ context.Context, _ string, keys []string, args 
 	}
 	hash[field] = strconv.FormatInt(value, 10)
 	return redis.NewCmdResult(int64(1), nil)
+}
+
+func (c *fakeRedisClient) evalWriteDailyIfUnfinalized(keys []string, args ...interface{}) *redis.Cmd {
+	if len(keys) != 2 || len(args) != 7 {
+		return redis.NewCmdResult(nil, fmt.Errorf("unexpected write daily eval call"))
+	}
+
+	dailyKey := keys[0]
+	daysKey := keys[1]
+	serviceID := fmt.Sprint(args[0])
+	day := fmt.Sprint(args[1])
+	upSlots := fmt.Sprint(args[2])
+	expectedSlots := fmt.Sprint(args[3])
+	uptimeRate := fmt.Sprint(args[4])
+	finalized := fmt.Sprint(args[5])
+	score, err := strconv.ParseFloat(fmt.Sprint(args[6]), 64)
+	if err != nil {
+		return redis.NewCmdResult(nil, err)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	hash := c.hashes[dailyKey]
+	if hash != nil {
+		current := hash["finalized"]
+		if current != "" && current != "0" {
+			c.zaddLocked(daysKey, day, score)
+			return redis.NewCmdResult(int64(0), nil)
+		}
+	}
+	if hash == nil {
+		hash = make(map[string]string)
+		c.hashes[dailyKey] = hash
+	}
+	hash["service_id"] = serviceID
+	hash["day"] = day
+	hash["up_slots"] = upSlots
+	hash["expected_slots"] = expectedSlots
+	hash["uptime_rate"] = uptimeRate
+	hash["finalized"] = finalized
+	c.zaddLocked(daysKey, day, score)
+	return redis.NewCmdResult(int64(1), nil)
+}
+
+func (c *fakeRedisClient) zaddLocked(key, member string, score float64) {
+	zset := c.zsets[key]
+	if zset == nil {
+		zset = make(map[string]float64)
+		c.zsets[key] = zset
+	}
+	zset[member] = score
 }
 
 func (c *fakeRedisClient) Pipelined(ctx context.Context, fn func(redis.Pipeliner) error) ([]redis.Cmder, error) {
