@@ -37,6 +37,10 @@ type runtime struct {
 
 	closeOnce sync.Once
 
+	storeMu           sync.Mutex
+	storeReady        bool
+	registeredTargets map[string]struct{}
+
 	errMu     sync.RWMutex
 	lastErr   error
 	lastErrAt time.Time
@@ -94,11 +98,6 @@ func newRuntime(config ...Config) (*runtime, error) {
 
 func newWithStore(cfg Config, store storage.Store, now time.Time) (*runtime, error) {
 	ctx := context.Background()
-	if err := store.Init(ctx); err != nil {
-		_ = store.Close()
-		return nil, fmt.Errorf("uptime: init store: %w", err)
-	}
-
 	instanceID := cfg.InstanceID
 	if instanceID == 0 && cfg.IDGenerator != nil {
 		instanceID = cfg.IDGenerator.NextID()
@@ -128,27 +127,38 @@ func newWithStore(cfg Config, store storage.Store, now time.Time) (*runtime, err
 		cancel:     cancel,
 		done:       make(chan struct{}),
 		httpClient: newProbeHTTPClient(),
+
+		registeredTargets: make(map[string]struct{}),
 	}
 
-	if err := u.runMaintenance(ctx, now, true); err != nil {
-		cancel()
-		_ = store.Close()
-		return nil, fmt.Errorf("uptime: maintenance: %w", err)
-	}
-	for _, target := range targets {
-		if target.probe != nil {
-			continue
-		}
-		if err := u.recordTarget(ctx, target, now); err != nil {
-			cancel()
-			_ = store.Close()
-			return nil, fmt.Errorf("uptime: initial heartbeat: %w", err)
-		}
+	if err := u.start(ctx, now); err != nil {
+		u.setLastError(err)
+		fiberlog.Errorf("uptime: startup degraded: %v", err)
 	}
 
 	go u.loop()
 	registerShutdownHook(cfg.App, u)
 	return u, nil
+}
+
+func (u *runtime) start(ctx context.Context, now time.Time) error {
+	for _, target := range u.targets {
+		if err := u.ensureTargetRegistered(ctx, target); err != nil {
+			return err
+		}
+	}
+	if err := u.runMaintenance(ctx, now, true); err != nil {
+		return err
+	}
+	for _, target := range u.targets {
+		if target.probe != nil {
+			continue
+		}
+		if err := u.writeTargetHeartbeat(ctx, target, now); err != nil {
+			return fmt.Errorf("initial heartbeat: %w", err)
+		}
+	}
+	return nil
 }
 
 func buildRecordTargets(cfg Config, now time.Time, firstInstanceID int64) []recordTarget {
@@ -417,6 +427,11 @@ func (u *runtime) recordTarget(ctx context.Context, target recordTarget, now tim
 	default:
 	}
 
+	if err := u.ensureTargetRegistered(ctx, target); err != nil {
+		u.setLastError(err)
+		fiberlog.Errorf("uptime: register target: %v", err)
+		return err
+	}
 	if target.probe != nil && !u.probeEndpoint(ctx, target.probe) {
 		if err := u.runMaintenance(ctx, now, false); err != nil {
 			return err
@@ -427,6 +442,48 @@ func (u *runtime) recordTarget(ctx context.Context, target recordTarget, now tim
 		return err
 	}
 	return u.runMaintenance(ctx, now, false)
+}
+
+func (u *runtime) ensureTargetRegistered(ctx context.Context, target recordTarget) error {
+	if err := u.ensureStoreReady(ctx); err != nil {
+		return err
+	}
+
+	u.storeMu.Lock()
+	if u.registeredTargets == nil {
+		u.registeredTargets = make(map[string]struct{})
+	}
+	_, registered := u.registeredTargets[target.service.ID]
+	u.storeMu.Unlock()
+	if registered {
+		return nil
+	}
+
+	if err := u.store.UpsertService(ctx, target.service); err != nil {
+		return fmt.Errorf("upsert service: %w", err)
+	}
+	if err := u.store.UpsertInstance(ctx, target.instance); err != nil {
+		return fmt.Errorf("upsert instance: %w", err)
+	}
+
+	u.storeMu.Lock()
+	u.registeredTargets[target.service.ID] = struct{}{}
+	u.storeMu.Unlock()
+	return nil
+}
+
+func (u *runtime) ensureStoreReady(ctx context.Context) error {
+	u.storeMu.Lock()
+	defer u.storeMu.Unlock()
+
+	if u.storeReady {
+		return nil
+	}
+	if err := u.store.Init(ctx); err != nil {
+		return fmt.Errorf("init store: %w", err)
+	}
+	u.storeReady = true
+	return nil
 }
 
 func (u *runtime) writeTargetHeartbeat(ctx context.Context, target recordTarget, now time.Time) error {
@@ -487,6 +544,11 @@ func (u *runtime) runMaintenance(ctx context.Context, now time.Time, force bool)
 
 	if !force && u.lastMaintenanceDay == today && now.Sub(u.lastMaintenance) < maintenanceInterval {
 		return nil
+	}
+	if err := u.ensureStoreReady(ctx); err != nil {
+		u.setLastError(err)
+		fiberlog.Errorf("uptime: init store for maintenance: %v", err)
+		return err
 	}
 
 	expected := func(day string) int {

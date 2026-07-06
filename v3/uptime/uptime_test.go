@@ -684,48 +684,62 @@ func TestBuildStatusDoesNotClearRuntimeError(t *testing.T) {
 	}
 }
 
-func TestNewReturnsErrorWhenInitialHeartbeatFails(t *testing.T) {
+func TestNewStartsDegradedWhenInitialHeartbeatFails(t *testing.T) {
 	t.Parallel()
 
 	store := newSnapshotStore()
 	store.writeHeartbeatErr = errors.New("write heartbeat failed")
 	cfg := normalizedTestConfig(t, Config{
 		ServiceID:      "api",
-		SampleInterval: time.Second,
+		SampleInterval: time.Hour,
 		DaysToShow:     1,
 		RetentionDays:  1,
 		Timezone:       time.UTC,
 	})
 
 	up, err := newWithStore(cfg, store, store.now)
-	requireError(t, err)
-	if up != nil {
-		t.Fatal("runtime instance should be nil")
+	requireNoError(t, err)
+	if up == nil {
+		t.Fatal("runtime instance should not be nil")
 	}
-	requireContains(t, err.Error(), "initial heartbeat")
-	requireEqual(t, 1, store.closeCalls)
+	t.Cleanup(func() { requireNoError(t, up.close()) })
+
+	_, lastErr := up.lastError()
+	requireError(t, lastErr)
+	requireContains(t, lastErr.Error(), "initial heartbeat")
+	requireEqual(t, 0, store.closeCalls)
 }
 
-func TestNewClosesStoreWhenInitFails(t *testing.T) {
+func TestNewStartsDegradedWhenInitFailsAndRecovers(t *testing.T) {
 	t.Parallel()
 
 	store := newSnapshotStore()
 	store.initErr = errors.New("init failed")
 	cfg := normalizedTestConfig(t, Config{
 		ServiceID:      "api",
-		SampleInterval: time.Second,
+		SampleInterval: time.Hour,
 		DaysToShow:     1,
 		RetentionDays:  1,
 		Timezone:       time.UTC,
 	})
 
 	up, err := newWithStore(cfg, store, store.now)
-	requireError(t, err)
-	if up != nil {
-		t.Fatal("runtime instance should be nil")
+	requireNoError(t, err)
+	if up == nil {
+		t.Fatal("runtime instance should not be nil")
 	}
-	requireContains(t, err.Error(), "init store")
-	requireEqual(t, 1, store.closeCalls)
+	t.Cleanup(func() { requireNoError(t, up.close()) })
+
+	_, lastErr := up.lastError()
+	requireError(t, lastErr)
+	requireContains(t, lastErr.Error(), "init store")
+	requireEqual(t, 0, store.closeCalls)
+
+	store.initErr = nil
+	requireNoError(t, up.recordTarget(context.Background(), up.targets[0], store.now.Add(time.Minute)))
+
+	_, lastErr = up.lastError()
+	requireNoError(t, lastErr)
 }
 
 func TestRuntimeRecordsInitialHeartbeat(t *testing.T) {

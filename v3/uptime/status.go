@@ -90,6 +90,11 @@ func (u *runtime) snapshot(ctx context.Context) (Snapshot, error) {
 }
 
 func (u *runtime) buildStatus(ctx context.Context, now time.Time) (StatusResponse, error) {
+	if err := u.ensureStoreReady(ctx); err != nil {
+		u.setLastError(err)
+		return StatusResponse{}, err
+	}
+
 	services, err := u.store.ListServices(ctx)
 	if err != nil {
 		u.setLastError(err)
