@@ -100,13 +100,14 @@ func (u *runtime) buildStatus(ctx context.Context, now time.Time) (StatusRespons
 	fromDay := days[0]
 	toDay := days[len(days)-1]
 	today := dayOf(now, u.config.Timezone)
+	serviceIDs := serviceIDsFromServices(services)
 
-	dailyRows, err := u.store.QueryDaily(ctx, storage.QueryDailyOptions{FromDay: fromDay, ToDay: toDay})
+	dailyRows, err := u.store.QueryDaily(ctx, storage.QueryDailyOptions{ServiceIDs: serviceIDs, FromDay: fromDay, ToDay: toDay})
 	if err != nil {
 		u.setLastError(err)
 		return StatusResponse{}, err
 	}
-	todayRows, err := u.store.QueryTodaySamples(ctx, storage.QueryTodaySamplesOptions{Day: today})
+	todayRows, err := u.store.QueryTodaySamples(ctx, storage.QueryTodaySamplesOptions{ServiceIDs: serviceIDs, Day: today})
 	if err != nil {
 		u.setLastError(err)
 		return StatusResponse{}, err
@@ -153,6 +154,14 @@ func (u *runtime) buildStatus(ctx context.Context, now time.Time) (StatusRespons
 	}
 
 	return resp, nil
+}
+
+func serviceIDsFromServices(services []storage.Service) []string {
+	serviceIDs := make([]string, 0, len(services))
+	for _, service := range services {
+		serviceIDs = append(serviceIDs, service.ID)
+	}
+	return serviceIDs
 }
 
 func (u *runtime) dayStatus(serviceID, day, today, createdDay string, createdAt, now time.Time, interval time.Duration, daily map[string]map[string]storage.DailyStatus, todayRows map[string]storage.TodaySampleStatus) DayStatus {

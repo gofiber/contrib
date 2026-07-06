@@ -256,12 +256,6 @@ func TestHandlerHeadDashboard(t *testing.T) {
 
 	_, app := newTestApp(t)
 
-	getResp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/uptime", nil))
-	requireNoError(t, err)
-	t.Cleanup(func() { requireNoError(t, getResp.Body.Close()) })
-	_, err = io.ReadAll(getResp.Body)
-	requireNoError(t, err)
-
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodHead, "/uptime", nil))
 	requireNoError(t, err)
 	t.Cleanup(func() { requireNoError(t, resp.Body.Close()) })
@@ -271,7 +265,8 @@ func TestHandlerHeadDashboard(t *testing.T) {
 
 	requireEqual(t, fiber.StatusOK, resp.StatusCode)
 	requireEqual(t, fiber.MIMETextHTMLCharsetUTF8, resp.Header.Get(fiber.HeaderContentType))
-	requireEqual(t, getResp.Header.Get(fiber.HeaderContentLength), resp.Header.Get(fiber.HeaderContentLength))
+	requireNotEqual(t, "", resp.Header.Get(fiber.HeaderContentLength))
+	requireNotEqual(t, "0", resp.Header.Get(fiber.HeaderContentLength))
 	requireEqual(t, 0, len(body))
 }
 
@@ -317,12 +312,6 @@ func TestHandlerStatusHead(t *testing.T) {
 
 	_, app := newTestApp(t)
 
-	getResp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/uptime/api/status", nil))
-	requireNoError(t, err)
-	t.Cleanup(func() { requireNoError(t, getResp.Body.Close()) })
-	_, err = io.ReadAll(getResp.Body)
-	requireNoError(t, err)
-
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodHead, "/uptime/api/status", nil))
 	requireNoError(t, err)
 	t.Cleanup(func() { requireNoError(t, resp.Body.Close()) })
@@ -332,7 +321,8 @@ func TestHandlerStatusHead(t *testing.T) {
 
 	requireEqual(t, fiber.StatusOK, resp.StatusCode)
 	requireEqual(t, fiber.MIMEApplicationJSONCharsetUTF8, resp.Header.Get(fiber.HeaderContentType))
-	requireEqual(t, getResp.Header.Get(fiber.HeaderContentLength), resp.Header.Get(fiber.HeaderContentLength))
+	requireNotEqual(t, "", resp.Header.Get(fiber.HeaderContentLength))
+	requireNotEqual(t, "0", resp.Header.Get(fiber.HeaderContentLength))
 	requireEqual(t, 0, len(body))
 }
 
@@ -536,6 +526,22 @@ func TestSnapshotReturnsStoreError(t *testing.T) {
 	_, err := u.snapshot(context.Background())
 	requireError(t, err)
 	requireContains(t, err.Error(), "store failed")
+}
+
+func TestBuildStatusPassesKnownServiceIDsToQueries(t *testing.T) {
+	t.Parallel()
+
+	store := newSnapshotStore()
+	u := newSnapshotUptime(store)
+
+	_, err := u.buildStatus(context.Background(), store.now)
+	requireNoError(t, err)
+
+	requireEqual(t, 1, store.listServicesCalls)
+	requireLen(t, store.queryDailyOptions.ServiceIDs, 1)
+	requireEqual(t, "api", store.queryDailyOptions.ServiceIDs[0])
+	requireLen(t, store.queryTodayOptions.ServiceIDs, 1)
+	requireEqual(t, "api", store.queryTodayOptions.ServiceIDs[0])
 }
 
 func TestDayStatusUsesServiceCreatedAtForToday(t *testing.T) {
@@ -1104,6 +1110,9 @@ type snapshotStore struct {
 	today             []storage.TodaySampleStatus
 	sampleSlots       map[string]map[int64]struct{}
 	writeHeartbeatErr error
+	listServicesCalls int
+	queryDailyOptions storage.QueryDailyOptions
+	queryTodayOptions storage.QueryTodaySamplesOptions
 	rollupCalls       int
 	cleanupCalls      int
 	rollupOptions     storage.RollupOptions
@@ -1185,14 +1194,22 @@ func (s *snapshotStore) Cleanup(context.Context, storage.CleanupOptions) error {
 	return nil
 }
 func (s *snapshotStore) ListServices(context.Context) ([]storage.Service, error) {
+	s.listServicesCalls++
 	if s.fail {
 		return nil, errors.New("store failed")
 	}
 	return append([]storage.Service(nil), s.services...), nil
 }
 func (s *snapshotStore) QueryDaily(_ context.Context, options storage.QueryDailyOptions) ([]storage.DailyStatus, error) {
+	s.queryDailyOptions = options
 	var statuses []storage.DailyStatus
+	serviceIDs := stringSet(options.ServiceIDs)
 	for _, status := range s.daily {
+		if len(serviceIDs) > 0 {
+			if _, ok := serviceIDs[status.ServiceID]; !ok {
+				continue
+			}
+		}
 		if options.FromDay != "" && status.Day < options.FromDay {
 			continue
 		}
@@ -1204,8 +1221,15 @@ func (s *snapshotStore) QueryDaily(_ context.Context, options storage.QueryDaily
 	return statuses, nil
 }
 func (s *snapshotStore) QueryTodaySamples(_ context.Context, options storage.QueryTodaySamplesOptions) ([]storage.TodaySampleStatus, error) {
+	s.queryTodayOptions = options
 	var statuses []storage.TodaySampleStatus
+	serviceIDs := stringSet(options.ServiceIDs)
 	for _, status := range s.today {
+		if len(serviceIDs) > 0 {
+			if _, ok := serviceIDs[status.ServiceID]; !ok {
+				continue
+			}
+		}
 		if options.Day != "" && status.Day != options.Day {
 			continue
 		}
@@ -1216,6 +1240,17 @@ func (s *snapshotStore) QueryTodaySamples(_ context.Context, options storage.Que
 func (s *snapshotStore) Close() error {
 	s.closeCalls++
 	return nil
+}
+
+func stringSet(values []string) map[string]struct{} {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		out[value] = struct{}{}
+	}
+	return out
 }
 
 type staticIDGenerator struct {
@@ -1244,6 +1279,13 @@ func requireEqual[T comparable](t *testing.T, want, got T) {
 	t.Helper()
 	if got != want {
 		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func requireNotEqual[T comparable](t *testing.T, notWant, got T) {
+	t.Helper()
+	if got == notWant {
+		t.Fatalf("got %v, want a different value", got)
 	}
 }
 

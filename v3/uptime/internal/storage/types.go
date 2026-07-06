@@ -82,10 +82,12 @@ type CleanupOptions struct {
 }
 
 type QueryDailyOptions struct {
-	FromDay string
-	ToDay   string
+	ServiceIDs []string
+	FromDay    string
+	ToDay      string
 }
 
 type QueryTodaySamplesOptions struct {
-	Day string
+	ServiceIDs []string
+	Day        string
 }

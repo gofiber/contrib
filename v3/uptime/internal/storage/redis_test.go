@@ -146,6 +146,45 @@ func TestRedisStoreCleanupKeepsSamplesUntilDailyFinalized(t *testing.T) {
 	}
 }
 
+func TestRedisStoreQueriesUseProvidedServiceIDs(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client := newFakeRedisClient()
+	store := &RedisStore{config: RedisConfig{KeyPrefix: "test:uptime"}, client: client}
+	mustNoErr(t, store.Init(ctx))
+	t.Cleanup(func() { mustNoErr(t, store.Close()) })
+
+	mustNoErr(t, store.writeDaily(ctx, DailyStatus{
+		ServiceID:     "api",
+		Day:           "2026-06-25",
+		UpSlots:       2,
+		ExpectedSlots: 1440,
+		UptimeRate:    rate(2, 1440),
+		Finalized:     true,
+	}))
+	mustNoErr(t, client.SAdd(ctx, store.sampleKey("api", "2026-06-26"), "1", "2").Err())
+
+	daily, err := store.QueryDaily(ctx, QueryDailyOptions{
+		ServiceIDs: []string{"api"},
+		FromDay:    "2026-06-25",
+		ToDay:      "2026-06-25",
+	})
+	mustNoErr(t, err)
+	if len(daily) != 1 || daily[0].ServiceID != "api" || daily[0].UpSlots != 2 {
+		t.Fatalf("daily with provided service ids = %+v, want one api row", daily)
+	}
+
+	today, err := store.QueryTodaySamples(ctx, QueryTodaySamplesOptions{
+		ServiceIDs: []string{"api"},
+		Day:        "2026-06-26",
+	})
+	mustNoErr(t, err)
+	if len(today) != 1 || today[0].ServiceID != "api" || today[0].UpSlots != 2 {
+		t.Fatalf("today with provided service ids = %+v, want one api row", today)
+	}
+}
+
 func TestRedisStoreRetainsInstancesWithTTLAndCleanupIndex(t *testing.T) {
 	t.Parallel()
 

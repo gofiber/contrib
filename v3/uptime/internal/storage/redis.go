@@ -299,11 +299,11 @@ func (s *RedisStore) ListServices(ctx context.Context) ([]Service, error) {
 }
 
 func (s *RedisStore) QueryDaily(ctx context.Context, options QueryDailyOptions) ([]DailyStatus, error) {
-	services, err := s.ListServices(ctx)
+	serviceIDs, err := s.queryServiceIDs(ctx, options.ServiceIDs)
 	if err != nil {
 		return nil, err
 	}
-	if len(services) == 0 {
+	if len(serviceIDs) == 0 {
 		return nil, nil
 	}
 
@@ -313,10 +313,10 @@ func (s *RedisStore) QueryDaily(ctx context.Context, options QueryDailyOptions) 
 	}
 	queries := make([]dailyQuery, 0)
 
-	dayCommands := make([]*redis.StringSliceCmd, len(services))
+	dayCommands := make([]*redis.StringSliceCmd, len(serviceIDs))
 	if _, err := s.client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
-		for i, service := range services {
-			cmd, err := s.daysBetweenPipe(ctx, pipe, s.dailyDaysKey(service.ID), options.FromDay, options.ToDay)
+		for i, serviceID := range serviceIDs {
+			cmd, err := s.daysBetweenPipe(ctx, pipe, s.dailyDaysKey(serviceID), options.FromDay, options.ToDay)
 			if err != nil {
 				return err
 			}
@@ -326,13 +326,13 @@ func (s *RedisStore) QueryDaily(ctx context.Context, options QueryDailyOptions) 
 	}); err != nil {
 		return nil, err
 	}
-	for i, service := range services {
+	for i, serviceID := range serviceIDs {
 		days, err := dayCommands[i].Result()
 		if err != nil {
 			return nil, err
 		}
 		for _, day := range days {
-			queries = append(queries, dailyQuery{serviceID: service.ID, day: day})
+			queries = append(queries, dailyQuery{serviceID: serviceID, day: day})
 		}
 	}
 	if len(queries) == 0 {
@@ -372,26 +372,26 @@ func (s *RedisStore) QueryTodaySamples(ctx context.Context, options QueryTodaySa
 		return nil, nil
 	}
 
-	services, err := s.ListServices(ctx)
+	serviceIDs, err := s.queryServiceIDs(ctx, options.ServiceIDs)
 	if err != nil {
 		return nil, err
 	}
-	if len(services) == 0 {
+	if len(serviceIDs) == 0 {
 		return nil, nil
 	}
 
-	cmds := make([]*redis.IntCmd, len(services))
+	cmds := make([]*redis.IntCmd, len(serviceIDs))
 	if _, err := s.client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
-		for i, service := range services {
-			cmds[i] = pipe.SCard(ctx, s.sampleKey(service.ID, options.Day))
+		for i, serviceID := range serviceIDs {
+			cmds[i] = pipe.SCard(ctx, s.sampleKey(serviceID, options.Day))
 		}
 		return nil
 	}); err != nil {
 		return nil, err
 	}
 
-	statuses := make([]TodaySampleStatus, 0, len(services))
-	for i, service := range services {
+	statuses := make([]TodaySampleStatus, 0, len(serviceIDs))
+	for i, serviceID := range serviceIDs {
 		upSlots, err := cmds[i].Result()
 		if err != nil {
 			return nil, err
@@ -400,12 +400,27 @@ func (s *RedisStore) QueryTodaySamples(ctx context.Context, options QueryTodaySa
 			continue
 		}
 		statuses = append(statuses, TodaySampleStatus{
-			ServiceID: service.ID,
+			ServiceID: serviceID,
 			Day:       options.Day,
 			UpSlots:   int(upSlots),
 		})
 	}
 	return statuses, nil
+}
+
+func (s *RedisStore) queryServiceIDs(ctx context.Context, serviceIDs []string) ([]string, error) {
+	if serviceIDs != nil {
+		return append([]string(nil), serviceIDs...), nil
+	}
+	services, err := s.ListServices(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(services))
+	for _, service := range services {
+		out = append(out, service.ID)
+	}
+	return out, nil
 }
 
 func (s *RedisStore) Close() error {
