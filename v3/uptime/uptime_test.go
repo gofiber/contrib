@@ -357,16 +357,29 @@ func TestHandlerMethodNotAllowed(t *testing.T) {
 	requireEqual(t, "GET, HEAD", resp.Header.Get(headerAllow))
 }
 
-func TestHandlerNotFound(t *testing.T) {
+func TestHandlerPassesThroughUnknownUIPath(t *testing.T) {
 	t.Parallel()
 
-	_, app := newTestApp(t)
+	up := newSnapshotUptimeWithConfig(newSnapshotStore(), Config{
+		ServiceID:      "api",
+		SampleInterval: time.Second,
+	})
 
-	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/uptime/unknown", nil))
+	app := fiber.New()
+	app.Use(up.handler())
+	app.Get("/uptime/custom", func(c fiber.Ctx) error {
+		return c.SendString("custom")
+	})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/uptime/custom", nil))
 	requireNoError(t, err)
 	t.Cleanup(func() { requireNoError(t, resp.Body.Close()) })
 
-	requireEqual(t, fiber.StatusNotFound, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	requireNoError(t, err)
+
+	requireEqual(t, fiber.StatusOK, resp.StatusCode)
+	requireEqual(t, "custom", string(body))
 }
 
 func TestHandlerNext(t *testing.T) {

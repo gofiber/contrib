@@ -46,7 +46,9 @@ import (
 func main() {
 	app := fiber.New()
 	store := fiberredis.New()
-	app.Hooks().OnPreShutdown(store.Close)
+	app.Hooks().OnPostShutdown(func(_ error) error {
+		return store.Close()
+	})
 
 	app.Use(uptime.New(uptime.Config{
 		App:         app,
@@ -108,7 +110,9 @@ store := fiberredis.New(fiberredis.Config{
 	Password: "",
 	Database: 0,
 })
-app.Hooks().OnPreShutdown(store.Close)
+app.Hooks().OnPostShutdown(func(_ error) error {
+	return store.Close()
+})
 
 app.Use(uptime.New(uptime.Config{
 	App:              app,
@@ -121,7 +125,14 @@ app.Use(uptime.New(uptime.Config{
 The middleware uses `Conn()` from the Fiber Redis storage to run the uptime
 queries it needs. Use a dedicated Redis database or a distinct
 `StorageKeyPrefix` when multiple environments share the same Redis server. The
-caller owns the Redis storage lifecycle.
+caller owns the Redis storage lifecycle. Close the Redis storage after the
+Fiber app has shut down, for example from `OnPostShutdown`, so uptime can stop
+its background recorders first.
+
+When multiple uptime instances share the same Redis database and
+`StorageKeyPrefix`, use the same `Timezone` and heartbeat or probe interval for
+the same `ServiceID` or endpoint `ID`. If those settings need to differ, use
+distinct service IDs, endpoint IDs, or storage prefixes.
 
 ## Snapshots and custom UI
 
@@ -174,8 +185,8 @@ The Fiber handler serves:
 - `/uptime/api/status`
 
 `GET` and `HEAD` are supported. Other methods return `405 Method Not Allowed`.
-Requests outside `UI.Path` are passed to the next handler. Unknown uptime
-subpaths return `404 Not Found`.
+Requests outside `UI.Path`, including unknown uptime subpaths, are passed to the
+next handler.
 
 The handler matches request paths against `UI.Path` (default `/uptime`).
 When mounted under a Fiber group or `Use` prefix, the match is relative to that
@@ -200,7 +211,8 @@ recorder and Fiber handlers.
 
 `Config.App` is required so `New` can register a Fiber shutdown hook that stops
 the uptime runtime. The caller owns the Redis storage lifecycle and should close
-it from an app hook or signal handler.
+it after the app has shut down, for example from `OnPostShutdown` or a signal
+handler that closes Redis after `app.Shutdown` returns.
 
 ## Security notes
 

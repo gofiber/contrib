@@ -281,9 +281,6 @@ func (u *runtime) handler() fiber.Handler {
 		if route == "" {
 			route = matchUptimeRoute(middlewareRelativePath(c), uiPath)
 		}
-		if route == routeNotFound {
-			return fiber.ErrNotFound
-		}
 		if route == "" {
 			return c.Next()
 		}
@@ -308,7 +305,6 @@ func (u *runtime) handler() fiber.Handler {
 const (
 	routeDashboard = "dashboard"
 	routeStatus    = "status"
-	routeNotFound  = "notfound"
 )
 
 func matchUptimeRoute(path, uiPath string) string {
@@ -318,9 +314,6 @@ func matchUptimeRoute(path, uiPath string) string {
 	case uiPath + "/api/status":
 		return routeStatus
 	default:
-		if strings.HasPrefix(path, uiPath+"/") {
-			return routeNotFound
-		}
 		return ""
 	}
 }
