@@ -361,10 +361,6 @@ func (u *runtime) serveStatusJSON(c fiber.Ctx) error {
 		fiberlog.Errorf("uptime: status unavailable: %v", err)
 		return fiber.NewError(fiber.StatusInternalServerError, "uptime status unavailable")
 	}
-	if c.Method() == fiber.MethodHead {
-		c.Status(fiber.StatusOK)
-		return nil
-	}
 	return c.Status(fiber.StatusOK).JSON(&status)
 }
 
@@ -382,10 +378,6 @@ func (u *runtime) serveDashboard(c fiber.Ctx, apiPath string) error {
 	if err != nil {
 		fiberlog.Errorf("uptime: dashboard render failed: %v", err)
 		return fiber.NewError(fiber.StatusInternalServerError, "uptime dashboard render failed")
-	}
-	if c.Method() == fiber.MethodHead {
-		c.Status(fiber.StatusOK)
-		return nil
 	}
 	return c.Status(fiber.StatusOK).SendString(html)
 }

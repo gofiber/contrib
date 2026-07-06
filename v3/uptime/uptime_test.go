@@ -256,6 +256,12 @@ func TestHandlerHeadDashboard(t *testing.T) {
 
 	_, app := newTestApp(t)
 
+	getResp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/uptime", nil))
+	requireNoError(t, err)
+	t.Cleanup(func() { requireNoError(t, getResp.Body.Close()) })
+	_, err = io.ReadAll(getResp.Body)
+	requireNoError(t, err)
+
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodHead, "/uptime", nil))
 	requireNoError(t, err)
 	t.Cleanup(func() { requireNoError(t, resp.Body.Close()) })
@@ -265,6 +271,7 @@ func TestHandlerHeadDashboard(t *testing.T) {
 
 	requireEqual(t, fiber.StatusOK, resp.StatusCode)
 	requireEqual(t, fiber.MIMETextHTMLCharsetUTF8, resp.Header.Get(fiber.HeaderContentType))
+	requireEqual(t, getResp.Header.Get(fiber.HeaderContentLength), resp.Header.Get(fiber.HeaderContentLength))
 	requireEqual(t, 0, len(body))
 }
 
@@ -310,6 +317,12 @@ func TestHandlerStatusHead(t *testing.T) {
 
 	_, app := newTestApp(t)
 
+	getResp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/uptime/api/status", nil))
+	requireNoError(t, err)
+	t.Cleanup(func() { requireNoError(t, getResp.Body.Close()) })
+	_, err = io.ReadAll(getResp.Body)
+	requireNoError(t, err)
+
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodHead, "/uptime/api/status", nil))
 	requireNoError(t, err)
 	t.Cleanup(func() { requireNoError(t, resp.Body.Close()) })
@@ -319,6 +332,7 @@ func TestHandlerStatusHead(t *testing.T) {
 
 	requireEqual(t, fiber.StatusOK, resp.StatusCode)
 	requireEqual(t, fiber.MIMEApplicationJSONCharsetUTF8, resp.Header.Get(fiber.HeaderContentType))
+	requireEqual(t, getResp.Header.Get(fiber.HeaderContentLength), resp.Header.Get(fiber.HeaderContentLength))
 	requireEqual(t, 0, len(body))
 }
 
