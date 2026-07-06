@@ -146,6 +146,67 @@ func TestRedisStoreCleanupKeepsSamplesUntilDailyFinalized(t *testing.T) {
 	}
 }
 
+func TestRedisStoreRetainsInstancesWithTTLAndCleanupIndex(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client := newFakeRedisClient()
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	store := &RedisStore{
+		config: RedisConfig{
+			KeyPrefix:   "test:uptime",
+			InstanceTTL: time.Hour,
+		},
+		client: client,
+		clock:  func() time.Time { return now },
+	}
+	mustNoErr(t, store.Init(ctx))
+	t.Cleanup(func() { mustNoErr(t, store.Close()) })
+
+	instanceKey := store.instanceKey(1)
+	indexKey := store.instanceExpirationsKey()
+	mustNoErr(t, store.UpsertInstance(ctx, Instance{
+		ID:         1,
+		ServiceID:  "api",
+		StartedAt:  now,
+		LastSeenAt: now,
+	}))
+
+	if got, ok := fakeExpiration(client, instanceKey); !ok || got != time.Hour {
+		t.Fatalf("instance expiration = %v, %v; want %s, true", got, ok, time.Hour)
+	}
+	if got, ok := fakeZScore(client, indexKey, "1"); !ok || got != float64(now.Add(time.Hour).Unix()) {
+		t.Fatalf("instance expiration score = %v, %v; want %v, true", got, ok, now.Add(time.Hour).Unix())
+	}
+
+	now = now.Add(30 * time.Minute)
+	mustNoErr(t, store.WriteHeartbeat(ctx, Heartbeat{
+		ServiceID:  "api",
+		InstanceID: 1,
+		Day:        "2026-06-25",
+		Slot:       1,
+		SeenAt:     now,
+	}))
+	if got, ok := fakeZScore(client, indexKey, "1"); !ok || got != float64(now.Add(time.Hour).Unix()) {
+		t.Fatalf("renewed instance expiration score = %v, %v; want %v, true", got, ok, now.Add(time.Hour).Unix())
+	}
+
+	now = now.Add(59 * time.Minute)
+	mustNoErr(t, store.Cleanup(ctx, CleanupOptions{}))
+	if !fakeHashExists(client, instanceKey) {
+		t.Fatal("instance hash should remain before the renewed expiration")
+	}
+
+	now = now.Add(2 * time.Minute)
+	mustNoErr(t, store.Cleanup(ctx, CleanupOptions{}))
+	if fakeHashExists(client, instanceKey) {
+		t.Fatal("instance hash should be removed after expiration")
+	}
+	if _, ok := fakeZScore(client, indexKey, "1"); ok {
+		t.Fatal("instance expiration index should remove expired instance")
+	}
+}
+
 func TestRedisStoreCloseDoesNotInvalidateConcurrentReaders(t *testing.T) {
 	t.Parallel()
 
@@ -296,6 +357,30 @@ func queryDailyMap(t *testing.T, store *RedisStore) map[string]DailyStatus {
 	return out
 }
 
+func fakeHashExists(client *fakeRedisClient, key string) bool {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+
+	_, ok := client.hashes[key]
+	return ok
+}
+
+func fakeExpiration(client *fakeRedisClient, key string) (time.Duration, bool) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+
+	expiration, ok := client.expirations[key]
+	return expiration, ok
+}
+
+func fakeZScore(client *fakeRedisClient, key, member string) (float64, bool) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+
+	score, ok := client.zsets[key][member]
+	return score, ok
+}
+
 func mustNoErr(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
@@ -304,17 +389,19 @@ func mustNoErr(t *testing.T, err error) {
 }
 
 type fakeRedisClient struct {
-	mu     sync.Mutex
-	hashes map[string]map[string]string
-	sets   map[string]map[string]struct{}
-	zsets  map[string]map[string]float64
+	mu          sync.Mutex
+	hashes      map[string]map[string]string
+	sets        map[string]map[string]struct{}
+	zsets       map[string]map[string]float64
+	expirations map[string]time.Duration
 }
 
 func newFakeRedisClient() *fakeRedisClient {
 	return &fakeRedisClient{
-		hashes: make(map[string]map[string]string),
-		sets:   make(map[string]map[string]struct{}),
-		zsets:  make(map[string]map[string]float64),
+		hashes:      make(map[string]map[string]string),
+		sets:        make(map[string]map[string]struct{}),
+		zsets:       make(map[string]map[string]float64),
+		expirations: make(map[string]time.Duration),
 	}
 }
 
@@ -484,20 +571,22 @@ func (c *fakeRedisClient) Del(_ context.Context, keys ...string) *redis.IntCmd {
 
 	var removed int64
 	for _, key := range keys {
-		if _, ok := c.hashes[key]; ok {
-			delete(c.hashes, key)
-			removed++
-		}
-		if _, ok := c.sets[key]; ok {
-			delete(c.sets, key)
-			removed++
-		}
-		if _, ok := c.zsets[key]; ok {
-			delete(c.zsets, key)
+		if c.deleteKeyLocked(key) {
 			removed++
 		}
 	}
 	return redis.NewIntResult(removed, nil)
+}
+
+func (c *fakeRedisClient) Expire(_ context.Context, key string, expiration time.Duration) *redis.BoolCmd {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	exists := c.keyExistsLocked(key)
+	if exists {
+		c.expirations[key] = expiration
+	}
+	return redis.NewBoolResult(exists, nil)
 }
 
 func (c *fakeRedisClient) Eval(_ context.Context, script string, keys []string, args ...interface{}) *redis.Cmd {
@@ -506,6 +595,8 @@ func (c *fakeRedisClient) Eval(_ context.Context, script string, keys []string, 
 		return c.evalSetMaxNano(keys, args...)
 	case writeDailyIfUnfinalizedScript:
 		return c.evalWriteDailyIfUnfinalized(keys, args...)
+	case cleanupExpiredInstanceScript:
+		return c.evalCleanupExpiredInstance(keys, args...)
 	default:
 		return redis.NewCmdResult(nil, fmt.Errorf("unexpected eval script"))
 	}
@@ -540,6 +631,31 @@ func (c *fakeRedisClient) evalSetMaxNano(keys []string, args ...interface{}) *re
 		}
 	}
 	hash[field] = strconv.FormatInt(value, 10)
+	return redis.NewCmdResult(int64(1), nil)
+}
+
+func (c *fakeRedisClient) evalCleanupExpiredInstance(keys []string, args ...interface{}) *redis.Cmd {
+	if len(keys) != 2 || len(args) != 2 {
+		return redis.NewCmdResult(nil, fmt.Errorf("unexpected cleanup instance eval call"))
+	}
+
+	indexKey := keys[0]
+	instanceKey := keys[1]
+	instanceID := fmt.Sprint(args[0])
+	expiresBefore, err := strconv.ParseFloat(fmt.Sprint(args[1]), 64)
+	if err != nil {
+		return redis.NewCmdResult(nil, err)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	score, ok := c.zsets[indexKey][instanceID]
+	if !ok || score > expiresBefore {
+		return redis.NewCmdResult(int64(0), nil)
+	}
+	c.deleteKeyLocked(instanceKey)
+	delete(c.zsets[indexKey], instanceID)
 	return redis.NewCmdResult(int64(1), nil)
 }
 
@@ -584,6 +700,26 @@ func (c *fakeRedisClient) evalWriteDailyIfUnfinalized(keys []string, args ...int
 	hash["finalized"] = finalized
 	c.zaddLocked(daysKey, day, score)
 	return redis.NewCmdResult(int64(1), nil)
+}
+
+func (c *fakeRedisClient) keyExistsLocked(key string) bool {
+	if _, ok := c.hashes[key]; ok {
+		return true
+	}
+	if _, ok := c.sets[key]; ok {
+		return true
+	}
+	_, ok := c.zsets[key]
+	return ok
+}
+
+func (c *fakeRedisClient) deleteKeyLocked(key string) bool {
+	exists := c.keyExistsLocked(key)
+	delete(c.hashes, key)
+	delete(c.sets, key)
+	delete(c.zsets, key)
+	delete(c.expirations, key)
+	return exists
 }
 
 func (c *fakeRedisClient) zaddLocked(key, member string, score float64) {

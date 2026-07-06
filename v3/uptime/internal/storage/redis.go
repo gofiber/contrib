@@ -15,6 +15,7 @@ import (
 )
 
 const defaultRedisKeyPrefix = "fiber:uptime"
+const defaultRedisInstanceTTL = 24 * time.Hour
 
 // setMaxNanoScript stores ARGV[2] in hash field ARGV[1] on KEYS[1] when
 // the current value is missing or lower. Keeping the comparison inside Redis
@@ -49,18 +50,34 @@ redis.call("ZADD", KEYS[2], ARGV[7], ARGV[2])
 return 1
 `
 
+// cleanupExpiredInstanceScript deletes an instance hash only if its expiration
+// score was not renewed after the caller fetched the expired index member.
+const cleanupExpiredInstanceScript = `
+local score = redis.call("ZSCORE", KEYS[1], ARGV[1])
+if (not score) or tonumber(score) > tonumber(ARGV[2]) then
+	return 0
+end
+redis.call("DEL", KEYS[2])
+redis.call("ZREM", KEYS[1], ARGV[1])
+return 1
+`
+
 // RedisConfig controls the Redis-backed uptime store.
 type RedisConfig struct {
 	// Storage is the Fiber Redis storage instance used for uptime state.
 	Storage *fiberredis.Storage
 	// KeyPrefix namespaces all uptime keys inside the selected Redis database.
 	KeyPrefix string
+	// InstanceTTL controls how long process instance metadata is kept.
+	// It defaults to 24 hours when unset.
+	InstanceTTL time.Duration
 }
 
 // RedisStore stores uptime state in Redis.
 type RedisStore struct {
 	config RedisConfig
 	client redisClient
+	clock  func() time.Time
 }
 
 type redisClient interface {
@@ -76,6 +93,7 @@ type redisClient interface {
 	ZRangeByScore(ctx context.Context, key string, opt *redis.ZRangeBy) *redis.StringSliceCmd
 	ZRem(ctx context.Context, key string, members ...interface{}) *redis.IntCmd
 	Del(ctx context.Context, keys ...string) *redis.IntCmd
+	Expire(ctx context.Context, key string, expiration time.Duration) *redis.BoolCmd
 	Eval(ctx context.Context, script string, keys []string, args ...interface{}) *redis.Cmd
 	Pipelined(ctx context.Context, fn func(redis.Pipeliner) error) ([]redis.Cmder, error)
 }
@@ -154,7 +172,10 @@ func (s *RedisStore) UpsertInstance(ctx context.Context, instance Instance) erro
 	).Err(); err != nil {
 		return err
 	}
-	return s.setMaxNano(ctx, instanceKey, "last_seen_at", unixNano(instance.LastSeenAt))
+	if err := s.setMaxNano(ctx, instanceKey, "last_seen_at", unixNano(instance.LastSeenAt)); err != nil {
+		return err
+	}
+	return s.touchInstance(ctx, instance.ID)
 }
 
 func (s *RedisStore) WriteHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
@@ -162,6 +183,9 @@ func (s *RedisStore) WriteHeartbeat(ctx context.Context, heartbeat Heartbeat) er
 		return err
 	}
 	if err := s.setMaxNano(ctx, s.instanceKey(heartbeat.InstanceID), "last_seen_at", unixNano(heartbeat.SeenAt)); err != nil {
+		return err
+	}
+	if err := s.touchInstance(ctx, heartbeat.InstanceID); err != nil {
 		return err
 	}
 	if err := s.client.SAdd(ctx, s.sampleKey(heartbeat.ServiceID, heartbeat.Day), strconv.FormatInt(heartbeat.Slot, 10)).Err(); err != nil {
@@ -211,6 +235,10 @@ func (s *RedisStore) RollupDaily(ctx context.Context, options RollupOptions) err
 }
 
 func (s *RedisStore) Cleanup(ctx context.Context, options CleanupOptions) error {
+	if err := s.cleanupExpiredInstances(ctx, s.now()); err != nil {
+		return err
+	}
+
 	services, err := s.ListServices(ctx)
 	if err != nil {
 		return err
@@ -385,6 +413,40 @@ func (s *RedisStore) Close() error {
 	return nil
 }
 
+func (s *RedisStore) touchInstance(ctx context.Context, instanceID int64) error {
+	if instanceID == 0 {
+		return nil
+	}
+	ttl := s.instanceTTL()
+	instanceKey := s.instanceKey(instanceID)
+	exists, err := s.client.Expire(ctx, instanceKey, ttl).Result()
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	expiresAt := s.now().Add(ttl).Unix()
+	return s.client.ZAdd(ctx, s.instanceExpirationsKey(), redis.Z{
+		Score:  float64(expiresAt),
+		Member: strconv.FormatInt(instanceID, 10),
+	}).Err()
+}
+
+func (s *RedisStore) instanceTTL() time.Duration {
+	if s.config.InstanceTTL > 0 {
+		return s.config.InstanceTTL
+	}
+	return defaultRedisInstanceTTL
+}
+
+func (s *RedisStore) now() time.Time {
+	if s.clock != nil {
+		return s.clock()
+	}
+	return time.Now()
+}
+
 func (s *RedisStore) setMaxNano(ctx context.Context, key, field string, value int64) error {
 	if value == 0 {
 		return nil
@@ -500,6 +562,30 @@ func (s *RedisStore) cleanupSampleDays(ctx context.Context, serviceID, beforeDay
 	return nil
 }
 
+func (s *RedisStore) cleanupExpiredInstances(ctx context.Context, now time.Time) error {
+	instanceIDs, err := s.client.ZRangeByScore(ctx, s.instanceExpirationsKey(), &redis.ZRangeBy{
+		Min: "-inf",
+		Max: strconv.FormatInt(now.Unix(), 10),
+	}).Result()
+	if err != nil {
+		return err
+	}
+	for _, instanceID := range instanceIDs {
+		id, err := strconv.ParseInt(instanceID, 10, 64)
+		if err != nil {
+			return fmt.Errorf("redis uptime store: parse instance id: %w", err)
+		}
+		if err := s.client.Eval(ctx, cleanupExpiredInstanceScript,
+			[]string{s.instanceExpirationsKey(), s.instanceKey(id)},
+			instanceID,
+			now.Unix(),
+		).Err(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *RedisStore) dailyFinalized(ctx context.Context, serviceID, day string) (bool, error) {
 	raw, err := s.client.HGet(ctx, s.dailyKey(serviceID, day), "finalized").Result()
 	if errors.Is(err, redis.Nil) {
@@ -521,6 +607,10 @@ func (s *RedisStore) serviceKey(serviceID string) string {
 
 func (s *RedisStore) instanceKey(instanceID int64) string {
 	return s.key("instance", strconv.FormatInt(instanceID, 10))
+}
+
+func (s *RedisStore) instanceExpirationsKey() string {
+	return s.key("instance-expirations")
 }
 
 func (s *RedisStore) sampleKey(serviceID, day string) string {
