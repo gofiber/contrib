@@ -7,11 +7,13 @@ on:
       - main
     paths:
       - 'v3/uptime/**/*.go'
+      - 'v3/uptime/dashboard.gohtml'
       - 'v3/uptime/go.mod'
       - 'v3/uptime/go.sum'
   pull_request:
     paths:
       - 'v3/uptime/**/*.go'
+      - 'v3/uptime/dashboard.gohtml'
       - 'v3/uptime/go.mod'
       - 'v3/uptime/go.sum'
 
