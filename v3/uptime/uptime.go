@@ -385,7 +385,6 @@ func (u *runtime) recordTarget(ctx context.Context, target recordTarget, now tim
 		if err := u.runMaintenance(ctx, now, false); err != nil {
 			return err
 		}
-		u.clearLastError()
 		return nil
 	}
 	if err := u.writeTargetHeartbeat(ctx, target, now); err != nil {

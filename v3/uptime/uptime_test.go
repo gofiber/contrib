@@ -722,6 +722,65 @@ func TestEndpointProbeSkipsHeartbeatOnUnexpectedStatus(t *testing.T) {
 	}
 }
 
+func TestEndpointProbeFailureDoesNotClearStorageErrorWhenMaintenanceSkipped(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	store := newSnapshotStore()
+	service := storage.Service{
+		ID:             "health",
+		Name:           "Health",
+		CreatedAt:      store.now.Add(-time.Hour),
+		SampleInterval: time.Second,
+	}
+	store.services = []storage.Service{service}
+	store.today = nil
+	cfg, err := Config{
+		Endpoints: []EndpointConfig{
+			{
+				ID:       "health",
+				URL:      server.URL,
+				Interval: time.Second,
+				Timeout:  time.Second,
+			},
+		},
+		DaysToShow:    1,
+		RetentionDays: 1,
+		Timezone:      time.UTC,
+	}.normalized()
+	requireNoError(t, err)
+
+	u := newSnapshotUptimeWithConfig(store, cfg)
+	u.httpClient = server.Client()
+	u.lastMaintenance = store.now
+	u.lastMaintenanceDay = dayOf(store.now, cfg.Timezone)
+	storageErr := errors.New("write heartbeat failed")
+	u.setLastError(storageErr)
+	target := recordTarget{
+		service:  service,
+		instance: storage.Instance{ID: 7, ServiceID: "health"},
+		interval: service.SampleInterval,
+		probe:    newEndpointProbe(cfg.Endpoints[0]),
+	}
+
+	requireNoError(t, u.recordTarget(context.Background(), target, store.now))
+	requireEqual(t, 0, store.rollupCalls)
+	requireEqual(t, 0, store.cleanupCalls)
+
+	_, lastErr := u.lastError()
+	if !errors.Is(lastErr, storageErr) {
+		t.Fatalf("last error = %v, want %v", lastErr, storageErr)
+	}
+	status, err := u.buildStatus(context.Background(), store.now)
+	requireNoError(t, err)
+	requireEqual(t, "degraded", status.Storage.Status)
+	requireContains(t, status.Storage.LastError, "write heartbeat failed")
+}
+
 func TestCustomIDGenerator(t *testing.T) {
 	t.Parallel()
 
