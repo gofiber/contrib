@@ -268,18 +268,15 @@ func (u *runtime) handler() fiber.Handler {
 			return c.Next()
 		}
 
-		path := c.Path()
 		uiPath := u.config.UI.Path
-		route := ""
-		switch path {
-		case uiPath, uiPath + "/":
-			route = "dashboard"
-		case uiPath + "/api/status":
-			route = "status"
-		default:
-			if strings.HasPrefix(path, uiPath+"/") {
-				return fiber.ErrNotFound
-			}
+		route := matchUptimeRoute(c.Path(), uiPath)
+		if route == "" {
+			route = matchUptimeRoute(middlewareRelativePath(c), uiPath)
+		}
+		if route == routeNotFound {
+			return fiber.ErrNotFound
+		}
+		if route == "" {
 			return c.Next()
 		}
 
@@ -291,13 +288,59 @@ func (u *runtime) handler() fiber.Handler {
 
 		switch route {
 		case "dashboard":
-			return u.serveDashboard(c)
+			return u.serveDashboard(c, dashboardAPIPath(c.Path()))
 		case "status":
 			return u.serveStatusJSON(c)
 		default:
 			return fiber.ErrNotFound
 		}
 	}
+}
+
+const (
+	routeDashboard = "dashboard"
+	routeStatus    = "status"
+	routeNotFound  = "notfound"
+)
+
+func matchUptimeRoute(path, uiPath string) string {
+	switch path {
+	case uiPath, uiPath + "/":
+		return routeDashboard
+	case uiPath + "/api/status":
+		return routeStatus
+	default:
+		if strings.HasPrefix(path, uiPath+"/") {
+			return routeNotFound
+		}
+		return ""
+	}
+}
+
+func middlewareRelativePath(c fiber.Ctx) string {
+	path := c.Path()
+	if !c.IsMiddleware() {
+		return path
+	}
+	prefix := strings.TrimSuffix(c.FullPath(), "/*")
+	if prefix == "" || prefix == "/" {
+		return path
+	}
+	if path == prefix {
+		return "/"
+	}
+	if strings.HasPrefix(path, prefix+"/") {
+		return path[len(prefix):]
+	}
+	return path
+}
+
+func dashboardAPIPath(path string) string {
+	path = strings.TrimRight(path, "/")
+	if path == "" {
+		return "/api/status"
+	}
+	return path + "/api/status"
 }
 
 func (u *runtime) serveStatusJSON(c fiber.Ctx) error {
@@ -317,7 +360,7 @@ func (u *runtime) serveStatusJSON(c fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(&status)
 }
 
-func (u *runtime) serveDashboard(c fiber.Ctx) error {
+func (u *runtime) serveDashboard(c fiber.Ctx, apiPath string) error {
 	c.Set(headerCacheControl, "no-store")
 	c.Set(headerXContentTypeOptions, "nosniff")
 	c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
@@ -327,7 +370,7 @@ func (u *runtime) serveDashboard(c fiber.Ctx) error {
 		fiberlog.Errorf("uptime: dashboard unavailable: %v", err)
 		return fiber.NewError(fiber.StatusInternalServerError, "uptime dashboard unavailable")
 	}
-	html, err := renderDashboardHTML(u.config, status)
+	html, err := renderDashboardHTML(u.config, status, apiPath)
 	if err != nil {
 		fiberlog.Errorf("uptime: dashboard render failed: %v", err)
 		return fiber.NewError(fiber.StatusInternalServerError, "uptime dashboard render failed")

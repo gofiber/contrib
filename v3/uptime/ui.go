@@ -19,12 +19,12 @@ type dashboardPage struct {
 
 var dashboardTemplate = template.Must(template.New("uptime").Parse(dashboardHTML))
 
-func renderDashboardHTML(config Config, status StatusResponse) (string, error) {
+func renderDashboardHTML(config Config, status StatusResponse, apiPath string) (string, error) {
 	statusJSON, err := json.Marshal(status)
 	if err != nil {
 		return "", err
 	}
-	apiPathJSON, err := json.Marshal(config.UI.Path + "/api/status")
+	apiPathJSON, err := json.Marshal(apiPath)
 	if err != nil {
 		return "", err
 	}

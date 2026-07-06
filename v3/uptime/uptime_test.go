@@ -396,6 +396,48 @@ func TestHandlerPassesThroughOutsideUIPath(t *testing.T) {
 	requireEqual(t, "ok", string(body))
 }
 
+func TestHandlerWorksUnderGroupMount(t *testing.T) {
+	t.Parallel()
+
+	up := newSnapshotUptime(newSnapshotStore())
+	app := fiber.New()
+	group := app.Group("/admin")
+	group.Use(up.handler())
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/admin/uptime", nil))
+	requireNoError(t, err)
+	t.Cleanup(func() { requireNoError(t, resp.Body.Close()) })
+
+	body, err := io.ReadAll(resp.Body)
+	requireNoError(t, err)
+	requireEqual(t, fiber.StatusOK, resp.StatusCode)
+	requireContains(t, string(body), `const apiPath = "/admin/uptime/api/status";`)
+
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/admin/uptime/api/status", nil))
+	requireNoError(t, err)
+	t.Cleanup(func() { requireNoError(t, resp.Body.Close()) })
+	requireEqual(t, fiber.StatusOK, resp.StatusCode)
+	requireEqual(t, fiber.MIMEApplicationJSONCharsetUTF8, resp.Header.Get(fiber.HeaderContentType))
+}
+
+func TestHandlerWorksUnderPrefixMount(t *testing.T) {
+	t.Parallel()
+
+	up := newSnapshotUptime(newSnapshotStore())
+	app := fiber.New()
+	app.Use("/admin", up.handler())
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/admin/uptime", nil))
+	requireNoError(t, err)
+	t.Cleanup(func() { requireNoError(t, resp.Body.Close()) })
+	requireEqual(t, fiber.StatusOK, resp.StatusCode)
+
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/admin/uptime/api/status", nil))
+	requireNoError(t, err)
+	t.Cleanup(func() { requireNoError(t, resp.Body.Close()) })
+	requireEqual(t, fiber.StatusOK, resp.StatusCode)
+}
+
 func TestNewPanicsOnInvalidConfig(t *testing.T) {
 	t.Parallel()
 

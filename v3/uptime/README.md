@@ -178,6 +178,8 @@ Requests outside `UI.Path` are passed to the next handler. Unknown uptime
 subpaths return `404 Not Found`.
 
 The handler matches request paths against `UI.Path` (default `/uptime`).
+When mounted under a Fiber group or `Use` prefix, the match is relative to that
+mount point.
 
 The middleware does not read request bodies, capture response bodies, or wrap
 business handlers. Process heartbeats and endpoint probes are run by background
