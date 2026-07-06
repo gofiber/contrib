@@ -74,6 +74,74 @@ func TestRedisStoreRollupAndCleanupLifecycle(t *testing.T) {
 	}
 }
 
+func TestRedisStoreCloseDoesNotInvalidateConcurrentReaders(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := &RedisStore{config: RedisConfig{KeyPrefix: "test:uptime"}, client: newFakeRedisClient()}
+	mustNoErr(t, store.Init(ctx))
+	t.Cleanup(func() { mustNoErr(t, store.Close()) })
+
+	created := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	mustNoErr(t, store.UpsertService(ctx, Service{ID: "api", Name: "API", CreatedAt: created, LastSeenAt: created, SampleInterval: time.Minute}))
+
+	const readers = 8
+	ready := make(chan struct{}, readers)
+	start := make(chan struct{})
+	done := make(chan struct{})
+	errCh := make(chan error, readers)
+
+	var wg sync.WaitGroup
+	for i := 0; i < readers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ready <- struct{}{}
+			<-start
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+
+				services, err := store.ListServices(ctx)
+				if err != nil {
+					errCh <- err
+					return
+				}
+				if len(services) != 1 || services[0].ID != "api" {
+					errCh <- fmt.Errorf("services = %+v, want api", services)
+					return
+				}
+			}
+		}()
+	}
+	for i := 0; i < readers; i++ {
+		<-ready
+	}
+
+	close(start)
+	for i := 0; i < 1000; i++ {
+		mustNoErr(t, store.Close())
+	}
+	close(done)
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	services, err := store.ListServices(ctx)
+	mustNoErr(t, err)
+	if len(services) != 1 || services[0].ID != "api" {
+		t.Fatalf("services after close = %+v, want api", services)
+	}
+}
+
 func TestRedisStoreKeepsMaxLastSeenAt(t *testing.T) {
 	t.Parallel()
 
@@ -168,7 +236,6 @@ type fakeRedisClient struct {
 	hashes map[string]map[string]string
 	sets   map[string]map[string]struct{}
 	zsets  map[string]map[string]float64
-	closed bool
 }
 
 func newFakeRedisClient() *fakeRedisClient {
@@ -399,14 +466,6 @@ func (c *fakeRedisClient) Pipelined(ctx context.Context, fn func(redis.Pipeliner
 		return nil, err
 	}
 	return pipe.cmds, nil
-}
-
-func (c *fakeRedisClient) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.closed = true
-	return nil
 }
 
 type fakeRedisPipeline struct {

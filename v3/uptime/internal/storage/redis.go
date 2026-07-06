@@ -38,9 +38,8 @@ type RedisConfig struct {
 
 // RedisStore stores uptime state in Redis.
 type RedisStore struct {
-	config  RedisConfig
-	storage *fiberredis.Storage
-	client  redisClient
+	config RedisConfig
+	client redisClient
 }
 
 type redisClient interface {
@@ -57,7 +56,6 @@ type redisClient interface {
 	Del(ctx context.Context, keys ...string) *redis.IntCmd
 	Eval(ctx context.Context, script string, keys []string, args ...interface{}) *redis.Cmd
 	Pipelined(ctx context.Context, fn func(redis.Pipeliner) error) ([]redis.Cmder, error)
-	Close() error
 }
 
 // NewRedisStore creates a Redis-backed uptime store.
@@ -77,8 +75,7 @@ func (s *RedisStore) Init(ctx context.Context) (err error) {
 	if s.config.Storage == nil {
 		return errors.New("redis uptime store: storage is required")
 	}
-	s.storage = s.config.Storage
-	s.client = s.storage.Conn()
+	s.client = s.config.Storage.Conn()
 	if s.client == nil {
 		return errors.New("redis uptime store: client is required")
 	}
@@ -364,8 +361,7 @@ func (s *RedisStore) QueryTodaySamples(ctx context.Context, options QueryTodaySa
 }
 
 func (s *RedisStore) Close() error {
-	s.storage = nil
-	s.client = nil
+	// The Fiber Redis storage is supplied by the caller and owns the connection.
 	return nil
 }
 
