@@ -302,9 +302,9 @@ func (u *runtime) handler() fiber.Handler {
 		}
 
 		switch route {
-		case "dashboard":
+		case routeDashboard:
 			return u.serveDashboard(c, dashboardAPIPath(c.Path()))
-		case "status":
+		case routeStatus:
 			return u.serveStatusJSON(c)
 		default:
 			return fiber.ErrNotFound
