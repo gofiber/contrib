@@ -107,16 +107,6 @@ func newWithStore(cfg Config, store storage.Store, now time.Time) (*runtime, err
 	}
 
 	targets := buildRecordTargets(cfg, now, instanceID)
-	for _, target := range targets {
-		if err := store.UpsertService(ctx, target.service); err != nil {
-			_ = store.Close()
-			return nil, fmt.Errorf("uptime: upsert service: %w", err)
-		}
-		if err := store.UpsertInstance(ctx, target.instance); err != nil {
-			_ = store.Close()
-			return nil, fmt.Errorf("uptime: upsert instance: %w", err)
-		}
-	}
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	u := &runtime{

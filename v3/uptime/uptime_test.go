@@ -742,6 +742,31 @@ func TestNewStartsDegradedWhenInitFailsAndRecovers(t *testing.T) {
 	requireNoError(t, lastErr)
 }
 
+func TestNewInitializesStoreBeforeRegisteringTargets(t *testing.T) {
+	t.Parallel()
+
+	store := newSnapshotStore()
+	store.requireInitBeforeWrite = true
+	cfg := normalizedTestConfig(t, Config{
+		ServiceID:      "api",
+		SampleInterval: time.Hour,
+		DaysToShow:     1,
+		RetentionDays:  1,
+		Timezone:       time.UTC,
+	})
+
+	up, err := newWithStore(cfg, store, store.now)
+	requireNoError(t, err)
+	if up == nil {
+		t.Fatal("runtime instance should not be nil")
+	}
+	t.Cleanup(func() { requireNoError(t, up.close()) })
+
+	requireEqual(t, 1, store.initCalls)
+	requireEqual(t, 1, store.upsertServiceCalls)
+	requireEqual(t, 1, store.upsertInstanceCalls)
+}
+
 func TestRuntimeRecordsInitialHeartbeat(t *testing.T) {
 	t.Parallel()
 
@@ -1129,21 +1154,26 @@ func newSnapshotUptimeWithConfig(store *snapshotStore, config Config) *runtime {
 }
 
 type snapshotStore struct {
-	fail              bool
-	initErr           error
-	now               time.Time
-	services          []storage.Service
-	daily             []storage.DailyStatus
-	today             []storage.TodaySampleStatus
-	sampleSlots       map[string]map[int64]struct{}
-	writeHeartbeatErr error
-	listServicesCalls int
-	queryDailyOptions storage.QueryDailyOptions
-	queryTodayOptions storage.QueryTodaySamplesOptions
-	rollupCalls       int
-	cleanupCalls      int
-	rollupOptions     storage.RollupOptions
-	closeCalls        int
+	fail                   bool
+	initErr                error
+	initialized            bool
+	requireInitBeforeWrite bool
+	now                    time.Time
+	services               []storage.Service
+	daily                  []storage.DailyStatus
+	today                  []storage.TodaySampleStatus
+	sampleSlots            map[string]map[int64]struct{}
+	writeHeartbeatErr      error
+	initCalls              int
+	upsertServiceCalls     int
+	upsertInstanceCalls    int
+	listServicesCalls      int
+	queryDailyOptions      storage.QueryDailyOptions
+	queryTodayOptions      storage.QueryTodaySamplesOptions
+	rollupCalls            int
+	cleanupCalls           int
+	rollupOptions          storage.RollupOptions
+	closeCalls             int
 }
 
 func newSnapshotStore() *snapshotStore {
@@ -1165,8 +1195,19 @@ func newSnapshotStore() *snapshotStore {
 	}
 }
 
-func (s *snapshotStore) Init(context.Context) error { return s.initErr }
+func (s *snapshotStore) Init(context.Context) error {
+	s.initCalls++
+	if s.initErr != nil {
+		return s.initErr
+	}
+	s.initialized = true
+	return nil
+}
 func (s *snapshotStore) UpsertService(_ context.Context, service storage.Service) error {
+	s.upsertServiceCalls++
+	if s.requireInitBeforeWrite && !s.initialized {
+		return errors.New("store used before init")
+	}
 	for i := range s.services {
 		if s.services[i].ID == service.ID {
 			s.services[i] = service
@@ -1177,6 +1218,10 @@ func (s *snapshotStore) UpsertService(_ context.Context, service storage.Service
 	return nil
 }
 func (s *snapshotStore) UpsertInstance(context.Context, storage.Instance) error {
+	s.upsertInstanceCalls++
+	if s.requireInitBeforeWrite && !s.initialized {
+		return errors.New("store used before init")
+	}
 	return nil
 }
 func (s *snapshotStore) WriteHeartbeat(_ context.Context, heartbeat storage.Heartbeat) error {
