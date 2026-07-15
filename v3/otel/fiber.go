@@ -183,7 +183,12 @@ func Middleware(opts ...Option) fiber.Handler {
 				request.SetBodyStream(requestBodyStreamSizeReader, -1)
 			}
 		} else {
-			requestSize = int64(len(request.Body()))
+			// use Content-Length to avoid re-marshaling the multipart body, including files, into memory.
+			if contentLength := request.Header.ContentLength(); contentLength > 0 {
+				requestSize = int64(contentLength)
+			} else if !isRequestBodyStream {
+				requestSize = int64(len(request.Body()))
+			}
 		}
 
 		reqHeader := make(http.Header)

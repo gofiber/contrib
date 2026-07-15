@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/gofiber/fiber/v3 v3.4.0
-	github.com/gofiber/utils/v2 v2.1.1
+	github.com/gofiber/utils/v2 v2.1.2
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/contrib v1.44.0
 	go.opentelemetry.io/contrib/propagators/b3 v1.44.0
@@ -21,7 +21,7 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/gofiber/schema v1.8.1 // indirect
+	github.com/gofiber/schema v1.8.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.19.0 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect

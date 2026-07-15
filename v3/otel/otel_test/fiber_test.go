@@ -339,6 +339,47 @@ func TestMetric(t *testing.T) {
 	assertScopeMetrics(t, metrics.ScopeMetrics[0], route, requestAttrs, append(requestAttrs, responseAttrs...))
 }
 
+func TestRequestBodySizeUsesContentLength(t *testing.T) {
+	const contentLength = 1024
+
+	reader := metric.NewManualReader()
+	provider := metric.NewMeterProvider(metric.WithReader(reader))
+
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		// Simulate a pre-parsed body whose in-memory representation differs from
+		// the size declared by the request, as can happen for multipart forms.
+		c.Request().Header.SetContentLength(contentLength)
+		return c.Next()
+	})
+	app.Use(fiberotel.Middleware(fiberotel.WithMeterProvider(provider)))
+	app.Post("/upload", func(c fiber.Ctx) error {
+		return c.SendStatus(http.StatusNoContent)
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodPost, "/upload", bytes.NewBufferString("body")))
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	metrics := metricdata.ResourceMetrics{}
+	require.NoError(t, reader.Collect(context.Background(), &metrics))
+	require.Len(t, metrics.ScopeMetrics, 1)
+
+	for _, m := range metrics.ScopeMetrics[0].Metrics {
+		if m.Name != fiberotel.MetricNameHTTPServerRequestBodySize {
+			continue
+		}
+
+		histogram, ok := m.Data.(metricdata.Histogram[int64])
+		require.True(t, ok)
+		require.Len(t, histogram.DataPoints, 1)
+		assert.Equal(t, int64(contentLength), histogram.DataPoints[0].Sum)
+		return
+	}
+
+	t.Fatal("request body size metric not found")
+}
+
 func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, requestAttrs []attribute.KeyValue, responseAttrs []attribute.KeyValue) {
 	assert.Equal(t, instrumentation.Scope{
 		Name:    instrumentationName,
