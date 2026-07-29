@@ -53,7 +53,7 @@ jwtware.FromContext(ctx any) *jwt.Token    // jwt "github.com/golang-jwt/jwt/v5"
 | TokenProcessorFunc | `func(token string) (string, error)` | TokenProcessorFunc processes the token extracted using the Extractor.                 | `nil`                        |
 | KeyFunc            | `jwt.Keyfunc`                        | User-defined function that supplies the public key for token validation.              | `nil` (uses internal default)|
 | JWKSetURLs         | `[]string`                           | List of JSON Web Key (JWK) Set URLs used to obtain signing keys for parsing JWTs.     | `nil`                        |
-| ParserOptions      | `[]jwt.ParserOption`                 | List of `jwt.ParserOption`, provides additional options for JWT parsing.                | `nil`                        |
+| ParserOptions      | `[]jwt.ParserOption`                 | List of [`jwt.ParserOption`](https://pkg.go.dev/github.com/golang-jwt/jwt/v5#ParserOption), provides additional options for JWT parsing.                | `nil`                        |
 
 ## Available Extractors
 
