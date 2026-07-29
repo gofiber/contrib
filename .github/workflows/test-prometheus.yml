@@ -7,10 +7,12 @@ on:
     paths:
       - 'v3/prometheus/**/*.go'
       - 'v3/prometheus/go.mod'
+      - 'v3/prometheus/go.sum'
   pull_request:
     paths:
       - 'v3/prometheus/**/*.go'
       - 'v3/prometheus/go.mod'
+      - 'v3/prometheus/go.sum'
 
 permissions:
   contents: read
