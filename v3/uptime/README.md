@@ -99,6 +99,14 @@ When `ExpectedStatusCodes` is empty, any `2xx` or `3xx` response is considered
 up. Failed probes do not write heartbeat slots, so the endpoint naturally moves
 to yellow, red, or down as slots are missed.
 
+Every instance runs its own probes, so N replicas sharing a `StorageKeyPrefix`
+send N times the probe traffic to each target. A slot counts as up when any
+replica saw the endpoint up.
+
+The first probe runs when `New` is called, before `app.Listen` has opened the
+port. Endpoints pointing at the app's own routes therefore miss their first
+slot or two on startup.
+
 ## Redis
 
 Redis state is stored through `github.com/gofiber/storage/redis/v3`. Create the
@@ -129,6 +137,11 @@ queries it needs. Use a dedicated Redis database or a distinct
 caller owns the Redis storage lifecycle. Close the Redis storage after the
 Fiber app has shut down, for example from `OnPostShutdown`, so uptime can stop
 its background recorders first.
+
+When multiple uptime instances share the same Redis database and
+`StorageKeyPrefix`, use the same `Timezone` and heartbeat or probe interval for
+the same `ServiceID` or endpoint `ID`. If those settings need to differ, use
+distinct service IDs, endpoint IDs, or storage prefixes.
 
 ### Key expiry
 
@@ -163,11 +176,6 @@ while the service is still being recorded takes it off the dashboard for good,
 but in-flight heartbeats will recreate partial keys; those carry the TTL above
 and expire on their own.
 
-When multiple uptime instances share the same Redis database and
-`StorageKeyPrefix`, use the same `Timezone` and heartbeat or probe interval for
-the same `ServiceID` or endpoint `ID`. If those settings need to differ, use
-distinct service IDs, endpoint IDs, or storage prefixes.
-
 ## Snapshots and custom UI
 
 The dashboard and JSON API build a fresh `Snapshot` from the backing store on
@@ -186,7 +194,7 @@ HTTP-level caching. The same snapshot payload is available at
 | ServiceDescription | `string` | Display description. | `""` |
 | Endpoints | `[]uptime.EndpointConfig` | Optional HTTP endpoints to probe as tracked services. | `nil` |
 | SampleInterval | `time.Duration` | Heartbeat interval. | `3 * time.Second` |
-| RetentionDays | `int` | Number of days to retain daily history. | `90` |
+| RetentionDays | `int` | Number of days to retain daily history. Also sets the key expiry backstop. | `90` |
 | DaysToShow | `int` | Number of days shown in snapshots and dashboard. | `30` |
 | Timezone | `*time.Location` | Timezone for day and slot boundaries. | `time.Local` |
 | NodeID | `int64` | Optional node value used for generated instance IDs. | `0` |
