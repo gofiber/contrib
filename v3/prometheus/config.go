@@ -24,6 +24,13 @@ type Config struct {
 	// Optional. Default: "".
 	Subsystem string
 
+	// MetricsPath is the request path served with the Prometheus exposition
+	// format. Requests to it are answered by the middleware itself and are not
+	// instrumented, regardless of where the middleware is mounted.
+	//
+	// Optional. Default: "/metrics".
+	MetricsPath string
+
 	// Labels are attached to every metric.
 	//
 	// Optional. Default: no labels.
@@ -124,6 +131,7 @@ var (
 // ConfigDefault holds the default middleware configuration.
 var ConfigDefault = Config{
 	Namespace:              "http",
+	MetricsPath:            "/metrics",
 	UnmatchedRouteLabel:    "/__unmatched__",
 	RequestDurationBuckets: defaultRequestDurationBuckets,
 	RequestSizeBuckets:     defaultRequestSizeBuckets,
@@ -144,6 +152,15 @@ func configDefault(config ...Config) Config {
 
 	if cfg.Namespace == "" {
 		cfg.Namespace = ConfigDefault.Namespace
+	}
+
+	if cfg.MetricsPath == "" {
+		cfg.MetricsPath = ConfigDefault.MetricsPath
+	} else {
+		cfg.MetricsPath = strings.Clone(cfg.MetricsPath)
+		if !strings.HasPrefix(cfg.MetricsPath, "/") {
+			cfg.MetricsPath = "/" + cfg.MetricsPath
+		}
 	}
 
 	if cfg.UnmatchedRouteLabel == "" {

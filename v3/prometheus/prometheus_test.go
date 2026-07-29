@@ -2,10 +2,12 @@ package prometheus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -42,13 +44,13 @@ func getMetrics(t *testing.T, app *fiber.App, path string) string {
 }
 
 func newAppWithMiddleware(cfg Config, metricsPath string) (*fiber.App, fiber.Handler) {
+	if metricsPath != "" {
+		cfg.MetricsPath = metricsPath
+	}
+
 	app := fiber.New()
 	handler := New(cfg)
 	app.Use(handler)
-	if metricsPath == "" {
-		metricsPath = "/metrics"
-	}
-	app.Use(metricsPath, handler)
 
 	return app, handler
 }
@@ -103,8 +105,8 @@ func TestMiddlewareRecordsMetrics(t *testing.T) {
 	if !strings.Contains(metrics, "http_requests_status_class_total") {
 		t.Fatalf("expected metrics to contain status class counter")
 	}
-	if !strings.Contains(metrics, "http_requests_in_progress{method=\"GET\",path=\"/hello\",service=\"test-service\"}") {
-		t.Fatalf("expected in-flight gauge to include method and path labels, got %q", metrics)
+	if !strings.Contains(metrics, "http_requests_in_progress{method=\"GET\",service=\"test-service\"}") {
+		t.Fatalf("expected in-flight gauge to include the method label, got %q", metrics)
 	}
 }
 
@@ -154,9 +156,6 @@ func TestSkipURIs(t *testing.T) {
 	if strings.Contains(metrics, "http_requests_status_class_total{status_class=\"2xx\",method=\"GET\",path=\"/skip\"}") {
 		t.Fatalf("expected skip path status class metric to be excluded")
 	}
-	if strings.Contains(metrics, "http_requests_in_progress{method=\"GET\",path=\"/skip\"}") {
-		t.Fatalf("expected skip path in-flight metric to be excluded")
-	}
 }
 
 func TestIgnoreStatusCodes(t *testing.T) {
@@ -197,23 +196,54 @@ func TestIgnoreStatusCodes(t *testing.T) {
 	}
 }
 
-func TestIgnoreStatusCodesRemovesInFlightGauge(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{IgnoreStatusCodes: []int{fiber.StatusUnauthorized}}, "")
+// gaugeValue returns the sample value of the given fully-qualified series,
+// failing the test when the series is missing.
+func gaugeValue(t *testing.T, metrics, series string) float64 {
+	t.Helper()
+
+	for _, line := range strings.Split(metrics, "\n") {
+		name, value, found := strings.Cut(line, " ")
+		if !found || name != series {
+			continue
+		}
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if err != nil {
+			t.Fatalf("parsing value of %s: %v", series, err)
+		}
+		return parsed
+	}
+
+	t.Fatalf("expected series %s to be present, got %q", series, metrics)
+	return 0
+}
+
+// TestInFlightGaugeIsBalanced covers requests that are dropped from
+// instrumentation for every reason the middleware supports. Each of them still
+// has to leave the in-flight gauge where it found it.
+func TestInFlightGaugeIsBalanced(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{
+		IgnoreStatusCodes: []int{fiber.StatusUnauthorized},
+		SkipURIs:          []string{"/skip"},
+	}, "")
 	app.Get("/deny", func(c fiber.Ctx) error {
 		return fiber.ErrUnauthorized
 	})
+	app.Get("/skip", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+	app.Get("/ok", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
 
-	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/deny", nil), noTimeoutConfig)
-	if err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
-	if resp.StatusCode != fiber.StatusUnauthorized {
-		t.Fatalf("expected status 401, got %d", resp.StatusCode)
+	for _, path := range []string{"/deny", "/skip", "/ok", "/unmatched", "/deny", "/skip"} {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+			t.Fatalf("unexpected request error for %s: %v", path, err)
+		}
 	}
 
-	metrics := getMetrics(t, app, "/metrics")
-	if strings.Contains(metrics, "http_requests_in_progress{method=\"GET\",path=\"/deny\"") {
-		t.Fatalf("expected ignored status code in-flight metric to be removed, got %q", metrics)
+	metrics := getMetrics(t, app, "")
+	if value := gaugeValue(t, metrics, "http_requests_in_progress{method=\"GET\"}"); value != 0 {
+		t.Fatalf("expected in-flight gauge to settle back to 0, got %v", value)
 	}
 }
 
@@ -431,7 +461,7 @@ func TestHeadRequestsMatchGetRoutes(t *testing.T) {
 		t.Fatalf("expected HEAD request duration histogram to be emitted, got %q", metrics)
 	}
 
-	if !strings.Contains(metrics, "http_requests_in_progress{method=\"HEAD\",path=\"/head-get\"}") {
+	if !strings.Contains(metrics, "http_requests_in_progress{method=\"HEAD\"}") {
 		t.Fatalf("expected HEAD request in-flight gauge to be emitted, got %q", metrics)
 	}
 }
@@ -684,8 +714,6 @@ func TestSizeHistogramsIncludeTraceExemplars(t *testing.T) {
 		return c.SendString("ok")
 	})
 
-	app.Use("/metrics", handler)
-
 	payload := httptest.NewRequest(fiber.MethodPost, "/upload", strings.NewReader("payload"))
 	payload.Header.Set("Content-Type", "text/plain")
 	if _, err := app.Test(payload, noTimeoutConfig); err != nil {
@@ -725,5 +753,272 @@ func TestSizeHistogramsIncludeTraceExemplars(t *testing.T) {
 	}
 	if !responseLineWithExemplar {
 		t.Fatalf("expected response size histogram to include a trace exemplar, got %q", metrics)
+	}
+}
+
+func TestMiddlewareDoesNotHijackRootRoute(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{}, "")
+	app.Get("/", func(c fiber.Ctx) error {
+		return c.SendString("Hello World")
+	})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil), noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+	if string(body) != "Hello World" {
+		t.Fatalf("expected the application handler to serve /, got %q", body)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, "http_requests_total{method=\"GET\",path=\"/\",status_code=\"200\"}") {
+		t.Fatalf("expected the root route to be instrumented, got %q", metrics)
+	}
+}
+
+func TestParameterizedRoutesUseRoutePattern(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{}, "")
+	app.Get("/user/:id", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+	app.Get("/files/*", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	for _, path := range []string{"/user/42", "/user/1337", "/files/a/b.txt"} {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+			t.Fatalf("unexpected request error for %s: %v", path, err)
+		}
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, "http_requests_total{method=\"GET\",path=\"/user/:id\",status_code=\"200\"} 2") {
+		t.Fatalf("expected parameterized requests to collapse onto the route pattern, got %q", metrics)
+	}
+	if !strings.Contains(metrics, "http_requests_total{method=\"GET\",path=\"/files/*\",status_code=\"200\"}") {
+		t.Fatalf("expected wildcard requests to use the route pattern, got %q", metrics)
+	}
+	if strings.Contains(metrics, "path=\"/user/42\"") {
+		t.Fatalf("expected the request path to stay out of the labels, got %q", metrics)
+	}
+}
+
+func TestCustomErrorHandlerStatusAndResponseSize(t *testing.T) {
+	app := fiber.New(fiber.Config{
+		ErrorHandler: func(c fiber.Ctx, _ error) error {
+			return c.Status(fiber.StatusTeapot).SendString("short and stout")
+		},
+	})
+	app.Use(New(Config{}))
+	app.Get("/boom", func(_ fiber.Ctx) error {
+		return errors.New("boom")
+	})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/boom", nil), noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusTeapot {
+		t.Fatalf("expected status 418, got %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+	if string(body) != "short and stout" {
+		t.Fatalf("expected the custom error handler body, got %q", body)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, "http_requests_total{method=\"GET\",path=\"/boom\",status_code=\"418\"}") {
+		t.Fatalf("expected the status written by the error handler to be recorded, got %q", metrics)
+	}
+	if strings.Contains(metrics, "status_code=\"500\"") {
+		t.Fatalf("expected no 500 to be recorded, got %q", metrics)
+	}
+
+	size := gaugeValue(t, metrics, "http_response_size_bytes_sum{method=\"GET\",path=\"/boom\",status_code=\"418\"}")
+	if size != float64(len("short and stout")) {
+		t.Fatalf("expected the error response body to be measured, got %v", size)
+	}
+}
+
+func TestWrappedFiberErrorUsesWrappedStatus(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{}, "")
+	app.Get("/missing", func(_ fiber.Ctx) error {
+		return fmt.Errorf("looking up record: %w", fiber.ErrNotFound)
+	})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/missing", nil), noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusNotFound {
+		t.Fatalf("expected status 404, got %d", resp.StatusCode)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, "http_requests_total{method=\"GET\",path=\"/missing\",status_code=\"404\"}") {
+		t.Fatalf("expected the wrapped fiber.Error status to be recorded, got %q", metrics)
+	}
+	if strings.Contains(metrics, "status_code=\"500\"") {
+		t.Fatalf("expected no 500 to be recorded for a wrapped fiber.Error, got %q", metrics)
+	}
+}
+
+func TestWrappedFiberErrorRespectsIgnoreStatusCodes(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{IgnoreStatusCodes: []int{fiber.StatusNotFound}}, "")
+	app.Get("/missing", func(_ fiber.Ctx) error {
+		return fmt.Errorf("looking up record: %w", fiber.ErrNotFound)
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/missing", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if strings.Contains(metrics, "path=\"/missing\"") {
+		t.Fatalf("expected the ignored status code to be excluded, got %q", metrics)
+	}
+}
+
+func TestNextSkipsMetricsEndpoint(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{
+		Next: func(_ fiber.Ctx) bool {
+			return true
+		},
+	}, "")
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/metrics", nil), noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusNotFound {
+		t.Fatalf("expected Next to gate the metrics endpoint, got status %d", resp.StatusCode)
+	}
+}
+
+func TestMetricsPathConfig(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{MetricsPath: "internal/metrics"}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/metrics", nil), noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusNotFound {
+		t.Fatalf("expected the default metrics path to be unused, got status %d", resp.StatusCode)
+	}
+
+	metrics := getMetrics(t, app, "/internal/metrics")
+	if !strings.Contains(metrics, "path=\"/hello\"") {
+		t.Fatalf("expected request metrics to be recorded, got %q", metrics)
+	}
+}
+
+// uncomparableRegistry is a Registerer/Gatherer whose dynamic type is not
+// comparable because of the map field. Comparing two of them through an
+// interface panics at run time, so the middleware must not do that.
+type uncomparableRegistry struct {
+	*prometheus.Registry
+
+	tags map[string]string
+}
+
+func TestUncomparableRegistryDoesNotPanic(t *testing.T) {
+	registry := uncomparableRegistry{Registry: prometheus.NewRegistry(), tags: map[string]string{"a": "b"}}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("expected no panic for an uncomparable registry, got %v", r)
+		}
+	}()
+
+	_ = New(Config{Registerer: registry, Gatherer: registry})
+}
+
+func TestMismatchedRegistryPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			message := fmt.Sprint(r)
+			if !strings.Contains(message, "must reference the same metrics source") {
+				t.Fatalf("expected panic about mismatched sources, got %q", message)
+			}
+			return
+		}
+		t.Fatal("expected panic when Registerer and Gatherer differ")
+	}()
+
+	_ = New(Config{Registerer: prometheus.NewRegistry(), Gatherer: prometheus.NewRegistry()})
+}
+
+func TestMetricsEndpointIsNotInstrumented(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{TrackUnmatchedRequests: true}, "")
+
+	getMetrics(t, app, "")
+	metrics := getMetrics(t, app, "")
+
+	if strings.Contains(metrics, "path=\"/metrics\"") {
+		t.Fatalf("expected scrapes to stay out of the metrics, got %q", metrics)
+	}
+	if strings.Contains(metrics, "path=\"/__unmatched__\"") {
+		t.Fatalf("expected scrapes not to be counted as unmatched, got %q", metrics)
+	}
+}
+
+func TestPayloadSizesAreRecorded(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{}, "")
+	app.Post("/echo", func(c fiber.Ctx) error {
+		return c.SendString(strings.Repeat("b", 654))
+	})
+
+	req := httptest.NewRequest(fiber.MethodPost, "/echo", strings.NewReader(strings.Repeat("a", 321)))
+	req.Header.Set("Content-Type", "text/plain")
+	if _, err := app.Test(req, noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+
+	if size := gaugeValue(t, metrics, "http_request_size_bytes_sum{method=\"POST\",path=\"/echo\",status_code=\"200\"}"); size != 321 {
+		t.Fatalf("expected request size 321, got %v", size)
+	}
+	if size := gaugeValue(t, metrics, "http_response_size_bytes_sum{method=\"POST\",path=\"/echo\",status_code=\"200\"}"); size != 654 {
+		t.Fatalf("expected response size 654, got %v", size)
+	}
+}
+
+// TestMiddlewareRoutesAreNotTreatedAsEndpoints guards against counting the
+// middleware's own `use` route as a registered endpoint, which would make any
+// method on "/" look matched.
+func TestMiddlewareRoutesAreNotTreatedAsEndpoints(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{}, "")
+	app.Get("/", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodDelete, "/", nil), noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusMethodNotAllowed {
+		t.Fatalf("expected status 405, got %d", resp.StatusCode)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if strings.Contains(metrics, "http_requests_total") {
+		t.Fatalf("expected the unregistered method to stay uninstrumented, got %q", metrics)
 	}
 }

@@ -16,8 +16,13 @@ http_request_size_bytes
 http_response_size_bytes
 ```
 
-`http_requests_in_progress` exposes both the HTTP method and normalized
-route path so you can pinpoint which handlers are currently running.
+Every metric except `http_requests_in_progress` is labeled with the *registered
+route pattern* (for example `/user/:id`), not the request path, so label
+cardinality stays bounded no matter what clients request.
+
+`http_requests_in_progress` is labeled by HTTP method only. It has to be
+incremented before the router picks a handler, at which point the route pattern
+is not known yet.
 
 > [!NOTE]
 > The middleware requires Go 1.25 or newer and Fiber v3 (currently RC).
@@ -39,29 +44,42 @@ import (
 )
 
 func main() {
-        app := fiber.New()
+	app := fiber.New()
 
-	app.Use("/metrics", fiberprometheus.New(fiberprometheus.Config{
+	// Mount the middleware globally so it observes every request. It answers
+	// scrapes on Config.MetricsPath ("/metrics" by default) itself and passes
+	// everything else through to your handlers.
+	app.Use(fiberprometheus.New(fiberprometheus.Config{
 		Service:           "my-service-name",
 		SkipURIs:          []string{"/ping"},
 		IgnoreStatusCodes: []int{401, 403, 404},
 	}))
 
-        app.Get("/", func(c fiber.Ctx) error {
-                return c.SendString("Hello World")
-        })
+	app.Get("/", func(c fiber.Ctx) error {
+		return c.SendString("Hello World")
+	})
 
-        app.Get("/ping", func(c fiber.Ctx) error {
-                return c.SendString("pong")
-        })
+	app.Get("/ping", func(c fiber.Ctx) error {
+		return c.SendString("pong")
+	})
 
-        app.Post("/some", func(c fiber.Ctx) error {
-                return c.SendString("Welcome!")
-        })
+	app.Post("/some", func(c fiber.Ctx) error {
+		return c.SendString("Welcome!")
+	})
 
-        app.Listen(":3000")
+	app.Listen(":3000")
 }
 ```
+
+Register the middleware before the routes you want instrumented, and mount it
+only once — mounting the same handler twice double-counts every request.
+
+Because Fiber runs the application error handler only after the whole handler
+chain has unwound, the middleware invokes it itself when a downstream handler
+returns an error. This is what Fiber's own logger middleware does, and it is
+what allows the recorded status code and response size to match what the client
+actually received. The error is therefore consumed by this middleware and does
+not propagate to handlers mounted *before* it.
 
 ### Collector, OpenMetrics, and response options
 
@@ -88,12 +106,11 @@ panic so metrics are not silently dropped.
   - Request size: `[256 512 1024 2048 4096 8192 16384 32768 65536 131072 262144 524288 1048576 2097152 5242880]`
   - Response size: `[256 512 1024 2048 4096 8192 16384 32768 65536 131072 262144 524288 1048576 2097152 5242880]`
 
-All of the options default to `false` and can be enabled or disabled individually as needed.
+All of the boolean options default to `false` and can be enabled or disabled individually as needed.
 
-The metrics endpoint path is derived from how the middleware is mounted. In the
-example above, calling `app.Use("/metrics", fiberprometheus.New(...))` exposes
-the handler at `/metrics` while the middleware continues to instrument all
-routed traffic.
+- `MetricsPath` sets the path served with the Prometheus exposition format. Defaults to `/metrics`. Requests to it are answered by the middleware itself and are never instrumented.
+- `SkipURIs` is matched against the registered route pattern, so use `/user/:id` rather than `/user/42`.
+- `Next` gates the middleware entirely: when it returns `true` the request is passed straight through, including requests to `MetricsPath`.
 
 ## 📊 Result
 

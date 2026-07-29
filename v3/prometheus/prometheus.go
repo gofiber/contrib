@@ -3,8 +3,9 @@
 package prometheus
 
 import (
+	"errors"
+	"reflect"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -18,11 +19,10 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// middleware encapsulates all mutable state required to expose metrics and
-// instrument Fiber requests.
+// middleware encapsulates all state required to expose metrics and instrument
+// Fiber requests.
 type middleware struct {
 	cfg              Config
-	gatherer         prometheus.Gatherer
 	requestsTotal    *prometheus.CounterVec
 	requestsByClass  *prometheus.CounterVec
 	requestDuration  *prometheus.HistogramVec
@@ -30,18 +30,29 @@ type middleware struct {
 	responseSize     *prometheus.HistogramVec
 	requestInFlight  *prometheus.GaugeVec
 	metricsHandler   fiber.Handler
+	metricsPath      string
+	unmatchedLabel   string
 	skipURIs         map[string]struct{}
 	ignoreStatusCode map[int]struct{}
-	registeredRoutes map[string]struct{}
-	routesVersion    int
-	routesMu         sync.RWMutex
 }
 
 // New creates a new Prometheus middleware handler.
 //
-// The returned handler records request/response metrics for all routes that are
-// mounted in the current Fiber application and serves the Prometheus endpoint
-// when it detects that the registered metrics route is being invoked.
+// The handler is meant to be mounted globally so that it observes every
+// request the application serves:
+//
+//	app.Use(prometheus.New(prometheus.Config{Service: "my-service"}))
+//
+// Requests whose path equals Config.MetricsPath ("/metrics" by default) are
+// answered with the Prometheus exposition format instead of being forwarded to
+// the application; every other request is instrumented and passed along.
+//
+// Because Fiber only runs the application error handler after the whole
+// handler chain has unwound, the middleware invokes it itself when a
+// downstream handler returns an error. This mirrors Fiber's own logger
+// middleware and is what allows the recorded status code and response size to
+// match what the client received. As a consequence the error is consumed by
+// this middleware and is not propagated to handlers mounted before it.
 func New(config ...Config) fiber.Handler {
 	cfg := configDefault(config...)
 
@@ -111,13 +122,16 @@ func New(config ...Config) fiber.Handler {
 		[]string{"status_code", "method", "path"},
 	)
 
+	// The in-flight gauge has to be incremented before the router picks a
+	// handler, at which point the route pattern is still unknown. Labelling it
+	// by method only keeps the gauge balanced and its cardinality bounded.
 	gauge := promauto.With(registry).NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name:        prometheus.BuildFQName(cfg.Namespace, cfg.Subsystem, "requests_in_progress"),
-			Help:        "All the requests in progress",
+			Help:        "All the requests in progress by method.",
 			ConstLabels: labels,
 		},
-		[]string{"method", "path"},
+		[]string{"method"},
 	)
 
 	metricsHandler := adaptor.HTTPHandler(promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{
@@ -128,7 +142,6 @@ func New(config ...Config) fiber.Handler {
 
 	m := &middleware{
 		cfg:              cfg,
-		gatherer:         gatherer,
 		requestsTotal:    counter,
 		requestsByClass:  statusClassCounter,
 		requestDuration:  histogram,
@@ -136,6 +149,8 @@ func New(config ...Config) fiber.Handler {
 		responseSize:     responseHistogram,
 		requestInFlight:  gauge,
 		metricsHandler:   metricsHandler,
+		metricsPath:      normalizePath(cfg.MetricsPath),
+		unmatchedLabel:   normalizePath(cfg.UnmatchedRouteLabel),
 		skipURIs:         make(map[string]struct{}, len(cfg.SkipURIs)),
 		ignoreStatusCode: make(map[int]struct{}, len(cfg.IgnoreStatusCodes)),
 	}
@@ -148,9 +163,7 @@ func New(config ...Config) fiber.Handler {
 		m.ignoreStatusCode[code] = struct{}{}
 	}
 
-	return func(ctx fiber.Ctx) error {
-		return m.handle(ctx)
-	}
+	return m.handle
 }
 
 // resolveRegistry selects the registerer/gatherer pair used for collector
@@ -165,14 +178,14 @@ func resolveRegistry(cfg Config) (prometheus.Registerer, prometheus.Gatherer) {
 		return reg, reg
 	}
 
-	if registerer == nil && gatherer != nil {
+	if registerer == nil {
 		if reg, ok := gatherer.(prometheus.Registerer); ok {
 			return reg, gatherer
 		}
 		panic("prometheus middleware: provided Gatherer does not implement prometheus.Registerer; supply a matching Registerer")
 	}
 
-	if registerer != nil && gatherer == nil {
+	if gatherer == nil {
 		if g, ok := registerer.(prometheus.Gatherer); ok {
 			return registerer, g
 		}
@@ -180,7 +193,7 @@ func resolveRegistry(cfg Config) (prometheus.Registerer, prometheus.Gatherer) {
 	}
 
 	if regGatherer, ok := registerer.(prometheus.Gatherer); ok {
-		if regGatherer != gatherer {
+		if differentSource(regGatherer, gatherer) {
 			panic("prometheus middleware: Registerer and Gatherer must reference the same metrics source")
 		}
 		return registerer, gatherer
@@ -189,102 +202,93 @@ func resolveRegistry(cfg Config) (prometheus.Registerer, prometheus.Gatherer) {
 	panic("prometheus middleware: Registerer must implement prometheus.Gatherer when a custom Gatherer is provided")
 }
 
-// handle dispatches the request to the next middleware and serves the metrics
-// endpoint when the current route matches the registered metrics path.
-func (m *middleware) handle(ctx fiber.Ctx) error {
-	if m.isMetricsRequest(ctx) {
-		method := ctx.Method()
-		if method != fiber.MethodGet && method != fiber.MethodHead {
-			return fiber.ErrMethodNotAllowed
-		}
-		return m.metricsHandler(ctx)
+// differentSource reports whether two gatherers provably reference distinct
+// metrics sources. Comparing interface values directly panics when the dynamic
+// type is not comparable, so identity is established through reflection and
+// cases that cannot be decided are accepted rather than aborting startup.
+func differentSource(a, b prometheus.Gatherer) bool {
+	av, bv := reflect.ValueOf(a), reflect.ValueOf(b)
+	if !av.IsValid() || !bv.IsValid() {
+		return false
 	}
 
+	if av.Kind() == reflect.Pointer && bv.Kind() == reflect.Pointer {
+		return av.Pointer() != bv.Pointer()
+	}
+
+	if !av.Type().Comparable() || !bv.Type().Comparable() {
+		return false
+	}
+
+	return av.Interface() != bv.Interface()
+}
+
+// handle serves the metrics endpoint or instruments the request, depending on
+// the requested path.
+func (m *middleware) handle(ctx fiber.Ctx) error {
 	if m.cfg.Next != nil && m.cfg.Next(ctx) {
 		return ctx.Next()
+	}
+
+	if normalizePath(ctx.Path()) == m.metricsPath {
+		return m.serveMetrics(ctx)
 	}
 
 	return m.instrument(ctx)
 }
 
-// isMetricsRequest returns true when the current request is routed to the
-// Prometheus endpoint exposed by this middleware.
-func (m *middleware) isMetricsRequest(ctx fiber.Ctx) bool {
-	route := ctx.Route()
-	if route == nil {
-		return false
+// serveMetrics answers a scrape request, rejecting methods the Prometheus
+// exposition endpoint does not support.
+func (m *middleware) serveMetrics(ctx fiber.Ctx) error {
+	if method := ctx.Method(); method != fiber.MethodGet && method != fiber.MethodHead {
+		ctx.Set(fiber.HeaderAllow, fiber.MethodGet+", "+fiber.MethodHead)
+		return fiber.ErrMethodNotAllowed
 	}
 
-	registered := route.Path
-	if registered == "" {
-		registered = "/"
-	} else if registered != "/" {
-		registered = normalizePath(registered)
-	}
-
-	return registered == normalizePath(ctx.Path())
+	return m.metricsHandler(ctx)
 }
 
 // instrument wraps the downstream handler, recording duration, request/response
-// sizes, in-flight counts, and status code metrics for the active route.
+// sizes, in-flight counts, and status code metrics for the matched route.
 func (m *middleware) instrument(ctx fiber.Ctx) error {
-	method := utils.CopyString(ctx.Method())
-	routePath := m.resolveRoutePath(ctx)
-	routeKey := method + " " + routePath
+	method := ctx.Method()
 
-	registered := m.refreshRoutes(ctx, routeKey)
-	trackUnmatched := false
-	if !registered && m.cfg.TrackUnmatchedRequests {
-		routePath = normalizePath(m.cfg.UnmatchedRouteLabel)
-		trackUnmatched = true
-	}
-
-	inflightPath := routePath
-	m.requestInFlight.WithLabelValues(method, inflightPath).Inc()
-	deleteGauge := false
-	defer func() {
-		m.requestInFlight.WithLabelValues(method, inflightPath).Dec()
-		if deleteGauge {
-			m.requestInFlight.DeleteLabelValues(method, inflightPath)
-		}
-	}()
+	inFlight := m.requestInFlight.WithLabelValues(method)
+	inFlight.Inc()
+	defer inFlight.Dec()
 
 	start := time.Now()
 
-	err := ctx.Next()
-
-	if !registered && !trackUnmatched {
-		deleteGauge = true
-		return err
-	}
-
-	if _, ok := m.skipURIs[routePath]; ok {
-		deleteGauge = true
-		return err
-	}
-
-	status := fiber.StatusInternalServerError
-	if err != nil {
-		if e, ok := err.(*fiber.Error); ok {
-			status = e.Code
+	// Fiber runs the application error handler only after the entire handler
+	// chain has unwound, so the response is still empty when Next reports an
+	// error. Running it here - as Fiber's own logger middleware does - means
+	// the status code and response size below are the ones the client sees.
+	if chainErr := ctx.Next(); chainErr != nil {
+		if err := ctx.App().ErrorHandler(ctx, chainErr); err != nil {
+			_ = ctx.SendStatus(fiber.StatusInternalServerError) //nolint:errcheck // mirrors Fiber's own fallback
 		}
-	} else {
-		status = ctx.Response().StatusCode()
 	}
 
-	if _, ok := m.ignoreStatusCode[status]; ok {
-		deleteGauge = true
-		return err
+	elapsed := time.Since(start).Seconds()
+
+	routePath, ok := m.routeLabel(ctx)
+	if !ok {
+		return nil
+	}
+
+	if _, skip := m.skipURIs[routePath]; skip {
+		return nil
+	}
+
+	status := ctx.Response().StatusCode()
+	if _, ignore := m.ignoreStatusCode[status]; ignore {
+		return nil
 	}
 
 	statusCode := strconv.Itoa(status)
 
 	m.requestsTotal.WithLabelValues(statusCode, method, routePath).Inc()
-
-	statusClass := strconv.Itoa(status/100) + "xx"
-	m.requestsByClass.WithLabelValues(statusClass, method, routePath).Inc()
-
-	elapsed := float64(time.Since(start).Nanoseconds()) / 1e9
+	m.requestsByClass.WithLabelValues(statusClass(status), method, routePath).Inc()
 
 	spanCtx := trace.SpanContextFromContext(ctx.Context())
 	traceID := spanCtx.TraceID()
@@ -303,90 +307,74 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		observer.Observe(value)
 	}
 
-	histogram := m.requestDuration.WithLabelValues(statusCode, method, routePath)
-	observe(histogram, elapsed)
+	observe(m.requestDuration.WithLabelValues(statusCode, method, routePath), elapsed)
 
-	requestLength := ctx.Request().Header.ContentLength()
-	if requestLength < 0 {
-		requestLength = len(ctx.Request().Body())
+	// Content-Length is authoritative when present and is the only usable
+	// source for file-backed or streamed payloads. Otherwise fall back to the
+	// buffered body, but never for a body stream: reading it would drain the
+	// stream into memory just to measure it.
+	req := ctx.Request()
+	requestLength := req.Header.ContentLength()
+	if requestLength <= 0 {
+		requestLength = 0
+		if !req.IsBodyStream() {
+			requestLength = len(req.Body())
+		}
 	}
-	requestHistogram := m.requestSize.WithLabelValues(statusCode, method, routePath)
-	observe(requestHistogram, float64(requestLength))
+	observe(m.requestSize.WithLabelValues(statusCode, method, routePath), float64(requestLength))
 
-	responseLength := ctx.Response().Header.ContentLength()
-	if responseLength < 0 {
-		responseLength = len(ctx.Response().Body())
+	resp := ctx.Response()
+	responseLength := resp.Header.ContentLength()
+	if responseLength <= 0 {
+		responseLength = 0
+		if !resp.IsBodyStream() {
+			responseLength = len(resp.Body())
+		}
 	}
-	responseHistogram := m.responseSize.WithLabelValues(statusCode, method, routePath)
-	observe(responseHistogram, float64(responseLength))
+	observe(m.responseSize.WithLabelValues(statusCode, method, routePath), float64(responseLength))
 
-	return err
+	return nil
 }
 
-// refreshRoutes ensures the registeredRoutes map reflects the current Fiber
-// stack. If the requested route key is missing or the stack length changes, the
-// cache is rebuilt before returning the registration status for the provided
-// key.
-func (m *middleware) refreshRoutes(ctx fiber.Ctx, routeKey string) bool {
-	stack := ctx.App().Stack()
-	stackVersion := stackSize(stack)
-
-	m.routesMu.RLock()
-	currentVersion := m.routesVersion
-	_, registered := m.registeredRoutes[routeKey]
-	m.routesMu.RUnlock()
-
-	if registered && currentVersion == stackVersion {
-		return true
-	}
-
-	routes := make(map[string]struct{})
-	for i := range stack {
-		routesList := stack[i]
-		for j := range routesList {
-			r := routesList[j]
-			if r == nil {
-				continue
-			}
-
-			path := utils.CopyString(r.Path)
-			if path == "" {
-				path = "/"
-			} else if path != "/" {
-				path = normalizePath(path)
-			}
-
-			routes[r.Method+" "+path] = struct{}{}
-			if r.Method == fiber.MethodGet {
-				routes[fiber.MethodHead+" "+path] = struct{}{}
-			}
+// routeLabel returns the path label for the current request and whether the
+// request should be recorded at all. Matched requests are attributed to the
+// registered route pattern (for example "/user/:id") so that the label
+// cardinality stays bounded; unmatched requests are only recorded when
+// TrackUnmatchedRequests is enabled.
+//
+// The route is read after the handler chain has run because Fiber sets the
+// matched route on the context as it walks the stack: while this middleware
+// runs, the context still points at the middleware's own route.
+func (m *middleware) routeLabel(ctx fiber.Ctx) (string, bool) {
+	if ctx.Matched() {
+		if route := ctx.Route(); route != nil {
+			return normalizePath(route.Path), true
 		}
 	}
 
-	m.routesMu.Lock()
-	m.registeredRoutes = routes
-	m.routesVersion = stackVersion
-	_, registered = routes[routeKey]
-	m.routesMu.Unlock()
+	if !m.cfg.TrackUnmatchedRequests {
+		return "", false
+	}
 
-	return registered
+	return m.unmatchedLabel, true
 }
 
-// resolveRoutePath returns the normalized route path associated with the
-// current request. When Fiber has not resolved a route, the request path is
-// used as a fallback so metrics can still be attributed.
-func (m *middleware) resolveRoutePath(ctx fiber.Ctx) string {
-	routePath := "/"
-	if route := ctx.Route(); route != nil {
-		routePath = utils.CopyString(route.Path)
+// statusClass maps a status code onto its "Nxx" class label.
+func statusClass(status int) string {
+	switch status / 100 {
+	case 1:
+		return "1xx"
+	case 2:
+		return "2xx"
+	case 3:
+		return "3xx"
+	case 4:
+		return "4xx"
+	case 5:
+		return "5xx"
+	default:
+		return "unknown"
 	}
-	if routePath == "" || routePath == "/" {
-		routePath = utils.CopyString(ctx.Path())
-	}
-	if routePath != "" && routePath != "/" {
-		routePath = normalizePath(routePath)
-	}
-	return routePath
 }
 
 // normalizePath trims trailing slashes and converts empty paths to "/" so
@@ -399,20 +387,12 @@ func normalizePath(routePath string) string {
 	return normalized
 }
 
-// stackSize returns the total number of routes present in the Fiber stack.
-func stackSize(stack [][]*fiber.Route) int {
-	size := 0
-	for i := range stack {
-		size += len(stack[i])
-	}
-	return size
-}
-
 // registerCollector attempts to register the provided collector, suppressing
 // the AlreadyRegistered error so callers can opt-in without coordination.
 func registerCollector(registry prometheus.Registerer, collector prometheus.Collector) {
 	if err := registry.Register(collector); err != nil {
-		if _, ok := err.(prometheus.AlreadyRegisteredError); ok {
+		var alreadyRegistered prometheus.AlreadyRegisteredError
+		if errors.As(err, &alreadyRegistered) {
 			return
 		}
 		panic(err)
