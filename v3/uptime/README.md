@@ -29,6 +29,7 @@ go get -u github.com/gofiber/storage/redis/v3
 
 ```go
 uptime.New(config ...uptime.Config) fiber.Handler
+uptime.RemoveService(ctx context.Context, store *fiberredis.Storage, keyPrefix, serviceID string) error
 ```
 
 ## Basic usage
@@ -128,6 +129,39 @@ queries it needs. Use a dedicated Redis database or a distinct
 caller owns the Redis storage lifecycle. Close the Redis storage after the
 Fiber app has shut down, for example from `OnPostShutdown`, so uptime can stop
 its background recorders first.
+
+### Key expiry
+
+Service, sample and daily keys carry a TTL of `RetentionDays + 1` days that is
+re-armed on every write. Background maintenance normally removes them long
+before that, so the TTL only matters once no process is left to run the
+cleanup: a decommissioned service, a changed key prefix, an app that never
+comes back. Without it those keys would stay in Redis forever.
+
+The `services` registry set is shared by all instances under a prefix and is
+never expired. A service that has never recorded a successful heartbeat also
+keeps its (small) service hash without a TTL. Use `RemoveService` to clear
+either.
+
+## Removing a service
+
+The dashboard lists every service found under `StorageKeyPrefix`, not just the
+ones in the current config. Services are never dropped automatically while
+their retention window keeps being refreshed, so renaming `ServiceID` or an
+endpoint `ID`, or removing an endpoint, leaves the old identifier behind as a
+row that reports down forever. Delete it explicitly:
+
+```go
+err := uptime.RemoveService(context.Background(), store, "fiber:uptime", "old-endpoint-id")
+```
+
+Pass the same `StorageKeyPrefix` the middleware uses, or `""` for the default.
+This removes the service, its history and its raw samples.
+
+Remove the service from your config and restart before calling it. Calling it
+while the service is still being recorded takes it off the dashboard for good,
+but in-flight heartbeats will recreate partial keys; those carry the TTL above
+and expire on their own.
 
 When multiple uptime instances share the same Redis database and
 `StorageKeyPrefix`, use the same `Timezone` and heartbeat or probe interval for

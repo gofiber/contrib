@@ -31,11 +31,19 @@ return 0
 // writeDailyIfUnfinalizedScript writes a finalized daily row only while the
 // row is not already finalized. This keeps late concurrent rollups from
 // replacing a previously finalized day after another instance has cleaned up
-// the raw samples.
+// the raw samples. ARGV[7] refreshes the TTL backstop on both keys.
 const writeDailyIfUnfinalizedScript = `
+local ttl = tonumber(ARGV[7])
+local function touch()
+	if ttl and ttl > 0 then
+		redis.call("EXPIRE", KEYS[1], ttl)
+		redis.call("EXPIRE", KEYS[2], ttl)
+	end
+end
 local finalized = redis.call("HGET", KEYS[1], "finalized")
 if finalized and finalized ~= "0" then
 	redis.call("ZADD", KEYS[2], ARGV[6], ARGV[2])
+	touch()
 	return 0
 end
 redis.call("HSET", KEYS[1],
@@ -45,6 +53,7 @@ redis.call("HSET", KEYS[1],
 	"expected_slots", ARGV[4],
 	"finalized", ARGV[5])
 redis.call("ZADD", KEYS[2], ARGV[6], ARGV[2])
+touch()
 return 1
 `
 
@@ -69,6 +78,11 @@ type RedisConfig struct {
 	// InstanceTTL controls how long process instance metadata is kept.
 	// It defaults to 24 hours when unset.
 	InstanceTTL time.Duration
+	// StateTTL is a safety net on service, sample and daily keys, refreshed on
+	// every write. Cleanup normally removes them far sooner; this only bounds
+	// the leak when the process never comes back to run maintenance.
+	// Zero disables it.
+	StateTTL time.Duration
 }
 
 // RedisStore stores uptime state in Redis.
@@ -81,6 +95,7 @@ type RedisStore struct {
 type redisClient interface {
 	Ping(ctx context.Context) *redis.StatusCmd
 	SAdd(ctx context.Context, key string, members ...interface{}) *redis.IntCmd
+	SRem(ctx context.Context, key string, members ...interface{}) *redis.IntCmd
 	SMembers(ctx context.Context, key string) *redis.StringSliceCmd
 	SCard(ctx context.Context, key string) *redis.IntCmd
 	HSet(ctx context.Context, key string, values ...interface{}) *redis.IntCmd
@@ -189,7 +204,60 @@ func (s *RedisStore) WriteHeartbeat(ctx context.Context, heartbeat Heartbeat) er
 	if err := s.client.SAdd(ctx, s.sampleKey(heartbeat.ServiceID, heartbeat.Day), strconv.FormatInt(heartbeat.Slot, 10)).Err(); err != nil {
 		return err
 	}
-	return s.addDay(ctx, s.sampleDaysKey(heartbeat.ServiceID), heartbeat.Day)
+	if err := s.addDay(ctx, s.sampleDaysKey(heartbeat.ServiceID), heartbeat.Day); err != nil {
+		return err
+	}
+	return s.refreshStateTTL(ctx, heartbeat.ServiceID, heartbeat.Day)
+}
+
+// refreshStateTTL re-arms the TTL backstop on the keys this heartbeat touched.
+func (s *RedisStore) refreshStateTTL(ctx context.Context, serviceID, day string) error {
+	ttl := s.config.StateTTL
+	if ttl <= 0 {
+		return nil
+	}
+	_, err := s.client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.Expire(ctx, s.serviceKey(serviceID), ttl)
+		pipe.Expire(ctx, s.sampleKey(serviceID, day), ttl)
+		pipe.Expire(ctx, s.sampleDaysKey(serviceID), ttl)
+		return nil
+	})
+	return err
+}
+
+// RemoveService deletes every key holding state for serviceID, including its
+// history. Use it after retiring or renaming a service so it stops appearing
+// on the dashboard as permanently down.
+func (s *RedisStore) RemoveService(ctx context.Context, serviceID string) error {
+	if serviceID == "" {
+		return errors.New("redis uptime store: service id is required")
+	}
+
+	indexes := []struct {
+		daysKey string
+		keyFor  func(string) string
+	}{
+		{s.sampleDaysKey(serviceID), func(day string) string { return s.sampleKey(serviceID, day) }},
+		{s.dailyDaysKey(serviceID), func(day string) string { return s.dailyKey(serviceID, day) }},
+	}
+	for _, index := range indexes {
+		days, err := s.client.ZRangeByScore(ctx, index.daysKey, &redis.ZRangeBy{Min: "-inf", Max: "+inf"}).Result()
+		if err != nil {
+			return err
+		}
+		for _, day := range days {
+			if err := s.client.Del(ctx, index.keyFor(day)).Err(); err != nil {
+				return err
+			}
+		}
+		if err := s.client.Del(ctx, index.daysKey).Err(); err != nil {
+			return err
+		}
+	}
+	if err := s.client.Del(ctx, s.serviceKey(serviceID)).Err(); err != nil {
+		return err
+	}
+	return s.client.SRem(ctx, s.servicesKey(), serviceID).Err()
 }
 
 func (s *RedisStore) RollupDaily(ctx context.Context, options RollupOptions) error {
@@ -210,6 +278,15 @@ func (s *RedisStore) RollupDaily(ctx context.Context, options RollupOptions) err
 			upSlots64, err := s.client.SCard(ctx, s.sampleKey(service.ID, day)).Result()
 			if err != nil {
 				return err
+			}
+			// A day only enters the index once a sample was written, so an empty
+			// set means the samples expired. Finalizing 0 here would persist a
+			// red day the guard script then refuses to correct.
+			if upSlots64 == 0 {
+				if err := s.client.ZRem(ctx, s.sampleDaysKey(service.ID), day).Err(); err != nil {
+					return err
+				}
+				continue
 			}
 			expectedSlots := 0
 			if options.ExpectedSlotsForServiceDay != nil {
@@ -483,6 +560,7 @@ func (s *RedisStore) writeDaily(ctx context.Context, status DailyStatus) error {
 		status.ExpectedSlots,
 		finalized,
 		score,
+		int64(s.config.StateTTL/time.Second),
 	).Err()
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/gofiber/contrib/v3/uptime/internal/storage"
 	"github.com/gofiber/fiber/v3"
 	fiberlog "github.com/gofiber/fiber/v3/log"
+	fiberredis "github.com/gofiber/storage/redis/v3"
 )
 
 // IDGenerator generates instance IDs.
@@ -89,11 +90,35 @@ func newRuntime(config ...Config) (*runtime, error) {
 		return nil, ErrMissingStore
 	}
 
-	store := storage.NewRedisStore(storage.RedisConfig{
+	store := storage.NewRedisStore(newRedisStoreConfig(cfg))
+	return newWithStore(cfg, store, time.Now())
+}
+
+func newRedisStoreConfig(cfg Config) storage.RedisConfig {
+	return storage.RedisConfig{
 		Storage:   cfg.Store,
 		KeyPrefix: cfg.StorageKeyPrefix,
-	})
-	return newWithStore(cfg, store, time.Now())
+		// One day past retention, so cleanup always wins in a live process and
+		// the TTL only matters once nothing is left to run it.
+		StateTTL: time.Duration(cfg.RetentionDays+1) * 24 * time.Hour,
+	}
+}
+
+// RemoveService deletes all stored uptime state for serviceID, including its
+// history. Services are never removed automatically while their retention
+// window is refreshed, so call this after retiring or renaming a service or an
+// endpoint ID. Otherwise the old ID keeps its dashboard row and reports down.
+//
+// keyPrefix must match Config.StorageKeyPrefix; empty uses the default.
+func RemoveService(ctx context.Context, store *fiberredis.Storage, keyPrefix, serviceID string) error {
+	if store == nil {
+		return ErrMissingStore
+	}
+	redisStore := storage.NewRedisStore(storage.RedisConfig{Storage: store, KeyPrefix: keyPrefix})
+	if err := redisStore.Init(ctx); err != nil {
+		return err
+	}
+	return redisStore.RemoveService(ctx, serviceID)
 }
 
 func newWithStore(cfg Config, store storage.Store, now time.Time) (*runtime, error) {

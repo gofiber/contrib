@@ -383,6 +383,147 @@ func TestRedisStoreKeepsMaxLastSeenAtConcurrently(t *testing.T) {
 	}
 }
 
+func TestRedisStoreRemoveServiceDropsAllState(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client := newFakeRedisClient()
+	store := &RedisStore{config: RedisConfig{KeyPrefix: "test:uptime"}, client: client}
+	mustNoErr(t, store.Init(ctx))
+
+	created := time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC)
+	for _, id := range []string{"api", "worker"} {
+		mustNoErr(t, store.UpsertService(ctx, Service{ID: id, Name: id, CreatedAt: created, LastSeenAt: created, SampleInterval: time.Minute}))
+		mustNoErr(t, store.WriteHeartbeat(ctx, Heartbeat{ServiceID: id, InstanceID: 1, Day: "2026-06-25", Slot: 0, SeenAt: created}))
+	}
+	mustNoErr(t, store.RollupDaily(ctx, RollupOptions{
+		BeforeDay:                  "2026-06-26",
+		ExpectedSlotsForServiceDay: func(string, string) int { return 1440 },
+	}))
+
+	mustNoErr(t, store.RemoveService(ctx, "api"))
+
+	services, err := store.ListServices(ctx)
+	mustNoErr(t, err)
+	if len(services) != 1 || services[0].ID != "worker" {
+		t.Fatalf("services after removal = %+v, want only worker", services)
+	}
+	for _, key := range []string{
+		store.serviceKey("api"),
+		store.sampleKey("api", "2026-06-25"),
+		store.sampleDaysKey("api"),
+		store.dailyKey("api", "2026-06-25"),
+		store.dailyDaysKey("api"),
+	} {
+		client.mu.Lock()
+		exists := client.keyExistsLocked(key)
+		client.mu.Unlock()
+		if exists {
+			t.Fatalf("key %q should be gone after RemoveService", key)
+		}
+	}
+	client.mu.Lock()
+	worker := client.keyExistsLocked(store.dailyKey("worker", "2026-06-25"))
+	client.mu.Unlock()
+	if !worker {
+		t.Fatal("RemoveService must not touch other services")
+	}
+}
+
+func TestRedisStoreHeartbeatArmsStateTTL(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client := newFakeRedisClient()
+	ttl := 91 * 24 * time.Hour
+	store := &RedisStore{config: RedisConfig{KeyPrefix: "test:uptime", StateTTL: ttl}, client: client}
+	mustNoErr(t, store.Init(ctx))
+
+	created := time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC)
+	mustNoErr(t, store.UpsertService(ctx, Service{ID: "api", Name: "API", CreatedAt: created, LastSeenAt: created, SampleInterval: time.Minute}))
+	mustNoErr(t, store.WriteHeartbeat(ctx, Heartbeat{ServiceID: "api", InstanceID: 1, Day: "2026-06-25", Slot: 0, SeenAt: created}))
+	mustNoErr(t, store.RollupDaily(ctx, RollupOptions{
+		BeforeDay:                  "2026-06-26",
+		ExpectedSlotsForServiceDay: func(string, string) int { return 1440 },
+	}))
+
+	for _, key := range []string{
+		store.serviceKey("api"),
+		store.sampleKey("api", "2026-06-25"),
+		store.sampleDaysKey("api"),
+		store.dailyKey("api", "2026-06-25"),
+		store.dailyDaysKey("api"),
+	} {
+		client.mu.Lock()
+		got := client.expirations[key]
+		client.mu.Unlock()
+		if got != ttl {
+			t.Fatalf("ttl for %q = %v, want %v", key, got, ttl)
+		}
+	}
+}
+
+func TestRedisStoreRollupSkipsDayWithExpiredSamples(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client := newFakeRedisClient()
+	store := &RedisStore{config: RedisConfig{KeyPrefix: "test:uptime"}, client: client}
+	mustNoErr(t, store.Init(ctx))
+
+	created := time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC)
+	mustNoErr(t, store.UpsertService(ctx, Service{ID: "api", Name: "API", CreatedAt: created, LastSeenAt: created, SampleInterval: time.Minute}))
+	mustNoErr(t, store.WriteHeartbeat(ctx, Heartbeat{ServiceID: "api", InstanceID: 1, Day: "2026-06-25", Slot: 0, SeenAt: created}))
+
+	// samples gone, index entry still there: the TTL backstop outlived cleanup
+	mustNoErr(t, client.Del(ctx, store.sampleKey("api", "2026-06-25")).Err())
+	mustNoErr(t, store.RollupDaily(ctx, RollupOptions{
+		BeforeDay:                  "2026-06-26",
+		ExpectedSlotsForServiceDay: func(string, string) int { return 1440 },
+	}))
+
+	if row, ok := queryDailyMap(t, store)["2026-06-25"]; ok {
+		t.Fatalf("rollup wrote %+v for a day with no samples, want no row", row)
+	}
+	client.mu.Lock()
+	_, indexed := client.zsets[store.sampleDaysKey("api")]["2026-06-25"]
+	client.mu.Unlock()
+	if indexed {
+		t.Fatal("stale day should be dropped from the sample index")
+	}
+}
+
+func TestRedisStoreRollupKeepsFinalizedRowWhenSamplesRemain(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client := newFakeRedisClient()
+	first := &RedisStore{config: RedisConfig{KeyPrefix: "test:uptime"}, client: client}
+	second := &RedisStore{config: RedisConfig{KeyPrefix: "test:uptime"}, client: client}
+	mustNoErr(t, first.Init(ctx))
+	mustNoErr(t, second.Init(ctx))
+
+	created := time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC)
+	mustNoErr(t, first.UpsertService(ctx, Service{ID: "api", Name: "API", CreatedAt: created, LastSeenAt: created, SampleInterval: time.Minute}))
+	mustNoErr(t, first.WriteHeartbeat(ctx, Heartbeat{ServiceID: "api", InstanceID: 1, Day: "2026-06-25", Slot: 0, SeenAt: created}))
+	mustNoErr(t, first.RollupDaily(ctx, RollupOptions{
+		BeforeDay:                  "2026-06-26",
+		ExpectedSlotsForServiceDay: func(string, string) int { return 1440 },
+	}))
+
+	// second instance disagrees on expected slots; samples still exist so only
+	// the Lua guard can stop it from rewriting the finalized row
+	mustNoErr(t, second.RollupDaily(ctx, RollupOptions{
+		BeforeDay:                  "2026-06-26",
+		ExpectedSlotsForServiceDay: func(string, string) int { return 96 },
+	}))
+
+	row := queryDailyMap(t, first)["2026-06-25"]
+	if row.UpSlots != 1 || row.ExpectedSlots != 1440 || !row.Finalized {
+		t.Fatalf("daily = %+v, want the original up=1 expected=1440 finalized row", row)
+	}
+}
+
 func queryDailyMap(t *testing.T, store *RedisStore) map[string]DailyStatus {
 	t.Helper()
 
@@ -465,6 +606,25 @@ func (c *fakeRedisClient) SAdd(_ context.Context, key string, members ...interfa
 		}
 	}
 	return redis.NewIntResult(added, nil)
+}
+
+func (c *fakeRedisClient) SRem(_ context.Context, key string, members ...interface{}) *redis.IntCmd {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	set := c.sets[key]
+	var removed int64
+	for _, member := range members {
+		value := fmt.Sprint(member)
+		if _, ok := set[value]; ok {
+			delete(set, value)
+			removed++
+		}
+	}
+	if len(set) == 0 {
+		delete(c.sets, key)
+	}
+	return redis.NewIntResult(removed, nil)
 }
 
 func (c *fakeRedisClient) SMembers(_ context.Context, key string) *redis.StringSliceCmd {
@@ -698,7 +858,7 @@ func (c *fakeRedisClient) evalCleanupExpiredInstance(keys []string, args ...inte
 }
 
 func (c *fakeRedisClient) evalWriteDailyIfUnfinalized(keys []string, args ...interface{}) *redis.Cmd {
-	if len(keys) != 2 || len(args) != 6 {
+	if len(keys) != 2 || len(args) != 7 {
 		return redis.NewCmdResult(nil, fmt.Errorf("unexpected write daily eval call"))
 	}
 
@@ -713,15 +873,31 @@ func (c *fakeRedisClient) evalWriteDailyIfUnfinalized(keys []string, args ...int
 	if err != nil {
 		return redis.NewCmdResult(nil, err)
 	}
+	ttlSeconds, err := strconv.ParseInt(fmt.Sprint(args[6]), 10, 64)
+	if err != nil {
+		return redis.NewCmdResult(nil, err)
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	touch := func() {
+		if ttlSeconds <= 0 {
+			return
+		}
+		for _, key := range keys {
+			if c.keyExistsLocked(key) {
+				c.expirations[key] = time.Duration(ttlSeconds) * time.Second
+			}
+		}
+	}
 
 	hash := c.hashes[dailyKey]
 	if hash != nil {
 		current := hash["finalized"]
 		if current != "" && current != "0" {
 			c.zaddLocked(daysKey, day, score)
+			touch()
 			return redis.NewCmdResult(int64(0), nil)
 		}
 	}
@@ -735,6 +911,7 @@ func (c *fakeRedisClient) evalWriteDailyIfUnfinalized(keys []string, args ...int
 	hash["expected_slots"] = expectedSlots
 	hash["finalized"] = finalized
 	c.zaddLocked(daysKey, day, score)
+	touch()
 	return redis.NewCmdResult(int64(1), nil)
 }
 
@@ -796,6 +973,15 @@ func (p *fakeRedisPipeline) SCard(ctx context.Context, key string) *redis.IntCmd
 		ctx = p.ctx
 	}
 	cmd := p.client.SCard(ctx, key)
+	p.cmds = append(p.cmds, cmd)
+	return cmd
+}
+
+func (p *fakeRedisPipeline) Expire(ctx context.Context, key string, expiration time.Duration) *redis.BoolCmd {
+	if ctx == nil {
+		ctx = p.ctx
+	}
+	cmd := p.client.Expire(ctx, key, expiration)
 	p.cmds = append(p.cmds, cmd)
 	return cmd
 }
