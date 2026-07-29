@@ -73,6 +73,10 @@ type Config struct {
 	// - Timeout refreshes after 10 seconds.
 	// At least one of the following is required: KeyFunc, JWKSetURLs, SigningKeys, or SigningKey.
 	JWKSetURLs []string
+
+	// ParserOptions provides additional options for JWT parsing.
+	// Optional. Default: nil
+	ParserOptions []jwt.ParserOption
 }
 
 // SigningKey holds information about the recognized cryptographic keys used to sign JWTs by this program.
