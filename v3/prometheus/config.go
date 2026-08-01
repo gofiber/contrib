@@ -25,8 +25,9 @@ type Config struct {
 	Subsystem string
 
 	// MetricsPath is the request path served with the Prometheus exposition
-	// format. Requests to it are answered by the middleware itself and are not
-	// instrumented, regardless of where the middleware is mounted.
+	// format. Unless Next returns true, requests to it are answered by the
+	// middleware itself and are not instrumented, regardless of where the
+	// middleware is mounted.
 	//
 	// Optional. Default: "/metrics".
 	MetricsPath string
@@ -106,17 +107,24 @@ type Config struct {
 	// Optional. Default: false.
 	DisableCompression bool
 
-	// SkipURIs excludes matching routes from instrumentation.
+	// SkipURIs excludes matching routes from instrumentation. Entries are
+	// matched against the registered route pattern rather than the request
+	// path, so use "/user/:id" instead of "/user/42". Trailing slashes are
+	// ignored.
 	//
 	// Optional. Default: none.
 	SkipURIs []string
 
 	// IgnoreStatusCodes excludes matching response status codes from metrics.
+	// The status is the one the client receives, so codes produced by the
+	// application error handler are matched as well.
 	//
 	// Optional. Default: none.
 	IgnoreStatusCodes []int
 
-	// Next skips the middleware when it returns true.
+	// Next skips the middleware when it returns true. It runs before the
+	// MetricsPath check, so returning true also stops the middleware from
+	// serving a scrape.
 	//
 	// Optional. Default: nil.
 	Next func(fiber.Ctx) bool

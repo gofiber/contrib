@@ -46,6 +46,8 @@ type middleware struct {
 // Requests whose path equals Config.MetricsPath ("/metrics" by default) are
 // answered with the Prometheus exposition format instead of being forwarded to
 // the application; every other request is instrumented and passed along.
+// Config.Next is evaluated first, so returning true from it passes even a
+// scrape straight through to the application.
 //
 // Because Fiber only runs the application error handler after the whole
 // handler chain has unwound, the middleware invokes it itself when a
