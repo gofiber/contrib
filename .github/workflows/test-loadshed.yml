@@ -5,10 +5,6 @@ on:
     branches:
       - master
       - main
-    paths:
-      - 'v3/loadshed/**/*.go'
-      - 'v3/loadshed/go.mod'
-      - 'v3/loadshed/go.sum'
   pull_request:
     paths:
       - 'v3/loadshed/**/*.go'

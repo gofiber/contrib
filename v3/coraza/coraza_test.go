@@ -2,6 +2,7 @@ package coraza
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"math"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"github.com/corazawaf/coraza/v3/types"
 	"github.com/gofiber/fiber/v3"
 	fiberlog "github.com/gofiber/fiber/v3/log"
+	"github.com/valyala/fasthttp"
 )
 
 const float64Epsilon = 1e-9
@@ -315,7 +317,7 @@ SecRule REQUEST_BODY "@contains attack" "id:1002,phase:2,deny,status:403,msg:'bo
 	if err == nil {
 		t.Fatal("expected Fiber body limit error, got nil")
 	}
-	if err.Error() != "body size exceeds the given limit" {
+	if !errors.Is(err, fasthttp.ErrBodyTooLarge) {
 		t.Fatalf("expected Fiber body limit error, got %v", err)
 	}
 }
