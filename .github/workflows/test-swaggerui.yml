@@ -5,10 +5,6 @@ on:
     branches:
       - master
       - main
-    paths:
-      - 'v3/swaggerui/**/*.go'
-      - 'v3/swaggerui/go.mod'
-      - 'v3/swaggerui/go.sum'
   pull_request:
     paths:
       - 'v3/swaggerui/**/*.go'

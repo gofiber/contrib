@@ -5,10 +5,6 @@ on:
     branches:
       - master
       - main
-    paths:
-      - 'v3/testcontainers/**/*.go'
-      - 'v3/testcontainers/go.mod'
-      - 'v3/testcontainers/go.sum'
   pull_request:
     paths:
       - 'v3/testcontainers/**/*.go'

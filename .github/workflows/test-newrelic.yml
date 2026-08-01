@@ -5,10 +5,6 @@ on:
     branches:
       - master
       - main
-    paths:
-      - 'v3/newrelic/**/*.go'
-      - 'v3/newrelic/go.mod'
-      - 'v3/newrelic/go.sum'
   pull_request:
     paths:
       - 'v3/newrelic/**/*.go'
