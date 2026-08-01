@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -521,6 +522,31 @@ func TestRedisStoreRollupKeepsFinalizedRowWhenSamplesRemain(t *testing.T) {
 	row := queryDailyMap(t, first)["2026-06-25"]
 	if row.UpSlots != 1 || row.ExpectedSlots != 1440 || !row.Finalized {
 		t.Fatalf("daily = %+v, want the original up=1 expected=1440 finalized row", row)
+	}
+}
+
+func TestIntFieldRejectsOutOfRangeValue(t *testing.T) {
+	t.Parallel()
+
+	fields := map[string]string{
+		"absent":    "",
+		"up_slots":  "42",
+		"too_large": strconv.FormatInt(math.MaxInt64, 10) + "0",
+	}
+
+	if value, err := intField(fields, "absent"); value != 0 || err != nil {
+		t.Fatalf("intField(absent) = %d, %v, want 0, <nil>", value, err)
+	}
+	if value, err := intField(fields, "up_slots"); value != 42 || err != nil {
+		t.Fatalf("intField(up_slots) = %d, %v, want 42, <nil>", value, err)
+	}
+
+	value, err := intField(fields, "too_large")
+	if !errors.Is(err, strconv.ErrRange) {
+		t.Fatalf("intField(too_large) error = %v, want strconv.ErrRange", err)
+	}
+	if value != 0 {
+		t.Fatalf("intField(too_large) = %d, want 0", value)
 	}
 }
 
