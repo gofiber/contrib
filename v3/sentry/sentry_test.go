@@ -91,7 +91,6 @@ var testCasesAfterRegister = []testCase{
 			Request: &sentry.Request{
 				URL:    "http://example.com/post",
 				Method: "POST",
-				Data:   "payload",
 				Headers: map[string]string{
 					"Content-Length": "7",
 					"Host":           "example.com",
@@ -164,9 +163,6 @@ var testCasesAfterRegister = []testCase{
 			Request: &sentry.Request{
 				URL:    "http://example.com/post/body-ignored",
 				Method: "POST",
-				// Actual request body included because fasthttp always
-				// reads full request body.
-				Data: "client sends, fasthttp always reads, SDK reports",
 				Headers: map[string]string{
 					"Content-Length": "48",
 					"Host":           "example.com",
