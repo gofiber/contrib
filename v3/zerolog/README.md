@@ -8,8 +8,7 @@ id: zerolog
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Test%20zerolog/badge.svg)
 
-[Zerolog](https://zerolog.io/) logging support for Fiber.
-
+[Zerolog](https://github.com/rs/zerolog/) logging support for Fiber.
 
 **Compatible with Fiber v3.**
 
