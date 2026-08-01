@@ -529,13 +529,18 @@ func TestIntFieldRejectsOutOfRangeValue(t *testing.T) {
 	t.Parallel()
 
 	fields := map[string]string{
-		"absent":    "",
+		"empty":     "",
 		"up_slots":  "42",
 		"too_large": strconv.FormatInt(math.MaxInt64, 10) + "0",
 	}
 
-	if value, err := intField(fields, "absent"); value != 0 || err != nil {
-		t.Fatalf("intField(absent) = %d, %v, want 0, <nil>", value, err)
+	// "missing" is absent from the map, "empty" is present but blank; both must
+	// stay a plain zero rather than a parse error.
+	if value, err := intField(fields, "missing"); value != 0 || err != nil {
+		t.Fatalf("intField(missing) = %d, %v, want 0, <nil>", value, err)
+	}
+	if value, err := intField(fields, "empty"); value != 0 || err != nil {
+		t.Fatalf("intField(empty) = %d, %v, want 0, <nil>", value, err)
 	}
 	if value, err := intField(fields, "up_slots"); value != 42 || err != nil {
 		t.Fatalf("intField(up_slots) = %d, %v, want 42, <nil>", value, err)
