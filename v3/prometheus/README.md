@@ -106,7 +106,9 @@ func main() {
 ```
 
 Register the middleware before the routes you want instrumented, and mount it
-only once — mounting the same handler twice double-counts every request.
+only once — mounting the same handler twice double-counts every request that
+reaches both instances. Scrapes are the exception: the first invocation answers
+them without calling `ctx.Next()`, so they never reach the second.
 
 ## Metrics
 
