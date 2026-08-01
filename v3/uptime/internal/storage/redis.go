@@ -778,9 +778,18 @@ func dailyFromRedisHash(serviceID, day string, fields map[string]string) (DailyS
 	}, nil
 }
 
+// Parsed as int rather than narrowed from int64Field, so an out-of-range value
+// reports strconv.ErrRange instead of silently truncating on 32-bit builds.
 func intField(fields map[string]string, name string) (int, error) {
-	value, err := int64Field(fields, name)
-	return int(value), err
+	raw := fields[name]
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("redis uptime store: parse %s: %w", name, err)
+	}
+	return value, nil
 }
 
 func int64Field(fields map[string]string, name string) (int64, error) {
