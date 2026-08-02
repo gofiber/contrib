@@ -5,10 +5,6 @@ on:
     branches:
       - master
       - main
-    paths:
-      - 'v3/zap/**/*.go'
-      - 'v3/zap/go.mod'
-      - 'v3/zap/go.sum'
   pull_request:
     paths:
       - 'v3/zap/**/*.go'

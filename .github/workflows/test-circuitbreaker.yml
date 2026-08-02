@@ -5,10 +5,6 @@ on:
     branches:
       - master
       - main
-    paths:
-      - 'v3/circuitbreaker/**/*.go'
-      - 'v3/circuitbreaker/go.mod'
-      - 'v3/circuitbreaker/go.sum'
   pull_request:
     paths:
       - 'v3/circuitbreaker/**/*.go'

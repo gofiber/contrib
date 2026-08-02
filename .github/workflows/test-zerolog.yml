@@ -5,10 +5,6 @@ on:
     branches:
       - master
       - main
-    paths:
-      - 'v3/zerolog/**/*.go'
-      - 'v3/zerolog/go.mod'
-      - 'v3/zerolog/go.sum'
   pull_request:
     paths:
       - 'v3/zerolog/**/*.go'

@@ -5,10 +5,6 @@ on:
     branches:
       - master
       - main
-    paths:
-      - 'v3/monitor/**/*.go'
-      - 'v3/monitor/go.mod'
-      - 'v3/monitor/go.sum'
   pull_request:
     paths:
       - 'v3/monitor/**/*.go'
