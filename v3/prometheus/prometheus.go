@@ -307,14 +307,18 @@ func resolveRegistry(cfg Config) (prometheus.Registerer, prometheus.Gatherer) {
 		panic("prometheus middleware: provided Registerer does not implement prometheus.Gatherer; supply a matching Gatherer or use prometheus.Registry")
 	}
 
+	// Both were supplied. Pairing a wrapping Registerer with the registry it
+	// wraps is the main reason to do that, and those wrappers - anything from
+	// prometheus.WrapRegistererWith or WrapRegistererWithPrefix - are not
+	// Gatherers, so requiring one here would reject the very configuration the
+	// panic above recommends. Only provably distinct pairs are rejected.
 	if regGatherer, ok := registerer.(prometheus.Gatherer); ok {
 		if differentSource(regGatherer, gatherer) {
 			panic("prometheus middleware: Registerer and Gatherer must reference the same metrics source")
 		}
-		return registerer, gatherer
 	}
 
-	panic("prometheus middleware: Registerer must implement prometheus.Gatherer when a custom Gatherer is provided")
+	return registerer, gatherer
 }
 
 // differentSource reports whether two gatherers provably reference distinct
@@ -327,11 +331,18 @@ func differentSource(a, b prometheus.Gatherer) bool {
 		return false
 	}
 
-	if av.Kind() == reflect.Pointer && bv.Kind() == reflect.Pointer {
+	// Mismatched dynamic types say nothing about the underlying source: a
+	// gathering wrapper delegating to the registry it was handed is a different
+	// type but the same source. Only like can be compared with like.
+	if av.Type() != bv.Type() {
+		return false
+	}
+
+	if av.Kind() == reflect.Pointer {
 		return av.Pointer() != bv.Pointer()
 	}
 
-	if !av.Type().Comparable() || !bv.Type().Comparable() {
+	if !av.Type().Comparable() {
 		return false
 	}
 
@@ -509,11 +520,20 @@ func (m *middleware) skipped(routePath string) bool {
 // The route is read after the handler chain has run because Fiber sets the
 // matched route on the context as it walks the stack: while this middleware
 // runs, the context still points at the middleware's own route.
+//
+// Fiber only ever tracks the route currently executing, so if the endpoint
+// delegated onwards with ctx.Next() and a trailing Use middleware ran last,
+// that middleware's mount path is what remains on the context. Recording it
+// would file the request under "/" and merge unrelated routes into a single
+// series. The endpoint pattern is not recoverable at that point, so such
+// requests fall back to UnmatchedRouteLabel: the route is unknown, but the
+// request did match one, so it is still recorded.
 func (m *middleware) routeLabel(ctx fiber.Ctx) (string, bool) {
 	if ctx.Matched() {
-		if route := ctx.Route(); route != nil {
+		if route := ctx.Route(); route != nil && !ctx.IsMiddleware() {
 			return normalizePath(route.Path), true
 		}
+		return m.unmatchedLabel, true
 	}
 
 	if !m.cfg.TrackUnmatchedRequests {

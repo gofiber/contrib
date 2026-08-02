@@ -78,23 +78,30 @@ type Config struct {
 	DisableProcessCollector bool
 
 	// RequestDurationBuckets configures the histogram buckets used for request
-	// latency metrics. Provide nil to use the defaults, or an empty non-nil
-	// slice to drop the classic buckets entirely, which is only useful together
-	// with NativeHistogramBucketFactor.
+	// latency metrics. Provide nil to use the defaults.
+	//
+	// An empty non-nil slice drops the classic buckets, but only when
+	// NativeHistogramBucketFactor is also set: client_golang substitutes its
+	// own defaults for a histogram that would otherwise have no buckets at all.
 	//
 	// Optional. Default: []float64{0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 10, 15, 30, 60}.
 	RequestDurationBuckets []float64
 
 	// RequestSizeBuckets configures the histogram buckets used for request
-	// payload size metrics. Provide nil to use the defaults, or an empty
-	// non-nil slice to drop the classic buckets entirely.
+	// payload size metrics. Provide nil to use the defaults.
+	//
+	// As with RequestDurationBuckets, an empty non-nil slice only drops the
+	// classic buckets when NativeHistogramBucketFactor is set. Without it the
+	// substituted defaults are client_golang's latency buckets, which would
+	// bucket byte counts at 0.005 through 10.
 	//
 	// Optional. Default: []float64{256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152, 5242880}.
 	RequestSizeBuckets []float64
 
 	// ResponseSizeBuckets configures the histogram buckets used for response
-	// payload size metrics. Provide nil to use the defaults, or an empty
-	// non-nil slice to drop the classic buckets entirely.
+	// payload size metrics. Provide nil to use the defaults.
+	//
+	// The same caveat as RequestSizeBuckets applies to an empty non-nil slice.
 	//
 	// Optional. Default: []float64{256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152, 5242880}.
 	ResponseSizeBuckets []float64

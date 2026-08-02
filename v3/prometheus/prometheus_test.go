@@ -1368,3 +1368,121 @@ func TestNativeHistogramsWithoutClassicBuckets(t *testing.T) {
 		t.Fatalf("expected the sample to still be counted, got %d", histogram.GetSampleCount())
 	}
 }
+
+// TestFallThroughToTrailingMiddlewareIsNotFiledUnderMountPath covers a handler
+// that delegates onwards with c.Next(). Fiber replaces the route on the context
+// with the trailing middleware's mount path, so the endpoint pattern is gone by
+// the time this middleware regains control; the request must not be filed under
+// that mount path, which would merge unrelated routes into one series.
+func TestFallThroughToTrailingMiddlewareIsNotFiledUnderMountPath(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{}, "")
+	app.Get("/user/:id", func(c fiber.Ctx) error {
+		return c.Next()
+	})
+	app.Get("/", func(c fiber.Ctx) error {
+		return c.SendString("root")
+	})
+	app.Use(func(c fiber.Ctx) error {
+		return c.SendString("trailing")
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/user/42", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if strings.Contains(metrics, `path="/"`) {
+		t.Fatalf("expected the request not to be attributed to the trailing mount path, got %q", metrics)
+	}
+	if !strings.Contains(metrics, `path="/__unmatched__"`) {
+		t.Fatalf("expected the unattributable request to be recorded, got %q", metrics)
+	}
+}
+
+// TestFallThroughIsRecordedWithoutTrackUnmatchedRequests guards against the
+// fallback silently dropping traffic: the request did match a route, so it is
+// recorded whether or not unmatched tracking is on.
+func TestFallThroughIsRecordedWithoutTrackUnmatchedRequests(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{TrackUnmatchedRequests: false}, "")
+	app.Get("/user/:id", func(c fiber.Ctx) error {
+		return c.Next()
+	})
+	app.Use(func(c fiber.Ctx) error {
+		return c.SendString("trailing")
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/user/42", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, "http_requests_total{") {
+		t.Fatalf("expected the request to still be counted, got %q", metrics)
+	}
+}
+
+// TestRouteLevelMiddlewareKeepsRoutePattern pins the common case the fallback
+// must not disturb: extra handlers on the route itself still resolve to the
+// route pattern.
+func TestRouteLevelMiddlewareKeepsRoutePattern(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{}, "")
+	app.Get("/user/:id", func(c fiber.Ctx) error {
+		return c.Next()
+	}, func(c fiber.Ctx) error {
+		return c.SendString("handled")
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/user/42", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `path="/user/:id"`) {
+		t.Fatalf("expected the route pattern to be preserved, got %q", metrics)
+	}
+}
+
+// TestWrappingRegistererWithMatchingGatherer covers pairing a Registerer that
+// is not itself a Gatherer with the registry it wraps, which is the reason to
+// supply both.
+func TestWrappingRegistererWithMatchingGatherer(t *testing.T) {
+	registry := prometheus.NewRegistry()
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("expected a wrapping Registerer paired with its registry to be accepted, got %v", r)
+		}
+	}()
+
+	app, _ := newAppWithMiddleware(Config{
+		Registerer: prometheus.WrapRegistererWithPrefix("app_", registry),
+		Gatherer:   registry,
+	}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, "app_http_requests_total") {
+		t.Fatalf("expected the prefixed metric to be gathered, got %q", metrics)
+	}
+}
+
+// TestEmptyBucketsWithoutNativeHistogramsKeepsDefaults pins the documented
+// caveat: client_golang substitutes its own defaults rather than leave a
+// histogram with no buckets, so an empty slice alone does not drop them.
+func TestEmptyBucketsWithoutNativeHistogramsKeepsDefaults(t *testing.T) {
+	_, registry := newAppWithRegistry(t, Config{RequestDurationBuckets: []float64{}})
+
+	histogram := durationHistogram(t, registry)
+	if len(histogram.Bucket) == 0 {
+		t.Fatal("expected client_golang to substitute its default buckets")
+	}
+	if histogram.Schema != nil {
+		t.Fatal("expected native histograms to stay disabled")
+	}
+}

@@ -146,6 +146,13 @@ Requests that miss every registered route are not recorded unless
 `TrackUnmatchedRequests` is enabled, in which case they are labeled with
 `UnmatchedRouteLabel`.
 
+One case cannot be attributed to a pattern: if the matched handler delegates
+onwards with `c.Next()` and a trailing `app.Use` middleware runs last, Fiber has
+already replaced the route on the context with that middleware's mount path, and
+the endpoint pattern is gone by the time the middleware regains control. Those
+requests are recorded under `UnmatchedRouteLabel` rather than filed under `/`,
+which would silently merge unrelated routes into one series.
+
 ### Dropping metrics you do not need
 
 Every family costs cardinality. `DisabledMetrics` skips registering and
@@ -249,7 +256,11 @@ the factor caps the growth between consecutive buckets, so `1.1` gives roughly
 enabled, and the values are only carried by the protobuf exposition format.
 
 Classic and native buckets are emitted together by default. To go native-only,
-pass an empty non-nil bucket slice — unlike `nil`, which selects the defaults:
+pass an empty non-nil bucket slice — unlike `nil`, which selects the defaults.
+This only takes effect alongside `NativeHistogramBucketFactor`: client_golang
+substitutes its own defaults rather than leave a histogram with no buckets, so
+an empty slice on its own would give the size histograms latency-shaped buckets
+(`le="0.005"` … `le="10"`) measured in bytes.
 
 ```go
 app.Use(fiberprometheus.New(fiberprometheus.Config{
