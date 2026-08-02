@@ -1369,19 +1369,62 @@ func TestNativeHistogramsWithoutClassicBuckets(t *testing.T) {
 	}
 }
 
-// TestFallThroughToTrailingMiddlewareIsNotFiledUnderMountPath covers a handler
-// that delegates onwards with c.Next(). Fiber replaces the route on the context
-// with the trailing middleware's mount path, so the endpoint pattern is gone by
-// the time this middleware regains control; the request must not be filed under
-// that mount path, which would merge unrelated routes into one series.
-func TestFallThroughToTrailingMiddlewareIsNotFiledUnderMountPath(t *testing.T) {
+// TestShortCircuitRouteGuardKeepsRoutePattern pins the case a ctx.IsMiddleware()
+// based fallback got wrong: Fiber reports IsMiddleware for any route whose
+// handler chain stopped early, which is exactly what a per-route guard that
+// rejects a request leaves behind. Those requests must keep their own route
+// pattern, or every 401 from a guard collapses into one series and SkipURIs
+// entries for the route stop matching.
+func TestShortCircuitRouteGuardKeepsRoutePattern(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{}, "")
+	app.Get("/admin", func(c fiber.Ctx) error {
+		return fiber.ErrUnauthorized
+	}, func(c fiber.Ctx) error {
+		return c.SendString("admin")
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/admin", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/admin",status_code="401"}`) {
+		t.Fatalf("expected the guarded route to keep its pattern, got %q", metrics)
+	}
+}
+
+// TestSkipURIsAppliesToShortCircuitRouteGuard is the second half of the same
+// regression: skipped() is handed the route label, so a wrong label silently
+// disables SkipURIs for guarded routes.
+func TestSkipURIsAppliesToShortCircuitRouteGuard(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{SkipURIs: []string{"/admin"}}, "")
+	app.Get("/admin", func(c fiber.Ctx) error {
+		return fiber.ErrUnauthorized
+	}, func(c fiber.Ctx) error {
+		return c.SendString("admin")
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/admin", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if strings.Contains(metrics, "http_requests_total{") {
+		t.Fatalf("expected the guarded route to be skipped, got %q", metrics)
+	}
+}
+
+// TestFallThroughToTrailingMiddlewareUsesMountPath documents a known
+// limitation rather than desired behaviour. Once a handler delegates onwards
+// with c.Next() and a trailing Use middleware runs last, Fiber has replaced the
+// route on the context with that middleware's mount path and the endpoint
+// pattern is gone; Fiber exposes nothing that distinguishes a Use route, so the
+// case cannot be detected either.
+func TestFallThroughToTrailingMiddlewareUsesMountPath(t *testing.T) {
 	app, _ := newAppWithMiddleware(Config{}, "")
 	app.Get("/user/:id", func(c fiber.Ctx) error {
 		return c.Next()
 	})
-	app.Get("/", func(c fiber.Ctx) error {
-		return c.SendString("root")
-	})
 	app.Use(func(c fiber.Ctx) error {
 		return c.SendString("trailing")
 	})
@@ -1391,33 +1434,8 @@ func TestFallThroughToTrailingMiddlewareIsNotFiledUnderMountPath(t *testing.T) {
 	}
 
 	metrics := getMetrics(t, app, "")
-	if strings.Contains(metrics, `path="/"`) {
-		t.Fatalf("expected the request not to be attributed to the trailing mount path, got %q", metrics)
-	}
-	if !strings.Contains(metrics, `path="/__unmatched__"`) {
-		t.Fatalf("expected the unattributable request to be recorded, got %q", metrics)
-	}
-}
-
-// TestFallThroughIsRecordedWithoutTrackUnmatchedRequests guards against the
-// fallback silently dropping traffic: the request did match a route, so it is
-// recorded whether or not unmatched tracking is on.
-func TestFallThroughIsRecordedWithoutTrackUnmatchedRequests(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{TrackUnmatchedRequests: false}, "")
-	app.Get("/user/:id", func(c fiber.Ctx) error {
-		return c.Next()
-	})
-	app.Use(func(c fiber.Ctx) error {
-		return c.SendString("trailing")
-	})
-
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/user/42", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
-
-	metrics := getMetrics(t, app, "")
-	if !strings.Contains(metrics, "http_requests_total{") {
-		t.Fatalf("expected the request to still be counted, got %q", metrics)
+	if !strings.Contains(metrics, `path="/"`) {
+		t.Fatalf("expected the documented mount-path attribution, got %q", metrics)
 	}
 }
 

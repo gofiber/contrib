@@ -334,19 +334,17 @@ func differentSource(a, b prometheus.Gatherer) bool {
 	// Mismatched dynamic types say nothing about the underlying source: a
 	// gathering wrapper delegating to the registry it was handed is a different
 	// type but the same source. Only like can be compared with like.
-	if av.Type() != bv.Type() {
+	//
+	// Pointer identity is then the only comparison worth making. Equality on
+	// anything else risks panicking at startup: reflect.Type.Comparable reports
+	// true for a struct holding an interface field, yet comparing two of them
+	// panics when that field carries an uncomparable dynamic value such as a
+	// prometheus.Gatherers slice. Everything else is treated as undecidable.
+	if av.Type() != bv.Type() || av.Kind() != reflect.Pointer {
 		return false
 	}
 
-	if av.Kind() == reflect.Pointer {
-		return av.Pointer() != bv.Pointer()
-	}
-
-	if !av.Type().Comparable() {
-		return false
-	}
-
-	return av.Interface() != bv.Interface()
+	return av.Pointer() != bv.Pointer()
 }
 
 // handle serves the metrics endpoint or instruments the request, depending on
@@ -528,16 +526,17 @@ func (m *middleware) skipped(routePath string) bool {
 // matched route on the context as it walks the stack: while this middleware
 // runs, the context still points at the middleware's own route.
 //
-// Fiber only ever tracks the route currently executing, so if the endpoint
-// delegated onwards with ctx.Next() and a trailing Use middleware ran last,
-// that middleware's mount path is what remains on the context. Recording it
-// would file the request under "/" and merge unrelated routes into a single
-// series. The endpoint pattern is not recoverable at that point, so such
-// requests fall back to UnmatchedRouteLabel: the route is unknown, but the
-// request did match one, so it is still recorded.
+// Known limitation: Fiber only ever tracks the route currently executing, so if
+// the endpoint delegates onwards with ctx.Next() and a trailing Use middleware
+// runs last, that middleware's mount path is what remains on the context and
+// the request is attributed to it. The endpoint pattern is not recoverable at
+// that point and Fiber exposes no way to tell a Use route apart from any other
+// - ctx.IsMiddleware() also reports true for a route whose own handler chain
+// stopped early, which is what a short-circuiting per-route guard leaves
+// behind, so it cannot be used to detect this.
 func (m *middleware) routeLabel(ctx fiber.Ctx) (string, bool) {
 	if ctx.Matched() {
-		if route := ctx.Route(); route != nil && !ctx.IsMiddleware() {
+		if route := ctx.Route(); route != nil {
 			return normalizePath(route.Path), true
 		}
 		return m.unmatchedLabel, true

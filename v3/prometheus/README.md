@@ -146,12 +146,14 @@ Requests that miss every registered route are not recorded unless
 `TrackUnmatchedRequests` is enabled, in which case they are labeled with
 `UnmatchedRouteLabel`.
 
-One case cannot be attributed to a pattern: if the matched handler delegates
+One case is attributed to the wrong pattern. If the matched handler delegates
 onwards with `c.Next()` and a trailing `app.Use` middleware runs last, Fiber has
-already replaced the route on the context with that middleware's mount path, and
-the endpoint pattern is gone by the time the middleware regains control. Those
-requests are recorded under `UnmatchedRouteLabel` rather than filed under `/`,
-which would silently merge unrelated routes into one series.
+already replaced the route on the context with that middleware's mount path by
+the time this middleware regains control, so the request is recorded under that
+mount path — usually `/`. The endpoint pattern is unrecoverable at that point,
+and Fiber exposes no way to tell a `use` route from any other, so the case
+cannot be detected either. Avoid falling through from a route handler into a
+trailing `app.Use` if you need exact route labels.
 
 ### Dropping metrics you do not need
 
@@ -233,8 +235,15 @@ process collectors into it.
 
 When customizing the registry, ensure that `Registerer` and `Gatherer` refer to
 the same metrics source (for example, a `*prometheus.Registry`). Supplying only
-one that does not implement the other interface, or providing a mismatched
-pair, panics during initialization so metrics are not silently dropped.
+one that does not implement the other interface panics during initialization so
+metrics are not silently dropped.
+
+Supplying both is trusted, because that is how you pair a wrapper such as
+`prometheus.WrapRegistererWithPrefix` with the registry it wraps — and such a
+wrapper is not itself a `Gatherer`, so there is nothing to compare it against.
+Only a pair that is provably distinct, two different `*prometheus.Registry`
+values, is rejected. Pairing a wrapper with an unrelated registry is accepted
+and scrapes will return nothing.
 
 ```go
 registry := prometheus.NewRegistry()

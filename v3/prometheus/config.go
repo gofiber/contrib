@@ -65,6 +65,13 @@ type Config struct {
 	// Registerer nor Gatherer is supplied. If only one is provided, it must also
 	// implement the other interface or the middleware will panic to prevent
 	// silently omitting metrics.
+	//
+	// Supplying both is trusted: pairing a wrapper such as
+	// prometheus.WrapRegistererWithPrefix with the registry it wraps is the
+	// reason to do so, and the wrapper is not itself a Gatherer to compare
+	// against. Only a provably distinct pair, two different *prometheus.Registry
+	// values, is rejected; pairing a wrapper with an unrelated registry is
+	// accepted and scrapes return nothing.
 	Gatherer prometheus.Gatherer
 
 	// DisableGoCollector disables the Go runtime metrics collector registration.
