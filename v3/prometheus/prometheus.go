@@ -430,7 +430,14 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	values[1] = method
 	values[2] = routePath
 	for i, label := range m.dynamicLabels {
-		values[3+i] = label.fn(ctx)
+		// Unless the app sets fiber.Config.Immutable, Fiber hands out strings
+		// that alias the connection read buffer, and a label function reading a
+		// header, query or param returns one of those. Prometheus keeps label
+		// values for the lifetime of the series, so without a copy the buffer
+		// is reused by the next request and every series rewrites itself to
+		// whatever arrived last - collapsing distinct series onto one label set
+		// and leaving the registry unable to gather at all.
+		values[3+i] = strings.Clone(label.fn(ctx))
 	}
 
 	if m.requestsTotal != nil {

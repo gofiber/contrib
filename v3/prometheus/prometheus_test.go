@@ -1486,3 +1486,43 @@ func TestEmptyBucketsWithoutNativeHistogramsKeepsDefaults(t *testing.T) {
 		t.Fatal("expected native histograms to stay disabled")
 	}
 }
+
+// TestDynamicLabelValuesAreCopied guards the corruption that follows from
+// storing Fiber's zero-copy strings. A label function reading a header returns
+// a string aliasing the connection read buffer; Prometheus keeps label values
+// for the lifetime of the series, so without a copy every series rewrites
+// itself to whatever request arrived last, collapsing them onto one label set
+// and leaving the registry unable to gather at all.
+func TestDynamicLabelValuesAreCopied(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{
+		DynamicLabels: map[string]func(fiber.Ctx) string{
+			"tenant": func(c fiber.Ctx) string { return c.Get("X-Tenant", "unknown") },
+		},
+	}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+
+	const tenants = 25
+	for i := range tenants {
+		req := httptest.NewRequest(fiber.MethodGet, "/hello", nil)
+		req.Header.Set("X-Tenant", fmt.Sprintf("tenant-%d", i))
+		if _, err := app.Test(req, noTimeoutConfig); err != nil {
+			t.Fatalf("unexpected request error: %v", err)
+		}
+	}
+
+	// A corrupted registry fails to gather, which getMetrics reports as a
+	// non-200 scrape.
+	metrics := getMetrics(t, app, "")
+
+	seen := 0
+	for i := range tenants {
+		if strings.Contains(metrics, fmt.Sprintf(`tenant="tenant-%d"`, i)) {
+			seen++
+		}
+	}
+	if seen != tenants {
+		t.Fatalf("expected all %d tenant label values to survive, found %d: %q", tenants, seen, metrics)
+	}
+}

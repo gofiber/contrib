@@ -232,8 +232,12 @@ type Config struct {
 	// not collide with the built-in "status_code", "status_class", "method" and
 	// "path" labels, or with Labels; New panics if they do.
 	//
-	// Every distinct value multiplies the number of series, so only derive
-	// labels from bounded values.
+	// Every distinct value creates a new series, so returning request data
+	// unchanged lets a client grow the registry without bound. Map untrusted
+	// input onto a fixed set of values first.
+	//
+	// Returned values are copied, so a zero-copy string from c.Get or c.Params
+	// is safe to return directly.
 	//
 	// Optional. Default: none.
 	DynamicLabels map[string]func(fiber.Ctx) string

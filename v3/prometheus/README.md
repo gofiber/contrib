@@ -170,12 +170,24 @@ app.Use(fiberprometheus.New(fiberprometheus.Config{
 ### Extra labels per request
 
 `DynamicLabels` adds labels whose values are computed once per recorded
-request, after the handler chain has returned:
+request, after the handler chain has returned.
+
+Every distinct value creates a new series, so a value taken straight from the
+request is a denial-of-service vector: a client that varies a header freely
+grows the registry without bound. Map untrusted input onto a fixed set of
+values before returning it:
 
 ```go
+var knownTenants = map[string]bool{"acme": true, "globex": true}
+
 app.Use(fiberprometheus.New(fiberprometheus.Config{
     DynamicLabels: map[string]func(fiber.Ctx) string{
-        "tenant": func(c fiber.Ctx) string { return c.Get("X-Tenant", "unknown") },
+        "tenant": func(c fiber.Ctx) string {
+            if tenant := c.Get("X-Tenant"); knownTenants[tenant] {
+                return tenant
+            }
+            return "other"
+        },
     },
 }))
 ```
@@ -183,8 +195,10 @@ app.Use(fiberprometheus.New(fiberprometheus.Config{
 They apply to every family except `http_requests_in_progress`, which is
 incremented before routing and so cannot see them. Names must not collide with
 the built-in `status_code`, `status_class`, `method` and `path` labels or with
-`Labels`; the middleware panics at startup if they do. Every distinct value
-multiplies the series count, so only derive labels from bounded values.
+`Labels`; the middleware panics at startup if they do.
+
+The middleware copies each returned value, so it is safe to return one of
+Fiber's zero-copy strings such as `c.Get(...)` or `c.Params(...)` directly.
 
 ### Filtering
 
@@ -231,6 +245,19 @@ app.Use(fiberprometheus.New(fiberprometheus.Config{
     Gatherer:   registry,
 }))
 ```
+
+### Exposure of the metrics endpoint
+
+The endpoint is unauthenticated. Because the middleware answers `MetricsPath`
+itself before routing, a route registered at the same path with auth in front of
+it is never reached — so restrict access at the network layer, bind the metrics
+listener to an internal interface, or use `Config.Next` to reject scrapes that
+do not come from your monitoring system.
+
+A scrape discloses more than request counts: the default collectors report the
+exact Go version, process memory, open file descriptors and start time, and the
+`path` label enumerates every registered route pattern in the application. Treat
+it as internal.
 
 ### Protecting the scrape endpoint
 
