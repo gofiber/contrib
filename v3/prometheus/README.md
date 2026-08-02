@@ -42,16 +42,26 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | Gatherer | `prometheus.Gatherer` | Source the metrics endpoint gathers from. | private registry |
 | DisableGoCollector | `bool` | Skips registration of the Go runtime metrics collector. | `false` |
 | DisableProcessCollector | `bool` | Skips registration of the process metrics collector. | `false` |
-| RequestDurationBuckets | `[]float64` | Histogram buckets for request latency, in seconds. | see [Default Config](#default-config) |
+| RequestDurationBuckets | `[]float64` | Histogram buckets for request latency, in seconds. `nil` selects the defaults; an empty non-nil slice drops the classic buckets. | see [Default Config](#default-config) |
 | RequestSizeBuckets | `[]float64` | Histogram buckets for request payload size, in bytes. | see [Default Config](#default-config) |
 | ResponseSizeBuckets | `[]float64` | Histogram buckets for response payload size, in bytes. | see [Default Config](#default-config) |
+| NativeHistogramBucketFactor | `float64` | Enables native histograms when greater than 1, capping the growth factor between buckets. | `0` |
+| NativeHistogramMaxBucketNumber | `uint32` | Bounds the native histogram buckets kept per series. | `0` (unlimited) |
+| NativeHistogramMinResetDuration | `time.Duration` | Minimum time before a native histogram may be reset to control its bucket count. | `0` |
 | TrackUnmatchedRequests | `bool` | Records metrics for requests that do not resolve to a registered route. | `false` |
 | UnmatchedRouteLabel | `string` | Path label used for unmatched requests when `TrackUnmatchedRequests` is enabled. | `"/__unmatched__"` |
 | EnableOpenMetrics | `bool` | Negotiates the experimental OpenMetrics encoding, which is what exports exemplars. | `false` |
 | EnableOpenMetricsTextCreatedSamples | `bool` | Adds synthetic `_created` samples to OpenMetrics responses. | `false` |
 | DisableCompression | `bool` | Serves metrics uncompressed even when the client requests gzip or zstd. | `false` |
-| SkipURIs | `[]string` | Route patterns excluded from instrumentation, e.g. `/user/:id`. | `nil` |
+| MetricsMaxRequestsInFlight | `int` | Caps concurrent scrapes; the excess is answered with 503. | `0` (unlimited) |
+| MetricsTimeout | `time.Duration` | Bounds a single scrape before it is answered with 503. | `0` (no timeout) |
+| MetricsErrorLog | `promhttp.Logger` | Receives errors raised while gathering or writing metrics. | `nil` |
+| MetricsErrorHandling | `promhttp.HandlerErrorHandling` | How gathering errors are reported to the scraper. | `promhttp.HTTPErrorOnError` |
+| DisabledMetrics | `[]Metric` | Metric families to skip registering and recording. | `nil` |
+| SkipURIs | `[]string` | Route patterns excluded from instrumentation, e.g. `/user/:id`. A trailing `*` matches by prefix. | `nil` |
 | IgnoreStatusCodes | `[]int` | Response status codes excluded from metrics. | `nil` |
+| IgnoreStatusClasses | `[]string` | Status classes excluded from metrics, `"1xx"` through `"5xx"`. | `nil` |
+| DynamicLabels | `map[string]func(fiber.Ctx) string` | Extra labels computed per request. | `nil` |
 | Next | `func(fiber.Ctx) bool` | Skips the middleware when it returns true, including for `MetricsPath`. | `nil` |
 
 ## Default Config
@@ -136,6 +146,55 @@ Requests that miss every registered route are not recorded unless
 `TrackUnmatchedRequests` is enabled, in which case they are labeled with
 `UnmatchedRouteLabel`.
 
+### Dropping metrics you do not need
+
+Every family costs cardinality. `DisabledMetrics` skips registering and
+recording the ones you will not query — most often the two size histograms:
+
+```go
+app.Use(fiberprometheus.New(fiberprometheus.Config{
+    DisabledMetrics: []fiberprometheus.Metric{
+        fiberprometheus.MetricRequestSize,
+        fiberprometheus.MetricResponseSize,
+    },
+}))
+```
+
+### Extra labels per request
+
+`DynamicLabels` adds labels whose values are computed once per recorded
+request, after the handler chain has returned:
+
+```go
+app.Use(fiberprometheus.New(fiberprometheus.Config{
+    DynamicLabels: map[string]func(fiber.Ctx) string{
+        "tenant": func(c fiber.Ctx) string { return c.Get("X-Tenant", "unknown") },
+    },
+}))
+```
+
+They apply to every family except `http_requests_in_progress`, which is
+incremented before routing and so cannot see them. Names must not collide with
+the built-in `status_code`, `status_class`, `method` and `path` labels or with
+`Labels`; the middleware panics at startup if they do. Every distinct value
+multiplies the series count, so only derive labels from bounded values.
+
+### Filtering
+
+`SkipURIs` matches the registered route pattern. A trailing `*` matches by
+prefix and stops at a path segment boundary, so `/admin/*` excludes `/admin` and
+`/admin/users` but not `/administration`. `/*` excludes everything.
+
+`IgnoreStatusCodes` takes exact codes; `IgnoreStatusClasses` takes whole classes
+so you do not have to enumerate them:
+
+```go
+app.Use(fiberprometheus.New(fiberprometheus.Config{
+    SkipURIs:            []string{"/health", "/internal/*"},
+    IgnoreStatusClasses: []string{"4xx"},
+}))
+```
+
 ## Error handling
 
 Because Fiber runs the application error handler only after the whole handler
@@ -163,6 +222,44 @@ app.Use(fiberprometheus.New(fiberprometheus.Config{
     Service:    "my-service-name",
     Registerer: registry,
     Gatherer:   registry,
+}))
+```
+
+### Protecting the scrape endpoint
+
+A slow or stuck gather can otherwise pile up. `MetricsMaxRequestsInFlight` caps
+concurrent scrapes and `MetricsTimeout` bounds each one; both answer the excess
+with 503. Gather errors are silent by default — pass a `MetricsErrorLog` to see
+them:
+
+```go
+app.Use(fiberprometheus.New(fiberprometheus.Config{
+    MetricsMaxRequestsInFlight: 4,
+    MetricsTimeout:             10 * time.Second,
+    MetricsErrorLog:            log.New(os.Stderr, "prometheus: ", log.LstdFlags),
+}))
+```
+
+## Native histograms
+
+Setting `NativeHistogramBucketFactor` above 1 enables native histograms on the
+duration and size histograms. They resolve latency without hand-tuned buckets:
+the factor caps the growth between consecutive buckets, so `1.1` gives roughly
+10% resolution. This requires a Prometheus server with native histograms
+enabled, and the values are only carried by the protobuf exposition format.
+
+Classic and native buckets are emitted together by default. To go native-only,
+pass an empty non-nil bucket slice — unlike `nil`, which selects the defaults:
+
+```go
+app.Use(fiberprometheus.New(fiberprometheus.Config{
+    NativeHistogramBucketFactor:     1.1,
+    NativeHistogramMaxBucketNumber:  160,
+    NativeHistogramMinResetDuration: time.Hour,
+
+    RequestDurationBuckets: []float64{},
+    RequestSizeBuckets:     []float64{},
+    ResponseSizeBuckets:    []float64{},
 }))
 ```
 

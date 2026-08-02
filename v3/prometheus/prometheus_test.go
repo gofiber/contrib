@@ -14,6 +14,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"go.opentelemetry.io/otel"
 	tracesdk "go.opentelemetry.io/otel/sdk/trace"
 )
@@ -147,13 +148,13 @@ func TestSkipURIs(t *testing.T) {
 	if strings.Contains(metrics, "path=\"/skip\"") {
 		t.Fatalf("expected skip path to be excluded, got %q", metrics)
 	}
-	if strings.Contains(metrics, "http_request_size_bytes_sum{status_code=\"200\",method=\"GET\",path=\"/skip\"}") {
+	if strings.Contains(metrics, "http_request_size_bytes_sum{method=\"GET\",path=\"/skip\",status_code=\"200\"}") {
 		t.Fatalf("expected skip path request size metric to be excluded, got %q", metrics)
 	}
-	if strings.Contains(metrics, "http_response_size_bytes_sum{status_code=\"200\",method=\"GET\",path=\"/skip\"}") {
+	if strings.Contains(metrics, "http_response_size_bytes_sum{method=\"GET\",path=\"/skip\",status_code=\"200\"}") {
 		t.Fatalf("expected skip path response size metric to be excluded, got %q", metrics)
 	}
-	if strings.Contains(metrics, "http_requests_status_class_total{status_class=\"2xx\",method=\"GET\",path=\"/skip\"}") {
+	if strings.Contains(metrics, "http_requests_status_class_total{method=\"GET\",path=\"/skip\",status_class=\"2xx\"}") {
 		t.Fatalf("expected skip path status class metric to be excluded")
 	}
 }
@@ -185,13 +186,13 @@ func TestIgnoreStatusCodes(t *testing.T) {
 	if strings.Contains(metrics, "status_code=\"401\"") {
 		t.Fatalf("expected status code 401 to be ignored, got %q", metrics)
 	}
-	if strings.Contains(metrics, "http_request_size_bytes_sum{status_code=\"401\",method=\"GET\",path=\"/deny\"}") {
+	if strings.Contains(metrics, "http_request_size_bytes_sum{method=\"GET\",path=\"/deny\",status_code=\"401\"}") {
 		t.Fatalf("expected ignored status code request size metric to be excluded, got %q", metrics)
 	}
-	if strings.Contains(metrics, "http_response_size_bytes_sum{status_code=\"401\",method=\"GET\",path=\"/deny\"}") {
+	if strings.Contains(metrics, "http_response_size_bytes_sum{method=\"GET\",path=\"/deny\",status_code=\"401\"}") {
 		t.Fatalf("expected ignored status code response size metric to be excluded, got %q", metrics)
 	}
-	if strings.Contains(metrics, "http_requests_status_class_total{status_class=\"4xx\",method=\"GET\",path=\"/deny\"}") {
+	if strings.Contains(metrics, "http_requests_status_class_total{method=\"GET\",path=\"/deny\",status_class=\"4xx\"}") {
 		t.Fatalf("expected ignored status code status class metric to be excluded")
 	}
 }
@@ -1020,5 +1021,350 @@ func TestMiddlewareRoutesAreNotTreatedAsEndpoints(t *testing.T) {
 	metrics := getMetrics(t, app, "")
 	if strings.Contains(metrics, "http_requests_total") {
 		t.Fatalf("expected the unregistered method to stay uninstrumented, got %q", metrics)
+	}
+}
+
+func TestDisabledMetricsRemovesFamilies(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{
+		DisabledMetrics: []Metric{MetricRequestSize, MetricResponseSize},
+	}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	for _, name := range []string{"http_request_size_bytes", "http_response_size_bytes"} {
+		if strings.Contains(metrics, name) {
+			t.Fatalf("expected %s to be absent, got %q", name, metrics)
+		}
+	}
+	for _, name := range []string{"http_requests_total", "http_request_duration_seconds", "http_requests_in_progress"} {
+		if !strings.Contains(metrics, name) {
+			t.Fatalf("expected %s to still be exposed, got %q", name, metrics)
+		}
+	}
+}
+
+func TestDisabledInProgressGauge(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{
+		DisabledMetrics: []Metric{MetricRequestsInProgress},
+	}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if strings.Contains(metrics, "http_requests_in_progress") {
+		t.Fatalf("expected in-progress gauge to be absent, got %q", metrics)
+	}
+	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/hello",status_code="200"}`) {
+		t.Fatalf("expected requests to still be counted, got %q", metrics)
+	}
+}
+
+func TestAllRecordingMetricsDisabled(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{
+		DisabledMetrics: []Metric{
+			MetricRequestsTotal,
+			MetricRequestsStatusClassTotal,
+			MetricRequestDuration,
+			MetricRequestSize,
+			MetricResponseSize,
+		},
+	}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected the handler to still run, got %d", resp.StatusCode)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, "http_requests_in_progress") {
+		t.Fatalf("expected the in-progress gauge to remain, got %q", metrics)
+	}
+	if strings.Contains(metrics, "http_requests_total") {
+		t.Fatalf("expected no request counter, got %q", metrics)
+	}
+}
+
+func TestSkipURIsPrefixWildcard(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{SkipURIs: []string{"/admin/*"}}, "")
+	for _, path := range []string{"/admin", "/admin/users", "/administration"} {
+		app.Get(path, func(c fiber.Ctx) error {
+			return c.SendStatus(fiber.StatusOK)
+		})
+	}
+
+	for _, path := range []string{"/admin", "/admin/users", "/administration"} {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+			t.Fatalf("unexpected request error for %s: %v", path, err)
+		}
+	}
+
+	metrics := getMetrics(t, app, "")
+	for _, path := range []string{`path="/admin"`, `path="/admin/users"`} {
+		if strings.Contains(metrics, path) {
+			t.Fatalf("expected %s to be skipped, got %q", path, metrics)
+		}
+	}
+	// The prefix must stop at a path segment boundary.
+	if !strings.Contains(metrics, `path="/administration"`) {
+		t.Fatalf("expected /administration to be recorded, got %q", metrics)
+	}
+}
+
+func TestSkipURIsWildcardMatchesEverything(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{SkipURIs: []string{"/*"}}, "")
+	app.Get("/", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+	app.Get("/deep/route", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	for _, path := range []string{"/", "/deep/route"} {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+			t.Fatalf("unexpected request error for %s: %v", path, err)
+		}
+	}
+
+	metrics := getMetrics(t, app, "")
+	if strings.Contains(metrics, "http_requests_total{") {
+		t.Fatalf("expected every route to be skipped, got %q", metrics)
+	}
+}
+
+func TestIgnoreStatusClasses(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{IgnoreStatusClasses: []string{"4xx"}}, "")
+	app.Get("/ok", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+	app.Get("/denied", func(c fiber.Ctx) error {
+		return fiber.ErrUnauthorized
+	})
+	app.Get("/gone", func(c fiber.Ctx) error {
+		return fiber.ErrNotFound
+	})
+
+	for _, path := range []string{"/ok", "/denied", "/gone"} {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+			t.Fatalf("unexpected request error for %s: %v", path, err)
+		}
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `path="/ok"`) {
+		t.Fatalf("expected the 2xx route to be recorded, got %q", metrics)
+	}
+	for _, path := range []string{`path="/denied"`, `path="/gone"`} {
+		if strings.Contains(metrics, path) {
+			t.Fatalf("expected %s to be ignored as 4xx, got %q", path, metrics)
+		}
+	}
+}
+
+func TestDynamicLabels(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{
+		DynamicLabels: map[string]func(fiber.Ctx) string{
+			"tenant": func(c fiber.Ctx) string { return c.Get("X-Tenant") },
+		},
+	}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+
+	req := httptest.NewRequest(fiber.MethodGet, "/hello", nil)
+	req.Header.Set("X-Tenant", "acme")
+	if _, err := app.Test(req, noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/hello",status_code="200",tenant="acme"}`) {
+		t.Fatalf("expected the dynamic label on the counter, got %q", metrics)
+	}
+	if !strings.Contains(metrics, `http_requests_status_class_total{method="GET",path="/hello",status_class="2xx",tenant="acme"}`) {
+		t.Fatalf("expected the dynamic label on the status class counter, got %q", metrics)
+	}
+
+	// The in-flight gauge is incremented before routing, so it cannot carry
+	// labels derived from the request outcome.
+	for _, line := range strings.Split(metrics, "\n") {
+		if strings.HasPrefix(line, "http_requests_in_progress{") && strings.Contains(line, "tenant=") {
+			t.Fatalf("expected no dynamic label on the in-progress gauge, got %q", line)
+		}
+	}
+}
+
+// Prometheus emits label pairs alphabetically, so this asserts the whole series
+// to prove each dynamic name is paired with its own function's value rather than
+// a neighbour's.
+func TestDynamicLabelsPairNamesWithValues(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{
+		DynamicLabels: map[string]func(fiber.Ctx) string{
+			"zone":   func(fiber.Ctx) string { return "eu" },
+			"tenant": func(fiber.Ctx) string { return "acme" },
+			"apex":   func(fiber.Ctx) string { return "one" },
+		},
+	}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	want := `http_requests_total{apex="one",method="GET",path="/hello",status_code="200",tenant="acme",zone="eu"}`
+	if !strings.Contains(metrics, want) {
+		t.Fatalf("expected %q, got %q", want, metrics)
+	}
+}
+
+func TestDynamicLabelCollisionPanics(t *testing.T) {
+	for name, cfg := range map[string]Config{
+		"built-in": {
+			DynamicLabels: map[string]func(fiber.Ctx) string{
+				"path": func(fiber.Ctx) string { return "x" },
+			},
+		},
+		"constant": {
+			Service: "svc",
+			DynamicLabels: map[string]func(fiber.Ctx) string{
+				"service": func(fiber.Ctx) string { return "x" },
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					if !strings.Contains(fmt.Sprint(r), "collides with") {
+						t.Fatalf("expected a collision panic, got %v", r)
+					}
+					return
+				}
+				t.Fatal("expected a panic for a colliding dynamic label")
+			}()
+
+			_ = New(cfg)
+		})
+	}
+}
+
+func TestDynamicLabelWithoutFunctionPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			if !strings.Contains(fmt.Sprint(r), "has no function") {
+				t.Fatalf("expected a panic about the missing function, got %v", r)
+			}
+			return
+		}
+		t.Fatal("expected a panic for a nil dynamic label function")
+	}()
+
+	_ = New(Config{DynamicLabels: map[string]func(fiber.Ctx) string{"tenant": nil}})
+}
+
+// durationHistogram gathers the request duration histogram straight from the
+// registry, because native histograms are only carried by the protobuf
+// exposition format and never appear in the text one.
+func durationHistogram(t *testing.T, registry *prometheus.Registry) *dto.Histogram {
+	t.Helper()
+
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("gathering metrics: %v", err)
+	}
+
+	for _, family := range families {
+		if family.GetName() != "http_request_duration_seconds" {
+			continue
+		}
+		if len(family.Metric) == 0 {
+			t.Fatal("expected at least one duration sample")
+		}
+		return family.Metric[0].Histogram
+	}
+
+	t.Fatal("expected the duration histogram to be registered")
+	return nil
+}
+
+func newAppWithRegistry(t *testing.T, cfg Config) (*fiber.App, *prometheus.Registry) {
+	t.Helper()
+
+	registry := prometheus.NewRegistry()
+	cfg.Registerer = registry
+	cfg.Gatherer = registry
+
+	app, _ := newAppWithMiddleware(cfg, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	return app, registry
+}
+
+func TestNativeHistogramsDisabledByDefault(t *testing.T) {
+	_, registry := newAppWithRegistry(t, Config{})
+
+	histogram := durationHistogram(t, registry)
+	if histogram.Schema != nil {
+		t.Fatalf("expected no native histogram schema, got %d", histogram.GetSchema())
+	}
+	if len(histogram.Bucket) == 0 {
+		t.Fatal("expected the default classic buckets")
+	}
+}
+
+func TestNativeHistogramBucketFactor(t *testing.T) {
+	_, registry := newAppWithRegistry(t, Config{NativeHistogramBucketFactor: 1.1})
+
+	histogram := durationHistogram(t, registry)
+	if histogram.Schema == nil {
+		t.Fatal("expected native histograms to be enabled")
+	}
+	// Both representations are emitted unless the classic buckets are dropped.
+	if len(histogram.Bucket) == 0 {
+		t.Fatal("expected the classic buckets to remain alongside the native ones")
+	}
+}
+
+func TestNativeHistogramsWithoutClassicBuckets(t *testing.T) {
+	_, registry := newAppWithRegistry(t, Config{
+		NativeHistogramBucketFactor: 1.1,
+		// An empty non-nil slice drops the classic buckets, unlike nil which
+		// selects the defaults.
+		RequestDurationBuckets: []float64{},
+	})
+
+	histogram := durationHistogram(t, registry)
+	if histogram.Schema == nil {
+		t.Fatal("expected native histograms to be enabled")
+	}
+	if len(histogram.Bucket) != 0 {
+		t.Fatalf("expected no classic buckets, got %d", len(histogram.Bucket))
+	}
+	if histogram.GetSampleCount() != 1 {
+		t.Fatalf("expected the sample to still be counted, got %d", histogram.GetSampleCount())
 	}
 }

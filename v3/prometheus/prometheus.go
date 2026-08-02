@@ -5,7 +5,9 @@ package prometheus
 import (
 	"errors"
 	"reflect"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -20,7 +22,8 @@ import (
 )
 
 // middleware encapsulates all state required to expose metrics and instrument
-// Fiber requests.
+// Fiber requests. Every metric vector is nil when its family is disabled
+// through Config.DisabledMetrics.
 type middleware struct {
 	cfg              Config
 	requestsTotal    *prometheus.CounterVec
@@ -33,7 +36,27 @@ type middleware struct {
 	metricsPath      string
 	unmatchedLabel   string
 	skipURIs         map[string]struct{}
+	skipPrefixes     []string
 	ignoreStatusCode map[int]struct{}
+	ignoreClasses    map[string]struct{}
+	dynamicLabels    []dynamicLabel
+	records          bool
+}
+
+// dynamicLabel binds a configured label name to the function producing its
+// value. The slice held by middleware is sorted by name so that the label order
+// of a metric never depends on map iteration order.
+type dynamicLabel struct {
+	name string
+	fn   func(fiber.Ctx) string
+}
+
+// reservedLabels are the label names the middleware sets itself.
+var reservedLabels = map[string]struct{}{
+	"status_code":  {},
+	"status_class": {},
+	"method":       {},
+	"path":         {},
 }
 
 // New creates a new Prometheus middleware handler.
@@ -76,88 +99,115 @@ func New(config ...Config) fiber.Handler {
 		labels["service"] = cfg.Service
 	}
 
-	counter := promauto.With(registry).NewCounterVec(
-		prometheus.CounterOpts{
-			Name:        prometheus.BuildFQName(cfg.Namespace, cfg.Subsystem, "requests_total"),
-			Help:        "Count all http requests by status code, method and path.",
-			ConstLabels: labels,
-		},
-		[]string{"status_code", "method", "path"},
-	)
+	dynamic := resolveDynamicLabels(cfg, labels)
 
-	statusClassCounter := promauto.With(registry).NewCounterVec(
-		prometheus.CounterOpts{
-			Name:        prometheus.BuildFQName(cfg.Namespace, cfg.Subsystem, "requests_status_class_total"),
-			Help:        "Count all http requests grouped by status class, method and path.",
-			ConstLabels: labels,
-		},
-		[]string{"status_class", "method", "path"},
-	)
+	disabled := make(map[Metric]struct{}, len(cfg.DisabledMetrics))
+	for _, metric := range cfg.DisabledMetrics {
+		disabled[metric] = struct{}{}
+	}
+	enabled := func(metric Metric) bool {
+		_, off := disabled[metric]
+		return !off
+	}
 
-	histogram := promauto.With(registry).NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:        prometheus.BuildFQName(cfg.Namespace, cfg.Subsystem, "request_duration_seconds"),
-			Help:        "Duration of all HTTP requests by status code, method and path.",
-			ConstLabels: labels,
-			Buckets:     cfg.RequestDurationBuckets,
-		},
-		[]string{"status_code", "method", "path"},
-	)
-
-	requestHistogram := promauto.With(registry).NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:        prometheus.BuildFQName(cfg.Namespace, cfg.Subsystem, "request_size_bytes"),
-			Help:        "Size of all HTTP requests by status code, method and path.",
-			ConstLabels: labels,
-			Buckets:     cfg.RequestSizeBuckets,
-		},
-		[]string{"status_code", "method", "path"},
-	)
-
-	responseHistogram := promauto.With(registry).NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:        prometheus.BuildFQName(cfg.Namespace, cfg.Subsystem, "response_size_bytes"),
-			Help:        "Size of all HTTP responses by status code, method and path.",
-			ConstLabels: labels,
-			Buckets:     cfg.ResponseSizeBuckets,
-		},
-		[]string{"status_code", "method", "path"},
-	)
-
-	// The in-flight gauge has to be incremented before the router picks a
-	// handler, at which point the route pattern is still unknown. Labelling it
-	// by method only keeps the gauge balanced and its cardinality bounded.
-	gauge := promauto.With(registry).NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name:        prometheus.BuildFQName(cfg.Namespace, cfg.Subsystem, "requests_in_progress"),
-			Help:        "All the requests in progress by method.",
-			ConstLabels: labels,
-		},
-		[]string{"method"},
-	)
+	// Both label sets carry the dynamic names last so that the value buffer
+	// built per request can be shared between them.
+	byStatusCode := variableLabels("status_code", dynamic)
+	byStatusClass := variableLabels("status_class", dynamic)
 
 	metricsHandler := adaptor.HTTPHandler(promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{
 		EnableOpenMetrics:                   cfg.EnableOpenMetrics,
 		EnableOpenMetricsTextCreatedSamples: cfg.EnableOpenMetricsTextCreatedSamples,
 		DisableCompression:                  cfg.DisableCompression,
+		MaxRequestsInFlight:                 cfg.MetricsMaxRequestsInFlight,
+		Timeout:                             cfg.MetricsTimeout,
+		ErrorLog:                            cfg.MetricsErrorLog,
+		ErrorHandling:                       cfg.MetricsErrorHandling,
 	}))
 
 	m := &middleware{
 		cfg:              cfg,
-		requestsTotal:    counter,
-		requestsByClass:  statusClassCounter,
-		requestDuration:  histogram,
-		requestSize:      requestHistogram,
-		responseSize:     responseHistogram,
-		requestInFlight:  gauge,
 		metricsHandler:   metricsHandler,
 		metricsPath:      normalizePath(cfg.MetricsPath),
 		unmatchedLabel:   normalizePath(cfg.UnmatchedRouteLabel),
 		skipURIs:         make(map[string]struct{}, len(cfg.SkipURIs)),
 		ignoreStatusCode: make(map[int]struct{}, len(cfg.IgnoreStatusCodes)),
+		ignoreClasses:    make(map[string]struct{}, len(cfg.IgnoreStatusClasses)),
+		dynamicLabels:    dynamic,
 	}
 
+	if enabled(MetricRequestsTotal) {
+		m.requestsTotal = promauto.With(registry).NewCounterVec(
+			prometheus.CounterOpts{
+				Name:        prometheus.BuildFQName(cfg.Namespace, cfg.Subsystem, string(MetricRequestsTotal)),
+				Help:        "Count all http requests by status code, method and path.",
+				ConstLabels: labels,
+			},
+			byStatusCode,
+		)
+	}
+
+	if enabled(MetricRequestsStatusClassTotal) {
+		m.requestsByClass = promauto.With(registry).NewCounterVec(
+			prometheus.CounterOpts{
+				Name:        prometheus.BuildFQName(cfg.Namespace, cfg.Subsystem, string(MetricRequestsStatusClassTotal)),
+				Help:        "Count all http requests grouped by status class, method and path.",
+				ConstLabels: labels,
+			},
+			byStatusClass,
+		)
+	}
+
+	if enabled(MetricRequestDuration) {
+		m.requestDuration = promauto.With(registry).NewHistogramVec(
+			histogramOpts(cfg, MetricRequestDuration,
+				"Duration of all HTTP requests by status code, method and path.",
+				labels, cfg.RequestDurationBuckets),
+			byStatusCode,
+		)
+	}
+
+	if enabled(MetricRequestSize) {
+		m.requestSize = promauto.With(registry).NewHistogramVec(
+			histogramOpts(cfg, MetricRequestSize,
+				"Size of all HTTP requests by status code, method and path.",
+				labels, cfg.RequestSizeBuckets),
+			byStatusCode,
+		)
+	}
+
+	if enabled(MetricResponseSize) {
+		m.responseSize = promauto.With(registry).NewHistogramVec(
+			histogramOpts(cfg, MetricResponseSize,
+				"Size of all HTTP responses by status code, method and path.",
+				labels, cfg.ResponseSizeBuckets),
+			byStatusCode,
+		)
+	}
+
+	if enabled(MetricRequestsInProgress) {
+		// The in-flight gauge has to be incremented before the router picks a
+		// handler, at which point the route pattern is still unknown. Labelling
+		// it by method only keeps the gauge balanced and its cardinality
+		// bounded, and is also why dynamic labels are not applied to it.
+		m.requestInFlight = promauto.With(registry).NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name:        prometheus.BuildFQName(cfg.Namespace, cfg.Subsystem, string(MetricRequestsInProgress)),
+				Help:        "All the requests in progress by method.",
+				ConstLabels: labels,
+			},
+			[]string{"method"},
+		)
+	}
+
+	m.records = m.requestsTotal != nil || m.requestsByClass != nil ||
+		m.requestDuration != nil || m.requestSize != nil || m.responseSize != nil
+
 	for _, path := range cfg.SkipURIs {
+		if prefix, found := strings.CutSuffix(path, "*"); found {
+			m.skipPrefixes = append(m.skipPrefixes, normalizePath(prefix))
+			continue
+		}
 		m.skipURIs[normalizePath(path)] = struct{}{}
 	}
 
@@ -165,7 +215,70 @@ func New(config ...Config) fiber.Handler {
 		m.ignoreStatusCode[code] = struct{}{}
 	}
 
+	for _, class := range cfg.IgnoreStatusClasses {
+		m.ignoreClasses[strings.ToLower(strings.TrimSpace(class))] = struct{}{}
+	}
+
 	return m.handle
+}
+
+// variableLabels builds a metric's variable label names: the status label the
+// family is keyed by, the request labels, then the dynamic names in sorted
+// order.
+func variableLabels(statusLabel string, dynamic []dynamicLabel) []string {
+	names := make([]string, 0, 3+len(dynamic))
+	names = append(names, statusLabel, "method", "path")
+	for _, label := range dynamic {
+		names = append(names, label.name)
+	}
+	return names
+}
+
+// histogramOpts assembles the options shared by the three histogram families,
+// including the native histogram settings.
+func histogramOpts(cfg Config, name Metric, help string, labels prometheus.Labels, buckets []float64) prometheus.HistogramOpts {
+	return prometheus.HistogramOpts{
+		Name:                            prometheus.BuildFQName(cfg.Namespace, cfg.Subsystem, string(name)),
+		Help:                            help,
+		ConstLabels:                     labels,
+		Buckets:                         buckets,
+		NativeHistogramBucketFactor:     cfg.NativeHistogramBucketFactor,
+		NativeHistogramMaxBucketNumber:  cfg.NativeHistogramMaxBucketNumber,
+		NativeHistogramMinResetDuration: cfg.NativeHistogramMinResetDuration,
+	}
+}
+
+// resolveDynamicLabels sorts the configured dynamic labels by name and rejects
+// the ones that would clash with a label the middleware already sets. Sorting
+// keeps the label order of a metric stable across restarts, which map iteration
+// order would not.
+func resolveDynamicLabels(cfg Config, constLabels prometheus.Labels) []dynamicLabel {
+	if len(cfg.DynamicLabels) == 0 {
+		return nil
+	}
+
+	names := make([]string, 0, len(cfg.DynamicLabels))
+	for name := range cfg.DynamicLabels {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	dynamic := make([]dynamicLabel, 0, len(names))
+	for _, name := range names {
+		if _, reserved := reservedLabels[name]; reserved {
+			panic("prometheus middleware: dynamic label " + strconv.Quote(name) + " collides with a built-in label")
+		}
+		if _, ok := constLabels[name]; ok {
+			panic("prometheus middleware: dynamic label " + strconv.Quote(name) + " collides with a constant label")
+		}
+		fn := cfg.DynamicLabels[name]
+		if fn == nil {
+			panic("prometheus middleware: dynamic label " + strconv.Quote(name) + " has no function")
+		}
+		dynamic = append(dynamic, dynamicLabel{name: name, fn: fn})
+	}
+
+	return dynamic
 }
 
 // resolveRegistry selects the registerer/gatherer pair used for collector
@@ -255,9 +368,11 @@ func (m *middleware) serveMetrics(ctx fiber.Ctx) error {
 func (m *middleware) instrument(ctx fiber.Ctx) error {
 	method := ctx.Method()
 
-	inFlight := m.requestInFlight.WithLabelValues(method)
-	inFlight.Inc()
-	defer inFlight.Dec()
+	if m.requestInFlight != nil {
+		inFlight := m.requestInFlight.WithLabelValues(method)
+		inFlight.Inc()
+		defer inFlight.Dec()
+	}
 
 	start := time.Now()
 
@@ -271,6 +386,10 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		}
 	}
 
+	if !m.records {
+		return nil
+	}
+
 	elapsed := time.Since(start).Seconds()
 
 	routePath, ok := m.routeLabel(ctx)
@@ -278,7 +397,7 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		return nil
 	}
 
-	if _, skip := m.skipURIs[routePath]; skip {
+	if m.skipped(routePath) {
 		return nil
 	}
 
@@ -287,10 +406,25 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		return nil
 	}
 
-	statusCode := strconv.Itoa(status)
+	class := statusClass(status)
+	if _, ignore := m.ignoreClasses[class]; ignore {
+		return nil
+	}
 
-	m.requestsTotal.WithLabelValues(statusCode, method, routePath).Inc()
-	m.requestsByClass.WithLabelValues(statusClass(status), method, routePath).Inc()
+	// One buffer shared by every family: the metric vectors copy the values
+	// they are given, so element 0 can be swapped from the status code to the
+	// status class for the last counter.
+	values := make([]string, 3+len(m.dynamicLabels))
+	values[0] = strconv.Itoa(status)
+	values[1] = method
+	values[2] = routePath
+	for i, label := range m.dynamicLabels {
+		values[3+i] = label.fn(ctx)
+	}
+
+	if m.requestsTotal != nil {
+		m.requestsTotal.WithLabelValues(values...).Inc()
+	}
 
 	spanCtx := trace.SpanContextFromContext(ctx.Context())
 	traceID := spanCtx.TraceID()
@@ -309,33 +443,61 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		observer.Observe(value)
 	}
 
-	observe(m.requestDuration.WithLabelValues(statusCode, method, routePath), elapsed)
+	if m.requestDuration != nil {
+		observe(m.requestDuration.WithLabelValues(values...), elapsed)
+	}
 
 	// Content-Length is authoritative when present and is the only usable
 	// source for file-backed or streamed payloads. Otherwise fall back to the
 	// buffered body, but never for a body stream: reading it would drain the
 	// stream into memory just to measure it.
-	req := ctx.Request()
-	requestLength := req.Header.ContentLength()
-	if requestLength <= 0 {
-		requestLength = 0
-		if !req.IsBodyStream() {
-			requestLength = len(req.Body())
+	if m.requestSize != nil {
+		req := ctx.Request()
+		requestLength := req.Header.ContentLength()
+		if requestLength <= 0 {
+			requestLength = 0
+			if !req.IsBodyStream() {
+				requestLength = len(req.Body())
+			}
 		}
+		observe(m.requestSize.WithLabelValues(values...), float64(requestLength))
 	}
-	observe(m.requestSize.WithLabelValues(statusCode, method, routePath), float64(requestLength))
 
-	resp := ctx.Response()
-	responseLength := resp.Header.ContentLength()
-	if responseLength <= 0 {
-		responseLength = 0
-		if !resp.IsBodyStream() {
-			responseLength = len(resp.Body())
+	if m.responseSize != nil {
+		resp := ctx.Response()
+		responseLength := resp.Header.ContentLength()
+		if responseLength <= 0 {
+			responseLength = 0
+			if !resp.IsBodyStream() {
+				responseLength = len(resp.Body())
+			}
 		}
+		observe(m.responseSize.WithLabelValues(values...), float64(responseLength))
 	}
-	observe(m.responseSize.WithLabelValues(statusCode, method, routePath), float64(responseLength))
+
+	if m.requestsByClass != nil {
+		values[0] = class
+		m.requestsByClass.WithLabelValues(values...).Inc()
+	}
 
 	return nil
+}
+
+// skipped reports whether the route pattern is excluded by Config.SkipURIs,
+// either as an exact match or through a "*" prefix entry.
+func (m *middleware) skipped(routePath string) bool {
+	if _, ok := m.skipURIs[routePath]; ok {
+		return true
+	}
+
+	for _, prefix := range m.skipPrefixes {
+		// "/*" normalizes to "/" and excludes everything.
+		if prefix == "/" || routePath == prefix || strings.HasPrefix(routePath, prefix+"/") {
+			return true
+		}
+	}
+
+	return false
 }
 
 // routeLabel returns the path label for the current request and whether the
