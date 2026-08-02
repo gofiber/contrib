@@ -133,6 +133,12 @@ type Config struct {
 	// UnmatchedRouteLabel is the path label used when TrackUnmatchedRequests is
 	// enabled and a request does not match a registered route.
 	//
+	// This is a label value rather than a route, so unlike MetricsPath it is
+	// taken as given: no leading slash is added. Set it to "unmatched" and the
+	// path label reads "unmatched", which is useful to keep unmatched traffic
+	// visibly distinct from real route patterns. Only trailing slashes are
+	// trimmed, so that "/other/" and "/other" cannot become two series.
+	//
 	// Optional. Default: "/__unmatched__".
 	UnmatchedRouteLabel string
 

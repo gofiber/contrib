@@ -44,9 +44,10 @@ func newBenchmarkApp(b *testing.B, cfg *Config) *fiber.App {
 func benchmarkRequests(b *testing.B, app *fiber.App, path string, wantStatus int) {
 	b.Helper()
 	b.ReportAllocs()
-	b.ResetTimer()
 
-	for range b.N {
+	// b.Loop manages the timer itself and keeps the compiler from optimising
+	// the body away, which a plain counted loop does not guarantee.
+	for b.Loop() {
 		resp, err := app.Test(httptest.NewRequest(http.MethodGet, path, nil), noTimeoutConfig)
 		if err != nil {
 			b.Fatalf("unexpected request error: %v", err)
