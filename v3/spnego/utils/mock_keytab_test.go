@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"errors"
+	"io"
 	"os"
 	"path"
 	"testing"
@@ -15,9 +17,36 @@ type mockFileOperator struct {
 	flag int
 }
 
-func (m mockFileOperator) OpenFile(filename string, flag int, perm os.FileMode) (*os.File, error) {
+const (
+	// readOnlyFileOperator creates the file but hands back a handle that cannot
+	// be written to. Unlike flag 0x02, which closes the handle and so makes the
+	// write and the following close fail with the same error, this separates
+	// them: the write fails while the close succeeds, which is where a reused
+	// error variable would drop the write error entirely.
+	readOnlyFileOperator = 0x04
+	// closeFailsFileOperator writes successfully and fails only on close, the
+	// one combination a real *os.File cannot produce.
+	closeFailsFileOperator = 0x08
+)
+
+// errCloseFailed is what closeFailsFileOperator reports, distinct from any
+// error the OS would produce so the assertion cannot pass by coincidence.
+var errCloseFailed = errors.New("close refused")
+
+// failingCloser writes through to the file and then refuses to close.
+type failingCloser struct{ *os.File }
+
+func (f failingCloser) Close() error {
+	_ = f.File.Close()
+	return errCloseFailed
+}
+
+func (m mockFileOperator) OpenFile(filename string, flag int, perm os.FileMode) (io.WriteCloser, error) {
 	if m.flag&0x01 != 0 {
 		return nil, os.ErrPermission
+	}
+	if m.flag&readOnlyFileOperator != 0 {
+		flag = os.O_RDONLY | os.O_CREATE
 	}
 	file, err := os.OpenFile(filename, flag, perm)
 	if err != nil {
@@ -25,6 +54,9 @@ func (m mockFileOperator) OpenFile(filename string, flag int, perm os.FileMode) 
 	}
 	if m.flag&0x02 != 0 {
 		file.Close()
+	}
+	if m.flag&closeFailsFileOperator != 0 {
+		return failingCloser{File: file}, nil
 	}
 	return file, nil
 }
@@ -106,6 +138,79 @@ func TestNewMockKeytab(t *testing.T) {
 		)
 		require.ErrorIs(t, err, os.ErrClosed)
 		require.NoFileExists(t, filename)
+		// Both the write and the close fail with the same error here, so only
+		// the wording tells the two apart: the write is what went wrong and the
+		// close is the aside. Reporting just the close would hide the cause.
+		require.ErrorContains(t, err, "error writing to file")
+		require.ErrorContains(t, err, "also failed to close file")
+	})
+	t.Run("a failed write is reported even when the close succeeds", func(t *testing.T) {
+		prevFileOperator := defaultFileOperator
+		defaultFileOperator = mockFileOperator{flag: readOnlyFileOperator}
+		t.Cleanup(func() {
+			defaultFileOperator = prevFileOperator
+		})
+		filename := path.Join(t.TempDir(), "temp.keytab")
+		_, _, err := NewMockKeytab(
+			WithPrincipal("HTTP/sso.example.com"),
+			WithRealm("TEST.LOCAL"),
+			WithPairs(EncryptTypePair{
+				Version:     3,
+				EncryptType: 18,
+				CreateTime:  time.Now(),
+			}),
+			WithFilename(filename),
+		)
+		require.ErrorContains(t, err, "error writing to file",
+			"a successful close must not overwrite the write error")
+		require.NotContains(t, err.Error(), "error closing file")
+		require.NoFileExists(t, filename,
+			"a half-written keytab must not be left on disk")
+	})
+	t.Run("a failed close is reported and the file removed", func(t *testing.T) {
+		// A close that fails after a good write can still have left a truncated
+		// keytab on disk, so returning success here would hand the caller a
+		// keytab that does not match the file.
+		prevFileOperator := defaultFileOperator
+		defaultFileOperator = mockFileOperator{flag: closeFailsFileOperator}
+		t.Cleanup(func() {
+			defaultFileOperator = prevFileOperator
+		})
+		filename := path.Join(t.TempDir(), "temp.keytab")
+		_, _, err := NewMockKeytab(
+			WithPrincipal("HTTP/sso.example.com"),
+			WithRealm("TEST.LOCAL"),
+			WithPairs(EncryptTypePair{
+				Version:     3,
+				EncryptType: 18,
+				CreateTime:  time.Now(),
+			}),
+			WithFilename(filename),
+		)
+		require.ErrorIs(t, err, errCloseFailed)
+		require.ErrorContains(t, err, "error closing file")
+		require.NoFileExists(t, filename)
+	})
+	t.Run("the keytab file is readable only by its owner", func(t *testing.T) {
+		// Keytabs hold long-term key material. Widening this would expose it to
+		// every local account, and nothing else in the suite looks at the mode.
+		filename := path.Join(t.TempDir(), "temp.keytab")
+		_, clean, err := NewMockKeytab(
+			WithPrincipal("HTTP/sso.example.com"),
+			WithRealm("TEST.LOCAL"),
+			WithPairs(EncryptTypePair{
+				Version:     3,
+				EncryptType: 18,
+				CreateTime:  time.Now(),
+			}),
+			WithFilename(filename),
+		)
+		require.NoError(t, err)
+		t.Cleanup(clean)
+
+		info, err := os.Stat(filename)
+		require.NoError(t, err)
+		require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 	})
 	t.Run("test file created", func(t *testing.T) {
 		filename := path.Join(t.TempDir(), "temp.keytab")

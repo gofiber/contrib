@@ -3,6 +3,7 @@ package utils
 import (
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 
@@ -90,19 +91,30 @@ func newDefaultMockOptions() *mockOptions {
 	}
 }
 
+// fileOperator is the seam the tests substitute to drive the failure paths of
+// writing a keytab out. OpenFile yields an io.WriteCloser rather than an
+// *os.File because those are the only two operations the writer needs, and a
+// concrete *os.File cannot fail its Close independently of its Write — which
+// leaves the close-after-a-good-write branch untestable.
 type fileOperator interface {
-	OpenFile(filename string, flag int, perm os.FileMode) (*os.File, error)
+	OpenFile(filename string, flag int, perm os.FileMode) (io.WriteCloser, error)
 	Remove(filename string) error
 }
 
 type myFileOperator struct{}
 
-func (m myFileOperator) OpenFile(filename string, flag int, perm os.FileMode) (*os.File, error) {
-	return os.OpenFile(filename, flag, perm)
+func (m myFileOperator) OpenFile(filename string, flag int, perm os.FileMode) (io.WriteCloser, error) {
+	file, err := os.OpenFile(filename, flag, perm) //nolint:gosec // path comes from the caller's own options
+	if err != nil {
+		// Returned explicitly rather than as the pair: a nil *os.File in a
+		// non-nil interface would not compare equal to nil at the call site.
+		return nil, err //nolint:wrapcheck // the caller wraps this with its own context
+	}
+	return file, nil
 }
 
 func (m myFileOperator) Remove(filename string) error {
-	return os.Remove(filename)
+	return os.Remove(filename) //nolint:wrapcheck // the caller does not inspect this
 }
 
 var defaultFileOperator fileOperator = myFileOperator{}

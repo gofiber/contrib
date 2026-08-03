@@ -12,7 +12,12 @@ import (
 // KeytabInfo represents information about a principal in a Kerberos keytab
 // It contains the principal name, realm, and associated encryption type pairs
 type KeytabInfo struct {
-	PrincipalName string            // The Kerberos principal name (e.g., HTTP/service.example.com)
+	// PrincipalName is the fully qualified principal, realm included, exactly
+	// as gokrb5 renders it — "HTTP/service.example.com@EXAMPLE.COM", not the
+	// bare "HTTP/service.example.com". Realm below repeats that suffix on its
+	// own for callers that need the two apart, so appending it to this field
+	// prints the realm twice.
+	PrincipalName string
 	Realm         string            // The Kerberos realm (e.g., EXAMPLE.COM)
 	Pairs         []EncryptTypePair // List of encryption type pairs for this principal
 }
@@ -48,7 +53,8 @@ type MultiKeytabInfo []KeytabInfo
 //	kt, _ := keytab.Load("/path/to/keytab")
 //	info := GetKeytabInfo(kt)
 //	for _, principal := range info {
-//	  fmt.Printf("Principal: %s@%s\n", principal.PrincipalName, principal.Realm)
+//	  // PrincipalName already ends in "@REALM"; appending Realm repeats it.
+//	  fmt.Printf("Principal: %s\n", principal.PrincipalName)
 //	  for _, pair := range principal.Pairs {
 //	    fmt.Printf("  EncryptType: %d, Version: %d, Created: %v\n", pair.EncryptType, pair.Version, pair.CreateTime)
 //	  }
