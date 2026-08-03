@@ -30,9 +30,12 @@ const DefaultSystemKeytabPath = "/etc/krb5.keytab"
 // This design allows for extensibility, enabling keytab retrieval from various sources
 // such as databases, remote services, or other custom implementations beyond static files
 //
-// The middleware calls this function on every authenticated request, so an
-// implementation that contacts an external system should cache its result and
-// refresh it out of band rather than doing the work inline.
+// The middleware calls this function on every request it does not skip, which
+// includes wholly unauthenticated ones: the lookup runs before the ticket is
+// examined, so a client with no credentials at all still drives one call per
+// request. An implementation that contacts an external system should therefore
+// cache its result and refresh it out of band rather than doing the work
+// inline, and size any rate limit for unauthenticated traffic.
 type KeytabLookupFunc func() (*keytab.Keytab, error)
 
 // UnauthorizedHandler is invoked in place of SPNEGO's own response when a
@@ -53,10 +56,12 @@ type Config struct {
 	Next func(ctx fiber.Ctx) bool
 	// KeytabLookup is a function that retrieves the keytab
 	KeytabLookup KeytabLookupFunc
-	// Log receives gokrb5's diagnostics. gokrb5 logs once per unauthenticated
-	// request and has no level of its own, so leaving this nil keeps an
-	// unauthenticated client from driving log volume. Note that the first leg
-	// of every Negotiate handshake is unauthenticated.
+	// Log receives gokrb5's diagnostics, which carry no level of their own.
+	// gokrb5 writes a line for every request that presents a token — one on
+	// success, one on a refusal, one on a token it cannot parse — so on a busy
+	// service this is a line per request, not a rare event. The one leg it
+	// stays silent on is the opening challenge, the request with no
+	// Authorization header. Leaving this nil keeps that volume off the log.
 	Log *log.Logger
 	// UseFiberLogger sends gokrb5's diagnostics to Fiber's default logger when
 	// Log is nil. It only takes effect when that logger is backed by a
@@ -144,7 +149,7 @@ type degradedState struct {
 // goroutine queued once mu is released. Queueing beside the mutation means a
 // transition cannot be marked as announced without its line being queued, and
 // writing after the unlock keeps the sink off the reload path that every
-// authenticated request queues on during a degraded episode.
+// request queues on during a degraded episode.
 //
 // Each goroutine writes only its own lines, and nothing orders them against
 // each other. A goroutine preempted between releasing mu and writing can
@@ -166,7 +171,7 @@ type keytabFileCache struct {
 	nowFn      func() time.Time
 
 	// snapshot is read without holding mu so the cache-hit path, which runs on
-	// every authenticated request, does not serialise concurrent requests.
+	// every request the middleware handles, does not serialise them.
 	snapshot atomic.Pointer[keytabSnapshot]
 	// degraded mirrors whether deg is populated. The hit path reads it rather
 	// than writing anything, so the common healthy case leaves this cache line

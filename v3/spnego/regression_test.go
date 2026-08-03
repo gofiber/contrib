@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -23,6 +25,7 @@ import (
 	"github.com/jcmturner/gokrb5/v8/keytab"
 	"github.com/jcmturner/gokrb5/v8/service"
 	gospnego "github.com/jcmturner/gokrb5/v8/spnego"
+	"github.com/jcmturner/gokrb5/v8/types"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
@@ -33,34 +36,20 @@ import (
 // status or body change and strand clients that only renegotiate on an
 // untouched 401.
 func TestUnauthorizedNotCalledOnContinueNeeded(t *testing.T) {
-	filename := writeMockKeytab(t, t.TempDir(), "sso.keytab", "HTTP/sso.example.com")
-	lookupFunc, err := NewKeytabFileLookupFunc(filename)
-	require.NoError(t, err)
-
 	var unauthorizedCalled bool
-	cfg := Config{
-		KeytabLookup: lookupFunc,
+	ctx := serveProtected(t, Config{
+		KeytabLookup: testKeytabLookup(t),
 		Unauthorized: func(c fiber.Ctx) error {
 			unauthorizedCalled = true
 			return c.Status(fiber.StatusForbidden).SendString("denied")
 		},
-	}
-
-	middleware, err := New(cfg)
-	require.NoError(t, err)
-	app := fiber.New()
-	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
-		return c.SendString("authenticated")
+	}, func(ctx *fasthttp.RequestCtx) {
+		// An NTLMSSP token is a Negotiate header gokrb5 cannot parse as SPNEGO
+		// or raw KRB5, which is exactly the path that asks the client to
+		// renegotiate.
+		ctx.Request.Header.Set(fiber.HeaderAuthorization,
+			"Negotiate "+base64.StdEncoding.EncodeToString([]byte("NTLMSSP\x00\x01\x00\x00\x00")))
 	})
-
-	// An NTLMSSP token is a Negotiate header gokrb5 cannot parse as SPNEGO or
-	// raw KRB5, which is exactly the path that asks the client to renegotiate.
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.Header.SetMethod(fiber.MethodGet)
-	ctx.Request.SetRequestURI("/authenticate")
-	ctx.Request.Header.Set(fiber.HeaderAuthorization,
-		"Negotiate "+base64.StdEncoding.EncodeToString([]byte("NTLMSSP\x00\x01\x00\x00\x00")))
-	app.Handler()(ctx)
 
 	require.False(t, unauthorizedCalled, "Unauthorized must not run on the continue-needed leg")
 	require.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode())
@@ -74,25 +63,12 @@ func TestUnauthorizedNotCalledOnContinueNeeded(t *testing.T) {
 // that arrives untouched, so letting a caller rewrite it into, say, a 403 is a
 // permanent silent deny-all.
 func TestUnauthorizedNotCalledOnOpeningChallenge(t *testing.T) {
-	filename := writeMockKeytab(t, t.TempDir(), "sso.keytab", "HTTP/sso.example.com")
-	lookupFunc, err := NewKeytabFileLookupFunc(filename)
-	require.NoError(t, err)
-
-	middleware, err := New(Config{
-		KeytabLookup: lookupFunc,
+	ctx := serveProtected(t, Config{
+		KeytabLookup: testKeytabLookup(t),
 		Unauthorized: func(c fiber.Ctx) error {
 			return c.Status(fiber.StatusForbidden).SendString("denied")
 		},
 	})
-	require.NoError(t, err)
-	app := fiber.New()
-	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
-		return c.SendString("authenticated")
-	})
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.Header.SetMethod(fiber.MethodGet)
-	ctx.Request.SetRequestURI("/authenticate")
-	app.Handler()(ctx)
 
 	require.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode())
 	require.Equal(t, "Negotiate", string(ctx.Response.Header.Peek(fiber.HeaderWWWAuthenticate)),
@@ -132,21 +108,11 @@ func TestIsRejection(t *testing.T) {
 // the keytab file.
 func TestKeytabLookupErrorNotLeakedToClient(t *testing.T) {
 	secretPath := path.Join(t.TempDir(), "super-secret-location.keytab")
-	middleware, err := New(Config{
+	ctx := serveProtected(t, Config{
 		KeytabLookup: func() (*keytab.Keytab, error) {
 			return nil, fmt.Errorf("open %s: permission denied", secretPath)
 		},
 	})
-	require.NoError(t, err)
-
-	app := fiber.New()
-	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
-		return c.SendString("authenticated")
-	})
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.Header.SetMethod(fiber.MethodGet)
-	ctx.Request.SetRequestURI("/authenticate")
-	app.Handler()(ctx)
 
 	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
 	require.NotContains(t, string(ctx.Response.Body()), secretPath)
@@ -157,20 +123,12 @@ func TestKeytabLookupErrorNotLeakedToClient(t *testing.T) {
 // but returns no keytab. gokrb5 dereferences it unconditionally, so passing it
 // through panics the process on an unauthenticated request.
 func TestNilKeytabFromLookup(t *testing.T) {
-	middleware, err := New(Config{
-		KeytabLookup: func() (*keytab.Keytab, error) { return nil, nil },
+	var ctx *fasthttp.RequestCtx
+	require.NotPanics(t, func() {
+		ctx = serveProtected(t, Config{
+			KeytabLookup: func() (*keytab.Keytab, error) { return nil, nil },
+		})
 	})
-	require.NoError(t, err)
-
-	app := fiber.New()
-	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
-		return c.SendString("authenticated")
-	})
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.Header.SetMethod(fiber.MethodGet)
-	ctx.Request.SetRequestURI("/authenticate")
-
-	require.NotPanics(t, func() { app.Handler()(ctx) })
 	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
 }
 
@@ -288,29 +246,16 @@ func rejectedNegotiateHeader(t *testing.T) string {
 // TestUnauthorizedCalledOnRejection is the positive case for Config.Unauthorized:
 // a client presented a ticket and the service refused it.
 func TestUnauthorizedCalledOnRejection(t *testing.T) {
-	filename := writeMockKeytab(t, t.TempDir(), "sso.keytab", "HTTP/sso.example.com")
-	lookupFunc, err := NewKeytabFileLookupFunc(filename)
-	require.NoError(t, err)
-
 	var called bool
-	middleware, err := New(Config{
-		KeytabLookup: lookupFunc,
+	ctx := serveProtected(t, Config{
+		KeytabLookup: testKeytabLookup(t),
 		Unauthorized: func(c fiber.Ctx) error {
 			called = true
 			return c.Status(fiber.StatusForbidden).SendString("denied")
 		},
+	}, func(ctx *fasthttp.RequestCtx) {
+		ctx.Request.Header.Set(fiber.HeaderAuthorization, rejectedNegotiateHeader(t))
 	})
-	require.NoError(t, err)
-
-	app := fiber.New()
-	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
-		return c.SendString("authenticated")
-	})
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.Header.SetMethod(fiber.MethodGet)
-	ctx.Request.SetRequestURI("/authenticate")
-	ctx.Request.Header.Set(fiber.HeaderAuthorization, rejectedNegotiateHeader(t))
-	app.Handler()(ctx)
 
 	require.True(t, called, "Unauthorized must run when a ticket is rejected")
 	require.Equal(t, fiber.StatusForbidden, ctx.Response.StatusCode())
@@ -324,21 +269,10 @@ func TestUnauthorizedCalledOnRejection(t *testing.T) {
 // TestRejectionWithoutHandlerPassesThrough checks the default: with no handler
 // configured, SPNEGO's own rejection reaches the client unchanged.
 func TestRejectionWithoutHandlerPassesThrough(t *testing.T) {
-	filename := writeMockKeytab(t, t.TempDir(), "sso.keytab", "HTTP/sso.example.com")
-	lookupFunc, err := NewKeytabFileLookupFunc(filename)
-	require.NoError(t, err)
-	middleware, err := New(Config{KeytabLookup: lookupFunc})
-	require.NoError(t, err)
-
-	app := fiber.New()
-	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
-		return c.SendString("authenticated")
-	})
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.Header.SetMethod(fiber.MethodGet)
-	ctx.Request.SetRequestURI("/authenticate")
-	ctx.Request.Header.Set(fiber.HeaderAuthorization, rejectedNegotiateHeader(t))
-	app.Handler()(ctx)
+	ctx := serveProtected(t, Config{KeytabLookup: testKeytabLookup(t)},
+		func(ctx *fasthttp.RequestCtx) {
+			ctx.Request.Header.Set(fiber.HeaderAuthorization, rejectedNegotiateHeader(t))
+		})
 
 	require.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode())
 	require.Equal(t, spnegoRejected, string(ctx.Response.Header.Peek(fiber.HeaderWWWAuthenticate)))
@@ -674,6 +608,7 @@ func TestRequestForSPNEGO(t *testing.T) {
 	ctx.Request.SetRequestURI("/a%2Fb/c%20d?q=1&x=%41")
 	ctx.Request.Header.Set(fiber.HeaderHost, "sso.example.com:8443")
 	ctx.Request.Header.Set(fiber.HeaderAuthorization, "Negotiate abc")
+	ctx.SetRemoteAddr(&net.TCPAddr{IP: net.IPv4(203, 0, 113, 7), Port: 55123})
 	app.Handler()(ctx)
 
 	require.NotNil(t, got)
@@ -682,6 +617,17 @@ func TestRequestForSPNEGO(t *testing.T) {
 	// net/http documents a server request's Host as "host or host:port", so the
 	// port must survive.
 	require.Equal(t, "sso.example.com:8443", got.Host)
+
+	// RemoteAddr is the one field gokrb5 reads: it parses it with
+	// types.GetHostAddress and, on success, constrains ticket verification to
+	// that client address (spnego/http.go:252, service/APExchange.go:14).
+	// Leaving it empty would reject every address-restricted service ticket and
+	// log a parse failure per request, so both the value and its parseability
+	// are pinned.
+	require.Equal(t, "203.0.113.7:55123", got.RemoteAddr)
+	addr, err := types.GetHostAddress(got.RemoteAddr)
+	require.NoError(t, err, "gokrb5 must be able to parse the address it is handed")
+	require.Equal(t, net.IPv4(203, 0, 113, 7).To4(), net.IP(addr.Address))
 
 	// URL is present purely so a dereference cannot panic. It is deliberately
 	// empty rather than a reconstruction, which could not be faithful for every
@@ -904,16 +850,35 @@ func TestKeytabCacheConcurrentReload(t *testing.T) {
 	require.NoError(t, err)
 
 	// Now flip the file between broken and good while readers hammer the cache.
-	stop := make(chan struct{})
+	// The two interlock: the flipper waits for the readers to have loaded since
+	// its last write, and the readers run until the flipper is done. Neither
+	// side bounding itself independently works — at GOMAXPROCS=1 the flipper
+	// runs every write before a reader is first scheduled, so the concurrent
+	// phase contains no observed transition at all and the assertion below
+	// becomes vacuous.
+	const (
+		readerCount = 16
+		flips       = 100
+		// Two loads per reader, because a load counted after a write may have
+		// stat'd the file before it. At most readerCount can be in flight, so
+		// doubling leaves a full round that certainly saw the new revision.
+		loadsPerFlip = 2 * readerCount
+	)
+	// Readers report progress with a non-blocking send and the flipper waits on
+	// receives, so it parks rather than spinning: a Gosched loop here holds the
+	// only P at GOMAXPROCS=1 and turns a 10ms test into a 7s one. A dropped
+	// send just means the flipper waits for the next load, of which there are
+	// always more.
+	progress := make(chan struct{}, readerCount)
+	flipsDone := make(chan struct{})
 	var flipper, readers sync.WaitGroup
 	flipper.Add(1)
 	go func() {
 		defer flipper.Done()
-		for i := 0; ; i++ {
-			select {
-			case <-stop:
-				return
-			default:
+		defer close(flipsDone)
+		for i := range flips {
+			for range loadsPerFlip {
+				<-progress
 			}
 			if i%2 == 0 {
 				_ = os.WriteFile(filename, []byte("12"), 0o600)
@@ -926,32 +891,51 @@ func TestKeytabCacheConcurrentReload(t *testing.T) {
 		}
 	}()
 	// Verdicts come back over a channel: require.* calls runtime.Goexit, which
-	// on a worker would let readers.Wait proceed as though it had finished.
-	bad := make(chan string, 16)
-	for range 16 {
+	// on a worker would let readers.Wait proceed as though it had finished. A
+	// reader that sees a violation keeps going rather than returning, so the
+	// flipper's wait above cannot be starved by readers dropping out.
+	bad := make(chan string, readerCount)
+	for range readerCount {
 		readers.Add(1)
 		go func() {
 			defer readers.Done()
-			for range 200 {
+			for {
+				select {
+				case <-flipsDone:
+					return
+				default:
+				}
 				kt, loadErr := cache.load()
+				select {
+				case progress <- struct{}{}:
+				default:
+				}
 				// Either a keytab or an error, never both and never neither.
 				if (loadErr == nil) == (kt == nil) {
 					select {
 					case bad <- fmt.Sprintf("load returned keytab=%v err=%v", kt != nil, loadErr):
 					default:
 					}
-					return
 				}
 			}
 		}()
 	}
-	readers.Wait()
-	close(stop)
 	flipper.Wait()
+	readers.Wait()
 	close(bad)
 	for msg := range bad {
 		t.Error(msg)
 	}
+
+	// Measured before the convergence load below, not after: that load closes
+	// the episode still open at this point and writes its own all-clear, which
+	// on its own would satisfy the assertion no matter what the concurrent
+	// phase did.
+	logMu.Lock()
+	afterConcurrent := logged.Len()
+	logMu.Unlock()
+	require.Greater(t, afterConcurrent, beforeConcurrent,
+		"the concurrent phase must produce episode lines of its own")
 
 	// Whatever the interleaving, the file ends good and the cache converges.
 	require.NoError(t, os.WriteFile(filename, good, 0o600))
@@ -959,11 +943,34 @@ func TestKeytabCacheConcurrentReload(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, kt)
 	require.False(t, cache.degraded.Load(), "the episode must close once the keytab is good")
+}
 
-	logMu.Lock()
-	defer logMu.Unlock()
-	require.Greater(t, logged.Len(), beforeConcurrent,
-		"the concurrent phase must produce episode lines of its own")
+// waitUntilBlockedOnMutex blocks until some goroutine is inside sync.Mutex.Lock
+// beneath the named function. The caller must already hold that mutex, which is
+// what makes the observation stable: the goroutine cannot leave Lock until the
+// caller releases it.
+//
+// It exists because the tests covering load's under-lock re-stat have to know
+// the loader is past its pre-lock stat before they disturb the files. A sleep
+// only makes that likely — and on a miss the pre-lock stat fails instead,
+// producing the same error and leaving the branch under test unexercised. A
+// goroutine sitting in Lock has provably run everything before the Lock call.
+//
+// Frames are matched rather than the goroutine's header state, which the
+// runtime has renamed across releases; the frames below Lock are elided for a
+// parked goroutine, so they cannot be matched either.
+func waitUntilBlockedOnMutex(t *testing.T, symbol string) {
+	t.Helper()
+	buf := make([]byte, 1<<20)
+	require.Eventually(t, func() bool {
+		for _, g := range strings.Split(string(buf[:runtime.Stack(buf, true)]), "\n\n") {
+			if strings.Contains(g, symbol) && strings.Contains(g, "sync.(*Mutex).Lock(") {
+				return true
+			}
+		}
+		return false
+	}, 30*time.Second, 200*time.Microsecond,
+		"no goroutine blocked on a mutex in %s", symbol)
 }
 
 // lockedWriter serialises writes so the test can read the buffer safely.
@@ -1052,15 +1059,26 @@ func TestEmitDoesNotHoldReloadLock(t *testing.T) {
 }
 
 // stubAuthenticate replaces the SPNEGO acceptance step for the duration of a
-// test, so the authenticated branch can be driven without a KDC.
-func stubAuthenticate(t *testing.T, accept func(w http.ResponseWriter, r *http.Request) bool) {
+// test, so the authenticated branch can be driven without a KDC. accept writes
+// whatever gokrb5 would have written and returns the identity to hand the inner
+// handler, or nil to decline.
+//
+// The identity is attached here rather than by accept because gokrb5 attaches
+// it to a request *derived* from the one it was given
+// (goidentity.AddToHTTPRequestContext, spnego/http.go:298) and never to the one
+// the middleware built. Passing the middleware's own request straight through
+// would make the two indistinguishable, and reading the identity off the wrong
+// one would pass under test while returning nothing in production.
+func stubAuthenticate(t *testing.T, accept func(w http.ResponseWriter, r *http.Request) goidentity.Identity) {
 	t.Helper()
 	previous := authenticate
 	authenticate = func(inner http.Handler, _ *keytab.Keytab, _ ...func(*service.Settings)) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if accept(w, r) {
-				inner.ServeHTTP(w, r)
+			id := accept(w, r)
+			if id == nil {
+				return
 			}
+			inner.ServeHTTP(w, goidentity.AddToHTTPRequestContext(id, r))
 		})
 	}
 	t.Cleanup(func() { authenticate = previous })
@@ -1073,11 +1091,11 @@ func stubAuthenticate(t *testing.T, accept func(w http.ResponseWriter, r *http.R
 func TestAuthenticatedRequestPropagatesIdentityAndError(t *testing.T) {
 	user := goidentity.NewUser("alice")
 	user.SetDomain("EXAMPLE.LOCAL")
-	stubAuthenticate(t, func(w http.ResponseWriter, r *http.Request) bool {
-		// What gokrb5 does on success, in the same order.
+	stubAuthenticate(t, func(w http.ResponseWriter, _ *http.Request) goidentity.Identity {
+		// SPNEGO writes the accept-completed header before serving the inner
+		// handler, so the recorder holds it by the time the middleware replays.
 		w.Header().Set(fiber.HeaderWWWAuthenticate, "Negotiate accepted")
-		*r = *goidentity.AddToHTTPRequestContext(&user, r)
-		return true
+		return &user
 	})
 
 	filename := writeMockKeytab(t, t.TempDir(), "sso.keytab", "HTTP/sso.example.com")
@@ -1166,26 +1184,13 @@ func TestFallbackToSystemKeytabValidatesAtStartup(t *testing.T) {
 // service settings, which resolveLogger alone does not exercise.
 func TestConfigLogReachesGokrb5(t *testing.T) {
 	var captured bytes.Buffer
-	filename := writeMockKeytab(t, t.TempDir(), "sso.keytab", "HTTP/sso.example.com")
-	lookupFunc, err := NewKeytabFileLookupFunc(filename)
-	require.NoError(t, err)
-
-	middleware, err := New(Config{
-		KeytabLookup: lookupFunc,
+	serveProtected(t, Config{
+		KeytabLookup: testKeytabLookup(t),
 		Log:          log.New(&captured, "", 0),
+	}, func(ctx *fasthttp.RequestCtx) {
+		// A malformed Negotiate token makes gokrb5 log its own diagnostic.
+		ctx.Request.Header.Set(fiber.HeaderAuthorization, "Negotiate !!!not-base64!!!")
 	})
-	require.NoError(t, err)
-
-	app := fiber.New()
-	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
-		return c.SendString("authenticated")
-	})
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.Header.SetMethod(fiber.MethodGet)
-	ctx.Request.SetRequestURI("/authenticate")
-	// A malformed Negotiate token makes gokrb5 log its own diagnostic.
-	ctx.Request.Header.Set(fiber.HeaderAuthorization, "Negotiate !!!not-base64!!!")
-	app.Handler()(ctx)
 
 	require.NotEmpty(t, captured.String(), "gokrb5 diagnostics must reach Config.Log")
 	require.Contains(t, captured.String(), "SPNEGO")
@@ -1208,8 +1213,9 @@ func TestReloadPairsStampsWithContent(t *testing.T) {
 	rotatedBytes, err := os.ReadFile(rotated)
 	require.NoError(t, err)
 
-	// Repeated because the loader has to reach its pre-lock stat before the
-	// rotation to exercise the window; a miss only costs an iteration.
+	// Repeated so the assertions run against many stat/read interleavings, not
+	// because any single iteration might miss the window: parking on mu is
+	// waited for below rather than slept for.
 	for range 30 {
 		filename := path.Join(t.TempDir(), "sso.keytab")
 		require.NoError(t, os.WriteFile(filename, original, 0o600))
@@ -1222,9 +1228,9 @@ func TestReloadPairsStampsWithContent(t *testing.T) {
 			_, _ = cache.load()
 		}()
 
-		// Give the loader time to stat and block on mu, then rotate underneath
-		// it and let it through.
-		time.Sleep(2 * time.Millisecond)
+		// Parked on mu means the pre-lock stat has already recorded the
+		// pre-rotation revision, which is the state this test is about.
+		waitUntilBlockedOnMutex(t, "(*keytabFileCache).load(")
 		require.NoError(t, os.WriteFile(filename, rotatedBytes, 0o600))
 		cache.mu.Unlock()
 		<-done
@@ -1255,25 +1261,24 @@ func TestReloadReportsStatFailureUnderLock(t *testing.T) {
 
 	cache := newKeytabFileCache([]string{filename})
 
+	cache.mu.Lock()
 	var loadErr error
-	for range 30 {
-		require.NoError(t, os.WriteFile(filename, []byte("not a keytab"), 0o600))
-		cache.mu.Lock()
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			_, loadErr = cache.load()
-		}()
-		// Let the loader stat and block on mu, then remove the file underneath
-		// it before letting it through.
-		time.Sleep(2 * time.Millisecond)
-		require.NoError(t, os.Remove(filename))
-		cache.mu.Unlock()
-		<-done
-		if loadErr != nil {
-			break
-		}
-	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, loadErr = cache.load()
+	}()
+	// Waiting for the loader to park on mu is what makes this test about the
+	// under-lock stat. A fixed sleep here would let the removal land first on a
+	// slow or loaded machine; the pre-lock stat would then be the one that
+	// failed, producing the same error and the same clear flag, and dropping
+	// the under-lock check would survive. Parked on mu means the pre-lock stat
+	// has already run and succeeded.
+	waitUntilBlockedOnMutex(t, "(*keytabFileCache).load(")
+	require.NoError(t, os.Remove(filename))
+	cache.mu.Unlock()
+	<-done
+
 	require.ErrorIs(t, loadErr, ErrLoadKeytabFileFailed)
 	// A stat failure records no episode. Falling through to readAll instead —
 	// which is what dropping the under-lock error check would do — sets
@@ -1359,15 +1364,15 @@ func TestRecorderStatusRules(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			stubAuthenticate(t, func(w http.ResponseWriter, _ *http.Request) bool {
+			stubAuthenticate(t, func(w http.ResponseWriter, _ *http.Request) goidentity.Identity {
 				tc.write(w)
-				return false
+				return nil
 			})
 			ctx := serveProtected(t, Config{KeytabLookup: testKeytabLookup(t)})
 			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode())
-			if tc.wantBody != "" {
-				require.Equal(t, tc.wantBody, string(ctx.Response.Body()))
-			}
+			// Asserted unconditionally: the declining row expects an empty
+			// body, and a "" that means "do not check" could not express that.
+			require.Equal(t, tc.wantBody, string(ctx.Response.Body()))
 		})
 	}
 }

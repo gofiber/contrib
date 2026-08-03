@@ -113,7 +113,7 @@ func main() {
 
 The middleware is designed with extensibility in mind, allowing keytab retrieval from various sources beyond static files:
 
-> **`KeytabLookup` is called on every authenticated request.** It sits in the request hot path, so a lookup that contacts an external system will add its latency — and its failure modes — to each authentication. If you fetch from a database, a secrets manager, or a remote service, cache the result and refresh it out of band (on a TTL or a rotation event), and apply a bounded timeout.
+> **`KeytabLookup` is called on every request the middleware handles, authenticated or not.** The lookup runs before the ticket is examined, so a client that presents no credentials at all still drives one call per request — size any rate limit or timeout for traffic you do not control. It also sits in the request hot path, so a lookup that contacts an external system adds its latency, and its failure modes, to every request. If you fetch from a database, a secrets manager, or a remote service, cache the result and refresh it out of band (on a TTL or a rotation event), and apply a bounded timeout.
 >
 > `NewKeytabFileLookupFunc` already does this: it caches the merged keytab and re-reads the files only when one of them changes size, modification time or identity, so rotating a keytab on disk still takes effect without paying for a parse per request.
 >
@@ -199,7 +199,7 @@ The `Config` struct supports the following fields:
 
 ### Logging
 
-gokrb5 logs once per unauthenticated request, with no level of its own. Since the first leg of every Negotiate handshake is unauthenticated, leaving both `Log` and `UseFiberLogger` unset keeps an unauthenticated client from driving log volume. Setting either one opts in, and note that neither honours Fiber's log level.
+gokrb5 writes a line for every request that presents a token, with no level of its own: one on success, one on a refusal, and one on a token it cannot parse. On a busy service that is a line per request. The single leg it stays silent on is the opening challenge — the request with no `Authorization` header — so enabling this is not cheap on authenticated traffic. Leaving both `Log` and `UseFiberLogger` unset keeps that volume off the log entirely. Setting either one opts in, and note that neither honours Fiber's log level.
 
 ### Customizing the unauthorized response
 

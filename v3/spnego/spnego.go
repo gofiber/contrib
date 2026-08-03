@@ -36,9 +36,12 @@ import (
 //
 // These values mirror unexported constants in gokrb5/v8/spnego/http.go, pinned
 // at v8.4.4. Re-check them against the source when upgrading gokrb5: a change
-// there would silently reclassify responses. TestIsRejection and
-// TestUnauthorizedNotCalledOnContinueNeeded assert them against gokrb5's real
-// output, so a drift fails the suite.
+// there would silently reclassify responses. The tests that would catch a drift
+// are the ones that drive live gokrb5 and compare what it emitted —
+// TestUnauthorizedNotCalledOnContinueNeeded, TestUnauthorizedCalledOnRejection
+// and TestRejectionWithoutHandlerPassesThrough. TestIsRejection is not one of
+// them: it builds its table from these same constants, so it holds whatever
+// they say.
 const (
 	spnegoContinueNeeded = "Negotiate oRQwEqADCgEBoQsGCSqGSIb3EgECAg=="
 	spnegoRejected       = "Negotiate oQcwBaADCgEC"

@@ -11,7 +11,11 @@ import (
 
 func TestGetAndSetAuthenticatedIdentityFromContextForFiberV3(t *testing.T) {
 	app := fiberV3.New()
-	id := goidentity.NewUser("test@TEST.LOCAL")
+	// The domain is set explicitly: NewUser stores its whole argument as the
+	// username and leaves the domain empty, so asserting against id.Domain()
+	// would compare "" to "" and hold however Locals behaved.
+	id := goidentity.NewUser("test")
+	id.SetDomain("TEST.LOCAL")
 	app.Use("/identity", func(ctx fiberV3.Ctx) error {
 		SetAuthenticatedIdentityToContext(ctx, &id)
 		return ctx.Next()
@@ -43,6 +47,6 @@ func TestGetAndSetAuthenticatedIdentityFromContextForFiberV3(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, fiberV3.StatusOK, resp.StatusCode)
 	require.True(t, withIDOK)
-	require.Equal(t, id.UserName(), withID.UserName())
-	require.Equal(t, id.Domain(), withID.Domain())
+	require.Equal(t, "test", withID.UserName())
+	require.Equal(t, "TEST.LOCAL", withID.Domain())
 }
