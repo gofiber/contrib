@@ -25,22 +25,22 @@ import (
 // Fiber requests. Every metric vector is nil when its family is disabled
 // through Config.DisabledMetrics.
 type middleware struct {
-	cfg              Config
-	requestsTotal    *prometheus.CounterVec
-	requestsByClass  *prometheus.CounterVec
-	requestDuration  *prometheus.HistogramVec
-	requestSize      *prometheus.HistogramVec
-	responseSize     *prometheus.HistogramVec
-	requestInFlight  *prometheus.GaugeVec
-	metricsHandler   fiber.Handler
-	metricsPath      string
-	unmatchedLabel   string
-	skipURIs         map[string]struct{}
-	skipPrefixes     []string
-	ignoreStatusCode map[int]struct{}
-	ignoreClasses    map[string]struct{}
-	dynamicLabels    []dynamicLabel
-	records          bool
+	cfg               Config
+	requestsTotal     *prometheus.CounterVec
+	requestsByClass   *prometheus.CounterVec
+	requestDuration   *prometheus.HistogramVec
+	requestSize       *prometheus.HistogramVec
+	responseSize      *prometheus.HistogramVec
+	requestInFlight   *prometheus.GaugeVec
+	metricsHandler    fiber.Handler
+	metricsPath       string
+	unmatchedLabel    string
+	skipURIs          map[string]struct{}
+	skipPrefixes      []string
+	skipStatusCodes   map[int]struct{}
+	skipStatusClasses map[string]struct{}
+	dynamicLabels     []dynamicLabel
+	records           bool
 }
 
 // dynamicLabel binds a configured label name to the function producing its
@@ -64,7 +64,7 @@ var reservedLabels = map[string]struct{}{
 // The handler is meant to be mounted globally so that it observes every
 // request the application serves:
 //
-//	app.Use(prometheus.New(prometheus.Config{Service: "my-service"}))
+//	app.Use(prometheus.New(prometheus.Config{ServiceName: "my-service"}))
 //
 // Requests whose path equals Config.MetricsPath ("/metrics" by default) are
 // answered with the Prometheus exposition format instead of being forwarded to
@@ -95,8 +95,8 @@ func New(config ...Config) fiber.Handler {
 	for key, value := range cfg.Labels {
 		labels[key] = value
 	}
-	if cfg.Service != "" {
-		labels["service"] = cfg.Service
+	if cfg.ServiceName != "" {
+		labels["service"] = cfg.ServiceName
 	}
 
 	dynamic := resolveDynamicLabels(cfg, labels)
@@ -126,14 +126,14 @@ func New(config ...Config) fiber.Handler {
 	}))
 
 	m := &middleware{
-		cfg:              cfg,
-		metricsHandler:   metricsHandler,
-		metricsPath:      normalizePath(cfg.MetricsPath),
-		unmatchedLabel:   normalizePath(cfg.UnmatchedRouteLabel),
-		skipURIs:         make(map[string]struct{}, len(cfg.SkipURIs)),
-		ignoreStatusCode: make(map[int]struct{}, len(cfg.IgnoreStatusCodes)),
-		ignoreClasses:    make(map[string]struct{}, len(cfg.IgnoreStatusClasses)),
-		dynamicLabels:    dynamic,
+		cfg:               cfg,
+		metricsHandler:    metricsHandler,
+		metricsPath:       normalizePath(cfg.MetricsPath),
+		unmatchedLabel:    normalizePath(cfg.UnmatchedRouteLabel),
+		skipURIs:          make(map[string]struct{}, len(cfg.SkipURIs)),
+		skipStatusCodes:   make(map[int]struct{}, len(cfg.SkipStatusCodes)),
+		skipStatusClasses: make(map[string]struct{}, len(cfg.SkipStatusClasses)),
+		dynamicLabels:     dynamic,
 	}
 
 	if enabled(MetricRequestsTotal) {
@@ -220,12 +220,12 @@ func New(config ...Config) fiber.Handler {
 		}
 	}
 
-	for _, code := range cfg.IgnoreStatusCodes {
-		m.ignoreStatusCode[code] = struct{}{}
+	for _, code := range cfg.SkipStatusCodes {
+		m.skipStatusCodes[code] = struct{}{}
 	}
 
-	for _, class := range cfg.IgnoreStatusClasses {
-		m.ignoreClasses[strings.ToLower(strings.TrimSpace(class))] = struct{}{}
+	for _, class := range cfg.SkipStatusClasses {
+		m.skipStatusClasses[strings.ToLower(strings.TrimSpace(class))] = struct{}{}
 	}
 
 	return m.handle
@@ -420,12 +420,12 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	}
 
 	status := ctx.Response().StatusCode()
-	if _, ignore := m.ignoreStatusCode[status]; ignore {
+	if _, ignore := m.skipStatusCodes[status]; ignore {
 		return nil
 	}
 
 	class := statusClass(status)
-	if _, ignore := m.ignoreClasses[class]; ignore {
+	if _, ignore := m.skipStatusClasses[class]; ignore {
 		return nil
 	}
 

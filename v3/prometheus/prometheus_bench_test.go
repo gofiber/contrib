@@ -72,7 +72,7 @@ func BenchmarkInstrumented(b *testing.B) {
 // BenchmarkInstrumentedWithService adds a constant label, which widens every
 // label set by one pair.
 func BenchmarkInstrumentedWithService(b *testing.B) {
-	benchmarkRequests(b, newBenchmarkApp(b, &Config{Service: "bench"}), "/user/42", http.StatusOK)
+	benchmarkRequests(b, newBenchmarkApp(b, &Config{ServiceName: "bench"}), "/user/42", http.StatusOK)
 }
 
 // BenchmarkInstrumentedWithDynamicLabels measures the per-request cost of

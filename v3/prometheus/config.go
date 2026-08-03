@@ -26,10 +26,10 @@ const (
 
 // Config defines the middleware configuration.
 type Config struct {
-	// Service is added as the `service` const label on every metric.
+	// ServiceName is added as the `service` const label on every metric.
 	//
 	// Optional. Default: "" (label omitted).
-	Service string
+	ServiceName string
 
 	// Namespace prefixes every metric name.
 	//
@@ -57,7 +57,7 @@ type Config struct {
 	MetricsPath string
 
 	// Labels are attached to every metric. A "service" key here is overridden by
-	// Service when that is also set.
+	// ServiceName when that is also set.
 	//
 	// Optional. Default: no labels.
 	Labels prometheus.Labels
@@ -220,8 +220,8 @@ type Config struct {
 
 	// SkipURIs excludes matching routes from instrumentation. Entries are
 	// matched against the registered route pattern rather than the request
-	// path, so use "/user/:id" instead of "/user/42". Trailing slashes are
-	// ignored.
+	// path, so use "/user/:id" instead of "/user/42" - fiberzap's option of the
+	// same name matches the request path instead. Trailing slashes are ignored.
 	//
 	// An entry ending in "*" matches by prefix: "/admin/*" excludes "/admin"
 	// and every route below it, and "/*" excludes everything. It also still
@@ -232,18 +232,18 @@ type Config struct {
 	// Optional. Default: none.
 	SkipURIs []string
 
-	// IgnoreStatusCodes excludes matching response status codes from metrics.
+	// SkipStatusCodes excludes matching response status codes from metrics.
 	// The status is the one the client receives, so codes produced by the
 	// application error handler are matched as well.
 	//
 	// Optional. Default: none.
-	IgnoreStatusCodes []int
+	SkipStatusCodes []int
 
-	// IgnoreStatusClasses excludes whole status classes from metrics, saving
+	// SkipStatusClasses excludes whole status classes from metrics, saving
 	// the need to enumerate every code. Valid entries are "1xx" through "5xx".
 	//
 	// Optional. Default: none.
-	IgnoreStatusClasses []string
+	SkipStatusClasses []string
 
 	// DynamicLabels adds labels whose values are computed per request, keyed by
 	// label name. Each function runs once per recorded request, after the
@@ -359,8 +359,8 @@ func configDefault(config ...Config) Config {
 	}
 
 	cfg.SkipURIs = append([]string(nil), cfg.SkipURIs...)
-	cfg.IgnoreStatusCodes = append([]int(nil), cfg.IgnoreStatusCodes...)
-	cfg.IgnoreStatusClasses = append([]string(nil), cfg.IgnoreStatusClasses...)
+	cfg.SkipStatusCodes = append([]int(nil), cfg.SkipStatusCodes...)
+	cfg.SkipStatusClasses = append([]string(nil), cfg.SkipStatusClasses...)
 	cfg.DisabledMetrics = append([]Metric(nil), cfg.DisabledMetrics...)
 
 	return cfg

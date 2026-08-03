@@ -33,7 +33,7 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 
 | Property | Type | Description | Default |
 |:---------|:-----|:------------|:--------|
-| Service | `string` | Added as the `service` const label on every metric. Omitted when empty. | `""` |
+| ServiceName | `string` | Added as the `service` const label on every metric. Omitted when empty. | `""` |
 | Namespace | `string` | Prefixes every metric name. | `"http"` |
 | Subsystem | `string` | Prefixes every metric name after `Namespace`. | `""` |
 | MetricsPath | `string` | Path served with the Prometheus exposition format. Unless `Next` returns true, requests to it are answered by the middleware and are not instrumented. Compared byte-for-byte against the full request path. | `"/metrics"` |
@@ -59,8 +59,8 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | MetricsErrorHandling | `promhttp.HandlerErrorHandling` | How gathering errors are reported to the scraper. | `promhttp.HTTPErrorOnError` |
 | DisabledMetrics | `[]Metric` | Metric families to skip registering and recording. | `nil` |
 | SkipURIs | `[]string` | Route patterns excluded from instrumentation, e.g. `/user/:id`. A trailing `*` matches by prefix. | `nil` |
-| IgnoreStatusCodes | `[]int` | Response status codes excluded from metrics. | `nil` |
-| IgnoreStatusClasses | `[]string` | Status classes excluded from metrics, `"1xx"` through `"5xx"`. | `nil` |
+| SkipStatusCodes | `[]int` | Response status codes excluded from metrics. | `nil` |
+| SkipStatusClasses | `[]string` | Status classes excluded from metrics, `"1xx"` through `"5xx"`. | `nil` |
 | DynamicLabels | `map[string]func(fiber.Ctx) string` | Extra labels computed per request. | `nil` |
 | Next | `func(fiber.Ctx) bool` | Skips the middleware when it returns true, including for `MetricsPath`. | `nil` |
 
@@ -94,9 +94,9 @@ func main() {
     // scrapes on Config.MetricsPath ("/metrics" by default) itself and passes
     // everything else through to your handlers.
     app.Use(fiberprometheus.New(fiberprometheus.Config{
-        Service:           "my-service-name",
-        SkipURIs:          []string{"/ping"},
-        IgnoreStatusCodes: []int{401, 403, 404},
+        ServiceName:     "my-service-name",
+        SkipURIs:        []string{"/ping"},
+        SkipStatusCodes: []int{401, 403, 404},
     }))
 
     app.Get("/", func(c fiber.Ctx) error {
@@ -206,7 +206,8 @@ Fiber's zero-copy strings such as `c.Get(...)` or `c.Params(...)` directly.
 
 ### Filtering
 
-`SkipURIs` matches the registered route pattern. A trailing `*` matches by
+`SkipURIs` matches the registered route pattern — note that fiberzap's option
+of the same name matches the request path instead. A trailing `*` matches by
 prefix and stops at a path segment boundary, so `/admin/*` excludes `/admin` and
 `/admin/users` but not `/administration`. `/*` excludes everything.
 
@@ -214,13 +215,13 @@ Because Fiber route patterns can themselves end in `*`, such an entry also
 matches the pattern named exactly that: `/static*` excludes both the route
 registered as `/static*` and anything under `/static`.
 
-`IgnoreStatusCodes` takes exact codes; `IgnoreStatusClasses` takes whole classes
+`SkipStatusCodes` takes exact codes; `SkipStatusClasses` takes whole classes
 so you do not have to enumerate them:
 
 ```go
 app.Use(fiberprometheus.New(fiberprometheus.Config{
-    SkipURIs:            []string{"/health", "/internal/*"},
-    IgnoreStatusClasses: []string{"4xx"},
+    SkipURIs:          []string{"/health", "/internal/*"},
+    SkipStatusClasses: []string{"4xx"},
 }))
 ```
 
@@ -255,7 +256,7 @@ and scrapes will return nothing.
 registry := prometheus.NewRegistry()
 
 app.Use(fiberprometheus.New(fiberprometheus.Config{
-    Service:    "my-service-name",
+    ServiceName:    "my-service-name",
     Registerer: registry,
     Gatherer:   registry,
 }))

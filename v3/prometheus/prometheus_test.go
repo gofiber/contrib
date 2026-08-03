@@ -57,7 +57,7 @@ func newAppWithMiddleware(cfg Config, metricsPath string) (*fiber.App, fiber.Han
 }
 
 func TestMiddlewareRecordsMetrics(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{Service: "test-service"}, "")
+	app, _ := newAppWithMiddleware(Config{ServiceName: "test-service"}, "")
 	app.Get("/hello", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -159,8 +159,8 @@ func TestSkipURIs(t *testing.T) {
 	}
 }
 
-func TestIgnoreStatusCodes(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{IgnoreStatusCodes: []int{fiber.StatusUnauthorized}}, "")
+func TestSkipStatusCodes(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{SkipStatusCodes: []int{fiber.StatusUnauthorized}}, "")
 	app.Get("/deny", func(c fiber.Ctx) error {
 		return fiber.ErrUnauthorized
 	})
@@ -223,8 +223,8 @@ func gaugeValue(t *testing.T, metrics, series string) float64 {
 // has to leave the in-flight gauge where it found it.
 func TestInFlightGaugeIsBalanced(t *testing.T) {
 	app, _ := newAppWithMiddleware(Config{
-		IgnoreStatusCodes: []int{fiber.StatusUnauthorized},
-		SkipURIs:          []string{"/skip"},
+		SkipStatusCodes: []int{fiber.StatusUnauthorized},
+		SkipURIs:        []string{"/skip"},
 	}, "")
 	app.Get("/deny", func(c fiber.Ctx) error {
 		return fiber.ErrUnauthorized
@@ -890,8 +890,8 @@ func TestWrappedFiberErrorUsesWrappedStatus(t *testing.T) {
 	}
 }
 
-func TestWrappedFiberErrorRespectsIgnoreStatusCodes(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{IgnoreStatusCodes: []int{fiber.StatusNotFound}}, "")
+func TestWrappedFiberErrorRespectsSkipStatusCodes(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{SkipStatusCodes: []int{fiber.StatusNotFound}}, "")
 	app.Get("/missing", func(_ fiber.Ctx) error {
 		return fmt.Errorf("looking up record: %w", fiber.ErrNotFound)
 	})
@@ -1165,8 +1165,8 @@ func TestSkipURIsWildcardMatchesEverything(t *testing.T) {
 	}
 }
 
-func TestIgnoreStatusClasses(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{IgnoreStatusClasses: []string{"4xx"}}, "")
+func TestSkipStatusClasses(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{SkipStatusClasses: []string{"4xx"}}, "")
 	app.Get("/ok", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -1261,7 +1261,7 @@ func TestDynamicLabelCollisionPanics(t *testing.T) {
 			},
 		},
 		"constant": {
-			Service: "svc",
+			ServiceName: "svc",
 			DynamicLabels: map[string]func(fiber.Ctx) string{
 				"service": func(fiber.Ctx) string { return "x" },
 			},
@@ -1696,8 +1696,8 @@ func TestLabelsAreAttachedToEveryMetric(t *testing.T) {
 // after the configured labels are copied.
 func TestServiceOverridesLabelsCollision(t *testing.T) {
 	app, _ := newAppWithMiddleware(Config{
-		Service: "from-service",
-		Labels:  prometheus.Labels{"service": "from-labels"},
+		ServiceName: "from-service",
+		Labels:      prometheus.Labels{"service": "from-labels"},
 	}, "")
 	app.Get("/hello", func(c fiber.Ctx) error {
 		return c.SendString("hi")
