@@ -140,18 +140,18 @@ type degradedState struct {
 // it only when one of those files changes on disk.
 //
 // Episode logging follows one rule: the line is queued with announce while mu
-// is held, next to the state change it describes, and written by emit once mu
-// is released. Queueing beside the mutation means a transition cannot be marked
-// as announced without its line being queued, and writing after the unlock
-// keeps a blocking sink off the reload path — which every authenticated request
-// queues on during a degraded episode.
+// is held, next to the state change it describes, and the queue is drained by
+// emit once mu is released. Queueing beside the mutation means a transition
+// cannot be marked as announced without its line being queued.
 //
-// No lock orders the writes against each other, deliberately: taking one while
-// mu was held would put a stalled sink right back on that path. Two goroutines
-// whose transitions land in the same instant can therefore reach the sink in
-// either order. Each line is self-describing and timestamped by the logger, and
-// a transition requires the keytab files to have changed on disk, so this stays
-// a cosmetic possibility rather than a misleading one.
+// Draining takes flushMu, never mu, across the sink write. Because appends are
+// serialised by mu, queue order is state-change order, and whoever holds flushMu
+// drains everything queued so far — so an all-clear cannot overtake the warning
+// it clears even if the goroutine that queued the warning is preempted before
+// it drains. And because flushMu is only ever taken after mu has been released,
+// a blocking sink cannot stall the reload path that every authenticated request
+// queues on during a degraded episode. The lock order is always flushMu then
+// mu; nothing acquires them the other way round.
 type keytabFileCache struct {
 	files      []string
 	staleGrace time.Duration
@@ -169,9 +169,12 @@ type keytabFileCache struct {
 	// mu guards reloads so the file I/O is done once, not once per waiter.
 	mu  sync.Mutex
 	deg degradedState
-	// pending holds the episode line queued by the current locked section, if
-	// any. Guarded by mu; drained by emit.
-	pending func()
+	// queue holds episode lines waiting to be written, oldest first. Guarded by
+	// mu; drained by flush.
+	queue []func()
+	// flushMu serialises draining so the lines reach the sink in queue order.
+	// See the note on this type for the lock order.
+	flushMu sync.Mutex
 }
 
 // newKeytabFileCache builds a cache with the production defaults.
@@ -311,19 +314,33 @@ func (c *keytabFileCache) endEpisodeIfCurrent(expected []fileStamp) {
 }
 
 // announce queues an episode line to be written once mu is released. Callers
-// must hold mu. At most one line is produced per locked section, since each is
-// guarded to fire once per episode.
+// must hold mu. Queueing rather than replacing means a locked section that
+// grows a second transition cannot silently drop the first one's line.
 func (c *keytabFileCache) announce(write func()) {
-	c.pending = write
+	c.queue = append(c.queue, write)
 }
 
-// emit releases mu and writes whatever announce queued. It is called with mu
-// held and returns with it released. See the note on keytabFileCache.
+// emit releases mu and drains the queue. It is called with mu held and returns
+// with it released. See the note on keytabFileCache.
 func (c *keytabFileCache) emit() {
-	write := c.pending
-	c.pending = nil
 	c.mu.Unlock()
-	if write != nil {
+	c.flush()
+}
+
+// flush writes every queued line, oldest first. Each is popped under mu and
+// written without it, so the sink is never reached with the reload lock held.
+func (c *keytabFileCache) flush() {
+	c.flushMu.Lock()
+	defer c.flushMu.Unlock()
+	for {
+		c.mu.Lock()
+		if len(c.queue) == 0 {
+			c.mu.Unlock()
+			return
+		}
+		write := c.queue[0]
+		c.queue = c.queue[1:]
+		c.mu.Unlock()
 		write()
 	}
 }

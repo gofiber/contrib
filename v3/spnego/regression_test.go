@@ -809,7 +809,7 @@ func TestKeytabEpisodeLogging(t *testing.T) {
 	// operator filtering below Warn sees every alert open and none of them
 	// close.
 	require.Contains(t, logged.String(), "[Warn] spnego: keytab loads cleanly again")
-	require.Regexp(t, `\[Warn\] spnego: .*serving the last keytab that parsed`, logged.String())
+	require.Regexp(t, `\[Warn\] spnego: .+; serving the last keytab that parsed`, logged.String())
 	require.Regexp(t, `\[Error\] spnego: keytab still unusable`, logged.String())
 }
 
@@ -880,6 +880,16 @@ func TestKeytabCacheConcurrentReload(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, cache.degraded.Load())
 
+	logMu.Lock()
+	beforeConcurrent := logged.Len()
+	logMu.Unlock()
+
+	// Capture the good revision's stamps so the flipper can restore it
+	// byte-for-byte with its original mtime, which is what drives the
+	// cache-hit recovery path through endEpisodeIfCurrent.
+	goodInfo, err := os.Stat(filename)
+	require.NoError(t, err)
+
 	// Now flip the file between broken and good while readers hammer the cache.
 	stop := make(chan struct{})
 	var flipper, readers sync.WaitGroup
@@ -896,9 +906,15 @@ func TestKeytabCacheConcurrentReload(t *testing.T) {
 				_ = os.WriteFile(filename, []byte("12"), 0o600)
 			} else {
 				_ = os.WriteFile(filename, good, 0o600)
+				// Restoring the original mtime makes the stamps match the
+				// snapshot, so recovery goes through the cache-hit path.
+				_ = os.Chtimes(filename, goodInfo.ModTime(), goodInfo.ModTime())
 			}
 		}
 	}()
+	// Verdicts come back over a channel: require.* calls runtime.Goexit, which
+	// on a worker would let readers.Wait proceed as though it had finished.
+	bad := make(chan string, 16)
 	for range 16 {
 		readers.Add(1)
 		go func() {
@@ -906,10 +922,12 @@ func TestKeytabCacheConcurrentReload(t *testing.T) {
 			for range 200 {
 				kt, loadErr := cache.load()
 				// Either a keytab or an error, never both and never neither.
-				if loadErr == nil {
-					require.NotNil(t, kt)
-				} else {
-					require.Nil(t, kt)
+				if (loadErr == nil) == (kt == nil) {
+					select {
+					case bad <- fmt.Sprintf("load returned keytab=%v err=%v", kt != nil, loadErr):
+					default:
+					}
+					return
 				}
 			}
 		}()
@@ -917,6 +935,10 @@ func TestKeytabCacheConcurrentReload(t *testing.T) {
 	readers.Wait()
 	close(stop)
 	flipper.Wait()
+	close(bad)
+	for msg := range bad {
+		t.Error(msg)
+	}
 
 	// Whatever the interleaving, the file ends good and the cache converges.
 	require.NoError(t, os.WriteFile(filename, good, 0o600))
@@ -927,7 +949,8 @@ func TestKeytabCacheConcurrentReload(t *testing.T) {
 
 	logMu.Lock()
 	defer logMu.Unlock()
-	require.NotEmpty(t, logged.String(), "a degraded episode must leave a trace")
+	require.Greater(t, logged.Len(), beforeConcurrent,
+		"the concurrent phase must produce episode lines of its own")
 }
 
 // lockedWriter serialises writes so the test can read the buffer safely.
@@ -940,4 +963,75 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.w.Write(p)
+}
+
+// TestNoAllClearWithoutWarning covers the guard that suppresses a recovery line
+// for an episode that never announced one. A process whose keytab is already
+// corrupt at startup has no cached keytab to fall back on, so serveStale
+// returns before setting the episode start and no warning is ever emitted;
+// announcing an all-clear afterwards would refer to nothing.
+func TestNoAllClearWithoutWarning(t *testing.T) {
+	var logged bytes.Buffer
+	flog.SetOutput(&logged)
+	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
+
+	dir := t.TempDir()
+	filename := path.Join(dir, "sso.keytab")
+	require.NoError(t, os.WriteFile(filename, []byte("12"), 0o600))
+
+	cache := newKeytabFileCache([]string{filename})
+	_, err := cache.load()
+	require.Error(t, err, "a keytab that never loaded must surface its error")
+	require.NotContains(t, logged.String(), "serving the last keytab that parsed",
+		"there is nothing to serve, so no warning opens the episode")
+
+	// Now make it good. The episode ends, but it never announced itself.
+	good := writeMockKeytab(t, dir, "good.keytab", "HTTP/sso.example.com")
+	contents, err := os.ReadFile(good)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filename, contents, 0o600))
+
+	_, err = cache.load()
+	require.NoError(t, err)
+	require.NotContains(t, logged.String(), "loads cleanly again",
+		"an all-clear must not be emitted for a warning that never fired")
+}
+
+// TestAnnounceQueuesInOrder pins the queue semantics directly. No locked
+// section announces twice today, so nothing else would notice announce going
+// back to overwriting — which is the trap the queue exists to remove.
+func TestAnnounceQueuesInOrder(t *testing.T) {
+	cache := newKeytabFileCache(nil)
+
+	var written []string
+	cache.mu.Lock()
+	cache.announce(func() { written = append(written, "first") })
+	cache.announce(func() { written = append(written, "second") })
+	cache.emit()
+
+	require.Equal(t, []string{"first", "second"}, written,
+		"queued lines must all be written, oldest first")
+
+	// The queue is drained, so a second flush writes nothing.
+	cache.flush()
+	require.Len(t, written, 2)
+}
+
+// TestFlushDoesNotHoldReloadLock pins the lock discipline of the drain loop:
+// each line is popped under mu but written without it.
+func TestFlushDoesNotHoldReloadLock(t *testing.T) {
+	cache := newKeytabFileCache(nil)
+
+	locked := false
+	cache.mu.Lock()
+	cache.announce(func() {
+		if cache.mu.TryLock() {
+			cache.mu.Unlock()
+		} else {
+			locked = true
+		}
+	})
+	cache.emit()
+
+	require.False(t, locked, "a queued line must be written with the reload lock released")
 }
