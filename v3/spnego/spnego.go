@@ -94,16 +94,17 @@ func (t *logThrottle) window() time.Duration {
 //
 // Sub against the zero time saturates, so the first event always runs.
 func (t *logThrottle) do(write func()) {
-	if t.consume(nowOr(t.nowFn)) {
+	if t.claimWindow(nowOr(t.nowFn)) {
 		write()
 	}
 }
 
-// consume reports whether the window has elapsed, and claims it when it has.
-// Split out so the lock is defer-guarded: do must call write with the lock
-// released, and hand-unlocking on every path invites a later early return that
-// leaks the mutex and deadlocks the request path.
-func (t *logThrottle) consume(now time.Time) bool {
+// claimWindow reports whether the window has elapsed, and claims it when it
+// has. Named for the mutation rather than the question so a second call site is
+// obviously wrong: claiming without writing swallows the line for a full
+// window. Split out from do only so the lock can be defer-guarded, since do
+// must call write with the lock released.
+func (t *logThrottle) claimWindow(now time.Time) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if now.Sub(t.last) < t.window() {

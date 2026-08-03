@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -808,8 +809,8 @@ func TestKeytabEpisodeLogging(t *testing.T) {
 	// operator filtering below Warn sees every alert open and none of them
 	// close.
 	require.Contains(t, logged.String(), "[Warn] spnego: keytab loads cleanly again")
-	require.Contains(t, logged.String(), "[Warn] spnego: load keytab failed")
-	require.Contains(t, logged.String(), "[Error] spnego: keytab still unusable")
+	require.Regexp(t, `\[Warn\] spnego: .*serving the last keytab that parsed`, logged.String())
+	require.Regexp(t, `\[Error\] spnego: keytab still unusable`, logged.String())
 }
 
 // lockProbeWriter records whether the cache's reload mutex was free while the
@@ -851,4 +852,92 @@ func TestKeytabEpisodeLogWritesOffReloadLock(t *testing.T) {
 	require.Contains(t, probe.buf.String(), "serving the last keytab that parsed",
 		"the episode warning must actually reach the sink")
 	require.False(t, probe.sawLocked, "the log write must happen with the reload lock released")
+}
+
+// TestKeytabCacheConcurrentReload drives the cache from many goroutines across
+// a corrupt-then-restore cycle. Nothing else in the package runs it
+// concurrently, so without this the -race build has no two goroutines to
+// compare and the locking around the episode state is unverified.
+func TestKeytabCacheConcurrentReload(t *testing.T) {
+	var logged bytes.Buffer
+	var logMu sync.Mutex
+	flog.SetOutput(&lockedWriter{mu: &logMu, w: &logged})
+	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
+
+	dir := t.TempDir()
+	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
+	good, err := os.ReadFile(filename)
+	require.NoError(t, err)
+
+	cache := newKeytabFileCache([]string{filename})
+	_, err = cache.load()
+	require.NoError(t, err)
+
+	// Enter a degraded episode deterministically, so the assertion below does
+	// not depend on how the flipping goroutine interleaves.
+	require.NoError(t, os.WriteFile(filename, []byte("12"), 0o600))
+	_, err = cache.load()
+	require.NoError(t, err)
+	require.True(t, cache.degraded.Load())
+
+	// Now flip the file between broken and good while readers hammer the cache.
+	stop := make(chan struct{})
+	var flipper, readers sync.WaitGroup
+	flipper.Add(1)
+	go func() {
+		defer flipper.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if i%2 == 0 {
+				_ = os.WriteFile(filename, []byte("12"), 0o600)
+			} else {
+				_ = os.WriteFile(filename, good, 0o600)
+			}
+		}
+	}()
+	for range 16 {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for range 200 {
+				kt, loadErr := cache.load()
+				// Either a keytab or an error, never both and never neither.
+				if loadErr == nil {
+					require.NotNil(t, kt)
+				} else {
+					require.Nil(t, kt)
+				}
+			}
+		}()
+	}
+	readers.Wait()
+	close(stop)
+	flipper.Wait()
+
+	// Whatever the interleaving, the file ends good and the cache converges.
+	require.NoError(t, os.WriteFile(filename, good, 0o600))
+	kt, err := cache.load()
+	require.NoError(t, err)
+	require.NotNil(t, kt)
+	require.False(t, cache.degraded.Load(), "the episode must close once the keytab is good")
+
+	logMu.Lock()
+	defer logMu.Unlock()
+	require.NotEmpty(t, logged.String(), "a degraded episode must leave a trace")
+}
+
+// lockedWriter serialises writes so the test can read the buffer safely.
+type lockedWriter struct {
+	mu *sync.Mutex
+	w  *bytes.Buffer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }
