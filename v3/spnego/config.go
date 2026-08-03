@@ -100,20 +100,49 @@ const defaultKeytabStaleGrace = 30 * time.Second
 // opposed to one that could not be read at all.
 var errKeytabUnparsable = errors.New("keytab did not parse")
 
+// keytabRetryEvery bounds how often a keytab revision already known to be
+// unparsable is re-read. Without it every request during an outage re-reads and
+// re-parses every keytab file, serialised behind the reload mutex.
+const keytabRetryEvery = time.Second
+
 // keytabFileCache holds the merged keytab for a fixed set of files, reloading
 // it only when one of those files changes on disk.
 type keytabFileCache struct {
 	files      []string
 	staleGrace time.Duration
-	now        func() time.Time
+	retryEvery time.Duration
+	nowFn      func() time.Time
 
 	// snapshot is read without holding mu so the cache-hit path, which runs on
 	// every authenticated request, does not serialise concurrent requests.
 	snapshot atomic.Pointer[keytabSnapshot]
+	// staleSince marks when the current degraded episode began, as Unix nanos,
+	// or 0 while healthy. It is atomic because the lock-free hit path clears it.
+	staleSince atomic.Int64
 
 	// mu guards reloads so the file I/O is done once, not once per waiter.
-	mu         sync.Mutex
-	staleSince time.Time
+	mu           sync.Mutex
+	failedStamps []fileStamp
+	failedCause  error
+	lastAttempt  time.Time
+	expiryLogged bool
+}
+
+// now reports the current time, defaulting to the wall clock so a zero-value
+// cache is usable. Tests substitute nowFn to drive the grace window.
+func (c *keytabFileCache) now() time.Time {
+	if c.nowFn != nil {
+		return c.nowFn()
+	}
+	return time.Now()
+}
+
+// grace reports how long an unparsable keytab may be covered for.
+func (c *keytabFileCache) grace() time.Duration {
+	if c.staleGrace <= 0 {
+		return defaultKeytabStaleGrace
+	}
+	return c.staleGrace
 }
 
 // stat collects the current revision of every file. A file that cannot be
@@ -154,24 +183,36 @@ func (c *keytabFileCache) readAll() (*keytab.Keytab, error) {
 // serveStale decides whether a keytab that no longer parses should be covered
 // for by the last one that did. Rewriting a keytab in place is not atomic, so a
 // read can catch a half-written file; that window is short. A keytab that stays
-// unparsable is a real fault, so the fallback expires after staleGrace and the
-// error surfaces. Callers must hold mu.
-func (c *keytabFileCache) serveStale(cause error) (*keytab.Keytab, error) {
+// unparsable is a real fault, so the fallback expires after the grace window
+// and the error surfaces. Callers must hold mu.
+func (c *keytabFileCache) serveStale(cause error, now time.Time) (*keytab.Keytab, error) {
 	snap := c.snapshot.Load()
 	if snap == nil {
 		return nil, cause
 	}
-	now := c.now()
-	if c.staleSince.IsZero() {
-		c.staleSince = now
+	since := c.staleSince.Load()
+	if since == 0 {
+		c.staleSince.Store(now.UnixNano())
 		// Logged once per episode rather than per request, so a persistent
 		// fault cannot be turned into a log flood by unauthenticated callers.
-		flog.Warnf("spnego: %v; serving the last keytab that parsed for up to %s", cause, c.staleGrace)
+		flog.Warnf("spnego: %v; serving the last keytab that parsed for up to %s", cause, c.grace())
+		return snap.merged, nil
 	}
-	if now.Sub(c.staleSince) > c.staleGrace {
+	if now.Sub(time.Unix(0, since)) > c.grace() {
+		if !c.expiryLogged {
+			c.expiryLogged = true
+			// The transition from degraded to failing is the one an operator
+			// most needs to see, so it gets its own line at error level.
+			flog.Errorf("spnego: keytab still unusable after %s, failing requests: %v", c.grace(), cause)
+		}
 		return nil, cause
 	}
 	return snap.merged, nil
+}
+
+// recovered clears the degraded state after a keytab loads cleanly again.
+func (c *keytabFileCache) recovered() {
+	c.staleSince.Store(0)
 }
 
 // load returns the merged keytab, re-reading the files only when their size or
@@ -188,6 +229,9 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 		return nil, err
 	}
 	if snap := c.snapshot.Load(); snap != nil && slices.Equal(snap.stamps, stamps) {
+		// The cached revision is current again, so any earlier degraded episode
+		// is over and must not eat into a later one's grace window.
+		c.recovered()
 		return snap.merged, nil
 	}
 
@@ -195,18 +239,34 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 	defer c.mu.Unlock()
 	// Another goroutine may have reloaded while this one waited for the lock.
 	if snap := c.snapshot.Load(); snap != nil && slices.Equal(snap.stamps, stamps) {
+		c.recovered()
 		return snap.merged, nil
 	}
 
+	now := c.now()
+	retryEvery := c.retryEvery
+	if retryEvery <= 0 {
+		retryEvery = keytabRetryEvery
+	}
+	// This exact revision already failed to parse recently; do not re-read every
+	// file again on every request while the fault persists.
+	if c.failedCause != nil && slices.Equal(c.failedStamps, stamps) && now.Sub(c.lastAttempt) < retryEvery {
+		return c.serveStale(c.failedCause, now)
+	}
+
+	c.lastAttempt = now
 	merged, err := c.readAll()
 	if err != nil {
 		if errors.Is(err, errKeytabUnparsable) {
-			return c.serveStale(err)
+			c.failedStamps, c.failedCause = stamps, err
+			return c.serveStale(err, now)
 		}
 		return nil, err
 	}
 	c.snapshot.Store(&keytabSnapshot{stamps: stamps, merged: merged})
-	c.staleSince = time.Time{}
+	c.failedStamps, c.failedCause = nil, nil
+	c.expiryLogged = false
+	c.recovered()
 	return merged, nil
 }
 
@@ -223,7 +283,7 @@ func NewKeytabFileLookupFunc(keytabFiles ...string) (KeytabLookupFunc, error) {
 	cache := &keytabFileCache{
 		files:      slices.Clone(keytabFiles),
 		staleGrace: defaultKeytabStaleGrace,
-		now:        time.Now,
+		retryEvery: keytabRetryEvery,
 	}
 	return cache.load, nil
 }

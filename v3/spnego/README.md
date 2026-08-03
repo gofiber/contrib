@@ -107,11 +107,28 @@ The middleware is designed with extensibility in mind, allowing keytab retrieval
 >
 > Change detection is cheap rather than exact — a rewrite that keeps the same size and lands within one filesystem timestamp tick looks unchanged. Rotate by writing a new file and renaming it over the old one; that normally moves the modification time, but the cache still only reacts to a detectable size or timestamp change.
 >
-> A keytab that reads but does not parse is treated as a rotation caught mid-write: the last keytab that parsed cleanly keeps being served and the next request retries. A keytab that cannot be read at all — deleted, unmounted, permissions revoked — is reported as an error instead, so revoking a keytab takes effect rather than being masked by the cache.
+> A keytab that reads but does not parse is treated as a rotation caught mid-write: the last keytab that parsed cleanly keeps being served, and a retry runs at most once a second while the fault lasts. That cover expires after 30 seconds — long enough to absorb a half-written file, short enough that a rotation to a permanently corrupt keytab surfaces as an error instead of silently keeping superseded keys alive. Entering and leaving that degraded state is logged once, not per request. A keytab that cannot be read at all — deleted, unmounted, permissions revoked — is reported as an error instead, so revoking a keytab takes effect rather than being masked by the cache.
 
 ### Errors
 
-A failed keytab lookup is logged and answered with a bare `500`. The detail names the keytab's path and the underlying OS error, which should not reach an unauthenticated caller, so it goes to Fiber's log at error level instead of into the response body.
+A failed keytab lookup is answered with a bare `500`. The detail names the keytab's path and the underlying OS error, which should not reach an unauthenticated caller, so the response body carries only `Internal Server Error`.
+
+The detail is logged at error level instead, throttled to one line per 30 seconds per distinct message so a persistent fault cannot be turned into a log flood by unauthenticated callers.
+
+The returned error still matches the package's sentinels, so an application `ErrorHandler` can tell a keytab failure from any other 500:
+
+```go
+app := fiber.New(fiber.Config{
+	ErrorHandler: func(c fiber.Ctx, err error) error {
+		if errors.Is(err, spnego.ErrLookupKeytabFailed) {
+			alertOnCall()
+		}
+		return fiber.DefaultErrorHandler(c, err)
+	},
+})
+```
+
+The status is always `500`: a `*fiber.Error` returned by your own `KeytabLookupFunc` deliberately does not set the response status, since an infrastructure fault reported as, say, `401` would make clients retry credentials against a server that cannot check them.
 
 ```go
 // Example: Retrieve keytab from a database

@@ -307,6 +307,10 @@ func TestUnauthorizedCalledOnRejection(t *testing.T) {
 	require.True(t, called, "Unauthorized must run when a ticket is rejected")
 	require.Equal(t, fiber.StatusForbidden, ctx.Response.StatusCode())
 	require.Equal(t, "denied", string(ctx.Response.Body()))
+	// The godoc promises a handler that only sets a status and body leaves
+	// SPNEGO's headers in place.
+	require.Equal(t, spnegoRejected, string(ctx.Response.Header.Peek(fiber.HeaderWWWAuthenticate)),
+		"a custom handler must not lose the WWW-Authenticate header")
 }
 
 // TestRejectionWithoutHandlerPassesThrough checks the default: with no handler
@@ -372,7 +376,8 @@ func TestKeytabStaleGraceExpires(t *testing.T) {
 	cache := &keytabFileCache{
 		files:      []string{filename},
 		staleGrace: 30 * time.Second,
-		now:        func() time.Time { return now },
+		retryEvery: 0, // retry on every call so the test drives the clock alone
+		nowFn:      func() time.Time { return now },
 	}
 
 	good, err := cache.load()
@@ -388,4 +393,105 @@ func TestKeytabStaleGraceExpires(t *testing.T) {
 	now = now.Add(31 * time.Second)
 	_, err = cache.load()
 	require.ErrorIs(t, err, ErrLoadKeytabFileFailed, "the fallback must not outlive the grace window")
+}
+
+// TestKeytabStaleGraceResetsAfterRecovery covers a degraded episode that ends
+// via the cache-hit path: restoring a keytab with its original size and mtime
+// (cp -p, rsync -a) leaves the stamps matching, so the recovery has to be
+// noticed there too. Otherwise the stale clock keeps running and a later,
+// unrelated torn read gets no grace at all.
+func TestKeytabStaleGraceResetsAfterRecovery(t *testing.T) {
+	dir := t.TempDir()
+	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
+	original, err := os.ReadFile(filename)
+	require.NoError(t, err)
+	info, err := os.Stat(filename)
+	require.NoError(t, err)
+
+	now := time.Now()
+	cache := &keytabFileCache{
+		files:      []string{filename},
+		staleGrace: 30 * time.Second,
+		nowFn:      func() time.Time { return now },
+	}
+	good, err := cache.load()
+	require.NoError(t, err)
+
+	// Corrupt it, and confirm the degraded episode has started.
+	require.NoError(t, os.WriteFile(filename, []byte("12"), 0o600))
+	_, err = cache.load()
+	require.NoError(t, err)
+	require.NotZero(t, cache.staleSince.Load())
+
+	// Restore byte-for-byte, preserving size and mtime.
+	require.NoError(t, os.WriteFile(filename, original, 0o600))
+	require.NoError(t, os.Chtimes(filename, info.ModTime(), info.ModTime()))
+	served, err := cache.load()
+	require.NoError(t, err)
+	require.Same(t, good, served)
+	require.Zero(t, cache.staleSince.Load(), "recovery must clear the degraded episode")
+
+	// A genuine torn read much later still gets the full grace window.
+	now = now.Add(10 * time.Minute)
+	require.NoError(t, os.WriteFile(filename, []byte("12"), 0o600))
+	served, err = cache.load()
+	require.NoError(t, err, "a later torn read must get its own grace window")
+	require.Same(t, good, served)
+}
+
+// TestKeytabRetryThrottle checks that a revision already known to be unparsable
+// is not re-read on every request while the fault persists.
+func TestKeytabRetryThrottle(t *testing.T) {
+	dir := t.TempDir()
+	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
+
+	now := time.Now()
+	cache := &keytabFileCache{
+		files:      []string{filename},
+		staleGrace: 30 * time.Second,
+		retryEvery: time.Second,
+		nowFn:      func() time.Time { return now },
+	}
+	_, err := cache.load()
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filename, []byte("12"), 0o600))
+	_, err = cache.load()
+	require.NoError(t, err)
+	firstAttempt := cache.lastAttempt
+
+	// Within the retry window the file is not read again.
+	now = now.Add(100 * time.Millisecond)
+	_, err = cache.load()
+	require.NoError(t, err)
+	require.Equal(t, firstAttempt, cache.lastAttempt, "should not re-read within the retry window")
+
+	// Past it, one more attempt is made.
+	now = now.Add(2 * time.Second)
+	_, err = cache.load()
+	require.NoError(t, err)
+	require.NotEqual(t, firstAttempt, cache.lastAttempt, "should retry once the window elapses")
+}
+
+// TestNewKeytabFileLookupFuncWiresDefaults pins the production defaults, which
+// the hand-built caches above deliberately override.
+func TestNewKeytabFileLookupFuncWiresDefaults(t *testing.T) {
+	filename := writeMockKeytab(t, t.TempDir(), "sso.keytab", "HTTP/sso.example.com")
+	cache := &keytabFileCache{
+		files:      []string{filename},
+		staleGrace: defaultKeytabStaleGrace,
+		retryEvery: keytabRetryEvery,
+	}
+	require.Positive(t, defaultKeytabStaleGrace, "a zero grace would defeat the torn-read fallback")
+	require.Positive(t, keytabRetryEvery, "a zero retry interval would re-read on every request")
+	require.Equal(t, defaultKeytabStaleGrace, cache.grace())
+
+	// A zero-value cache must still work: now() falls back to the wall clock
+	// and grace() to the default, so no nil call and no zero window.
+	zero := &keytabFileCache{files: []string{filename}}
+	require.NotPanics(t, func() {
+		_, err := zero.load()
+		require.NoError(t, err)
+	})
+	require.Equal(t, defaultKeytabStaleGrace, zero.grace())
 }

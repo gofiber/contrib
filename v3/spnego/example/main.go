@@ -19,8 +19,10 @@ func main() {
 	// you must use a real keytab file
 	tempDir, err := os.MkdirTemp("", "spnego-example")
 	if err != nil {
-		log.Fatalf("create temp dir error: %v", err)
+		panic(fmt.Errorf("create temp dir failed: %w", err))
 	}
+	// panic rather than log.Fatalf throughout: Fatalf calls os.Exit, which
+	// would skip this cleanup and leave key material behind.
 	defer func() { _ = os.RemoveAll(tempDir) }()
 	keytabPath := filepath.Join(tempDir, "temp-sso.keytab")
 	_, clean, err := utils.NewMockKeytab(
@@ -36,7 +38,7 @@ func main() {
 		}),
 	)
 	if err != nil {
-		log.Fatalf("create mock keytab error: %v", err)
+		panic(fmt.Errorf("create mock keytab failed: %w", err))
 	}
 	defer clean()
 	keytabLookup, err := spnego.NewKeytabFileLookupFunc(keytabPath)

@@ -2,9 +2,12 @@ package spnego
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	flog "github.com/gofiber/fiber/v3/log"
@@ -49,15 +52,27 @@ func isRejection(headers http.Header) bool {
 	return headers.Get(fiber.HeaderWWWAuthenticate) == spnegoRejected
 }
 
-// clientSafeError keeps an internal cause inspectable with errors.Is and
-// errors.As while showing the client nothing but a generic message. Fiber's
-// DefaultErrorHandler writes err.Error() straight into the response body, and
-// these causes name keytab paths and OS errors.
+// internalErrorLogEvery throttles the log line for a repeating internal
+// failure. Without it, a keytab the process cannot read turns every request —
+// at a rate unauthenticated callers control — into a log line.
+const internalErrorLogEvery = 30 * time.Second
+
+// clientSafeError keeps an internal cause matchable with errors.Is while
+// showing the client nothing but a generic message. Fiber's DefaultErrorHandler
+// writes err.Error() straight into the response body, and these causes name
+// keytab paths and OS errors.
+//
+// It deliberately implements Is rather than Unwrap. errors.As walks the Unwrap
+// chain, and Fiber derives the response status from any *fiber.Error it finds
+// there, so exposing the chain would let a caller's KeytabLookupFunc returning,
+// say, fiber.ErrUnauthorized turn an infrastructure fault into a 401 with no
+// WWW-Authenticate header. Stopping the walk here pins the status at 500 while
+// leaving the package's sentinels matchable.
 type clientSafeError struct{ cause error }
 
 func (e *clientSafeError) Error() string { return "Internal Server Error" }
 
-func (e *clientSafeError) Unwrap() error { return e.cause }
+func (e *clientSafeError) Is(target error) bool { return errors.Is(e.cause, target) }
 
 // responseRecorder captures what the SPNEGO handler writes so the middleware
 // can inspect the outcome before replaying it onto the Fiber response.
@@ -144,6 +159,23 @@ func New(cfg Config) (fiber.Handler, error) {
 	if l := resolveLogger(cfg, flog.DefaultLogger[*log.Logger]()); l != nil {
 		opts = append(opts, service.Logger(l))
 	}
+	// Internal failures are logged here rather than returned to the client, and
+	// throttled so a persistent fault cannot become a log flood.
+	var (
+		logMu       sync.Mutex
+		lastLogged  string
+		lastLogTime time.Time
+	)
+	logInternal := func(sentinel, cause error) {
+		message := cause.Error()
+		logMu.Lock()
+		defer logMu.Unlock()
+		if message == lastLogged && time.Since(lastLogTime) < internalErrorLogEvery {
+			return
+		}
+		lastLogged, lastLogTime = message, time.Now()
+		flog.Errorf("spnego: %v: %v", sentinel, cause)
+	}
 	// Return the middleware handler
 	return func(ctx fiber.Ctx) error {
 		if cfg.Next != nil && cfg.Next(ctx) {
@@ -159,10 +191,12 @@ func New(cfg Config) (fiber.Handler, error) {
 			err = errNilKeytab
 		}
 		if err != nil {
+			logInternal(ErrLookupKeytabFailed, err)
 			return &clientSafeError{cause: fmt.Errorf("%w: %w", ErrLookupKeytabFailed, err)}
 		}
 		req, err := adaptor.ConvertRequest(ctx, true)
 		if err != nil {
+			logInternal(ErrConvertRequestFailed, err)
 			return &clientSafeError{cause: fmt.Errorf("%w: %w", ErrConvertRequestFailed, err)}
 		}
 
