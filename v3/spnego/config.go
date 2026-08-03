@@ -311,8 +311,10 @@ func (c *keytabFileCache) endEpisodeIfCurrent(expected []fileStamp) {
 	defer c.emit()
 	if c.deg.cause == nil {
 		// Another goroutine closed the episode between the lock-free check and
-		// this lock. It cleared the flag under this same mutex — degraded and
-		// deg.cause always move together — so there is nothing left to do.
+		// this lock. Skipping the stat below is the only effect: clearDegraded
+		// would find nothing to do either, since degraded and deg.cause always
+		// move together under this mutex. Purely an early-out, so its absence
+		// is not observable.
 		return
 	}
 	if fresh, err := c.stat(); err == nil && slices.Equal(fresh, expected) {
@@ -438,10 +440,15 @@ func NewKeytabFileLookupFunc(keytabFiles ...string) (KeytabLookupFunc, error) {
 // otherwise DefaultSystemKeytabPath.
 //
 // MIT Kerberos writes KRB5_KTNAME as an optional "TYPE:residual" pair. The
-// file-backed types, FILE and WRFILE, are accepted and stripped. Any other
-// type — KEYRING, MEMORY, ANY and the like — cannot be read as a file and is
-// rejected with ErrUnsupportedKeytabResidualType rather than being treated as
-// a literal path that would fail on every request.
+// file-backed types, FILE and WRFILE, are accepted and stripped. The known
+// types that cannot be read as a file — KEYRING, MEMORY, DIR, ANY, SRVTAB —
+// are rejected with ErrUnsupportedKeytabResidualType rather than being treated
+// as a literal path that would fail on every request.
+//
+// A prefix matching no known type is taken as part of the filename, since a
+// relative path may legitimately contain a colon. A typo such as
+// "FIEL:/etc/krb5.keytab" therefore resolves as a path and fails when the file
+// cannot be found.
 //
 // Note that this is a keytab, not a credential cache: SPNEGO acceptance
 // requires the service's long-term keys, so a client credential cache
@@ -451,9 +458,7 @@ func NewSystemKeytabLookupFunc() (KeytabLookupFunc, error) {
 	if keytabPath == "" {
 		keytabPath = DefaultSystemKeytabPath
 	}
-	// MIT Kerberos writes KRB5_KTNAME as an optional "TYPE:residual" pair. Only
-	// file-backed types can be read here, so anything else is rejected up front
-	// rather than being treated as a literal path that fails on every request.
+	// See resolveKeytabResidual for how the optional "TYPE:" prefix is handled.
 	resolved, err := resolveKeytabResidual(keytabPath)
 	if err != nil {
 		return nil, err

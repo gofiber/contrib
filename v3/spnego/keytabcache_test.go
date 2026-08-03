@@ -105,6 +105,16 @@ func TestNewSystemKeytabLookupFunc(t *testing.T) {
 		require.NoError(t, err)
 	})
 
+	t.Run("accepts a lowercase file type", func(t *testing.T) {
+		filename := writeMockKeytab(t, t.TempDir(), "system.keytab", "HTTP/system.example.com")
+		t.Setenv("KRB5_KTNAME", "file:"+filename)
+
+		fn, err := NewSystemKeytabLookupFunc()
+		require.NoError(t, err)
+		_, err = fn()
+		require.NoError(t, err, "type names are case-insensitive")
+	})
+
 	t.Run("falls back to the default path when KRB5_KTNAME is unset", func(t *testing.T) {
 		t.Setenv("KRB5_KTNAME", "")
 
@@ -131,7 +141,14 @@ func TestNewSystemKeytabLookupFunc(t *testing.T) {
 	})
 
 	t.Run("rejects keytab types that are not plain files", func(t *testing.T) {
-		for _, name := range []string{"KEYRING:persistent:0:0", "MEMORY:mykeytab", "ANY:FILE:/tmp/a"} {
+		for _, name := range []string{
+			"KEYRING:persistent:0:0",
+			"MEMORY:mykeytab",
+			"ANY:FILE:/tmp/a",
+			"DIR:/etc/krb5kt",
+			"SRVTAB:/etc/srvtab",
+			"keyring:persistent:0:0", // type names are case-insensitive
+		} {
 			t.Setenv("KRB5_KTNAME", name)
 			_, err := NewSystemKeytabLookupFunc()
 			require.ErrorIs(t, err, ErrUnsupportedKeytabResidualType, name)

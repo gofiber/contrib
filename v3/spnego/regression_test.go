@@ -402,7 +402,13 @@ func TestKeytabStaleGraceExpires(t *testing.T) {
 	require.NoError(t, err, "within the grace window the last good keytab is served")
 	require.Same(t, good, served)
 
-	now = now.Add(31 * time.Second)
+	// Exactly at the boundary the keytab is still covered for; one tick past it
+	// the fallback expires.
+	now = now.Add(30 * time.Second)
+	_, err = cache.load()
+	require.NoError(t, err, "the grace window is inclusive of its own length")
+
+	now = now.Add(time.Nanosecond)
 	_, err = cache.load()
 	require.ErrorIs(t, err, ErrLoadKeytabFileFailed, "the fallback must not outlive the grace window")
 }
@@ -1269,6 +1275,11 @@ func TestReloadReportsStatFailureUnderLock(t *testing.T) {
 		}
 	}
 	require.ErrorIs(t, loadErr, ErrLoadKeytabFileFailed)
+	// A stat failure records no episode. Falling through to readAll instead —
+	// which is what dropping the under-lock error check would do — sets
+	// deg.cause and the flag, so this is what tells the two apart.
+	require.False(t, cache.degraded.Load(),
+		"a stat failure must surface, not fall through to a read")
 }
 
 // TestEndEpisodeIfCurrentOnAlreadyClearedEpisode covers the guard for a second
@@ -1311,93 +1322,54 @@ func TestEndEpisodeIfCurrentOnAlreadyClearedEpisode(t *testing.T) {
 		"a closed episode must not be announced twice")
 }
 
-// TestRecorderKeepsFirstStatus covers the recorder's first-status-wins rule.
-// gokrb5 v8.4.4 writes a status exactly once, so nothing else reaches this;
-// the guard exists so a future version that writes twice cannot have its real
-// outcome overwritten by a later default.
-func TestRecorderKeepsFirstStatus(t *testing.T) {
-	stubAuthenticate(t, func(w http.ResponseWriter, _ *http.Request) bool {
-		w.Header().Set(fiber.HeaderWWWAuthenticate, spnegoRejected)
-		w.WriteHeader(http.StatusForbidden)
-		// A second write must not override the first.
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte("denied"))
-		return false
-	})
-
-	filename := writeMockKeytab(t, t.TempDir(), "sso.keytab", "HTTP/sso.example.com")
-	lookupFunc, err := NewKeytabFileLookupFunc(filename)
-	require.NoError(t, err)
-	middleware, err := New(Config{KeytabLookup: lookupFunc})
-	require.NoError(t, err)
-
-	app := fiber.New()
-	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
-		return c.SendString("authenticated")
-	})
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.Header.SetMethod(fiber.MethodGet)
-	ctx.Request.SetRequestURI("/authenticate")
-	app.Handler()(ctx)
-
-	require.Equal(t, fiber.StatusForbidden, ctx.Response.StatusCode(),
-		"the first status written must win")
-	require.Equal(t, "denied", string(ctx.Response.Body()))
-}
-
-// TestRecorderDefaultsToUnauthorized covers the fallback for a SPNEGO
-// implementation that declines a request without writing a status. Answering
-// such a request 200 would silently stop the middleware denying anything.
-func TestRecorderDefaultsToUnauthorized(t *testing.T) {
-	stubAuthenticate(t, func(_ http.ResponseWriter, _ *http.Request) bool {
-		// Neither WriteHeader nor Write: nothing was recorded.
-		return false
-	})
-
-	filename := writeMockKeytab(t, t.TempDir(), "sso.keytab", "HTTP/sso.example.com")
-	lookupFunc, err := NewKeytabFileLookupFunc(filename)
-	require.NoError(t, err)
-	middleware, err := New(Config{KeytabLookup: lookupFunc})
-	require.NoError(t, err)
-
-	app := fiber.New()
-	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
-		return c.SendString("authenticated")
-	})
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.Header.SetMethod(fiber.MethodGet)
-	ctx.Request.SetRequestURI("/authenticate")
-	app.Handler()(ctx)
-
-	require.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode(),
-		"a declined request with no recorded status must not be answered 200")
-}
-
-// TestRecorderImplicitOK covers the other half of the recorder's status rules:
-// a body written without a status means 200, as net/http defines it.
-func TestRecorderImplicitOK(t *testing.T) {
-	stubAuthenticate(t, func(w http.ResponseWriter, _ *http.Request) bool {
-		_, _ = w.Write([]byte("body without a status"))
-		return false
-	})
-
-	filename := writeMockKeytab(t, t.TempDir(), "sso.keytab", "HTTP/sso.example.com")
-	lookupFunc, err := NewKeytabFileLookupFunc(filename)
-	require.NoError(t, err)
-	middleware, err := New(Config{KeytabLookup: lookupFunc})
-	require.NoError(t, err)
-
-	app := fiber.New()
-	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
-		return c.SendString("authenticated")
-	})
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.Header.SetMethod(fiber.MethodGet)
-	ctx.Request.SetRequestURI("/authenticate")
-	app.Handler()(ctx)
-
-	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
-	require.Equal(t, "body without a status", string(ctx.Response.Body()))
+// TestRecorderStatusRules covers how the recorder turns what SPNEGO wrote into
+// a Fiber response. gokrb5 v8.4.4 always writes a status exactly once through
+// http.Error, so these rules exist for a future version — or a caller's own
+// wrapper — that does something else.
+func TestRecorderStatusRules(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		write      func(w http.ResponseWriter)
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name: "the first status written wins",
+			write: func(w http.ResponseWriter) {
+				w.Header().Set(fiber.HeaderWWWAuthenticate, spnegoRejected)
+				w.WriteHeader(http.StatusForbidden)
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte("denied"))
+			},
+			wantStatus: fiber.StatusForbidden,
+			wantBody:   "denied",
+		},
+		{
+			name:       "declining without writing anything is 401",
+			write:      func(http.ResponseWriter) {},
+			wantStatus: fiber.StatusUnauthorized,
+		},
+		{
+			name: "a body without a status is 200",
+			write: func(w http.ResponseWriter) {
+				_, _ = w.Write([]byte("body without a status"))
+			},
+			wantStatus: fiber.StatusOK,
+			wantBody:   "body without a status",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubAuthenticate(t, func(w http.ResponseWriter, _ *http.Request) bool {
+				tc.write(w)
+				return false
+			})
+			ctx := serveProtected(t, Config{KeytabLookup: testKeytabLookup(t)})
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode())
+			if tc.wantBody != "" {
+				require.Equal(t, tc.wantBody, string(ctx.Response.Body()))
+			}
+		})
+	}
 }
 
 // TestMergedKeytabIsSerialisable pins why readAll builds on keytab.New rather
@@ -1425,46 +1397,157 @@ func TestMergedKeytabIsSerialisable(t *testing.T) {
 	require.Len(t, utils.GetKeytabInfo(reloaded), 2)
 }
 
-// TestWindowBoundaries pins the inclusive/exclusive edge of each time window,
-// which stepping the clock well past them leaves unspecified.
-func TestWindowBoundaries(t *testing.T) {
-	t.Run("log throttle reopens only after the window", func(t *testing.T) {
-		now := time.Now()
-		throttle := &logThrottle{every: 30 * time.Second, nowFn: func() time.Time { return now }}
-		var runs int
-		fire := func() { throttle.do(func() { runs++ }) }
+// TestLogThrottleWindowBoundary pins the throttle's inclusive/exclusive edge,
+// which stepping the clock well past the window leaves unspecified. The grace
+// window's boundary is covered in TestKeytabStaleGraceExpires.
+func TestLogThrottleWindowBoundary(t *testing.T) {
+	now := time.Now()
+	throttle := &logThrottle{every: 30 * time.Second, nowFn: func() time.Time { return now }}
+	var runs int
+	fire := func() { throttle.do(func() { runs++ }) }
 
-		fire()
-		require.Equal(t, 1, runs)
-		// Exactly one window later is the first instant that may fire again.
-		now = now.Add(30 * time.Second)
-		fire()
-		require.Equal(t, 2, runs, "the window is closed for strictly less than its length")
-	})
+	fire()
+	require.Equal(t, 1, runs)
 
-	t.Run("grace expires strictly after its length", func(t *testing.T) {
+	now = now.Add(30*time.Second - time.Nanosecond)
+	fire()
+	require.Equal(t, 1, runs, "one tick short of the window it is still closed")
+
+	now = now.Add(time.Nanosecond)
+	fire()
+	require.Equal(t, 2, runs, "at exactly the window it reopens")
+}
+
+// TestUnderLockMatchClosesEpisode covers load's under-lock snapshot match. A
+// loader whose pre-lock stat saw the broken revision, but which finds the
+// cached one back on disk once it holds the lock, must close the episode —
+// otherwise the flag stays set and every later cache hit pays for a full stat
+// under the reload mutex.
+func TestUnderLockMatchClosesEpisode(t *testing.T) {
+	var logged bytes.Buffer
+	flog.SetOutput(&logged)
+	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
+
+	dir := t.TempDir()
+	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
+	original, err := os.ReadFile(filename)
+	require.NoError(t, err)
+	info, err := os.Stat(filename)
+	require.NoError(t, err)
+
+	cache := newKeytabFileCache([]string{filename})
+	_, err = cache.load()
+	require.NoError(t, err)
+
+	// Open an episode on a broken revision.
+	require.NoError(t, os.WriteFile(filename, []byte("12"), 0o600))
+	_, err = cache.load()
+	require.NoError(t, err)
+	require.True(t, cache.degraded.Load())
+
+	// A loader stats the broken revision, then blocks while the keytab is
+	// restored byte-for-byte — same size, mtime and inode-preserving rewrite.
+	cache.mu.Lock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = cache.load()
+	}()
+	time.Sleep(2 * time.Millisecond)
+	require.NoError(t, os.WriteFile(filename, original, 0o600))
+	require.NoError(t, os.Chtimes(filename, info.ModTime(), info.ModTime()))
+	cache.mu.Unlock()
+	<-done
+
+	require.False(t, cache.degraded.Load(),
+		"a revision matching the snapshot under the lock must close the episode")
+	require.Contains(t, logged.String(), "loads cleanly again")
+}
+
+// TestFileStampTracksSizeAndModTime pins each half of the change signal. Every
+// other rotation in the suite moves both at once, so either could be dropped
+// unnoticed — and each covers a case the README promises is caught.
+func TestFileStampTracksSizeAndModTime(t *testing.T) {
+	t.Run("a same-size rewrite is caught by modification time", func(t *testing.T) {
 		dir := t.TempDir()
-		filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
-		now := time.Now()
-		cache := &keytabFileCache{
-			files:      []string{filename},
-			staleGrace: 30 * time.Second,
-			retryEvery: time.Nanosecond,
-			nowFn:      func() time.Time { return now },
-		}
-		_, err := cache.load()
+		first := writeMockKeytab(t, dir, "one.keytab", "HTTP/aaa.example.com")
+		second := writeMockKeytab(t, dir, "two.keytab", "HTTP/bbb.example.com")
+		firstBytes, err := os.ReadFile(first)
 		require.NoError(t, err)
-		require.NoError(t, os.WriteFile(filename, []byte("12"), 0o600))
-		_, err = cache.load()
+		secondBytes, err := os.ReadFile(second)
+		require.NoError(t, err)
+		require.Len(t, secondBytes, len(firstBytes), "the principals must be the same length")
+
+		target := path.Join(dir, "sso.keytab")
+		require.NoError(t, os.WriteFile(target, firstBytes, 0o600))
+		cache := newKeytabFileCache([]string{target})
+		before, err := cache.load()
 		require.NoError(t, err)
 
-		// Exactly at the grace boundary the keytab is still covered for.
-		now = now.Add(30 * time.Second)
-		_, err = cache.load()
-		require.NoError(t, err, "the grace window is inclusive of its own length")
-
-		now = now.Add(time.Nanosecond)
-		_, err = cache.load()
-		require.Error(t, err, "one tick past the window it expires")
+		// Same size, different bytes, different mtime.
+		require.NoError(t, os.WriteFile(target, secondBytes, 0o600))
+		require.NoError(t, os.Chtimes(target, time.Now().Add(time.Second), time.Now().Add(time.Second)))
+		after, err := cache.load()
+		require.NoError(t, err)
+		require.NotSame(t, before, after, "a same-size rewrite must be detected by mtime")
 	})
+
+	t.Run("a same-mtime rewrite is caught by size", func(t *testing.T) {
+		dir := t.TempDir()
+		single := writeMockKeytab(t, dir, "one.keytab", "HTTP/aaa.example.com")
+		singleBytes, err := os.ReadFile(single)
+		require.NoError(t, err)
+
+		target := path.Join(dir, "sso.keytab")
+		require.NoError(t, os.WriteFile(target, singleBytes, 0o600))
+		cache := newKeytabFileCache([]string{target})
+		before, err := cache.load()
+		require.NoError(t, err)
+		info, err := os.Stat(target)
+		require.NoError(t, err)
+
+		// A two-entry keytab is longer; restore the original mtime so only the
+		// size differs.
+		twoEntry := writeMockKeytab(t, dir, "two.keytab", "HTTP/a-much-longer-principal.example.com")
+		twoBytes, err := os.ReadFile(twoEntry)
+		require.NoError(t, err)
+		require.NotEqual(t, len(singleBytes), len(twoBytes))
+		require.NoError(t, os.WriteFile(target, twoBytes, 0o600))
+		require.NoError(t, os.Chtimes(target, info.ModTime(), info.ModTime()))
+
+		after, err := cache.load()
+		require.NoError(t, err)
+		require.NotSame(t, before, after, "a same-mtime rewrite must be detected by size")
+	})
+}
+
+// testKeytabLookup returns a lookup over a throwaway mock keytab.
+func testKeytabLookup(t *testing.T) KeytabLookupFunc {
+	t.Helper()
+	filename := writeMockKeytab(t, t.TempDir(), "sso.keytab", "HTTP/sso.example.com")
+	lookup, err := NewKeytabFileLookupFunc(filename)
+	require.NoError(t, err)
+	return lookup
+}
+
+// serveProtected builds a middleware from cfg, puts it in front of one route,
+// and drives a single GET through it, returning the response context.
+func serveProtected(t *testing.T, cfg Config, decorate ...func(*fasthttp.RequestCtx)) *fasthttp.RequestCtx {
+	t.Helper()
+	middleware, err := New(cfg)
+	require.NoError(t, err)
+
+	app := fiber.New()
+	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
+		return c.SendString("authenticated")
+	})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fiber.MethodGet)
+	ctx.Request.SetRequestURI("/authenticate")
+	for _, d := range decorate {
+		d(ctx)
+	}
+	app.Handler()(ctx)
+	return ctx
 }
