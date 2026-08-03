@@ -34,7 +34,7 @@ func New(cfg Config) (fiber.Handler, error) {
 		// Look up the keytab
 		kt, err := cfg.KeytabLookup()
 		if err != nil {
-			return fmt.Errorf("%w: %v", ErrLookupKeytabFailed, err)
+			return fmt.Errorf("%w: %w", ErrLookupKeytabFailed, err)
 		}
 		// Create the SPNEGO handler using the keytab
 		var handleErr error

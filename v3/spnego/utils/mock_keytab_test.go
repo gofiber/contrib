@@ -156,11 +156,11 @@ func TestWithPairs(t *testing.T) {
 		CreateTime:  tm,
 	})(&opts)
 	require.Len(t, opts.Pairs, 3)
-	require.Equal(t, opts.Pairs, []EncryptTypePair{
+	require.Equal(t, []EncryptTypePair{
 		{Version: 2, EncryptType: 17, CreateTime: tm.Add(-time.Minute)},
 		{Version: 2, EncryptType: 18, CreateTime: tm.Add(-time.Minute)},
 		{Version: 3, EncryptType: 18, CreateTime: tm},
-	})
+	}, opts.Pairs)
 }
 
 func TestWithPassword(t *testing.T) {

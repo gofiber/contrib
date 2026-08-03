@@ -116,10 +116,10 @@ var defaultFileOperator fileOperator = myFileOperator{}
 //	  WithFilename("test.keytab"),
 //	  WithPairs(EncryptTypePair{EncryptType: 18})
 //	)
-//	defer cleanup()
 //	if err != nil {
-//	  // handle error
+//	  // handle error; cleanup is nil on failure, so do not defer it above
 //	}
+//	defer cleanup()
 func NewMockKeytab(opts ...MockOption) (*keytab.Keytab, func(), error) {
 	opt := newDefaultMockOptions()
 	opt.apply(opts...)
@@ -132,7 +132,8 @@ func NewMockKeytab(opts ...MockOption) (*keytab.Keytab, func(), error) {
 	}
 	var clean = func() {}
 	if len(opt.Filename) > 0 {
-		file, err := defaultFileOperator.OpenFile(opt.Filename, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o666)
+		// Keytabs hold key material, so keep them readable only by the owner.
+		file, err := defaultFileOperator.OpenFile(opt.Filename, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
 		if err != nil {
 			return nil, nil, fmt.Errorf("error opening file: %w", err)
 		}

@@ -24,8 +24,8 @@ func TestGetAndSetAuthenticatedIdentityFromContextForFiberV3(t *testing.T) {
 	app.Get("/identity/test", func(ctx fiberV3.Ctx) error {
 		user, ok := GetAuthenticatedIdentityFromContext(ctx)
 		require.True(t, ok)
-		require.Equal(t, id.UserName(), user.UserName())
-		require.Equal(t, id.Domain(), user.Domain())
+		require.Equal(t, user.UserName(), id.UserName())
+		require.Equal(t, user.Domain(), id.Domain())
 		return ctx.SendStatus(fiberV3.StatusOK)
 	})
 	resp, err := app.Test(httptest.NewRequest("GET", "/test", nil))
