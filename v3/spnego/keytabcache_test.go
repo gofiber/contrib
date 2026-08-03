@@ -139,12 +139,14 @@ func TestNewSystemKeytabLookupFunc(t *testing.T) {
 	})
 
 	t.Run("treats a path as a path, not a residual type", func(t *testing.T) {
-		filename := writeMockKeytab(t, t.TempDir(), "system.keytab", "HTTP/system.example.com")
+		// resolveKeytabResidual never touches the filesystem, so these are just
+		// names; nothing here needs to exist.
 		for _, name := range []string{
-			filename,          // POSIX absolute path, no colon at all
-			`C:\krb5.keytab`,  // Windows drive letter
-			`c:/krb5.keytab`,  // lowercase, forward slashes
-			`\\host\share\kt`, // UNC path
+			path.Join(t.TempDir(), "system.keytab"), // POSIX absolute path
+			`C:\krb5.keytab`,                        // Windows drive letter
+			`c:/krb5.keytab`,                        // lowercase, forward slashes
+			`\\host\share\kt`,                       // UNC path
+			"backup:2024.keytab",                    // relative name that happens to contain a colon
 		} {
 			resolved, err := resolveKeytabResidual(name)
 			require.NoError(t, err, name)

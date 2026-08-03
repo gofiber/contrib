@@ -140,18 +140,25 @@ type degradedState struct {
 // it only when one of those files changes on disk.
 //
 // Episode logging follows one rule: the line is queued with announce while mu
-// is held, next to the state change it describes, and the queue is drained by
-// emit once mu is released. Queueing beside the mutation means a transition
-// cannot be marked as announced without its line being queued.
+// is held, next to the state change it describes, and emit writes whatever this
+// goroutine queued once mu is released. Queueing beside the mutation means a
+// transition cannot be marked as announced without its line being queued, and
+// writing after the unlock keeps the sink off the reload path that every
+// authenticated request queues on during a degraded episode.
 //
-// Draining takes flushMu, never mu, across the sink write. Because appends are
-// serialised by mu, queue order is state-change order, and whoever holds flushMu
-// drains everything queued so far — so an all-clear cannot overtake the warning
-// it clears even if the goroutine that queued the warning is preempted before
-// it drains. And because flushMu is only ever taken after mu has been released,
-// a blocking sink cannot stall the reload path that every authenticated request
-// queues on during a degraded episode. The lock order is always flushMu then
-// mu; nothing acquires them the other way round.
+// Each goroutine writes only its own lines, and nothing orders them against
+// each other. A goroutine preempted between releasing mu and writing can
+// therefore let a later transition's line reach the sink first — an all-clear
+// printed above the warning it clears. That window is a few instructions wide,
+// against another goroutine that has to acquire mu and read every keytab file
+// to overtake it.
+//
+// A shared flush lock was tried and removed. It made the ordering exact, but
+// every request on the reload path had to take it, so one goroutine inside a
+// slow sink stalled all of them — and a sink that re-entered the cache
+// deadlocked on it, since a sync.Mutex is not reentrant. A cosmetic
+// misordering of two rare lines is a better trade than a reproducible stall on
+// the authentication path.
 type keytabFileCache struct {
 	files      []string
 	staleGrace time.Duration
@@ -169,12 +176,9 @@ type keytabFileCache struct {
 	// mu guards reloads so the file I/O is done once, not once per waiter.
 	mu  sync.Mutex
 	deg degradedState
-	// queue holds episode lines waiting to be written, oldest first. Guarded by
-	// mu; drained by flush.
+	// queue holds the episode lines this locked section produced, oldest first.
+	// Guarded by mu; taken and cleared by emit.
 	queue []func()
-	// flushMu serialises draining so the lines reach the sink in queue order.
-	// See the note on this type for the lock order.
-	flushMu sync.Mutex
 }
 
 // newKeytabFileCache builds a cache with the production defaults.
@@ -306,6 +310,9 @@ func (c *keytabFileCache) endEpisodeIfCurrent(expected []fileStamp) {
 	c.mu.Lock()
 	defer c.emit()
 	if c.deg.cause == nil {
+		// Another goroutine closed the episode first. Clear the flag so the
+		// fast path stops paying for this call on every later request.
+		c.degraded.Store(false)
 		return
 	}
 	if fresh, err := c.stat(); err == nil && slices.Equal(fresh, expected) {
@@ -320,36 +327,15 @@ func (c *keytabFileCache) announce(write func()) {
 	c.queue = append(c.queue, write)
 }
 
-// emit releases mu and drains the queue. It is called with mu held and returns
-// with it released. See the note on keytabFileCache.
-//
-// Whether anything is queued is read while mu is still held, so a request that
-// produced no line never touches flushMu. Otherwise every request on the reload
-// path — which is all of them during a degraded episode — would queue behind
-// whichever goroutine is currently inside the sink. A goroutine that did queue
-// always sees its own entry, so nothing is left undrained.
+// emit releases mu and writes whatever this locked section queued, oldest
+// first. It is called with mu held and returns with it released. Clearing the
+// queue rather than resharing it means a goroutine only ever writes its own
+// lines and nothing is retained afterwards. See the note on keytabFileCache.
 func (c *keytabFileCache) emit() {
-	queued := len(c.queue) > 0
+	writes := c.queue
+	c.queue = nil
 	c.mu.Unlock()
-	if queued {
-		c.flush()
-	}
-}
-
-// flush writes every queued line, oldest first. Each is popped under mu and
-// written without it, so the sink is never reached with the reload lock held.
-func (c *keytabFileCache) flush() {
-	c.flushMu.Lock()
-	defer c.flushMu.Unlock()
-	for {
-		c.mu.Lock()
-		if len(c.queue) == 0 {
-			c.mu.Unlock()
-			return
-		}
-		write := c.queue[0]
-		c.queue = c.queue[1:]
-		c.mu.Unlock()
+	for _, write := range writes {
 		write()
 	}
 }
@@ -476,10 +462,16 @@ func NewSystemKeytabLookupFunc() (KeytabLookupFunc, error) {
 // fileKeytabTypes are the MIT keytab residual types backed by a plain file.
 var fileKeytabTypes = []string{"FILE", "WRFILE"}
 
+// nonFileKeytabTypes are the MIT keytab residual types that exist but cannot be
+// read as a file. Anything outside both lists is a filename, not a type: a
+// relative path may legitimately contain a colon.
+var nonFileKeytabTypes = []string{"KEYRING", "MEMORY", "DIR", "ANY", "SRVTAB"}
+
 // resolveKeytabResidual strips a supported "TYPE:" prefix from a keytab name
-// and rejects the types that are not plain files. A name with no recognised
-// prefix is returned unchanged, so absolute paths and Windows drive letters
-// still work.
+// and rejects the known types that are not plain files. A name whose prefix
+// matches no known type is returned unchanged and treated as a path, so
+// absolute paths, Windows drive letters and relative names that happen to
+// contain a colon all still work.
 func resolveKeytabResidual(name string) (string, error) {
 	prefix, residual, found := strings.Cut(name, ":")
 	if !found {
@@ -489,8 +481,12 @@ func resolveKeytabResidual(name string) (string, error) {
 	if strings.ContainsAny(prefix, `/\`) || len(prefix) < 2 {
 		return name, nil
 	}
-	if slices.Contains(fileKeytabTypes, strings.ToUpper(prefix)) {
+	switch upper := strings.ToUpper(prefix); {
+	case slices.Contains(fileKeytabTypes, upper):
 		return residual, nil
+	case slices.Contains(nonFileKeytabTypes, upper):
+		return "", fmt.Errorf("%w: %s", ErrUnsupportedKeytabResidualType, prefix)
+	default:
+		return name, nil
 	}
-	return "", fmt.Errorf("%w: %s", ErrUnsupportedKeytabResidualType, prefix)
 }

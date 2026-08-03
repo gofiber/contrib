@@ -97,6 +97,8 @@ func TestUnauthorizedNotCalledOnOpeningChallenge(t *testing.T) {
 	require.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode())
 	require.Equal(t, "Negotiate", string(ctx.Response.Header.Peek(fiber.HeaderWWWAuthenticate)),
 		"the opening challenge must reach the client untouched")
+	require.Contains(t, string(ctx.Response.Body()), "Unauthorised",
+		"SPNEGO's own body must reach the client, not just its headers")
 }
 
 // TestIsRejection pins which of gokrb5's three 401 shapes is treated as a
@@ -340,6 +342,8 @@ func TestRejectionWithoutHandlerPassesThrough(t *testing.T) {
 
 	require.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode())
 	require.Equal(t, spnegoRejected, string(ctx.Response.Header.Peek(fiber.HeaderWWWAuthenticate)))
+	require.Contains(t, string(ctx.Response.Body()), "Unauthorised",
+		"SPNEGO's own body must reach the client, not just its headers")
 }
 
 // TestLookupErrorRemainsInspectable checks that hiding the detail from the
@@ -1015,14 +1019,16 @@ func TestAnnounceQueuesInOrder(t *testing.T) {
 	require.Equal(t, []string{"first", "second"}, written,
 		"queued lines must all be written, oldest first")
 
-	// The queue is drained, so a second flush writes nothing.
-	cache.flush()
+	// The queue was cleared, so a second locked section writes nothing.
+	cache.mu.Lock()
+	cache.emit()
 	require.Len(t, written, 2)
 }
 
-// TestFlushDoesNotHoldReloadLock pins the lock discipline of the drain loop:
-// each line is popped under mu but written without it.
-func TestFlushDoesNotHoldReloadLock(t *testing.T) {
+// TestEmitDoesNotHoldReloadLock pins the lock discipline: a queued line is
+// written after mu is released, so a blocking sink cannot stall the reload
+// path every authenticated request queues on during a degraded episode.
+func TestEmitDoesNotHoldReloadLock(t *testing.T) {
 	cache := newKeytabFileCache(nil)
 
 	locked := false
@@ -1101,63 +1107,6 @@ func TestAuthenticatedRequestPropagatesIdentityAndError(t *testing.T) {
 		"the downstream error must be returned, not swallowed")
 }
 
-// TestFlushOrdersAcrossGoroutines pins the guarantee flushMu exists for: a
-// goroutine preempted between queueing its line and draining must not let a
-// later transition's line reach the sink first. Without the flush lock, the
-// all-clear below overtakes the warning it clears.
-func TestFlushOrdersAcrossGoroutines(t *testing.T) {
-	cache := newKeytabFileCache(nil)
-
-	var mu sync.Mutex
-	var order []string
-	release := make(chan struct{})
-
-	// A queues a line whose write blocks, then drains.
-	cache.mu.Lock()
-	cache.announce(func() {
-		<-release
-		mu.Lock()
-		order = append(order, "warning")
-		mu.Unlock()
-	})
-	var drained sync.WaitGroup
-	drained.Add(1)
-	go func() {
-		defer drained.Done()
-		cache.emit() // releases cache.mu, then blocks inside the write
-	}()
-
-	// B queues the later line and drains once A is inside the sink. TryLock
-	// acquires on success, so release it again when it does.
-	require.Eventually(t, func() bool {
-		if cache.flushMu.TryLock() {
-			cache.flushMu.Unlock()
-			return false
-		}
-		return true
-	}, time.Second, time.Millisecond, "the first drain should hold the flush lock")
-
-	drained.Add(1)
-	go func() {
-		defer drained.Done()
-		cache.mu.Lock()
-		cache.announce(func() {
-			mu.Lock()
-			order = append(order, "all-clear")
-			mu.Unlock()
-		})
-		cache.emit()
-	}()
-
-	close(release)
-	drained.Wait()
-
-	mu.Lock()
-	defer mu.Unlock()
-	require.Equal(t, []string{"warning", "all-clear"}, order,
-		"a later line must not overtake one already queued")
-}
-
 // TestKeytabUnreadableNotCoveredWithinRetryWindow covers the throttled branch:
 // a second request inside the retry window must still get the error rather than
 // the cached keytab, or making a keytab unreadable would be masked for the
@@ -1234,4 +1183,134 @@ func TestConfigLogReachesGokrb5(t *testing.T) {
 
 	require.NotEmpty(t, captured.String(), "gokrb5 diagnostics must reach Config.Log")
 	require.Contains(t, captured.String(), "SPNEGO")
+}
+
+// TestReloadPairsStampsWithContent covers the under-lock re-stat. A goroutine
+// whose pre-lock stat predates a rotation must not record that older revision
+// as holding the bytes it reads after acquiring the lock — the snapshot would
+// then describe a revision it never read, and a rollback to it would be
+// invisible.
+//
+// The window is reproduced by holding mu while a loader stats and blocks, then
+// rotating the file before releasing it.
+func TestReloadPairsStampsWithContent(t *testing.T) {
+	dir := t.TempDir()
+	source := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
+	original, err := os.ReadFile(source)
+	require.NoError(t, err)
+	rotated := writeMockKeytab(t, dir, "rotated.keytab", "HTTP/rotated.example.com")
+	rotatedBytes, err := os.ReadFile(rotated)
+	require.NoError(t, err)
+
+	// Repeated because the loader has to reach its pre-lock stat before the
+	// rotation to exercise the window; a miss only costs an iteration.
+	for range 30 {
+		filename := path.Join(t.TempDir(), "sso.keytab")
+		require.NoError(t, os.WriteFile(filename, original, 0o600))
+		cache := newKeytabFileCache([]string{filename})
+
+		cache.mu.Lock()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, _ = cache.load()
+		}()
+
+		// Give the loader time to stat and block on mu, then rotate underneath
+		// it and let it through.
+		time.Sleep(2 * time.Millisecond)
+		require.NoError(t, os.WriteFile(filename, rotatedBytes, 0o600))
+		cache.mu.Unlock()
+		<-done
+
+		// Whatever it read, the snapshot's stamps must describe that content.
+		snap := cache.snapshot.Load()
+		require.NotNil(t, snap)
+		onDisk, err := cache.stat()
+		require.NoError(t, err)
+		require.Equal(t, onDisk, snap.stamps,
+			"the snapshot must record the revision whose bytes it holds")
+
+		info := utils.GetKeytabInfo(snap.merged)
+		require.Len(t, info, 1)
+		require.Equal(t, "HTTP/rotated.example.com@TEST.LOCAL", info[0].PrincipalName)
+	}
+}
+
+// TestReloadReportsStatFailureUnderLock covers the error branch of that re-stat:
+// a keytab removed between the pre-lock stat and the lock must surface, not
+// proceed to a read with stale stamps.
+func TestReloadReportsStatFailureUnderLock(t *testing.T) {
+	dir := t.TempDir()
+	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
+
+	cache := newKeytabFileCache([]string{filename})
+	_, err := cache.load()
+	require.NoError(t, err)
+
+	// Change the file so the fast path misses, then remove it before the
+	// under-lock stat runs.
+	require.NoError(t, os.WriteFile(filename, []byte("12"), 0o600))
+	_, err = cache.stat()
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(filename))
+
+	_, err = cache.load()
+	require.ErrorIs(t, err, ErrLoadKeytabFileFailed)
+}
+
+// TestEndEpisodeIfCurrentOnAlreadyClearedEpisode covers the guard for a second
+// goroutine arriving after the first has already closed the episode.
+func TestEndEpisodeIfCurrentOnAlreadyClearedEpisode(t *testing.T) {
+	var logged bytes.Buffer
+	flog.SetOutput(&logged)
+	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
+
+	dir := t.TempDir()
+	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
+	cache := newKeytabFileCache([]string{filename})
+	_, err := cache.load()
+	require.NoError(t, err)
+	stamps := cache.snapshot.Load().stamps
+
+	// No episode is open, so this must return without announcing anything.
+	cache.degraded.Store(true)
+	logged.Reset()
+	cache.endEpisodeIfCurrent(stamps)
+	require.Empty(t, logged.String(), "an already-cleared episode must not announce again")
+	require.False(t, cache.degraded.Load())
+}
+
+// TestRecorderKeepsFirstStatus covers the recorder's first-status-wins rule.
+// gokrb5 v8.4.4 writes a status exactly once, so nothing else reaches this;
+// the guard exists so a future version that writes twice cannot have its real
+// outcome overwritten by a later default.
+func TestRecorderKeepsFirstStatus(t *testing.T) {
+	stubAuthenticate(t, func(w http.ResponseWriter, _ *http.Request) bool {
+		w.Header().Set(fiber.HeaderWWWAuthenticate, spnegoRejected)
+		w.WriteHeader(http.StatusForbidden)
+		// A second write must not override the first.
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("denied"))
+		return false
+	})
+
+	filename := writeMockKeytab(t, t.TempDir(), "sso.keytab", "HTTP/sso.example.com")
+	lookupFunc, err := NewKeytabFileLookupFunc(filename)
+	require.NoError(t, err)
+	middleware, err := New(Config{KeytabLookup: lookupFunc})
+	require.NoError(t, err)
+
+	app := fiber.New()
+	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
+		return c.SendString("authenticated")
+	})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fiber.MethodGet)
+	ctx.Request.SetRequestURI("/authenticate")
+	app.Handler()(ctx)
+
+	require.Equal(t, fiber.StatusForbidden, ctx.Response.StatusCode(),
+		"the first status written must win")
+	require.Equal(t, "denied", string(ctx.Response.Body()))
 }

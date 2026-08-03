@@ -220,6 +220,10 @@ func requestForSPNEGO(ctx fiber.Ctx) *http.Request {
 // can substitute a stub: reaching the authenticated branch for real needs a
 // live KDC, which would leave identity propagation, the accept-completed header
 // replay and downstream error handling permanently unexercised.
+//
+// New captures it once, so the request path reads a local rather than this
+// package-level variable. A test therefore has to substitute before
+// constructing its middleware, and cannot race a request already in flight.
 var authenticate = spnego.SPNEGOKRB5Authenticate
 
 // New creates a new SPNEGO authentication middleware.
@@ -261,6 +265,8 @@ func New(cfg Config) (fiber.Handler, error) {
 	// giving it its own: sharing this one would let each suppress the other,
 	// and keying on the cause would let a caller defeat the throttle by varying
 	// client-controlled text inside it.
+	// Captured at construction; see the note on authenticate.
+	acceptSPNEGO := authenticate
 	lookupFailures := &logThrottle{every: internalErrorLogEvery}
 	logInternal := func(cause error) {
 		lookupFailures.do(func() {
@@ -306,7 +312,7 @@ func New(cfg Config) (fiber.Handler, error) {
 			// Call the next handler in the chain
 			nextErr = ctx.Next()
 		})
-		authenticate(inner, kt, opts...).ServeHTTP(recorder, req)
+		acceptSPNEGO(inner, kt, opts...).ServeHTTP(recorder, req)
 		if authenticated {
 			return nextErr
 		}
