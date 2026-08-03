@@ -138,12 +138,23 @@ func TestNewSystemKeytabLookupFunc(t *testing.T) {
 		}
 	})
 
-	t.Run("treats an absolute path as a path", func(t *testing.T) {
+	t.Run("treats a path as a path, not a residual type", func(t *testing.T) {
 		filename := writeMockKeytab(t, t.TempDir(), "system.keytab", "HTTP/system.example.com")
-		t.Setenv("KRB5_KTNAME", filename)
+		for _, name := range []string{
+			filename,          // POSIX absolute path, no colon at all
+			`C:\krb5.keytab`,  // Windows drive letter
+			`c:/krb5.keytab`,  // lowercase, forward slashes
+			`\\host\share\kt`, // UNC path
+		} {
+			resolved, err := resolveKeytabResidual(name)
+			require.NoError(t, err, name)
+			require.Equal(t, name, resolved, name)
+		}
+	})
 
-		resolved, err := resolveKeytabResidual(filename)
-		require.NoError(t, err)
-		require.Equal(t, filename, resolved)
+	t.Run("rejects a file type with no residual", func(t *testing.T) {
+		t.Setenv("KRB5_KTNAME", "FILE:")
+		_, err := NewSystemKeytabLookupFunc()
+		require.ErrorIs(t, err, ErrConfigInvalidOfAtLeastOneKeytabFileRequired)
 	})
 }

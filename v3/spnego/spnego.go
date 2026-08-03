@@ -216,6 +216,12 @@ func requestForSPNEGO(ctx fiber.Ctx) *http.Request {
 	}
 }
 
+// authenticate wraps a handler in SPNEGO acceptance. It is a variable so tests
+// can substitute a stub: reaching the authenticated branch for real needs a
+// live KDC, which would leave identity propagation, the accept-completed header
+// replay and downstream error handling permanently unexercised.
+var authenticate = spnego.SPNEGOKRB5Authenticate
+
 // New creates a new SPNEGO authentication middleware.
 // It takes a Config struct and returns a Fiber handler or an error.
 // The middleware handles Kerberos authentication for incoming requests using the
@@ -300,7 +306,7 @@ func New(cfg Config) (fiber.Handler, error) {
 			// Call the next handler in the chain
 			nextErr = ctx.Next()
 		})
-		spnego.SPNEGOKRB5Authenticate(inner, kt, opts...).ServeHTTP(recorder, req)
+		authenticate(inner, kt, opts...).ServeHTTP(recorder, req)
 		if authenticated {
 			return nextErr
 		}

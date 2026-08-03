@@ -18,8 +18,10 @@ import (
 	"github.com/gofiber/fiber/v3"
 	flog "github.com/gofiber/fiber/v3/log"
 	"github.com/jcmturner/gofork/encoding/asn1"
+	"github.com/jcmturner/goidentity/v6"
 	"github.com/jcmturner/gokrb5/v8/gssapi"
 	"github.com/jcmturner/gokrb5/v8/keytab"
+	"github.com/jcmturner/gokrb5/v8/service"
 	gospnego "github.com/jcmturner/gokrb5/v8/spnego"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -884,10 +886,11 @@ func TestKeytabCacheConcurrentReload(t *testing.T) {
 	beforeConcurrent := logged.Len()
 	logMu.Unlock()
 
-	// Capture the good revision's stamps so the flipper can restore it
-	// byte-for-byte with its original mtime, which is what drives the
-	// cache-hit recovery path through endEpisodeIfCurrent.
-	goodInfo, err := os.Stat(filename)
+	// Every restore below is stamped with this same mtime. What opens the
+	// cache-hit recovery path through endEpisodeIfCurrent is that restores are
+	// stamp-identical to each other — once one has been snapshotted, the next
+	// matches it — not that they match the keytab's original mtime.
+	restoreStamp, err := os.Stat(filename)
 	require.NoError(t, err)
 
 	// Now flip the file between broken and good while readers hammer the cache.
@@ -908,7 +911,7 @@ func TestKeytabCacheConcurrentReload(t *testing.T) {
 				_ = os.WriteFile(filename, good, 0o600)
 				// Restoring the original mtime makes the stamps match the
 				// snapshot, so recovery goes through the cache-hit path.
-				_ = os.Chtimes(filename, goodInfo.ModTime(), goodInfo.ModTime())
+				_ = os.Chtimes(filename, restoreStamp.ModTime(), restoreStamp.ModTime())
 			}
 		}
 	}()
@@ -1034,4 +1037,201 @@ func TestFlushDoesNotHoldReloadLock(t *testing.T) {
 	cache.emit()
 
 	require.False(t, locked, "a queued line must be written with the reload lock released")
+}
+
+// stubAuthenticate replaces the SPNEGO acceptance step for the duration of a
+// test, so the authenticated branch can be driven without a KDC.
+func stubAuthenticate(t *testing.T, accept func(w http.ResponseWriter, r *http.Request) bool) {
+	t.Helper()
+	previous := authenticate
+	authenticate = func(inner http.Handler, _ *keytab.Keytab, _ ...func(*service.Settings)) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if accept(w, r) {
+				inner.ServeHTTP(w, r)
+			}
+		})
+	}
+	t.Cleanup(func() { authenticate = previous })
+}
+
+// TestAuthenticatedRequestPropagatesIdentityAndError covers the success branch:
+// the identity reaches the handler, the accept-completed header the client
+// needs for mutual authentication is replayed onto the response, and an error
+// from the downstream handler is returned rather than swallowed.
+func TestAuthenticatedRequestPropagatesIdentityAndError(t *testing.T) {
+	user := goidentity.NewUser("alice")
+	user.SetDomain("EXAMPLE.LOCAL")
+	stubAuthenticate(t, func(w http.ResponseWriter, r *http.Request) bool {
+		// What gokrb5 does on success, in the same order.
+		w.Header().Set(fiber.HeaderWWWAuthenticate, "Negotiate accepted")
+		*r = *goidentity.AddToHTTPRequestContext(&user, r)
+		return true
+	})
+
+	filename := writeMockKeytab(t, t.TempDir(), "sso.keytab", "HTTP/sso.example.com")
+	lookupFunc, err := NewKeytabFileLookupFunc(filename)
+	require.NoError(t, err)
+	middleware, err := New(Config{KeytabLookup: lookupFunc})
+	require.NoError(t, err)
+
+	downstream := errors.New("downstream failed")
+	var seen goidentity.Identity
+	app := fiber.New(fiber.Config{
+		ErrorHandler: func(c fiber.Ctx, e error) error {
+			require.ErrorIs(t, e, downstream)
+			return c.SendStatus(fiber.StatusTeapot)
+		},
+	})
+	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
+		seen, _ = GetAuthenticatedIdentityFromContext(c)
+		return downstream
+	})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fiber.MethodGet)
+	ctx.Request.SetRequestURI("/authenticate")
+	app.Handler()(ctx)
+
+	require.NotNil(t, seen, "the authenticated identity must reach the handler")
+	require.Equal(t, "alice", seen.UserName())
+	require.Equal(t, "EXAMPLE.LOCAL", seen.Domain())
+	require.Equal(t, "Negotiate accepted", string(ctx.Response.Header.Peek(fiber.HeaderWWWAuthenticate)),
+		"the accept-completed header must be replayed for mutual authentication")
+	require.Equal(t, fiber.StatusTeapot, ctx.Response.StatusCode(),
+		"the downstream error must be returned, not swallowed")
+}
+
+// TestFlushOrdersAcrossGoroutines pins the guarantee flushMu exists for: a
+// goroutine preempted between queueing its line and draining must not let a
+// later transition's line reach the sink first. Without the flush lock, the
+// all-clear below overtakes the warning it clears.
+func TestFlushOrdersAcrossGoroutines(t *testing.T) {
+	cache := newKeytabFileCache(nil)
+
+	var mu sync.Mutex
+	var order []string
+	release := make(chan struct{})
+
+	// A queues a line whose write blocks, then drains.
+	cache.mu.Lock()
+	cache.announce(func() {
+		<-release
+		mu.Lock()
+		order = append(order, "warning")
+		mu.Unlock()
+	})
+	var drained sync.WaitGroup
+	drained.Add(1)
+	go func() {
+		defer drained.Done()
+		cache.emit() // releases cache.mu, then blocks inside the write
+	}()
+
+	// B queues the later line and drains once A is inside the sink. TryLock
+	// acquires on success, so release it again when it does.
+	require.Eventually(t, func() bool {
+		if cache.flushMu.TryLock() {
+			cache.flushMu.Unlock()
+			return false
+		}
+		return true
+	}, time.Second, time.Millisecond, "the first drain should hold the flush lock")
+
+	drained.Add(1)
+	go func() {
+		defer drained.Done()
+		cache.mu.Lock()
+		cache.announce(func() {
+			mu.Lock()
+			order = append(order, "all-clear")
+			mu.Unlock()
+		})
+		cache.emit()
+	}()
+
+	close(release)
+	drained.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"warning", "all-clear"}, order,
+		"a later line must not overtake one already queued")
+}
+
+// TestKeytabUnreadableNotCoveredWithinRetryWindow covers the throttled branch:
+// a second request inside the retry window must still get the error rather than
+// the cached keytab, or making a keytab unreadable would be masked for the
+// whole grace window.
+func TestKeytabUnreadableNotCoveredWithinRetryWindow(t *testing.T) {
+	dir := t.TempDir()
+	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
+
+	now := time.Now()
+	cache := &keytabFileCache{
+		files:      []string{filename},
+		staleGrace: 30 * time.Second,
+		retryEvery: time.Second,
+		nowFn:      func() time.Time { return now },
+	}
+	_, err := cache.load()
+	require.NoError(t, err)
+
+	// A directory stats fine but cannot be read.
+	require.NoError(t, os.Remove(filename))
+	require.NoError(t, os.Mkdir(filename, 0o700))
+
+	_, err = cache.load()
+	require.ErrorIs(t, err, ErrLoadKeytabFileFailed)
+
+	// Inside the retry window the recorded cause is reused — and must still be
+	// an error, not the stale keytab.
+	now = now.Add(100 * time.Millisecond)
+	kt, err := cache.load()
+	require.ErrorIs(t, err, ErrLoadKeytabFileFailed)
+	require.Nil(t, kt, "an unreadable keytab must never be served from cache")
+}
+
+// TestFallbackToSystemKeytabValidatesAtStartup covers the documented promise
+// that a misconfigured host fails during New rather than on every request.
+func TestFallbackToSystemKeytabValidatesAtStartup(t *testing.T) {
+	t.Run("missing keytab fails construction", func(t *testing.T) {
+		t.Setenv("KRB5_KTNAME", path.Join(t.TempDir(), "absent.keytab"))
+		_, err := New(Config{FallbackToSystemKeytab: true})
+		require.ErrorIs(t, err, ErrLoadKeytabFileFailed)
+	})
+
+	t.Run("unsupported residual type fails construction", func(t *testing.T) {
+		t.Setenv("KRB5_KTNAME", "KEYRING:persistent:0:0")
+		_, err := New(Config{FallbackToSystemKeytab: true})
+		require.ErrorIs(t, err, ErrUnsupportedKeytabResidualType)
+	})
+}
+
+// TestConfigLogReachesGokrb5 covers the plumbing from Config.Log into gokrb5's
+// service settings, which resolveLogger alone does not exercise.
+func TestConfigLogReachesGokrb5(t *testing.T) {
+	var captured bytes.Buffer
+	filename := writeMockKeytab(t, t.TempDir(), "sso.keytab", "HTTP/sso.example.com")
+	lookupFunc, err := NewKeytabFileLookupFunc(filename)
+	require.NoError(t, err)
+
+	middleware, err := New(Config{
+		KeytabLookup: lookupFunc,
+		Log:          log.New(&captured, "", 0),
+	})
+	require.NoError(t, err)
+
+	app := fiber.New()
+	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
+		return c.SendString("authenticated")
+	})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fiber.MethodGet)
+	ctx.Request.SetRequestURI("/authenticate")
+	// A malformed Negotiate token makes gokrb5 log its own diagnostic.
+	ctx.Request.Header.Set(fiber.HeaderAuthorization, "Negotiate !!!not-base64!!!")
+	app.Handler()(ctx)
+
+	require.NotEmpty(t, captured.String(), "gokrb5 diagnostics must reach Config.Log")
+	require.Contains(t, captured.String(), "SPNEGO")
 }

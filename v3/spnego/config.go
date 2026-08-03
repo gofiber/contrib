@@ -322,9 +322,18 @@ func (c *keytabFileCache) announce(write func()) {
 
 // emit releases mu and drains the queue. It is called with mu held and returns
 // with it released. See the note on keytabFileCache.
+//
+// Whether anything is queued is read while mu is still held, so a request that
+// produced no line never touches flushMu. Otherwise every request on the reload
+// path — which is all of them during a degraded episode — would queue behind
+// whichever goroutine is currently inside the sink. A goroutine that did queue
+// always sees its own entry, so nothing is left undrained.
 func (c *keytabFileCache) emit() {
+	queued := len(c.queue) > 0
 	c.mu.Unlock()
-	c.flush()
+	if queued {
+		c.flush()
+	}
 }
 
 // flush writes every queued line, oldest first. Each is popped under mu and
@@ -372,6 +381,15 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 
 	c.mu.Lock()
 	defer c.emit()
+	// Re-stat under the lock. The caller's stamps were taken before mu was
+	// acquired, and this goroutine may have waited behind another's readAll, so
+	// pairing those stamps with content read now could record one revision as
+	// holding another's bytes — which would both clobber a correct snapshot and,
+	// if the rotation were later rolled back in place, pin the wrong keytab.
+	stamps, err = c.stat()
+	if err != nil {
+		return nil, err
+	}
 	// Another goroutine may have reloaded while this one waited for the lock.
 	if snap := c.snapshot.Load(); snap != nil && slices.Equal(snap.stamps, stamps) {
 		return snap.merged, nil
