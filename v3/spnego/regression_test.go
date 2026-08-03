@@ -310,6 +310,33 @@ func TestLookupErrorRemainsInspectable(t *testing.T) {
 		"the message shown to a client must not carry the cause")
 }
 
+// TestLookupErrorCannotChooseTheResponseStatus is why clientSafeError
+// implements Is and not Unwrap. Fiber's asFiberError resolves the status with
+// errors.As, which walks the Unwrap chain, so publishing the cause would hand a
+// caller's KeytabLookupFunc control of this middleware's status code. A lookup
+// returning fiber.ErrUnauthorized would answer an infrastructure fault with a
+// bare 401 — which a SPNEGO client reads as "renegotiate", not "this server is
+// broken" — and it would do so with no WWW-Authenticate header to renegotiate
+// against.
+//
+// Adding the Unwrap method that Go style would otherwise expect is the whole
+// regression, and it is invisible without this test.
+func TestLookupErrorCannotChooseTheResponseStatus(t *testing.T) {
+	ctx := serveProtected(t, Config{
+		KeytabLookup: func() (*keytab.Keytab, error) {
+			// A caller-chosen error that Fiber knows how to turn into a status.
+			return nil, fiber.ErrUnauthorized
+		},
+	})
+
+	require.Equal(t, fiber.StatusInternalServerError, ctx.Response.StatusCode(),
+		"a keytab lookup failure is a 500 whatever error the lookup returned")
+	require.Empty(t, ctx.Response.Header.Peek(fiber.HeaderWWWAuthenticate),
+		"nothing here should look like a challenge the client can answer")
+	require.Equal(t, "Internal Server Error", string(ctx.Response.Body()),
+		"the cause must not reach the client through the body either")
+}
+
 // TestKeytabStaleGraceExpires checks that a keytab which stays unparsable stops
 // being covered for. Serving it forever would keep a revoked key alive.
 func TestKeytabStaleGraceExpires(t *testing.T) {
@@ -598,13 +625,16 @@ func TestKeytabUnreadableIsNotCoveredFor(t *testing.T) {
 func TestRequestForSPNEGO(t *testing.T) {
 	var got *http.Request
 	app := fiber.New()
-	app.Get("/*", func(c fiber.Ctx) error {
+	// Registered for every verb and driven with one that is not the zero-ish
+	// default: asserting a GET against a hardcoded "GET" would hold however the
+	// method was derived.
+	app.All("/*", func(c fiber.Ctx) error {
 		got = requestForSPNEGO(c)
 		return nil
 	})
 
 	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.Header.SetMethod(fiber.MethodGet)
+	ctx.Request.Header.SetMethod(fiber.MethodPatch)
 	ctx.Request.SetRequestURI("/a%2Fb/c%20d?q=1&x=%41")
 	ctx.Request.Header.Set(fiber.HeaderHost, "sso.example.com:8443")
 	ctx.Request.Header.Set(fiber.HeaderAuthorization, "Negotiate abc")
@@ -612,7 +642,7 @@ func TestRequestForSPNEGO(t *testing.T) {
 	app.Handler()(ctx)
 
 	require.NotNil(t, got)
-	require.Equal(t, fiber.MethodGet, got.Method)
+	require.Equal(t, fiber.MethodPatch, got.Method)
 	require.Equal(t, "Negotiate abc", got.Header.Get(fiber.HeaderAuthorization))
 	// net/http documents a server request's Host as "host or host:port", so the
 	// port must survive.
