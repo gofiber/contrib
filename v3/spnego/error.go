@@ -20,3 +20,7 @@ var ErrLoadKeytabFileFailed = errors.New("load keytab failed")
 // ErrUnsupportedKeytabResidualType is returned when KRB5_KTNAME names a keytab
 // type that is not backed by a plain file, such as KEYRING or MEMORY.
 var ErrUnsupportedKeytabResidualType = errors.New("unsupported keytab residual type")
+
+// errNilKeytab is returned when a KeytabLookupFunc reports success but yields
+// no keytab. It is internal: callers see ErrLookupKeytabFailed.
+var errNilKeytab = errors.New("keytab lookup returned no keytab")

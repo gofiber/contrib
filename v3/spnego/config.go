@@ -43,6 +43,10 @@ type UnauthorizedHandler func(ctx fiber.Ctx) error
 // Config holds the configuration for the SPNEGO middleware
 // It includes the keytab lookup function and a logger
 type Config struct {
+	// Next, when it returns true, skips this middleware for that request and
+	// passes it straight down the chain. Useful for exempting health probes or
+	// CORS preflights from authentication.
+	Next func(ctx fiber.Ctx) bool
 	// KeytabLookup is a function that retrieves the keytab
 	KeytabLookup KeytabLookupFunc
 	// Log receives gokrb5's diagnostics. gokrb5 logs once per unauthenticated
@@ -83,31 +87,28 @@ type keytabFileCache struct {
 	merged *keytab.Keytab
 }
 
-// lastGood returns the previously loaded keytab, if there is one, so that a
-// transient read failure does not take down authentication. Rotating a keytab
-// is not atomic: a stat can see the new size while the write is still in
-// flight, and re-parsing the half-written file fails. The cached keytab is
-// still valid in that window, and the stamps are deliberately left untouched so
-// the next request retries the load.
-func (c *keytabFileCache) lastGood(err error) (*keytab.Keytab, error) {
-	if c.merged != nil {
-		return c.merged, nil
-	}
-	return nil, err
-}
-
 // load returns the merged keytab, re-reading the files only when their size or
 // modification time differs from the cached revision. The returned pointer is
 // stable across calls for as long as the files are unchanged, which lets a
 // caller reuse anything it derived from the keytab.
+//
+// Detecting a change by size and modification time is cheap enough to do per
+// request, but it is not exact: a rewrite that keeps the file the same size and
+// lands within one filesystem timestamp tick looks unchanged. Where that
+// matters, rotate by writing a new file and renaming it over the old one, which
+// always moves the modification time.
+//
+// A file that cannot be read at all — deleted, unmounted, permissions revoked —
+// is reported as an error, because that is how a revoked keytab must behave. A
+// file that reads but does not parse is treated as a rotation caught mid-write:
+// rewriting a keytab in place is not atomic, so the previously loaded keytab is
+// served and the stamps are left untouched, which makes the next request retry.
 func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 	stamps := make([]fileStamp, len(c.files))
 	for i, keytabFile := range c.files {
 		info, err := os.Stat(keytabFile)
 		if err != nil {
-			c.mu.Lock()
-			defer c.mu.Unlock()
-			return c.lastGood(fmt.Errorf("%w: file %s load failed: %w", ErrLoadKeytabFileFailed, keytabFile, err))
+			return nil, fmt.Errorf("%w: file %s load failed: %w", ErrLoadKeytabFileFailed, keytabFile, err)
 		}
 		stamps[i] = fileStamp{size: info.Size(), modTime: info.ModTime().UnixNano()}
 	}
@@ -118,15 +119,25 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 		return c.merged, nil
 	}
 
-	var mergeKeytab keytab.Keytab
+	// keytab.New rather than the zero value: it sets the format version that
+	// Marshal writes, so the merged keytab stays serialisable.
+	mergeKeytab := keytab.New()
 	for _, keytabFile := range c.files {
-		kt, err := keytab.Load(keytabFile)
+		raw, err := os.ReadFile(keytabFile) //nolint:gosec // path comes from the caller's own configuration
 		if err != nil {
-			return c.lastGood(fmt.Errorf("%w: file %s load failed: %w", ErrLoadKeytabFileFailed, keytabFile, err))
+			return nil, fmt.Errorf("%w: file %s load failed: %w", ErrLoadKeytabFileFailed, keytabFile, err)
+		}
+		kt := keytab.New()
+		if err = kt.Unmarshal(raw); err != nil {
+			if c.merged != nil {
+				// Half-written file: keep serving the keytab that last parsed.
+				return c.merged, nil
+			}
+			return nil, fmt.Errorf("%w: file %s load failed: %w", ErrLoadKeytabFileFailed, keytabFile, err)
 		}
 		mergeKeytab.Entries = append(mergeKeytab.Entries, kt.Entries...)
 	}
-	c.merged = &mergeKeytab
+	c.merged = mergeKeytab
 	c.stamps = stamps
 	return c.merged, nil
 }
@@ -147,8 +158,13 @@ func NewKeytabFileLookupFunc(keytabFiles ...string) (KeytabLookupFunc, error) {
 
 // NewSystemKeytabLookupFunc creates a KeytabLookupFunc that loads the host's
 // system keytab: the path in the KRB5_KTNAME environment variable when set,
-// otherwise DefaultSystemKeytabPath. A "FILE:" prefix, which MIT Kerberos
-// allows in KRB5_KTNAME, is accepted and stripped.
+// otherwise DefaultSystemKeytabPath.
+//
+// MIT Kerberos writes KRB5_KTNAME as an optional "TYPE:residual" pair. The
+// file-backed types, FILE and WRFILE, are accepted and stripped. Any other
+// type — KEYRING, MEMORY, ANY and the like — cannot be read as a file and is
+// rejected with ErrUnsupportedKeytabResidualType rather than being treated as
+// a literal path that would fail on every request.
 //
 // Note that this is a keytab, not a credential cache: SPNEGO acceptance
 // requires the service's long-term keys, so a client credential cache

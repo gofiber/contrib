@@ -73,6 +73,7 @@ func TestNewMockKeytab(t *testing.T) {
 		t.Cleanup(func() {
 			defaultFileOperator = prevFileOperator
 		})
+		filename := path.Join(t.TempDir(), "temp.keytab")
 		_, _, err := NewMockKeytab(
 			WithPrincipal("HTTP/sso.example.com"),
 			WithRealm("TEST.LOCAL"),
@@ -81,10 +82,10 @@ func TestNewMockKeytab(t *testing.T) {
 				EncryptType: 18,
 				CreateTime:  time.Now(),
 			}),
-			WithFilename("./temp.keytab"),
+			WithFilename(filename),
 		)
 		require.ErrorIs(t, err, os.ErrPermission)
-		require.NoFileExists(t, "./temp.keytab")
+		require.NoFileExists(t, filename)
 	})
 	t.Run("test file write failed", func(t *testing.T) {
 		prevFileOperator := defaultFileOperator
@@ -92,6 +93,7 @@ func TestNewMockKeytab(t *testing.T) {
 		t.Cleanup(func() {
 			defaultFileOperator = prevFileOperator
 		})
+		filename := path.Join(t.TempDir(), "temp.keytab")
 		_, _, err := NewMockKeytab(
 			WithPrincipal("HTTP/sso.example.com"),
 			WithRealm("TEST.LOCAL"),
@@ -100,10 +102,10 @@ func TestNewMockKeytab(t *testing.T) {
 				EncryptType: 18,
 				CreateTime:  time.Now(),
 			}),
-			WithFilename("./temp.keytab"),
+			WithFilename(filename),
 		)
 		require.ErrorIs(t, err, os.ErrClosed)
-		require.NoFileExists(t, "./temp.keytab")
+		require.NoFileExists(t, filename)
 	})
 	t.Run("test file created", func(t *testing.T) {
 		filename := path.Join(t.TempDir(), "temp.keytab")

@@ -2,7 +2,6 @@ package spnego
 
 import (
 	"bytes"
-	"fmt"
 	"log"
 	"net/http"
 
@@ -14,14 +13,29 @@ import (
 	"github.com/jcmturner/gokrb5/v8/spnego"
 )
 
-// spnegoContinueNeeded is the WWW-Authenticate value gokrb5 sends when the
-// negotiation is incomplete and the client must retry with a KRB5 mech type.
-// It is a 401, but it is a step in a successful handshake rather than a
-// rejection, so it must reach the client untouched.
+// gokrb5 answers 401 for three different situations and tells them apart only
+// by the WWW-Authenticate value it sets. Two of the three are steps in a
+// handshake that is still going well:
 //
-// Mirrors the unexported spnegoNegTokenRespIncompleteKRB5 in
-// gokrb5/v8/spnego/http.go.
-const spnegoContinueNeeded = "Negotiate oRQwEqADCgEBoQsGCSqGSIb3EgECAg=="
+//   - a bare "Negotiate" is the opening challenge, and clients start SPNEGO
+//     only when they receive it on an untouched 401;
+//   - spnegoContinueNeeded carries a continuation token asking the client to
+//     retry with KRB5;
+//   - spnegoRejected is the only one that means authentication failed.
+//
+// These mirror the unexported constants in gokrb5/v8/spnego/http.go.
+const (
+	spnegoContinueNeeded = "Negotiate oRQwEqADCgEBoQsGCSqGSIb3EgECAg=="
+	spnegoRejected       = "Negotiate oQcwBaADCgEC"
+)
+
+// isRejection reports whether the response SPNEGO produced is a final refusal
+// rather than a leg of an ongoing negotiation. Only a refusal is handed to
+// Config.Unauthorized; rewriting either challenge would stop clients from ever
+// completing the handshake.
+func isRejection(headers http.Header) bool {
+	return headers.Get(fiber.HeaderWWWAuthenticate) == spnegoRejected
+}
 
 // responseRecorder captures what the SPNEGO handler writes so the middleware
 // can inspect the outcome before replaying it onto the Fiber response.
@@ -92,6 +106,12 @@ func New(cfg Config) (fiber.Handler, error) {
 		if keytabLookup, err = NewSystemKeytabLookupFunc(); err != nil {
 			return nil, err
 		}
+		// Nothing named the keytab explicitly, so confirm the resolved system
+		// keytab actually loads. Otherwise a misconfigured host starts clean
+		// and fails every request instead of failing at startup.
+		if _, err = keytabLookup(); err != nil {
+			return nil, err
+		}
 	}
 	// gokrb5 logs unconditionally, once per request and without a level, so it
 	// is wired up only when the caller asks for it. Config.Log takes priority;
@@ -104,14 +124,27 @@ func New(cfg Config) (fiber.Handler, error) {
 	}
 	// Return the middleware handler
 	return func(ctx fiber.Ctx) error {
+		if cfg.Next != nil && cfg.Next(ctx) {
+			return ctx.Next()
+		}
 		// Look up the keytab
 		kt, err := keytabLookup()
+		if err == nil && kt == nil {
+			// A lookup is caller-supplied and may return no keytab and no
+			// error. gokrb5 dereferences it unconditionally, so let it through
+			// and an unauthenticated request panics the process.
+			err = errNilKeytab
+		}
 		if err != nil {
-			return fmt.Errorf("%w: %w", ErrLookupKeytabFailed, err)
+			// The detail names the keytab path and the underlying OS error, so
+			// it goes to the log rather than to an unauthenticated client.
+			flog.Errorf("spnego: %v: %v", ErrLookupKeytabFailed, err)
+			return fiber.ErrInternalServerError
 		}
 		req, err := adaptor.ConvertRequest(ctx, true)
 		if err != nil {
-			return fmt.Errorf("%w: %w", ErrConvertRequestFailed, err)
+			flog.Errorf("spnego: %v: %v", ErrConvertRequestFailed, err)
+			return fiber.ErrInternalServerError
 		}
 
 		var (
@@ -145,12 +178,10 @@ func New(cfg Config) (fiber.Handler, error) {
 			status = fiber.StatusUnauthorized
 		}
 		ctx.Status(status)
-		// A "continue needed" 401 is the middle of a working handshake: the
-		// client is being told to retry with KRB5. Handing it to a caller's
-		// handler would let it change the status or body and strand clients
-		// that only renegotiate on an untouched 401, so it is passed straight
-		// through.
-		if cfg.Unauthorized != nil && recorder.Header().Get(fiber.HeaderWWWAuthenticate) != spnegoContinueNeeded {
+		// Only a refusal reaches the caller's handler. The opening challenge
+		// and the continuation token are legs of a handshake that can still
+		// succeed, and clients renegotiate only when they arrive untouched.
+		if cfg.Unauthorized != nil && isRejection(recorder.Header()) {
 			return cfg.Unauthorized(ctx)
 		}
 		return ctx.Send(recorder.body.Bytes()) //nolint:wrapcheck // Fiber's own error

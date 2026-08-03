@@ -103,7 +103,15 @@ The middleware is designed with extensibility in mind, allowing keytab retrieval
 
 > **`KeytabLookup` is called on every authenticated request.** It sits in the request hot path, so a lookup that contacts an external system will add its latency — and its failure modes — to each authentication. If you fetch from a database, a secrets manager, or a remote service, cache the result and refresh it out of band (on a TTL or a rotation event), and apply a bounded timeout.
 >
-> `NewKeytabFileLookupFunc` already does this: it caches the merged keytab and re-reads the files only when one of them changes size or modification time, so rotating a keytab on disk still takes effect without paying for a parse per request. If a reload fails — a keytab rotation is not atomic, so a read can catch a half-written file — the last keytab that loaded cleanly keeps being served and the next request retries, rather than failing authentication outright.
+> `NewKeytabFileLookupFunc` already does this: it caches the merged keytab and re-reads the files only when one of them changes size or modification time, so rotating a keytab on disk still takes effect without paying for a parse per request.
+>
+> Change detection is cheap rather than exact — a rewrite that keeps the same size and lands within one filesystem timestamp tick looks unchanged. Rotate by writing a new file and renaming it over the old one, which always moves the modification time.
+>
+> A keytab that reads but does not parse is treated as a rotation caught mid-write: the last keytab that parsed cleanly keeps being served and the next request retries. A keytab that cannot be read at all — deleted, unmounted, permissions revoked — is reported as an error instead, so revoking a keytab takes effect rather than being masked by the cache.
+
+### Errors
+
+A failed keytab lookup is logged and answered with a bare `500`. The detail names the keytab's path and the underlying OS error, which should not reach an unauthenticated caller, so it goes to Fiber's log at error level instead of into the response body.
 
 ```go
 // Example: Retrieve keytab from a database
@@ -147,11 +155,12 @@ Note that this resolves a *keytab*, not a credential cache. Accepting a SPNEGO t
 
 The `Config` struct supports the following fields:
 
+- `Next`: A `func(fiber.Ctx) bool` that, when it returns true, skips authentication for that request — useful for health probes and CORS preflights (optional)
 - `KeytabLookup`: A function that retrieves the keytab (required, unless `FallbackToSystemKeytab` is set)
 - `Log`: A `*log.Logger` receiving gokrb5's diagnostics (optional, defaults to no logging)
 - `UseFiberLogger`: Send gokrb5's diagnostics to Fiber's default logger when `Log` is nil (optional, defaults to `false`)
 - `Unauthorized`: A `func(fiber.Ctx) error` invoked when authentication does not succeed, in place of the default challenge response (optional)
-- `FallbackToSystemKeytab`: Load the system keytab when `KeytabLookup` is nil, instead of rejecting the configuration (optional, defaults to `false`)
+- `FallbackToSystemKeytab`: Load the system keytab when `KeytabLookup` is nil, instead of rejecting the configuration (optional, defaults to `false`). The resolved keytab is loaded once during `New`, so a misconfigured host fails at startup rather than on every request.
 
 ### Logging
 
@@ -170,9 +179,19 @@ authMiddleware, err := spnego.New(spnego.Config{
 })
 ```
 
-The `WWW-Authenticate` challenge SPNEGO produced is already on the response when this runs, so a handler that only sets a status and body leaves it in place. Removing that header will break Kerberos negotiation with the client.
+**This handler runs only when Kerberos authentication is actually refused** — when a client presented a ticket the service rejected.
 
-This handler is **not** called for the "continue needed" leg of a handshake — the 401 that carries a continuation token telling the client to retry with KRB5. That response is a step in a *successful* negotiation, not a failure, and clients renegotiate only if it reaches them untouched, so it is always passed straight through. Your handler sees the initial challenge and outright rejections.
+gokrb5 answers `401` in three different situations, and only one of them is a failure:
+
+| WWW-Authenticate | Meaning | Reaches your handler |
+|---|---|---|
+| `Negotiate` (bare) | Opening challenge that starts the handshake | No |
+| `Negotiate oRQwEq…` | Continuation token: retry with KRB5 | No |
+| `Negotiate oQcwBa…` | Ticket rejected | **Yes** |
+
+The first two are steps in a negotiation that can still succeed. `curl --negotiate` and every major browser begin SPNEGO only when an untouched `401` arrives, so rewriting either one — changing the status to `403`, say — would stop authentication from ever completing. They are always passed straight through, and your handler never sees them.
+
+The rejection response's headers are already set when your handler runs, so setting a status and body leaves them in place. Removing the `WWW-Authenticate` header will break negotiation.
 
 ## Requirements
 

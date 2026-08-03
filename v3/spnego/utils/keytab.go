@@ -57,10 +57,12 @@ func GetKeytabInfo(kt *keytab.Keytab) MultiKeytabInfo {
 	keytabMap := make(map[string]KeytabInfo)
 	if kt != nil {
 		for _, entry := range kt.Entries {
-			item, ok := keytabMap[entry.Principal.String()]
+			// Principal.String allocates, so build it once per entry.
+			name := entry.Principal.String()
+			item, ok := keytabMap[name]
 			if !ok {
 				item = KeytabInfo{
-					PrincipalName: entry.Principal.String(),
+					PrincipalName: name,
 					Realm:         entry.Principal.Realm,
 				}
 			}
@@ -69,7 +71,7 @@ func GetKeytabInfo(kt *keytab.Keytab) MultiKeytabInfo {
 				EncryptType: entry.Key.KeyType,
 				CreateTime:  entry.Timestamp,
 			})
-			keytabMap[entry.Principal.String()] = item
+			keytabMap[name] = item
 		}
 	}
 	var mk = make(MultiKeytabInfo, 0, len(keytabMap))

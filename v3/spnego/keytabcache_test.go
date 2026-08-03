@@ -40,7 +40,8 @@ func TestKeytabFileLookupCaching(t *testing.T) {
 		second, err := fn()
 		require.NoError(t, err)
 
-		// A stable pointer is what lets the middleware reuse its SPNEGO handler.
+		// A stable pointer means an unchanged keytab was not re-read and
+		// re-parsed, and lets a caller reuse anything derived from it.
 		require.Same(t, first, second)
 	})
 

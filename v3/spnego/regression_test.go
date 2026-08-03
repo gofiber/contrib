@@ -2,13 +2,16 @@ package spnego
 
 import (
 	"encoding/base64"
+	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path"
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
 	flog "github.com/gofiber/fiber/v3/log"
+	"github.com/jcmturner/gokrb5/v8/keytab"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
@@ -54,10 +57,12 @@ func TestUnauthorizedNotCalledOnContinueNeeded(t *testing.T) {
 		"the continuation token must reach the client untouched")
 }
 
-// TestUnauthorizedCalledOnChallenge checks the complementary case: a request
-// with no Authorization header is a terminal outcome for this exchange, so a
-// caller-supplied handler does run.
-func TestUnauthorizedCalledOnChallenge(t *testing.T) {
+// TestUnauthorizedNotCalledOnOpeningChallenge covers the leg that bootstraps
+// every handshake: a request with no Authorization header gets 401 plus a bare
+// "Negotiate". curl --negotiate and every major browser start SPNEGO only when
+// that arrives untouched, so letting a caller rewrite it into, say, a 403 is a
+// permanent silent deny-all.
+func TestUnauthorizedNotCalledOnOpeningChallenge(t *testing.T) {
 	filename := writeMockKeytab(t, t.TempDir(), "sso.keytab", "HTTP/sso.example.com")
 	lookupFunc, err := NewKeytabFileLookupFunc(filename)
 	require.NoError(t, err)
@@ -78,8 +83,106 @@ func TestUnauthorizedCalledOnChallenge(t *testing.T) {
 	ctx.Request.SetRequestURI("/authenticate")
 	app.Handler()(ctx)
 
-	require.Equal(t, fiber.StatusForbidden, ctx.Response.StatusCode())
-	require.Equal(t, "denied", string(ctx.Response.Body()))
+	require.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode())
+	require.Equal(t, "Negotiate", string(ctx.Response.Header.Peek(fiber.HeaderWWWAuthenticate)),
+		"the opening challenge must reach the client untouched")
+}
+
+// TestIsRejection pins which of gokrb5's three 401 shapes is treated as a
+// failure. Only the rejection is; the other two are legs of a negotiation that
+// can still succeed.
+func TestIsRejection(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		header string
+		want   bool
+	}{
+		{"opening challenge", "Negotiate", false},
+		{"continue needed", spnegoContinueNeeded, false},
+		{"accept completed", "Negotiate oRQwEqADCgEAoQsGCSqGSIb3EgECAg==", false},
+		{"rejected", spnegoRejected, true},
+		{"no header", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			headers := make(http.Header)
+			if tc.header != "" {
+				headers.Set(fiber.HeaderWWWAuthenticate, tc.header)
+			}
+			require.Equal(t, tc.want, isRejection(headers))
+		})
+	}
+}
+
+// TestKeytabLookupErrorNotLeakedToClient checks that the keytab path and the
+// underlying OS error stay out of the response body. Fiber's default error
+// handler echoes err.Error() straight to the client, and the lookup error names
+// the keytab file.
+func TestKeytabLookupErrorNotLeakedToClient(t *testing.T) {
+	secretPath := path.Join(t.TempDir(), "super-secret-location.keytab")
+	middleware, err := New(Config{
+		KeytabLookup: func() (*keytab.Keytab, error) {
+			return nil, fmt.Errorf("open %s: permission denied", secretPath)
+		},
+	})
+	require.NoError(t, err)
+
+	app := fiber.New()
+	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
+		return c.SendString("authenticated")
+	})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fiber.MethodGet)
+	ctx.Request.SetRequestURI("/authenticate")
+	app.Handler()(ctx)
+
+	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
+	require.NotContains(t, string(ctx.Response.Body()), secretPath)
+	require.NotContains(t, string(ctx.Response.Body()), "permission denied")
+}
+
+// TestNilKeytabFromLookup covers a caller-supplied lookup that reports success
+// but returns no keytab. gokrb5 dereferences it unconditionally, so passing it
+// through panics the process on an unauthenticated request.
+func TestNilKeytabFromLookup(t *testing.T) {
+	middleware, err := New(Config{
+		KeytabLookup: func() (*keytab.Keytab, error) { return nil, nil },
+	})
+	require.NoError(t, err)
+
+	app := fiber.New()
+	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
+		return c.SendString("authenticated")
+	})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fiber.MethodGet)
+	ctx.Request.SetRequestURI("/authenticate")
+
+	require.NotPanics(t, func() { app.Handler()(ctx) })
+	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
+}
+
+// TestNextSkipsMiddleware covers the standard opt-out hook.
+func TestNextSkipsMiddleware(t *testing.T) {
+	filename := writeMockKeytab(t, t.TempDir(), "sso.keytab", "HTTP/sso.example.com")
+	lookupFunc, err := NewKeytabFileLookupFunc(filename)
+	require.NoError(t, err)
+	middleware, err := New(Config{
+		KeytabLookup: lookupFunc,
+		Next:         func(c fiber.Ctx) bool { return c.Path() == "/healthz" },
+	})
+	require.NoError(t, err)
+
+	app := fiber.New()
+	app.Get("/healthz", middleware, func(c fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fiber.MethodGet)
+	ctx.Request.SetRequestURI("/healthz")
+	app.Handler()(ctx)
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	require.Equal(t, "ok", string(ctx.Response.Body()))
 }
 
 // TestResolveLoggerNilFiberLogger covers the nil interface Fiber's
