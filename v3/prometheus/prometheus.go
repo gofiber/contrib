@@ -204,11 +204,15 @@ func New(config ...Config) fiber.Handler {
 		m.requestDuration != nil || m.requestSize != nil || m.responseSize != nil
 
 	for _, path := range cfg.SkipURIs {
+		// Every entry is kept as an exact match, including one ending in "*".
+		// Fiber route patterns may themselves end in "*", so registering only
+		// the prefix would leave the route named "/static*" unskippable: the
+		// stripped prefix "/static" matches neither it nor "/static/...".
+		m.skipURIs[normalizePath(path)] = struct{}{}
+
 		if prefix, found := strings.CutSuffix(path, "*"); found {
 			m.skipPrefixes = append(m.skipPrefixes, normalizePath(prefix))
-			continue
 		}
-		m.skipURIs[normalizePath(path)] = struct{}{}
 	}
 
 	for _, code := range cfg.IgnoreStatusCodes {

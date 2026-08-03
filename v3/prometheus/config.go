@@ -211,7 +211,10 @@ type Config struct {
 	// ignored.
 	//
 	// An entry ending in "*" matches by prefix: "/admin/*" excludes "/admin"
-	// and every route below it, and "/*" excludes everything.
+	// and every route below it, and "/*" excludes everything. It also still
+	// matches a route pattern named exactly that, since Fiber patterns may end
+	// in "*" themselves - "/static*" excludes the route "/static*" as well as
+	// anything under "/static".
 	//
 	// Optional. Default: none.
 	SkipURIs []string

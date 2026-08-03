@@ -208,6 +208,10 @@ Fiber's zero-copy strings such as `c.Get(...)` or `c.Params(...)` directly.
 prefix and stops at a path segment boundary, so `/admin/*` excludes `/admin` and
 `/admin/users` but not `/administration`. `/*` excludes everything.
 
+Because Fiber route patterns can themselves end in `*`, such an entry also
+matches the pattern named exactly that: `/static*` excludes both the route
+registered as `/static*` and anything under `/static`.
+
 `IgnoreStatusCodes` takes exact codes; `IgnoreStatusClasses` takes whole classes
 so you do not have to enumerate them:
 

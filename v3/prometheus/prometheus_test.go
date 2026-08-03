@@ -1544,3 +1544,36 @@ func TestDynamicLabelValuesAreCopied(t *testing.T) {
 		t.Fatalf("expected all %d tenant label values to survive, found %d: %q", tenants, seen, metrics)
 	}
 }
+
+// TestSkipURIsMatchesWildcardRoutePattern covers the overload in "*": it is
+// both the prefix syntax for SkipURIs and a legitimate character in a Fiber
+// route pattern. An entry ending in "*" therefore has to match the route
+// literally named that, not only the paths beneath its prefix.
+func TestSkipURIsMatchesWildcardRoutePattern(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{SkipURIs: []string{"/static*", "/files/*"}}, "")
+	app.Get("/static*", func(c fiber.Ctx) error {
+		return c.SendString("static")
+	})
+	app.Get("/files/*", func(c fiber.Ctx) error {
+		return c.SendString("files")
+	})
+	app.Get("/keep", func(c fiber.Ctx) error {
+		return c.SendString("keep")
+	})
+
+	for _, path := range []string{"/staticfoo", "/files/a.txt", "/keep"} {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+			t.Fatalf("unexpected request error for %s: %v", path, err)
+		}
+	}
+
+	metrics := getMetrics(t, app, "")
+	for _, skipped := range []string{`path="/static*"`, `path="/files/*"`} {
+		if strings.Contains(metrics, skipped) {
+			t.Fatalf("expected %s to be skipped, got %q", skipped, metrics)
+		}
+	}
+	if !strings.Contains(metrics, `path="/keep"`) {
+		t.Fatalf("expected the unlisted route to still be recorded, got %q", metrics)
+	}
+}
