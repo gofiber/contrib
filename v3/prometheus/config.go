@@ -43,18 +43,31 @@ type Config struct {
 
 	// MetricsPath is the request path served with the Prometheus exposition
 	// format. Unless Next returns true, requests to it are answered by the
-	// middleware itself and are not instrumented, regardless of where the
-	// middleware is mounted.
+	// middleware itself and are not instrumented.
+	//
+	// It is compared against the full request path, byte for byte. Two
+	// consequences: mounting the middleware on a group leaves the default
+	// endpoint unreachable, because a request to "/api/metrics" never equals
+	// "/metrics" and one to "/metrics" never reaches the group - set this to the
+	// full path, "/api/metrics". And because Fiber routes case-insensitively by
+	// default while this comparison does not, "/METRICS" is instrumented as an
+	// ordinary request rather than answered.
 	//
 	// Optional. Default: "/metrics".
 	MetricsPath string
 
-	// Labels are attached to every metric.
+	// Labels are attached to every metric. A "service" key here is overridden by
+	// Service when that is also set.
 	//
 	// Optional. Default: no labels.
 	Labels prometheus.Labels
 
 	// Registerer is used to register metrics.
+	//
+	// Calling New twice with the same Registerer panics with a duplicate
+	// registration error: the metric families are registered eagerly, and only
+	// the Go and process collectors tolerate being registered twice. Give each
+	// middleware its own registry, or a distinct Namespace or Subsystem.
 	//
 	// Optional. Default: a private registry.
 	Registerer prometheus.Registerer

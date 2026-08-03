@@ -491,6 +491,23 @@ func TestCustomRegistry(t *testing.T) {
 	if !strings.Contains(metrics, "http_requests_total") {
 		t.Fatalf("expected metrics to be produced, got %q", metrics)
 	}
+
+	// Reading the endpoint alone would pass even if Registerer were ignored and
+	// a private registry used instead, so assert against the supplied registry.
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("gathering from the supplied registry: %v", err)
+	}
+	var found bool
+	for _, family := range families {
+		if family.GetName() == "http_requests_total" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected the supplied Registerer to hold the metrics")
+	}
 }
 
 func TestRegistererWithoutGathererPanics(t *testing.T) {
@@ -1575,5 +1592,265 @@ func TestSkipURIsMatchesWildcardRoutePattern(t *testing.T) {
 	}
 	if !strings.Contains(metrics, `path="/keep"`) {
 		t.Fatalf("expected the unlisted route to still be recorded, got %q", metrics)
+	}
+}
+
+// TestDynamicLabelValuesSurviveInvalidUTF8 guards a process-killer: Prometheus
+// rejects label values that are not valid UTF-8 by panicking inside
+// WithLabelValues, and the documented way to write a label function is to
+// return a request value directly. A single header of raw bytes would take the
+// server down.
+func TestDynamicLabelValuesSurviveInvalidUTF8(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{
+		DynamicLabels: map[string]func(fiber.Ctx) string{
+			"tenant": func(c fiber.Ctx) string { return c.Get("X-Tenant") },
+		},
+	}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+
+	req := httptest.NewRequest(fiber.MethodGet, "/hello", nil)
+	req.Header.Set("X-Tenant", "\xff\xfe")
+	resp, err := app.Test(req, noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected the request to be served, got %d", resp.StatusCode)
+	}
+
+	// A corrupted or unreadable registry shows up as a non-200 scrape.
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, "http_requests_total{") {
+		t.Fatalf("expected the request to be recorded, got %q", metrics)
+	}
+	if !strings.Contains(metrics, "�") {
+		t.Fatalf("expected invalid bytes to be replaced, got %q", metrics)
+	}
+}
+
+// TestSkipURIsIgnoresTrailingSlashAfterWildcard pins that "/admin/*/" behaves
+// as "/admin/*", since trailing slashes are documented as ignored.
+func TestSkipURIsIgnoresTrailingSlashAfterWildcard(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{SkipURIs: []string{"/admin/*/"}}, "")
+	app.Get("/admin/users", func(c fiber.Ctx) error {
+		return c.SendString("users")
+	})
+	app.Get("/keep", func(c fiber.Ctx) error {
+		return c.SendString("keep")
+	})
+
+	for _, path := range []string{"/admin/users", "/keep"} {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+			t.Fatalf("unexpected request error for %s: %v", path, err)
+		}
+	}
+
+	metrics := getMetrics(t, app, "")
+	if strings.Contains(metrics, `path="/admin/users"`) {
+		t.Fatalf("expected the wildcard prefix to still apply, got %q", metrics)
+	}
+	if !strings.Contains(metrics, `path="/keep"`) {
+		t.Fatalf("expected the unlisted route to be recorded, got %q", metrics)
+	}
+}
+
+func TestLabelsAreAttachedToEveryMetric(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{
+		Labels: prometheus.Labels{"env": "staging", "region": "eu"},
+	}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	for _, family := range []string{
+		"http_requests_total{",
+		"http_requests_status_class_total{",
+		"http_request_duration_seconds_sum{",
+		"http_request_size_bytes_sum{",
+		"http_response_size_bytes_sum{",
+		"http_requests_in_progress{",
+	} {
+		found := false
+		for _, line := range strings.Split(metrics, "\n") {
+			if strings.HasPrefix(line, family) &&
+				strings.Contains(line, `env="staging"`) && strings.Contains(line, `region="eu"`) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected constant labels on %s, got %q", family, metrics)
+		}
+	}
+}
+
+// TestServiceOverridesLabelsCollision pins the precedence when Labels carries a
+// "service" key and Service is also set: Service wins, because it is applied
+// after the configured labels are copied.
+func TestServiceOverridesLabelsCollision(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{
+		Service: "from-service",
+		Labels:  prometheus.Labels{"service": "from-labels"},
+	}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `service="from-service"`) {
+		t.Fatalf("expected Service to win over a colliding Labels entry, got %q", metrics)
+	}
+	if strings.Contains(metrics, `service="from-labels"`) {
+		t.Fatalf("expected the colliding Labels entry to be overridden, got %q", metrics)
+	}
+}
+
+func TestNamespaceAndSubsystemPrefixMetricNames(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{Namespace: "svc", Subsystem: "api"}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	for _, name := range []string{
+		"svc_api_requests_total",
+		"svc_api_requests_status_class_total",
+		"svc_api_request_duration_seconds",
+		"svc_api_request_size_bytes",
+		"svc_api_response_size_bytes",
+		"svc_api_requests_in_progress",
+	} {
+		if !strings.Contains(metrics, name) {
+			t.Fatalf("expected %s to be exposed, got %q", name, metrics)
+		}
+	}
+	if strings.Contains(metrics, "http_requests_total") {
+		t.Fatalf("expected the default namespace to be replaced, got %q", metrics)
+	}
+}
+
+// TestGathererOnlyResolvesRegisterer covers the branch where only a Gatherer is
+// supplied and it also implements Registerer.
+func TestGathererOnlyResolvesRegisterer(t *testing.T) {
+	registry := prometheus.NewRegistry()
+
+	app, _ := newAppWithMiddleware(Config{Gatherer: registry}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("gathering metrics: %v", err)
+	}
+	if len(families) == 0 {
+		t.Fatal("expected the supplied Gatherer to have been registered into")
+	}
+}
+
+func TestGathererWithoutRegistererPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			if !strings.Contains(fmt.Sprint(r), "does not implement prometheus.Registerer") {
+				t.Fatalf("expected a panic about the missing Registerer, got %v", r)
+			}
+			return
+		}
+		t.Fatal("expected a panic when the Gatherer cannot register")
+	}()
+
+	_ = New(Config{Gatherer: prometheus.GathererFunc(func() ([]*dto.MetricFamily, error) {
+		return nil, nil
+	})})
+}
+
+// TestCollectorsRegisteredIntoSuppliedRegistry pins that the runtime collectors
+// land in the configured registry, and that registering them twice into the
+// same one is tolerated rather than fatal.
+func TestCollectorsRegisteredIntoSuppliedRegistry(t *testing.T) {
+	registry := prometheus.NewRegistry()
+
+	_ = New(Config{Registerer: registry, Gatherer: registry})
+	// A second middleware on the same registry would hit AlreadyRegistered for
+	// the collectors; only the metric families conflict, so vary the namespace.
+	_ = New(Config{Registerer: registry, Gatherer: registry, Namespace: "other"})
+
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("gathering metrics: %v", err)
+	}
+
+	var sawGo, sawProcess bool
+	for _, family := range families {
+		switch family.GetName() {
+		case "go_goroutines":
+			sawGo = true
+		case "process_cpu_seconds_total":
+			sawProcess = true
+		}
+	}
+	if !sawGo || !sawProcess {
+		t.Fatalf("expected both runtime collectors, go=%v process=%v", sawGo, sawProcess)
+	}
+}
+
+func TestStatusClassMapping(t *testing.T) {
+	for status, want := range map[int]string{
+		100: "1xx",
+		204: "2xx",
+		301: "3xx",
+		404: "4xx",
+		503: "5xx",
+		999: "unknown",
+	} {
+		if got := statusClass(status); got != want {
+			t.Errorf("statusClass(%d) = %q, want %q", status, got, want)
+		}
+	}
+}
+
+// TestErrorHandlerFailureFallsBackTo500 covers the branch where the application
+// error handler itself fails and the middleware has to produce a status.
+func TestErrorHandlerFailureFallsBackTo500(t *testing.T) {
+	app := fiber.New(fiber.Config{
+		ErrorHandler: func(fiber.Ctx, error) error {
+			return errors.New("error handler failed")
+		},
+	})
+	app.Use(New(Config{}))
+	app.Get("/boom", func(fiber.Ctx) error {
+		return errors.New("boom")
+	})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/boom", nil), noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusInternalServerError {
+		t.Fatalf("expected status 500, got %d", resp.StatusCode)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/boom",status_code="500"}`) {
+		t.Fatalf("expected the fallback status to be recorded, got %q", metrics)
 	}
 }

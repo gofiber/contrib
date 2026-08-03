@@ -204,13 +204,18 @@ func New(config ...Config) fiber.Handler {
 		m.requestDuration != nil || m.requestSize != nil || m.responseSize != nil
 
 	for _, path := range cfg.SkipURIs {
+		// Normalize before looking for the star, so that a trailing slash after
+		// it - "/admin/*/" - still registers the prefix. Trailing slashes are
+		// documented as ignored.
+		normalized := normalizePath(path)
+
 		// Every entry is kept as an exact match, including one ending in "*".
 		// Fiber route patterns may themselves end in "*", so registering only
 		// the prefix would leave the route named "/static*" unskippable: the
 		// stripped prefix "/static" matches neither it nor "/static/...".
-		m.skipURIs[normalizePath(path)] = struct{}{}
+		m.skipURIs[normalized] = struct{}{}
 
-		if prefix, found := strings.CutSuffix(path, "*"); found {
+		if prefix, found := strings.CutSuffix(normalized, "*"); found {
 			m.skipPrefixes = append(m.skipPrefixes, normalizePath(prefix))
 		}
 	}
@@ -432,14 +437,21 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	values[1] = method
 	values[2] = routePath
 	for i, label := range m.dynamicLabels {
-		// Unless the app sets fiber.Config.Immutable, Fiber hands out strings
-		// that alias the connection read buffer, and a label function reading a
-		// header, query or param returns one of those. Prometheus keeps label
-		// values for the lifetime of the series, so without a copy the buffer
-		// is reused by the next request and every series rewrites itself to
-		// whatever arrived last - collapsing distinct series onto one label set
-		// and leaving the registry unable to gather at all.
-		values[3+i] = strings.Clone(label.fn(ctx))
+		// Two hazards, both reachable from a value taken off the request.
+		//
+		// Prometheus rejects label values that are not valid UTF-8 by panicking
+		// inside WithLabelValues, so a single header of raw bytes would take the
+		// process down. Invalid sequences are replaced instead.
+		//
+		// And unless the app sets fiber.Config.Immutable, Fiber hands out
+		// strings aliasing the connection read buffer. Prometheus keeps label
+		// values for the lifetime of the series, so without a copy the buffer is
+		// reused by the next request and every series rewrites itself to
+		// whatever arrived last, collapsing distinct series onto one label set
+		// and leaving the registry unable to gather at all. ToValidUTF8 returns
+		// its input untouched when the value is already valid, so the clone has
+		// to stay.
+		values[3+i] = strings.Clone(strings.ToValidUTF8(label.fn(ctx), "�"))
 	}
 
 	if m.requestsTotal != nil {
@@ -538,6 +550,11 @@ func (m *middleware) skipped(routePath string) bool {
 // - ctx.IsMiddleware() also reports true for a route whose own handler chain
 // stopped early, which is what a short-circuiting per-route guard leaves
 // behind, so it cannot be used to detect this.
+//
+// A request answered entirely by Use handlers - static.New, or a Use-mounted
+// guard returning 401 - never matches a non-Use route, so Matched stays false
+// and it is treated as unmatched: dropped by default, or recorded under
+// UnmatchedRouteLabel when TrackUnmatchedRequests is set.
 func (m *middleware) routeLabel(ctx fiber.Ctx) (string, bool) {
 	if ctx.Matched() {
 		if route := ctx.Route(); route != nil {

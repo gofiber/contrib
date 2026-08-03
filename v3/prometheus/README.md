@@ -36,13 +36,13 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | Service | `string` | Added as the `service` const label on every metric. Omitted when empty. | `""` |
 | Namespace | `string` | Prefixes every metric name. | `"http"` |
 | Subsystem | `string` | Prefixes every metric name after `Namespace`. | `""` |
-| MetricsPath | `string` | Path served with the Prometheus exposition format. Unless `Next` returns true, requests to it are answered by the middleware and are not instrumented. | `"/metrics"` |
+| MetricsPath | `string` | Path served with the Prometheus exposition format. Unless `Next` returns true, requests to it are answered by the middleware and are not instrumented. Compared byte-for-byte against the full request path. | `"/metrics"` |
 | Labels | `prometheus.Labels` | Extra const labels attached to every metric. | `nil` |
-| Registerer | `prometheus.Registerer` | Registry used to register the metrics. | private registry |
+| Registerer | `prometheus.Registerer` | Registry used to register the metrics. Reusing one across two `New` calls panics on duplicate registration. | private registry |
 | Gatherer | `prometheus.Gatherer` | Source the metrics endpoint gathers from. | private registry |
 | DisableGoCollector | `bool` | Skips registration of the Go runtime metrics collector. | `false` |
 | DisableProcessCollector | `bool` | Skips registration of the process metrics collector. | `false` |
-| RequestDurationBuckets | `[]float64` | Histogram buckets for request latency, in seconds. `nil` selects the defaults; an empty non-nil slice drops the classic buckets. | see [Default Config](#default-config) |
+| RequestDurationBuckets | `[]float64` | Histogram buckets for request latency, in seconds. `nil` selects the defaults; an empty non-nil slice drops the classic buckets, but only alongside `NativeHistogramBucketFactor`. | see [Default Config](#default-config) |
 | RequestSizeBuckets | `[]float64` | Histogram buckets for request payload size, in bytes. | see [Default Config](#default-config) |
 | ResponseSizeBuckets | `[]float64` | Histogram buckets for response payload size, in bytes. | see [Default Config](#default-config) |
 | NativeHistogramBucketFactor | `float64` | Enables native histograms when greater than 1, capping the growth factor between buckets. | `0` |
@@ -144,7 +144,9 @@ is not known yet.
 
 Requests that miss every registered route are not recorded unless
 `TrackUnmatchedRequests` is enabled, in which case they are labeled with
-`UnmatchedRouteLabel`.
+`UnmatchedRouteLabel`. A request answered entirely by `app.Use` handlers counts
+as one of those: `static.New`, or a `Use`-mounted guard returning 401, never
+matches a non-`Use` route, so nothing is recorded for it by default.
 
 One case is attributed to the wrong pattern. If the matched handler delegates
 onwards with `c.Next()` and a trailing `app.Use` middleware runs last, Fiber has
@@ -258,6 +260,25 @@ app.Use(fiberprometheus.New(fiberprometheus.Config{
     Gatherer:   registry,
 }))
 ```
+
+### Where the endpoint is served
+
+`MetricsPath` is compared byte-for-byte against the full request path, which has
+two consequences worth knowing before you mount the middleware anywhere but the
+root.
+
+Mounting on a group leaves the default endpoint unreachable — `/api/metrics`
+never equals `/metrics`, and `/metrics` never reaches the group, so both 404.
+Set the full path instead:
+
+```go
+api := app.Group("/api")
+api.Use(fiberprometheus.New(fiberprometheus.Config{MetricsPath: "/api/metrics"}))
+```
+
+And because Fiber routes case-insensitively by default while this comparison
+does not, `GET /METRICS` is instrumented as an ordinary request rather than
+answered with the exposition page.
 
 ### Exposure of the metrics endpoint
 
