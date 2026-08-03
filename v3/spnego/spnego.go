@@ -11,7 +11,6 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	flog "github.com/gofiber/fiber/v3/log"
-	"github.com/gofiber/fiber/v3/middleware/adaptor"
 	"github.com/jcmturner/goidentity/v6"
 	"github.com/jcmturner/gokrb5/v8/service"
 	"github.com/jcmturner/gokrb5/v8/spnego"
@@ -128,6 +127,23 @@ func resolveLogger(cfg Config, fiberLogger flog.AllLogger[*log.Logger]) *log.Log
 	return fiberLogger.Logger()
 }
 
+// requestForSPNEGO builds the net/http request gokrb5 inspects. It reads only
+// the Authorization header and the remote address — with no session manager
+// configured it never looks at cookies — so the request is assembled directly
+// rather than through adaptor.ConvertRequest, which would parse the
+// client-supplied URI and copy every header on each authenticated request.
+func requestForSPNEGO(ctx fiber.Ctx) *http.Request {
+	header := make(http.Header, 1)
+	if auth := ctx.Get(fiber.HeaderAuthorization); auth != "" {
+		header.Set(fiber.HeaderAuthorization, auth)
+	}
+	return &http.Request{
+		Method:     ctx.Method(),
+		Header:     header,
+		RemoteAddr: ctx.RequestCtx().RemoteAddr().String(),
+	}
+}
+
 // New creates a new SPNEGO authentication middleware.
 // It takes a Config struct and returns a Fiber handler or an error.
 // The middleware handles Kerberos authentication for incoming requests using the
@@ -201,11 +217,7 @@ func New(cfg Config) (fiber.Handler, error) {
 			logInternal(ErrLookupKeytabFailed, err)
 			return &clientSafeError{cause: fmt.Errorf("%w: %w", ErrLookupKeytabFailed, err)}
 		}
-		req, err := adaptor.ConvertRequest(ctx, true)
-		if err != nil {
-			logInternal(ErrConvertRequestFailed, err)
-			return &clientSafeError{cause: fmt.Errorf("%w: %w", ErrConvertRequestFailed, err)}
-		}
+		req := requestForSPNEGO(ctx)
 
 		var (
 			authenticated bool

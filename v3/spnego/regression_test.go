@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/gofiber/contrib/v3/spnego/utils"
 	"github.com/gofiber/fiber/v3"
 	flog "github.com/gofiber/fiber/v3/log"
 	"github.com/jcmturner/gofork/encoding/asn1"
@@ -503,4 +505,98 @@ func TestNewKeytabFileCacheWiresDefaults(t *testing.T) {
 	})
 	require.Equal(t, defaultKeytabStaleGrace, zero.grace())
 	require.Equal(t, keytabRetryEvery, zero.retry())
+}
+
+// TestKeytabEpisodeBoundedAcrossRevisions covers a rotation script that keeps
+// writing a broken keytab. Each attempt is a new revision, and restarting the
+// grace window on every one would cover a superseded — possibly revoked —
+// keytab forever.
+func TestKeytabEpisodeBoundedAcrossRevisions(t *testing.T) {
+	dir := t.TempDir()
+	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
+
+	now := time.Now()
+	cache := &keytabFileCache{
+		files:      []string{filename},
+		staleGrace: 30 * time.Second,
+		retryEvery: time.Nanosecond,
+		nowFn:      func() time.Time { return now },
+	}
+	_, err := cache.load()
+	require.NoError(t, err)
+
+	// Rewrite a different broken keytab every 20 seconds.
+	var lastErr error
+	for i := range 10 {
+		require.NoError(t, os.WriteFile(filename, []byte(strings.Repeat("x", i+2)), 0o600))
+		now = now.Add(20 * time.Second)
+		_, lastErr = cache.load()
+	}
+	require.Error(t, lastErr, "a keytab that keeps failing must stop being covered for")
+	require.ErrorIs(t, lastErr, ErrLoadKeytabFileFailed)
+}
+
+// TestEndEpisodeIfCurrentRejectsStaleView drives the guard directly: a request
+// whose stat predates a rotation another goroutine already found broken must
+// not cancel that goroutine's episode.
+func TestEndEpisodeIfCurrentRejectsStaleView(t *testing.T) {
+	dir := t.TempDir()
+	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
+
+	cache := newKeytabFileCache([]string{filename})
+	_, err := cache.load()
+	require.NoError(t, err)
+	goodStamps := cache.snapshot.Load().stamps
+
+	// Simulate the state another goroutine would have left behind.
+	require.NoError(t, os.WriteFile(filename, []byte("12"), 0o600))
+	cache.mu.Lock()
+	cache.deg = degradedState{since: time.Now(), cause: errKeytabUnparsable}
+	cache.degraded.Store(true)
+	cache.mu.Unlock()
+
+	// A caller holding the pre-rotation view must not clear that episode: the
+	// keytab on disk is still broken.
+	cache.endEpisodeIfCurrent(goodStamps)
+	require.True(t, cache.degraded.Load(), "a stale view must not end a live episode")
+
+	// Once the keytab really is back, the episode ends.
+	restored := writeMockKeytab(t, dir, "restored.keytab", "HTTP/sso.example.com")
+	contents, err := os.ReadFile(restored)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filename, contents, 0o600))
+	fresh, err := cache.stat()
+	require.NoError(t, err)
+	cache.endEpisodeIfCurrent(fresh)
+	require.False(t, cache.degraded.Load(), "a current view must end the episode")
+}
+
+// TestKeytabRotationByRenameDetected covers the rotation the README recommends,
+// staged by a tool that preserves the timestamp of a same-sized file. Size and
+// mtime alone would call that unchanged and keep serving the rotated-out keys.
+func TestKeytabRotationByRenameDetected(t *testing.T) {
+	dir := t.TempDir()
+	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
+
+	cache := newKeytabFileCache([]string{filename})
+	before, err := cache.load()
+	require.NoError(t, err)
+	info, err := os.Stat(filename)
+	require.NoError(t, err)
+
+	// A different principal of the same length, staged with the original's
+	// mtime, then renamed into place.
+	staged := writeMockKeytab(t, dir, "staged.keytab", "HTTP/sso.example.org")
+	stagedInfo, err := os.Stat(staged)
+	require.NoError(t, err)
+	require.Equal(t, info.Size(), stagedInfo.Size(), "same-length keytabs make this the interesting case")
+	require.NoError(t, os.Chtimes(staged, info.ModTime(), info.ModTime()))
+	require.NoError(t, os.Rename(staged, filename))
+
+	after, err := cache.load()
+	require.NoError(t, err)
+	require.NotSame(t, before, after, "a renamed-in keytab must be picked up")
+	info2 := utils.GetKeytabInfo(after)
+	require.Len(t, info2, 1)
+	require.Equal(t, "HTTP/sso.example.org@TEST.LOCAL", info2[0].PrincipalName)
 }
