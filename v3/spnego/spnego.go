@@ -57,6 +57,39 @@ func isRejection(headers http.Header) bool {
 // at a rate unauthenticated callers control — into a log line.
 const internalErrorLogEvery = 30 * time.Second
 
+// logThrottle permits one event per window. It reports whether to log rather
+// than logging itself, so the caller can write outside the lock and keep a slow
+// sink off the request path.
+type logThrottle struct {
+	every time.Duration
+	// nowFn is a seam for tests; the wall clock is used when it is nil.
+	nowFn func() time.Time
+
+	mu   sync.Mutex
+	last time.Time
+}
+
+func (t *logThrottle) now() time.Time {
+	if t.nowFn != nil {
+		return t.nowFn()
+	}
+	return time.Now()
+}
+
+// allow reports whether the caller should emit, and records the emission when
+// it should. Sub against the zero time saturates, so the first event always
+// passes.
+func (t *logThrottle) allow() bool {
+	now := t.now()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if now.Sub(t.last) < t.every {
+		return false
+	}
+	t.last = now
+	return true
+}
+
 // clientSafeError keeps an internal cause matchable with errors.Is while
 // showing the client nothing but a generic message. Fiber's DefaultErrorHandler
 // writes err.Error() straight into the response body, and these causes name
@@ -192,29 +225,19 @@ func New(cfg Config) (fiber.Handler, error) {
 	}
 	// Internal failures are logged here rather than returned to the client, and
 	// throttled so a persistent fault cannot become a log flood.
+	//
 	// A keytab lookup failure is the only internal failure this middleware
-	// reports, so one throttle slot covers it. Adding a second kind of failure
-	// means giving it its own slot: sharing this one would let each suppress
-	// the other, and keying on the cause would let a caller defeat the throttle
-	// by varying client-controlled text inside it.
-	var (
-		logMu      sync.Mutex
-		lastLogged time.Time
-	)
+	// reports, so one throttle covers it. Adding a second kind of failure means
+	// giving it its own: sharing this one would let each suppress the other,
+	// and keying on the cause would let a caller defeat the throttle by varying
+	// client-controlled text inside it.
+	lookupFailures := &logThrottle{every: internalErrorLogEvery}
 	logInternal := func(cause error) {
-		logMu.Lock()
-		now := time.Now()
-		// Sub on the zero time saturates, so the first failure always logs.
-		throttled := now.Sub(lastLogged) < internalErrorLogEvery
-		if !throttled {
-			lastLogged = now
+		// allow reports rather than logs, so the write stays off the lock and a
+		// slow sink cannot become request latency.
+		if lookupFailures.allow() {
+			flog.Errorf("spnego: %v: %v", ErrLookupKeytabFailed, cause)
 		}
-		logMu.Unlock()
-		if throttled {
-			return
-		}
-		// Written outside the lock so the log sink is not a contention point.
-		flog.Errorf("spnego: %v: %v", ErrLookupKeytabFailed, cause)
 	}
 	// Return the middleware handler
 	return func(ctx fiber.Ctx) error {

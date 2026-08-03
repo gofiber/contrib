@@ -678,13 +678,29 @@ func TestRequestForSPNEGO(t *testing.T) {
 	require.Empty(t, got.URL.RawQuery)
 }
 
-// TestInternalErrorLogThrottle pins both halves of the throttle: the first
-// failure must always be logged, and a repeat inside the window must not be.
-//
-// The first half rests on time.Sub saturating against the zero time, which is
-// easy to "fix" into an inversion that swallows every line, so it is asserted
-// rather than left to a comment.
-func TestInternalErrorLogThrottle(t *testing.T) {
+// TestLogThrottle pins all three properties: the first event passes, repeats
+// inside the window do not, and the window reopens. The last one needs a clock
+// seam — without it, hoisting the timestamp update out of the guard would turn
+// the throttle into "never log again while failures keep arriving" and no test
+// would notice.
+func TestLogThrottle(t *testing.T) {
+	now := time.Now()
+	throttle := &logThrottle{every: 30 * time.Second, nowFn: func() time.Time { return now }}
+
+	require.True(t, throttle.allow(), "the first event must always pass")
+	require.False(t, throttle.allow(), "an immediate repeat must not")
+
+	now = now.Add(29 * time.Second)
+	require.False(t, throttle.allow(), "still inside the window")
+
+	now = now.Add(2 * time.Second)
+	require.True(t, throttle.allow(), "the window must reopen")
+	require.False(t, throttle.allow(), "and close again behind it")
+}
+
+// TestInternalErrorLogsOncePerFault checks the wiring: a repeating keytab
+// failure reaches the log exactly once, not once per request.
+func TestInternalErrorLogsOncePerFault(t *testing.T) {
 	var logged bytes.Buffer
 	flog.SetOutput(&logged)
 	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
@@ -701,7 +717,7 @@ func TestInternalErrorLogThrottle(t *testing.T) {
 		return c.SendString("authenticated")
 	})
 	handler := app.Handler()
-	send := func() {
+	for range 4 {
 		ctx := &fasthttp.RequestCtx{}
 		ctx.Request.Header.SetMethod(fiber.MethodGet)
 		ctx.Request.SetRequestURI("/authenticate")
@@ -709,14 +725,6 @@ func TestInternalErrorLogThrottle(t *testing.T) {
 		require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
 	}
 
-	send()
-	require.Contains(t, logged.String(), "keytab boom", "the first internal failure must be logged")
-	require.Equal(t, 1, strings.Count(logged.String(), "keytab boom"))
-
-	// Three more inside the window add nothing.
-	send()
-	send()
-	send()
 	require.Equal(t, 1, strings.Count(logged.String(), "keytab boom"),
-		"repeats inside the window must not be logged")
+		"a repeating fault must be logged once, not per request")
 }

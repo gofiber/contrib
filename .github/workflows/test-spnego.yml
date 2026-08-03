@@ -10,6 +10,9 @@ on:
       - 'v3/spnego/**/*.go'
       - 'v3/spnego/go.mod'
       - 'v3/spnego/go.sum'
+      # So a change to this workflow — the cross-platform vet matrix below in
+      # particular — is exercised by the PR that makes it.
+      - '.github/workflows/test-spnego.yml'
 
   workflow_dispatch:
 

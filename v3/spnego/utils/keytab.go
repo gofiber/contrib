@@ -74,12 +74,7 @@ func GetKeytabInfo(kt *keytab.Keytab) MultiKeytabInfo {
 			keytabMap[name] = item
 		}
 	}
-	var mk = make(MultiKeytabInfo, 0, len(keytabMap))
-	for item := range maps.Values(keytabMap) {
-		mk = append(mk, item)
-	}
-	slices.SortFunc(mk, func(a, b KeytabInfo) int {
+	return slices.SortedFunc(maps.Values(keytabMap), func(a, b KeytabInfo) int {
 		return strings.Compare(a.PrincipalName, b.PrincipalName)
 	})
-	return mk
 }
