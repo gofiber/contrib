@@ -755,7 +755,6 @@ func TestInternalErrorLogsOncePerFault(t *testing.T) {
 func TestKeytabEpisodeLogging(t *testing.T) {
 	var logged bytes.Buffer
 	flog.SetOutput(&logged)
-	flog.SetLevel(flog.LevelInfo)
 	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
 
 	dir := t.TempDir()
@@ -804,4 +803,52 @@ func TestKeytabEpisodeLogging(t *testing.T) {
 	_, err = cache.load()
 	require.NoError(t, err)
 	require.Equal(t, 1, strings.Count(logged.String(), "loads cleanly again"))
+
+	// The all-clear must carry the level of the warning it clears, or an
+	// operator filtering below Warn sees every alert open and none of them
+	// close.
+	require.Contains(t, logged.String(), "[Warn] spnego: keytab loads cleanly again")
+	require.Contains(t, logged.String(), "[Warn] spnego: load keytab failed")
+	require.Contains(t, logged.String(), "[Error] spnego: keytab still unusable")
+}
+
+// lockProbeWriter records whether the cache's reload mutex was free while the
+// log line was being written.
+type lockProbeWriter struct {
+	cache     *keytabFileCache
+	buf       *bytes.Buffer
+	sawLocked bool
+}
+
+func (w *lockProbeWriter) Write(p []byte) (int, error) {
+	if w.cache.mu.TryLock() {
+		w.cache.mu.Unlock()
+	} else {
+		w.sawLocked = true
+	}
+	return w.buf.Write(p)
+}
+
+// TestKeytabEpisodeLogWritesOffReloadLock pins the half of the logging rule
+// that line counts cannot see: the sink is written with the reload mutex
+// released, so a blocking sink cannot stall every authenticated request queued
+// behind a reload.
+func TestKeytabEpisodeLogWritesOffReloadLock(t *testing.T) {
+	dir := t.TempDir()
+	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
+
+	cache := newKeytabFileCache([]string{filename})
+	probe := &lockProbeWriter{cache: cache, buf: &bytes.Buffer{}}
+	flog.SetOutput(probe)
+	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
+
+	_, err := cache.load()
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filename, []byte("12"), 0o600))
+	_, err = cache.load()
+	require.NoError(t, err)
+
+	require.Contains(t, probe.buf.String(), "serving the last keytab that parsed",
+		"the episode warning must actually reach the sink")
+	require.False(t, probe.sawLocked, "the log write must happen with the reload lock released")
 }

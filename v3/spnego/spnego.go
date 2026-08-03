@@ -94,15 +94,23 @@ func (t *logThrottle) window() time.Duration {
 //
 // Sub against the zero time saturates, so the first event always runs.
 func (t *logThrottle) do(write func()) {
-	now := nowOr(t.nowFn)
+	if t.consume(nowOr(t.nowFn)) {
+		write()
+	}
+}
+
+// consume reports whether the window has elapsed, and claims it when it has.
+// Split out so the lock is defer-guarded: do must call write with the lock
+// released, and hand-unlocking on every path invites a later early return that
+// leaks the mutex and deadlocks the request path.
+func (t *logThrottle) consume(now time.Time) bool {
 	t.mu.Lock()
+	defer t.mu.Unlock()
 	if now.Sub(t.last) < t.window() {
-		t.mu.Unlock()
-		return
+		return false
 	}
 	t.last = now
-	t.mu.Unlock()
-	write()
+	return true
 }
 
 // clientSafeError keeps an internal cause matchable with errors.Is while
