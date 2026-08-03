@@ -2,6 +2,9 @@ package spnego
 
 import "github.com/jcmturner/goidentity/v6"
 
+// FiberContext is the subset of the Fiber context used to carry the
+// authenticated identity. fiber.Ctx satisfies it, and accepting the interface
+// rather than the concrete type keeps the identity helpers testable.
 type FiberContext interface {
 	Locals(key any, value ...any) any
 }
