@@ -2,16 +2,21 @@ package spnego
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	flog "github.com/gofiber/fiber/v3/log"
+	"github.com/jcmturner/gofork/encoding/asn1"
+	"github.com/jcmturner/gokrb5/v8/gssapi"
 	"github.com/jcmturner/gokrb5/v8/keytab"
+	gospnego "github.com/jcmturner/gokrb5/v8/spnego"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
@@ -252,4 +257,135 @@ func TestKeytabCacheReportsFirstLoadFailure(t *testing.T) {
 	require.NoError(t, err)
 	_, err = fn()
 	require.ErrorIs(t, err, ErrLoadKeytabFileFailed)
+}
+
+// rejectedNegotiateHeader builds an Authorization value that gokrb5 parses as a
+// well-formed SPNEGO NegTokenInit advertising KRB5, but whose mech token fails
+// validation. That is the one path that produces an outright rejection rather
+// than another leg of the handshake.
+func rejectedNegotiateHeader(t *testing.T) string {
+	t.Helper()
+	token := gospnego.SPNEGOToken{
+		Init: true,
+		NegTokenInit: gospnego.NegTokenInit{
+			MechTypes:      []asn1.ObjectIdentifier{gssapi.OIDKRB5.OID()},
+			MechTokenBytes: []byte{0x60, 0x05, 0x06, 0x03, 0x2a, 0x03, 0x04},
+		},
+	}
+	raw, err := token.Marshal()
+	require.NoError(t, err)
+	return "Negotiate " + base64.StdEncoding.EncodeToString(raw)
+}
+
+// TestUnauthorizedCalledOnRejection is the positive case for Config.Unauthorized:
+// a client presented a ticket and the service refused it.
+func TestUnauthorizedCalledOnRejection(t *testing.T) {
+	filename := writeMockKeytab(t, t.TempDir(), "sso.keytab", "HTTP/sso.example.com")
+	lookupFunc, err := NewKeytabFileLookupFunc(filename)
+	require.NoError(t, err)
+
+	var called bool
+	middleware, err := New(Config{
+		KeytabLookup: lookupFunc,
+		Unauthorized: func(c fiber.Ctx) error {
+			called = true
+			return c.Status(fiber.StatusForbidden).SendString("denied")
+		},
+	})
+	require.NoError(t, err)
+
+	app := fiber.New()
+	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
+		return c.SendString("authenticated")
+	})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fiber.MethodGet)
+	ctx.Request.SetRequestURI("/authenticate")
+	ctx.Request.Header.Set(fiber.HeaderAuthorization, rejectedNegotiateHeader(t))
+	app.Handler()(ctx)
+
+	require.True(t, called, "Unauthorized must run when a ticket is rejected")
+	require.Equal(t, fiber.StatusForbidden, ctx.Response.StatusCode())
+	require.Equal(t, "denied", string(ctx.Response.Body()))
+}
+
+// TestRejectionWithoutHandlerPassesThrough checks the default: with no handler
+// configured, SPNEGO's own rejection reaches the client unchanged.
+func TestRejectionWithoutHandlerPassesThrough(t *testing.T) {
+	filename := writeMockKeytab(t, t.TempDir(), "sso.keytab", "HTTP/sso.example.com")
+	lookupFunc, err := NewKeytabFileLookupFunc(filename)
+	require.NoError(t, err)
+	middleware, err := New(Config{KeytabLookup: lookupFunc})
+	require.NoError(t, err)
+
+	app := fiber.New()
+	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
+		return c.SendString("authenticated")
+	})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fiber.MethodGet)
+	ctx.Request.SetRequestURI("/authenticate")
+	ctx.Request.Header.Set(fiber.HeaderAuthorization, rejectedNegotiateHeader(t))
+	app.Handler()(ctx)
+
+	require.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode())
+	require.Equal(t, spnegoRejected, string(ctx.Response.Header.Peek(fiber.HeaderWWWAuthenticate)))
+}
+
+// TestLookupErrorRemainsInspectable checks that hiding the detail from the
+// client did not also hide it from the application's own error handler.
+func TestLookupErrorRemainsInspectable(t *testing.T) {
+	middleware, err := New(Config{
+		KeytabLookup: func() (*keytab.Keytab, error) {
+			return nil, errors.New("boom")
+		},
+	})
+	require.NoError(t, err)
+
+	var handlerErr error
+	app := fiber.New(fiber.Config{
+		ErrorHandler: func(c fiber.Ctx, e error) error {
+			handlerErr = e
+			return c.SendStatus(fiber.StatusInternalServerError)
+		},
+	})
+	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
+		return c.SendString("authenticated")
+	})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fiber.MethodGet)
+	ctx.Request.SetRequestURI("/authenticate")
+	app.Handler()(ctx)
+
+	require.ErrorIs(t, handlerErr, ErrLookupKeytabFailed)
+	require.Equal(t, "Internal Server Error", handlerErr.Error(),
+		"the message shown to a client must not carry the cause")
+}
+
+// TestKeytabStaleGraceExpires checks that a keytab which stays unparsable stops
+// being covered for. Serving it forever would keep a revoked key alive.
+func TestKeytabStaleGraceExpires(t *testing.T) {
+	dir := t.TempDir()
+	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
+
+	now := time.Now()
+	cache := &keytabFileCache{
+		files:      []string{filename},
+		staleGrace: 30 * time.Second,
+		now:        func() time.Time { return now },
+	}
+
+	good, err := cache.load()
+	require.NoError(t, err)
+
+	// The keytab is replaced by something that will never parse.
+	require.NoError(t, os.WriteFile(filename, []byte("12"), 0o600))
+
+	served, err := cache.load()
+	require.NoError(t, err, "within the grace window the last good keytab is served")
+	require.Same(t, good, served)
+
+	now = now.Add(31 * time.Second)
+	_, err = cache.load()
+	require.ErrorIs(t, err, ErrLoadKeytabFileFailed, "the fallback must not outlive the grace window")
 }

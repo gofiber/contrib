@@ -2,6 +2,7 @@ package spnego
 
 import (
 	"bytes"
+	"fmt"
 	"log"
 	"net/http"
 
@@ -13,29 +14,50 @@ import (
 	"github.com/jcmturner/gokrb5/v8/spnego"
 )
 
-// gokrb5 answers 401 for three different situations and tells them apart only
-// by the WWW-Authenticate value it sets. Two of the three are steps in a
-// handshake that is still going well:
+// gokrb5 answers 401 in several situations and distinguishes them only by the
+// WWW-Authenticate value it sets:
 //
-//   - a bare "Negotiate" is the opening challenge, and clients start SPNEGO
+//   - a bare "Negotiate" is the opening challenge, and clients begin SPNEGO
 //     only when they receive it on an untouched 401;
-//   - spnegoContinueNeeded carries a continuation token asking the client to
-//     retry with KRB5;
-//   - spnegoRejected is the only one that means authentication failed.
+//   - spnegoContinueNeeded asks the client to retry with KRB5;
+//   - spnegoRejected means the ticket was refused.
 //
-// These mirror the unexported constants in gokrb5/v8/spnego/http.go.
+// Only the last is treated as a failure. Note that spnegoContinueNeeded is not
+// exclusively a handshake step: gokrb5 sends it from three places — a genuine
+// GSS-API continue, a Negotiate header that fails base64 decoding, and a token
+// that unmarshals as neither SPNEGO nor raw KRB5 (spnego/http.go:284, :320 and
+// :330 in v8.4.4). A malformed or NTLM-only token is therefore indistinguishable
+// from a real continuation, and such failures cannot reach Config.Unauthorized.
+// Treating them as rejections instead would break genuine continuations, which
+// is the more damaging error, so they are passed through.
+//
+// These values mirror unexported constants in gokrb5/v8/spnego/http.go, pinned
+// at v8.4.4. Re-check them against the source when upgrading gokrb5: a change
+// there would silently reclassify responses. TestIsRejection and
+// TestUnauthorizedNotCalledOnContinueNeeded assert them against gokrb5's real
+// output, so a drift fails the suite.
 const (
 	spnegoContinueNeeded = "Negotiate oRQwEqADCgEBoQsGCSqGSIb3EgECAg=="
 	spnegoRejected       = "Negotiate oQcwBaADCgEC"
 )
 
-// isRejection reports whether the response SPNEGO produced is a final refusal
-// rather than a leg of an ongoing negotiation. Only a refusal is handed to
+// isRejection reports whether the response SPNEGO produced is a refusal rather
+// than a leg of an ongoing negotiation. Only a refusal is handed to
 // Config.Unauthorized; rewriting either challenge would stop clients from ever
 // completing the handshake.
 func isRejection(headers http.Header) bool {
 	return headers.Get(fiber.HeaderWWWAuthenticate) == spnegoRejected
 }
+
+// clientSafeError keeps an internal cause inspectable with errors.Is and
+// errors.As while showing the client nothing but a generic message. Fiber's
+// DefaultErrorHandler writes err.Error() straight into the response body, and
+// these causes name keytab paths and OS errors.
+type clientSafeError struct{ cause error }
+
+func (e *clientSafeError) Error() string { return "Internal Server Error" }
+
+func (e *clientSafeError) Unwrap() error { return e.cause }
 
 // responseRecorder captures what the SPNEGO handler writes so the middleware
 // can inspect the outcome before replaying it onto the Fiber response.
@@ -131,20 +153,17 @@ func New(cfg Config) (fiber.Handler, error) {
 		kt, err := keytabLookup()
 		if err == nil && kt == nil {
 			// A lookup is caller-supplied and may return no keytab and no
-			// error. gokrb5 dereferences it unconditionally, so let it through
-			// and an unauthenticated request panics the process.
+			// error. gokrb5 dereferences the keytab while decrypting a ticket,
+			// so letting nil through panics the process on the first request
+			// that carries a well-formed AP-REQ.
 			err = errNilKeytab
 		}
 		if err != nil {
-			// The detail names the keytab path and the underlying OS error, so
-			// it goes to the log rather than to an unauthenticated client.
-			flog.Errorf("spnego: %v: %v", ErrLookupKeytabFailed, err)
-			return fiber.ErrInternalServerError
+			return &clientSafeError{cause: fmt.Errorf("%w: %w", ErrLookupKeytabFailed, err)}
 		}
 		req, err := adaptor.ConvertRequest(ctx, true)
 		if err != nil {
-			flog.Errorf("spnego: %v: %v", ErrConvertRequestFailed, err)
-			return fiber.ErrInternalServerError
+			return &clientSafeError{cause: fmt.Errorf("%w: %w", ErrConvertRequestFailed, err)}
 		}
 
 		var (

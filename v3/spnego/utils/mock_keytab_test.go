@@ -194,3 +194,19 @@ func Test_mockOptions_apply(t *testing.T) {
 	require.Equal(t, "/tmp/test.keytab", opts.Filename)
 	require.Equal(t, "TEST.LOCAL", opts.Realm)
 }
+
+func TestNewMockKeytabRejectsUnrepresentableVersion(t *testing.T) {
+	// gokrb5's AddEntry takes a uint8, so a wider version cannot be written.
+	// Truncating it silently would defeat the point of reporting the 32-bit
+	// key version in KeytabInfo.
+	_, _, err := NewMockKeytab(
+		WithPrincipal("HTTP/sso.example.com"),
+		WithRealm("TEST.LOCAL"),
+		WithPairs(EncryptTypePair{
+			Version:     256,
+			EncryptType: 18,
+			CreateTime:  time.Now(),
+		}),
+	)
+	require.ErrorIs(t, err, ErrInvalidKeyVersion)
+}

@@ -1,14 +1,18 @@
 package spnego
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
+	flog "github.com/gofiber/fiber/v3/log"
 	"github.com/jcmturner/gokrb5/v8/keytab"
 )
 
@@ -31,13 +35,13 @@ const DefaultSystemKeytabPath = "/etc/krb5.keytab"
 // refresh it out of band rather than doing the work inline.
 type KeytabLookupFunc func() (*keytab.Keytab, error)
 
-// UnauthorizedHandler is invoked when SPNEGO authentication does not succeed,
-// in place of the default challenge response.
+// UnauthorizedHandler is invoked in place of SPNEGO's own response when a
+// presented Kerberos ticket is rejected. It is not called for the opening
+// challenge or for a continuation token; see Config.Unauthorized.
 //
-// The Negotiate challenge headers written by the SPNEGO layer are already set
-// on the response when this runs, so a handler that only changes the status
-// code or body keeps the negotiation flow intact. Removing the
-// WWW-Authenticate header will break Kerberos negotiation with the client.
+// The headers SPNEGO wrote are already on the response when this runs, so a
+// handler that only changes the status code or body leaves them in place.
+// Removing the WWW-Authenticate header will break negotiation with the client.
 type UnauthorizedHandler func(ctx fiber.Ctx) error
 
 // Config holds the configuration for the SPNEGO middleware
@@ -59,9 +63,11 @@ type Config struct {
 	// *log.Logger, and it bypasses Fiber's log level, so the caveat on Log
 	// applies here too.
 	UseFiberLogger bool
-	// Unauthorized customizes the response sent when authentication fails.
-	// When nil, the SPNEGO layer's own 401 challenge response is returned
-	// unmodified.
+	// Unauthorized customizes the response sent when a client's Kerberos
+	// ticket is rejected. It does not run for the opening challenge or for a
+	// continuation token, which are legs of a handshake that can still succeed
+	// and which clients act on only when they arrive untouched. When nil,
+	// SPNEGO's own response is returned unmodified.
 	Unauthorized UnauthorizedHandler
 	// FallbackToSystemKeytab loads the host's system keytab when KeytabLookup
 	// is nil, instead of rejecting the configuration. See
@@ -70,40 +76,50 @@ type Config struct {
 }
 
 // fileStamp identifies a keytab file revision cheaply enough to check on every
-// request. Size and modification time change whenever a keytab is rotated in
-// place or replaced.
+// request. It is not exact: a rewrite that keeps the file the same size and
+// lands within one filesystem timestamp tick looks unchanged.
 type fileStamp struct {
 	size    int64
 	modTime int64
 }
 
-// keytabFileCache holds the merged keytab for a fixed set of files, reloading
-// it only when one of those files changes on disk.
-type keytabFileCache struct {
-	files []string
-
-	mu     sync.Mutex
+// keytabSnapshot is an immutable view of the merged keytab and the file
+// revisions it was built from, published as a unit so readers never see a
+// half-updated cache.
+type keytabSnapshot struct {
 	stamps []fileStamp
 	merged *keytab.Keytab
 }
 
-// load returns the merged keytab, re-reading the files only when their size or
-// modification time differs from the cached revision. The returned pointer is
-// stable across calls for as long as the files are unchanged, which lets a
-// caller reuse anything it derived from the keytab.
-//
-// Detecting a change by size and modification time is cheap enough to do per
-// request, but it is not exact: a rewrite that keeps the file the same size and
-// lands within one filesystem timestamp tick looks unchanged. Where that
-// matters, rotate by writing a new file and renaming it over the old one, which
-// always moves the modification time.
-//
-// A file that cannot be read at all — deleted, unmounted, permissions revoked —
-// is reported as an error, because that is how a revoked keytab must behave. A
-// file that reads but does not parse is treated as a rotation caught mid-write:
-// rewriting a keytab in place is not atomic, so the previously loaded keytab is
-// served and the stamps are left untouched, which makes the next request retry.
-func (c *keytabFileCache) load() (*keytab.Keytab, error) {
+// defaultKeytabStaleGrace bounds how long a keytab that no longer parses keeps
+// being served. Long enough to cover a file caught mid-rewrite, short enough
+// that a rotation to a permanently corrupt keytab surfaces quickly.
+const defaultKeytabStaleGrace = 30 * time.Second
+
+// errKeytabUnparsable marks a keytab that was read but could not be parsed, as
+// opposed to one that could not be read at all.
+var errKeytabUnparsable = errors.New("keytab did not parse")
+
+// keytabFileCache holds the merged keytab for a fixed set of files, reloading
+// it only when one of those files changes on disk.
+type keytabFileCache struct {
+	files      []string
+	staleGrace time.Duration
+	now        func() time.Time
+
+	// snapshot is read without holding mu so the cache-hit path, which runs on
+	// every authenticated request, does not serialise concurrent requests.
+	snapshot atomic.Pointer[keytabSnapshot]
+
+	// mu guards reloads so the file I/O is done once, not once per waiter.
+	mu         sync.Mutex
+	staleSince time.Time
+}
+
+// stat collects the current revision of every file. A file that cannot be
+// stat'ed is an error rather than a reason to serve the cache: that is how a
+// deleted or revoked keytab has to behave.
+func (c *keytabFileCache) stat() ([]fileStamp, error) {
 	stamps := make([]fileStamp, len(c.files))
 	for i, keytabFile := range c.files {
 		info, err := os.Stat(keytabFile)
@@ -112,13 +128,12 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 		}
 		stamps[i] = fileStamp{size: info.Size(), modTime: info.ModTime().UnixNano()}
 	}
+	return stamps, nil
+}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.merged != nil && slices.Equal(c.stamps, stamps) {
-		return c.merged, nil
-	}
-
+// readAll re-reads and merges every keytab file. A parse failure is wrapped
+// with errKeytabUnparsable so the caller can tell it apart from an I/O failure.
+func (c *keytabFileCache) readAll() (*keytab.Keytab, error) {
 	// keytab.New rather than the zero value: it sets the format version that
 	// Marshal writes, so the merged keytab stays serialisable.
 	mergeKeytab := keytab.New()
@@ -129,17 +144,70 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 		}
 		kt := keytab.New()
 		if err = kt.Unmarshal(raw); err != nil {
-			if c.merged != nil {
-				// Half-written file: keep serving the keytab that last parsed.
-				return c.merged, nil
-			}
-			return nil, fmt.Errorf("%w: file %s load failed: %w", ErrLoadKeytabFileFailed, keytabFile, err)
+			return nil, fmt.Errorf("%w: file %s load failed: %w: %w", ErrLoadKeytabFileFailed, keytabFile, errKeytabUnparsable, err)
 		}
 		mergeKeytab.Entries = append(mergeKeytab.Entries, kt.Entries...)
 	}
-	c.merged = mergeKeytab
-	c.stamps = stamps
-	return c.merged, nil
+	return mergeKeytab, nil
+}
+
+// serveStale decides whether a keytab that no longer parses should be covered
+// for by the last one that did. Rewriting a keytab in place is not atomic, so a
+// read can catch a half-written file; that window is short. A keytab that stays
+// unparsable is a real fault, so the fallback expires after staleGrace and the
+// error surfaces. Callers must hold mu.
+func (c *keytabFileCache) serveStale(cause error) (*keytab.Keytab, error) {
+	snap := c.snapshot.Load()
+	if snap == nil {
+		return nil, cause
+	}
+	now := c.now()
+	if c.staleSince.IsZero() {
+		c.staleSince = now
+		// Logged once per episode rather than per request, so a persistent
+		// fault cannot be turned into a log flood by unauthenticated callers.
+		flog.Warnf("spnego: %v; serving the last keytab that parsed for up to %s", cause, c.staleGrace)
+	}
+	if now.Sub(c.staleSince) > c.staleGrace {
+		return nil, cause
+	}
+	return snap.merged, nil
+}
+
+// load returns the merged keytab, re-reading the files only when their size or
+// modification time differs from the cached revision. The returned pointer is
+// stable across calls for as long as the files are unchanged, which lets a
+// caller reuse anything it derived from the keytab.
+//
+// Because change detection is inexact (see fileStamp), rotate a keytab by
+// writing a new file and renaming it over the old one: that normally moves the
+// modification time, whereas an in-place rewrite of identical length may not.
+func (c *keytabFileCache) load() (*keytab.Keytab, error) {
+	stamps, err := c.stat()
+	if err != nil {
+		return nil, err
+	}
+	if snap := c.snapshot.Load(); snap != nil && slices.Equal(snap.stamps, stamps) {
+		return snap.merged, nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Another goroutine may have reloaded while this one waited for the lock.
+	if snap := c.snapshot.Load(); snap != nil && slices.Equal(snap.stamps, stamps) {
+		return snap.merged, nil
+	}
+
+	merged, err := c.readAll()
+	if err != nil {
+		if errors.Is(err, errKeytabUnparsable) {
+			return c.serveStale(err)
+		}
+		return nil, err
+	}
+	c.snapshot.Store(&keytabSnapshot{stamps: stamps, merged: merged})
+	c.staleSince = time.Time{}
+	return merged, nil
 }
 
 // NewKeytabFileLookupFunc creates a new KeytabLookupFunc that loads keytab files
@@ -152,7 +220,11 @@ func NewKeytabFileLookupFunc(keytabFiles ...string) (KeytabLookupFunc, error) {
 	if len(keytabFiles) == 0 {
 		return nil, ErrConfigInvalidOfAtLeastOneKeytabFileRequired
 	}
-	cache := &keytabFileCache{files: slices.Clone(keytabFiles)}
+	cache := &keytabFileCache{
+		files:      slices.Clone(keytabFiles),
+		staleGrace: defaultKeytabStaleGrace,
+		now:        time.Now,
+	}
 	return cache.load, nil
 }
 
@@ -177,12 +249,14 @@ func NewSystemKeytabLookupFunc() (KeytabLookupFunc, error) {
 	// MIT Kerberos writes KRB5_KTNAME as an optional "TYPE:residual" pair. Only
 	// file-backed types can be read here, so anything else is rejected up front
 	// rather than being treated as a literal path that fails on every request.
-	if resolved, err := resolveKeytabResidual(keytabPath); err != nil {
+	resolved, err := resolveKeytabResidual(keytabPath)
+	if err != nil {
 		return nil, err
-	} else if keytabPath = resolved; keytabPath == "" {
+	}
+	if resolved == "" {
 		return nil, ErrConfigInvalidOfAtLeastOneKeytabFileRequired
 	}
-	return NewKeytabFileLookupFunc(keytabPath)
+	return NewKeytabFileLookupFunc(resolved)
 }
 
 // fileKeytabTypes are the MIT keytab residual types backed by a plain file.

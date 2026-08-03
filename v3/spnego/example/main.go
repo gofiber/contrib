@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/gofiber/contrib/v3/spnego"
@@ -12,14 +14,21 @@ import (
 
 func main() {
 	app := fiber.New()
-	// create mock keytab file
+	// create mock keytab file in a temporary directory, so key material never
+	// lands in the working directory
 	// you must use a real keytab file
+	tempDir, err := os.MkdirTemp("", "spnego-example")
+	if err != nil {
+		log.Fatalf("create temp dir error: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+	keytabPath := filepath.Join(tempDir, "temp-sso.keytab")
 	_, clean, err := utils.NewMockKeytab(
 		// The SPN must match the host clients contact below, or the client's
 		// service ticket will not match any entry in the keytab.
 		utils.WithPrincipal("HTTP/sso.example.local"),
 		utils.WithRealm("EXAMPLE.LOCAL"),
-		utils.WithFilename("./temp-sso.keytab"),
+		utils.WithFilename(keytabPath),
 		utils.WithPairs(utils.EncryptTypePair{
 			Version:     2,
 			EncryptType: 18,
@@ -30,7 +39,7 @@ func main() {
 		log.Fatalf("create mock keytab error: %v", err)
 	}
 	defer clean()
-	keytabLookup, err := spnego.NewKeytabFileLookupFunc("./temp-sso.keytab")
+	keytabLookup, err := spnego.NewKeytabFileLookupFunc(keytabPath)
 	if err != nil {
 		panic(fmt.Errorf("create keytab lookup function failed: %w", err))
 	}

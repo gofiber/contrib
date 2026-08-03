@@ -1,10 +1,10 @@
 package utils
 
 import (
-	"time"
-
 	"maps"
-	"sort"
+	"slices"
+	"strings"
+	"time"
 
 	"github.com/jcmturner/gokrb5/v8/keytab"
 )
@@ -78,8 +78,8 @@ func GetKeytabInfo(kt *keytab.Keytab) MultiKeytabInfo {
 	for item := range maps.Values(keytabMap) {
 		mk = append(mk, item)
 	}
-	sort.Slice(mk, func(i, j int) bool {
-		return mk[i].PrincipalName < mk[j].PrincipalName
+	slices.SortFunc(mk, func(a, b KeytabInfo) int {
+		return strings.Compare(a.PrincipalName, b.PrincipalName)
 	})
 	return mk
 }

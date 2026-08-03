@@ -105,7 +105,7 @@ The middleware is designed with extensibility in mind, allowing keytab retrieval
 >
 > `NewKeytabFileLookupFunc` already does this: it caches the merged keytab and re-reads the files only when one of them changes size or modification time, so rotating a keytab on disk still takes effect without paying for a parse per request.
 >
-> Change detection is cheap rather than exact — a rewrite that keeps the same size and lands within one filesystem timestamp tick looks unchanged. Rotate by writing a new file and renaming it over the old one, which always moves the modification time.
+> Change detection is cheap rather than exact — a rewrite that keeps the same size and lands within one filesystem timestamp tick looks unchanged. Rotate by writing a new file and renaming it over the old one; that normally moves the modification time, but the cache still only reacts to a detectable size or timestamp change.
 >
 > A keytab that reads but does not parse is treated as a rotation caught mid-write: the last keytab that parsed cleanly keeps being served and the next request retries. A keytab that cannot be read at all — deleted, unmounted, permissions revoked — is reported as an error instead, so revoking a keytab takes effect rather than being masked by the cache.
 
@@ -159,7 +159,7 @@ The `Config` struct supports the following fields:
 - `KeytabLookup`: A function that retrieves the keytab (required, unless `FallbackToSystemKeytab` is set)
 - `Log`: A `*log.Logger` receiving gokrb5's diagnostics (optional, defaults to no logging)
 - `UseFiberLogger`: Send gokrb5's diagnostics to Fiber's default logger when `Log` is nil (optional, defaults to `false`)
-- `Unauthorized`: A `func(fiber.Ctx) error` invoked when authentication does not succeed, in place of the default challenge response (optional)
+- `Unauthorized`: A `func(fiber.Ctx) error` invoked when a presented Kerberos ticket is rejected, in place of SPNEGO's own rejection response (optional)
 - `FallbackToSystemKeytab`: Load the system keytab when `KeytabLookup` is nil, instead of rejecting the configuration (optional, defaults to `false`). The resolved keytab is loaded once during `New`, so a misconfigured host fails at startup rather than on every request.
 
 ### Logging
@@ -186,10 +186,14 @@ gokrb5 answers `401` in three different situations, and only one of them is a fa
 | WWW-Authenticate | Meaning | Reaches your handler |
 |---|---|---|
 | `Negotiate` (bare) | Opening challenge that starts the handshake | No |
-| `Negotiate oRQwEq…` | Continuation token: retry with KRB5 | No |
-| `Negotiate oQcwBa…` | Ticket rejected | **Yes** |
+| `Negotiate oRQwEqADCgEB…` | Continuation token: retry with KRB5 | No |
+| `Negotiate oQcwBaADCgEC` | Ticket rejected | **Yes** |
+
+(Success is signalled by `Negotiate oRQwEqADCgEA…`, which differs from the continuation value only at the twelfth base64 character — `CgEA` versus `CgEB`.)
 
 The first two are steps in a negotiation that can still succeed. `curl --negotiate` and every major browser begin SPNEGO only when an untouched `401` arrives, so rewriting either one — changing the status to `403`, say — would stop authentication from ever completing. They are always passed straight through, and your handler never sees them.
+
+One limitation worth knowing: gokrb5 sends the continuation value not only for a genuine continue, but also for a `Negotiate` header that fails base64 decoding or does not unmarshal as SPNEGO or raw KRB5. An NTLM-only client is therefore indistinguishable from a client mid-handshake, and those failures never reach your handler. Classifying them as rejections instead would break real continuations, which is the worse failure.
 
 The rejection response's headers are already set when your handler runs, so setting a status and body leaves them in place. Removing the `WWW-Authenticate` header will break negotiation.
 
@@ -202,4 +206,4 @@ The rejection response's headers are already set when your handler runs, so sett
 
 - Ensure your Kerberos infrastructure is properly configured
 - The middleware handles the SPNEGO negotiation process
-- Authenticated identities are stored in the Fiber context using `contextKeyOfIdentity`
+- Retrieve authenticated identities with `GetAuthenticatedIdentityFromContext`
