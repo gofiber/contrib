@@ -4,7 +4,7 @@ id: spnego
 
 # SPNEGO Kerberos Authentication Middleware for Fiber
 
-![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=spnego*)
+![Release](https://img.shields.io/github/v/tag/gofiber/contrib?filter=*spnego*)
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Test%20spnego/badge.svg)
 
@@ -103,7 +103,7 @@ The middleware is designed with extensibility in mind, allowing keytab retrieval
 
 > **`KeytabLookup` is called on every authenticated request.** It sits in the request hot path, so a lookup that contacts an external system will add its latency — and its failure modes — to each authentication. If you fetch from a database, a secrets manager, or a remote service, cache the result and refresh it out of band (on a TTL or a rotation event), and apply a bounded timeout.
 >
-> `NewKeytabFileLookupFunc` already does this: it caches the merged keytab and re-reads the files only when one of them changes size or modification time, so rotating a keytab on disk still takes effect without paying for a parse per request. Returning the same `*keytab.Keytab` pointer on consecutive calls also lets the middleware reuse the SPNEGO handler it built from that keytab, so a custom lookup that caches gets the same benefit.
+> `NewKeytabFileLookupFunc` already does this: it caches the merged keytab and re-reads the files only when one of them changes size or modification time, so rotating a keytab on disk still takes effect without paying for a parse per request. If a reload fails — a keytab rotation is not atomic, so a read can catch a half-written file — the last keytab that loaded cleanly keeps being served and the next request retries, rather than failing authentication outright.
 
 ```go
 // Example: Retrieve keytab from a database
@@ -127,9 +127,9 @@ func remoteKeytabLookup() (*keytab.Keytab, error) {
 
 Creates a new SPNEGO authentication middleware.
 
-### `GetAuthenticatedIdentityFromContext[T FiberContext](ctx T) (goidentity.Identity, bool)`
+### `GetAuthenticatedIdentityFromContext(ctx FiberContext) (goidentity.Identity, bool)`
 
-Retrieves the authenticated identity from the Fiber context. `FiberContext` is any type exposing `Locals(key any, value ...any) any`, so in handlers this is normally called as `GetAuthenticatedIdentityFromContext(c)` with a `fiber.Ctx`.
+Retrieves the authenticated identity from the Fiber context. `FiberContext` is any type exposing `Locals(key any, value ...any) any`, which `fiber.Ctx` satisfies, so handlers call this as `GetAuthenticatedIdentityFromContext(c)`.
 
 ### `NewKeytabFileLookupFunc(keytabFiles ...string) (KeytabLookupFunc, error)`
 
@@ -137,7 +137,9 @@ Creates a new KeytabLookupFunc that loads keytab files, caching the merged resul
 
 ### `NewSystemKeytabLookupFunc() (KeytabLookupFunc, error)`
 
-Creates a KeytabLookupFunc for the host's system keytab: `$KRB5_KTNAME` when set, otherwise `/etc/krb5.keytab`. A `FILE:` prefix on `KRB5_KTNAME` is accepted and stripped.
+Creates a KeytabLookupFunc for the host's system keytab: `$KRB5_KTNAME` when set, otherwise `/etc/krb5.keytab`.
+
+MIT Kerberos writes `KRB5_KTNAME` as an optional `TYPE:residual` pair. The file-backed types (`FILE:`, `WRFILE:`) are accepted and stripped; anything else — `KEYRING:`, `MEMORY:`, `ANY:` — is rejected at construction with `ErrUnsupportedKeytabResidualType` rather than being treated as a literal path that fails on every request.
 
 Note that this resolves a *keytab*, not a credential cache. Accepting a SPNEGO ticket requires the service's long-term keys, so a client credential cache (`KRB5CCNAME`) cannot be used to authenticate incoming requests.
 
@@ -146,9 +148,14 @@ Note that this resolves a *keytab*, not a credential cache. Accepting a SPNEGO t
 The `Config` struct supports the following fields:
 
 - `KeytabLookup`: A function that retrieves the keytab (required, unless `FallbackToSystemKeytab` is set)
-- `Log`: The logger used for middleware logging (optional, defaults to Fiber's default logger)
+- `Log`: A `*log.Logger` receiving gokrb5's diagnostics (optional, defaults to no logging)
+- `UseFiberLogger`: Send gokrb5's diagnostics to Fiber's default logger when `Log` is nil (optional, defaults to `false`)
 - `Unauthorized`: A `func(fiber.Ctx) error` invoked when authentication does not succeed, in place of the default challenge response (optional)
 - `FallbackToSystemKeytab`: Load the system keytab when `KeytabLookup` is nil, instead of rejecting the configuration (optional, defaults to `false`)
+
+### Logging
+
+gokrb5 logs once per unauthenticated request, with no level of its own. Since the first leg of every Negotiate handshake is unauthenticated, leaving both `Log` and `UseFiberLogger` unset keeps an unauthenticated client from driving log volume. Setting either one opts in, and note that neither honours Fiber's log level.
 
 ### Customizing the unauthorized response
 
@@ -163,7 +170,9 @@ authMiddleware, err := spnego.New(spnego.Config{
 })
 ```
 
-The `WWW-Authenticate: Negotiate` challenge is already set on the response when this runs, so changing only the status code or body keeps the negotiation flow intact. Removing that header will break Kerberos negotiation with the client.
+The `WWW-Authenticate` challenge SPNEGO produced is already on the response when this runs, so a handler that only sets a status and body leaves it in place. Removing that header will break Kerberos negotiation with the client.
+
+This handler is **not** called for the "continue needed" leg of a handshake — the 401 that carries a continuation token telling the client to retry with KRB5. That response is a step in a *successful* negotiation, not a failure, and clients renegotiate only if it reaches them untouched, so it is always passed straight through. Your handler sees the initial challenge and outright rejections.
 
 ## Requirements
 

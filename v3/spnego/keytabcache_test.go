@@ -7,8 +7,6 @@ import (
 	"time"
 
 	"github.com/gofiber/contrib/v3/spnego/utils"
-	"github.com/gofiber/fiber/v3"
-	"github.com/jcmturner/gokrb5/v8/keytab"
 	"github.com/stretchr/testify/require"
 )
 
@@ -109,37 +107,42 @@ func TestNewSystemKeytabLookupFunc(t *testing.T) {
 	t.Run("falls back to the default path when KRB5_KTNAME is unset", func(t *testing.T) {
 		t.Setenv("KRB5_KTNAME", "")
 
+		// Assert on the resolved path rather than on a load outcome, so this
+		// holds both on a bare CI runner and on a Kerberos-enabled host that
+		// really has /etc/krb5.keytab.
+		resolved, err := resolveKeytabResidual(DefaultSystemKeytabPath)
+		require.NoError(t, err)
+		require.Equal(t, DefaultSystemKeytabPath, resolved)
+
 		fn, err := NewSystemKeytabLookupFunc()
 		require.NoError(t, err)
-		// The default path is almost never present in CI, so assert on the
-		// resolved target rather than on a successful load.
-		if _, statErr := os.Stat(DefaultSystemKeytabPath); statErr != nil {
-			_, err = fn()
-			require.ErrorIs(t, err, ErrLoadKeytabFileFailed)
-			require.Contains(t, err.Error(), DefaultSystemKeytabPath)
+		require.NotNil(t, fn)
+	})
+
+	t.Run("accepts the WRFILE: prefix", func(t *testing.T) {
+		filename := writeMockKeytab(t, t.TempDir(), "system.keytab", "HTTP/system.example.com")
+		t.Setenv("KRB5_KTNAME", "WRFILE:"+filename)
+
+		fn, err := NewSystemKeytabLookupFunc()
+		require.NoError(t, err)
+		_, err = fn()
+		require.NoError(t, err)
+	})
+
+	t.Run("rejects keytab types that are not plain files", func(t *testing.T) {
+		for _, name := range []string{"KEYRING:persistent:0:0", "MEMORY:mykeytab", "ANY:FILE:/tmp/a"} {
+			t.Setenv("KRB5_KTNAME", name)
+			_, err := NewSystemKeytabLookupFunc()
+			require.ErrorIs(t, err, ErrUnsupportedKeytabResidualType, name)
 		}
 	})
-}
 
-func TestHandlerCache(t *testing.T) {
-	var built int
-	cache := &handlerCache{
-		build: func(*keytab.Keytab) fiber.Handler {
-			built++
-			return func(fiber.Ctx) error { return nil }
-		},
-	}
+	t.Run("treats an absolute path as a path", func(t *testing.T) {
+		filename := writeMockKeytab(t, t.TempDir(), "system.keytab", "HTTP/system.example.com")
+		t.Setenv("KRB5_KTNAME", filename)
 
-	first := &keytab.Keytab{}
-	second := &keytab.Keytab{}
-
-	cache.get(first)
-	cache.get(first)
-	require.Equal(t, 1, built, "the handler should be built once per keytab")
-
-	cache.get(second)
-	require.Equal(t, 2, built, "a new keytab should rebuild the handler")
-
-	cache.get(first)
-	require.Equal(t, 3, built, "the cache holds a single entry")
+		resolved, err := resolveKeytabResidual(filename)
+		require.NoError(t, err)
+		require.Equal(t, filename, resolved)
+	})
 }

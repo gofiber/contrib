@@ -12,7 +12,7 @@ type FiberContext interface {
 // SetAuthenticatedIdentityToContext stores the authenticated identity in the Fiber context.
 // It takes a Fiber context and an identity, and sets it using the contextKeyOfIdentity key
 // for later retrieval by other handlers in the request chain.
-func SetAuthenticatedIdentityToContext[T FiberContext](ctx T, identity goidentity.Identity) {
+func SetAuthenticatedIdentityToContext(ctx FiberContext, identity goidentity.Identity) {
 	ctx.Locals(contextKeyOfIdentity, identity)
 }
 
@@ -25,7 +25,7 @@ func SetAuthenticatedIdentityToContext[T FiberContext](ctx T, identity goidentit
 //	if ok {
 //	    fmt.Printf("Authenticated user: %s\n", user.UserName())
 //	}
-func GetAuthenticatedIdentityFromContext[T FiberContext](ctx T) (goidentity.Identity, bool) {
+func GetAuthenticatedIdentityFromContext(ctx FiberContext) (goidentity.Identity, bool) {
 	id, ok := ctx.Locals(contextKeyOfIdentity).(goidentity.Identity)
 	return id, ok
 }

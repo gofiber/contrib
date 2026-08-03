@@ -45,8 +45,16 @@ type UnauthorizedHandler func(ctx fiber.Ctx) error
 type Config struct {
 	// KeytabLookup is a function that retrieves the keytab
 	KeytabLookup KeytabLookupFunc
-	// Log is the logger used for middleware logging
+	// Log receives gokrb5's diagnostics. gokrb5 logs once per unauthenticated
+	// request and has no level of its own, so leaving this nil keeps an
+	// unauthenticated client from driving log volume. Note that the first leg
+	// of every Negotiate handshake is unauthenticated.
 	Log *log.Logger
+	// UseFiberLogger sends gokrb5's diagnostics to Fiber's default logger when
+	// Log is nil. It only takes effect when that logger is backed by a
+	// *log.Logger, and it bypasses Fiber's log level, so the caveat on Log
+	// applies here too.
+	UseFiberLogger bool
 	// Unauthorized customizes the response sent when authentication fails.
 	// When nil, the SPNEGO layer's own 401 challenge response is returned
 	// unmodified.
@@ -75,16 +83,31 @@ type keytabFileCache struct {
 	merged *keytab.Keytab
 }
 
+// lastGood returns the previously loaded keytab, if there is one, so that a
+// transient read failure does not take down authentication. Rotating a keytab
+// is not atomic: a stat can see the new size while the write is still in
+// flight, and re-parsing the half-written file fails. The cached keytab is
+// still valid in that window, and the stamps are deliberately left untouched so
+// the next request retries the load.
+func (c *keytabFileCache) lastGood(err error) (*keytab.Keytab, error) {
+	if c.merged != nil {
+		return c.merged, nil
+	}
+	return nil, err
+}
+
 // load returns the merged keytab, re-reading the files only when their size or
 // modification time differs from the cached revision. The returned pointer is
-// stable across calls for as long as the files are unchanged, which lets the
-// middleware reuse the SPNEGO handler built from it.
+// stable across calls for as long as the files are unchanged, which lets a
+// caller reuse anything it derived from the keytab.
 func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 	stamps := make([]fileStamp, len(c.files))
 	for i, keytabFile := range c.files {
 		info, err := os.Stat(keytabFile)
 		if err != nil {
-			return nil, fmt.Errorf("%w: file %s load failed: %w", ErrLoadKeytabFileFailed, keytabFile, err)
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			return c.lastGood(fmt.Errorf("%w: file %s load failed: %w", ErrLoadKeytabFileFailed, keytabFile, err))
 		}
 		stamps[i] = fileStamp{size: info.Size(), modTime: info.ModTime().UnixNano()}
 	}
@@ -99,7 +122,7 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 	for _, keytabFile := range c.files {
 		kt, err := keytab.Load(keytabFile)
 		if err != nil {
-			return nil, fmt.Errorf("%w: file %s load failed: %w", ErrLoadKeytabFileFailed, keytabFile, err)
+			return c.lastGood(fmt.Errorf("%w: file %s load failed: %w", ErrLoadKeytabFileFailed, keytabFile, err))
 		}
 		mergeKeytab.Entries = append(mergeKeytab.Entries, kt.Entries...)
 	}
@@ -135,12 +158,35 @@ func NewSystemKeytabLookupFunc() (KeytabLookupFunc, error) {
 	if keytabPath == "" {
 		keytabPath = DefaultSystemKeytabPath
 	}
-	// MIT Kerberos accepts a residual type prefix; only plain files are usable here.
-	if rest, ok := strings.CutPrefix(keytabPath, "FILE:"); ok {
-		keytabPath = rest
-	}
-	if keytabPath == "" {
+	// MIT Kerberos writes KRB5_KTNAME as an optional "TYPE:residual" pair. Only
+	// file-backed types can be read here, so anything else is rejected up front
+	// rather than being treated as a literal path that fails on every request.
+	if resolved, err := resolveKeytabResidual(keytabPath); err != nil {
+		return nil, err
+	} else if keytabPath = resolved; keytabPath == "" {
 		return nil, ErrConfigInvalidOfAtLeastOneKeytabFileRequired
 	}
 	return NewKeytabFileLookupFunc(keytabPath)
+}
+
+// fileKeytabTypes are the MIT keytab residual types backed by a plain file.
+var fileKeytabTypes = []string{"FILE", "WRFILE"}
+
+// resolveKeytabResidual strips a supported "TYPE:" prefix from a keytab name
+// and rejects the types that are not plain files. A name with no recognised
+// prefix is returned unchanged, so absolute paths and Windows drive letters
+// still work.
+func resolveKeytabResidual(name string) (string, error) {
+	prefix, residual, found := strings.Cut(name, ":")
+	if !found {
+		return name, nil
+	}
+	// Not a type prefix: an absolute path, or a Windows drive letter such as C:\.
+	if strings.ContainsAny(prefix, `/\`) || len(prefix) < 2 {
+		return name, nil
+	}
+	if slices.Contains(fileKeytabTypes, strings.ToUpper(prefix)) {
+		return residual, nil
+	}
+	return "", fmt.Errorf("%w: %s", ErrUnsupportedKeytabResidualType, prefix)
 }

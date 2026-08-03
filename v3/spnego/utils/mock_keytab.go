@@ -1,11 +1,17 @@
 package utils
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"os"
 
 	"github.com/jcmturner/gokrb5/v8/keytab"
 )
+
+// ErrInvalidKeyVersion is returned when a requested key version cannot be
+// represented in the keytab format gokrb5 writes.
+var ErrInvalidKeyVersion = errors.New("invalid key version")
 
 // mockOptions contains configuration parameters for creating a mock keytab
 // It allows customization of principal name, realm, password, filename, and encryption type pairs
@@ -126,7 +132,13 @@ func NewMockKeytab(opts ...MockOption) (*keytab.Keytab, func(), error) {
 	kt := keytab.New()
 	var err error
 	for _, pair := range opt.Pairs {
-		if err = kt.AddEntry(opt.PrincipalName, opt.Realm, opt.Password, pair.CreateTime, pair.Version, pair.EncryptType); err != nil {
+		// gokrb5 only accepts an 8-bit key version when building a keytab, so a
+		// wider value cannot be represented here. Reject it rather than
+		// silently writing a truncated version.
+		if pair.Version > math.MaxUint8 {
+			return nil, nil, fmt.Errorf("%w: key version %d exceeds the maximum of %d", ErrInvalidKeyVersion, pair.Version, math.MaxUint8)
+		}
+		if err = kt.AddEntry(opt.PrincipalName, opt.Realm, opt.Password, pair.CreateTime, uint8(pair.Version), pair.EncryptType); err != nil {
 			return nil, nil, fmt.Errorf("error adding entry: %w", err)
 		}
 	}

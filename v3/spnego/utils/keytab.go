@@ -20,7 +20,10 @@ type KeytabInfo struct {
 // EncryptTypePair represents an encryption type entry in a Kerberos keytab
 // It contains the version, encryption type, and creation timestamp
 type EncryptTypePair struct {
-	Version     uint8     // The key version number
+	// Version is the key version number. gokrb5 parses both the legacy 8-bit
+	// and the 32-bit key version, and the 32-bit one wins where present, so
+	// this is wider than the uint8 accepted when building a mock keytab.
+	Version     uint32
 	EncryptType int32     // The encryption type (e.g., 18 for AES-256-CTS-HMAC-SHA1-96)
 	CreateTime  time.Time // The timestamp when this key was created
 }
@@ -62,7 +65,7 @@ func GetKeytabInfo(kt *keytab.Keytab) MultiKeytabInfo {
 				}
 			}
 			item.Pairs = append(item.Pairs, EncryptTypePair{
-				Version:     entry.KVNO8,
+				Version:     entry.KVNO,
 				EncryptType: entry.Key.KeyType,
 				CreateTime:  entry.Timestamp,
 			})

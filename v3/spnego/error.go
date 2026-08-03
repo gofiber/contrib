@@ -16,3 +16,7 @@ var ErrConfigInvalidOfAtLeastOneKeytabFileRequired = errors.New("config invalid:
 
 // ErrLoadKeytabFileFailed is returned when load keytab files failed
 var ErrLoadKeytabFileFailed = errors.New("load keytab failed")
+
+// ErrUnsupportedKeytabResidualType is returned when KRB5_KTNAME names a keytab
+// type that is not backed by a plain file, such as KEYRING or MEMORY.
+var ErrUnsupportedKeytabResidualType = errors.New("unsupported keytab residual type")

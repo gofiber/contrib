@@ -2,6 +2,7 @@ package spnego
 
 import (
 	"os"
+	"path"
 	"testing"
 	"time"
 
@@ -15,18 +16,17 @@ func TestNewKeytabFileLookupFunc(t *testing.T) {
 		require.ErrorIs(t, err, ErrConfigInvalidOfAtLeastOneKeytabFileRequired)
 	})
 	t.Run("test not found keytab file", func(t *testing.T) {
-		err := os.WriteFile("./invalid.keytab", []byte("12345"), 0600)
+		invalid := path.Join(t.TempDir(), "invalid.keytab")
+		err := os.WriteFile(invalid, []byte("12345"), 0o600)
 		require.NoError(t, err)
-		t.Cleanup(func() {
-			os.Remove("./invalid.keytab")
-		})
-		fn, err := NewKeytabFileLookupFunc("./invalid.keytab")
+		fn, err := NewKeytabFileLookupFunc(invalid)
 		require.NoError(t, err)
 		_, err = fn()
 		require.ErrorIs(t, err, ErrLoadKeytabFileFailed)
 	})
 	t.Run("test one keytab file", func(t *testing.T) {
 		tm := time.Now()
+		temp := path.Join(t.TempDir(), "temp.keytab")
 		_, clean, err := utils.NewMockKeytab(
 			utils.WithPrincipal("HTTP/sso.example.com"),
 			utils.WithRealm("TEST.LOCAL"),
@@ -35,11 +35,11 @@ func TestNewKeytabFileLookupFunc(t *testing.T) {
 				EncryptType: 18,
 				CreateTime:  tm,
 			}),
-			utils.WithFilename("./temp.keytab"),
+			utils.WithFilename(temp),
 		)
 		require.NoError(t, err)
 		t.Cleanup(clean)
-		fn, err := NewKeytabFileLookupFunc("./temp.keytab")
+		fn, err := NewKeytabFileLookupFunc(temp)
 		require.NoError(t, err)
 		kt1, err := fn()
 		require.NoError(t, err)
@@ -48,13 +48,15 @@ func TestNewKeytabFileLookupFunc(t *testing.T) {
 		require.Equal(t, "HTTP/sso.example.com@TEST.LOCAL", info[0].PrincipalName)
 		require.Equal(t, "TEST.LOCAL", info[0].Realm)
 		require.Len(t, info[0].Pairs, 1)
-		require.Equal(t, uint8(2), info[0].Pairs[0].Version)
+		require.Equal(t, uint32(2), info[0].Pairs[0].Version)
 		require.Equal(t, int32(18), info[0].Pairs[0].EncryptType)
 		// Note: The creation time of keytab is only accurate to the second.
 		require.Equal(t, tm.Unix(), info[0].Pairs[0].CreateTime.Unix())
 	})
 	t.Run("test multiple keytab file but has invalid keytab", func(t *testing.T) {
 		tm := time.Now()
+		dir := t.TempDir()
+		temp := path.Join(dir, "temp.keytab")
 		_, clean, err := utils.NewMockKeytab(
 			utils.WithPrincipal("HTTP/sso.example.com"),
 			utils.WithRealm("TEST.LOCAL"),
@@ -63,22 +65,23 @@ func TestNewKeytabFileLookupFunc(t *testing.T) {
 				EncryptType: 18,
 				CreateTime:  tm,
 			}),
-			utils.WithFilename("./temp.keytab"),
+			utils.WithFilename(temp),
 		)
 		require.NoError(t, err)
 		t.Cleanup(clean)
-		err = os.WriteFile("./invalid1.keytab", []byte("12345"), 0600)
+		invalid := path.Join(dir, "invalid1.keytab")
+		err = os.WriteFile(invalid, []byte("12345"), 0o600)
 		require.NoError(t, err)
-		t.Cleanup(func() {
-			os.Remove("./invalid1.keytab")
-		})
-		fn, err := NewKeytabFileLookupFunc("./temp.keytab", "./invalid1.keytab")
+		fn, err := NewKeytabFileLookupFunc(temp, invalid)
 		require.NoError(t, err)
 		_, err = fn()
 		require.ErrorIs(t, err, ErrLoadKeytabFileFailed)
 	})
 	t.Run("test multiple keytab file", func(t *testing.T) {
 		tm := time.Now()
+		dir := t.TempDir()
+		temp1 := path.Join(dir, "temp1.keytab")
+		temp2 := path.Join(dir, "temp2.keytab")
 		_, clean1, err1 := utils.NewMockKeytab(
 			utils.WithPrincipal("HTTP/sso.example1.com"),
 			utils.WithRealm("TEST.LOCAL"),
@@ -87,7 +90,7 @@ func TestNewKeytabFileLookupFunc(t *testing.T) {
 				EncryptType: 18,
 				CreateTime:  tm,
 			}),
-			utils.WithFilename("./temp1.keytab"),
+			utils.WithFilename(temp1),
 		)
 		require.NoError(t, err1)
 		t.Cleanup(clean1)
@@ -103,11 +106,11 @@ func TestNewKeytabFileLookupFunc(t *testing.T) {
 				EncryptType: 18,
 				CreateTime:  tm,
 			}),
-			utils.WithFilename("./temp2.keytab"),
+			utils.WithFilename(temp2),
 		)
 		require.NoError(t, err2)
 		t.Cleanup(clean2)
-		fn, err := NewKeytabFileLookupFunc("./temp1.keytab", "./temp2.keytab")
+		fn, err := NewKeytabFileLookupFunc(temp1, temp2)
 		require.NoError(t, err)
 		kt2, err := fn()
 		require.NoError(t, err)
@@ -116,16 +119,16 @@ func TestNewKeytabFileLookupFunc(t *testing.T) {
 		require.Equal(t, "HTTP/sso.example1.com@TEST.LOCAL", info[0].PrincipalName)
 		require.Equal(t, "TEST.LOCAL", info[0].Realm)
 		require.Len(t, info[0].Pairs, 1)
-		require.Equal(t, uint8(2), info[0].Pairs[0].Version)
+		require.Equal(t, uint32(2), info[0].Pairs[0].Version)
 		require.Equal(t, int32(18), info[0].Pairs[0].EncryptType)
 		require.Equal(t, tm.Unix(), info[0].Pairs[0].CreateTime.Unix())
 		require.Equal(t, "HTTP/sso.example2.com@TEST.LOCAL", info[1].PrincipalName)
 		require.Equal(t, "TEST.LOCAL", info[1].Realm)
 		require.Len(t, info[1].Pairs, 2)
-		require.Equal(t, uint8(2), info[1].Pairs[0].Version)
+		require.Equal(t, uint32(2), info[1].Pairs[0].Version)
 		require.Equal(t, int32(17), info[1].Pairs[0].EncryptType)
 		require.Equal(t, tm.Unix(), info[1].Pairs[0].CreateTime.Unix())
-		require.Equal(t, uint8(2), info[1].Pairs[1].Version)
+		require.Equal(t, uint32(2), info[1].Pairs[1].Version)
 		require.Equal(t, int32(18), info[1].Pairs[1].EncryptType)
 		require.Equal(t, tm.Unix(), info[1].Pairs[1].CreateTime.Unix())
 	})
