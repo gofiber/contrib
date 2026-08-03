@@ -52,16 +52,6 @@ func isRejection(headers http.Header) bool {
 	return headers.Get(fiber.HeaderWWWAuthenticate) == spnegoRejected
 }
 
-// internalErrorKind enumerates the internal failures the middleware logs. It is
-// a closed set so the throttle's state is bounded by the compiler rather than
-// by whatever error value a caller happens to produce.
-type internalErrorKind int
-
-const (
-	internalErrorKeytabLookup internalErrorKind = iota
-	numInternalErrorKinds
-)
-
 // internalErrorLogEvery throttles the log line for a repeating internal
 // failure. Without it, a keytab the process cannot read turns every request —
 // at a rate unauthenticated callers control — into a log line.
@@ -144,32 +134,22 @@ func resolveLogger(cfg Config, fiberLogger flog.AllLogger[*log.Logger]) *log.Log
 //
 // gokrb5 v8.4.4's server path reads only the Authorization header and the
 // remote address; it consults cookies solely behind a session-manager check,
-// and this middleware configures no session manager. URL and Host are populated
-// anyway, both because net/http documents a server request as always having a
-// URL and so that a future gokrb5 that reads them does not nil-panic. Re-check
-// this when upgrading gokrb5 or if a session manager is ever exposed through
-// Config.
+// and this middleware configures no session manager. Re-check this when
+// upgrading gokrb5 or if a session manager is ever exposed through Config.
 func requestForSPNEGO(ctx fiber.Ctx) *http.Request {
 	header := make(http.Header, 1)
 	if auth := ctx.Get(fiber.HeaderAuthorization); auth != "" {
 		header.Set(fiber.HeaderAuthorization, auth)
 	}
-	// url.URL.Path holds the decoded path; RawPath carries the original bytes
-	// only when they differ, which is what url.URL.EscapedPath expects. Getting
-	// this wrong would be worse than leaving URL nil, since a consumer
-	// reconstructing the URI would silently see a double-encoded one.
-	escaped := ctx.Path()
-	decoded, err := url.PathUnescape(escaped)
-	if err != nil {
-		decoded = escaped
-	}
-	requestURL := &url.URL{Path: decoded, RawQuery: string(ctx.RequestCtx().URI().QueryString())}
-	if decoded != escaped {
-		requestURL.RawPath = escaped
-	}
 	return &http.Request{
 		Method: ctx.Method(),
-		URL:    requestURL,
+		// A non-nil but empty URL. gokrb5 never reads it, and reconstructing a
+		// faithful one is not possible from here: Fiber's path is
+		// percent-encoded or not depending on Config.UnescapePath, and net/url
+		// cannot represent a malformed escape at all, so any attempt would
+		// misrepresent some requests. An empty URL states nothing false and
+		// still guards against a dereference.
+		URL: &url.URL{},
 		// Host, not Hostname: net/http documents a server request's Host as
 		// "host or host:port", and a service on a non-default port needs the
 		// port to derive its own principal.
@@ -212,28 +192,28 @@ func New(cfg Config) (fiber.Handler, error) {
 	}
 	// Internal failures are logged here rather than returned to the client, and
 	// throttled so a persistent fault cannot become a log flood.
+	// A keytab lookup failure is the only internal failure this middleware
+	// reports, so one throttle slot covers it. Adding a second kind of failure
+	// means giving it its own slot: sharing this one would let each suppress
+	// the other, and keying on the cause would let a caller defeat the throttle
+	// by varying client-controlled text inside it.
 	var (
 		logMu      sync.Mutex
-		lastLogged [numInternalErrorKinds]time.Time
+		lastLogged time.Time
 	)
-	logInternal := func(kind internalErrorKind, sentinel, cause error) {
-		// Keyed by kind rather than by message: a cause can embed
-		// client-controlled text, and keying on that would let a caller defeat
-		// the throttle by varying it. A single shared slot would not do either,
-		// since two alternating kinds would reset each other's window on every
-		// request. The key is a closed type, so the state cannot grow.
+	logInternal := func(cause error) {
 		logMu.Lock()
 		now := time.Now()
-		throttled := now.Sub(lastLogged[kind]) < internalErrorLogEvery
+		throttled := !lastLogged.IsZero() && now.Sub(lastLogged) < internalErrorLogEvery
 		if !throttled {
-			lastLogged[kind] = now
+			lastLogged = now
 		}
 		logMu.Unlock()
 		if throttled {
 			return
 		}
 		// Written outside the lock so the log sink is not a contention point.
-		flog.Errorf("spnego: %v: %v", sentinel, cause)
+		flog.Errorf("spnego: %v: %v", ErrLookupKeytabFailed, cause)
 	}
 	// Return the middleware handler
 	return func(ctx fiber.Ctx) error {
@@ -250,7 +230,7 @@ func New(cfg Config) (fiber.Handler, error) {
 			err = errNilKeytab
 		}
 		if err != nil {
-			logInternal(internalErrorKeytabLookup, ErrLookupKeytabFailed, err)
+			logInternal(err)
 			return &clientSafeError{cause: fmt.Errorf("%w: %w", ErrLookupKeytabFailed, err)}
 		}
 		req := requestForSPNEGO(ctx)

@@ -586,8 +586,8 @@ func TestKeytabRotationByRenameDetected(t *testing.T) {
 
 	info, err := os.Stat(filename)
 	require.NoError(t, err)
-	if _, ok := fileRevisionID(info); !ok {
-		t.Skip("platform exposes no file identity; detection falls back to size and mtime")
+	if !identityDetectsRename {
+		t.Skip("platform has no dependable file identity; detection falls back to size and mtime")
 	}
 
 	cache := newKeytabFileCache([]string{filename})
@@ -669,11 +669,32 @@ func TestRequestForSPNEGO(t *testing.T) {
 	// non-default port needs it to derive its own principal.
 	require.Equal(t, "sso.example.com:8443", got.Host)
 
+	// URL is present purely so a dereference cannot panic. It is deliberately
+	// empty rather than a reconstruction, which could not be faithful for every
+	// request, so nothing here should claim to describe the target.
 	require.NotNil(t, got.URL)
-	// Path is the decoded form, and round-tripping must give back exactly what
-	// the client sent rather than a doubly-escaped version of it.
-	require.Equal(t, "/a/b/c d", got.URL.Path)
-	require.Equal(t, "/a%2Fb/c%20d", got.URL.EscapedPath())
-	require.Equal(t, "q=1&x=%41", got.URL.RawQuery)
-	require.Equal(t, "/a%2Fb/c%20d?q=1&x=%41", got.URL.RequestURI())
+	require.Empty(t, got.URL.Path)
+	require.Empty(t, got.URL.RawQuery)
+}
+
+// TestRequestForSPNEGOMalformedPath checks that a path net/url cannot represent
+// does not break request construction. fasthttp does not validate percent
+// escapes, so this reaches the middleware.
+func TestRequestForSPNEGOMalformedPath(t *testing.T) {
+	var got *http.Request
+	app := fiber.New()
+	app.Get("/*", func(c fiber.Ctx) error {
+		got = requestForSPNEGO(c)
+		return nil
+	})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fiber.MethodGet)
+	ctx.Request.SetRequestURI("/a%zzb")
+	ctx.Request.Header.Set(fiber.HeaderAuthorization, "Negotiate abc")
+	require.NotPanics(t, func() { app.Handler()(ctx) })
+
+	require.NotNil(t, got)
+	require.NotNil(t, got.URL)
+	require.Equal(t, "Negotiate abc", got.Header.Get(fiber.HeaderAuthorization))
 }

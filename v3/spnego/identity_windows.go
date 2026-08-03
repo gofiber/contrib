@@ -7,19 +7,34 @@ import (
 	"syscall"
 )
 
+// identityDetectsRename is false on Windows: the creation time used below is a
+// useful hint but not a dependable identity. See fileRevisionID.
+//
+//nolint:unused // read by tests; lint runs with --tests=false and cannot see that
+const identityDetectsRename = false
+
 // fileRevisionID returns the file's creation time, which Windows already
 // supplies through os.Stat at no extra syscall cost.
 //
-// It is not a true identity the way a Unix inode is, but it discriminates the
-// case size and modification time miss: a keytab staged as a separate file and
-// renamed into place was created separately, so its creation time differs even
-// when a copy preserved the modification time. A real identity — volume serial
-// plus file index — requires opening the file, which would put a syscall on
-// every authenticated request.
-func fileRevisionID(info fs.FileInfo) (fileID, bool) {
+// This is a best-effort hint rather than a true identity. It usually
+// distinguishes a keytab staged separately and renamed into place, because the
+// replacement was created separately, but two cases defeat it: NTFS file
+// tunneling restores the superseded file's creation time to a replacement made
+// at the same name within about fifteen seconds, and FAT, exFAT and several
+// network redirectors report no creation time at all. Both fall back to size
+// and modification time.
+//
+// A dependable identity — volume serial plus file index — requires opening the
+// file, which would put a syscall on every authenticated request.
+func fileRevisionID(info fs.FileInfo) fileID {
 	data, ok := info.Sys().(*syscall.Win32FileAttributeData)
 	if !ok {
-		return fileID{}, false
+		return fileID{}
 	}
-	return fileID{a: uint64(data.CreationTime.Nanoseconds())}, true
+	// An unset creation time carries no information, and Filetime.Nanoseconds
+	// maps it to a fixed constant that would look like a real value.
+	if data.CreationTime.LowDateTime == 0 && data.CreationTime.HighDateTime == 0 {
+		return fileID{}
+	}
+	return fileID{a: uint64(data.CreationTime.Nanoseconds())}
 }

@@ -199,11 +199,10 @@ func (c *keytabFileCache) stat() ([]fileStamp, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%w: file %s load failed: %w", ErrLoadKeytabFileFailed, keytabFile, err)
 		}
-		id, _ := fileRevisionID(info)
 		stamps[i] = fileStamp{
 			size:    info.Size(),
 			modTime: info.ModTime().UnixNano(),
-			id:      id,
+			id:      fileRevisionID(info),
 		}
 	}
 	return stamps, nil
