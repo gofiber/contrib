@@ -686,16 +686,36 @@ func TestRequestForSPNEGO(t *testing.T) {
 func TestLogThrottle(t *testing.T) {
 	now := time.Now()
 	throttle := &logThrottle{every: 30 * time.Second, nowFn: func() time.Time { return now }}
+	var runs int
+	fire := func() { throttle.do(func() { runs++ }) }
 
-	require.True(t, throttle.allow(), "the first event must always pass")
-	require.False(t, throttle.allow(), "an immediate repeat must not")
+	fire()
+	require.Equal(t, 1, runs, "the first event must always run")
+	fire()
+	require.Equal(t, 1, runs, "an immediate repeat must not")
 
 	now = now.Add(29 * time.Second)
-	require.False(t, throttle.allow(), "still inside the window")
+	fire()
+	require.Equal(t, 1, runs, "still inside the window")
 
 	now = now.Add(2 * time.Second)
-	require.True(t, throttle.allow(), "the window must reopen")
-	require.False(t, throttle.allow(), "and close again behind it")
+	fire()
+	require.Equal(t, 2, runs, "the window must reopen")
+	fire()
+	require.Equal(t, 2, runs, "and close again behind it")
+}
+
+// TestLogThrottleZeroWindow checks that a throttle built without a window
+// still throttles. Treating zero as "no interval" would let every event
+// through, which is the flood the type exists to prevent.
+func TestLogThrottleZeroWindow(t *testing.T) {
+	throttle := &logThrottle{}
+	var runs int
+	for range 5 {
+		throttle.do(func() { runs++ })
+	}
+	require.Equal(t, 1, runs)
+	require.Equal(t, internalErrorLogEvery, throttle.window())
 }
 
 // TestInternalErrorLogsOncePerFault checks the wiring: a repeating keytab
@@ -727,4 +747,61 @@ func TestInternalErrorLogsOncePerFault(t *testing.T) {
 
 	require.Equal(t, 1, strings.Count(logged.String(), "keytab boom"),
 		"a repeating fault must be logged once, not per request")
+}
+
+// TestKeytabEpisodeLogging pins the three operator-facing lines the README
+// promises, and that each is emitted once per episode rather than per request.
+// Without this, dropping the log calls entirely leaves the suite green.
+func TestKeytabEpisodeLogging(t *testing.T) {
+	var logged bytes.Buffer
+	flog.SetOutput(&logged)
+	flog.SetLevel(flog.LevelInfo)
+	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
+
+	dir := t.TempDir()
+	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
+	original, err := os.ReadFile(filename)
+	require.NoError(t, err)
+
+	now := time.Now()
+	cache := &keytabFileCache{
+		files:      []string{filename},
+		staleGrace: 30 * time.Second,
+		retryEvery: time.Nanosecond,
+		nowFn:      func() time.Time { return now },
+	}
+	_, err = cache.load()
+	require.NoError(t, err)
+	require.Empty(t, logged.String(), "a healthy keytab must not log")
+
+	// Enter the degraded state.
+	require.NoError(t, os.WriteFile(filename, []byte("12"), 0o600))
+	_, err = cache.load()
+	require.NoError(t, err)
+	require.Equal(t, 1, strings.Count(logged.String(), "serving the last keytab that parsed"))
+
+	// Repeats inside the window add nothing.
+	now = now.Add(time.Second)
+	_, err = cache.load()
+	require.NoError(t, err)
+	require.Equal(t, 1, strings.Count(logged.String(), "serving the last keytab that parsed"),
+		"the warning is per episode, not per request")
+
+	// Expire the grace window.
+	now = now.Add(31 * time.Second)
+	_, err = cache.load()
+	require.Error(t, err)
+	require.Equal(t, 1, strings.Count(logged.String(), "failing requests"))
+	now = now.Add(time.Second)
+	_, err = cache.load()
+	require.Error(t, err)
+	require.Equal(t, 1, strings.Count(logged.String(), "failing requests"),
+		"the expiry line is emitted once, not per request")
+
+	// Recover.
+	require.NoError(t, os.WriteFile(filename, original, 0o600))
+	now = now.Add(time.Second)
+	_, err = cache.load()
+	require.NoError(t, err)
+	require.Equal(t, 1, strings.Count(logged.String(), "loads cleanly again"))
 }

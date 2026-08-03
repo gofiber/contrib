@@ -52,14 +52,22 @@ func isRejection(headers http.Header) bool {
 	return headers.Get(fiber.HeaderWWWAuthenticate) == spnegoRejected
 }
 
+// nowOr reports fn's time, or the wall clock when fn is nil. The nil case is
+// production; a non-nil fn is a test driving the clock.
+func nowOr(fn func() time.Time) time.Time {
+	if fn != nil {
+		return fn()
+	}
+	return time.Now()
+}
+
 // internalErrorLogEvery throttles the log line for a repeating internal
 // failure. Without it, a keytab the process cannot read turns every request —
 // at a rate unauthenticated callers control — into a log line.
 const internalErrorLogEvery = 30 * time.Second
 
-// logThrottle permits one event per window. It reports whether to log rather
-// than logging itself, so the caller can write outside the lock and keep a slow
-// sink off the request path.
+// logThrottle runs at most one write per window. The write happens outside the
+// lock, so a slow sink cannot become latency on the request path this sits on.
 type logThrottle struct {
 	every time.Duration
 	// nowFn is a seam for tests; the wall clock is used when it is nil.
@@ -69,25 +77,32 @@ type logThrottle struct {
 	last time.Time
 }
 
-func (t *logThrottle) now() time.Time {
-	if t.nowFn != nil {
-		return t.nowFn()
+// window reports the throttle interval, defaulting rather than trusting a
+// non-positive value, which would let every event through — the flood the type
+// exists to prevent.
+func (t *logThrottle) window() time.Duration {
+	if t.every <= 0 {
+		return internalErrorLogEvery
 	}
-	return time.Now()
+	return t.every
 }
 
-// allow reports whether the caller should emit, and records the emission when
-// it should. Sub against the zero time saturates, so the first event always
-// passes.
-func (t *logThrottle) allow() bool {
-	now := t.now()
+// do runs write if the window has elapsed, and consumes the window when it
+// does. Taking the write rather than reporting a verdict keeps the consumption
+// visible at the call site: a predicate would invite a second call that
+// silently swallows the line it was added for.
+//
+// Sub against the zero time saturates, so the first event always runs.
+func (t *logThrottle) do(write func()) {
+	now := nowOr(t.nowFn)
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	if now.Sub(t.last) < t.every {
-		return false
+	if now.Sub(t.last) < t.window() {
+		t.mu.Unlock()
+		return
 	}
 	t.last = now
-	return true
+	t.mu.Unlock()
+	write()
 }
 
 // clientSafeError keeps an internal cause matchable with errors.Is while
@@ -233,11 +248,9 @@ func New(cfg Config) (fiber.Handler, error) {
 	// client-controlled text inside it.
 	lookupFailures := &logThrottle{every: internalErrorLogEvery}
 	logInternal := func(cause error) {
-		// allow reports rather than logs, so the write stays off the lock and a
-		// slow sink cannot become request latency.
-		if lookupFailures.allow() {
+		lookupFailures.do(func() {
 			flog.Errorf("spnego: %v: %v", ErrLookupKeytabFailed, cause)
-		}
+		})
 	}
 	// Return the middleware handler
 	return func(ctx fiber.Ctx) error {

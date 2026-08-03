@@ -166,15 +166,6 @@ func newKeytabFileCache(files []string) *keytabFileCache {
 	}
 }
 
-// now reports the current time, defaulting to the wall clock so a zero-value
-// cache is usable. Tests substitute nowFn to drive the grace window.
-func (c *keytabFileCache) now() time.Time {
-	if c.nowFn != nil {
-		return c.nowFn()
-	}
-	return time.Now()
-}
-
 // grace reports how long an unparsable keytab may be covered for.
 func (c *keytabFileCache) grace() time.Duration {
 	if c.staleGrace <= 0 {
@@ -230,12 +221,21 @@ func (c *keytabFileCache) readAll() (*keytab.Keytab, error) {
 	return mergeKeytab, nil
 }
 
+// The three episode lines below are written while mu is held, deliberately.
+// Emitting them after the unlock would let two goroutines print the narrative
+// backwards — an all-clear before the warning it clears — because the order in
+// which they reach the sink would no longer match the order in which they
+// changed the state. Each line is emitted at most once per episode, so a slow
+// sink costs one request per transition rather than one per request. That is
+// the opposite trade-off from the per-fault throttle in spnego.go, which is on
+// the request path and therefore writes outside its lock.
+//
 // serveStale decides whether a keytab that no longer parses should be covered
 // for by the last one that did. Rewriting a keytab in place is not atomic, so a
 // read can catch a half-written file; that window is short. A keytab that stays
 // unparsable is a real fault, so the fallback expires after the grace window
 // and the error surfaces. Callers must hold mu.
-func (c *keytabFileCache) serveStale(cause error, now time.Time, logs *pendingLogs) (*keytab.Keytab, error) {
+func (c *keytabFileCache) serveStale(cause error, now time.Time) (*keytab.Keytab, error) {
 	snap := c.snapshot.Load()
 	if snap == nil {
 		return nil, cause
@@ -245,10 +245,7 @@ func (c *keytabFileCache) serveStale(cause error, now time.Time, logs *pendingLo
 		// Logged once per episode rather than per request or per revision, so
 		// neither a persistent fault nor a keytab being rewritten repeatedly
 		// can be turned into a log flood.
-		grace := c.grace()
-		logs.add(func() {
-			flog.Warnf("spnego: %v; serving the last keytab that parsed for up to %s", cause, grace)
-		})
+		flog.Warnf("spnego: %v; serving the last keytab that parsed for up to %s", cause, c.grace())
 		return snap.merged, nil
 	}
 	if now.Sub(c.deg.since) > c.grace() {
@@ -256,38 +253,16 @@ func (c *keytabFileCache) serveStale(cause error, now time.Time, logs *pendingLo
 			c.deg.expiryLogged = true
 			// The transition from degraded to failing is the one an operator
 			// most needs to see, so it gets its own line at error level.
-			grace := c.grace()
-			logs.add(func() {
-				flog.Errorf("spnego: keytab still unusable after %s, failing requests: %v", grace, cause)
-			})
+			flog.Errorf("spnego: keytab still unusable after %s, failing requests: %v", c.grace(), cause)
 		}
 		return nil, cause
 	}
 	return snap.merged, nil
 }
 
-// pendingLogs collects log lines produced while a lock is held, so they can be
-// written after it is released. A slow sink must not turn into request latency
-// on the authentication path, which is the same rule New follows for its own
-// throttle.
-type pendingLogs struct {
-	writes []func()
-}
-
-func (p *pendingLogs) add(write func()) {
-	p.writes = append(p.writes, write)
-}
-
-func (p *pendingLogs) flush() {
-	for _, write := range p.writes {
-		write()
-	}
-	p.writes = nil
-}
-
 // clearDegraded ends the current episode and logs the recovery, so an operator
 // alerted by the warning gets a matching all-clear. Callers must hold mu.
-func (c *keytabFileCache) clearDegraded(logs *pendingLogs) {
+func (c *keytabFileCache) clearDegraded() {
 	if c.deg.cause == nil {
 		c.degraded.Store(false)
 		return
@@ -296,7 +271,7 @@ func (c *keytabFileCache) clearDegraded(logs *pendingLogs) {
 	// that began before any keytab ever loaded never emitted the warning, so an
 	// all-clear would refer to nothing.
 	if !c.deg.since.IsZero() {
-		logs.add(func() { flog.Infof("spnego: keytab loads cleanly again") })
+		flog.Infof("spnego: keytab loads cleanly again")
 	}
 	c.deg = degradedState{}
 	c.degraded.Store(false)
@@ -308,10 +283,6 @@ func (c *keytabFileCache) clearDegraded(logs *pendingLogs) {
 // broken, so the files are re-stat'ed under the lock before anything is
 // cleared.
 func (c *keytabFileCache) endEpisodeIfCurrent(expected []fileStamp) {
-	// Registered first so it runs after the unlock below: defers are LIFO.
-	var logs pendingLogs
-	defer logs.flush()
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.deg.cause == nil {
@@ -321,7 +292,7 @@ func (c *keytabFileCache) endEpisodeIfCurrent(expected []fileStamp) {
 	if err != nil || !slices.Equal(fresh, expected) {
 		return
 	}
-	c.clearDegraded(&logs)
+	c.clearDegraded()
 }
 
 // load returns the merged keytab, re-reading the files only when their
@@ -349,11 +320,6 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 		return snap.merged, nil
 	}
 
-	// Registered first so it runs after the unlock below: defers are LIFO, so
-	// the lines are written with c.mu already released.
-	var logs pendingLogs
-	defer logs.flush()
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// Another goroutine may have reloaded while this one waited for the lock.
@@ -361,7 +327,7 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 		return snap.merged, nil
 	}
 
-	now := c.now()
+	now := nowOr(c.nowFn)
 	// This exact revision already failed recently; do not re-read every file
 	// again on every request while the fault persists. This covers a file that
 	// cannot be read as well as one that cannot be parsed — both would
@@ -369,7 +335,7 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 	// behind this mutex.
 	if c.deg.cause != nil && slices.Equal(c.deg.stamps, stamps) && now.Sub(c.deg.lastAttempt) < c.retry() {
 		if errors.Is(c.deg.cause, errKeytabUnparsable) {
-			return c.serveStale(c.deg.cause, now, &logs)
+			return c.serveStale(c.deg.cause, now)
 		}
 		return nil, c.deg.cause
 	}
@@ -384,12 +350,12 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 		c.deg.stamps, c.deg.cause, c.deg.lastAttempt = stamps, err, now
 		c.degraded.Store(true)
 		if errors.Is(err, errKeytabUnparsable) {
-			return c.serveStale(err, now, &logs)
+			return c.serveStale(err, now)
 		}
 		return nil, err
 	}
 	c.snapshot.Store(&keytabSnapshot{stamps: stamps, merged: merged})
-	c.clearDegraded(&logs)
+	c.clearDegraded()
 	return merged, nil
 }
 

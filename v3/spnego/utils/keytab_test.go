@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -43,4 +44,16 @@ func TestGetKeytabInfo(t *testing.T) {
 	require.Equal(t, uint32(2), info[1].Pairs[0].Version)
 	require.Equal(t, int32(18), info[1].Pairs[0].EncryptType)
 	require.Equal(t, tm.Add(-time.Minute).Unix(), info[1].Pairs[0].CreateTime.Unix())
+}
+
+func TestGetKeytabInfoEmpty(t *testing.T) {
+	// A nil keytab is documented as accepted. The result must stay non-nil so
+	// that marshalling it yields [] rather than null.
+	info := GetKeytabInfo(nil)
+	require.NotNil(t, info)
+	require.Empty(t, info)
+
+	encoded, err := json.Marshal(info)
+	require.NoError(t, err)
+	require.JSONEq(t, "[]", string(encoded))
 }

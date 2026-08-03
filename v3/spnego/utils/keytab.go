@@ -74,7 +74,12 @@ func GetKeytabInfo(kt *keytab.Keytab) MultiKeytabInfo {
 			keytabMap[name] = item
 		}
 	}
-	return slices.SortedFunc(maps.Values(keytabMap), func(a, b KeytabInfo) int {
+	// AppendSeq onto a made slice rather than slices.SortedFunc, which collects
+	// onto a nil slice and would return nil for an empty keytab. Callers
+	// marshalling the result expect [] rather than null.
+	mk := slices.AppendSeq(make(MultiKeytabInfo, 0, len(keytabMap)), maps.Values(keytabMap))
+	slices.SortFunc(mk, func(a, b KeytabInfo) int {
 		return strings.Compare(a.PrincipalName, b.PrincipalName)
 	})
+	return mk
 }
