@@ -118,16 +118,28 @@ func TestNewSystemKeytabLookupFunc(t *testing.T) {
 	t.Run("falls back to the default path when KRB5_KTNAME is unset", func(t *testing.T) {
 		t.Setenv("KRB5_KTNAME", "")
 
-		// Assert on the resolved path rather than on a load outcome, so this
-		// holds both on a bare CI runner and on a Kerberos-enabled host that
-		// really has /etc/krb5.keytab.
-		resolved, err := resolveKeytabResidual(DefaultSystemKeytabPath)
-		require.NoError(t, err)
-		require.Equal(t, DefaultSystemKeytabPath, resolved)
-
 		fn, err := NewSystemKeytabLookupFunc()
 		require.NoError(t, err)
 		require.NotNil(t, fn)
+
+		// The resolved path is not exposed, so it is observed through a load:
+		// the failure names the file it tried. A host that really has a system
+		// keytab would load it instead, and is not a useful place to assert
+		// this, so the check is skipped there rather than made conditional on
+		// an outcome.
+		if _, statErr := os.Stat(DefaultSystemKeytabPath); statErr != nil {
+			_, loadErr := fn()
+			require.ErrorContains(t, loadErr, DefaultSystemKeytabPath,
+				"an unset KRB5_KTNAME must resolve to DefaultSystemKeytabPath")
+		}
+	})
+
+	t.Run("the default path is MIT Kerberos's standard location", func(t *testing.T) {
+		// Pinned as a literal because every other assertion here is written in
+		// terms of the constant and so holds whatever it says. This is exported
+		// API, and moving it silently relocates every host relying on the
+		// fallback.
+		require.Equal(t, "/etc/krb5.keytab", DefaultSystemKeytabPath)
 	})
 
 	t.Run("accepts the WRFILE: prefix", func(t *testing.T) {
