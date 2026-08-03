@@ -101,7 +101,9 @@ func main() {
 
 The middleware is designed with extensibility in mind, allowing keytab retrieval from various sources beyond static files:
 
-> **`KeytabLookup` is called on every authenticated request.** It sits in the request hot path, so a lookup that contacts an external system will add its latency — and its failure modes — to each authentication. If you fetch from a database, a secrets manager, or a remote service, cache the result and refresh it out of band (on a TTL, a file-modification check, or a rotation event), and apply a bounded timeout. `NewKeytabFileLookupFunc` re-reads and re-parses its files on every call, so wrap it likewise if it sits in front of a busy route.
+> **`KeytabLookup` is called on every authenticated request.** It sits in the request hot path, so a lookup that contacts an external system will add its latency — and its failure modes — to each authentication. If you fetch from a database, a secrets manager, or a remote service, cache the result and refresh it out of band (on a TTL or a rotation event), and apply a bounded timeout.
+>
+> `NewKeytabFileLookupFunc` already does this: it caches the merged keytab and re-reads the files only when one of them changes size or modification time, so rotating a keytab on disk still takes effect without paying for a parse per request. Returning the same `*keytab.Keytab` pointer on consecutive calls also lets the middleware reuse the SPNEGO handler it built from that keytab, so a custom lookup that caches gets the same benefit.
 
 ```go
 // Example: Retrieve keytab from a database
@@ -131,14 +133,37 @@ Retrieves the authenticated identity from the Fiber context. `FiberContext` is a
 
 ### `NewKeytabFileLookupFunc(keytabFiles ...string) (KeytabLookupFunc, error)`
 
-Creates a new KeytabLookupFunc that loads keytab files.
+Creates a new KeytabLookupFunc that loads keytab files, caching the merged result until a file changes on disk.
+
+### `NewSystemKeytabLookupFunc() (KeytabLookupFunc, error)`
+
+Creates a KeytabLookupFunc for the host's system keytab: `$KRB5_KTNAME` when set, otherwise `/etc/krb5.keytab`. A `FILE:` prefix on `KRB5_KTNAME` is accepted and stripped.
+
+Note that this resolves a *keytab*, not a credential cache. Accepting a SPNEGO ticket requires the service's long-term keys, so a client credential cache (`KRB5CCNAME`) cannot be used to authenticate incoming requests.
 
 ## Configuration
 
 The `Config` struct supports the following fields:
 
-- `KeytabLookup`: A function that retrieves the keytab (required)
+- `KeytabLookup`: A function that retrieves the keytab (required, unless `FallbackToSystemKeytab` is set)
 - `Log`: The logger used for middleware logging (optional, defaults to Fiber's default logger)
+- `Unauthorized`: A `func(fiber.Ctx) error` invoked when authentication does not succeed, in place of the default challenge response (optional)
+- `FallbackToSystemKeytab`: Load the system keytab when `KeytabLookup` is nil, instead of rejecting the configuration (optional, defaults to `false`)
+
+### Customizing the unauthorized response
+
+```go
+authMiddleware, err := spnego.New(spnego.Config{
+	KeytabLookup: keytabLookup,
+	Unauthorized: func(c fiber.Ctx) error {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": "kerberos authentication required",
+		})
+	},
+})
+```
+
+The `WWW-Authenticate: Negotiate` challenge is already set on the response when this runs, so changing only the status code or body keeps the negotiation flow intact. Removing that header will break Kerberos negotiation with the client.
 
 ## Requirements
 

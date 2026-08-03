@@ -89,3 +89,59 @@ func TestNewSpnegoKrb5AuthenticateMiddleware(t *testing.T) {
 		require.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode())
 	})
 }
+
+func TestUnauthorizedHandler(t *testing.T) {
+	filename := writeMockKeytab(t, t.TempDir(), "sso.keytab", "HTTP/sso.example.com")
+	lookupFunc, err := NewKeytabFileLookupFunc(filename)
+	require.NoError(t, err)
+
+	middleware, err := New(Config{
+		KeytabLookup: lookupFunc,
+		Unauthorized: func(c fiber.Ctx) error {
+			return c.Status(fiber.StatusForbidden).SendString("custom denial")
+		},
+	})
+	require.NoError(t, err)
+
+	app := fiber.New()
+	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
+		return c.SendString("authenticated")
+	})
+	handler := app.Handler()
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fiber.MethodGet)
+	ctx.Request.SetRequestURI("/authenticate")
+	handler(ctx)
+
+	require.Equal(t, fiber.StatusForbidden, ctx.Response.StatusCode())
+	require.Equal(t, "custom denial", string(ctx.Response.Body()))
+	// The Negotiate challenge stays in place so clients can still authenticate.
+	require.Contains(t, string(ctx.Response.Header.Peek(fiber.HeaderWWWAuthenticate)), "Negotiate")
+}
+
+func TestFallbackToSystemKeytab(t *testing.T) {
+	t.Run("rejects an empty config without the fallback", func(t *testing.T) {
+		_, err := New(Config{})
+		require.ErrorIs(t, err, ErrConfigInvalidOfKeytabLookupFunctionRequired)
+	})
+
+	t.Run("uses the system keytab when enabled", func(t *testing.T) {
+		filename := writeMockKeytab(t, t.TempDir(), "system.keytab", "HTTP/system.example.com")
+		t.Setenv("KRB5_KTNAME", filename)
+
+		middleware, err := New(Config{FallbackToSystemKeytab: true})
+		require.NoError(t, err)
+
+		app := fiber.New()
+		app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
+			return c.SendString("authenticated")
+		})
+		handler := app.Handler()
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(fiber.MethodGet)
+		ctx.Request.SetRequestURI("/authenticate")
+		handler(ctx)
+
+		require.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode())
+	})
+}
