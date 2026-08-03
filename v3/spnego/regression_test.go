@@ -584,10 +584,14 @@ func TestKeytabRotationByRenameDetected(t *testing.T) {
 	dir := t.TempDir()
 	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
 
+	info, err := os.Stat(filename)
+	require.NoError(t, err)
+	if _, ok := fileRevisionID(info); !ok {
+		t.Skip("platform exposes no file identity; detection falls back to size and mtime")
+	}
+
 	cache := newKeytabFileCache([]string{filename})
 	before, err := cache.load()
-	require.NoError(t, err)
-	info, err := os.Stat(filename)
 	require.NoError(t, err)
 
 	// A different principal of the same length, staged with the original's
@@ -638,4 +642,38 @@ func TestKeytabUnreadableIsNotCoveredFor(t *testing.T) {
 	cache.mu.Unlock()
 	require.True(t, recorded, "an unreadable revision must be recorded for throttling")
 	require.True(t, cache.degraded.Load())
+}
+
+// TestRequestForSPNEGO checks the hand-built request the middleware hands to
+// gokrb5. A field populated wrongly is worse than one left nil, because nil
+// fails loudly.
+func TestRequestForSPNEGO(t *testing.T) {
+	var got *http.Request
+	app := fiber.New()
+	app.Get("/*", func(c fiber.Ctx) error {
+		got = requestForSPNEGO(c)
+		return nil
+	})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fiber.MethodGet)
+	ctx.Request.SetRequestURI("/a%2Fb/c%20d?q=1&x=%41")
+	ctx.Request.Header.Set(fiber.HeaderHost, "sso.example.com:8443")
+	ctx.Request.Header.Set(fiber.HeaderAuthorization, "Negotiate abc")
+	app.Handler()(ctx)
+
+	require.NotNil(t, got)
+	require.Equal(t, fiber.MethodGet, got.Method)
+	require.Equal(t, "Negotiate abc", got.Header.Get(fiber.HeaderAuthorization))
+	// The port is part of a server request's Host, and a service on a
+	// non-default port needs it to derive its own principal.
+	require.Equal(t, "sso.example.com:8443", got.Host)
+
+	require.NotNil(t, got.URL)
+	// Path is the decoded form, and round-tripping must give back exactly what
+	// the client sent rather than a doubly-escaped version of it.
+	require.Equal(t, "/a/b/c d", got.URL.Path)
+	require.Equal(t, "/a%2Fb/c%20d", got.URL.EscapedPath())
+	require.Equal(t, "q=1&x=%41", got.URL.RawQuery)
+	require.Equal(t, "/a%2Fb/c%20d?q=1&x=%41", got.URL.RequestURI())
 }

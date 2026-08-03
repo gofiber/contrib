@@ -117,7 +117,9 @@ The middleware is designed with extensibility in mind, allowing keytab retrieval
 >
 > `NewKeytabFileLookupFunc` already does this: it caches the merged keytab and re-reads the files only when one of them changes size, modification time or identity, so rotating a keytab on disk still takes effect without paying for a parse per request.
 >
-> Change detection compares each file's size, modification time and identity, so replacing a keytab by rename is picked up even when the staging tool preserved the timestamp of a same-sized file. It is still not exact: an in-place rewrite that keeps the same size and lands within one filesystem timestamp tick looks unchanged, since the file's identity does not change either. Rotating by rename avoids that case.
+> Change detection compares each file's size, modification time and identity, so replacing a keytab by rename is picked up even when the staging tool preserved the timestamp of a same-sized file. Identity is the inode on Unix and the creation time on Windows; on any other platform none is available and detection falls back to size and modification time alone.
+
+It is still not exact: an in-place rewrite that keeps the same size and lands within one filesystem timestamp tick looks unchanged, since the file's identity does not change either. Rotating by rename avoids that case.
 >
 > A keytab that reads but does not parse is treated as a rotation caught mid-write: the last keytab that parsed cleanly keeps being served, and a retry runs at most once a second while the fault lasts. That cover expires after 30 seconds — long enough to absorb a half-written file, short enough that a rotation to a permanently corrupt keytab surfaces as an error instead of silently keeping superseded keys alive. Entering the degraded state logs a warning, expiry logs an error, and recovery logs an all-clear — each once per episode, not per request. A keytab that cannot be read at all — deleted, unmounted, replaced by something unreadable — is reported as an error instead of being masked by the cache.
 

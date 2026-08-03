@@ -90,9 +90,16 @@ type Config struct {
 type fileStamp struct {
 	size    int64
 	modTime int64
-	dev     uint64
-	ino     uint64
-	hasID   bool
+	id      fileID
+}
+
+// fileID is an opaque, comparable file identity. What it holds is
+// platform-specific — see the fileRevisionID implementations — and it is the
+// zero value where the platform exposes nothing, in which case change detection
+// falls back to size and modification time.
+type fileID struct {
+	a uint64
+	b uint64
 }
 
 // keytabSnapshot is an immutable view of the merged keytab and the file
@@ -192,13 +199,11 @@ func (c *keytabFileCache) stat() ([]fileStamp, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%w: file %s load failed: %w", ErrLoadKeytabFileFailed, keytabFile, err)
 		}
-		dev, ino, hasID := fileIdentity(info)
+		id, _ := fileRevisionID(info)
 		stamps[i] = fileStamp{
 			size:    info.Size(),
 			modTime: info.ModTime().UnixNano(),
-			dev:     dev,
-			ino:     ino,
-			hasID:   hasID,
+			id:      id,
 		}
 	}
 	return stamps, nil

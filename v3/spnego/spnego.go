@@ -52,6 +52,16 @@ func isRejection(headers http.Header) bool {
 	return headers.Get(fiber.HeaderWWWAuthenticate) == spnegoRejected
 }
 
+// internalErrorKind enumerates the internal failures the middleware logs. It is
+// a closed set so the throttle's state is bounded by the compiler rather than
+// by whatever error value a caller happens to produce.
+type internalErrorKind int
+
+const (
+	internalErrorKeytabLookup internalErrorKind = iota
+	numInternalErrorKinds
+)
+
 // internalErrorLogEvery throttles the log line for a repeating internal
 // failure. Without it, a keytab the process cannot read turns every request —
 // at a rate unauthenticated callers control — into a log line.
@@ -144,10 +154,26 @@ func requestForSPNEGO(ctx fiber.Ctx) *http.Request {
 	if auth := ctx.Get(fiber.HeaderAuthorization); auth != "" {
 		header.Set(fiber.HeaderAuthorization, auth)
 	}
+	// url.URL.Path holds the decoded path; RawPath carries the original bytes
+	// only when they differ, which is what url.URL.EscapedPath expects. Getting
+	// this wrong would be worse than leaving URL nil, since a consumer
+	// reconstructing the URI would silently see a double-encoded one.
+	escaped := ctx.Path()
+	decoded, err := url.PathUnescape(escaped)
+	if err != nil {
+		decoded = escaped
+	}
+	requestURL := &url.URL{Path: decoded, RawQuery: string(ctx.RequestCtx().URI().QueryString())}
+	if decoded != escaped {
+		requestURL.RawPath = escaped
+	}
 	return &http.Request{
-		Method:     ctx.Method(),
-		URL:        &url.URL{Path: ctx.Path()},
-		Host:       ctx.Hostname(),
+		Method: ctx.Method(),
+		URL:    requestURL,
+		// Host, not Hostname: net/http documents a server request's Host as
+		// "host or host:port", and a service on a non-default port needs the
+		// port to derive its own principal.
+		Host:       ctx.Host(),
 		Header:     header,
 		RemoteAddr: ctx.RequestCtx().RemoteAddr().String(),
 	}
@@ -188,20 +214,19 @@ func New(cfg Config) (fiber.Handler, error) {
 	// throttled so a persistent fault cannot become a log flood.
 	var (
 		logMu      sync.Mutex
-		lastLogged = make(map[error]time.Time)
+		lastLogged [numInternalErrorKinds]time.Time
 	)
-	logInternal := func(sentinel, cause error) {
-		// Keyed per sentinel rather than per message: a cause can embed
+	logInternal := func(kind internalErrorKind, sentinel, cause error) {
+		// Keyed by kind rather than by message: a cause can embed
 		// client-controlled text, and keying on that would let a caller defeat
-		// the throttle by varying it. A single slot would not do either — two
-		// alternating error kinds would reset each other's window on every
-		// request. The key set is this package's own sentinels, so the map
-		// cannot grow without bound.
+		// the throttle by varying it. A single shared slot would not do either,
+		// since two alternating kinds would reset each other's window on every
+		// request. The key is a closed type, so the state cannot grow.
 		logMu.Lock()
 		now := time.Now()
-		throttled := now.Sub(lastLogged[sentinel]) < internalErrorLogEvery
+		throttled := now.Sub(lastLogged[kind]) < internalErrorLogEvery
 		if !throttled {
-			lastLogged[sentinel] = now
+			lastLogged[kind] = now
 		}
 		logMu.Unlock()
 		if throttled {
@@ -225,7 +250,7 @@ func New(cfg Config) (fiber.Handler, error) {
 			err = errNilKeytab
 		}
 		if err != nil {
-			logInternal(ErrLookupKeytabFailed, err)
+			logInternal(internalErrorKeytabLookup, ErrLookupKeytabFailed, err)
 			return &clientSafeError{cause: fmt.Errorf("%w: %w", ErrLookupKeytabFailed, err)}
 		}
 		req := requestForSPNEGO(ctx)
