@@ -310,9 +310,9 @@ func (c *keytabFileCache) endEpisodeIfCurrent(expected []fileStamp) {
 	c.mu.Lock()
 	defer c.emit()
 	if c.deg.cause == nil {
-		// Another goroutine closed the episode first. Clear the flag so the
-		// fast path stops paying for this call on every later request.
-		c.degraded.Store(false)
+		// Another goroutine closed the episode between the lock-free check and
+		// this lock. It cleared the flag under this same mutex — degraded and
+		// deg.cause always move together — so there is nothing left to do.
 		return
 	}
 	if fresh, err := c.stat(); err == nil && slices.Equal(fresh, expected) {
@@ -378,6 +378,11 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 	}
 	// Another goroutine may have reloaded while this one waited for the lock.
 	if snap := c.snapshot.Load(); snap != nil && slices.Equal(snap.stamps, stamps) {
+		// The revision on disk is the cached one again, so any episode is over.
+		// The fast path reaches the same conclusion through endEpisodeIfCurrent;
+		// here the stamps were just taken under the lock, so no re-stat is
+		// needed.
+		c.clearDegraded()
 		return snap.merged, nil
 	}
 
@@ -477,16 +482,15 @@ func resolveKeytabResidual(name string) (string, error) {
 	if !found {
 		return name, nil
 	}
-	// Not a type prefix: an absolute path, or a Windows drive letter such as C:\.
-	if strings.ContainsAny(prefix, `/\`) || len(prefix) < 2 {
-		return name, nil
-	}
 	switch upper := strings.ToUpper(prefix); {
 	case slices.Contains(fileKeytabTypes, upper):
 		return residual, nil
 	case slices.Contains(nonFileKeytabTypes, upper):
 		return "", fmt.Errorf("%w: %s", ErrUnsupportedKeytabResidualType, prefix)
 	default:
+		// Not a known type, so the colon belongs to the name: an absolute path,
+		// a Windows drive letter such as C:\, or a relative name that simply
+		// contains one.
 		return name, nil
 	}
 }

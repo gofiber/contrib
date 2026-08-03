@@ -1237,30 +1237,43 @@ func TestReloadPairsStampsWithContent(t *testing.T) {
 	}
 }
 
-// TestReloadReportsStatFailureUnderLock covers the error branch of that re-stat:
-// a keytab removed between the pre-lock stat and the lock must surface, not
-// proceed to a read with stale stamps.
+// TestReloadReportsStatFailureUnderLock covers the error branch of the
+// under-lock re-stat: a keytab removed after the pre-lock stat but before the
+// lock is granted must surface, not proceed to a read with stale stamps.
+//
+// Removing the file before calling load would fail at the pre-lock stat and
+// never reach this branch, so the window is reproduced by holding mu.
 func TestReloadReportsStatFailureUnderLock(t *testing.T) {
 	dir := t.TempDir()
 	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
 
 	cache := newKeytabFileCache([]string{filename})
-	_, err := cache.load()
-	require.NoError(t, err)
 
-	// Change the file so the fast path misses, then remove it before the
-	// under-lock stat runs.
-	require.NoError(t, os.WriteFile(filename, []byte("12"), 0o600))
-	_, err = cache.stat()
-	require.NoError(t, err)
-	require.NoError(t, os.Remove(filename))
-
-	_, err = cache.load()
-	require.ErrorIs(t, err, ErrLoadKeytabFileFailed)
+	var loadErr error
+	for range 30 {
+		require.NoError(t, os.WriteFile(filename, []byte("not a keytab"), 0o600))
+		cache.mu.Lock()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, loadErr = cache.load()
+		}()
+		// Let the loader stat and block on mu, then remove the file underneath
+		// it before letting it through.
+		time.Sleep(2 * time.Millisecond)
+		require.NoError(t, os.Remove(filename))
+		cache.mu.Unlock()
+		<-done
+		if loadErr != nil {
+			break
+		}
+	}
+	require.ErrorIs(t, loadErr, ErrLoadKeytabFileFailed)
 }
 
 // TestEndEpisodeIfCurrentOnAlreadyClearedEpisode covers the guard for a second
-// goroutine arriving after the first has already closed the episode.
+// goroutine arriving after the first has already closed the episode. Both saw
+// the lock-free degraded flag, but only one gets to announce the recovery.
 func TestEndEpisodeIfCurrentOnAlreadyClearedEpisode(t *testing.T) {
 	var logged bytes.Buffer
 	flog.SetOutput(&logged)
@@ -1268,17 +1281,34 @@ func TestEndEpisodeIfCurrentOnAlreadyClearedEpisode(t *testing.T) {
 
 	dir := t.TempDir()
 	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
+	original, err := os.ReadFile(filename)
+	require.NoError(t, err)
+	info, err := os.Stat(filename)
+	require.NoError(t, err)
+
 	cache := newKeytabFileCache([]string{filename})
-	_, err := cache.load()
+	_, err = cache.load()
 	require.NoError(t, err)
 	stamps := cache.snapshot.Load().stamps
 
-	// No episode is open, so this must return without announcing anything.
-	cache.degraded.Store(true)
-	logged.Reset()
+	// Open an episode, then restore the keytab to the snapshotted revision.
+	require.NoError(t, os.WriteFile(filename, []byte("12"), 0o600))
+	_, err = cache.load()
+	require.NoError(t, err)
+	require.True(t, cache.degraded.Load())
+	require.NoError(t, os.WriteFile(filename, original, 0o600))
+	require.NoError(t, os.Chtimes(filename, info.ModTime(), info.ModTime()))
+
+	// The first arrival closes it and announces.
 	cache.endEpisodeIfCurrent(stamps)
-	require.Empty(t, logged.String(), "an already-cleared episode must not announce again")
 	require.False(t, cache.degraded.Load())
+	require.Equal(t, 1, strings.Count(logged.String(), "loads cleanly again"))
+
+	// A second arrival, still holding the stale view that the episode was open,
+	// must find nothing to do rather than announce again.
+	cache.endEpisodeIfCurrent(stamps)
+	require.Equal(t, 1, strings.Count(logged.String(), "loads cleanly again"),
+		"a closed episode must not be announced twice")
 }
 
 // TestRecorderKeepsFirstStatus covers the recorder's first-status-wins rule.
@@ -1313,4 +1343,128 @@ func TestRecorderKeepsFirstStatus(t *testing.T) {
 	require.Equal(t, fiber.StatusForbidden, ctx.Response.StatusCode(),
 		"the first status written must win")
 	require.Equal(t, "denied", string(ctx.Response.Body()))
+}
+
+// TestRecorderDefaultsToUnauthorized covers the fallback for a SPNEGO
+// implementation that declines a request without writing a status. Answering
+// such a request 200 would silently stop the middleware denying anything.
+func TestRecorderDefaultsToUnauthorized(t *testing.T) {
+	stubAuthenticate(t, func(_ http.ResponseWriter, _ *http.Request) bool {
+		// Neither WriteHeader nor Write: nothing was recorded.
+		return false
+	})
+
+	filename := writeMockKeytab(t, t.TempDir(), "sso.keytab", "HTTP/sso.example.com")
+	lookupFunc, err := NewKeytabFileLookupFunc(filename)
+	require.NoError(t, err)
+	middleware, err := New(Config{KeytabLookup: lookupFunc})
+	require.NoError(t, err)
+
+	app := fiber.New()
+	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
+		return c.SendString("authenticated")
+	})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fiber.MethodGet)
+	ctx.Request.SetRequestURI("/authenticate")
+	app.Handler()(ctx)
+
+	require.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode(),
+		"a declined request with no recorded status must not be answered 200")
+}
+
+// TestRecorderImplicitOK covers the other half of the recorder's status rules:
+// a body written without a status means 200, as net/http defines it.
+func TestRecorderImplicitOK(t *testing.T) {
+	stubAuthenticate(t, func(w http.ResponseWriter, _ *http.Request) bool {
+		_, _ = w.Write([]byte("body without a status"))
+		return false
+	})
+
+	filename := writeMockKeytab(t, t.TempDir(), "sso.keytab", "HTTP/sso.example.com")
+	lookupFunc, err := NewKeytabFileLookupFunc(filename)
+	require.NoError(t, err)
+	middleware, err := New(Config{KeytabLookup: lookupFunc})
+	require.NoError(t, err)
+
+	app := fiber.New()
+	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
+		return c.SendString("authenticated")
+	})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fiber.MethodGet)
+	ctx.Request.SetRequestURI("/authenticate")
+	app.Handler()(ctx)
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	require.Equal(t, "body without a status", string(ctx.Response.Body()))
+}
+
+// TestMergedKeytabIsSerialisable pins why readAll builds on keytab.New rather
+// than the zero value: the zero value marshals with a version byte gokrb5's own
+// loader rejects, and the merged keytab is handed to callers.
+func TestMergedKeytabIsSerialisable(t *testing.T) {
+	dir := t.TempDir()
+	first := writeMockKeytab(t, dir, "one.keytab", "HTTP/one.example.com")
+	second := writeMockKeytab(t, dir, "two.keytab", "HTTP/two.example.com")
+
+	fn, err := NewKeytabFileLookupFunc(first, second)
+	require.NoError(t, err)
+	merged, err := fn()
+	require.NoError(t, err)
+
+	out := path.Join(dir, "merged.keytab")
+	file, err := os.OpenFile(out, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
+	require.NoError(t, err)
+	_, err = merged.Write(file)
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+
+	reloaded, err := keytab.Load(out)
+	require.NoError(t, err, "the merged keytab must be loadable by gokrb5")
+	require.Len(t, utils.GetKeytabInfo(reloaded), 2)
+}
+
+// TestWindowBoundaries pins the inclusive/exclusive edge of each time window,
+// which stepping the clock well past them leaves unspecified.
+func TestWindowBoundaries(t *testing.T) {
+	t.Run("log throttle reopens only after the window", func(t *testing.T) {
+		now := time.Now()
+		throttle := &logThrottle{every: 30 * time.Second, nowFn: func() time.Time { return now }}
+		var runs int
+		fire := func() { throttle.do(func() { runs++ }) }
+
+		fire()
+		require.Equal(t, 1, runs)
+		// Exactly one window later is the first instant that may fire again.
+		now = now.Add(30 * time.Second)
+		fire()
+		require.Equal(t, 2, runs, "the window is closed for strictly less than its length")
+	})
+
+	t.Run("grace expires strictly after its length", func(t *testing.T) {
+		dir := t.TempDir()
+		filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
+		now := time.Now()
+		cache := &keytabFileCache{
+			files:      []string{filename},
+			staleGrace: 30 * time.Second,
+			retryEvery: time.Nanosecond,
+			nowFn:      func() time.Time { return now },
+		}
+		_, err := cache.load()
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filename, []byte("12"), 0o600))
+		_, err = cache.load()
+		require.NoError(t, err)
+
+		// Exactly at the grace boundary the keytab is still covered for.
+		now = now.Add(30 * time.Second)
+		_, err = cache.load()
+		require.NoError(t, err, "the grace window is inclusive of its own length")
+
+		now = now.Add(time.Nanosecond)
+		_, err = cache.load()
+		require.Error(t, err, "one tick past the window it expires")
+	})
 }

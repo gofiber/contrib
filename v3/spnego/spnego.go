@@ -257,6 +257,9 @@ func New(cfg Config) (fiber.Handler, error) {
 	if l := resolveLogger(cfg, flog.DefaultLogger[*log.Logger]()); l != nil {
 		opts = append(opts, service.Logger(l))
 	}
+	// Captured at construction; see the note on authenticate.
+	acceptSPNEGO := authenticate
+
 	// Internal failures are logged here rather than returned to the client, and
 	// throttled so a persistent fault cannot become a log flood.
 	//
@@ -265,8 +268,6 @@ func New(cfg Config) (fiber.Handler, error) {
 	// giving it its own: sharing this one would let each suppress the other,
 	// and keying on the cause would let a caller defeat the throttle by varying
 	// client-controlled text inside it.
-	// Captured at construction; see the note on authenticate.
-	acceptSPNEGO := authenticate
 	lookupFailures := &logThrottle{every: internalErrorLogEvery}
 	logInternal := func(cause error) {
 		lookupFailures.do(func() {
