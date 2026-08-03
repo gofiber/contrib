@@ -38,6 +38,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/gofiber/contrib/v3/spnego"
@@ -51,10 +53,20 @@ func main() {
 	// Create a configuration with a keytab lookup function
 	// For testing, you can create a mock keytab file using utils.NewMockKeytab
 	// In production, use a real keytab file
+	// A temporary directory keeps key material out of the working directory.
+	tempDir, err := os.MkdirTemp("", "spnego-example")
+	if err != nil {
+		panic(fmt.Errorf("create temp dir failed: %w", err))
+	}
+	// panic rather than log.Fatalf below: Fatalf calls os.Exit, which would
+	// skip these deferred cleanups and leave the keytab on disk.
+	defer func() { _ = os.RemoveAll(tempDir) }()
+	keytabPath := filepath.Join(tempDir, "temp-sso.keytab")
+
 	_, clean, err := utils.NewMockKeytab(
 		utils.WithPrincipal("HTTP/sso1.example.com"),
 		utils.WithRealm("EXAMPLE.LOCAL"),
-		utils.WithFilename("./temp-sso1.keytab"),
+		utils.WithFilename(keytabPath),
 		utils.WithPairs(utils.EncryptTypePair{
 			Version:     2,
 			EncryptType: 18,
@@ -62,12 +74,12 @@ func main() {
 		}),
 	)
 	if err != nil {
-		log.Fatalf("Failed to create mock keytab: %v", err)
+		panic(fmt.Errorf("create mock keytab failed: %w", err))
 	}
 	defer clean()
-	keytabLookup, err := spnego.NewKeytabFileLookupFunc("./temp-sso1.keytab")
+	keytabLookup, err := spnego.NewKeytabFileLookupFunc(keytabPath)
 	if err != nil {
-		log.Fatalf("Failed to create keytab lookup function: %v", err)
+		panic(fmt.Errorf("create keytab lookup failed: %w", err))
 	}
 	
 	// Create the middleware
@@ -75,7 +87,7 @@ func main() {
 		KeytabLookup: keytabLookup,
 	})
 	if err != nil {
-		log.Fatalf("Failed to create middleware: %v", err)
+		panic(fmt.Errorf("create middleware failed: %w", err))
 	}
 
 	// Apply the middleware to protected routes
@@ -92,7 +104,7 @@ func main() {
 
 	log.Info("Starting server on :3000")
 	if err := app.Listen(":3000"); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+		panic(fmt.Errorf("start server failed: %w", err))
 	}
 }
 ```
@@ -107,7 +119,7 @@ The middleware is designed with extensibility in mind, allowing keytab retrieval
 >
 > Change detection is cheap rather than exact — a rewrite that keeps the same size and lands within one filesystem timestamp tick looks unchanged. Rotate by writing a new file and renaming it over the old one; that normally moves the modification time, but the cache still only reacts to a detectable size or timestamp change.
 >
-> A keytab that reads but does not parse is treated as a rotation caught mid-write: the last keytab that parsed cleanly keeps being served, and a retry runs at most once a second while the fault lasts. That cover expires after 30 seconds — long enough to absorb a half-written file, short enough that a rotation to a permanently corrupt keytab surfaces as an error instead of silently keeping superseded keys alive. Entering and leaving that degraded state is logged once, not per request. A keytab that cannot be read at all — deleted, unmounted, permissions revoked — is reported as an error instead, so revoking a keytab takes effect rather than being masked by the cache.
+> A keytab that reads but does not parse is treated as a rotation caught mid-write: the last keytab that parsed cleanly keeps being served, and a retry runs at most once a second while the fault lasts. That cover expires after 30 seconds — long enough to absorb a half-written file, short enough that a rotation to a permanently corrupt keytab surfaces as an error instead of silently keeping superseded keys alive. Entering the degraded state logs a warning, expiry logs an error, and recovery logs an all-clear — each once per episode, not per request. A keytab that cannot be read at all — deleted, unmounted, permissions revoked — is reported as an error instead, so revoking a keytab takes effect rather than being masked by the cache.
 
 ### Errors
 

@@ -376,7 +376,9 @@ func TestKeytabStaleGraceExpires(t *testing.T) {
 	cache := &keytabFileCache{
 		files:      []string{filename},
 		staleGrace: 30 * time.Second,
-		retryEvery: 0, // retry on every call so the test drives the clock alone
+		// A tiny retry window keeps the throttle out of the way; load() maps a
+		// non-positive value back to the 1s default, so 0 would not disable it.
+		retryEvery: time.Nanosecond,
 		nowFn:      func() time.Time { return now },
 	}
 
@@ -421,7 +423,7 @@ func TestKeytabStaleGraceResetsAfterRecovery(t *testing.T) {
 	require.NoError(t, os.WriteFile(filename, []byte("12"), 0o600))
 	_, err = cache.load()
 	require.NoError(t, err)
-	require.NotZero(t, cache.staleSince.Load())
+	require.True(t, cache.degraded.Load())
 
 	// Restore byte-for-byte, preserving size and mtime.
 	require.NoError(t, os.WriteFile(filename, original, 0o600))
@@ -429,7 +431,7 @@ func TestKeytabStaleGraceResetsAfterRecovery(t *testing.T) {
 	served, err := cache.load()
 	require.NoError(t, err)
 	require.Same(t, good, served)
-	require.Zero(t, cache.staleSince.Load(), "recovery must clear the degraded episode")
+	require.False(t, cache.degraded.Load(), "recovery must clear the degraded episode")
 
 	// A genuine torn read much later still gets the full grace window.
 	now = now.Add(10 * time.Minute)
@@ -458,40 +460,47 @@ func TestKeytabRetryThrottle(t *testing.T) {
 	require.NoError(t, os.WriteFile(filename, []byte("12"), 0o600))
 	_, err = cache.load()
 	require.NoError(t, err)
-	firstAttempt := cache.lastAttempt
+	firstAttempt := cache.deg.lastAttempt
 
 	// Within the retry window the file is not read again.
 	now = now.Add(100 * time.Millisecond)
 	_, err = cache.load()
 	require.NoError(t, err)
-	require.Equal(t, firstAttempt, cache.lastAttempt, "should not re-read within the retry window")
+	require.Equal(t, firstAttempt, cache.deg.lastAttempt, "should not re-read within the retry window")
 
 	// Past it, one more attempt is made.
 	now = now.Add(2 * time.Second)
 	_, err = cache.load()
 	require.NoError(t, err)
-	require.NotEqual(t, firstAttempt, cache.lastAttempt, "should retry once the window elapses")
+	require.NotEqual(t, firstAttempt, cache.deg.lastAttempt, "should retry once the window elapses")
 }
 
-// TestNewKeytabFileLookupFuncWiresDefaults pins the production defaults, which
-// the hand-built caches above deliberately override.
-func TestNewKeytabFileLookupFuncWiresDefaults(t *testing.T) {
+// TestNewKeytabFileCacheWiresDefaults pins what the production constructor
+// configures, which the hand-built caches above deliberately override.
+func TestNewKeytabFileCacheWiresDefaults(t *testing.T) {
 	filename := writeMockKeytab(t, t.TempDir(), "sso.keytab", "HTTP/sso.example.com")
-	cache := &keytabFileCache{
-		files:      []string{filename},
-		staleGrace: defaultKeytabStaleGrace,
-		retryEvery: keytabRetryEvery,
-	}
-	require.Positive(t, defaultKeytabStaleGrace, "a zero grace would defeat the torn-read fallback")
-	require.Positive(t, keytabRetryEvery, "a zero retry interval would re-read on every request")
-	require.Equal(t, defaultKeytabStaleGrace, cache.grace())
 
-	// A zero-value cache must still work: now() falls back to the wall clock
-	// and grace() to the default, so no nil call and no zero window.
+	cache := newKeytabFileCache([]string{filename})
+	require.Equal(t, defaultKeytabStaleGrace, cache.staleGrace)
+	require.Equal(t, keytabRetryEvery, cache.retryEvery)
+	require.Positive(t, cache.grace(), "a zero grace would defeat the torn-read fallback")
+	require.Positive(t, cache.retry(), "a zero retry interval would re-read on every request")
+
+	// The constructor copies its input, so a caller mutating the slice
+	// afterwards cannot repoint the cache at a different keytab.
+	files := []string{filename}
+	cache = newKeytabFileCache(files)
+	files[0] = "/nonexistent"
+	_, err := cache.load()
+	require.NoError(t, err)
+
+	// A zero-value cache must still work: now falls back to the wall clock and
+	// grace to the default, so no nil call and no zero window.
 	zero := &keytabFileCache{files: []string{filename}}
 	require.NotPanics(t, func() {
-		_, err := zero.load()
-		require.NoError(t, err)
+		_, loadErr := zero.load()
+		require.NoError(t, loadErr)
 	})
 	require.Equal(t, defaultKeytabStaleGrace, zero.grace())
+	require.Equal(t, keytabRetryEvery, zero.retry())
 }

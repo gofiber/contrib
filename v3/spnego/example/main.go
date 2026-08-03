@@ -21,8 +21,10 @@ func main() {
 	if err != nil {
 		panic(fmt.Errorf("create temp dir failed: %w", err))
 	}
-	// panic rather than log.Fatalf throughout: Fatalf calls os.Exit, which
-	// would skip this cleanup and leave key material behind.
+	// panic rather than log.Fatalf on the main goroutine: Fatalf calls os.Exit,
+	// which would skip this cleanup and leave key material behind. Failures on
+	// other goroutines report and return instead, since a panic there would
+	// crash the process without running main's defers either.
 	defer func() { _ = os.RemoveAll(tempDir) }()
 	keytabPath := filepath.Join(tempDir, "temp-sso.keytab")
 	_, clean, err := utils.NewMockKeytab(
@@ -70,8 +72,10 @@ func main() {
 		fmt.Println("if response is 401, execute `klist` to check your Kerberos session")
 		<-time.After(time.Second * 2)
 		fmt.Println("close server")
-		if err = app.Shutdown(); err != nil {
-			panic(fmt.Errorf("shutdown server failed: %w", err))
+		if shutdownErr := app.Shutdown(); shutdownErr != nil {
+			// Not a panic: this goroutine's crash would bypass the cleanup
+			// registered in main.
+			log.Errorf("shutdown server failed: %v", shutdownErr)
 		}
 	}()
 	if err := app.Listen("sso.example.local:3000"); err != nil {

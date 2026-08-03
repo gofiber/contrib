@@ -162,18 +162,25 @@ func New(cfg Config) (fiber.Handler, error) {
 	// Internal failures are logged here rather than returned to the client, and
 	// throttled so a persistent fault cannot become a log flood.
 	var (
-		logMu       sync.Mutex
-		lastLogged  string
-		lastLogTime time.Time
+		logMu        sync.Mutex
+		lastSentinel error
+		lastLogTime  time.Time
 	)
 	logInternal := func(sentinel, cause error) {
-		message := cause.Error()
+		// Keyed on the sentinel, not on the cause: a conversion failure embeds
+		// the request URI, so keying on the message would let a caller defeat
+		// the throttle just by varying the path.
 		logMu.Lock()
-		defer logMu.Unlock()
-		if message == lastLogged && time.Since(lastLogTime) < internalErrorLogEvery {
+		now := time.Now()
+		throttled := sentinel == lastSentinel && now.Sub(lastLogTime) < internalErrorLogEvery
+		if !throttled {
+			lastSentinel, lastLogTime = sentinel, now
+		}
+		logMu.Unlock()
+		if throttled {
 			return
 		}
-		lastLogged, lastLogTime = message, time.Now()
+		// Written outside the lock so the log sink is not a contention point.
 		flog.Errorf("spnego: %v: %v", sentinel, cause)
 	}
 	// Return the middleware handler
