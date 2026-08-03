@@ -7,12 +7,6 @@ import (
 	"syscall"
 )
 
-// identityDetectsRename reports whether this platform's fileRevisionID reliably
-// distinguishes a file replaced by rename from the file it replaced.
-//
-//nolint:unused // read by tests; lint runs with --tests=false and cannot see that
-const identityDetectsRename = true
-
 // fileRevisionID returns the device and inode the file lives at. Replacing a
 // keytab by rename changes the inode, so a rotation is detected even when the
 // replacement has the same size and modification time.

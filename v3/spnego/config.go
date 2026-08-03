@@ -77,8 +77,10 @@ type Config struct {
 
 // fileStamp identifies a keytab file revision cheaply enough to check on every
 // request. Identity is recorded alongside size and modification time where the
-// platform exposes it, so replacing a keytab by rename is detected even when
-// the staging tool preserved the timestamp of a same-sized file.
+// platform exposes it, so on Unix, replacing a keytab by rename is detected
+// even when the staging tool preserved the timestamp of a same-sized file.
+// Elsewhere identity is a hint at best — see the fileRevisionID
+// implementations — and detection falls back to size and modification time.
 //
 // It is deliberately plain and comparable: the os.FileInfo it came from is not
 // retained, so a snapshot stays immutable and readable without locking.
@@ -299,9 +301,11 @@ func (c *keytabFileCache) endEpisodeIfCurrent(expected []fileStamp) {
 // anything it derived from the keytab.
 //
 // Because change detection is inexact (see fileStamp), rotate a keytab by
-// writing a new file and renaming it over the old one. That changes the file's
-// identity, so it is picked up even when size and modification time are
-// preserved, whereas an in-place rewrite of identical length may not be.
+// writing a new file and renaming it over the old one. On Unix that changes the
+// file's identity, so it is picked up even when size and modification time are
+// preserved, whereas an in-place rewrite of identical length may not be. On
+// other platforms make sure the replacement differs in size or modification
+// time, since identity there cannot be relied on.
 func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 	stamps, err := c.stat()
 	if err != nil {

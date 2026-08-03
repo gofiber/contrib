@@ -4,11 +4,6 @@ package spnego
 
 import "io/fs"
 
-// identityDetectsRename is false: this platform exposes no file identity.
-//
-//nolint:unused // read by tests; lint runs with --tests=false and cannot see that
-const identityDetectsRename = false
-
 // fileRevisionID reports no identity on platforms that expose none through
 // fs.FileInfo, so keytab change detection falls back to size and modification
 // time alone.

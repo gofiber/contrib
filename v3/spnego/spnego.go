@@ -150,9 +150,9 @@ func requestForSPNEGO(ctx fiber.Ctx) *http.Request {
 		// misrepresent some requests. An empty URL states nothing false and
 		// still guards against a dereference.
 		URL: &url.URL{},
-		// Host, not Hostname: net/http documents a server request's Host as
-		// "host or host:port", and a service on a non-default port needs the
-		// port to derive its own principal.
+		// net/http documents a server request's Host as "host or host:port", so
+		// it is Host rather than Hostname, which drops the port. gokrb5 does
+		// not read it; it is set because it can be set faithfully, unlike URL.
 		Host:       ctx.Host(),
 		Header:     header,
 		RemoteAddr: ctx.RequestCtx().RemoteAddr().String(),
@@ -204,7 +204,8 @@ func New(cfg Config) (fiber.Handler, error) {
 	logInternal := func(cause error) {
 		logMu.Lock()
 		now := time.Now()
-		throttled := !lastLogged.IsZero() && now.Sub(lastLogged) < internalErrorLogEvery
+		// Sub on the zero time saturates, so the first failure always logs.
+		throttled := now.Sub(lastLogged) < internalErrorLogEvery
 		if !throttled {
 			lastLogged = now
 		}

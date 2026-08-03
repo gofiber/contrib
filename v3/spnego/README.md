@@ -119,7 +119,7 @@ The middleware is designed with extensibility in mind, allowing keytab retrieval
 >
 > Change detection compares each file's size, modification time and identity, so replacing a keytab by rename is picked up even when the staging tool preserved the timestamp of a same-sized file. Identity is the inode on Unix. On Windows it is the creation time, which is a hint rather than a dependable identity — NTFS file tunneling can restore a replaced file's creation time, and some filesystems report none — and on other platforms there is no identity at all; both fall back to size and modification time.
 >
-> Detection is not exact even on Unix: an in-place rewrite that keeps the same size and lands within one filesystem timestamp tick looks unchanged, since the file's identity does not change either. Rotating by rename avoids that case.
+> Detection is not exact even on Unix: an in-place rewrite that keeps the same size and lands within one filesystem timestamp tick looks unchanged, since the file's identity does not change either. Rotating by rename avoids that case on Unix. Elsewhere, where identity cannot be relied on, make sure the replacement differs in size or modification time.
 >
 > A keytab that reads but does not parse is treated as a rotation caught mid-write: the last keytab that parsed cleanly keeps being served, and a retry runs at most once a second while the fault lasts. That cover expires after 30 seconds — long enough to absorb a half-written file, short enough that a rotation to a permanently corrupt keytab surfaces as an error instead of silently keeping superseded keys alive. Entering the degraded state logs a warning, expiry logs an error, and recovery logs an all-clear — each once per episode, not per request. A keytab that cannot be read at all — deleted, unmounted, replaced by something unreadable — is reported as an error instead of being masked by the cache.
 
@@ -129,7 +129,7 @@ Note that revoking a keytab with `chmod` alone is not enough: changing permissio
 
 A failed keytab lookup is answered with a bare `500`. The detail from `NewKeytabFileLookupFunc` names the keytab's path and the underlying OS error — a custom `KeytabLookupFunc` may report whatever it likes — and none of that should reach an unauthenticated caller, so the response body carries only `Internal Server Error`.
 
-The detail is logged at error level instead, throttled to one line per 30 seconds per kind of failure, so a persistent fault cannot be turned into a log flood by unauthenticated callers.
+The detail is logged at error level instead, throttled to one line per 30 seconds, so a persistent fault cannot be turned into a log flood by unauthenticated callers.
 
 The returned error still matches the package's sentinels, so an application `ErrorHandler` can tell a keytab failure from any other 500:
 

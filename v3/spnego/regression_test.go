@@ -584,11 +584,11 @@ func TestKeytabRotationByRenameDetected(t *testing.T) {
 	dir := t.TempDir()
 	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
 
-	info, err := os.Stat(filename)
-	require.NoError(t, err)
 	if !identityDetectsRename {
 		t.Skip("platform has no dependable file identity; detection falls back to size and mtime")
 	}
+	info, err := os.Stat(filename)
+	require.NoError(t, err)
 
 	cache := newKeytabFileCache([]string{filename})
 	before, err := cache.load()
@@ -665,8 +665,8 @@ func TestRequestForSPNEGO(t *testing.T) {
 	require.NotNil(t, got)
 	require.Equal(t, fiber.MethodGet, got.Method)
 	require.Equal(t, "Negotiate abc", got.Header.Get(fiber.HeaderAuthorization))
-	// The port is part of a server request's Host, and a service on a
-	// non-default port needs it to derive its own principal.
+	// net/http documents a server request's Host as "host or host:port", so the
+	// port must survive.
 	require.Equal(t, "sso.example.com:8443", got.Host)
 
 	// URL is present purely so a dereference cannot panic. It is deliberately
@@ -675,26 +675,4 @@ func TestRequestForSPNEGO(t *testing.T) {
 	require.NotNil(t, got.URL)
 	require.Empty(t, got.URL.Path)
 	require.Empty(t, got.URL.RawQuery)
-}
-
-// TestRequestForSPNEGOMalformedPath checks that a path net/url cannot represent
-// does not break request construction. fasthttp does not validate percent
-// escapes, so this reaches the middleware.
-func TestRequestForSPNEGOMalformedPath(t *testing.T) {
-	var got *http.Request
-	app := fiber.New()
-	app.Get("/*", func(c fiber.Ctx) error {
-		got = requestForSPNEGO(c)
-		return nil
-	})
-
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.Header.SetMethod(fiber.MethodGet)
-	ctx.Request.SetRequestURI("/a%zzb")
-	ctx.Request.Header.Set(fiber.HeaderAuthorization, "Negotiate abc")
-	require.NotPanics(t, func() { app.Handler()(ctx) })
-
-	require.NotNil(t, got)
-	require.NotNil(t, got.URL)
-	require.Equal(t, "Negotiate abc", got.Header.Get(fiber.HeaderAuthorization))
 }

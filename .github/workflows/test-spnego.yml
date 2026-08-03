@@ -39,12 +39,13 @@ jobs:
         with:
           go-version: '${{ matrix.go-version }}'
           cache-dependency-path: v3/spnego/go.sum
-      # This module carries build-tagged sources for file identity, so the
-      # Linux test run never compiles the Windows or fallback variants.
+      # This module carries build-tagged sources for file identity. The Linux
+      # test run compiles only the unix variant, and darwin is unix too, so
+      # js/wasm is what actually covers the !unix && !windows fallback.
       - name: Vet other platforms
         working-directory: ./v3/spnego
         run: |
-          for target in windows/amd64 darwin/arm64; do
+          for target in windows/amd64 js/wasm; do
             GOOS="${target%/*}" GOARCH="${target#*/}" go vet ./...
           done
       - name: Run Test

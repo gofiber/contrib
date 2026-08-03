@@ -7,12 +7,6 @@ import (
 	"syscall"
 )
 
-// identityDetectsRename is false on Windows: the creation time used below is a
-// useful hint but not a dependable identity. See fileRevisionID.
-//
-//nolint:unused // read by tests; lint runs with --tests=false and cannot see that
-const identityDetectsRename = false
-
 // fileRevisionID returns the file's creation time, which Windows already
 // supplies through os.Stat at no extra syscall cost.
 //
