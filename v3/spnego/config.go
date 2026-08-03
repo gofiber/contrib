@@ -57,11 +57,18 @@ type Config struct {
 	// KeytabLookup is a function that retrieves the keytab
 	KeytabLookup KeytabLookupFunc
 	// Log receives gokrb5's diagnostics, which carry no level of their own.
-	// gokrb5 writes a line for every request that presents a token — one on
-	// success, one on a refusal, one on a token it cannot parse — so on a busy
-	// service this is a line per request, not a rare event. The one leg it
-	// stays silent on is the opening challenge, the request with no
-	// Authorization header. Leaving this nil keeps that volume off the log.
+	// gokrb5 writes a line for every request carrying a Negotiate token — one
+	// on success, one on a refusal, one on a token it cannot parse — so on a
+	// busy service this is a line per request, not a rare event. It is silent
+	// only for requests it declines to negotiate at all: no Authorization
+	// header, or one for a different scheme.
+	//
+	// One case escapes that rule. gokrb5 parses the client address before it
+	// looks at the token, and logs when it cannot, so a listener whose remote
+	// addresses are not host:port — a Unix socket, say — produces a line on
+	// every request including the opening challenge.
+	//
+	// Leaving this nil keeps all of that off the log.
 	Log *log.Logger
 	// UseFiberLogger sends gokrb5's diagnostics to Fiber's default logger when
 	// Log is nil. It only takes effect when that logger is backed by a

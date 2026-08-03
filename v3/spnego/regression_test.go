@@ -859,18 +859,29 @@ func TestKeytabCacheConcurrentReload(t *testing.T) {
 	const (
 		readerCount = 16
 		flips       = 100
-		// Two loads per reader, because a load counted after a write may have
-		// stat'd the file before it. At most readerCount can be in flight, so
-		// doubling leaves a full round that certainly saw the new revision.
-		loadsPerFlip = 2 * readerCount
+		// One token per reader can describe a load that stat'd before the write
+		// it is counted against: a reader holds at most one undelivered token,
+		// and progress is unbuffered so none are stored in the channel either.
+		// The token after those therefore comes from a load that began after
+		// the write, and so saw the revision it made.
+		loadsPerFlip = readerCount + 1
 	)
-	// Readers report progress with a non-blocking send and the flipper waits on
-	// receives, so it parks rather than spinning: a Gosched loop here holds the
-	// only P at GOMAXPROCS=1 and turns a 10ms test into a 7s one. A dropped
-	// send just means the flipper waits for the next load, of which there are
-	// always more.
-	progress := make(chan struct{}, readerCount)
+	// Both sides block on the channel rather than polling. A non-blocking send
+	// here would let a reader that found no receiver loop straight back into
+	// load, which at GOMAXPROCS=1 holds the only P until async preemption fires
+	// and turns a 0.2s test into a 7s one.
+	progress := make(chan struct{})
 	flipsDone := make(chan struct{})
+	// Verdicts come back over a channel: require.* calls runtime.Goexit, which
+	// on a worker would let Wait proceed as though it had finished.
+	bad := make(chan string, readerCount+1)
+	report := func(msg string) {
+		select {
+		case bad <- msg:
+		default:
+		}
+	}
+
 	var flipper, readers sync.WaitGroup
 	flipper.Add(1)
 	go func() {
@@ -880,42 +891,45 @@ func TestKeytabCacheConcurrentReload(t *testing.T) {
 			for range loadsPerFlip {
 				<-progress
 			}
+			// A failed write leaves the revision unchanged, which surfaces
+			// downstream as "no episode lines" — a report about the cache
+			// rather than about the write that actually failed.
 			if i%2 == 0 {
-				_ = os.WriteFile(filename, []byte("12"), 0o600)
-			} else {
-				_ = os.WriteFile(filename, good, 0o600)
-				// Restoring the original mtime makes the stamps match the
-				// snapshot, so recovery goes through the cache-hit path.
-				_ = os.Chtimes(filename, restoreStamp.ModTime(), restoreStamp.ModTime())
+				if writeErr := os.WriteFile(filename, []byte("12"), 0o600); writeErr != nil {
+					report(fmt.Sprintf("flip %d: write broken keytab: %v", i, writeErr))
+					return
+				}
+				continue
+			}
+			if writeErr := os.WriteFile(filename, good, 0o600); writeErr != nil {
+				report(fmt.Sprintf("flip %d: write good keytab: %v", i, writeErr))
+				return
+			}
+			// Restoring the original mtime makes the stamps match the
+			// snapshot, so recovery goes through the cache-hit path.
+			if timeErr := os.Chtimes(filename, restoreStamp.ModTime(), restoreStamp.ModTime()); timeErr != nil {
+				report(fmt.Sprintf("flip %d: restore mtime: %v", i, timeErr))
+				return
 			}
 		}
 	}()
-	// Verdicts come back over a channel: require.* calls runtime.Goexit, which
-	// on a worker would let readers.Wait proceed as though it had finished. A
-	// reader that sees a violation keeps going rather than returning, so the
-	// flipper's wait above cannot be starved by readers dropping out.
-	bad := make(chan string, readerCount)
 	for range readerCount {
 		readers.Add(1)
 		go func() {
 			defer readers.Done()
 			for {
-				select {
-				case <-flipsDone:
-					return
-				default:
-				}
 				kt, loadErr := cache.load()
-				select {
-				case progress <- struct{}{}:
-				default:
-				}
 				// Either a keytab or an error, never both and never neither.
 				if (loadErr == nil) == (kt == nil) {
-					select {
-					case bad <- fmt.Sprintf("load returned keytab=%v err=%v", kt != nil, loadErr):
-					default:
-					}
+					report(fmt.Sprintf("load returned keytab=%v err=%v", kt != nil, loadErr))
+				}
+				// Reporting a violation does not end the loop: the flipper is
+				// waiting on these sends, and a reader dropping out would
+				// starve it into a deadlock rather than a failure.
+				select {
+				case progress <- struct{}{}:
+				case <-flipsDone:
+					return
 				}
 			}
 		}()
@@ -959,18 +973,34 @@ func TestKeytabCacheConcurrentReload(t *testing.T) {
 // Frames are matched rather than the goroutine's header state, which the
 // runtime has renamed across releases; the frames below Lock are elided for a
 // parked goroutine, so they cannot be matched either.
+//
+// The budget is seconds rather than tens of seconds because the loader only has
+// to be scheduled and run two syscalls. A caller loops over this — should the
+// frame match ever stop holding, thirty generous waits would blow the package's
+// own 10-minute timeout and bury this diagnostic under a goroutine dump.
 func waitUntilBlockedOnMutex(t *testing.T, symbol string) {
 	t.Helper()
-	buf := make([]byte, 1<<20)
 	require.Eventually(t, func() bool {
-		for _, g := range strings.Split(string(buf[:runtime.Stack(buf, true)]), "\n\n") {
+		for _, g := range strings.Split(goroutineDump(), "\n\n") {
 			if strings.Contains(g, symbol) && strings.Contains(g, "sync.(*Mutex).Lock(") {
 				return true
 			}
 		}
 		return false
-	}, 30*time.Second, 200*time.Microsecond,
+	}, 5*time.Second, 200*time.Microsecond,
 		"no goroutine blocked on a mutex in %s", symbol)
+}
+
+// goroutineDump returns every goroutine's stack, growing the buffer until the
+// dump fits. A truncated dump could cut out the very block being matched, which
+// would turn a scheduling wait into a timeout.
+func goroutineDump() string {
+	for size := 1 << 16; ; size *= 2 {
+		buf := make([]byte, size)
+		if n := runtime.Stack(buf, true); n < size {
+			return string(buf[:n])
+		}
+	}
 }
 
 // lockedWriter serialises writes so the test can read the buffer safely.
@@ -1458,7 +1488,11 @@ func TestUnderLockMatchClosesEpisode(t *testing.T) {
 		defer close(done)
 		_, _ = cache.load()
 	}()
-	time.Sleep(2 * time.Millisecond)
+	// Waited for rather than slept on: a loader that had not yet stat'd would
+	// see the restored revision on its pre-lock stat, match the snapshot and
+	// close the episode through the lock-free path instead — which satisfies
+	// both assertions below without the under-lock branch running at all.
+	waitUntilBlockedOnMutex(t, "(*keytabFileCache).load(")
 	require.NoError(t, os.WriteFile(filename, original, 0o600))
 	require.NoError(t, os.Chtimes(filename, info.ModTime(), info.ModTime()))
 	cache.mu.Unlock()

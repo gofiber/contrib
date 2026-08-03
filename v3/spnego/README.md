@@ -199,7 +199,11 @@ The `Config` struct supports the following fields:
 
 ### Logging
 
-gokrb5 writes a line for every request that presents a token, with no level of its own: one on success, one on a refusal, and one on a token it cannot parse. On a busy service that is a line per request. The single leg it stays silent on is the opening challenge — the request with no `Authorization` header — so enabling this is not cheap on authenticated traffic. Leaving both `Log` and `UseFiberLogger` unset keeps that volume off the log entirely. Setting either one opts in, and note that neither honours Fiber's log level.
+gokrb5 writes a line for every request carrying a `Negotiate` token, with no level of its own: one on success, one on a refusal, and one on a token it cannot parse. On a busy service that is a line per request, so enabling this is not cheap on authenticated traffic. It is silent only for requests it declines to negotiate at all — no `Authorization` header, or one for a different scheme.
+
+One case escapes that rule: gokrb5 parses the client address before it looks at the token and logs when it cannot, so a listener whose remote addresses are not `host:port` — a Unix socket, for instance — produces a line on every request, including the opening challenge.
+
+Leaving both `Log` and `UseFiberLogger` unset keeps all of that off the log. Setting either one opts in, and note that neither honours Fiber's log level.
 
 ### Customizing the unauthorized response
 
