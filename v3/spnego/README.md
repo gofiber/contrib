@@ -90,14 +90,18 @@ func main() {
 		return c.SendString(fmt.Sprintf("Hello, %s!", identity.UserName()))
 	})
 
-	log.Info("Server is running on :3000")
-	app.Listen(":3000")
+	log.Info("Starting server on :3000")
+	if err := app.Listen(":3000"); err != nil {
+		log.Fatalf("Failed to start server: %v", err)
+	}
 }
 ```
 
 ## Dynamic Keytab Lookup
 
 The middleware is designed with extensibility in mind, allowing keytab retrieval from various sources beyond static files:
+
+> **`KeytabLookup` is called on every authenticated request.** It sits in the request hot path, so a lookup that contacts an external system will add its latency — and its failure modes — to each authentication. If you fetch from a database, a secrets manager, or a remote service, cache the result and refresh it out of band (on a TTL, a file-modification check, or a rotation event), and apply a bounded timeout. `NewKeytabFileLookupFunc` re-reads and re-parses its files on every call, so wrap it likewise if it sits in front of a busy route.
 
 ```go
 // Example: Retrieve keytab from a database
@@ -121,9 +125,9 @@ func remoteKeytabLookup() (*keytab.Keytab, error) {
 
 Creates a new SPNEGO authentication middleware.
 
-### `GetAuthenticatedIdentityFromContext(ctx fiber.Ctx) (goidentity.Identity, bool)`
+### `GetAuthenticatedIdentityFromContext[T FiberContext](ctx T) (goidentity.Identity, bool)`
 
-Retrieves the authenticated identity from the Fiber context.
+Retrieves the authenticated identity from the Fiber context. `FiberContext` is any type exposing `Locals(key any, value ...any) any`, so in handlers this is normally called as `GetAuthenticatedIdentityFromContext(c)` with a `fiber.Ctx`.
 
 ### `NewKeytabFileLookupFunc(keytabFiles ...string) (KeytabLookupFunc, error)`
 

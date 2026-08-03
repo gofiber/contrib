@@ -140,13 +140,15 @@ func NewMockKeytab(opts ...MockOption) (*keytab.Keytab, func(), error) {
 		clean = func() {
 			_ = defaultFileOperator.Remove(opt.Filename)
 		}
-		if _, err = kt.Write(file); err != nil {
-			if err = file.Close(); err != nil {
+		if _, writeErr := kt.Write(file); writeErr != nil {
+			// Keep the write error in its own variable: reusing err would lose it
+			// whenever the subsequent Close succeeds.
+			if closeErr := file.Close(); closeErr != nil {
 				clean()
-				return nil, nil, fmt.Errorf("error closing file: %w", err)
+				return nil, nil, fmt.Errorf("error writing to file: %w (also failed to close file: %w)", writeErr, closeErr)
 			}
 			clean()
-			return nil, nil, fmt.Errorf("error writing to file: %w", err)
+			return nil, nil, fmt.Errorf("error writing to file: %w", writeErr)
 		}
 		if err = file.Close(); err != nil {
 			clean()

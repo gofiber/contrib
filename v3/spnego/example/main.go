@@ -1,4 +1,4 @@
-package example
+package main
 
 import (
 	"fmt"
@@ -10,14 +10,16 @@ import (
 	"github.com/gofiber/fiber/v3/log"
 )
 
-func ExampleNew() {
+func main() {
 	app := fiber.New()
 	// create mock keytab file
 	// you must use a real keytab file
 	_, clean, err := utils.NewMockKeytab(
-		utils.WithPrincipal("HTTP/sso1.example.com"),
+		// The SPN must match the host clients contact below, or the client's
+		// service ticket will not match any entry in the keytab.
+		utils.WithPrincipal("HTTP/sso.example.local"),
 		utils.WithRealm("EXAMPLE.LOCAL"),
-		utils.WithFilename("./temp-sso1.keytab"),
+		utils.WithFilename("./temp-sso.keytab"),
 		utils.WithPairs(utils.EncryptTypePair{
 			Version:     2,
 			EncryptType: 18,
@@ -28,7 +30,7 @@ func ExampleNew() {
 		log.Fatalf("create mock keytab error: %v", err)
 	}
 	defer clean()
-	keytabLookup, err := spnego.NewKeytabFileLookupFunc("./temp-sso1.keytab")
+	keytabLookup, err := spnego.NewKeytabFileLookupFunc("./temp-sso.keytab")
 	if err != nil {
 		panic(fmt.Errorf("create keytab lookup function failed: %w", err))
 	}
