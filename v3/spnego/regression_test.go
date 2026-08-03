@@ -462,19 +462,25 @@ func TestKeytabRetryThrottle(t *testing.T) {
 	require.NoError(t, os.WriteFile(filename, []byte("12"), 0o600))
 	_, err = cache.load()
 	require.NoError(t, err)
-	firstAttempt := cache.deg.lastAttempt
+	// deg is mutex-guarded, so read it the way the cache does.
+	lastAttempt := func() time.Time {
+		cache.mu.Lock()
+		defer cache.mu.Unlock()
+		return cache.deg.lastAttempt
+	}
+	firstAttempt := lastAttempt()
 
 	// Within the retry window the file is not read again.
 	now = now.Add(100 * time.Millisecond)
 	_, err = cache.load()
 	require.NoError(t, err)
-	require.Equal(t, firstAttempt, cache.deg.lastAttempt, "should not re-read within the retry window")
+	require.Equal(t, firstAttempt, lastAttempt(), "should not re-read within the retry window")
 
 	// Past it, one more attempt is made.
 	now = now.Add(2 * time.Second)
 	_, err = cache.load()
 	require.NoError(t, err)
-	require.NotEqual(t, firstAttempt, cache.deg.lastAttempt, "should retry once the window elapses")
+	require.NotEqual(t, firstAttempt, lastAttempt(), "should retry once the window elapses")
 }
 
 // TestNewKeytabFileCacheWiresDefaults pins what the production constructor
@@ -599,4 +605,37 @@ func TestKeytabRotationByRenameDetected(t *testing.T) {
 	info2 := utils.GetKeytabInfo(after)
 	require.Len(t, info2, 1)
 	require.Equal(t, "HTTP/sso.example.org@TEST.LOCAL", info2[0].PrincipalName)
+}
+
+// TestKeytabUnreadableIsNotCoveredFor checks the branch that separates a file
+// that cannot be read from one that cannot be parsed. Only the latter is a
+// rotation caught mid-write; an unreadable keytab must surface immediately, or
+// revoking one by making it unreachable would be masked by the cache.
+//
+// A directory in place of the file yields EISDIR portably; chmod is not usable
+// because the suite may run as root.
+func TestKeytabUnreadableIsNotCoveredFor(t *testing.T) {
+	dir := t.TempDir()
+	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
+
+	cache := newKeytabFileCache([]string{filename})
+	good, err := cache.load()
+	require.NoError(t, err)
+	require.NotNil(t, good)
+
+	// Replace the keytab with a directory: it stats fine but cannot be read.
+	require.NoError(t, os.Remove(filename))
+	require.NoError(t, os.Mkdir(filename, 0o700))
+
+	_, err = cache.load()
+	require.Error(t, err, "an unreadable keytab must not be covered for by the cache")
+	require.ErrorIs(t, err, ErrLoadKeytabFileFailed)
+	require.NotErrorIs(t, err, errKeytabUnparsable)
+
+	// The failing revision is still recorded, so the retry throttle applies.
+	cache.mu.Lock()
+	recorded := cache.deg.cause != nil
+	cache.mu.Unlock()
+	require.True(t, recorded, "an unreadable revision must be recorded for throttling")
+	require.True(t, cache.degraded.Load())
 }

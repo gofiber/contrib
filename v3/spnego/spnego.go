@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -127,11 +128,17 @@ func resolveLogger(cfg Config, fiberLogger flog.AllLogger[*log.Logger]) *log.Log
 	return fiberLogger.Logger()
 }
 
-// requestForSPNEGO builds the net/http request gokrb5 inspects. It reads only
-// the Authorization header and the remote address — with no session manager
-// configured it never looks at cookies — so the request is assembled directly
-// rather than through adaptor.ConvertRequest, which would parse the
-// client-supplied URI and copy every header on each authenticated request.
+// requestForSPNEGO builds the net/http request gokrb5 inspects. Assembling it
+// directly avoids adaptor.ConvertRequest, which parses the client-supplied URI
+// and copies every header on each authenticated request.
+//
+// gokrb5 v8.4.4's server path reads only the Authorization header and the
+// remote address; it consults cookies solely behind a session-manager check,
+// and this middleware configures no session manager. URL and Host are populated
+// anyway, both because net/http documents a server request as always having a
+// URL and so that a future gokrb5 that reads them does not nil-panic. Re-check
+// this when upgrading gokrb5 or if a session manager is ever exposed through
+// Config.
 func requestForSPNEGO(ctx fiber.Ctx) *http.Request {
 	header := make(http.Header, 1)
 	if auth := ctx.Get(fiber.HeaderAuthorization); auth != "" {
@@ -139,6 +146,8 @@ func requestForSPNEGO(ctx fiber.Ctx) *http.Request {
 	}
 	return &http.Request{
 		Method:     ctx.Method(),
+		URL:        &url.URL{Path: ctx.Path()},
+		Host:       ctx.Hostname(),
 		Header:     header,
 		RemoteAddr: ctx.RequestCtx().RemoteAddr().String(),
 	}
@@ -178,19 +187,21 @@ func New(cfg Config) (fiber.Handler, error) {
 	// Internal failures are logged here rather than returned to the client, and
 	// throttled so a persistent fault cannot become a log flood.
 	var (
-		logMu        sync.Mutex
-		lastSentinel error
-		lastLogTime  time.Time
+		logMu      sync.Mutex
+		lastLogged = make(map[error]time.Time)
 	)
 	logInternal := func(sentinel, cause error) {
-		// Keyed on the sentinel, not on the cause: a conversion failure embeds
-		// the request URI, so keying on the message would let a caller defeat
-		// the throttle just by varying the path.
+		// Keyed per sentinel rather than per message: a cause can embed
+		// client-controlled text, and keying on that would let a caller defeat
+		// the throttle by varying it. A single slot would not do either — two
+		// alternating error kinds would reset each other's window on every
+		// request. The key set is this package's own sentinels, so the map
+		// cannot grow without bound.
 		logMu.Lock()
 		now := time.Now()
-		throttled := sentinel == lastSentinel && now.Sub(lastLogTime) < internalErrorLogEvery
+		throttled := now.Sub(lastLogged[sentinel]) < internalErrorLogEvery
 		if !throttled {
-			lastSentinel, lastLogTime = sentinel, now
+			lastLogged[sentinel] = now
 		}
 		logMu.Unlock()
 		if throttled {

@@ -76,35 +76,23 @@ type Config struct {
 }
 
 // fileStamp identifies a keytab file revision cheaply enough to check on every
-// request. Identity is included alongside size and modification time, so
-// replacing a keytab by rename is detected even when a tool such as cp -p or
-// rsync -a preserves the timestamp of a same-sized file.
+// request. Identity is recorded alongside size and modification time where the
+// platform exposes it, so replacing a keytab by rename is detected even when
+// the staging tool preserved the timestamp of a same-sized file.
 //
-// It is still not exact: an in-place rewrite that keeps the file the same size
-// and lands within one filesystem timestamp tick looks unchanged, because the
-// file's identity does not change either.
+// It is deliberately plain and comparable: the os.FileInfo it came from is not
+// retained, so a snapshot stays immutable and readable without locking.
+//
+// Detection is still not exact. An in-place rewrite that keeps the file the
+// same size and lands within one filesystem timestamp tick looks unchanged,
+// because the file's identity does not change either. Neither does a
+// permissions change, which alters only ctime.
 type fileStamp struct {
 	size    int64
 	modTime int64
-	info    os.FileInfo
-}
-
-// sameRevision reports whether two stamp sets describe the same files.
-// os.SameFile compares the underlying identity (inode and device on Unix),
-// which slices.Equal cannot do because os.FileInfo is an interface.
-func sameRevision(a, b []fileStamp) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i].size != b[i].size || a[i].modTime != b[i].modTime {
-			return false
-		}
-		if !os.SameFile(a[i].info, b[i].info) {
-			return false
-		}
-	}
-	return true
+	dev     uint64
+	ino     uint64
+	hasID   bool
 }
 
 // keytabSnapshot is an immutable view of the merged keytab and the file
@@ -204,7 +192,14 @@ func (c *keytabFileCache) stat() ([]fileStamp, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%w: file %s load failed: %w", ErrLoadKeytabFileFailed, keytabFile, err)
 		}
-		stamps[i] = fileStamp{size: info.Size(), modTime: info.ModTime().UnixNano(), info: info}
+		dev, ino, hasID := fileIdentity(info)
+		stamps[i] = fileStamp{
+			size:    info.Size(),
+			modTime: info.ModTime().UnixNano(),
+			dev:     dev,
+			ino:     ino,
+			hasID:   hasID,
+		}
 	}
 	return stamps, nil
 }
@@ -288,26 +283,27 @@ func (c *keytabFileCache) endEpisodeIfCurrent(expected []fileStamp) {
 		return
 	}
 	fresh, err := c.stat()
-	if err != nil || !sameRevision(fresh, expected) {
+	if err != nil || !slices.Equal(fresh, expected) {
 		return
 	}
 	c.clearDegraded()
 }
 
-// load returns the merged keytab, re-reading the files only when their size or
-// modification time differs from the cached revision. The returned pointer is
-// stable across calls for as long as the files are unchanged, which lets a
-// caller reuse anything it derived from the keytab.
+// load returns the merged keytab, re-reading the files only when their
+// revision differs from the cached one. The returned pointer is stable across
+// calls for as long as the files are unchanged, which lets a caller reuse
+// anything it derived from the keytab.
 //
 // Because change detection is inexact (see fileStamp), rotate a keytab by
-// writing a new file and renaming it over the old one: that normally moves the
-// modification time, whereas an in-place rewrite of identical length may not.
+// writing a new file and renaming it over the old one. That changes the file's
+// identity, so it is picked up even when size and modification time are
+// preserved, whereas an in-place rewrite of identical length may not be.
 func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 	stamps, err := c.stat()
 	if err != nil {
 		return nil, err
 	}
-	if snap := c.snapshot.Load(); snap != nil && sameRevision(snap.stamps, stamps) {
+	if snap := c.snapshot.Load(); snap != nil && slices.Equal(snap.stamps, stamps) {
 		// Rare, and deliberately off the common path: an episode that ended
 		// without a reload still has to be closed out.
 		if c.degraded.Load() {
@@ -319,7 +315,7 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// Another goroutine may have reloaded while this one waited for the lock.
-	if snap := c.snapshot.Load(); snap != nil && sameRevision(snap.stamps, stamps) {
+	if snap := c.snapshot.Load(); snap != nil && slices.Equal(snap.stamps, stamps) {
 		return snap.merged, nil
 	}
 
@@ -329,7 +325,7 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 	// cannot be read as well as one that cannot be parsed — both would
 	// otherwise put a full read of every keytab on every request, serialised
 	// behind this mutex.
-	if c.deg.cause != nil && sameRevision(c.deg.stamps, stamps) && now.Sub(c.deg.lastAttempt) < c.retry() {
+	if c.deg.cause != nil && slices.Equal(c.deg.stamps, stamps) && now.Sub(c.deg.lastAttempt) < c.retry() {
 		if errors.Is(c.deg.cause, errKeytabUnparsable) {
 			return c.serveStale(c.deg.cause, now)
 		}
@@ -358,9 +354,11 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 // NewKeytabFileLookupFunc creates a new KeytabLookupFunc that loads keytab files
 // It accepts one or more keytab file paths and returns a function that loads them
 //
-// The merged keytab is cached and reused until one of the files changes size or
-// modification time, so rotating a keytab on disk still takes effect without
-// re-reading and re-parsing every file on every request.
+// The merged keytab is cached and reused until one of the files changes, so
+// rotating a keytab on disk still takes effect without re-reading and
+// re-parsing every file on every request. A file counts as changed when its
+// size, modification time or identity differs; see fileStamp for what that
+// does and does not catch.
 func NewKeytabFileLookupFunc(keytabFiles ...string) (KeytabLookupFunc, error) {
 	if len(keytabFiles) == 0 {
 		return nil, ErrConfigInvalidOfAtLeastOneKeytabFileRequired
