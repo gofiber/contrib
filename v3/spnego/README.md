@@ -117,7 +117,7 @@ The middleware is designed with extensibility in mind, allowing keytab retrieval
 >
 > `NewKeytabFileLookupFunc` already does this: it caches the merged keytab and re-reads the files only when one of them changes size, modification time or identity, so rotating a keytab on disk still takes effect without paying for a parse per request.
 >
-> Change detection compares each file's size, modification time and identity, so replacing a keytab by rename is picked up even when the staging tool preserved the timestamp of a same-sized file. Identity is the inode on Unix. On Windows it is the creation time, which is a hint rather than a dependable identity — NTFS file tunneling can restore a replaced file's creation time, and some filesystems report none — and on other platforms there is no identity at all; both fall back to size and modification time.
+> Change detection compares each file's size, modification time and identity. On Unix that means replacing a keytab by rename is picked up even when the staging tool preserved the timestamp of a same-sized file, because identity there is the inode. On Windows it is the creation time, which is a hint rather than a dependable identity — NTFS file tunneling can restore a replaced file's creation time, and some filesystems report none — and on other platforms there is no identity at all; both fall back to size and modification time.
 >
 > Detection is not exact even on Unix: an in-place rewrite that keeps the same size and lands within one filesystem timestamp tick looks unchanged, since the file's identity does not change either. Rotating by rename avoids that case on Unix. Elsewhere, where identity cannot be relied on, make sure the replacement differs in size or modification time.
 >

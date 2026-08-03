@@ -19,7 +19,9 @@ import (
 // and modification time.
 //
 // A dependable identity — volume serial plus file index — requires opening the
-// file, which would put a syscall on every authenticated request.
+// file, which would put a syscall on every authenticated request. If that is
+// ever adopted, flip identityDetectsRename in identity_rename_windows_test.go
+// so the rotation test stops skipping here.
 func fileRevisionID(info fs.FileInfo) fileID {
 	data, ok := info.Sys().(*syscall.Win32FileAttributeData)
 	if !ok {

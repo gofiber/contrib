@@ -1,9 +1,7 @@
-//go:build !unix
+//go:build !unix && !windows
 
 package spnego
 
-// identityDetectsRename is false off Unix. Windows offers only the creation
-// time, which NTFS file tunneling can restore onto a replacement made at the
-// same name, and other platforms expose no identity at all. See the
-// fileRevisionID implementations.
+// identityDetectsRename is false: fileRevisionID exposes no identity on these
+// platforms, so change detection uses size and modification time alone.
 const identityDetectsRename = false

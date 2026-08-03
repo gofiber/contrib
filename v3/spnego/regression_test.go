@@ -1,6 +1,7 @@
 package spnego
 
 import (
+	"bytes"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -581,12 +582,12 @@ func TestEndEpisodeIfCurrentRejectsStaleView(t *testing.T) {
 // staged by a tool that preserves the timestamp of a same-sized file. Size and
 // mtime alone would call that unchanged and keep serving the rotated-out keys.
 func TestKeytabRotationByRenameDetected(t *testing.T) {
-	dir := t.TempDir()
-	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
-
 	if !identityDetectsRename {
 		t.Skip("platform has no dependable file identity; detection falls back to size and mtime")
 	}
+
+	dir := t.TempDir()
+	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
 	info, err := os.Stat(filename)
 	require.NoError(t, err)
 
@@ -675,4 +676,47 @@ func TestRequestForSPNEGO(t *testing.T) {
 	require.NotNil(t, got.URL)
 	require.Empty(t, got.URL.Path)
 	require.Empty(t, got.URL.RawQuery)
+}
+
+// TestInternalErrorLogThrottle pins both halves of the throttle: the first
+// failure must always be logged, and a repeat inside the window must not be.
+//
+// The first half rests on time.Sub saturating against the zero time, which is
+// easy to "fix" into an inversion that swallows every line, so it is asserted
+// rather than left to a comment.
+func TestInternalErrorLogThrottle(t *testing.T) {
+	var logged bytes.Buffer
+	flog.SetOutput(&logged)
+	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
+
+	middleware, err := New(Config{
+		KeytabLookup: func() (*keytab.Keytab, error) {
+			return nil, errors.New("keytab boom")
+		},
+	})
+	require.NoError(t, err)
+
+	app := fiber.New()
+	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
+		return c.SendString("authenticated")
+	})
+	handler := app.Handler()
+	send := func() {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(fiber.MethodGet)
+		ctx.Request.SetRequestURI("/authenticate")
+		handler(ctx)
+		require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
+	}
+
+	send()
+	require.Contains(t, logged.String(), "keytab boom", "the first internal failure must be logged")
+	require.Equal(t, 1, strings.Count(logged.String(), "keytab boom"))
+
+	// Three more inside the window add nothing.
+	send()
+	send()
+	send()
+	require.Equal(t, 1, strings.Count(logged.String(), "keytab boom"),
+		"repeats inside the window must not be logged")
 }
