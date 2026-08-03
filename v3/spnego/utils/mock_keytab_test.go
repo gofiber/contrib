@@ -144,6 +144,25 @@ func TestNewMockKeytab(t *testing.T) {
 		require.ErrorContains(t, err, "error writing to file")
 		require.ErrorContains(t, err, "also failed to close file")
 	})
+	t.Run("a real open failure is reported", func(t *testing.T) {
+		// Runs against the default file operator rather than a substitute, so
+		// the production open path's own error branch is exercised and not just
+		// the mock standing in for it.
+		filename := path.Join(t.TempDir(), "no-such-directory", "temp.keytab")
+		_, _, err := NewMockKeytab(
+			WithPrincipal("HTTP/sso.example.com"),
+			WithRealm("TEST.LOCAL"),
+			WithPairs(EncryptTypePair{
+				Version:     3,
+				EncryptType: 18,
+				CreateTime:  time.Now(),
+			}),
+			WithFilename(filename),
+		)
+		require.ErrorIs(t, err, os.ErrNotExist)
+		require.ErrorContains(t, err, "error opening file")
+		require.NoFileExists(t, filename)
+	})
 	t.Run("a failed write is reported even when the close succeeds", func(t *testing.T) {
 		prevFileOperator := defaultFileOperator
 		defaultFileOperator = mockFileOperator{flag: readOnlyFileOperator}
