@@ -3233,9 +3233,23 @@ func TestUnparsableKeytabDoesNotLeakKeyMaterial(t *testing.T) {
 	require.NoError(t, err, "the cached keytab is served through the grace window")
 
 	require.Contains(t, logged.String(), "serving the last keytab that parsed")
-	require.NotContains(t, logged.String(), string(key),
-		"the log must not carry the keytab's key material either")
 	require.Contains(t, logged.String(), "keytab did not parse")
+
+	// The log needs a different needle than the error above. The episode line
+	// goes through quoteForLog, which renders a key's non-printable bytes as
+	// \xNN escapes, so searching the log for the raw bytes could never match
+	// however badly it leaked — which is what the first two versions of this
+	// test did.
+	//
+	// strconv.Quote is byte-wise, so the key renders the same inside the longer
+	// quoted cause as it does alone; the outer quotes are stripped to leave the
+	// substring that would appear there.
+	quoted := strconv.Quote(string(key))
+	escaped := quoted[1 : len(quoted)-1]
+	require.Contains(t, quoteForLog(torn), escaped,
+		"the escaped key must be what a leak would look like, or the check below is empty")
+	require.NotContains(t, logged.String(), escaped,
+		"the log must not carry the keytab's key material either")
 }
 
 // TestKeytabPathCannotForgeALogLine is what the quoting on the episode lines is
