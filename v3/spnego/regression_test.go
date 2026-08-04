@@ -805,6 +805,28 @@ func TestRequestForSPNEGOCopiesOutOfTheRequestBuffer(t *testing.T) {
 			}
 		}
 	}
+
+	// Without a session manager nothing outlives the handler, so the copies are
+	// not made — a Kerberos Authorization header runs to kilobytes and arrives
+	// as often as an unauthenticated caller cares to send one. Asserted rather
+	// than assumed, because the gate is invisible from the outside otherwise.
+	var bare *http.Request
+	bareCtx := &fasthttp.RequestCtx{}
+	require.NoError(t, bareCtx.Request.Read(bufio.NewReader(bytes.NewBufferString(raw))))
+	bareApp := fiber.New()
+	bareApp.All("/*", func(c fiber.Ctx) error {
+		bare = requestForSPNEGO(c, false)
+		return nil
+	})
+	bareApp.Handler()(bareCtx)
+	require.NotNil(t, bare)
+
+	require.True(t,
+		sharesStorage(bare.Header.Get(fiber.HeaderAuthorization),
+			bareCtx.Request.Header.Peek(fiber.HeaderAuthorization)),
+		"without a session manager the Authorization value has no reason to be copied")
+	require.True(t, sharesStorage(bare.Host, bareCtx.Request.URI().Host()),
+		"without a session manager Host has no reason to be copied")
 }
 
 // sharesStorage reports whether s begins inside b, which is what a string
@@ -2750,7 +2772,7 @@ func (m *failingSessionManager) Get(*http.Request, string) ([]byte, error) {
 // validation, so recording it as a failure would turn a slow or broken session
 // cache into a 500 on every request — the exact opposite of degrading quietly.
 func TestSessionManagerProbeLeavesGetAlone(t *testing.T) {
-	probe := sessionManagerProbe{delegate: &failingSessionManager{}}
+	probe := newSessionManagerProbe(&failingSessionManager{})
 	var recorder responseRecorder
 
 	_, err := probe.Get(httptest.NewRequest(http.MethodGet, "/", nil), "creds")
@@ -2765,7 +2787,7 @@ func TestSessionManagerProbeLeavesGetAlone(t *testing.T) {
 
 	// A New that succeeds records nothing.
 	var clean responseRecorder
-	ok := sessionManagerProbe{delegate: &recordingSessionManager{}}
+	ok := newSessionManagerProbe(&recordingSessionManager{})
 	require.NoError(t, ok.New(&clean, httptest.NewRequest(http.MethodGet, "/", nil), "creds", nil))
 	require.False(t, clean.sessionFailed)
 }
@@ -2797,7 +2819,7 @@ func TestSessionManagerProbeSeesThroughAWrappedWriter(t *testing.T) {
 		inner:          wrappedWriter{ResponseWriter: httptest.NewRecorder(), inner: &recorder},
 	}
 
-	probe := sessionManagerProbe{delegate: &failingSessionManager{}}
+	probe := newSessionManagerProbe(&failingSessionManager{})
 	err := probe.New(writer, httptest.NewRequest(http.MethodGet, "/", nil), "creds", nil)
 	require.ErrorIs(t, err, errSessionStoreDown)
 	require.True(t, recorder.sessionFailed, "the walk must reach the recorder through the wrappers")
@@ -2808,10 +2830,25 @@ func TestSessionManagerProbeSeesThroughAWrappedWriter(t *testing.T) {
 // whose Unwrap cycles. Neither can be allowed to panic or spin — the signal is
 // lost, which is what the log line is for, but the request still completes.
 func TestSessionManagerProbeSurvivesAForeignWriter(t *testing.T) {
-	for name, writer := range map[string]http.ResponseWriter{
-		"a writer that does not unwrap": httptest.NewRecorder(),
-		"a writer that unwraps to itself": &selfWrappingWriter{
-			ResponseWriter: httptest.NewRecorder(),
+	// The two exits are reported apart because they call for different things:
+	// a writer gokrb5 swapped out is a dependency change to look at, while a
+	// chain deeper than the bound just means raising the bound. A single
+	// message would send whoever reads it after the wrong one.
+	for name, tc := range map[string]struct {
+		writer     http.ResponseWriter
+		wantReason string
+	}{
+		"a writer that does not unwrap": {
+			writer:     httptest.NewRecorder(),
+			wantReason: "gokrb5 replaced the response writer",
+		},
+		"a writer that unwraps to itself": {
+			writer:     &selfWrappingWriter{ResponseWriter: httptest.NewRecorder()},
+			wantReason: "nests deeper than the unwrap limit",
+		},
+		"a chain one hop past the limit": {
+			writer:     nestedWriter(maxResponseWriterUnwraps+1, &responseRecorder{}),
+			wantReason: "nests deeper than the unwrap limit",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -2819,10 +2856,10 @@ func TestSessionManagerProbeSurvivesAForeignWriter(t *testing.T) {
 			flog.SetOutput(&logged)
 			t.Cleanup(func() { flog.SetOutput(os.Stderr) })
 
-			probe := sessionManagerProbe{delegate: &failingSessionManager{}}
+			probe := newSessionManagerProbe(&failingSessionManager{})
 			done := make(chan error, 1)
 			go func() {
-				done <- probe.New(writer, httptest.NewRequest(http.MethodGet, "/", nil), "creds", nil)
+				done <- probe.New(tc.writer, httptest.NewRequest(http.MethodGet, "/", nil), "creds", nil)
 			}()
 			select {
 			case err := <-done:
@@ -2832,14 +2869,93 @@ func TestSessionManagerProbeSurvivesAForeignWriter(t *testing.T) {
 			}
 
 			// Losing the signal is the hole the probe exists to close, so it
-			// must not be silent: this is the line that points at the
-			// dependency bump that caused it.
+			// must not be silent.
 			require.Contains(t, logged.String(), "session failure could not be recorded",
 				"a lost signal must be reported, not swallowed")
-			require.Contains(t, logged.String(), "gokrb5 replaced the response writer",
-				"the line must say what to look at")
+			require.Contains(t, logged.String(), tc.wantReason,
+				"the line must say which of the two happened")
 		})
 	}
+}
+
+// nestedWriter wraps inner in depth layers, so a test can put the recorder at a
+// chosen distance from the writer the probe is handed.
+func nestedWriter(depth int, inner http.ResponseWriter) http.ResponseWriter {
+	w := inner
+	for range depth {
+		w = wrappedWriter{ResponseWriter: httptest.NewRecorder(), inner: w}
+	}
+	return w
+}
+
+// TestSessionManagerProbeUnwrapsExactlyAsManyTimesAsItSays pins the bound
+// against its name. A walk that stopped one hop early would lose the signal for
+// a chain the constant promises to cover, and the shortfall would only show up
+// as a misclassified session failure on some future gokrb5.
+func TestSessionManagerProbeUnwrapsExactlyAsManyTimesAsItSays(t *testing.T) {
+	var atTheLimit responseRecorder
+	require.Empty(t, recordSessionFailure(nestedWriter(maxResponseWriterUnwraps, &atTheLimit)),
+		"a recorder exactly maxResponseWriterUnwraps hops away must be found")
+	require.True(t, atTheLimit.sessionFailed)
+
+	var pastTheLimit responseRecorder
+	require.Contains(t, recordSessionFailure(nestedWriter(maxResponseWriterUnwraps+1, &pastTheLimit)),
+		"nests deeper than the unwrap limit")
+	require.False(t, pastTheLimit.sessionFailed)
+}
+
+// TestWiredSessionManagerProbeCanReportALostSignal pins the probe as production
+// builds it, not as the tests construct it.
+//
+// The throttle is only touched when the recorder cannot be found, which no test
+// going through gokrb5 can reach — it always passes the recorder through. So a
+// probe built without its throttle looks fine everywhere until the day the
+// signal is lost, and then panics inside the authentication middleware on a
+// request that was already failing. This is the assertion that fails instead.
+func TestWiredSessionManagerProbeCanReportALostSignal(t *testing.T) {
+	flog.SetOutput(io.Discard)
+	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
+
+	settings := service.NewSettings(nil, serviceSettings(Config{
+		SessionManager: &failingSessionManager{},
+	})...)
+
+	require.NotPanics(t, func() {
+		// A writer that is not the recorder, which is the only way to reach the
+		// reporting path at all.
+		err := settings.SessionManager().New(
+			httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "creds", nil)
+		require.ErrorIs(t, err, errSessionStoreDown)
+	})
+}
+
+// TestSessionManagerProbeThrottlesItsDiagnostic covers the rate. The line fires
+// once per request that reaches a failing session store, so an outage would
+// otherwise produce one per authenticated request for as long as it lasts —
+// which is the flood every other internal-failure log in this package is
+// throttled to prevent.
+func TestSessionManagerProbeThrottlesItsDiagnostic(t *testing.T) {
+	var logged bytes.Buffer
+	flog.SetOutput(&logged)
+	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
+
+	probe := newSessionManagerProbe(&failingSessionManager{})
+	for range 5 {
+		require.ErrorIs(t,
+			probe.New(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "creds", nil),
+			errSessionStoreDown)
+	}
+	require.Equal(t, 1, strings.Count(logged.String(), "session failure could not be recorded"),
+		"a repeating fault must not turn into one log line per request")
+
+	// The window is claimed, not the line suppressed for good: winding the
+	// clock past it lets the next one through, so a fault that outlasts the
+	// window still reappears in the log.
+	probe.signalLost.nowFn = func() time.Time { return time.Now().Add(2 * internalErrorLogEvery) }
+	require.ErrorIs(t,
+		probe.New(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "creds", nil),
+		errSessionStoreDown)
+	require.Equal(t, 2, strings.Count(logged.String(), "session failure could not be recorded"))
 }
 
 // TestSessionManagerProbeIsQuietWhenItFindsTheRecorder is the other half. The
@@ -2851,7 +2967,7 @@ func TestSessionManagerProbeIsQuietWhenItFindsTheRecorder(t *testing.T) {
 	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
 
 	var recorder responseRecorder
-	probe := sessionManagerProbe{delegate: &failingSessionManager{}}
+	probe := newSessionManagerProbe(&failingSessionManager{})
 	require.ErrorIs(t,
 		probe.New(&recorder, httptest.NewRequest(http.MethodGet, "/", nil), "creds", nil),
 		errSessionStoreDown)

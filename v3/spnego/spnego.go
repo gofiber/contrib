@@ -109,43 +109,79 @@ func isSPNEGOOutcome(value string) bool {
 // not be recorded as one.
 type sessionManagerProbe struct {
 	delegate service.SessionMgr
+	// signalLost throttles the one log line this type emits, which fires per
+	// request for as long as the condition lasts. A pointer because the probe
+	// is copied into gokrb5's settings by value, and a throttle that copied
+	// with it would let every copy through its own first line.
+	signalLost *logThrottle
+}
+
+// newSessionManagerProbe builds the probe with its throttle. Constructing the
+// struct directly leaves that nil, which panics on the path it exists to report
+// — inside the authentication middleware, on a request that was already failing.
+func newSessionManagerProbe(delegate service.SessionMgr) sessionManagerProbe {
+	return sessionManagerProbe{
+		delegate:   delegate,
+		signalLost: &logThrottle{every: internalErrorLogEvery},
+	}
 }
 
 func (p sessionManagerProbe) New(w http.ResponseWriter, r *http.Request, k string, v []byte) error {
 	err := p.delegate.New(w, r, k, v)
-	if err != nil && !recordSessionFailure(w) {
-		// Losing the signal is not fatal — isSPNEGOOutcome still classifies
-		// most of these correctly — but it is exactly the hole this probe
-		// closed, so it must not go unnoticed. gokrb5 v8.4.4 passes the
-		// ResponseWriter straight through, so reaching here means a version
-		// that no longer does, which is a dependency bump to look at.
-		flog.Errorf("spnego: session failure could not be recorded: gokrb5 replaced the response writer with %T; "+
-			"a session manager that writes a Negotiate header before failing may now be misread as authenticated", w)
+	if err != nil {
+		if reason := recordSessionFailure(w); reason != "" {
+			// Losing the signal is not fatal — isSPNEGOOutcome still classifies
+			// most of these correctly — but it is exactly the hole this probe
+			// closed, so it must not go unnoticed.
+			//
+			// Throttled like every other internal failure in this package, and
+			// for the same reason: this fires once per request that reaches a
+			// failing session store, which is a rate the caller does not
+			// control but the store's outage duration does.
+			p.signalLost.do(func() {
+				flog.Errorf("spnego: session failure could not be recorded: %s (writer %T); "+
+					"a session manager that writes a Negotiate header before failing may now "+
+					"be misread as authenticated", reason, w)
+			})
+		}
 	}
 	return err //nolint:wrapcheck // gokrb5 inspects only whether this is nil
 }
 
-// recordSessionFailure marks the middleware's recorder, reporting whether it
-// found one. The writer is unwrapped along the way, following the convention
-// net/http itself uses in http.ResponseController, so a gokrb5 that wrapped the
-// writer to add a capability would still be seen through.
-func recordSessionFailure(w http.ResponseWriter) bool {
-	for range maxResponseWriterUnwraps {
+// recordSessionFailure marks the middleware's recorder, and reports why it could
+// not when it could not — the empty string meaning it did.
+//
+// The writer is unwrapped along the way, following the convention net/http
+// itself uses in http.ResponseController, so a gokrb5 that wrapped the writer to
+// add a capability would still be seen through.
+//
+// The two failures are told apart because they call for different things. An
+// unrecognised writer means gokrb5 replaced it, which is a dependency change to
+// look at; an exhausted walk means the recorder is still down there and the
+// bound is simply too low.
+func recordSessionFailure(w http.ResponseWriter) string {
+	// Bounded because a writer whose Unwrap returns itself, or a pair that
+	// returns each other, would otherwise hang the request. Written as an
+	// unwrap count rather than an inspection count so it means what its name
+	// says: the writer handed in is inspected before any unwrap happens, and
+	// then once more after each one.
+	for unwraps := 0; ; unwraps++ {
 		if recorder, ok := w.(*responseRecorder); ok {
 			recorder.sessionFailed = true
-			return true
+			return ""
+		}
+		if unwraps == maxResponseWriterUnwraps {
+			return "the response writer nests deeper than the unwrap limit"
 		}
 		wrapper, ok := w.(interface{ Unwrap() http.ResponseWriter })
 		if !ok {
-			return false
+			return "gokrb5 replaced the response writer"
 		}
 		w = wrapper.Unwrap()
 	}
-	return false
 }
 
-// maxResponseWriterUnwraps bounds the walk. A writer whose Unwrap returns
-// itself, or a pair that returns each other, would otherwise hang the request.
+// maxResponseWriterUnwraps bounds the walk in recordSessionFailure.
 const maxResponseWriterUnwraps = 8
 
 func (p sessionManagerProbe) Get(r *http.Request, k string) ([]byte, error) {
@@ -317,6 +353,16 @@ func resolveLogger(cfg Config, fiberLogger flog.AllLogger[*log.Logger]) *log.Log
 	return fiberLogger.Logger()
 }
 
+// ownedIf copies s when the caller needs a string that outlives the request,
+// and hands back Fiber's own view when it does not. See requestForSPNEGO for
+// which of the two each field is.
+func ownedIf(owned bool, s string) string {
+	if !owned {
+		return s
+	}
+	return strings.Clone(s)
+}
+
 // requestForSPNEGO builds the net/http request gokrb5 inspects. Assembling it
 // directly avoids adaptor.ConvertRequest, which parses the client-supplied URI
 // and copies every header on each authenticated request.
@@ -326,23 +372,29 @@ func resolveLogger(cfg Config, fiberLogger flog.AllLogger[*log.Logger]) *log.Log
 // withCookies mirrors whether Config.SessionManager is set. Re-check this when
 // upgrading gokrb5.
 //
-// Every string that comes out of the request buffer is copied. Fiber returns
-// those as views into fasthttp's storage unless Config.Immutable is set, and
-// that storage is reused by the next request on the same worker — so a
-// Config.SessionManager that keeps one, which is ordinary enough for a manager
-// recording the host it issued a session for, would read back another
-// connection's bytes. The copies cost a few small allocations on a path that is
-// already decoding base64 and unmarshalling ASN.1; a session record naming the
-// wrong client cannot be undone.
+// Strings that come out of the request buffer are copied, but only when a
+// session manager is configured. Fiber returns those as views into fasthttp's
+// storage unless Config.Immutable is set, and fasthttp pools its request
+// contexts across connections — so a string kept past the handler reads back
+// whichever client came next, not merely more of the same one. Nothing else
+// keeps them: gokrb5 splits and base64-decodes the Authorization header while
+// the handler runs and reads none of the other fields, so only a
+// Config.SessionManager can outlive the buffer, and that is ordinary enough for
+// one recording which host it issued a session for.
 //
-// Three of the fields need no copy and say so where they are set: Method comes
-// from Fiber's table of constants, RemoteAddr from net.Addr.String, and the
-// Cookie header is rebuilt through a strings.Builder.
+// Gating them matters because the copy is not free on the request that does not
+// need it: a Kerberos Authorization header runs to kilobytes, and an
+// unauthenticated caller controls how often it arrives. A session record naming
+// the wrong client, on the other hand, cannot be undone.
+//
+// Three fields need no copy either way, and say so where they are set: Method
+// comes from Fiber's table of constants, RemoteAddr from net.Addr.String, and
+// the Cookie header is rebuilt through a strings.Builder.
 func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
 	fasthttpCtx := ctx.RequestCtx()
 	header := make(http.Header, 2)
 	if auth := ctx.Get(fiber.HeaderAuthorization); auth != "" {
-		header.Set(fiber.HeaderAuthorization, strings.Clone(auth))
+		header.Set(fiber.HeaderAuthorization, ownedIf(withCookies, auth))
 	}
 	// Forwarded only for a session manager, which reads the session out of the
 	// cookies. Sending them unconditionally would hand gokrb5 every cookie the
@@ -354,6 +406,10 @@ func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
 	// Copying it would forward a subset that varies with whatever unrelated
 	// middleware ran first, and a session cookie on the second line would go
 	// missing — which reads as "no session" and mints a fresh one per request.
+	//
+	// Rebuilding is also what makes this one owned: the Builder accumulates its
+	// own bytes, so unlike Host and the Authorization value there is nothing
+	// here still pointing into the request buffer.
 	if withCookies {
 		var cookies strings.Builder
 		for key, value := range fasthttpCtx.Request.Header.Cookies() {
@@ -396,8 +452,10 @@ func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
 		// it is Host rather than Hostname, which drops the port. gokrb5 does
 		// not read it; it is set because it can be set faithfully, unlike the
 		// rest of the URL.
-		Host:       strings.Clone(ctx.Host()),
-		Header:     header,
+		Host:   ownedIf(withCookies, ctx.Host()),
+		Header: header,
+		// Not copied: net.Addr.String builds a new string every call, so this
+		// never pointed into the request buffer to begin with.
 		RemoteAddr: fasthttpCtx.RemoteAddr().String(),
 		// net/http guarantees a server request's Body is never nil, and a
 		// Config.SessionManager is ordinary net/http code that may well hold
@@ -472,7 +530,7 @@ func serviceSettings(cfg Config) []func(*service.Settings) {
 		opts = append(opts, service.RequireHostAddr(true))
 	}
 	if cfg.SessionManager != nil {
-		opts = append(opts, service.SessionManager(sessionManagerProbe{delegate: cfg.SessionManager}))
+		opts = append(opts, service.SessionManager(newSessionManagerProbe(cfg.SessionManager)))
 	}
 	return opts
 }

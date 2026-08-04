@@ -77,12 +77,14 @@ type Config struct {
 	// *log.Logger, and it bypasses Fiber's log level, so the caveat on Log
 	// applies here too.
 	//
-	// The logger is resolved once, when New runs, so register yours before
-	// building the middleware. Fiber's out-of-the-box default is *log.Logger
-	// backed, so calling log.SetLogger afterwards leaves gokrb5 writing to the
-	// logger this replaced rather than to yours; registering a logger that is
-	// not *log.Logger backed after New leaves it writing nowhere. Config.Log
-	// avoids the question entirely.
+	// The logger is resolved once, when New runs, and gokrb5 keeps what it was
+	// given — so register yours before building the middleware. Fiber's
+	// out-of-the-box default is a *log.Logger writing to stderr, which means a
+	// log.SetLogger call afterwards does not redirect gokrb5: it goes on
+	// writing to stderr, past the level and the format of the logger you
+	// registered, and a later SetOutput does not reach it either. gokrb5 emits
+	// a line per authenticated request naming the client address and user, so
+	// this is not a quiet leak. Config.Log avoids the question entirely.
 	UseFiberLogger bool
 	// Unauthorized customizes the response sent when a client's Kerberos
 	// ticket is rejected. It does not run for the opening challenge or for a
