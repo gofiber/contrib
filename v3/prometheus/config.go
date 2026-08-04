@@ -79,9 +79,10 @@ type Config struct {
 	// Labels are attached to every metric. A "service" key here is overridden by
 	// ServiceName when that is also set.
 	//
-	// Names must not be empty, must be valid UTF-8, and must not collide with
-	// the reserved "status_code", "status_class", "method", "path" and "le"
-	// labels; values have to be valid UTF-8 too. New panics on any of those.
+	// Names must not be empty, must be valid UTF-8, must not begin with "__"
+	// (which Prometheus keeps for itself), and must not collide with the
+	// reserved "status_code", "status_class", "method", "path" and "le" labels;
+	// values have to be valid UTF-8 too. New panics on any of those.
 	//
 	// Optional. Default: no labels.
 	Labels prometheus.Labels
@@ -263,8 +264,9 @@ type Config struct {
 	// or record. Use it to drop families that are not worth their cardinality,
 	// most commonly MetricRequestSize and MetricResponseSize. New panics on a
 	// name that is not one of the Metric constants, which would otherwise
-	// disable nothing and say nothing; blank entries are skipped, as in the
-	// skip lists, so an unset environment variable split on "," is harmless.
+	// disable nothing and say nothing. Surrounding whitespace is trimmed and
+	// blank entries are skipped, as in the skip lists, so an environment
+	// variable split on "," works whether it is unset or padded.
 	//
 	// MetricRequestsStatusClassTotal is worth a look too: status_class is a
 	// function of status_code, so every query against it has an equivalent
@@ -285,9 +287,10 @@ type Config struct {
 	// the root route by asking for "/" explicitly.
 	//
 	// An entry ending in "*" matches by prefix: "/admin/*" excludes "/admin"
-	// and every route below it, and "/*" excludes everything - including
-	// MetricRequestsInProgress, which is otherwise incremented before routing
-	// and so beyond the reach of any per-route filter. It also still
+	// and every route below it. "/*" excludes everything, and then no metric
+	// family is registered at all - not even MetricRequestsInProgress, which is
+	// otherwise incremented before routing and so beyond the reach of any
+	// per-route filter. It also still
 	// matches a route pattern named exactly that, since Fiber patterns may end
 	// in "*" themselves - "/static*" excludes the route "/static*" as well as
 	// anything under "/static".

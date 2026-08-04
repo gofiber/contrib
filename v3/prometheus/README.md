@@ -37,7 +37,7 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | Namespace | `string` | Prefixes every metric name. Must be valid UTF-8. | `"http"` |
 | Subsystem | `string` | Prefixes every metric name after `Namespace`. Must be valid UTF-8. | `""` |
 | MetricsPath | `string` | Path served with the Prometheus exposition format. Unless `Next` returns true, requests to it are answered by the middleware and are not instrumented. Compared case-sensitively against the full request path, ignoring trailing slashes. | `"/metrics"` |
-| Labels | `prometheus.Labels` | Extra const labels attached to every metric. A key colliding with a reserved label (`status_code`, `status_class`, `method`, `path`, `le`) panics. | `nil` |
+| Labels | `prometheus.Labels` | Extra const labels attached to every metric. A key that is empty, starts with `__`, or collides with a reserved label (`status_code`, `status_class`, `method`, `path`, `le`) panics. | `nil` |
 | Registerer | `prometheus.Registerer` | Registry used to register the metrics. Reusing one across two `New` calls panics on duplicate registration. | private registry |
 | Gatherer | `prometheus.Gatherer` | Source the metrics endpoint gathers from. | private registry |
 | DisableGoCollector | `bool` | Skips registration of the Go runtime metrics collector. | `false` |
@@ -58,7 +58,7 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | MetricsTimeout | `time.Duration` | Bounds a single scrape before it is answered with 503. | `0` (no timeout) |
 | MetricsErrorLog | `promhttp.Logger` | Receives errors raised while gathering or writing metrics. A typed nil panics. | `nil` |
 | MetricsErrorHandling | `promhttp.HandlerErrorHandling` | How gathering errors are reported to the scraper. | `promhttp.HTTPErrorOnError` |
-| DisabledMetrics | `[]Metric` | Metric families to skip registering and recording. An unknown name panics. | `nil` |
+| DisabledMetrics | `[]Metric` | Metric families to skip registering and recording. Entries are trimmed; an unknown name panics. | `nil` |
 | SkipURIs | `[]string` | Route patterns excluded from instrumentation, e.g. `/user/:id`. A trailing `*` matches by prefix; a leading `/` is added when missing. | `nil` |
 | SkipStatusCodes | `[]int` | Response status codes excluded from metrics. Codes are three digits; anything else panics. | `nil` |
 | SkipStatusClasses | `[]string` | Status classes excluded from metrics, `"1xx"` through `"5xx"` or `"unknown"`. Anything else panics. | `nil` |
@@ -230,9 +230,10 @@ Fiber's zero-copy strings such as `c.Get(...)` or `c.Params(...)` directly.
 `SkipURIs` matches the registered route pattern — note that fiberzap's option
 of the same name matches the request path instead. A trailing `*` matches by
 prefix and stops at a path segment boundary, so `/admin/*` excludes `/admin` and
-`/admin/users` but not `/administration`. `/*` excludes everything, the
-in-flight gauge included — it is incremented before routing, so no per-route
-filter would otherwise reach it. Trailing
+`/admin/users` but not `/administration`. `/*` excludes everything, and then no
+metric family is registered at all — not even the in-flight gauge, which is
+incremented before routing and so beyond the reach of any per-route filter.
+Trailing
 slashes are ignored, and a leading `/` is added when missing — route patterns
 always carry one, so `admin` without it would otherwise match nothing.
 

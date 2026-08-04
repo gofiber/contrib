@@ -191,21 +191,42 @@ func New(config ...Config) fiber.Handler {
 	}
 
 	disabled := make(map[Metric]struct{}, len(cfg.DisabledMetrics))
-	for _, metric := range cfg.DisabledMetrics {
-		// Blank entries are skipped for the same reason as in the skip lists:
-		// splitting an unset environment variable on "," yields one, and that
-		// should not stop the process from booting.
-		if strings.TrimSpace(string(metric)) == "" {
+	for _, entry := range cfg.DisabledMetrics {
+		// Trimmed and blank-skipped as the skip lists are, so that splitting an
+		// environment variable on "," works whether it is unset or padded.
+		metric := Metric(strings.TrimSpace(string(entry)))
+		if metric == "" {
 			continue
 		}
 		// An unrecognised name would disable nothing and say nothing, leaving
 		// the family it was meant to drop registered and recording.
 		if _, known := allMetrics[metric]; !known {
-			panic("prometheus middleware: unknown metric " + strconv.Quote(string(metric)) + " in DisabledMetrics")
+			panic("prometheus middleware: unknown metric " + strconv.Quote(string(entry)) + " in DisabledMetrics")
 		}
 		disabled[metric] = struct{}{}
 	}
+	m := &middleware{
+		next:              cfg.Next,
+		metricsPath:       normalizePath(cfg.MetricsPath),
+		unmatchedLabel:    normalizePath(cfg.UnmatchedRouteLabel),
+		skipURIs:          make(map[string]struct{}, len(cfg.SkipURIs)),
+		skipStatusCodes:   make(map[int]struct{}, len(cfg.SkipStatusCodes)),
+		skipStatusClasses: make(map[string]struct{}, len(cfg.SkipStatusClasses)),
+		dynamicLabels:     dynamic,
+		exemplars:         !cfg.DisableExemplars,
+		trackUnmatched:    cfg.TrackUnmatchedRequests,
+	}
+
+	m.resolveFilters(cfg)
+
+	// A "/*" entry excludes every route, so no family can receive a sample.
+	// Registering them anyway would claim six metric names in a caller's
+	// registry that nothing will ever write to, and make a second middleware
+	// configured the same way collide with the first.
 	enabled := func(metric Metric) bool {
+		if m.skipAll {
+			return false
+		}
 		_, off := disabled[metric]
 		return !off
 	}
@@ -224,20 +245,6 @@ func New(config ...Config) fiber.Handler {
 	if enabled(MetricResponseSize) {
 		validateBuckets("ResponseSizeBuckets", cfg.ResponseSizeBuckets)
 	}
-
-	m := &middleware{
-		next:              cfg.Next,
-		metricsPath:       normalizePath(cfg.MetricsPath),
-		unmatchedLabel:    normalizePath(cfg.UnmatchedRouteLabel),
-		skipURIs:          make(map[string]struct{}, len(cfg.SkipURIs)),
-		skipStatusCodes:   make(map[int]struct{}, len(cfg.SkipStatusCodes)),
-		skipStatusClasses: make(map[string]struct{}, len(cfg.SkipStatusClasses)),
-		dynamicLabels:     dynamic,
-		exemplars:         !cfg.DisableExemplars,
-		trackUnmatched:    cfg.TrackUnmatchedRequests,
-	}
-
-	m.resolveFilters(cfg)
 
 	// Both label sets carry the dynamic names last so that the value buffer
 	// built per request can be shared between them.
@@ -306,11 +313,7 @@ func New(config ...Config) fiber.Handler {
 		)
 	}
 
-	// A "/*" entry excludes every route, and the gauge is the one family that
-	// would otherwise keep exporting: it is incremented before routing, so
-	// nothing downstream can drop it. Documenting an exemption would be worse
-	// than honouring the claim.
-	if enabled(MetricRequestsInProgress) && !m.skipAll {
+	if enabled(MetricRequestsInProgress) {
 		// The in-flight gauge has to be incremented before the router picks a
 		// handler, at which point the route pattern is still unknown. Labelling
 		// it by method only keeps the gauge balanced and its cardinality
@@ -356,7 +359,11 @@ func (m *middleware) resolveFilters(cfg Config) {
 		// Normalize before looking for the star, so that a trailing slash after
 		// it - "/admin/*/" - still registers the prefix. Trailing slashes are
 		// documented as ignored.
-		normalized := normalizePath(path)
+		//
+		// validLabel matches what routeLabel does to the pattern these are
+		// compared against; without it an entry for a route whose pattern is not
+		// valid UTF-8 would silently stop matching.
+		normalized := validLabel(normalizePath(path))
 
 		// Every entry is kept as an exact match, including one ending in "*".
 		// Fiber route patterns may themselves end in "*", so registering only
@@ -774,39 +781,41 @@ func (m *middleware) resolveDynamicValues(ctx fiber.Ctx, values []string) (ok bo
 	}()
 
 	for i, label := range m.dynamicLabels {
-		// Two hazards, both reachable from a value taken off the request.
-		//
-		// Prometheus rejects label values that are not valid UTF-8 by panicking
-		// inside WithLabelValues, so a single header of raw bytes would take the
-		// process down. Invalid sequences are replaced instead.
-		//
-		// And unless the app sets fiber.Config.Immutable, Fiber hands out
-		// strings aliasing the connection read buffer. Prometheus keeps label
-		// values for the lifetime of the series, so without a copy the buffer is
-		// reused by the next request and every series rewrites itself to
-		// whatever arrived last, collapsing distinct series onto one label set
-		// and leaving the registry unable to gather at all.
-		value := label.fn(ctx)
-		if utf8.ValidString(value) {
-			values[3+i] = strings.Clone(value)
-		} else {
-			// ToValidUTF8 allocates whenever it substitutes, so its result is
-			// already detached from the read buffer.
-			values[3+i] = strings.ToValidUTF8(value, "�")
-		}
+		values[3+i] = detachedLabel(label.fn(ctx))
 	}
 
 	return true
 }
 
+// replacementRune stands in for bytes Prometheus will not accept.
+const replacementRune = "�"
+
 // validLabel replaces invalid UTF-8 so that a value can never be rejected by
-// Prometheus. The common case is a scan and no allocation; ToValidUTF8 allocates
-// only when it has something to substitute.
+// Prometheus, which panics on one. The common case is a scan and no allocation.
+// Use it for values the middleware already owns, such as a registered route
+// pattern; a value read off the request needs detachedLabel instead.
 func validLabel(value string) string {
 	if utf8.ValidString(value) {
 		return value
 	}
-	return strings.ToValidUTF8(value, "�")
+	return strings.ToValidUTF8(value, replacementRune)
+}
+
+// detachedLabel is validLabel for a value that may alias fasthttp's read buffer.
+//
+// Unless the app sets fiber.Config.Immutable, Fiber hands out strings pointing
+// into the connection read buffer. Prometheus keeps label values for the
+// lifetime of the series, so without a copy the buffer is reused by the next
+// request and every series rewrites itself to whatever arrived last, collapsing
+// distinct series onto one label set and leaving the registry unable to gather
+// at all.
+func detachedLabel(value string) string {
+	if utf8.ValidString(value) {
+		return strings.Clone(value)
+	}
+	// ToValidUTF8 allocates whenever it substitutes, so its result is already
+	// detached.
+	return strings.ToValidUTF8(value, replacementRune)
 }
 
 // statusStrings holds the decimal form of every status code a response can
@@ -983,6 +992,11 @@ func validateLabelName(kind, name string) {
 	}
 	if !utf8.ValidString(name) {
 		panic("prometheus middleware: " + kind + " " + strconv.Quote(name) + " is not valid UTF-8")
+	}
+	// client_golang's checkLabelName rejects the "__" prefix, which Prometheus
+	// keeps for itself.
+	if strings.HasPrefix(name, "__") {
+		panic("prometheus middleware: " + kind + " " + strconv.Quote(name) + ` uses the reserved "__" prefix`)
 	}
 }
 

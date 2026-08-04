@@ -3176,3 +3176,127 @@ func TestBlankDisabledMetricIsIgnored(t *testing.T) {
 		}
 	}
 }
+
+// TestReservedPrefixLabelNamePanics covers the "__" prefix Prometheus keeps for
+// itself, which client_golang rejects while building a descriptor - after the
+// runtime collectors have gone into a caller's registry.
+func TestReservedPrefixLabelNamePanics(t *testing.T) {
+	for name, cfg := range map[string]Config{
+		"constant": {Labels: prometheus.Labels{"__tenant": "x"}},
+		"dynamic":  {DynamicLabels: map[string]func(fiber.Ctx) string{"__tenant": func(fiber.Ctx) string { return "x" }}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			registry := prometheus.NewRegistry()
+			cfg.Registerer = registry
+			cfg.Gatherer = registry
+
+			func() {
+				defer func() {
+					r := recover()
+					if r == nil {
+						t.Fatal(`expected the "__" prefix to be rejected`)
+					}
+					if msg := fmt.Sprint(r); !strings.Contains(msg, "__") {
+						t.Fatalf("expected the panic to name the prefix, got %v", r)
+					}
+				}()
+
+				_ = New(cfg)
+			}()
+
+			if families, _ := registry.Gather(); len(families) != 0 {
+				t.Fatalf("expected the registry to be untouched, got %d families", len(families))
+			}
+		})
+	}
+}
+
+// TestDisabledMetricsTrimsWhitespace covers the padded entries that splitting a
+// setting on "," produces, which the skip lists already tolerate.
+func TestDisabledMetricsTrimsWhitespace(t *testing.T) {
+	disabled := make([]Metric, 0, 2)
+	for _, name := range strings.Split("requests_total, request_size_bytes", ",") {
+		disabled = append(disabled, Metric(name))
+	}
+
+	app := newAppWithMiddleware(Config{DisabledMetrics: disabled}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	for _, name := range []string{"http_requests_total", "http_request_size_bytes"} {
+		if strings.Contains(metrics, name) {
+			t.Fatalf("expected %s to be disabled, got %q", name, metrics)
+		}
+	}
+	if !strings.Contains(metrics, "http_request_duration_seconds") {
+		t.Fatalf("expected the other families to survive, got %q", metrics)
+	}
+}
+
+// TestSkipURIMatchesSanitisedRoutePattern pins that both sides of the skip
+// comparison get the same treatment. The route label is sanitised for
+// Prometheus, so an entry kept in its raw bytes would never match it again.
+func TestSkipURIMatchesSanitisedRoutePattern(t *testing.T) {
+	app := fiber.New(fiber.Config{UnescapePath: true})
+	app.Use(New(Config{SkipURIs: []string{"/caf\xe9"}}))
+	app.Get("/caf\xe9", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+	app.Get("/kept", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	for _, path := range []string{"/caf%E9", "/kept"} {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+			t.Fatalf("requesting %s: %v", path, err)
+		}
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `path="/kept"`) {
+		t.Fatalf("expected the unfiltered route to be recorded, got %q", metrics)
+	}
+	if strings.Contains(metrics, "caf") {
+		t.Fatalf("expected the listed route to be skipped, got %q", metrics)
+	}
+}
+
+// TestSkipAllRegistersNoFamilies is the general form of the in-flight gauge
+// case: with every route excluded, nothing can receive a sample, so claiming the
+// metric names in a caller's registry only invites a collision with the next
+// middleware configured the same way.
+func TestSkipAllRegistersNoFamilies(t *testing.T) {
+	registry := prometheus.NewRegistry()
+
+	for range 2 {
+		app := fiber.New()
+		app.Use(New(Config{
+			Registerer:              registry,
+			Gatherer:                registry,
+			SkipURIs:                []string{"/*"},
+			DisableGoCollector:      true,
+			DisableProcessCollector: true,
+		}))
+		app.Get("/a", func(c fiber.Ctx) error {
+			return c.SendStatus(fiber.StatusOK)
+		})
+
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/a", nil), noTimeoutConfig); err != nil {
+			t.Fatalf("unexpected request error: %v", err)
+		}
+	}
+
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("gathering: %v", err)
+	}
+	if len(families) != 0 {
+		t.Fatalf("expected no families to be registered, got %d", len(families))
+	}
+}
