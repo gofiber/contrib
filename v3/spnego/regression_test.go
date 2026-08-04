@@ -3159,77 +3159,6 @@ func TestSessionFailureReportsTheStatusTheHandlerWrote(t *testing.T) {
 	require.NotContains(t, hookErr.Error(), "status 401")
 }
 
-// TestDegradedKeytabEpisodeCannotForgeALogLine covers the third place untrusted
-// text reaches this package's log, and the worst of them: gokrb5's keytab
-// parser interpolates the whole file it was handed into its errors, so the
-// half-written keytab the stale-grace path exists to absorb arrives as raw
-// binary with newlines of its own.
-func TestDegradedKeytabEpisodeCannotForgeALogLine(t *testing.T) {
-	var logged bytes.Buffer
-	flog.SetOutput(&logged)
-	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
-
-	dir := t.TempDir()
-	file := path.Join(dir, "sso.keytab")
-	_, clean, err := utils.NewMockKeytab(
-		utils.WithPrincipal("HTTP/sso.example.com"),
-		utils.WithRealm("EXAMPLE.LOCAL"),
-		utils.WithPairs(utils.EncryptTypePair{Version: 3, EncryptType: 18, CreateTime: time.Now()}),
-		utils.WithFilename(file),
-	)
-	require.NoError(t, err)
-	t.Cleanup(clean)
-
-	now := time.Now()
-	cache := &keytabFileCache{
-		files:      []string{file},
-		staleGrace: 30 * time.Second,
-		retryEvery: time.Nanosecond,
-		nowFn:      func() time.Time { return now },
-	}
-	_, err = cache.load()
-	require.NoError(t, err, "the first load must succeed, or there is no cache to degrade")
-
-	// A keytab that reads but does not parse. The first two bytes are kept so
-	// gokrb5 gets past its version check and reaches a length check — the
-	// branch that interpolates the whole file into the error. Anything that
-	// fails earlier is reported without the contents, and would not exercise
-	// this at all.
-	//
-	// What follows them is the shape a rotation caught mid-write can leave: in
-	// this case text that reads like one of this package's own lines, on a line
-	// of its own.
-	good, err := os.ReadFile(file)
-	require.NoError(t, err)
-	forged := append(append([]byte{}, good[:2]...),
-		bytes.Repeat([]byte("\nspnego: [Error] keytab loads cleanly again\n"), 200)...)
-	require.NoError(t, os.WriteFile(file, forged, 0o600))
-
-	_, err = cache.load()
-	require.NoError(t, err, "the cached keytab must still be served during the grace window")
-
-	require.Contains(t, logged.String(), "serving the last keytab that parsed",
-		"the degraded episode must be announced")
-	require.NotContains(t, logged.String(), "\nspnego: [Error] keytab loads cleanly again",
-		"the keytab's own bytes must not start a line under this package's prefix")
-	require.Less(t, logged.Len(), 4*loggedBodyLimit+512,
-		"one bad keytab must not become a log line the size of the file")
-
-	// The expiry line carries the same cause and needs the same treatment. It
-	// is the one an operator is most likely to be looking at, since it is where
-	// the middleware stops serving the stale keytab and starts failing.
-	logged.Reset()
-	now = now.Add(2 * cache.staleGrace)
-
-	_, err = cache.load()
-	require.Error(t, err, "the grace window has passed, so requests must fail")
-	require.Contains(t, logged.String(), "keytab still unusable after",
-		"the expiry must be announced")
-	require.NotContains(t, logged.String(), "\nspnego: [Error] keytab loads cleanly again",
-		"the expiry line must quote the cause too")
-	require.Less(t, logged.Len(), 4*loggedBodyLimit+512)
-}
-
 // TestUnparsableKeytabDoesNotLeakKeyMaterial is the reason gokrb5's parse error
 // is dropped rather than quoted.
 //
@@ -3255,17 +3184,25 @@ func TestUnparsableKeytabDoesNotLeakKeyMaterial(t *testing.T) {
 
 	good, err := os.ReadFile(file)
 	require.NoError(t, err)
-	// The key sits at the end of the entry, after the 16-bit key type and
-	// length. Taking the tail is enough to have something to search for that
-	// appears nowhere else.
-	key := good[len(good)-32:]
-	require.Len(t, key, 32)
+
+	// The needle is the entry's own key, read out of the parsed keytab rather
+	// than sliced off the end of the file. The file's last bytes are the key's
+	// tail followed by a four-byte KVNO, and the first version of this test cut
+	// its needle from there — from `good`, which has a byte `torn` does not, so
+	// the search could never match and a fully-leaking readAll passed.
+	parsed, err := keytab.Load(file)
+	require.NoError(t, err)
+	require.NotEmpty(t, parsed.Entries)
+	key := parsed.Entries[0].Key.KeyValue
+	require.NotEmpty(t, key)
 
 	// Header kept so gokrb5 gets past its version check and reaches the length
-	// check, which is the branch that interpolates the file. Everything after
-	// it is the real keytab, so a leak would carry the real key.
+	// check, which is the branch that interpolates the file. Everything before
+	// the cut is the real keytab, so a leak carries the real key.
 	torn := good[:len(good)-1]
 	require.NoError(t, os.WriteFile(file, torn, 0o600))
+	require.Contains(t, string(torn), string(key),
+		"the bytes handed to gokrb5 must contain the key, or nothing below can fail")
 
 	now := time.Now()
 	cache := &keytabFileCache{
@@ -3307,6 +3244,12 @@ func TestUnparsableKeytabDoesNotLeakKeyMaterial(t *testing.T) {
 // one, so a path chosen badly — or supplied from configuration someone else
 // controls — could otherwise start a line under this package's prefix.
 func TestKeytabPathCannotForgeALogLine(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// A newline is not a legal filename character there, so the vector this
+		// covers does not exist and the file cannot be created to test it.
+		t.Skip("filenames cannot contain a newline on Windows")
+	}
+
 	var logged bytes.Buffer
 	flog.SetOutput(&logged)
 	t.Cleanup(func() { flog.SetOutput(os.Stderr) })

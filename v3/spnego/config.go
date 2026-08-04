@@ -445,10 +445,15 @@ func (c *keytabFileCache) serveStale(cause error, now time.Time) (*keytab.Keytab
 		// begins only when the files on disk actually change, so the rate is
 		// bounded by rotations, not by request volume.
 		grace := c.grace()
-		// Quoted: gokrb5's keytab parser interpolates the whole file it was
-		// given into its errors, so the truncated keytab this path exists to
-		// absorb would otherwise arrive here as raw binary with newlines of its
-		// own — one log line becoming many, under this package's prefix.
+		// Quoted because the cause names the keytab file, and a path is not
+		// this package's text: Unix allows a newline in one, so a path chosen
+		// badly — or taken from configuration someone else controls — would
+		// otherwise start a line of its own under this package's prefix.
+		//
+		// It used to matter far more. gokrb5's parser interpolates the whole
+		// file it was handed into its errors, which for a keytab is key
+		// material; readAll drops that message rather than quoting it, since
+		// bounding a secret is not the same as not logging it.
 		detail := quoteForLog([]byte(cause.Error()))
 		c.announce(func() {
 			flog.Warnf("spnego: %s; serving the last keytab that parsed for up to %s", detail, grace)

@@ -213,16 +213,19 @@ func (p sessionManagerProbe) Get(r *http.Request, k string) ([]byte, error) {
 }
 
 // loggedBodyLimit bounds how much of any text this package did not write
-// reaches the log. Three things qualify, and none of them is bounded at source:
-// the body a session manager wrote before failing, which is whatever it chose;
-// a KeytabLookupFunc's error, which may carry an upstream's response; and
-// gokrb5's keytab parse errors, which interpolate the entire file they were
-// handed — so the truncated keytab the stale-grace path exists to absorb
-// arrives as raw binary.
+// reaches the log. Two things qualify and neither is bounded at source: the
+// body a session manager wrote before failing, which is whatever it chose, and
+// a KeytabLookupFunc's error, which may carry an upstream's whole response. The
+// keytab paths this package logs alongside them are quoted for the same reason
+// but are not the size problem.
 //
 // 512 bytes is enough to tell which of those happened and roughly why. When
-// there is more to know, the store, the upstream and the file itself are all
-// still there to look at; an unbounded log line is not a better place for them.
+// there is more to know, the store and the upstream are still there to look at;
+// an unbounded log line is not a better place for them.
+//
+// Note what this is not for. gokrb5's keytab parse errors interpolate the whole
+// file, which is key material, and readAll drops that message rather than
+// relying on this: a bounded secret is still a secret in the log.
 const loggedBodyLimit = 512
 
 // quoteForLog renders untrusted bytes as a single quoted token, truncated.
