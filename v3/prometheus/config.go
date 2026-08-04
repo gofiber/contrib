@@ -306,10 +306,11 @@ type Config struct {
 	// exclude nothing. Spell the entry the way the route was registered.
 	//
 	// An entry ending in "*" matches by prefix: "/admin/*" excludes "/admin"
-	// and every route below it. "/*" excludes everything, and then no metric
-	// family is registered at all - not even MetricRequestsInProgress, which is
-	// otherwise incremented before routing and so beyond the reach of any
-	// per-route filter. Such an entry also still matches a route pattern named
+	// and every route below it. Trailing stars are stripped as a group, so the
+	// glob spelling "/admin/**" means the same thing. "/*" excludes everything,
+	// and then no metric family is registered at all - not even
+	// MetricRequestsInProgress, which is otherwise incremented before routing
+	// and so beyond the reach of any per-route filter. Such an entry also still matches a route pattern named
 	// exactly that, since Fiber patterns may end in "*" themselves - "/static*"
 	// excludes the route "/static*" as well as anything under "/static".
 	//

@@ -51,7 +51,6 @@ type middleware struct {
 	skipStatusClasses map[string]struct{}
 	dynamicLabels     []dynamicLabel
 	exemplars         bool
-	skipAll           bool
 	trackUnmatched    bool
 	records           bool
 	observes          bool
@@ -91,14 +90,17 @@ var validStatusClasses = map[string]bool{
 	"unknown": true,
 }
 
-// allMetrics is the set of families Config.DisabledMetrics may name.
-var allMetrics = map[Metric]struct{}{
-	MetricRequestsTotal:            {},
-	MetricRequestsStatusClassTotal: {},
-	MetricRequestDuration:          {},
-	MetricRequestSize:              {},
-	MetricResponseSize:             {},
-	MetricRequestsInProgress:       {},
+// allMetrics lists every family Config.DisabledMetrics may name. It is a slice
+// rather than a set so that validation reports the same problem the same way on
+// every run: iterating a map would make one bad Namespace panic with whichever
+// metric name the runtime happened to yield first.
+var allMetrics = []Metric{
+	MetricRequestsTotal,
+	MetricRequestsStatusClassTotal,
+	MetricRequestDuration,
+	MetricRequestSize,
+	MetricResponseSize,
+	MetricRequestsInProgress,
 }
 
 // New creates a new Prometheus middleware handler.
@@ -155,7 +157,9 @@ func New(config ...Config) fiber.Handler {
 	// panic names neither Labels nor ServiceName. Worse, it would fire from
 	// inside the first promauto call, leaving a caller's registry holding the
 	// collectors registered by then.
-	for name, value := range labels {
+	// Sorted so that a config with two bad entries always names the same one.
+	for _, name := range slices.Sorted(maps.Keys(labels)) {
+		value := labels[name]
 		if _, reserved := reservedLabels[name]; reserved {
 			panic("prometheus middleware: constant label " + strconv.Quote(name) + " collides with a reserved label")
 		}
@@ -192,7 +196,7 @@ func New(config ...Config) fiber.Handler {
 		}
 		// An unrecognised name would disable nothing and say nothing, leaving
 		// the family it was meant to drop registered and recording.
-		if _, known := allMetrics[metric]; !known {
+		if !slices.Contains(allMetrics, metric) {
 			panic("prometheus middleware: unknown metric " + strconv.Quote(string(entry)) + " in DisabledMetrics")
 		}
 		disabled[metric] = struct{}{}
@@ -209,14 +213,14 @@ func New(config ...Config) fiber.Handler {
 		trackUnmatched:    cfg.TrackUnmatchedRequests,
 	}
 
-	m.resolveFilters(cfg)
+	skipAll := m.resolveFilters(cfg)
 
 	// A "/*" entry excludes every route, so no family can receive a sample.
 	// Registering them anyway would claim six metric names in a caller's
 	// registry that nothing will ever write to, and make a second middleware
 	// configured the same way collide with the first.
 	enabled := func(metric Metric) bool {
-		if m.skipAll {
+		if skipAll {
 			return false
 		}
 		_, off := disabled[metric]
@@ -226,10 +230,12 @@ func New(config ...Config) fiber.Handler {
 	// Namespace and Subsystem reach the descriptor only through the assembled
 	// metric names, so validating those covers both - and catches a name that a
 	// stricter validation scheme would reject even though it is valid UTF-8.
-	for metric := range allMetrics {
-		if enabled(metric) {
-			validateMetricName(cfg.Namespace, cfg.Subsystem, metric)
-		}
+	//
+	// Every family is checked whatever is disabled: the prefixes are the same
+	// for all six, so gating this would let a bad Namespace sit unnoticed until
+	// the day someone enables a family and the application stops booting.
+	for _, metric := range allMetrics {
+		validateMetricName(cfg.Namespace, cfg.Subsystem, metric)
 	}
 
 	// Bucket bounds belong to one family each, so a disabled family's bounds are
@@ -346,7 +352,12 @@ func New(config ...Config) fiber.Handler {
 // something. Blank entries are the exception: splitting an unset environment
 // variable on "," yields one, and treating that as a configuration error would
 // stop the process from booting over an empty setting.
-func (m *middleware) resolveFilters(cfg Config) {
+//
+// It reports whether an entry excludes every route, which New needs but no
+// request does - once nothing is registered, nothing consults it again.
+func (m *middleware) resolveFilters(cfg Config) bool {
+	skipAll := false
+
 	for _, path := range cfg.SkipURIs {
 		path = strings.TrimSpace(path)
 		if path == "" {
@@ -366,7 +377,12 @@ func (m *middleware) resolveFilters(cfg Config) {
 		// validLabel matches what routeLabel does to the pattern these are
 		// compared against; without it an entry for a route whose pattern is not
 		// valid UTF-8 would silently stop matching.
-		normalized := validLabel(normalizePath(path))
+		//
+		// Clone, because these become map keys for the process lifetime and
+		// normalizePath returns a subslice: the documented way to build this
+		// list is strings.Split on an environment variable, whose parts all
+		// point into one blob that would otherwise never be freed.
+		normalized := strings.Clone(validLabel(normalizePath(path)))
 
 		// Every entry is kept as an exact match, including one ending in "*".
 		// Fiber route patterns may themselves end in "*", so registering only
@@ -374,14 +390,17 @@ func (m *middleware) resolveFilters(cfg Config) {
 		// stripped prefix "/static" matches neither it nor "/static/...".
 		m.skipURIs[normalized] = struct{}{}
 
-		prefix, found := strings.CutSuffix(normalized, "*")
-		if !found {
+		// Trailing stars are stripped as a group, so that the "/**" an operator
+		// reaches for out of glob habit means what "/*" means rather than
+		// quietly excluding almost nothing.
+		prefix := strings.TrimRight(normalized, "*")
+		if prefix == normalized {
 			continue
 		}
 
 		// "/*" normalizes to "/" and excludes everything.
 		if prefix = normalizePath(prefix); prefix == "/" {
-			m.skipAll = true
+			skipAll = true
 			continue
 		}
 
@@ -415,6 +434,8 @@ func (m *middleware) resolveFilters(cfg Config) {
 		}
 		m.skipStatusClasses[normalized] = struct{}{}
 	}
+
+	return skipAll
 }
 
 // newScrapeHandler builds the net/http handler answering a scrape, detaching
@@ -645,20 +666,21 @@ func (m *middleware) serveMetrics(ctx fiber.Ctx) error {
 // instrument wraps the downstream handler, recording duration, request/response
 // sizes, in-flight counts, and status code metrics for the matched route.
 func (m *middleware) instrument(ctx fiber.Ctx) error {
-	// With nothing left to record, taking over the error handler below would
-	// change where the application's errors surface for no benefit at all: the
-	// error would stop propagating to middleware mounted before this one, and
-	// run at a different point in the stack. Stay out of the way instead.
-	if !m.records && m.requestInFlight == nil {
-		return ctx.Next()
-	}
-
 	method := ctx.Method()
 
 	if m.requestInFlight != nil {
 		inFlight := m.requestInFlight.WithLabelValues(method)
 		inFlight.Inc()
 		defer inFlight.Dec()
+	}
+
+	// The gauge is labelled by method alone and never reads the status, so
+	// nothing below this point serves it. Taking over the error handler anyway
+	// would change where the application's errors surface for no benefit: the
+	// error would stop propagating to middleware mounted before this one, and
+	// run at a different depth in the stack.
+	if !m.records {
+		return ctx.Next()
 	}
 
 	start := time.Now()
@@ -671,10 +693,6 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		if err := ctx.App().ErrorHandler(ctx, chainErr); err != nil {
 			_ = ctx.SendStatus(fiber.StatusInternalServerError) //nolint:errcheck // mirrors Fiber's own fallback
 		}
-	}
-
-	if !m.records {
-		return nil
 	}
 
 	elapsed := time.Since(start).Seconds()

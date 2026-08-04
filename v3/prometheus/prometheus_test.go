@@ -3369,3 +3369,112 @@ func TestInertMiddlewarePassesErrorsThrough(t *testing.T) {
 		t.Fatal("expected the error to reach the middleware mounted before this one")
 	}
 }
+
+// TestGaugeOnlyMiddlewarePassesErrorsThrough is the other half of
+// TestInertMiddlewarePassesErrorsThrough: the in-flight gauge is labelled by
+// method alone and never reads the status, so a configuration that keeps only
+// the gauge has no reason to take over the error handler either.
+func TestGaugeOnlyMiddlewarePassesErrorsThrough(t *testing.T) {
+	app := fiber.New()
+
+	var seen error
+	app.Use(func(c fiber.Ctx) error {
+		err := c.Next()
+		seen = err
+		return err
+	})
+	app.Use(New(Config{DisabledMetrics: []Metric{
+		MetricRequestsTotal,
+		MetricRequestsStatusClassTotal,
+		MetricRequestDuration,
+		MetricRequestSize,
+		MetricResponseSize,
+	}}))
+	app.Get("/boom", func(fiber.Ctx) error {
+		return fiber.ErrTeapot
+	})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/boom", nil), noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusTeapot {
+		t.Fatalf("expected status 418, got %d", resp.StatusCode)
+	}
+	if seen == nil {
+		t.Fatal("expected the error to reach the middleware mounted before this one")
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, "http_requests_in_progress") {
+		t.Fatalf("expected the gauge to still be exposed, got %q", metrics)
+	}
+}
+
+// TestMetricNamesValidatedWhenEverythingIsExcluded pins that a bad Namespace is
+// caught whatever is disabled. Gating the check would let it sit unnoticed until
+// the day someone turns a family back on and the application stops booting.
+func TestMetricNamesValidatedWhenEverythingIsExcluded(t *testing.T) {
+	previous := model.NameValidationScheme //nolint:staticcheck // exercising the scheme client_golang reads
+	model.NameValidationScheme = model.LegacyValidation
+	t.Cleanup(func() { model.NameValidationScheme = previous })
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected the invalid namespace to be rejected")
+		}
+		if msg := fmt.Sprint(r); !strings.Contains(msg, "valid metric name") {
+			t.Fatalf("expected a metric name panic, got %v", r)
+		}
+	}()
+
+	_ = New(Config{Namespace: "my-app", SkipURIs: []string{"/*"}})
+}
+
+// TestInvalidNamespaceNamesTheSameMetricEveryTime pins the deterministic report.
+// A startup panic pasted into a bug report has to be reproducible, and iterating
+// a map would name whichever family the runtime yielded first.
+func TestInvalidNamespaceNamesTheSameMetricEveryTime(t *testing.T) {
+	previous := model.NameValidationScheme //nolint:staticcheck // exercising the scheme client_golang reads
+	model.NameValidationScheme = model.LegacyValidation
+	t.Cleanup(func() { model.NameValidationScheme = previous })
+
+	messages := make(map[string]struct{})
+	for range 16 {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					messages[fmt.Sprint(r)] = struct{}{}
+				}
+			}()
+
+			_ = New(Config{Namespace: "my-app"})
+		}()
+	}
+
+	if len(messages) != 1 {
+		t.Fatalf("expected one panic message across runs, got %d: %v", len(messages), messages)
+	}
+}
+
+// TestDoubledWildcardSkipsEverything covers the glob spelling an operator is
+// likely to reach for. Recognising only a single trailing star turned it into a
+// near-no-op that excluded nothing and said nothing.
+func TestDoubledWildcardSkipsEverything(t *testing.T) {
+	app := newAppWithMiddleware(Config{SkipURIs: []string{"/**"}}, "")
+	app.Get("/a", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/a", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	for _, name := range []string{"http_requests_total", "http_requests_in_progress"} {
+		if strings.Contains(metrics, name) {
+			t.Fatalf("expected %s to be absent with everything excluded, got %q", name, metrics)
+		}
+	}
+}

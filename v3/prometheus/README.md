@@ -235,7 +235,8 @@ Fiber's zero-copy strings such as `c.Get(...)` or `c.Params(...)` directly.
 `SkipURIs` matches the registered route pattern — note that fiberzap's option
 of the same name matches the request path instead. A trailing `*` matches by
 prefix and stops at a path segment boundary, so `/admin/*` excludes `/admin` and
-`/admin/users` but not `/administration`. `/*` excludes everything, and then no
+`/admin/users` but not `/administration`. Trailing stars are stripped as a group,
+so the glob spelling `/admin/**` means the same thing. `/*` excludes everything, and then no
 metric family is registered at all — not even the in-flight gauge, which is
 incremented before routing and so beyond the reach of any per-route filter.
 Trailing slashes are ignored, and a leading `/` is added when missing — route
