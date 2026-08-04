@@ -221,7 +221,9 @@ type Config struct {
 
 	// DisabledMetrics lists metric families the middleware should not register
 	// or record. Use it to drop families that are not worth their cardinality,
-	// most commonly MetricRequestSize and MetricResponseSize.
+	// most commonly MetricRequestSize and MetricResponseSize. New panics on a
+	// name that is not one of the Metric constants, which would otherwise
+	// disable nothing and say nothing.
 	//
 	// MetricRequestsStatusClassTotal is worth a look too: status_class is a
 	// function of status_code, so every query against it has an equivalent
@@ -236,9 +238,10 @@ type Config struct {
 	// SkipURIs excludes matching routes from instrumentation. Entries are
 	// matched against the registered route pattern rather than the request
 	// path, so use "/user/:id" instead of "/user/42" - fiberzap's option of the
-	// same name matches the request path instead. Trailing slashes are ignored
-	// and a leading slash is added when missing, since route patterns always
-	// carry one.
+	// same name matches the request path instead. Surrounding whitespace and
+	// trailing slashes are ignored, and a leading slash is added when missing,
+	// since route patterns always carry one. Blank entries are skipped; exclude
+	// the root route by asking for "/" explicitly.
 	//
 	// An entry ending in "*" matches by prefix: "/admin/*" excludes "/admin"
 	// and every route below it, and "/*" excludes everything. It also still
@@ -253,11 +256,20 @@ type Config struct {
 	// The status is the one the client receives, so codes produced by the
 	// application error handler are matched as well.
 	//
+	// Codes are three digits, per RFC 9110; New panics on anything else, since
+	// a typo such as 4040 could only ever filter nothing.
+	//
 	// Optional. Default: none.
 	SkipStatusCodes []int
 
 	// SkipStatusClasses excludes whole status classes from metrics, saving
-	// the need to enumerate every code. Valid entries are "1xx" through "5xx".
+	// the need to enumerate every code. Valid entries are "1xx" through "5xx"
+	// and "unknown", the class of a response outside those ranges. Case and
+	// surrounding whitespace are ignored; New panics on anything else, since an
+	// entry that matches no class would filter nothing silently.
+	//
+	// Blank entries are skipped rather than rejected, so splitting an unset
+	// environment variable on "," does not stop the process from booting.
 	//
 	// Optional. Default: none.
 	SkipStatusClasses []string

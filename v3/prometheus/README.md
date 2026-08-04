@@ -57,10 +57,10 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | MetricsTimeout | `time.Duration` | Bounds a single scrape before it is answered with 503. | `0` (no timeout) |
 | MetricsErrorLog | `promhttp.Logger` | Receives errors raised while gathering or writing metrics. | `nil` |
 | MetricsErrorHandling | `promhttp.HandlerErrorHandling` | How gathering errors are reported to the scraper. | `promhttp.HTTPErrorOnError` |
-| DisabledMetrics | `[]Metric` | Metric families to skip registering and recording. | `nil` |
+| DisabledMetrics | `[]Metric` | Metric families to skip registering and recording. An unknown name panics. | `nil` |
 | SkipURIs | `[]string` | Route patterns excluded from instrumentation, e.g. `/user/:id`. A trailing `*` matches by prefix; a leading `/` is added when missing. | `nil` |
-| SkipStatusCodes | `[]int` | Response status codes excluded from metrics. | `nil` |
-| SkipStatusClasses | `[]string` | Status classes excluded from metrics, `"1xx"` through `"5xx"`. Anything else panics. | `nil` |
+| SkipStatusCodes | `[]int` | Response status codes excluded from metrics. Codes are three digits; anything else panics. | `nil` |
+| SkipStatusClasses | `[]string` | Status classes excluded from metrics, `"1xx"` through `"5xx"` or `"unknown"`. Anything else panics. | `nil` |
 | DynamicLabels | `map[string]func(fiber.Ctx) string` | Extra labels computed per request. | `nil` |
 | Next | `func(fiber.Ctx) bool` | Skips the middleware when it returns true, including for `MetricsPath`. | `nil` |
 
@@ -231,8 +231,12 @@ Because Fiber route patterns can themselves end in `*`, such an entry also
 matches the pattern named exactly that: `/static*` excludes both the route
 registered as `/static*` and anything under `/static`.
 
-Blank entries are ignored, so splitting an unset environment variable on `,`
-does not silently exclude the root route; ask for `/` explicitly to do that.
+Blank entries are ignored in `SkipURIs` and `SkipStatusClasses` alike, so
+splitting an unset environment variable on `,` neither excludes the root route
+nor stops the process from booting; ask for `/` explicitly to skip the root.
+Every other unmatchable entry — an unknown metric name, a status code that is not
+three digits, a status class outside `"1xx"`–`"5xx"` and `"unknown"` — panics at
+startup rather than filtering nothing in silence.
 
 `SkipStatusCodes` takes exact codes; `SkipStatusClasses` takes whole classes
 so you do not have to enumerate them:

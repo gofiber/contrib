@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/gofiber/fiber/v3"
 	recoverer "github.com/gofiber/fiber/v3/middleware/recover"
@@ -2221,9 +2222,30 @@ func TestDetachRequestCopiesHeader(t *testing.T) {
 			if got[i] != value {
 				t.Fatalf("expected %s[%d] to be %q, got %q", name, i, value, got[i])
 			}
+			// Equality alone would survive dropping the clones, since the
+			// values are copied into a fresh slice either way. The point of the
+			// wrapper is that the bytes behind each string are new too, so the
+			// backing arrays are what the test compares.
+			if unsafe.StringData(got[i]) == unsafe.StringData(value) {
+				t.Fatalf("expected %s[%d] to be backed by a fresh allocation", name, i)
+			}
 		}
-		if &got[0] == &values[0] {
-			t.Fatalf("expected the values of %s to be a fresh slice", name)
+	}
+
+	// Names alias too: the adaptor passes a name already in canonical form
+	// straight through, so they are cloned on the same grounds as the values.
+	for name := range original {
+		var detached string
+		for candidate := range seen.Header {
+			if candidate == name {
+				detached = candidate
+			}
+		}
+		if detached == "" {
+			t.Fatalf("expected the header name %q to survive", name)
+		}
+		if unsafe.StringData(detached) == unsafe.StringData(name) {
+			t.Fatalf("expected the name %q to be backed by a fresh allocation", name)
 		}
 	}
 }
@@ -2249,5 +2271,160 @@ func TestPanicWithDownstreamRecoverIsRecorded(t *testing.T) {
 	metrics := getMetrics(t, app, "")
 	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/boom",status_code="500"}`) {
 		t.Fatalf("expected the panic-induced 500 to be recorded, got %q", metrics)
+	}
+}
+
+// TestBlankSkipStatusClassIsIgnored matches the tolerance SkipURIs has for the
+// entry an unset environment variable produces: an empty setting must not stop
+// the process from booting.
+func TestBlankSkipStatusClassIsIgnored(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{SkipStatusClasses: []string{"", "  "}}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `path="/hello"`) {
+		t.Fatalf("expected a blank class to filter nothing, got %q", metrics)
+	}
+}
+
+// TestSkipURIsTrimsWhitespace covers the other half of splitting a setting on
+// ",": the entries after the first carry a leading space, which would otherwise
+// land behind the slash the middleware prepends and match no route.
+func TestSkipURIsTrimsWhitespace(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{SkipURIs: strings.Split("/health, /ping", ",")}, "")
+	for _, path := range []string{"/health", "/ping"} {
+		app.Get(path, func(c fiber.Ctx) error {
+			return c.SendStatus(fiber.StatusOK)
+		})
+	}
+
+	for _, path := range []string{"/health", "/ping"} {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+			t.Fatalf("requesting %s: %v", path, err)
+		}
+	}
+
+	metrics := getMetrics(t, app, "")
+	if strings.Contains(metrics, "http_requests_total") {
+		t.Fatalf("expected both padded entries to be skipped, got %q", metrics)
+	}
+}
+
+// TestUnknownStatusClassIsFilterable covers a response outside 1xx-5xx, whose
+// class statusClass reports as "unknown" - the one class an operator is most
+// likely to want gone.
+func TestUnknownStatusClassIsFilterable(t *testing.T) {
+	for _, filtered := range []bool{false, true} {
+		t.Run(fmt.Sprintf("filtered=%v", filtered), func(t *testing.T) {
+			cfg := Config{}
+			if filtered {
+				cfg.SkipStatusClasses = []string{"unknown"}
+			}
+
+			app, _ := newAppWithMiddleware(cfg, "")
+			app.Get("/odd", func(c fiber.Ctx) error {
+				return c.Status(999).SendString("odd")
+			})
+
+			if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/odd", nil), noTimeoutConfig); err != nil {
+				t.Fatalf("unexpected request error: %v", err)
+			}
+
+			metrics := getMetrics(t, app, "")
+			recorded := strings.Contains(metrics, `status_class="unknown"`)
+			if recorded == filtered {
+				t.Fatalf("expected recorded=%v with the class filtered=%v, got %q", !filtered, filtered, metrics)
+			}
+		})
+	}
+}
+
+// TestUnknownDisabledMetricPanics covers a mistyped family name, which would
+// otherwise disable nothing while the operator waits for a cardinality drop.
+func TestUnknownDisabledMetricPanics(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected a panic for an unknown metric name")
+		}
+		if msg := fmt.Sprint(r); !strings.Contains(msg, "unknown metric") {
+			t.Fatalf("expected an unknown metric panic, got %v", r)
+		}
+	}()
+
+	_ = New(Config{DisabledMetrics: []Metric{"request_duration"}})
+}
+
+// TestInvalidSkipStatusCodePanics covers a code that is not three digits, which
+// no response could ever carry.
+func TestInvalidSkipStatusCodePanics(t *testing.T) {
+	for _, code := range []int{0, 99, 4040, -404} {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatalf("expected a panic for the status code %d", code)
+				}
+				if msg := fmt.Sprint(r); !strings.Contains(msg, "status code") {
+					t.Fatalf("expected a status code panic, got %v", r)
+				}
+			}()
+
+			_ = New(Config{SkipStatusCodes: []int{code}})
+		})
+	}
+}
+
+// TestRejectedConfigLeavesRegistryClean pins that validation happens before the
+// first Register call. Registering half the families and then rejecting the
+// config would leave a shared registry unusable, and the corrected retry would
+// fail on a duplicate registration instead - a message pointing nowhere near the
+// actual mistake.
+func TestRejectedConfigLeavesRegistryClean(t *testing.T) {
+	registry := prometheus.NewRegistry()
+
+	rejected := []Config{
+		{SkipStatusClasses: []string{"4x"}},
+		{SkipStatusCodes: []int{4040}},
+		{DisabledMetrics: []Metric{"nope"}},
+		{Labels: prometheus.Labels{"path": "x"}},
+		{DynamicLabels: map[string]func(fiber.Ctx) string{"method": func(fiber.Ctx) string { return "x" }}},
+	}
+
+	for i, cfg := range rejected {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("expected the invalid config to be rejected")
+				}
+			}()
+
+			cfg.Registerer = registry
+			cfg.Gatherer = registry
+			_ = New(cfg)
+		})
+	}
+
+	// The registry must still be untouched, so the corrected config registers
+	// cleanly rather than dying on a duplicate.
+	app := fiber.New()
+	app.Use(New(Config{Registerer: registry, Gatherer: registry}))
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/hello",status_code="200"}`) {
+		t.Fatalf("expected the corrected config to register cleanly, got %q", metrics)
 	}
 }

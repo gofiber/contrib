@@ -67,13 +67,25 @@ var reservedLabels = map[string]struct{}{
 }
 
 // validStatusClasses are the classes Config.SkipStatusClasses accepts, which is
-// exactly the set statusClass can return for a real response.
+// exactly the set statusClass can return - "unknown" included, since a handler
+// is free to answer with a status outside 1xx-5xx.
 var validStatusClasses = map[string]bool{
-	"1xx": true,
-	"2xx": true,
-	"3xx": true,
-	"4xx": true,
-	"5xx": true,
+	"1xx":     true,
+	"2xx":     true,
+	"3xx":     true,
+	"4xx":     true,
+	"5xx":     true,
+	"unknown": true,
+}
+
+// allMetrics is the set of families Config.DisabledMetrics may name.
+var allMetrics = map[Metric]struct{}{
+	MetricRequestsTotal:            {},
+	MetricRequestsStatusClassTotal: {},
+	MetricRequestDuration:          {},
+	MetricRequestSize:              {},
+	MetricResponseSize:             {},
+	MetricRequestsInProgress:       {},
 }
 
 // New creates a new Prometheus middleware handler.
@@ -110,16 +122,13 @@ var validStatusClasses = map[string]bool{
 func New(config ...Config) fiber.Handler {
 	cfg := configDefault(config...)
 
-	registry, gatherer := resolveRegistry(cfg)
-
-	if !cfg.DisableGoCollector {
-		registerCollector(registry, collectors.NewGoCollector())
-	}
-
-	if !cfg.DisableProcessCollector {
-		registerCollector(registry, collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
-	}
-
+	// Every panic below has to fire before the first Register call. A
+	// configuration rejected half way through registration would leave a
+	// caller-supplied Registerer holding the families this middleware had got to,
+	// so the corrected retry would die on a duplicate registration instead -
+	// a message pointing at the wrong problem, and one no amount of fixing the
+	// original config resolves.
+	//
 	// configDefault already handed over a private copy of Labels, so the
 	// "service" entry goes straight into it. ServiceName wins over a "service"
 	// key supplied through Labels.
@@ -140,6 +149,11 @@ func New(config ...Config) fiber.Handler {
 
 	disabled := make(map[Metric]struct{}, len(cfg.DisabledMetrics))
 	for _, metric := range cfg.DisabledMetrics {
+		// An unrecognised name would disable nothing and say nothing, leaving
+		// the family it was meant to drop registered and recording.
+		if _, known := allMetrics[metric]; !known {
+			panic("prometheus middleware: unknown metric " + strconv.Quote(string(metric)) + " in DisabledMetrics")
+		}
 		disabled[metric] = struct{}{}
 	}
 	enabled := func(metric Metric) bool {
@@ -147,10 +161,25 @@ func New(config ...Config) fiber.Handler {
 		return !off
 	}
 
+	m := &middleware{
+		next:              cfg.Next,
+		metricsPath:       normalizePath(cfg.MetricsPath),
+		unmatchedLabel:    normalizePath(cfg.UnmatchedRouteLabel),
+		skipURIs:          make(map[string]struct{}, len(cfg.SkipURIs)),
+		skipStatusCodes:   make(map[int]struct{}, len(cfg.SkipStatusCodes)),
+		skipStatusClasses: make(map[string]struct{}, len(cfg.SkipStatusClasses)),
+		dynamicLabels:     dynamic,
+		trackUnmatched:    cfg.TrackUnmatchedRequests,
+	}
+
+	m.resolveFilters(cfg)
+
 	// Both label sets carry the dynamic names last so that the value buffer
 	// built per request can be shared between them.
 	byStatusCode := variableLabels("status_code", dynamic)
 	byStatusClass := variableLabels("status_class", dynamic)
+
+	registry, gatherer := resolveRegistry(cfg)
 
 	scrapeHandler := promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{
 		EnableOpenMetrics:                   cfg.EnableOpenMetrics,
@@ -166,18 +195,15 @@ func New(config ...Config) fiber.Handler {
 		scrapeHandler = detachRequest(scrapeHandler)
 	}
 
-	metricsHandler := adaptor.HTTPHandler(scrapeHandler)
+	m.metricsHandler = adaptor.HTTPHandler(scrapeHandler)
 
-	m := &middleware{
-		metricsHandler:    metricsHandler,
-		next:              cfg.Next,
-		metricsPath:       normalizePath(cfg.MetricsPath),
-		unmatchedLabel:    normalizePath(cfg.UnmatchedRouteLabel),
-		skipURIs:          make(map[string]struct{}, len(cfg.SkipURIs)),
-		skipStatusCodes:   make(map[int]struct{}, len(cfg.SkipStatusCodes)),
-		skipStatusClasses: make(map[string]struct{}, len(cfg.SkipStatusClasses)),
-		dynamicLabels:     dynamic,
-		trackUnmatched:    cfg.TrackUnmatchedRequests,
+	// Past this point the config is known good and registration can begin.
+	if !cfg.DisableGoCollector {
+		registerCollector(registry, collectors.NewGoCollector())
+	}
+
+	if !cfg.DisableProcessCollector {
+		registerCollector(registry, collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	}
 
 	if enabled(MetricRequestsTotal) {
@@ -245,13 +271,24 @@ func New(config ...Config) fiber.Handler {
 	}
 
 	m.observes = m.requestDuration != nil || m.requestSize != nil || m.responseSize != nil
-	m.records = m.requestsTotal != nil || m.requestsByClass != nil || m.observes
+	// A "/*" entry excludes every route, so nothing downstream of the handler
+	// chain can ever be recorded. Saying so here lets instrument return the
+	// moment the chain unwinds, rather than timing and labelling a request only
+	// for skipped to discard it.
+	m.records = !m.skipAll && (m.requestsTotal != nil || m.requestsByClass != nil || m.observes)
 
+	return m.handle
+}
+
+// resolveFilters parses the three skip lists, rejecting entries that could never
+// match rather than letting them sit in a filter the operator believes is doing
+// something. Blank entries are the exception: splitting an unset environment
+// variable on "," yields one, and treating that as a configuration error would
+// stop the process from booting over an empty setting.
+func (m *middleware) resolveFilters(cfg Config) {
 	for _, path := range cfg.SkipURIs {
-		// A blank entry - what splitting an unset environment variable on ","
-		// yields - would otherwise normalize to "/" and quietly drop the root
-		// route from every metric. Excluding "/" stays possible by asking for it.
-		if strings.TrimSpace(path) == "" {
+		path = strings.TrimSpace(path)
+		if path == "" {
 			continue
 		}
 
@@ -292,21 +329,27 @@ func New(config ...Config) fiber.Handler {
 	}
 
 	for _, code := range cfg.SkipStatusCodes {
+		// RFC 9110 makes a status code three digits, so anything else - a 4040
+		// for 404, or a stray 0 - is a typo that would silently filter nothing.
+		if code < 100 || code > 999 {
+			panic("prometheus middleware: status code " + strconv.Itoa(code) + " is not a three-digit HTTP status")
+		}
 		m.skipStatusCodes[code] = struct{}{}
 	}
 
 	for _, class := range cfg.SkipStatusClasses {
 		normalized := strings.ToLower(strings.TrimSpace(class))
+		if normalized == "" {
+			continue
+		}
 		// Anything statusClass never returns would sit in the map unmatched, so
 		// the operator would believe a class was filtered while every response
 		// in it kept being recorded.
 		if !validStatusClasses[normalized] {
-			panic("prometheus middleware: status class " + strconv.Quote(class) + ` is not one of "1xx" through "5xx"`)
+			panic("prometheus middleware: status class " + strconv.Quote(class) + ` is not one of "1xx" through "5xx" or "unknown"`)
 		}
 		m.skipStatusClasses[normalized] = struct{}{}
 	}
-
-	return m.handle
 }
 
 // detachRequest hands the wrapped handler a request whose header no longer
