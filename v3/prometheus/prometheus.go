@@ -3,6 +3,7 @@
 package prometheus
 
 import (
+	"bytes"
 	"errors"
 	"maps"
 	"math"
@@ -429,7 +430,12 @@ func (m *middleware) resolveFilters(cfg Config) bool {
 		// leaves the per-request scan a single HasPrefix against a separator
 		// already appended here rather than rebuilt on every request.
 		m.skipURIs[prefix] = struct{}{}
-		m.skipPrefixes = append(m.skipPrefixes, prefix+"/")
+		// Several spellings normalize to one prefix - "/admin/*", "/admin/**"
+		// and "/admin/*/" all do - and each duplicate would repeat an identical
+		// HasPrefix on every instrumented request for the process lifetime.
+		if withSeparator := prefix + "/"; !slices.Contains(m.skipPrefixes, withSeparator) {
+			m.skipPrefixes = append(m.skipPrefixes, withSeparator)
+		}
 	}
 
 	for _, code := range cfg.SkipStatusCodes {
@@ -806,7 +812,15 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 
 		if m.requestSize != nil {
 			req := ctx.Request()
-			if size, known := requestBodySize(req.Header.ContentLength(), req); known {
+			// The body limit is read only for a multipart form, which is the
+			// one shape that consults it - App.Config returns the whole config
+			// by value, so this stays off the ordinary path.
+			preParsedForm := bytes.HasPrefix(req.Header.ContentType(), multipartFormPrefix)
+			bodyLimit := 0
+			if preParsedForm {
+				bodyLimit = ctx.App().Config().BodyLimit
+			}
+			if size, known := requestBodySize(req.Header.ContentLength(), bodyLimit, preParsedForm, req); known {
 				observe(m.requestSize.WithLabelValues(values...), size)
 			}
 		}
@@ -921,33 +935,45 @@ type payload interface {
 // requestBodySize reports the size of the payload received, and whether it could
 // be determined at all.
 //
-// Content-Length is what fasthttp parsed off the wire, so on this side it is
-// authoritative and is taken first. Measuring the buffer instead would be
-// actively harmful: for a pre-parsed multipart form fasthttp keeps the parsed
-// parts rather than the raw body - the large ones spilled to temp files
-// precisely so they never sit in memory - and Request.Body() re-marshals the
-// whole form back into a fresh buffer just to have its length taken, doubling
-// the memory an upload costs and discarding the result. It also returns the
-// error text as the body if that re-marshal fails, which would land in the
-// histogram as a ~50-byte request.
+// The buffer holds what actually arrived, so it is measured wherever it can be.
+// Trusting Content-Length instead would let a client bill the histogram for a
+// body it never sent: fasthttp rejects a request announcing more than BodyLimit
+// before reading a byte of it, Fiber then replays the Use chain, and this would
+// record the announced figure - unbounded, from a few hundred bytes of traffic.
 //
-// Only an unannounced length falls back to the buffer, and never for a body
-// stream: reading that would drain it into memory just to size it, so the size
-// stays unknown and the caller leaves the payload out of the histogram rather
-// than observing zero. Recording a zero would be worse than recording nothing -
-// it still increments _count and lands in the lowest bucket while adding nothing
-// to _sum.
-func requestBodySize(contentLength int, p payload) (float64, bool) {
-	if contentLength >= 0 {
-		return float64(contentLength), true
+// A pre-parsed multipart form is the exception, because there the buffer is not
+// the body: fasthttp keeps the parsed parts, the large ones spilled to temp
+// files precisely so they never sit in memory, and Request.Body would re-marshal
+// the whole form into a fresh buffer just to have its length taken - doubling
+// what an upload costs and discarding the copy. There the announced length is
+// the only cheap answer, clamped to what the server would have accepted, since
+// anything larger was rejected unread.
+//
+// A body stream is left unknown rather than measured: reading it would drain it
+// into memory just to size it, so the caller leaves the payload out of the
+// histogram. Recording a zero would be worse than recording nothing - it still
+// increments _count and lands in the lowest bucket while adding nothing to _sum.
+func requestBodySize(contentLength, bodyLimit int, preParsedForm bool, p payload) (float64, bool) {
+	if p.IsBodyStream() {
+		if contentLength >= 0 {
+			return float64(contentLength), true
+		}
+		return 0, false
 	}
 
-	if p.IsBodyStream() {
-		return 0, false
+	if preParsedForm && contentLength > 0 {
+		if bodyLimit > 0 && contentLength > bodyLimit {
+			return float64(bodyLimit), true
+		}
+		return float64(contentLength), true
 	}
 
 	return float64(len(p.Body())), true
 }
+
+// multipartFormPrefix is the media type whose body fasthttp consumes into parsed
+// parts before the handler chain runs.
+var multipartFormPrefix = []byte("multipart/form-data")
 
 // responseBodySize reports the size of the payload about to be sent, and whether
 // it could be determined at all.
@@ -959,7 +985,9 @@ func requestBodySize(contentLength int, p payload) (float64, bool) {
 // is, and without one the payload is left out of the histogram as above.
 func responseBodySize(contentLength int, p payload) (float64, bool) {
 	if p.IsBodyStream() {
-		if contentLength > 0 {
+		// Zero is announced, not absent: fasthttp uses a negative length for a
+		// stream whose size is unknown.
+		if contentLength >= 0 {
 			return float64(contentLength), true
 		}
 		return 0, false

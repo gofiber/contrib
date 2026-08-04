@@ -23,9 +23,11 @@ type Metric string
 // measured. A stream of unannounced length - c.SendStream without a size, an SSE
 // response, a chunked upload read through fiber.Config.StreamRequestBody - is
 // left out of the histogram rather than recorded as zero bytes. On the request
-// side the announced Content-Length is taken as given rather than measuring the
-// buffer, which for a pre-parsed multipart form would re-marshal every uploaded
-// part back into memory just to size it. A response that
+// side what arrived is measured, so a client cannot bill the histogram for a
+// body it never sent; the exception is a pre-parsed multipart form, where the
+// buffer is not the body and reading it back would re-marshal every uploaded
+// part into memory just to size it, so the announced length is used and clamped
+// to fiber.Config.BodyLimit. A response that
 // carries no body on the wire records zero however much the handler wrote: a
 // HEAD, or any status RFC 9110 forbids a body on - 1xx, 204 and 304.
 //
@@ -211,8 +213,10 @@ type Config struct {
 	// This is a label value rather than a route, so unlike MetricsPath it is
 	// taken as given: no leading slash is added. Set it to "unmatched" and the
 	// path label reads "unmatched", which is useful to keep unmatched traffic
-	// visibly distinct from real route patterns. Only trailing slashes are
-	// trimmed, so that "/other/" and "/other" cannot become two series.
+	// visibly distinct from real route patterns. Surrounding whitespace and
+	// trailing slashes are trimmed - the first so that a value carrying the
+	// newline an environment variable picks up does not become part of the
+	// series name, the second so that "/other/" and "/other" cannot become two.
 	//
 	// It has to be valid UTF-8, which New checks: unlike Labels, this value
 	// never passes through a descriptor, so client_golang would not see it until
@@ -325,6 +329,11 @@ type Config struct {
 	// routes case-insensitively by default: a route registered as "/Admin"
 	// serves GET /admin and is labelled "/Admin", so an entry of "/admin" would
 	// exclude nothing. Spell the entry the way the route was registered.
+	//
+	// An entry may also name UnmatchedRouteLabel, which excludes unmatched
+	// traffic from the metrics TrackUnmatchedRequests would otherwise record.
+	// That one is matched exactly - the label is a value, not a path, so a
+	// wildcard against it means nothing and excludes nothing.
 	//
 	// An entry ending in "*" matches by prefix: "/admin/*" excludes "/admin"
 	// and every route below it. Trailing stars are stripped as a group, so the

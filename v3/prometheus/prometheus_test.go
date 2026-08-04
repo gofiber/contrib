@@ -1924,23 +1924,30 @@ func TestRequestBodySize(t *testing.T) {
 	tests := []struct {
 		name          string
 		contentLength int
+		bodyLimit     int
+		preParsedForm bool
 		payload       fakePayload
 		want          float64
 		wantKnown     bool
 	}{
-		// Taking the header first is what keeps a pre-parsed multipart form
-		// from being re-marshalled into memory just to be measured.
-		{name: "content length wins over the buffer", contentLength: 2048, payload: fakePayload{}, want: 2048, wantKnown: true},
-		{name: "content length wins over a stream", contentLength: 42, payload: fakePayload{stream: true}, want: 42, wantKnown: true},
-		{name: "announced zero is a known zero", contentLength: 0, payload: fakePayload{body: []byte("ignored")}, want: 0, wantKnown: true},
+		// The buffer holds what arrived, so an announced length a client made
+		// up cannot reach the histogram.
+		{name: "buffer wins over an inflated content length", contentLength: 500000000, payload: fakePayload{}, want: 0, wantKnown: true},
+		{name: "buffered body is measured", contentLength: 5, payload: fakePayload{body: []byte("hello")}, want: 5, wantKnown: true},
 		{name: "chunked body is measured", contentLength: -1, payload: fakePayload{body: []byte("hello")}, want: 5, wantKnown: true},
+		// A pre-parsed form is the one case where the buffer is not the body.
+		{name: "form takes the announced length", contentLength: 2048, bodyLimit: 4096, preParsedForm: true, payload: fakePayload{}, want: 2048, wantKnown: true},
+		{name: "form length is clamped to the body limit", contentLength: 500000000, bodyLimit: 4096, preParsedForm: true, payload: fakePayload{}, want: 4096, wantKnown: true},
+		{name: "form without a limit takes the announced length", contentLength: 2048, preParsedForm: true, payload: fakePayload{}, want: 2048, wantKnown: true},
+		{name: "stream takes the announced length", contentLength: 42, payload: fakePayload{stream: true}, want: 42, wantKnown: true},
+		{name: "stream announcing zero is a known zero", contentLength: 0, payload: fakePayload{stream: true}, want: 0, wantKnown: true},
 		{name: "stream of unknown length is undetermined", contentLength: -1, payload: fakePayload{stream: true}, wantKnown: false},
 		{name: "identity encoding stream is undetermined", contentLength: -2, payload: fakePayload{stream: true}, wantKnown: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			size, known := requestBodySize(tt.contentLength, tt.payload)
+			size, known := requestBodySize(tt.contentLength, tt.bodyLimit, tt.preParsedForm, tt.payload)
 			if known != tt.wantKnown {
 				t.Fatalf("expected known=%v, got %v", tt.wantKnown, known)
 			}
@@ -1965,6 +1972,7 @@ func TestResponseBodySize(t *testing.T) {
 		{name: "content length is all a stream has", contentLength: 42, payload: fakePayload{stream: true}, want: 42, wantKnown: true},
 		{name: "buffered body is measured", contentLength: -1, payload: fakePayload{body: []byte("hello")}, want: 5, wantKnown: true},
 		{name: "empty body is a known zero", contentLength: 0, payload: fakePayload{}, want: 0, wantKnown: true},
+		{name: "stream announcing zero is a known zero", contentLength: 0, payload: fakePayload{stream: true}, want: 0, wantKnown: true},
 		{name: "stream of unknown length is undetermined", contentLength: -1, payload: fakePayload{stream: true}, wantKnown: false},
 		{name: "identity encoding stream is undetermined", contentLength: -2, payload: fakePayload{stream: true}, wantKnown: false},
 	}
@@ -3841,4 +3849,82 @@ func TestNegativeNativeHistogramFactorPanics(t *testing.T) {
 	}()
 
 	_ = New(Config{NativeHistogramBucketFactor: -1})
+}
+
+// TestInflatedContentLengthIsNotRecorded covers the shape a client can send for
+// free: a body over BodyLimit, which fasthttp rejects before reading a byte of
+// it. Fiber then replays the Use chain, and trusting the announced length would
+// let a few hundred bytes of traffic bill the histogram for half a gigabyte.
+func TestInflatedContentLengthIsNotRecorded(t *testing.T) {
+	app := fiber.New(fiber.Config{BodyLimit: 1024})
+	app.Use(New(Config{TrackUnmatchedRequests: true}))
+	app.Post("/upload", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	req := httptest.NewRequest(fiber.MethodPost, "/upload", strings.NewReader("tiny"))
+	req.Header.Set(fiber.HeaderContentType, "application/octet-stream")
+	req.Header.Set(fiber.HeaderContentLength, "500000000")
+	req.ContentLength = 500000000
+	// fasthttp rejects the request at the connection level, which app.Test
+	// surfaces as an error rather than a response - but Fiber has already
+	// replayed the Use chain by then, so the middleware ran and may have
+	// recorded something.
+	_, _ = app.Test(req, noTimeoutConfig) //nolint:errcheck // the rejection is the point
+
+	metrics := getMetrics(t, app, "")
+	for _, line := range strings.Split(metrics, "\n") {
+		if !strings.HasPrefix(line, "http_request_size_bytes_sum") {
+			continue
+		}
+		_, value, _ := strings.Cut(line, " ")
+		size, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if err != nil {
+			t.Fatalf("parsing %q: %v", line, err)
+		}
+		if size > 1024 {
+			t.Fatalf("expected no request larger than the body limit, got %v in %q", size, line)
+		}
+	}
+}
+
+// TestZeroLengthStreamIsRecorded covers c.SendStream(reader, 0): the length is
+// announced, not absent, so the observation belongs in the histogram - otherwise
+// _count under-reports against http_requests_total.
+func TestZeroLengthStreamIsRecorded(t *testing.T) {
+	app := newAppWithMiddleware(Config{}, "")
+	app.Get("/empty-stream", func(c fiber.Ctx) error {
+		return c.SendStream(strings.NewReader(""), 0)
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/empty-stream", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	series := `http_response_size_bytes_count{method="GET",path="/empty-stream",status_code="200"}`
+	if count := gaugeValue(t, metrics, series); count != 1 {
+		t.Fatalf("expected the observation to be recorded, got %v", count)
+	}
+}
+
+// TestDuplicateWildcardEntriesShareOnePrefix pins that the spellings documented
+// as equivalent collapse to a single scan, rather than repeating an identical
+// HasPrefix on every instrumented request for the process lifetime.
+func TestDuplicateWildcardEntriesShareOnePrefix(t *testing.T) {
+	// The prefix set is internal, so drive resolveFilters directly.
+	mw := &middleware{
+		skipURIs:          make(map[string]struct{}),
+		skipStatusCodes:   make(map[int]struct{}),
+		skipStatusClasses: make(map[string]struct{}),
+		unmatchedLabel:    "/__unmatched__",
+	}
+	mw.resolveFilters(Config{SkipURIs: []string{"/admin/*", "/admin/**", "/admin/*/"}})
+
+	if len(mw.skipPrefixes) != 1 {
+		t.Fatalf("expected one prefix, got %v", mw.skipPrefixes)
+	}
+	if mw.skipPrefixes[0] != "/admin/" {
+		t.Fatalf("expected the prefix to be /admin/, got %q", mw.skipPrefixes[0])
+	}
 }
