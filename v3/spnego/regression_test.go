@@ -3214,13 +3214,13 @@ func TestUnparsableKeytabDoesNotLeakKeyMaterial(t *testing.T) {
 	// Nothing has parsed yet, so there is no cached keytab to serve and the
 	// parse error is returned as-is. This is the shape a caller sees through
 	// Config.OnError and its ErrorHandler.
-	_, err = cache.load()
-	require.Error(t, err)
-	require.NotContains(t, err.Error(), string(key),
+	_, parseErr := cache.load()
+	require.Error(t, parseErr)
+	require.NotContains(t, parseErr.Error(), string(key),
 		"the returned error must not carry the keytab's key material")
-	require.Contains(t, err.Error(), "keytab did not parse")
-	require.Contains(t, err.Error(), file, "the file is what identifies the fault")
-	require.Contains(t, err.Error(), fmt.Sprintf("(%d bytes read)", len(torn)),
+	require.Contains(t, parseErr.Error(), "keytab did not parse")
+	require.Contains(t, parseErr.Error(), file, "the file is what identifies the fault")
+	require.Contains(t, parseErr.Error(), fmt.Sprintf("(%d bytes read)", len(torn)),
 		"the length is what is kept: a torn write is short, a corrupt file usually is not")
 
 	// And now with a cached keytab behind it, which is the path that announces
@@ -3241,15 +3241,26 @@ func TestUnparsableKeytabDoesNotLeakKeyMaterial(t *testing.T) {
 	// however badly it leaked — which is what the first two versions of this
 	// test did.
 	//
-	// strconv.Quote is byte-wise, so the key renders the same inside the longer
-	// quoted cause as it does alone; the outer quotes are stripped to leave the
-	// substring that would appear there.
+	// Both renderings are checked. strconv.Quote decodes runes rather than
+	// working a byte at a time, so a key spliced into a longer string does not
+	// always escape to the same characters as it does alone; searching for one
+	// form only would be trusting an alignment that holds here by accident.
 	quoted := strconv.Quote(string(key))
 	escaped := quoted[1 : len(quoted)-1]
-	require.Contains(t, quoteForLog(torn), escaped,
+	require.Contains(t, quoteForLog([]byte("keytab did not parse: "+string(key))), escaped,
 		"the escaped key must be what a leak would look like, or the check below is empty")
+
+	// And the cause has to fit inside the cap, or a leak could be truncated
+	// away rather than caught — which is how this check would go quietly
+	// vacuous again after an unrelated change, a second keytab file or a longer
+	// temporary directory being enough to do it.
+	require.Less(t, len(parseErr.Error()), loggedBodyLimit,
+		"a cause past the cap would be truncated, so absence would prove nothing")
+
 	require.NotContains(t, logged.String(), escaped,
 		"the log must not carry the keytab's key material either")
+	require.NotContains(t, logged.String(), string(key),
+		"nor unescaped, if the quoting is ever removed")
 }
 
 // TestKeytabPathCannotForgeALogLine is what the quoting on the episode lines is

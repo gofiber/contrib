@@ -147,6 +147,17 @@ func remoteKeytabLookup() (*keytab.Keytab, error) {
 }
 ```
 
+> **Whatever error your lookup returns is logged and passed to `OnError`, so it must not carry anything secret.** That is easy to get wrong with a keytab: gokrb5's parse errors interpolate the whole file they were handed, which for a single-principal keytab is the entire key. So `return keytab.Load(path)` writes that key to your logs on any file it cannot parse — a rotation caught mid-write is enough to trigger it. Report the failure without gokrb5's cause:
+>
+> ```go
+> kt, err := keytab.Load(path)
+> if err != nil {
+>     return nil, fmt.Errorf("loading %s: keytab did not parse", path)
+> }
+> ```
+>
+> `NewKeytabFileLookupFunc` already does this, which is the other reason to prefer it over a hand-rolled file loader.
+
 ### Errors
 
 A failed keytab lookup is answered with a bare `500`. The detail from `NewKeytabFileLookupFunc` names the keytab's path and the underlying OS error — a custom `KeytabLookupFunc` may report whatever it likes — and none of that should reach an unauthenticated caller, so the response body carries only `Internal Server Error`.
@@ -294,7 +305,7 @@ The two are told apart by the error your `New` returns, and by `WWW-Authenticate
 
 One caveat for whoever is on call. gokrb5 sends your manager's actual error to *its own* logger and writes only `Internal Server Error` to the response, so that boilerplate is what `ErrSPNEGOHandlerFailed` carries unless your manager wrote something itself. To see why the store refused, set `Log` or `UseFiberLogger` — or log it inside your manager, which is the more direct route.
 
-What it does carry is quoted and capped at 512 bytes, with a `(+N bytes)` suffix when there was more. Every string in this package's logs that the package did not write is treated that way — a manager's body, a `KeytabLookupFunc`'s error, a keytab path — because a newline in any of them would otherwise start a line of its own under the `spnego:` prefix.
+What it does carry is quoted and capped at 512 bytes, with a `(+N bytes)` suffix when there was more. Every string in this package's logs that the package did not write is treated that way — a manager's body, a `KeytabLookupFunc`'s error, a keytab path — because a newline in any of them would otherwise start a line of its own under the `spnego:` prefix. Quoting is not redaction: it keeps text from forging log lines and bounds how much of it lands, but a secret inside the cap still reaches the log, which is why what you return from a `KeytabLookupFunc` is yours to keep clean.
 
 gokrb5's own keytab parse errors are not quoted but dropped. They interpolate the whole file they were handed, and that file is key material: for a single-principal keytab the entire key fits inside the 512-byte cap, so quoting would have bounded it and logged it anyway. What is reported instead is the file's name, that it did not parse, and how many bytes were read — a rotation caught mid-write is short, a corrupt file usually is not.
 

@@ -56,7 +56,26 @@ type Config struct {
 	// passes it straight down the chain. Useful for exempting health probes or
 	// CORS preflights from authentication.
 	Next func(ctx fiber.Ctx) bool
-	// KeytabLookup is a function that retrieves the keytab
+	// KeytabLookup is a function that retrieves the keytab.
+	//
+	// Whatever error it returns is logged and passed to OnError, so it must not
+	// carry anything secret. This is not hypothetical for a keytab: gokrb5's
+	// own parse errors interpolate the whole file they were handed, which for a
+	// single-principal keytab is the entire key, so
+	//
+	//	func lookup() (*keytab.Keytab, error) { return keytab.Load(path) }
+	//
+	// writes that key to the log on any file it cannot parse — a rotation
+	// caught mid-write is enough. Report the failure without the cause, or with
+	// a cause of your own:
+	//
+	//	kt, err := keytab.Load(path)
+	//	if err != nil {
+	//		return nil, fmt.Errorf("loading %s: keytab did not parse", path)
+	//	}
+	//
+	// NewKeytabFileLookupFunc does exactly that, which is the other reason to
+	// prefer it.
 	KeytabLookup KeytabLookupFunc
 	// Log receives gokrb5's diagnostics, which carry no level of their own.
 	// gokrb5 writes a line for every request carrying a Negotiate token — one
@@ -195,7 +214,9 @@ type Config struct {
 	// There are two failures, distinguished by sentinel:
 	//
 	//   - ErrLookupKeytabFailed, when KeytabLookup returns an error or no
-	//     keytab. The error also carries the underlying cause.
+	//     keytab. The error also carries the underlying cause, whatever the
+	//     lookup chose to put there — see KeytabLookup on why that must not be
+	//     gokrb5's parse error.
 	//   - ErrSPNEGOHandlerFailed, when gokrb5 fails inside its own handler
 	//     without reaching an authentication outcome, which in v8.4.4 means a
 	//     SessionManager that could not persist a session.
