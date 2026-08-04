@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/adaptor"
@@ -25,9 +26,11 @@ import (
 // middleware encapsulates all state required to expose metrics and instrument
 // Fiber requests. Every metric vector is nil when its family is disabled
 // through Config.DisabledMetrics.
-// Only the two configuration fields read per request are kept; everything else
-// Config carries is consumed by New and would otherwise be retained - along
-// with configDefault's defensive copies of it - for the lifetime of the process.
+//
+// Only the configuration actually read per request is kept. Everything else
+// Config carries is consumed by New, and holding the struct would retain
+// configDefault's copies of it - the skip lists, the labels - for the lifetime
+// of the process.
 type middleware struct {
 	requestsTotal     *prometheus.CounterVec
 	requestsByClass   *prometheus.CounterVec
@@ -44,6 +47,7 @@ type middleware struct {
 	skipStatusCodes   map[int]struct{}
 	skipStatusClasses map[string]struct{}
 	dynamicLabels     []dynamicLabel
+	exemplars         bool
 	skipAll           bool
 	trackUnmatched    bool
 	records           bool
@@ -169,6 +173,7 @@ func New(config ...Config) fiber.Handler {
 		skipStatusCodes:   make(map[int]struct{}, len(cfg.SkipStatusCodes)),
 		skipStatusClasses: make(map[string]struct{}, len(cfg.SkipStatusClasses)),
 		dynamicLabels:     dynamic,
+		exemplars:         !cfg.DisableExemplars,
 		trackUnmatched:    cfg.TrackUnmatchedRequests,
 	}
 
@@ -181,21 +186,7 @@ func New(config ...Config) fiber.Handler {
 
 	registry, gatherer := resolveRegistry(cfg)
 
-	scrapeHandler := promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{
-		EnableOpenMetrics:                   cfg.EnableOpenMetrics,
-		EnableOpenMetricsTextCreatedSamples: cfg.EnableOpenMetricsTextCreatedSamples,
-		DisableCompression:                  cfg.DisableCompression,
-		MaxRequestsInFlight:                 cfg.MetricsMaxRequestsInFlight,
-		Timeout:                             cfg.MetricsTimeout,
-		ErrorLog:                            cfg.MetricsErrorLog,
-		ErrorHandling:                       cfg.MetricsErrorHandling,
-	})
-
-	if cfg.MetricsTimeout > 0 {
-		scrapeHandler = detachRequest(scrapeHandler)
-	}
-
-	m.metricsHandler = adaptor.HTTPHandler(scrapeHandler)
+	m.metricsHandler = adaptor.HTTPHandler(newScrapeHandler(cfg, gatherer))
 
 	// Past this point the config is known good and registration can begin.
 	if !cfg.DisableGoCollector {
@@ -352,6 +343,42 @@ func (m *middleware) resolveFilters(cfg Config) {
 	}
 }
 
+// newScrapeHandler builds the net/http handler answering a scrape, detaching
+// the request when the timeout that makes detaching necessary is in play.
+func newScrapeHandler(cfg Config, gatherer prometheus.Gatherer) http.Handler {
+	handler := promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{
+		EnableOpenMetrics:                   cfg.EnableOpenMetrics,
+		EnableOpenMetricsTextCreatedSamples: cfg.EnableOpenMetricsTextCreatedSamples,
+		DisableCompression:                  cfg.DisableCompression,
+		MaxRequestsInFlight:                 cfg.MetricsMaxRequestsInFlight,
+		Timeout:                             cfg.MetricsTimeout,
+		ErrorLog:                            cfg.MetricsErrorLog,
+		ErrorHandling:                       cfg.MetricsErrorHandling,
+	})
+
+	if cfg.MetricsTimeout > 0 {
+		handler = detachRequest(handler)
+	}
+
+	return handler
+}
+
+// typedNil reports whether an interface holds a nil pointer or other nilable
+// zero value, which `== nil` does not catch.
+func typedNil(value any) bool {
+	if value == nil {
+		return false
+	}
+
+	rv := reflect.ValueOf(value)
+	switch rv.Kind() { //nolint:exhaustive // only nilable kinds can be a typed nil
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface, reflect.UnsafePointer:
+		return rv.IsNil()
+	default:
+		return false
+	}
+}
+
 // detachRequest hands the wrapped handler a request whose header no longer
 // aliases the connection buffers.
 //
@@ -448,6 +475,16 @@ func resolveRegistry(cfg Config) (prometheus.Registerer, prometheus.Gatherer) {
 	registerer := cfg.Registerer
 	gatherer := cfg.Gatherer
 
+	// A typed nil - `var reg *prometheus.Registry` handed straight over - is a
+	// non-nil interface, so it would sail past every check below and die on a
+	// nil dereference inside client_golang instead.
+	if typedNil(registerer) {
+		panic("prometheus middleware: Registerer is a typed nil; leave it unset to use a private registry")
+	}
+	if typedNil(gatherer) {
+		panic("prometheus middleware: Gatherer is a typed nil; leave it unset to use a private registry")
+	}
+
 	if registerer == nil && gatherer == nil {
 		reg := prometheus.NewRegistry()
 		return reg, reg
@@ -486,10 +523,8 @@ func resolveRegistry(cfg Config) (prometheus.Registerer, prometheus.Gatherer) {
 // type is not comparable, so identity is established through reflection and
 // cases that cannot be decided are accepted rather than aborting startup.
 func differentSource(a, b prometheus.Gatherer) bool {
+	// Both interfaces are non-nil here, so neither Value can be invalid.
 	av, bv := reflect.ValueOf(a), reflect.ValueOf(b)
-	if !av.IsValid() || !bv.IsValid() {
-		return false
-	}
 
 	// Mismatched dynamic types say nothing about the underlying source: a
 	// gathering wrapper delegating to the registry it was handed is a different
@@ -602,7 +637,14 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		// and leaving the registry unable to gather at all. ToValidUTF8 returns
 		// its input untouched when the value is already valid, so the clone has
 		// to stay.
-		values[3+i] = strings.Clone(strings.ToValidUTF8(label.fn(ctx), "�"))
+		value := label.fn(ctx)
+		if utf8.ValidString(value) {
+			values[3+i] = strings.Clone(value)
+		} else {
+			// ToValidUTF8 allocates whenever it substitutes, so its result is
+			// already detached from the read buffer.
+			values[3+i] = strings.ToValidUTF8(value, "�")
+		}
 	}
 
 	if m.requestsTotal != nil {
@@ -615,11 +657,15 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	// extra user value to clear on release. Skip the lot when every histogram
 	// family is disabled.
 	if m.observes {
-		spanCtx := trace.SpanContextFromContext(ctx.Context())
-		traceID := spanCtx.TraceID()
 		var exemplarLabels prometheus.Labels
-		if traceID.IsValid() {
-			exemplarLabels = prometheus.Labels{"traceID": traceID.String()}
+		if m.exemplars {
+			// Reading the request context is what costs: with no user context
+			// set - the norm without tracing middleware - Fiber installs a
+			// background one, which the request then has to clear on release.
+			spanCtx := trace.SpanContextFromContext(ctx.Context())
+			if traceID := spanCtx.TraceID(); traceID.IsValid() {
+				exemplarLabels = prometheus.Labels{"traceID": traceID.String()}
+			}
 		}
 
 		observe := func(observer prometheus.Observer, value float64) {
@@ -691,10 +737,6 @@ func bodySize(contentLength int, p payload) (float64, bool) {
 // skipped reports whether the route pattern is excluded by Config.SkipURIs,
 // either as an exact match or through a "*" prefix entry.
 func (m *middleware) skipped(routePath string) bool {
-	if m.skipAll {
-		return true
-	}
-
 	if _, ok := m.skipURIs[routePath]; ok {
 		return true
 	}

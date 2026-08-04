@@ -2411,8 +2411,23 @@ func TestRejectedConfigLeavesRegistryClean(t *testing.T) {
 		})
 	}
 
-	// The registry must still be untouched, so the corrected config registers
-	// cleanly rather than dying on a duplicate.
+	// Untouched means empty, not merely free of the metric families: the Go and
+	// process collectors register through registerCollector, which swallows
+	// AlreadyRegisteredError, so a retry would succeed even with them left
+	// behind by a config the caller never got to work.
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("gathering after the rejected configs: %v", err)
+	}
+	if len(families) != 0 {
+		names := make([]string, 0, len(families))
+		for _, family := range families {
+			names = append(names, family.GetName())
+		}
+		t.Fatalf("expected the registry to be untouched, got %v", names)
+	}
+
+	// So the corrected config registers cleanly rather than dying on a duplicate.
 	app := fiber.New()
 	app.Use(New(Config{Registerer: registry, Gatherer: registry}))
 	app.Get("/hello", func(c fiber.Ctx) error {
@@ -2426,5 +2441,206 @@ func TestRejectedConfigLeavesRegistryClean(t *testing.T) {
 	metrics := getMetrics(t, app, "")
 	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/hello",status_code="200"}`) {
 		t.Fatalf("expected the corrected config to register cleanly, got %q", metrics)
+	}
+}
+
+// TestMetricsTimeoutBoundsScrape pins that the configured timeout reaches
+// promhttp. Without it a gatherer stuck on a slow collector holds the handler -
+// and its in-flight slot - indefinitely, which is the pile-up the option exists
+// to prevent.
+func TestMetricsTimeoutBoundsScrape(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	gatherer := &blockingGatherer{
+		Gatherer: registry,
+		entered:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+	}
+	t.Cleanup(func() { close(gatherer.release) })
+
+	app, _ := newAppWithMiddleware(Config{
+		Registerer:     registry,
+		Gatherer:       gatherer,
+		MetricsTimeout: 50 * time.Millisecond,
+	}, "")
+
+	// A bounded wait, well clear of the 50ms deadline: should the timeout stop
+	// reaching promhttp, the gather never returns and this has to fail rather
+	// than hang the suite.
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/metrics", nil), fiber.TestConfig{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("the scrape was not bounded by MetricsTimeout: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusServiceUnavailable {
+		t.Fatalf("expected status 503 once the deadline fires, got %d", resp.StatusCode)
+	}
+}
+
+// TestScrapeHandlerDetachesOnlyWithTimeout pins the wiring, not just the
+// wrapper: detachRequest replaces the request's header in place, so whether the
+// scrape handler was built with it is visible from the caller's own request.
+func TestScrapeHandlerDetachesOnlyWithTimeout(t *testing.T) {
+	for _, timeout := range []time.Duration{0, time.Minute} {
+		t.Run(timeout.String(), func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+			req.Header.Set("Accept", "text/plain")
+			before := req.Header["Accept"][0]
+
+			newScrapeHandler(Config{MetricsTimeout: timeout}, prometheus.NewRegistry()).
+				ServeHTTP(httptest.NewRecorder(), req)
+
+			after := req.Header["Accept"][0]
+			detached := unsafe.StringData(after) != unsafe.StringData(before)
+			if detached != (timeout > 0) {
+				t.Fatalf("expected detached=%v with MetricsTimeout=%s", timeout > 0, timeout)
+			}
+		})
+	}
+}
+
+// TestBucketsAreCopiedFromConfig pins the defensive copy: client_golang aliases
+// the slice it is handed into the live histogram, so a caller reusing its own
+// slice would otherwise reshape an already-registered metric.
+func TestBucketsAreCopiedFromConfig(t *testing.T) {
+	buckets := []float64{1, 2, 3}
+
+	app, _ := newAppWithMiddleware(Config{
+		RequestDurationBuckets: buckets,
+		DisabledMetrics:        []Metric{MetricRequestSize, MetricResponseSize},
+	}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	// Mutating the caller's slice must not reach the registered histogram.
+	buckets[0] = 1000
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `http_request_duration_seconds_bucket{method="GET",path="/hello",status_code="200",le="1"}`) {
+		t.Fatalf("expected the bucket bounds configured at startup, got %q", metrics)
+	}
+	if strings.Contains(metrics, `le="1000"`) {
+		t.Fatalf("expected the caller's mutation not to reshape the histogram, got %q", metrics)
+	}
+}
+
+// TestUnmatchedRouteLabelIsTakenAsGiven pins the documented contract that,
+// unlike MetricsPath, the label is used verbatim - normalizing it would rename a
+// live series and break every dashboard keyed on it.
+func TestUnmatchedRouteLabelIsTakenAsGiven(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{
+		TrackUnmatchedRequests: true,
+		UnmatchedRouteLabel:    "unmatched",
+	}, "")
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/nothing/here", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `path="unmatched"`) {
+		t.Fatalf("expected the label to be used verbatim, got %q", metrics)
+	}
+}
+
+// TestMetricsPathIgnoresTrailingSlash covers both sides of the documented
+// tolerance: a request with a trailing slash, and a configured path carrying one.
+func TestMetricsPathIgnoresTrailingSlash(t *testing.T) {
+	t.Run("request", func(t *testing.T) {
+		app, _ := newAppWithMiddleware(Config{}, "")
+		if body := getMetrics(t, app, "/metrics/"); !strings.Contains(body, "go_goroutines") {
+			t.Fatalf("expected /metrics/ to be served, got %q", body)
+		}
+	})
+
+	t.Run("config", func(t *testing.T) {
+		app, _ := newAppWithMiddleware(Config{MetricsPath: "/telemetry/"}, "")
+		if body := getMetrics(t, app, "/telemetry"); !strings.Contains(body, "go_goroutines") {
+			t.Fatalf("expected /telemetry to be served, got %q", body)
+		}
+	})
+}
+
+// TestDisableExemplarsSkipsContextRead covers the opt-out for applications with
+// no tracing middleware, which otherwise pay a context install and clear per
+// request for exemplars that can never be produced.
+func TestDisableExemplarsSkipsContextRead(t *testing.T) {
+	prev := otel.GetTracerProvider()
+	tp := tracesdk.NewTracerProvider(tracesdk.WithSampler(tracesdk.AlwaysSample()))
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prev)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := tp.Shutdown(ctx); err != nil {
+			t.Fatalf("shutting down tracer provider: %v", err)
+		}
+	})
+
+	tracer := otel.Tracer("test")
+
+	app := fiber.New()
+	handler := New(Config{DisableExemplars: true, EnableOpenMetrics: true})
+
+	app.Use(func(c fiber.Ctx) error {
+		ctxWithSpan, span := tracer.Start(c.Context(), "test-request")
+		defer span.End()
+		c.SetContext(ctxWithSpan)
+		return handler(c)
+	})
+
+	app.Get("/traced", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/traced", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metricsReq := httptest.NewRequest(fiber.MethodGet, "/metrics", nil)
+	metricsReq.Header.Set("Accept", "application/openmetrics-text; version=1.0.0; charset=utf-8")
+	metricsResp, err := app.Test(metricsReq, noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("fetching metrics: %v", err)
+	}
+	body, err := io.ReadAll(metricsResp.Body)
+	if err != nil {
+		t.Fatalf("reading metrics body: %v", err)
+	}
+	metrics := string(body)
+	if !strings.Contains(metrics, `path="/traced"`) {
+		t.Fatalf("expected the request to still be recorded, got %q", metrics)
+	}
+	if strings.Contains(metrics, "traceID=") {
+		t.Fatalf("expected no exemplar with DisableExemplars set, got %q", metrics)
+	}
+}
+
+// TestTypedNilRegistryPanics covers a nil *prometheus.Registry handed over as a
+// non-nil interface, which would otherwise die on a nil dereference inside
+// client_golang rather than at the boundary that can name the field.
+func TestTypedNilRegistryPanics(t *testing.T) {
+	var registry *prometheus.Registry
+
+	for name, cfg := range map[string]Config{
+		"registerer": {Registerer: registry},
+		"gatherer":   {Gatherer: registry},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatal("expected a panic for a typed nil")
+				}
+				if msg := fmt.Sprint(r); !strings.Contains(msg, "typed nil") {
+					t.Fatalf("expected a typed nil panic, got %v", r)
+				}
+			}()
+
+			_ = New(cfg)
+		})
 	}
 }

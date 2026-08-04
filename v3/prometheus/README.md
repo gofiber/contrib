@@ -52,6 +52,7 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | UnmatchedRouteLabel | `string` | Path label used for unmatched requests when `TrackUnmatchedRequests` is enabled. | `"/__unmatched__"` |
 | EnableOpenMetrics | `bool` | Negotiates the experimental OpenMetrics encoding, which is what exports exemplars. | `false` |
 | EnableOpenMetricsTextCreatedSamples | `bool` | Adds synthetic `_created` samples to OpenMetrics responses. | `false` |
+| DisableExemplars | `bool` | Skips trace exemplar collection, and with it the request-context read every instrumented request otherwise pays. | `false` |
 | DisableCompression | `bool` | Serves metrics uncompressed even when the client requests gzip or zstd. | `false` |
 | MetricsMaxRequestsInFlight | `int` | Caps concurrent scrapes; the excess is answered with 503. | `0` (unlimited) |
 | MetricsTimeout | `time.Duration` | Bounds a single scrape before it is answered with 503. | `0` (no timeout) |
@@ -385,6 +386,11 @@ size histograms record the trace ID as an exemplar under the `traceID` label.
 Exemplars are only serialized in the OpenMetrics encoding, so set
 `EnableOpenMetrics: true` and scrape with an OpenMetrics-capable client to see
 them.
+
+Collecting one costs a request-context read on every instrumented request: Fiber
+installs a background context when the application never set one, which the
+request then has to clear again on release. Set `DisableExemplars: true` when
+nothing in your stack starts spans, and that work goes away.
 
 ## 📊 Result
 

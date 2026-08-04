@@ -188,6 +188,19 @@ type Config struct {
 	// Optional. Default: false.
 	EnableOpenMetricsTextCreatedSamples bool
 
+	// DisableExemplars stops the middleware from attaching a trace exemplar to
+	// each histogram observation.
+	//
+	// Collecting one means reading the request context, and Fiber installs a
+	// background context on the request when the application never set one -
+	// which the request then has to clear again on release. An application with
+	// no tracing middleware pays that on every instrumented request for
+	// exemplars that can never be produced, so turn this on when nothing in the
+	// stack starts spans.
+	//
+	// Optional. Default: false (exemplars collected when a span is present).
+	DisableExemplars bool
+
 	// DisableCompression prevents gzip compression of metrics responses, even when
 	// requested by the client (both gzip and zstd).
 	//
