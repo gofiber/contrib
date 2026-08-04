@@ -553,6 +553,16 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 	// cannot be read as well as one that cannot be parsed — both would
 	// otherwise put a full read of every keytab on every request, serialised
 	// behind this mutex.
+	//
+	// What it does not remove is the mutex itself. A degraded revision never
+	// matches the snapshot, so the lock-free fast path misses and every request
+	// stats twice and queues here for as long as the fault lasts. Publishing
+	// the failing revision alongside the snapshot would keep this path lock-free
+	// too, at the cost of a second copy of the degraded state to keep in step
+	// with this one. It is not worth it: what is being served through here is
+	// either a stale keytab on a 30-second clock or an error, so the episode is
+	// short by construction and the throughput of a failing service is not the
+	// thing to optimise for.
 	if c.deg.cause != nil && slices.Equal(c.deg.stamps, stamps) && now.Sub(c.deg.lastAttempt) < c.retry() {
 		if errors.Is(c.deg.cause, errKeytabUnparsable) {
 			return c.serveStale(c.deg.cause, now)

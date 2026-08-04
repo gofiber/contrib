@@ -344,6 +344,17 @@ func (r *responseRecorder) Write(b []byte) (int, error) {
 // copyHeadersTo replays the recorded headers onto the Fiber response. SPNEGO
 // sets WWW-Authenticate on success as well as on failure, and the client needs
 // it in both cases to complete mutual authentication.
+//
+// Not on every success, though: a request served from an established session
+// goes straight to the inner handler without an accept-completed token, so
+// there is nothing to replay but whatever the session manager wrote. That is
+// gokrb5's design — the token proves this exchange, and a resumed session had
+// no exchange — and it is why this copies whatever is there rather than
+// expecting a particular header.
+//
+// Add rather than Set: a manager may write a header more than once, and Set
+// would keep only the last. Set-Cookie would survive either way, since fasthttp
+// routes it through a path where Set appends, but nothing else would.
 func (r *responseRecorder) copyHeadersTo(ctx fiber.Ctx) {
 	for key, values := range r.Header() {
 		for _, value := range values {
@@ -469,12 +480,13 @@ func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
 		// fasthttp's is not an io.ReadCloser — so it is the empty one.
 		Body: http.NoBody,
 	}
-	// Host, protocol, scheme and TLS exist only for a session manager, which is
-	// the sole reader of any of them — gokrb5 looks at none — so they sit behind
-	// the same gate as the cookies. An ordinary request then pays for none:
-	// reading the TLS state copies and heap-allocates a tls.ConnectionState,
-	// ctx.Scheme and ctx.Host each walk the headers once TrustProxy is on, and
-	// the protocol has to be copied out of the request buffer and parsed.
+	// The context, host, protocol, scheme and TLS exist only for a session
+	// manager, which is the sole reader of any of them — gokrb5 looks at none —
+	// so they sit behind the same gate as the cookies. An ordinary request then
+	// pays for none: WithContext shallow-copies the request, reading the TLS
+	// state copies and heap-allocates a tls.ConnectionState, ctx.Scheme and
+	// ctx.Host each walk the headers once TrustProxy is on, and the protocol
+	// has to be copied out of the request buffer and parsed.
 	//
 	// Neither TLS nor Scheme is a dependable signal on its own. TLS is non-nil
 	// only where Fiber terminates TLS itself, and Scheme reports https from
@@ -483,6 +495,15 @@ func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
 	// behind a TLS-terminating proxy both can say "not secure" for a connection
 	// the client made over HTTPS.
 	if withCookies {
+		// A session manager is ordinary net/http code, so its store call is
+		// likely to be a QueryContext or an outbound request taking
+		// r.Context(). Left unset that is context.Background(): no deadline, no
+		// cancellation when the client goes away, and detached from whatever
+		// trace the application is carrying — so a session store that hangs
+		// holds the request goroutine for its own driver timeout instead of
+		// Fiber's. This is Fiber's context, so a timeout or tracing middleware
+		// upstream reaches the store.
+		req = req.WithContext(ctx.Context())
 		// net/http documents a server request's Host as "host or host:port", so
 		// it is Host rather than Hostname, which drops the port.
 		req.Host = strings.Clone(ctx.Host())

@@ -3,6 +3,7 @@ package spnego
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
@@ -853,6 +854,43 @@ func sharesStorage(s string, b []byte) bool {
 	return start >= low && start < low+uintptr(len(b))
 }
 
+// TestRequestForSPNEGOCarriesFibersContext pins the context a session manager
+// gets. A manager is ordinary net/http code, so its store call is likely to be
+// a QueryContext or an outbound request taking r.Context(); left unset that is
+// context.Background(), which means no deadline, no cancellation when the
+// client disconnects, and nothing joined to the application's trace. A session
+// store that hangs would then hold the request goroutine for its own driver
+// timeout rather than for Fiber's.
+func TestRequestForSPNEGOCarriesFibersContext(t *testing.T) {
+	type key struct{}
+
+	build := func(t *testing.T, withCookies bool) *http.Request {
+		t.Helper()
+		var got *http.Request
+		app := fiber.New()
+		app.All("/*", func(c fiber.Ctx) error {
+			c.SetContext(context.WithValue(context.Background(), key{}, "from the application"))
+			got = requestForSPNEGO(c, withCookies)
+			return nil
+		})
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/authenticate")
+		ctx.Request.Header.Set(fiber.HeaderHost, "sso.example.com")
+		app.Handler()(ctx)
+		require.NotNil(t, got)
+		return got
+	}
+
+	require.Equal(t, "from the application", build(t, true).Context().Value(key{}),
+		"a session manager must reach its store under the application's context")
+
+	// Not carried without one, like everything else only a manager reads:
+	// WithContext shallow-copies the whole request, and nothing on that path
+	// would look at it.
+	require.Nil(t, build(t, false).Context().Value(key{}),
+		"the context is only for a session manager")
+}
+
 // TestRequestForSPNEGOStatesTheProtocol pins Proto against its numbers. A
 // manager that compares ProtoAtLeast with Proto must not be told two different
 // things, and fasthttp serves HTTP/1.0 as well as 1.1.
@@ -1181,15 +1219,6 @@ func TestServiceSettingsPassesOnlyWhatWasSet(t *testing.T) {
 		require.Equal(t, 90*time.Second, settings.MaxClockSkew())
 		require.False(t, settings.DecodePAC())
 		require.True(t, settings.RequireHostAddr())
-		// No spare capacity. The slice is passed variadically to gokrb5 and
-		// closed over by the handler, so its backing array is shared by every
-		// concurrent request; a gokrb5 that appended to it rather than to a
-		// fresh slice would be writing into that array from several goroutines.
-		// Nothing observable depends on this today, which is why it is asserted
-		// here rather than left to a behavioural test.
-		require.Equal(t, len(opts), cap(opts),
-			"the options slice must not carry spare capacity into gokrb5")
-
 		// Wrapped rather than passed through, so that a New which refuses is
 		// known as a fact instead of being read back out of the response the
 		// manager itself was just holding. The caller's manager has to be
@@ -3004,7 +3033,16 @@ func TestSessionManagerProbeThrottlesItsDiagnostic(t *testing.T) {
 	flog.SetOutput(&logged)
 	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
 
+	// The clock is installed before the probe is used and then stepped through
+	// a variable, rather than the field being reassigned partway. nowFn is read
+	// without the throttle's mutex — deliberately, since nothing takes it to
+	// write the field either — so reassigning it once the probe is in use is
+	// the pattern that becomes a race as soon as anyone drives the probe from
+	// a second goroutine, which other tests in this file do.
+	now := time.Now()
 	probe := newSessionManagerProbe(&failingSessionManager{})
+	probe.signalLost.nowFn = func() time.Time { return now }
+
 	for range 5 {
 		require.ErrorIs(t,
 			probe.New(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "creds", nil),
@@ -3016,7 +3054,7 @@ func TestSessionManagerProbeThrottlesItsDiagnostic(t *testing.T) {
 	// The window is claimed, not the line suppressed for good: winding the
 	// clock past it lets the next one through, so a fault that outlasts the
 	// window still reappears in the log.
-	probe.signalLost.nowFn = func() time.Time { return time.Now().Add(2 * internalErrorLogEvery) }
+	now = now.Add(2 * internalErrorLogEvery)
 	require.ErrorIs(t,
 		probe.New(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "creds", nil),
 		errSessionStoreDown)

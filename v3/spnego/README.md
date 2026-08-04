@@ -18,7 +18,7 @@ This middleware provides SPNEGO (Simple and Protected GSSAPI Negotiation Mechani
 - Integration with Fiber context for authenticated identity storage
 - Group-based authorization from Active Directory's PAC, with no extra parsing
 - Optional sessions, so an authenticated client is not revalidated per request
-- Service principal, keytab principal, clock skew and host-address controls
+- Keytab principal, clock skew and host-address controls
 - Success and failure hooks for metrics and audit
 - Configurable logging
 
