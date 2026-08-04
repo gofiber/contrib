@@ -1,12 +1,14 @@
 package prometheus
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"math"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -1907,7 +1909,7 @@ func TestUnknownResponseSizeIsNotObserved(t *testing.T) {
 }
 
 // fakePayload stands in for *fasthttp.Request and *fasthttp.Response so
-// bodySize can be exercised on both sides without a live connection.
+// the size helpers can be exercised on both sides without a live connection.
 type fakePayload struct {
 	stream bool
 	body   []byte
@@ -1916,7 +1918,9 @@ type fakePayload struct {
 func (p fakePayload) IsBodyStream() bool { return p.stream }
 func (p fakePayload) Body() []byte       { return p.body }
 
-func TestBodySize(t *testing.T) {
+// TestRequestBodySize covers the received side, where Content-Length is what
+// fasthttp parsed off the wire and the buffer may not hold the body at all.
+func TestRequestBodySize(t *testing.T) {
 	tests := []struct {
 		name          string
 		contentLength int
@@ -1924,8 +1928,39 @@ func TestBodySize(t *testing.T) {
 		want          float64
 		wantKnown     bool
 	}{
-		// fasthttp recomputes Content-Length from the body it writes, so a
-		// hand-set or stale header never describes what the client receives.
+		// Taking the header first is what keeps a pre-parsed multipart form
+		// from being re-marshalled into memory just to be measured.
+		{name: "content length wins over the buffer", contentLength: 2048, payload: fakePayload{}, want: 2048, wantKnown: true},
+		{name: "content length wins over a stream", contentLength: 42, payload: fakePayload{stream: true}, want: 42, wantKnown: true},
+		{name: "announced zero is a known zero", contentLength: 0, payload: fakePayload{body: []byte("ignored")}, want: 0, wantKnown: true},
+		{name: "chunked body is measured", contentLength: -1, payload: fakePayload{body: []byte("hello")}, want: 5, wantKnown: true},
+		{name: "stream of unknown length is undetermined", contentLength: -1, payload: fakePayload{stream: true}, wantKnown: false},
+		{name: "identity encoding stream is undetermined", contentLength: -2, payload: fakePayload{stream: true}, wantKnown: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			size, known := requestBodySize(tt.contentLength, tt.payload)
+			if known != tt.wantKnown {
+				t.Fatalf("expected known=%v, got %v", tt.wantKnown, known)
+			}
+			if known && size != tt.want {
+				t.Fatalf("expected size %v, got %v", tt.want, size)
+			}
+		})
+	}
+}
+
+// TestResponseBodySize covers the sent side, where fasthttp recomputes
+// Content-Length from the body it is about to write.
+func TestResponseBodySize(t *testing.T) {
+	tests := []struct {
+		name          string
+		contentLength int
+		payload       fakePayload
+		want          float64
+		wantKnown     bool
+	}{
 		{name: "buffered body wins over content length", contentLength: 999999, payload: fakePayload{body: []byte("tiny")}, want: 4, wantKnown: true},
 		{name: "content length is all a stream has", contentLength: 42, payload: fakePayload{stream: true}, want: 42, wantKnown: true},
 		{name: "buffered body is measured", contentLength: -1, payload: fakePayload{body: []byte("hello")}, want: 5, wantKnown: true},
@@ -1936,7 +1971,7 @@ func TestBodySize(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			size, known := bodySize(tt.contentLength, tt.payload)
+			size, known := responseBodySize(tt.contentLength, tt.payload)
 			if known != tt.wantKnown {
 				t.Fatalf("expected known=%v, got %v", tt.wantKnown, known)
 			}
@@ -2152,14 +2187,19 @@ func TestMetricsTimeoutServesScrape(t *testing.T) {
 // second scrape can be made to arrive while the first is still in flight.
 type blockingGatherer struct {
 	prometheus.Gatherer
-	entered chan struct{}
-	release chan struct{}
+	entered  chan struct{}
+	release  chan struct{}
+	finished chan struct{}
 }
 
 func (g *blockingGatherer) Gather() ([]*dto.MetricFamily, error) {
 	g.entered <- struct{}{}
 	<-g.release
-	return g.Gatherer.Gather()
+	families, err := g.Gatherer.Gather()
+	if g.finished != nil {
+		g.finished <- struct{}{}
+	}
+	return families, err
 }
 
 // TestMetricsMaxRequestsInFlightRejectsExcess pins that the promhttp limiter is
@@ -2471,12 +2511,20 @@ func TestRejectedConfigLeavesRegistryClean(t *testing.T) {
 // to prevent.
 func TestMetricsTimeoutBoundsScrape(t *testing.T) {
 	registry := prometheus.NewRegistry()
+	// MetricsTimeout runs the gather on its own goroutine and answers 503
+	// without it, so the test has to wait for that straggler: it calls
+	// registry.Gather, which reads the process-global model.NameValidationScheme
+	// that later tests write.
 	gatherer := &blockingGatherer{
 		Gatherer: registry,
 		entered:  make(chan struct{}, 1),
 		release:  make(chan struct{}),
+		finished: make(chan struct{}, 1),
 	}
-	t.Cleanup(func() { close(gatherer.release) })
+	t.Cleanup(func() {
+		close(gatherer.release)
+		<-gatherer.finished
+	})
 
 	app := newAppWithMiddleware(Config{
 		Registerer:     registry,
@@ -3646,4 +3694,151 @@ func TestUnmatchedRouteLabelIsTrimmed(t *testing.T) {
 	if !strings.Contains(metrics, `path="unmatched"`) {
 		t.Fatalf("expected the label to be trimmed, got %q", metrics)
 	}
+}
+
+// TestMultipartUploadIsNotReMarshalled covers the request size of a pre-parsed
+// multipart form. fasthttp keeps the parsed parts rather than the raw body -
+// spilling large ones to temp files so they never sit in memory - and
+// Request.Body() re-marshals the whole form into a fresh buffer, so measuring
+// the buffer would double what an upload costs and throw the copy away.
+func TestMultipartUploadIsNotReMarshalled(t *testing.T) {
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", "payload.bin")
+	if err != nil {
+		t.Fatalf("creating the form file: %v", err)
+	}
+	if _, err := part.Write(bytes.Repeat([]byte("u"), 4096)); err != nil {
+		t.Fatalf("writing the form file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("closing the writer: %v", err)
+	}
+	announced := float64(body.Len())
+
+	app := newAppWithMiddleware(Config{}, "")
+	app.Post("/upload", func(c fiber.Ctx) error {
+		if _, err := c.FormFile("file"); err != nil {
+			return err
+		}
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	req := httptest.NewRequest(fiber.MethodPost, "/upload", body)
+	req.Header.Set(fiber.HeaderContentType, writer.FormDataContentType())
+	resp, err := app.Test(req, noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	metrics := getMetrics(t, app, "")
+	series := `http_request_size_bytes_sum{method="POST",path="/upload",status_code="200"}`
+	if size := gaugeValue(t, metrics, series); size != announced {
+		t.Fatalf("expected the announced %v bytes, got %v", announced, size)
+	}
+}
+
+// TestUnsampledTraceProducesNoExemplar pins that an exemplar points somewhere.
+// Under head-based sampling every request carries a valid trace ID, and
+// Prometheus keeps one exemplar per bucket, overwritten on each observation - so
+// recording unsampled traces would evict the links that lead anywhere.
+func TestUnsampledTraceProducesNoExemplar(t *testing.T) {
+	prev := otel.GetTracerProvider()
+	tp := tracesdk.NewTracerProvider(tracesdk.WithSampler(tracesdk.NeverSample()))
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prev)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := tp.Shutdown(ctx); err != nil {
+			t.Fatalf("shutting down tracer provider: %v", err)
+		}
+	})
+
+	tracer := otel.Tracer("test")
+
+	app := fiber.New()
+	handler := New(Config{EnableOpenMetrics: true})
+	app.Use(func(c fiber.Ctx) error {
+		ctxWithSpan, span := tracer.Start(c.Context(), "test-request")
+		defer span.End()
+		c.SetContext(ctxWithSpan)
+		return handler(c)
+	})
+	app.Get("/traced", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/traced", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metricsReq := httptest.NewRequest(fiber.MethodGet, "/metrics", nil)
+	metricsReq.Header.Set("Accept", "application/openmetrics-text; version=1.0.0; charset=utf-8")
+	metricsResp, err := app.Test(metricsReq, noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("fetching metrics: %v", err)
+	}
+	body, err := io.ReadAll(metricsResp.Body)
+	if err != nil {
+		t.Fatalf("reading metrics body: %v", err)
+	}
+	metrics := string(body)
+
+	if !strings.Contains(metrics, `path="/traced"`) {
+		t.Fatalf("expected the request to still be recorded, got %q", metrics)
+	}
+	if strings.Contains(metrics, "traceID=") {
+		t.Fatalf("expected no exemplar for an unsampled trace, got %q", metrics)
+	}
+}
+
+// TestSkipURIEntryFiltersBothMeanings covers an entry that names the unmatched
+// label and a registered route at once: diverting it to the unmatched key alone
+// would make the route filter the operator also asked for a silent no-op.
+func TestSkipURIEntryFiltersBothMeanings(t *testing.T) {
+	app := newAppWithMiddleware(Config{
+		TrackUnmatchedRequests: true,
+		UnmatchedRouteLabel:    "admin",
+		SkipURIs:               []string{"admin"},
+	}, "")
+	app.Get("/admin", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+	app.Get("/kept", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	for _, path := range []string{"/admin", "/kept", "/nothing/here"} {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+			t.Fatalf("requesting %s: %v", path, err)
+		}
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `path="/kept"`) {
+		t.Fatalf("expected the unfiltered route to be recorded, got %q", metrics)
+	}
+	if strings.Contains(metrics, `path="/admin"`) {
+		t.Fatalf("expected the route of that name to be skipped, got %q", metrics)
+	}
+	if strings.Contains(metrics, `path="admin"`) {
+		t.Fatalf("expected unmatched traffic to be skipped, got %q", metrics)
+	}
+}
+
+// TestNegativeNativeHistogramFactorPanics covers the other side of zero: a
+// negative factor is neither 0 nor greater than 1, and client_golang treats it
+// exactly as it treats 0.1.
+func TestNegativeNativeHistogramFactorPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected a negative factor to be rejected")
+		}
+	}()
+
+	_ = New(Config{NativeHistogramBucketFactor: -1})
 }

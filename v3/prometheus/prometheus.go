@@ -252,7 +252,7 @@ func New(config ...Config) fiber.Handler {
 	// client_golang enables nothing, and then substitutes its latency defaults
 	// for any bucket slice deliberately left empty, so a byte histogram ends up
 	// bucketed in seconds and every real payload lands in +Inf alone.
-	if factor := cfg.NativeHistogramBucketFactor; math.IsNaN(factor) || (factor > 0 && factor <= 1) {
+	if factor := cfg.NativeHistogramBucketFactor; math.IsNaN(factor) || (factor != 0 && factor <= 1) {
 		panic("prometheus middleware: NativeHistogramBucketFactor must be 0 to disable native histograms, or greater than 1")
 	}
 
@@ -375,9 +375,13 @@ func (m *middleware) resolveFilters(cfg Config) bool {
 		// as given, so an entry naming it has to be too. Without this, a filter
 		// for unmatched traffic would work only while the label happened to
 		// start with a slash - and Config recommends spelling it "unmatched".
+		// This is deliberately not a "continue": an entry naming the unmatched
+		// label may equally name a route, and it still has to reach the
+		// wildcard handling below.
 		if normalizePath(path) == m.unmatchedLabel {
-			m.skipURIs[strings.Clone(m.unmatchedLabel)] = struct{}{}
-			continue
+			// No clone - configDefault already gave the middleware a private
+			// copy, unlike the caller-supplied entries below.
+			m.skipURIs[m.unmatchedLabel] = struct{}{}
 		}
 
 		// Fiber's register prepends "/" to every pattern, so an entry without
@@ -776,7 +780,12 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 			// set - the norm without tracing middleware - Fiber installs a
 			// background one, which the request then has to clear on release.
 			spanCtx := trace.SpanContextFromContext(ctx.Context())
-			if traceID := spanCtx.TraceID(); traceID.IsValid() {
+			// Sampled, not merely valid. Under head-based sampling every
+			// request carries a valid trace ID, and Prometheus keeps one
+			// exemplar per bucket, overwritten on each observation - so
+			// recording unsampled traces would evict the links that lead
+			// somewhere and leave the ones that do not.
+			if traceID := spanCtx.TraceID(); traceID.IsValid() && spanCtx.IsSampled() {
 				exemplarLabels = prometheus.Labels{"traceID": traceID.String()}
 			}
 		}
@@ -797,7 +806,7 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 
 		if m.requestSize != nil {
 			req := ctx.Request()
-			if size, known := bodySize(req.Header.ContentLength(), req); known {
+			if size, known := requestBodySize(req.Header.ContentLength(), req); known {
 				observe(m.requestSize.WithLabelValues(values...), size)
 			}
 		}
@@ -807,7 +816,7 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 				observe(m.responseSize.WithLabelValues(values...), 0)
 			} else {
 				resp := ctx.Response()
-				if size, known := bodySize(resp.Header.ContentLength(), resp); known {
+				if size, known := responseBodySize(resp.Header.ContentLength(), resp); known {
 					observe(m.responseSize.WithLabelValues(values...), size)
 				}
 			}
@@ -909,21 +918,46 @@ type payload interface {
 	Body() []byte
 }
 
-// bodySize reports the payload size in bytes and whether it could be determined
-// at all.
+// requestBodySize reports the size of the payload received, and whether it could
+// be determined at all.
 //
-// A body stream cannot be measured without draining it into memory, so the
-// announced Content-Length is all there is to go on; without one the size stays
-// unknown and the caller leaves the payload out of the histogram rather than
-// observing zero. Recording a zero would be worse than recording nothing: it
-// still increments _count and lands in the lowest bucket while adding nothing to
-// _sum, so an app serving files or SSE would report a median response of no
-// bytes at all.
+// Content-Length is what fasthttp parsed off the wire, so on this side it is
+// authoritative and is taken first. Measuring the buffer instead would be
+// actively harmful: for a pre-parsed multipart form fasthttp keeps the parsed
+// parts rather than the raw body - the large ones spilled to temp files
+// precisely so they never sit in memory - and Request.Body() re-marshals the
+// whole form back into a fresh buffer just to have its length taken, doubling
+// the memory an upload costs and discarding the result. It also returns the
+// error text as the body if that re-marshal fails, which would land in the
+// histogram as a ~50-byte request.
 //
-// Anything else is buffered, and then the buffer is the ground truth rather than
-// the header: fasthttp recomputes Content-Length from the body it is about to
-// write, so a stale or hand-set value never reaches the client.
-func bodySize(contentLength int, p payload) (float64, bool) {
+// Only an unannounced length falls back to the buffer, and never for a body
+// stream: reading that would drain it into memory just to size it, so the size
+// stays unknown and the caller leaves the payload out of the histogram rather
+// than observing zero. Recording a zero would be worse than recording nothing -
+// it still increments _count and lands in the lowest bucket while adding nothing
+// to _sum.
+func requestBodySize(contentLength int, p payload) (float64, bool) {
+	if contentLength >= 0 {
+		return float64(contentLength), true
+	}
+
+	if p.IsBodyStream() {
+		return 0, false
+	}
+
+	return float64(len(p.Body())), true
+}
+
+// responseBodySize reports the size of the payload about to be sent, and whether
+// it could be determined at all.
+//
+// Here the buffer is the ground truth rather than the header, because fasthttp
+// recomputes Content-Length from the body it is about to write - so a stale or
+// hand-set value never reaches the client. A body stream is the exception: it
+// cannot be measured without draining it, so the announced length is all there
+// is, and without one the payload is left out of the histogram as above.
+func responseBodySize(contentLength int, p payload) (float64, bool) {
 	if p.IsBodyStream() {
 		if contentLength > 0 {
 			return float64(contentLength), true

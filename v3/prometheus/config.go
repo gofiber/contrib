@@ -22,7 +22,10 @@ type Metric string
 // is known: either Content-Length is set, or the body is buffered and can be
 // measured. A stream of unannounced length - c.SendStream without a size, an SSE
 // response, a chunked upload read through fiber.Config.StreamRequestBody - is
-// left out of the histogram rather than recorded as zero bytes. A response that
+// left out of the histogram rather than recorded as zero bytes. On the request
+// side the announced Content-Length is taken as given rather than measuring the
+// buffer, which for a pre-parsed multipart form would re-marshal every uploaded
+// part back into memory just to size it. A response that
 // carries no body on the wire records zero however much the handler wrote: a
 // HEAD, or any status RFC 9110 forbids a body on - 1xx, 204 and 304.
 //
@@ -162,6 +165,12 @@ type Config struct {
 	// resolve latency without hand-tuned buckets, but require a Prometheus
 	// server with native histograms enabled.
 	//
+	// New panics on anything else non-zero - a negative value, or one between 0
+	// and 1. client_golang enables native histograms above 1 only, and then
+	// substitutes its latency defaults for any bucket slice deliberately left
+	// empty, so 0.1 where 1.1 was meant would leave the byte histograms
+	// bucketed in seconds with every real payload in +Inf alone.
+	//
 	// Optional. Default: 0 (classic buckets only).
 	NativeHistogramBucketFactor float64
 
@@ -242,6 +251,10 @@ type Config struct {
 	// Reaching a scraper takes an encoding that carries exemplars: OpenMetrics
 	// text, which EnableOpenMetrics offers, or protobuf, which promhttp
 	// negotiates without it.
+	//
+	// Only sampled spans produce one. Prometheus keeps a single exemplar per
+	// bucket and overwrites it on each observation, so recording unsampled
+	// traces would evict the links that lead somewhere.
 	//
 	// Optional. Default: false (exemplars collected when a span is present).
 	DisableExemplars bool

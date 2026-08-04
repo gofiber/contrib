@@ -45,7 +45,7 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | RequestDurationBuckets | `[]float64` | Histogram buckets for request latency, in seconds. `nil` selects the defaults; an empty non-nil slice drops the classic buckets, but only alongside `NativeHistogramBucketFactor`. Bounds must be strictly increasing, `+Inf` last only, or `New` panics. | see [Default Config](#default-config) |
 | RequestSizeBuckets | `[]float64` | Histogram buckets for request payload size, in bytes. | see [Default Config](#default-config) |
 | ResponseSizeBuckets | `[]float64` | Histogram buckets for response payload size, in bytes. | see [Default Config](#default-config) |
-| NativeHistogramBucketFactor | `float64` | Enables native histograms when greater than 1, capping the growth factor between buckets. | `0` |
+| NativeHistogramBucketFactor | `float64` | Enables native histograms when greater than 1, capping the growth factor between buckets. Any other non-zero value panics. | `0` |
 | NativeHistogramMaxBucketNumber | `uint32` | Bounds the native histogram buckets kept per series. | `0` (unlimited) |
 | NativeHistogramMinResetDuration | `time.Duration` | Minimum time before a native histogram may be reset to control its bucket count. | `0` |
 | TrackUnmatchedRequests | `bool` | Records metrics for requests that do not resolve to a registered route. | `false` |
@@ -151,8 +151,11 @@ when its size is known — either `Content-Length` is set, or the body is buffer
 and can be measured. A stream of unannounced length, such as `c.SendStream`
 without a size or an SSE response, is left out of those histograms rather than
 recorded as zero bytes, which would drag the reported percentiles towards
-nothing. A response that carries no body on the wire records zero however much
-the handler wrote — a `HEAD`, or any status RFC 9110 forbids a body on (`1xx`,
+nothing. On the request side the announced `Content-Length` is taken as given
+rather than measuring the buffer: for a pre-parsed multipart form fasthttp keeps
+the parsed parts — the large ones spilled to temp files — and reading the body
+back would re-marshal every uploaded file into memory just to size it. A response
+that carries no body on the wire records zero however much the handler wrote — a `HEAD`, or any status RFC 9110 forbids a body on (`1xx`,
 `204`, `304`) — because fasthttp drops the body and no payload bytes reach the
 client.
 
@@ -401,8 +404,11 @@ app.Use(fiberprometheus.New(fiberprometheus.Config{
 
 ## Exemplars
 
-When the request context carries a valid OpenTelemetry trace, the duration and
-size histograms record the trace ID as an exemplar under the `traceID` label.
+When the request context carries a **sampled** OpenTelemetry span, the duration
+and size histograms record the trace ID as an exemplar under the `traceID`
+label. Unsampled spans are skipped: Prometheus keeps one exemplar per bucket and
+overwrites it on each observation, so recording traces that were never exported
+would evict the links that lead somewhere.
 Reaching a scraper takes an encoding that carries exemplars. Protobuf does, and
 promhttp negotiates it without any configuration — which is what a Prometheus
 server asks for once native histograms are enabled. OpenMetrics text does too,
