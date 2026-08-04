@@ -37,12 +37,12 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | Namespace | `string` | Prefixes every metric name. | `"http"` |
 | Subsystem | `string` | Prefixes every metric name after `Namespace`. | `""` |
 | MetricsPath | `string` | Path served with the Prometheus exposition format. Unless `Next` returns true, requests to it are answered by the middleware and are not instrumented. Compared case-sensitively against the full request path, ignoring trailing slashes. | `"/metrics"` |
-| Labels | `prometheus.Labels` | Extra const labels attached to every metric. A key colliding with a built-in label panics. | `nil` |
+| Labels | `prometheus.Labels` | Extra const labels attached to every metric. A key colliding with a reserved label (`status_code`, `status_class`, `method`, `path`, `le`) panics. | `nil` |
 | Registerer | `prometheus.Registerer` | Registry used to register the metrics. Reusing one across two `New` calls panics on duplicate registration. | private registry |
 | Gatherer | `prometheus.Gatherer` | Source the metrics endpoint gathers from. | private registry |
 | DisableGoCollector | `bool` | Skips registration of the Go runtime metrics collector. | `false` |
 | DisableProcessCollector | `bool` | Skips registration of the process metrics collector. | `false` |
-| RequestDurationBuckets | `[]float64` | Histogram buckets for request latency, in seconds. `nil` selects the defaults; an empty non-nil slice drops the classic buckets, but only alongside `NativeHistogramBucketFactor`. | see [Default Config](#default-config) |
+| RequestDurationBuckets | `[]float64` | Histogram buckets for request latency, in seconds. `nil` selects the defaults; an empty non-nil slice drops the classic buckets, but only alongside `NativeHistogramBucketFactor`. Bounds must be strictly increasing, `+Inf` last only, or `New` panics. | see [Default Config](#default-config) |
 | RequestSizeBuckets | `[]float64` | Histogram buckets for request payload size, in bytes. | see [Default Config](#default-config) |
 | ResponseSizeBuckets | `[]float64` | Histogram buckets for response payload size, in bytes. | see [Default Config](#default-config) |
 | NativeHistogramBucketFactor | `float64` | Enables native histograms when greater than 1, capping the growth factor between buckets. | `0` |
@@ -213,7 +213,7 @@ app.Use(fiberprometheus.New(fiberprometheus.Config{
 
 They apply to every family except `http_requests_in_progress`, which is
 incremented before routing and so cannot see them. Names must not collide with
-the built-in `status_code`, `status_class`, `method` and `path` labels or with
+the reserved `status_code`, `status_class`, `method`, `path` and `le` labels or with
 `Labels`; the middleware panics at startup if they do.
 
 The middleware copies each returned value, so it is safe to return one of

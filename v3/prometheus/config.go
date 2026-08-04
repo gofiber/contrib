@@ -1,6 +1,8 @@
 package prometheus
 
 import (
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -67,6 +69,9 @@ type Config struct {
 	// Labels are attached to every metric. A "service" key here is overridden by
 	// ServiceName when that is also set.
 	//
+	// Names must not collide with the reserved "status_code", "status_class",
+	// "method", "path" and "le" labels; New panics if they do.
+	//
 	// Optional. Default: no labels.
 	Labels prometheus.Labels
 
@@ -111,6 +116,10 @@ type Config struct {
 	// An empty non-nil slice drops the classic buckets, but only when
 	// NativeHistogramBucketFactor is also set: client_golang substitutes its
 	// own defaults for a histogram that would otherwise have no buckets at all.
+	//
+	// Bounds must be strictly increasing, with +Inf allowed only last. New
+	// panics otherwise: client_golang checks them when it builds the first
+	// histogram for a label set, which is on a request rather than at startup.
 	//
 	// Optional. Default: []float64{0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 10, 15, 30, 60}.
 	RequestDurationBuckets []float64
@@ -293,9 +302,9 @@ type Config struct {
 	// the context.
 	//
 	// The labels are added to every metric except MetricRequestsInProgress,
-	// which is incremented before routing and so cannot see them. Names must
-	// not collide with the built-in "status_code", "status_class", "method" and
-	// "path" labels, or with Labels; New panics if they do.
+	// which is incremented before routing and so cannot see them. Names must not
+	// collide with the reserved "status_code", "status_class", "method", "path"
+	// and "le" labels, or with Labels; New panics if they do.
 	//
 	// Every distinct value creates a new series, so returning request data
 	// unchanged lets a client grow the registry without bound. Map untrusted
@@ -339,7 +348,10 @@ func cloneBuckets(supplied, defaults []float64) []float64 {
 	if supplied == nil {
 		supplied = defaults
 	}
-	return append([]float64(nil), supplied...)
+	// slices.Clone keeps an empty non-nil slice non-nil, which Config documents
+	// as meaning something different from nil: drop the classic buckets, rather
+	// than take the defaults.
+	return slices.Clone(supplied)
 }
 
 // configDefault fills in the defaults and takes private copies of the two
@@ -363,8 +375,11 @@ func configDefault(config ...Config) Config {
 	if cfg.MetricsPath == "" {
 		cfg.MetricsPath = ConfigDefault.MetricsPath
 	} else {
-		cfg.MetricsPath = strings.Clone(cfg.MetricsPath)
-		if !strings.HasPrefix(cfg.MetricsPath, "/") {
+		// Concatenating already detaches the string from the caller's backing
+		// array, which is the only thing the clone is there for.
+		if strings.HasPrefix(cfg.MetricsPath, "/") {
+			cfg.MetricsPath = strings.Clone(cfg.MetricsPath)
+		} else {
 			cfg.MetricsPath = "/" + cfg.MetricsPath
 		}
 	}
@@ -382,11 +397,7 @@ func configDefault(config ...Config) Config {
 	if cfg.Labels == nil {
 		cfg.Labels = make(prometheus.Labels)
 	} else {
-		labels := make(prometheus.Labels, len(cfg.Labels))
-		for key, value := range cfg.Labels {
-			labels[key] = value
-		}
-		cfg.Labels = labels
+		cfg.Labels = maps.Clone(cfg.Labels)
 	}
 
 	return cfg

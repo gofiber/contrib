@@ -4,9 +4,11 @@ package prometheus
 
 import (
 	"errors"
+	"maps"
+	"math"
 	"net/http"
 	"reflect"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -62,12 +64,18 @@ type dynamicLabel struct {
 	fn   func(fiber.Ctx) string
 }
 
-// reservedLabels are the label names the middleware sets itself.
+// reservedLabels are the label names Labels and DynamicLabels may not use:
+// the four this middleware sets itself, plus "le", which Prometheus keeps for
+// histogram bucket bounds. CounterVec and GaugeVec would accept "le" happily,
+// but NewHistogramVec only builds the Desc - the rejection comes later, from
+// the lazy newHistogram call on the first observation, on a connection
+// goroutine no recover placed where this package recommends can reach.
 var reservedLabels = map[string]struct{}{
 	"status_code":  {},
 	"status_class": {},
 	"method":       {},
 	"path":         {},
+	"le":           {},
 }
 
 // validStatusClasses are the classes Config.SkipStatusClasses accepts, which is
@@ -145,11 +153,15 @@ func New(config ...Config) fiber.Handler {
 	// an invalid Desc, whose panic names neither Labels nor the offending key.
 	for name := range labels {
 		if _, reserved := reservedLabels[name]; reserved {
-			panic("prometheus middleware: constant label " + strconv.Quote(name) + " collides with a built-in label")
+			panic("prometheus middleware: constant label " + strconv.Quote(name) + " collides with a reserved label")
 		}
 	}
 
 	dynamic := resolveDynamicLabels(cfg)
+
+	validateBuckets("RequestDurationBuckets", cfg.RequestDurationBuckets)
+	validateBuckets("RequestSizeBuckets", cfg.RequestSizeBuckets)
+	validateBuckets("ResponseSizeBuckets", cfg.ResponseSizeBuckets)
 
 	disabled := make(map[Metric]struct{}, len(cfg.DisabledMetrics))
 	for _, metric := range cfg.DisabledMetrics {
@@ -444,16 +456,14 @@ func resolveDynamicLabels(cfg Config) []dynamicLabel {
 		return nil
 	}
 
-	names := make([]string, 0, len(cfg.DynamicLabels))
-	for name := range cfg.DynamicLabels {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	// Sorting keeps the label order of a metric stable across restarts, which
+	// map iteration order would not.
+	names := slices.Sorted(maps.Keys(cfg.DynamicLabels))
 
 	dynamic := make([]dynamicLabel, 0, len(names))
 	for _, name := range names {
 		if _, reserved := reservedLabels[name]; reserved {
-			panic("prometheus middleware: dynamic label " + strconv.Quote(name) + " collides with a built-in label")
+			panic("prometheus middleware: dynamic label " + strconv.Quote(name) + " collides with a reserved label")
 		}
 		if _, ok := cfg.Labels[name]; ok {
 			panic("prometheus middleware: dynamic label " + strconv.Quote(name) + " collides with a constant label")
@@ -821,6 +831,27 @@ func normalizePath(routePath string) string {
 	return normalized
 }
 
+// validateBuckets rejects bucket bounds client_golang would reject, which it
+// only does inside newHistogram - and HistogramVec calls that lazily, on the
+// first observation for a label set. Left to it, a bad slice lets New return,
+// the application boot and the scrape endpoint serve, then panics on every
+// instrumented request from the connection goroutine, where a recover mounted
+// as this package prescribes cannot catch it.
+func validateBuckets(field string, buckets []float64) {
+	for i, upper := range buckets {
+		if math.IsNaN(upper) {
+			panic("prometheus middleware: " + field + " contains NaN")
+		}
+		// A +Inf bound is allowed, but only last: client_golang drops it there
+		// and rejects it anywhere else through the ordering check below.
+		if i > 0 && buckets[i-1] >= upper {
+			panic("prometheus middleware: " + field + " must be strictly increasing, got " +
+				strconv.FormatFloat(buckets[i-1], 'g', -1, 64) + " before " +
+				strconv.FormatFloat(upper, 'g', -1, 64))
+		}
+	}
+}
+
 // registerCollector attempts to register the provided collector, suppressing
 // the AlreadyRegistered error so callers can opt-in without coordination.
 func registerCollector(registry prometheus.Registerer, collector prometheus.Collector) {
@@ -829,6 +860,7 @@ func registerCollector(registry prometheus.Registerer, collector prometheus.Coll
 		if errors.As(err, &alreadyRegistered) {
 			return
 		}
-		panic(err)
+		panic("prometheus middleware: registering the Go or process collector failed, " +
+			"disable it with DisableGoCollector or DisableProcessCollector: " + err.Error())
 	}
 }

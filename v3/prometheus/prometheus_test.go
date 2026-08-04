@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -132,21 +133,25 @@ func TestSkipURIs(t *testing.T) {
 	app.Get("/skip", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
+	app.Get("/kept", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/skip", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
+	for _, path := range []string{"/skip", "/kept"} {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+			t.Fatalf("requesting %s: %v", path, err)
+		}
 	}
 
-	metricsResp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/metrics", nil), noTimeoutConfig)
-	if err != nil {
-		t.Fatalf("fetching metrics: %v", err)
-	}
+	// getMetrics fails the test on a non-200, which matters here: every
+	// assertion below is a negative, so a scrape that errored out would satisfy
+	// all of them. The positive control on /kept closes the other half of the
+	// gap - a middleware recording nothing at all would pass too.
+	metrics := getMetrics(t, app, "")
 
-	body, err := io.ReadAll(metricsResp.Body)
-	if err != nil {
-		t.Fatalf("reading metrics body: %v", err)
+	if !strings.Contains(metrics, "path=\"/kept\"") {
+		t.Fatalf("expected the unfiltered route to be recorded, got %q", metrics)
 	}
-	metrics := string(body)
 	if strings.Contains(metrics, "path=\"/skip\"") {
 		t.Fatalf("expected skip path to be excluded, got %q", metrics)
 	}
@@ -166,6 +171,9 @@ func TestSkipStatusCodes(t *testing.T) {
 	app.Get("/deny", func(c fiber.Ctx) error {
 		return fiber.ErrUnauthorized
 	})
+	app.Get("/allow", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/deny", nil), noTimeoutConfig)
 	if err != nil {
@@ -175,16 +183,16 @@ func TestSkipStatusCodes(t *testing.T) {
 		t.Fatalf("expected status 401, got %d", resp.StatusCode)
 	}
 
-	metricsResp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/metrics", nil), noTimeoutConfig)
-	if err != nil {
-		t.Fatalf("fetching metrics: %v", err)
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/allow", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
 	}
 
-	body, err := io.ReadAll(metricsResp.Body)
-	if err != nil {
-		t.Fatalf("reading metrics body: %v", err)
+	// Scrape through getMetrics and assert a positive, as in TestSkipURIs.
+	metrics := getMetrics(t, app, "")
+
+	if !strings.Contains(metrics, "status_code=\"200\"") {
+		t.Fatalf("expected the unfiltered status to be recorded, got %q", metrics)
 	}
-	metrics := string(body)
 	if strings.Contains(metrics, "status_code=\"401\"") {
 		t.Fatalf("expected status code 401 to be ignored, got %q", metrics)
 	}
@@ -366,21 +374,22 @@ func TestNextSkipsInstrumentation(t *testing.T) {
 	app.Get("/healthz", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
+	app.Get("/kept", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/healthz", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
+	for _, path := range []string{"/healthz", "/kept"} {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+			t.Fatalf("requesting %s: %v", path, err)
+		}
 	}
 
-	metricsResp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/metrics", nil), noTimeoutConfig)
-	if err != nil {
-		t.Fatalf("fetching metrics: %v", err)
-	}
+	// Scrape through getMetrics and assert a positive, as in TestSkipURIs.
+	metrics := getMetrics(t, app, "")
 
-	body, err := io.ReadAll(metricsResp.Body)
-	if err != nil {
-		t.Fatalf("reading metrics body: %v", err)
+	if !strings.Contains(metrics, "path=\"/kept\"") {
+		t.Fatalf("expected the unfiltered route to be recorded, got %q", metrics)
 	}
-	metrics := string(body)
 	if strings.Contains(metrics, "path=\"/healthz\"") {
 		t.Fatalf("expected next-skipped path to be excluded, got %q", metrics)
 	}
@@ -2642,5 +2651,90 @@ func TestTypedNilRegistryPanics(t *testing.T) {
 
 			_ = New(cfg)
 		})
+	}
+}
+
+// TestInvalidBucketsPanicAtStartup covers bounds client_golang rejects. It only
+// checks them inside newHistogram, which HistogramVec calls lazily on the first
+// observation, so an unvalidated slice lets New return and the app boot, then
+// panics on every instrumented request from the connection goroutine - where a
+// recover mounted as this package prescribes cannot catch it.
+func TestInvalidBucketsPanicAtStartup(t *testing.T) {
+	nan := math.NaN()
+
+	for name, cfg := range map[string]Config{
+		"duplicate duration bound": {RequestDurationBuckets: []float64{1, 1}},
+		"descending request size":  {RequestSizeBuckets: []float64{2, 1}},
+		"descending response size": {ResponseSizeBuckets: []float64{100, 50, 200}},
+		"nan":                      {RequestDurationBuckets: []float64{1, nan, 3}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatal("expected the invalid buckets to be rejected by New")
+				}
+				if msg := fmt.Sprint(r); !strings.Contains(msg, "prometheus middleware:") {
+					t.Fatalf("expected the module's own panic, got %v", r)
+				}
+			}()
+
+			_ = New(cfg)
+		})
+	}
+}
+
+// TestValidBucketShapesAreAccepted guards the validation against rejecting what
+// client_golang allows, including a trailing +Inf and the empty slice that drops
+// the classic buckets.
+func TestValidBucketShapesAreAccepted(t *testing.T) {
+	_ = New(Config{
+		RequestDurationBuckets:      []float64{0.5, 1, math.Inf(1)},
+		RequestSizeBuckets:          []float64{},
+		ResponseSizeBuckets:         []float64{1},
+		NativeHistogramBucketFactor: 1.1,
+	})
+}
+
+// TestReservedHistogramLabelPanics covers "le", which Prometheus keeps for
+// bucket bounds. Counters and gauges accept it, and NewHistogramVec only builds
+// the Desc, so without the check the rejection surfaces on the first request
+// rather than at startup.
+func TestReservedHistogramLabelPanics(t *testing.T) {
+	for name, cfg := range map[string]Config{
+		"constant": {Labels: prometheus.Labels{"le": "x"}},
+		"dynamic":  {DynamicLabels: map[string]func(fiber.Ctx) string{"le": func(fiber.Ctx) string { return "x" }}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatal(`expected "le" to be rejected by New`)
+				}
+				if msg := fmt.Sprint(r); !strings.Contains(msg, "reserved label") {
+					t.Fatalf("expected a reserved label panic, got %v", r)
+				}
+			}()
+
+			_ = New(cfg)
+		})
+	}
+}
+
+// TestEmptyBucketsStayEmpty pins the nil-versus-empty distinction Config makes
+// load-bearing: nil selects the defaults, an empty non-nil slice drops the
+// classic buckets. A clone that flattened one into the other would leave the
+// two spellings meaning the same thing.
+func TestEmptyBucketsStayEmpty(t *testing.T) {
+	cfg := configDefault(Config{RequestDurationBuckets: []float64{}})
+	if cfg.RequestDurationBuckets == nil {
+		t.Fatal("expected an empty non-nil slice to survive the copy")
+	}
+	if len(cfg.RequestDurationBuckets) != 0 {
+		t.Fatalf("expected no bounds, got %v", cfg.RequestDurationBuckets)
+	}
+
+	if cfg := configDefault(Config{}); len(cfg.RequestDurationBuckets) != len(defaultRequestDurationBuckets) {
+		t.Fatalf("expected nil to select the defaults, got %v", cfg.RequestDurationBuckets)
 	}
 }
