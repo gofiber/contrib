@@ -774,11 +774,41 @@ func TestRequestForSPNEGOSerialisesValuelessCookies(t *testing.T) {
 	app.Handler()(ctx)
 
 	require.NotNil(t, got)
-	forwarded := string(got.Header.Get(fiber.HeaderCookie))
-	require.NotContains(t, forwarded, "=legacyflag",
-		"a valueless cookie must not gain an empty name")
-	require.Contains(t, forwarded, "legacyflag")
+	forwarded := got.Header.Get(fiber.HeaderCookie)
+	require.NotContains(t, forwarded, "legacyflag",
+		"a nameless cookie cannot be looked up, so forwarding it can only mislead")
+	require.NotContains(t, forwarded, "=legacyflag")
 	// And the real session cookie still survives alongside it.
+	session, err := (&http.Request{Header: got.Header}).Cookie("spnego-session")
+	require.NoError(t, err)
+	require.Equal(t, "opaque", session.Value)
+}
+
+// TestRequestForSPNEGODropsLeadingEqualsCookies is the other half of that rule.
+// fasthttp parses "Cookie: =sneaky" to the same empty key as a bare flag, so
+// rendering it as "sneaky" would hand the session manager a cookie named
+// "sneaky" that the client never sent — net/http drops it from the wire form
+// for having an invalid name.
+func TestRequestForSPNEGODropsLeadingEqualsCookies(t *testing.T) {
+	raw := "GET /authenticate HTTP/1.1\r\n" +
+		"Host: sso.example.com\r\n" +
+		"Cookie: =sneaky\r\n" +
+		"Cookie: spnego-session=opaque\r\n\r\n"
+
+	ctx := &fasthttp.RequestCtx{}
+	require.NoError(t, ctx.Request.Read(bufio.NewReader(bytes.NewBufferString(raw))))
+
+	var got *http.Request
+	app := fiber.New()
+	app.All("/*", func(c fiber.Ctx) error {
+		got = requestForSPNEGO(c, true)
+		return nil
+	})
+	app.Handler()(ctx)
+
+	require.NotNil(t, got)
+	_, err := (&http.Request{Header: got.Header}).Cookie("sneaky")
+	require.Error(t, err, "a cookie the client never named must not be invented")
 	session, err := (&http.Request{Header: got.Header}).Cookie("spnego-session")
 	require.NoError(t, err)
 	require.Equal(t, "opaque", session.Value)
@@ -880,20 +910,20 @@ func TestServiceSettingsPassesOnlyWhatWasSet(t *testing.T) {
 // recordingSessionManager is a gokrb5 service.SessionMgr that keeps what it was
 // handed, so a test can tell whether the middleware wired it up at all.
 type recordingSessionManager struct {
-	mu      sync.Mutex
-	stored  []byte
-	gets    int
-	newCall int
+	mu     sync.Mutex
+	stored []byte
+	gets   int
 }
 
-func (m *recordingSessionManager) New(w http.ResponseWriter, _ *http.Request, k string, v []byte) error {
+// New satisfies service.SessionMgr and nothing more. gokrb5 calls it only from
+// newSession, which runs after a ticket has been validated — so reaching it
+// needs a KDC, and no test here can. Tests that need the manager-writes-a-cookie
+// behaviour drive it through the stub instead, which is where gokrb5 would have
+// written one.
+func (m *recordingSessionManager) New(_ http.ResponseWriter, _ *http.Request, _ string, v []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.newCall++
 	m.stored = v
-	// A real manager sets a cookie here; doing the same proves the middleware
-	// replays whatever the manager writes onto the Fiber response.
-	http.SetCookie(w, &http.Cookie{Name: k, Value: "opaque-session-id", Path: "/"})
 	return nil
 }
 
@@ -904,10 +934,12 @@ func (m *recordingSessionManager) Get(_ *http.Request, _ string) ([]byte, error)
 	return m.stored, nil
 }
 
-func (m *recordingSessionManager) calls() (news, gets int) {
+// getCalls reports how often gokrb5 consulted the session, which is what shows
+// the manager was wired through at all.
+func (m *recordingSessionManager) getCalls() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.newCall, m.gets
+	return m.gets
 }
 
 // TestOnSuccessSeesTheIdentity covers the success hook. It runs before the rest
@@ -1051,8 +1083,8 @@ func TestSessionManagerServesFromSessionWithoutATicket(t *testing.T) {
 	require.NotNil(t, seen, "the session identity must reach the handler")
 	require.Equal(t, "alice", seen.UserName())
 
-	_, gets := manager.calls()
-	require.Positive(t, gets, "gokrb5 must have consulted the session manager")
+	require.Positive(t, manager.getCalls(),
+		"gokrb5 must have consulted the session manager")
 }
 
 // TestSPNEGOInternalFailureIsReportedNotSwallowed covers the 5xx the session
@@ -1115,9 +1147,10 @@ func TestSPNEGOInternalFailureIsReportedNotSwallowed(t *testing.T) {
 // is a session the client can never present, so every request would re-establish
 // one.
 //
-// Nothing else in the suite looks at Set-Cookie, so without this copyHeadersTo
-// could be deleted, moved after the response is written, or switched from Add
-// to Set and the suite would stay green.
+// Nothing else in the suite looks at Set-Cookie. Deleting copyHeadersTo
+// outright would also fail TestAuthenticatedRequestPropagatesIdentityAndError,
+// which pins the accept-completed header, but moving it after the response is
+// written or switching Add to Set would leave only this test to notice.
 func TestSessionCookieIsReplayedOnSuccess(t *testing.T) {
 	user := goidentity.NewUser("alice")
 	stubAuthenticate(t, func(w http.ResponseWriter, _ *http.Request) goidentity.Identity {
@@ -1190,6 +1223,44 @@ func TestSPNEGOInternalFailureDoesNotLeakTheHandlerBody(t *testing.T) {
 	// Unlike the previous behaviour, which returned nil and never reached here.
 	require.ErrorIs(t, handlerErr, ErrSPNEGOHandlerFailed,
 		"the application's ErrorHandler must see it, as it does a keytab failure")
+}
+
+// TestSPNEGOHandlerFailureCaughtWhenItWritesBeforeFailing covers the shape a
+// real session manager produces, and the one a 5xx-only test misses entirely.
+//
+// gokrb5 hands the manager the raw ResponseWriter, so a manager that reports
+// its own trouble writes a body first and only then returns the error gokrb5
+// turns into a 500. The recorder keeps the first status, so that Write pins it
+// at 200 and the eventual 500 is dropped — leaving a request that never
+// authenticated answered 200, with the manager's text and a Set-Cookie for a
+// session that was never stored. Testing "not an authentication outcome"
+// rather than "5xx" is what catches it.
+func TestSPNEGOHandlerFailureCaughtWhenItWritesBeforeFailing(t *testing.T) {
+	flog.SetOutput(io.Discard)
+	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
+
+	const secret = "postgres://user:hunter2@db.internal:5432/sessions"
+	stubAuthenticate(t, func(w http.ResponseWriter, _ *http.Request) goidentity.Identity {
+		http.SetCookie(w, &http.Cookie{Name: "spnego-session", Value: "never-stored"})
+		// Body first — this is what pins the recorder at 200.
+		_, _ = fmt.Fprintf(w, "could not reach %s", secret)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return nil
+	})
+
+	var hookRuns int
+	ctx := serveProtected(t, Config{
+		KeytabLookup:   testKeytabLookup(t),
+		SessionManager: &recordingSessionManager{},
+		OnError:        func(fiber.Ctx, error) { hookRuns++ },
+	})
+
+	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode(),
+		"a request that did not authenticate must never be answered 200")
+	require.Equal(t, "Internal Server Error", string(ctx.Response.Body()))
+	require.NotContains(t, string(ctx.Response.Body()), "hunter2")
+	require.Empty(t, ctx.Response.Header.Peek(fiber.HeaderSetCookie))
+	require.Equal(t, 1, hookRuns)
 }
 
 // TestInternalFailureKindsThrottleIndependently pins that the two internal
@@ -2153,12 +2224,29 @@ func TestRecorderStatusRules(t *testing.T) {
 			wantStatus: fiber.StatusUnauthorized,
 		},
 		{
-			name: "a body without a status is 200",
+			// The recorder itself still reports 200 for this — that is
+			// net/http's rule and responseRecorder follows it. What the
+			// middleware does with it is the point: a request that did not
+			// authenticate cannot be answered 200, so this is treated as the
+			// handler failing and sanitised. It is exactly the shape a session
+			// manager produces when it writes its own message before failing.
+			name: "a body without a status is a handler failure, not a 200",
 			write: func(w http.ResponseWriter) {
 				_, _ = w.Write([]byte("body without a status"))
 			},
-			wantStatus: fiber.StatusOK,
-			wantBody:   "body without a status",
+			wantStatus: fiber.StatusInternalServerError,
+			wantBody:   "Internal Server Error",
+		},
+		{
+			// A 4xx other than 401 is still an authentication outcome as far as
+			// this middleware is concerned, so it passes through untouched.
+			name: "a 4xx passes through",
+			write: func(w http.ResponseWriter) {
+				w.Header().Set(fiber.HeaderWWWAuthenticate, spnegoRejected)
+				http.Error(w, "denied", http.StatusForbidden)
+			},
+			wantStatus: fiber.StatusForbidden,
+			wantBody:   "denied\n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

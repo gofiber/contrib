@@ -135,7 +135,7 @@ A failed keytab lookup is answered with a bare `500`. The detail from `NewKeytab
 
 The detail is logged at error level instead, throttled to one line per 30 seconds, so a persistent fault cannot be turned into a log flood by unauthenticated callers.
 
-The returned error still matches the package's sentinels, so an application `ErrorHandler` can tell a keytab failure from any other 500:
+The returned error still matches the package's sentinels, so an application `ErrorHandler` can tell one of these from any other 500:
 
 ```go
 app := fiber.New(fiber.Config{
@@ -149,6 +149,15 @@ app := fiber.New(fiber.Config{
 ```
 
 The status is always `500`: a `*fiber.Error` returned by your own `KeytabLookupFunc` deliberately does not set the response status, since an infrastructure fault reported as, say, `401` would make clients retry credentials against a server that cannot check them.
+
+There are two sentinels, and both reach the `ErrorHandler` and `OnError` the same way, with the same sanitised body:
+
+| Sentinel | Raised when |
+| --- | --- |
+| `ErrLookupKeytabFailed` | `KeytabLookup` returned an error, or no keytab |
+| `ErrSPNEGOHandlerFailed` | gokrb5 answered something other than an authentication outcome — in v8.4.4, a `SessionManager` that could not persist a session |
+
+Match on both if you alert from the `ErrorHandler`; matching only the first misses every broken-session-store failure.
 
 ```go
 // Example: Retrieve keytab from a database
@@ -258,11 +267,13 @@ If you went looking for gokrb5's `service.SName` and wondered why it is not expo
 
 `SessionManager` is the largest saving available on an authenticated hot path: gokrb5 establishes a session after the first successful authentication and serves later requests from it, skipping ticket validation entirely.
 
-It also changes the trust model. The session becomes a credential in its own right, so whatever your implementation stores must be unguessable, bound to the client, and expired deliberately — a predictable session identifier is a full authentication bypass. The middleware forwards the request's cookies to gokrb5 only when this is set, and replays whatever the manager writes — `Set-Cookie` included — onto the Fiber response.
+It also changes the trust model. The session becomes a credential in its own right, so whatever your implementation stores must be unguessable, bound to the client, and expired deliberately — a predictable session identifier is a full authentication bypass. The middleware forwards the request's cookies to gokrb5 only when this is set, and replays what the manager writes — `Set-Cookie` included — onto the Fiber response **for a request that goes on to authenticate**. On a request the manager fails, its headers are dropped rather than replayed, so a cookie written just before the failure never advertises a session that was not stored.
 
 The request handed to your manager is built by this middleware rather than by `net/http`, so it carries only what gokrb5 reads plus what a session store needs to make its decisions: method, host, remote address, cookies, `URL.Scheme`, and `TLS`. The path and query are deliberately absent, so do not key a session on them.
 
-`Secure: r.TLS != nil` — the usual idiom — is reliable only where Fiber terminates TLS itself. Behind a TLS-terminating proxy the connection into Fiber is plaintext, so `TLS` is nil while `URL.Scheme` reports `https` from `X-Forwarded-Proto`. Prefer the scheme there, or set `Secure` unconditionally if the service is only ever reached over HTTPS.
+`Secure: r.TLS != nil` — the usual idiom — is reliable only where Fiber terminates TLS itself. Behind a TLS-terminating proxy the connection into Fiber is plaintext, so `TLS` is nil.
+
+`URL.Scheme` is not a drop-in replacement: Fiber returns `http` regardless of `X-Forwarded-Proto` unless `Config.TrustProxy` is on **and** the peer matches `TrustProxyConfig`. So behind a proxy, both fields can say "not secure" for a connection the client made over HTTPS. Either configure `TrustProxy` for your proxy's address and then trust the scheme, or set `Secure` unconditionally if the service is only ever reached over HTTPS.
 
 The two failure paths are not symmetric, which matters for monitoring. A manager whose `New` cannot persist makes gokrb5 answer `5xx` from inside its handler; the middleware treats that as an internal failure rather than an ordinary response — logged on its own throttle, passed to `OnError` as `ErrSPNEGOHandlerFailed`, and answered with the same sanitised `Internal Server Error` body a keytab failure gets, so a manager that reports a DSN or a driver error cannot leak it to an unauthenticated caller. A manager whose `Get` fails is different: gokrb5 discards that error and falls through to full ticket validation, so a broken read path degrades performance silently and is worth watching on the store's own side.
 

@@ -2,7 +2,6 @@ package spnego
 
 import (
 	"bytes"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
@@ -220,55 +219,58 @@ func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
 			if cookies.Len() > 0 {
 				cookies.WriteString("; ")
 			}
-			// fasthttp parses a valueless "Cookie: flag" as key "" and value
-			// "flag", and re-serialises it without the "=". Emitting one
-			// anyway would produce "=flag", which net/http then drops for an
-			// invalid name — so the manager would see a different cookie set
-			// than the client sent.
-			if len(key) > 0 {
-				cookies.Write(key)
-				cookies.WriteByte('=')
+			// A cookie with no name is dropped rather than rendered. fasthttp
+			// parses both "Cookie: flag" and "Cookie: =sneaky" as an empty key,
+			// so the two are indistinguishable here: emitting "=flag" produces
+			// something net/http discards for an invalid name, while emitting
+			// "flag" would turn "=sneaky" into a cookie actually named
+			// "sneaky" that the client never sent. Neither form can be looked
+			// up by name, which is all a session manager does, so forwarding
+			// either can only mislead.
+			if len(key) == 0 {
+				continue
 			}
+			cookies.Write(key)
+			cookies.WriteByte('=')
 			cookies.Write(value)
 		}
 		if cookies.Len() > 0 {
 			header.Set(fiber.HeaderCookie, cookies.String())
 		}
 	}
-	// Scheme and TLS exist only for a session manager, which is the sole reader
-	// of either — gokrb5 itself looks at neither. They are gated on the same
-	// flag as the cookies so an ordinary request pays for neither: reading the
-	// TLS state copies and heap-allocates a tls.ConnectionState, and ctx.Scheme
-	// walks every header once TrustProxy is on.
-	//
-	// Their guarantee is narrower than it looks. A store deciding Secure from
-	// r.TLS != nil is right only where Fiber terminates TLS itself. Behind a
-	// TLS-terminating proxy the connection into Fiber is plain, so TLS is nil
-	// while Scheme reports https from X-Forwarded-Proto — the two disagree, and
-	// only Scheme reflects what the client actually used.
-	requestURL := &url.URL{}
-	var tlsState *tls.ConnectionState
-	if withCookies {
-		requestURL.Scheme = ctx.Scheme()
-		tlsState = fasthttpCtx.TLSConnectionState()
-	}
-	return &http.Request{
+	req := &http.Request{
 		Method: ctx.Method(),
-		// Scheme at most. gokrb5 never reads the URL, and a faithful path is
-		// not reconstructible from here: Fiber's is percent-encoded or not
-		// depending on Config.UnescapePath, and net/url cannot represent a
-		// malformed escape at all. The scheme, unlike the path, can be stated
-		// truthfully.
-		URL: requestURL,
+		// Scheme at most, filled in below. gokrb5 never reads the URL, and a
+		// faithful path is not reconstructible from here: Fiber's is
+		// percent-encoded or not depending on Config.UnescapePath, and net/url
+		// cannot represent a malformed escape at all. The scheme, unlike the
+		// path, can be stated truthfully.
+		URL: &url.URL{},
 		// net/http documents a server request's Host as "host or host:port", so
 		// it is Host rather than Hostname, which drops the port. gokrb5 does
 		// not read it; it is set because it can be set faithfully, unlike the
 		// rest of the URL.
 		Host:       ctx.Host(),
 		Header:     header,
-		TLS:        tlsState,
 		RemoteAddr: fasthttpCtx.RemoteAddr().String(),
 	}
+	// Scheme and TLS exist only for a session manager, which is the sole reader
+	// of either — gokrb5 looks at neither — so they sit behind the same gate as
+	// the cookies. An ordinary request then pays for neither: reading the TLS
+	// state copies and heap-allocates a tls.ConnectionState, and ctx.Scheme
+	// walks every header once TrustProxy is on.
+	//
+	// Neither is a dependable signal on its own. TLS is non-nil only where
+	// Fiber terminates TLS itself, and Scheme reports https from
+	// X-Forwarded-Proto only when Fiber is configured to trust the proxy —
+	// without Config.TrustProxy it answers http regardless of the header. So
+	// behind a TLS-terminating proxy both can say "not secure" for a connection
+	// the client made over HTTPS.
+	if withCookies {
+		req.URL.Scheme = ctx.Scheme()
+		req.TLS = fasthttpCtx.TLSConnectionState()
+	}
+	return req
 }
 
 // serviceSettings translates Config into the options gokrb5 accepts. Only the
@@ -360,8 +362,9 @@ func New(cfg Config) (fiber.Handler, error) {
 	// throttled so a persistent fault cannot become a log flood.
 	//
 	// There are two kinds, and each gets its own throttle: a keytab lookup that
-	// fails, and a 5xx raised inside the SPNEGO handler — which today means a
-	// session manager that could not store or fetch a session. Sharing one
+	// fails, and a SPNEGO handler that answered something other than an
+	// authentication outcome — which today means a session manager that could
+	// not persist a session. Sharing one
 	// throttle would let either suppress the other, so an operator chasing a
 	// broken session store could be looking at a keytab line instead. Keying on
 	// the cause is what to avoid: that would let a caller defeat the throttle
@@ -435,22 +438,25 @@ func New(cfg Config) (fiber.Handler, error) {
 		if status == 0 {
 			status = fiber.StatusUnauthorized
 		}
-		// A 5xx from inside the SPNEGO handler is not an authentication
-		// outcome, it is this service failing. gokrb5 raises one when a session
-		// manager cannot persist a session, and passing it through as an
-		// ordinary response would leave a broken store 500ing every
-		// authenticated request with nothing logged and no hook fired.
+		// Reaching here means the request did not authenticate, and every
+		// unauthenticated path in gokrb5 v8.4.4 answers 4xx — the three 401
+		// shapes above. Any other status is the handler failing rather than an
+		// authentication outcome, so it is not passed through.
 		//
-		// Neither the body nor the headers are replayed here, unlike the
-		// challenge path below. gokrb5 hands the session manager the raw
-		// ResponseWriter, so a manager that reports its own failure — a DSN, a
-		// host, a driver error — would have that captured by the recorder and
-		// echoed to an unauthenticated caller. Returning the error instead
-		// routes it through the application's ErrorHandler with the same
-		// sanitised body a keytab failure gets, and drops any Set-Cookie the
-		// manager wrote before failing, which would otherwise hand out a
-		// session that was never stored.
-		if status >= fiber.StatusInternalServerError {
+		// The test is "not 4xx" rather than "5xx" because the recorder keeps
+		// the first status written, and a session manager handed the raw
+		// ResponseWriter may write its own message before gokrb5 turns the
+		// failure into a 500. That first Write pins the status at 200, so a
+		// 5xx-only test would let the whole thing through: a 200, the
+		// manager's text — a DSN, a host, a driver error — and a Set-Cookie
+		// for a session that was never stored, all to a caller that never
+		// authenticated.
+		//
+		// Neither body nor headers are replayed, unlike the challenge path
+		// below. Returning the error routes it through the application's
+		// ErrorHandler with the same sanitised body a keytab failure gets, and
+		// drops the cookie rather than advertising that session.
+		if status < fiber.StatusBadRequest || status >= fiber.StatusInternalServerError {
 			failure := fmt.Errorf("%w: status %d", ErrSPNEGOHandlerFailed, status)
 			logInternal(handlerFailures, failure)
 			if cfg.OnError != nil {
