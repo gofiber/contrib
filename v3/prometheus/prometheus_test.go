@@ -21,6 +21,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	dto "github.com/prometheus/client_model/go"
+	"github.com/prometheus/common/model"
 	"go.opentelemetry.io/otel"
 	tracesdk "go.opentelemetry.io/otel/sdk/trace"
 )
@@ -3298,5 +3299,73 @@ func TestSkipAllRegistersNoFamilies(t *testing.T) {
 	}
 	if len(families) != 0 {
 		t.Fatalf("expected no families to be registered, got %d", len(families))
+	}
+}
+
+// TestLegacyNameValidationIsHonoured pins that the middleware applies
+// client_golang's own rule rather than approximating it. Under the legacy
+// scheme a hyphen makes a name invalid, and client_golang would only say so
+// while building the first descriptor - with the runtime collectors already in
+// the caller's registry.
+func TestLegacyNameValidationIsHonoured(t *testing.T) {
+	previous := model.NameValidationScheme //nolint:staticcheck // exercising the scheme client_golang reads
+	model.NameValidationScheme = model.LegacyValidation
+	t.Cleanup(func() { model.NameValidationScheme = previous })
+
+	for name, cfg := range map[string]Config{
+		"namespace":     {Namespace: "my-app"},
+		"subsystem":     {Subsystem: "my-sub"},
+		"label":         {Labels: prometheus.Labels{"my-label": "x"}},
+		"dynamic label": {DynamicLabels: map[string]func(fiber.Ctx) string{"my-label": func(fiber.Ctx) string { return "x" }}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			registry := prometheus.NewRegistry()
+			cfg.Registerer = registry
+			cfg.Gatherer = registry
+
+			func() {
+				defer func() {
+					if recover() == nil {
+						t.Fatal("expected the legacy-invalid name to be rejected")
+					}
+				}()
+
+				_ = New(cfg)
+			}()
+
+			if families, _ := registry.Gather(); len(families) != 0 {
+				t.Fatalf("expected the registry to be untouched, got %d families", len(families))
+			}
+		})
+	}
+}
+
+// TestInertMiddlewarePassesErrorsThrough pins that a middleware with nothing
+// left to record stays out of the way. Taking over the error handler would stop
+// errors from reaching middleware mounted before it, and move where the handler
+// runs in the stack, for no metric at all.
+func TestInertMiddlewarePassesErrorsThrough(t *testing.T) {
+	app := fiber.New()
+
+	var seen error
+	app.Use(func(c fiber.Ctx) error {
+		err := c.Next()
+		seen = err
+		return err
+	})
+	app.Use(New(Config{SkipURIs: []string{"/*"}}))
+	app.Get("/boom", func(fiber.Ctx) error {
+		return fiber.ErrTeapot
+	})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/boom", nil), noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusTeapot {
+		t.Fatalf("expected status 418, got %d", resp.StatusCode)
+	}
+	if seen == nil {
+		t.Fatal("expected the error to reach the middleware mounted before this one")
 	}
 }

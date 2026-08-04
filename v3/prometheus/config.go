@@ -183,6 +183,16 @@ type Config struct {
 	// TrackUnmatchedRequests toggles metrics for requests that do not resolve to a
 	// registered Fiber route.
 	//
+	// Known limitation: a request fasthttp rejects before routing - a body over
+	// fiber.Config.BodyLimit, headers over the buffer size, a read timeout - is
+	// counted here as a 200. Fiber answers those through App.serverErrorHandler,
+	// which replays the Use chain with non-Use routes skipped and writes the
+	// real status only afterwards, so this middleware sees a chain that returned
+	// no error and a response nothing has touched. Fiber v3.4.0 exposes no way
+	// to tell that replay apart from an ordinary request answered by Use
+	// handlers, which is recorded here too and must be. Leave this off if such
+	// traffic would distort the counters more than missing genuine 404s would.
+	//
 	// Optional. Default: false.
 	TrackUnmatchedRequests bool
 
@@ -257,6 +267,10 @@ type Config struct {
 	// MetricsErrorHandling selects how gathering errors are reported to the
 	// scraper.
 	//
+	// Avoid promhttp.PanicOnError: the panic unwinds to the fasthttp connection
+	// goroutine, which neither fasthttp nor Fiber guards, so a single failing
+	// scrape takes the process down.
+	//
 	// Optional. Default: promhttp.HTTPErrorOnError.
 	MetricsErrorHandling promhttp.HandlerErrorHandling
 
@@ -286,14 +300,18 @@ type Config struct {
 	// since route patterns always carry one. Blank entries are skipped; exclude
 	// the root route by asking for "/" explicitly.
 	//
+	// Matching is case-sensitive against the pattern as registered, while Fiber
+	// routes case-insensitively by default: a route registered as "/Admin"
+	// serves GET /admin and is labelled "/Admin", so an entry of "/admin" would
+	// exclude nothing. Spell the entry the way the route was registered.
+	//
 	// An entry ending in "*" matches by prefix: "/admin/*" excludes "/admin"
 	// and every route below it. "/*" excludes everything, and then no metric
 	// family is registered at all - not even MetricRequestsInProgress, which is
 	// otherwise incremented before routing and so beyond the reach of any
-	// per-route filter. It also still
-	// matches a route pattern named exactly that, since Fiber patterns may end
-	// in "*" themselves - "/static*" excludes the route "/static*" as well as
-	// anything under "/static".
+	// per-route filter. Such an entry also still matches a route pattern named
+	// exactly that, since Fiber patterns may end in "*" themselves - "/static*"
+	// excludes the route "/static*" as well as anything under "/static".
 	//
 	// Optional. Default: none.
 	SkipURIs []string

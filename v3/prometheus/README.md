@@ -57,7 +57,7 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | MetricsMaxRequestsInFlight | `int` | Caps concurrent scrapes; the excess is answered with 503. | `0` (unlimited) |
 | MetricsTimeout | `time.Duration` | Bounds a single scrape before it is answered with 503. | `0` (no timeout) |
 | MetricsErrorLog | `promhttp.Logger` | Receives errors raised while gathering or writing metrics. A typed nil panics. | `nil` |
-| MetricsErrorHandling | `promhttp.HandlerErrorHandling` | How gathering errors are reported to the scraper. | `promhttp.HTTPErrorOnError` |
+| MetricsErrorHandling | `promhttp.HandlerErrorHandling` | How gathering errors are reported to the scraper. Avoid `PanicOnError` — it takes the process down. | `promhttp.HTTPErrorOnError` |
 | DisabledMetrics | `[]Metric` | Metric families to skip registering and recording. Entries are trimmed; an unknown name panics. | `nil` |
 | SkipURIs | `[]string` | Route patterns excluded from instrumentation, e.g. `/user/:id`. A trailing `*` matches by prefix; a leading `/` is added when missing. | `nil` |
 | SkipStatusCodes | `[]int` | Response status codes excluded from metrics. Codes are three digits; anything else panics. | `nil` |
@@ -165,7 +165,12 @@ not worth it to you.
 
 Requests that miss every registered route are not recorded unless
 `TrackUnmatchedRequests` is enabled, in which case they are labeled with
-`UnmatchedRouteLabel`. A request answered entirely by `app.Use` handlers counts
+`UnmatchedRouteLabel`. One caveat comes with that flag: a request fasthttp
+rejects before routing — a body over `BodyLimit`, oversized headers, a read
+timeout — is counted as a `200`. Fiber answers those through its server error
+handler, which replays the `Use` chain with non-`Use` routes skipped and writes
+the real status only afterwards, and Fiber v3.4.0 offers no way to tell that
+replay apart from an ordinary request answered by `Use` handlers. A request answered entirely by `app.Use` handlers counts
 as one of those: `static.New`, or a `Use`-mounted guard returning 401, never
 matches a non-`Use` route, so nothing is recorded for it by default.
 
@@ -233,9 +238,11 @@ prefix and stops at a path segment boundary, so `/admin/*` excludes `/admin` and
 `/admin/users` but not `/administration`. `/*` excludes everything, and then no
 metric family is registered at all — not even the in-flight gauge, which is
 incremented before routing and so beyond the reach of any per-route filter.
-Trailing
-slashes are ignored, and a leading `/` is added when missing — route patterns
-always carry one, so `admin` without it would otherwise match nothing.
+Trailing slashes are ignored, and a leading `/` is added when missing — route
+patterns always carry one, so `admin` without it would otherwise match nothing.
+The match is case-sensitive against the pattern as registered, while Fiber routes
+case-insensitively by default, so spell the entry the way the route was
+registered: `/Admin`, not `/admin`.
 
 Because Fiber route patterns can themselves end in `*`, such an entry also
 matches the pattern named exactly that: `/static*` excludes both the route

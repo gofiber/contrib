@@ -21,6 +21,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/common/model"
 
 	"go.opentelemetry.io/otel/trace"
 )
@@ -164,15 +165,6 @@ func New(config ...Config) fiber.Handler {
 		}
 	}
 
-	// Both prefix every metric name, so an invalid one is rejected when the
-	// first descriptor is built - by which point the collectors are registered.
-	if !utf8.ValidString(cfg.Namespace) {
-		panic("prometheus middleware: Namespace is not valid UTF-8")
-	}
-	if !utf8.ValidString(cfg.Subsystem) {
-		panic("prometheus middleware: Subsystem is not valid UTF-8")
-	}
-
 	dynamic := resolveDynamicLabels(cfg)
 
 	// promhttp tests its logger against nil, which a typed nil passes, and then
@@ -229,6 +221,15 @@ func New(config ...Config) fiber.Handler {
 		}
 		_, off := disabled[metric]
 		return !off
+	}
+
+	// Namespace and Subsystem reach the descriptor only through the assembled
+	// metric names, so validating those covers both - and catches a name that a
+	// stricter validation scheme would reject even though it is valid UTF-8.
+	for metric := range allMetrics {
+		if enabled(metric) {
+			validateMetricName(cfg.Namespace, cfg.Subsystem, metric)
+		}
 	}
 
 	// Bucket bounds belong to one family each, so a disabled family's bounds are
@@ -333,7 +334,9 @@ func New(config ...Config) fiber.Handler {
 	// chain can ever be recorded. Saying so here lets instrument return the
 	// moment the chain unwinds, rather than timing and labelling a request only
 	// for skipped to discard it.
-	m.records = !m.skipAll && (m.requestsTotal != nil || m.requestsByClass != nil || m.observes)
+	// enabled reports false for every family when skipAll is set, so the vectors
+	// are already nil in that case.
+	m.records = m.requestsTotal != nil || m.requestsByClass != nil || m.observes
 
 	return m.handle
 }
@@ -441,9 +444,11 @@ func typedNil(value any) bool {
 		return false
 	}
 
+	// reflect.ValueOf unwraps the interface, so the kind here is always the
+	// dynamic type's.
 	rv := reflect.ValueOf(value)
 	switch rv.Kind() { //nolint:exhaustive // only nilable kinds can be a typed nil
-	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface, reflect.UnsafePointer:
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.UnsafePointer:
 		return rv.IsNil()
 	default:
 		return false
@@ -640,6 +645,14 @@ func (m *middleware) serveMetrics(ctx fiber.Ctx) error {
 // instrument wraps the downstream handler, recording duration, request/response
 // sizes, in-flight counts, and status code metrics for the matched route.
 func (m *middleware) instrument(ctx fiber.Ctx) error {
+	// With nothing left to record, taking over the error handler below would
+	// change where the application's errors surface for no benefit at all: the
+	// error would stop propagating to middleware mounted before this one, and
+	// run at a different point in the stack. Stay out of the way instead.
+	if !m.records && m.requestInFlight == nil {
+		return ctx.Next()
+	}
+
 	method := ctx.Method()
 
 	if m.requestInFlight != nil {
@@ -982,21 +995,33 @@ func normalizePath(routePath string) string {
 	return normalized
 }
 
-// validateLabelName rejects the two shapes client_golang refuses as a label
-// name. It refuses them while building a descriptor, which happens after the
-// collectors have gone into the registry, so a caller who supplied their own
-// would be left with a registry they never successfully configured.
+// validateLabelName applies client_golang's own rule rather than approximating
+// it, so the two cannot disagree when the process selects a stricter validation
+// scheme than the UTF-8 default. client_golang checks names while building a
+// descriptor, which happens after the collectors have gone into the registry, so
+// a caller who supplied their own would otherwise be left with a registry they
+// never successfully configured.
 func validateLabelName(kind, name string) {
-	if name == "" {
-		panic("prometheus middleware: " + kind + " has an empty name")
+	//nolint:staticcheck // matching client_golang's own deprecated usage
+	if !model.NameValidationScheme.IsValidLabelName(name) {
+		panic("prometheus middleware: " + kind + " " + strconv.Quote(name) + " is not a valid label name")
 	}
-	if !utf8.ValidString(name) {
-		panic("prometheus middleware: " + kind + " " + strconv.Quote(name) + " is not valid UTF-8")
+	// model.ReservedLabelPrefix is Prometheus's own namespace.
+	if strings.HasPrefix(name, model.ReservedLabelPrefix) {
+		panic("prometheus middleware: " + kind + " " + strconv.Quote(name) + " uses the reserved " +
+			strconv.Quote(model.ReservedLabelPrefix) + " prefix")
 	}
-	// client_golang's checkLabelName rejects the "__" prefix, which Prometheus
-	// keeps for itself.
-	if strings.HasPrefix(name, "__") {
-		panic("prometheus middleware: " + kind + " " + strconv.Quote(name) + ` uses the reserved "__" prefix`)
+}
+
+// validateMetricName rejects a fully qualified name client_golang would refuse,
+// for the same reason and under the same scheme. Namespace and Subsystem reach
+// the descriptor only through this, so checking the assembled name covers both.
+func validateMetricName(namespace, subsystem string, metric Metric) {
+	name := prometheus.BuildFQName(namespace, subsystem, string(metric))
+	//nolint:staticcheck // matching client_golang's own deprecated usage
+	if !model.NameValidationScheme.IsValidMetricName(name) {
+		panic("prometheus middleware: " + strconv.Quote(name) +
+			" is not a valid metric name; check Namespace and Subsystem")
 	}
 }
 
