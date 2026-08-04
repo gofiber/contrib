@@ -8,7 +8,10 @@ var ErrConfigInvalidOfKeytabLookupFunctionRequired = errors.New("config invalid:
 // ErrLookupKeytabFailed is returned when the keytab lookup fails
 var ErrLookupKeytabFailed = errors.New("keytab lookup failed")
 
-// ErrConfigInvalidOfAtLeastOneKeytabFileRequired is returned when no keytab files are provided
+// ErrConfigInvalidOfAtLeastOneKeytabFileRequired is returned when no keytab
+// files are provided, and when one of the paths given is empty — the shape an
+// unset environment variable takes. Neither names a keytab file, and both are
+// worth refusing at startup rather than at every request.
 var ErrConfigInvalidOfAtLeastOneKeytabFileRequired = errors.New("config invalid: at least one keytab file required")
 
 // ErrLoadKeytabFileFailed is returned when load keytab files failed

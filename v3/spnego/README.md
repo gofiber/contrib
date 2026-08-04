@@ -188,7 +188,7 @@ Retrieves the authenticated identity from the Fiber context. `FiberContext` is a
 
 ### `NewKeytabFileLookupFunc(keytabFiles ...string) (KeytabLookupFunc, error)`
 
-Creates a new KeytabLookupFunc that loads keytab files, caching the merged result until a file changes on disk.
+Creates a new KeytabLookupFunc that loads keytab files, caching the merged result until a file changes on disk. At least one path is required and none may be empty — an unset environment variable is refused here rather than at every request.
 
 ### `NewSystemKeytabLookupFunc() (KeytabLookupFunc, error)`
 

@@ -628,6 +628,9 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 // re-parsing every file on every request. A file counts as changed when its
 // size, modification time or identity differs; see fileStamp for what that
 // does and does not catch.
+//
+// At least one path is required, and none of them may be empty:
+// ErrConfigInvalidOfAtLeastOneKeytabFileRequired covers both.
 func NewKeytabFileLookupFunc(keytabFiles ...string) (KeytabLookupFunc, error) {
 	// An empty path is rejected alongside no paths at all. It is what an unset
 	// environment variable expands to, and accepting it turns a configuration
