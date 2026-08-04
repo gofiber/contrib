@@ -739,10 +739,15 @@ func TestRequestForSPNEGOHasANonNilBody(t *testing.T) {
 // reasons unrelated to this middleware.
 func TestRequestForSPNEGOCopiesOutOfTheRequestBuffer(t *testing.T) {
 	raw := "POST /authenticate HTTP/1.1\r\n" +
-		"Host: sso.example.com\r\n" +
+		"Host: sso.example.com:8443\r\n" +
 		"Authorization: Negotiate dGlja2V0\r\n" +
 		"X-Forwarded-Proto: https\r\n" +
 		"Cookie: spnego-session=opaque\r\n\r\n"
+	// Host carries a port on purpose: net/http documents a server request's
+	// Host as "host or host:port", so it must be Fiber's Host and not its
+	// Hostname, which drops the port. A session manager scoping sessions by
+	// r.Host would otherwise conflate two ports on one name, and one calling
+	// net.SplitHostPort would get "missing port in address".
 
 	ctx := &fasthttp.RequestCtx{}
 	require.NoError(t, ctx.Request.Read(bufio.NewReader(bytes.NewBufferString(raw))))
@@ -765,7 +770,8 @@ func TestRequestForSPNEGOCopiesOutOfTheRequestBuffer(t *testing.T) {
 	app.Handler()(ctx)
 	require.NotNil(t, got)
 
-	require.Equal(t, "sso.example.com", got.Host)
+	require.Equal(t, "sso.example.com:8443", got.Host,
+		"the port must survive: this is Host, not Hostname")
 	require.Equal(t, "Negotiate dGlja2V0", got.Header.Get(fiber.HeaderAuthorization))
 	require.Equal(t, "https", got.URL.Scheme,
 		"the proxy must be trusted, or Scheme is a constant and proves nothing")
@@ -1129,7 +1135,16 @@ func TestRequestForSPNEGOCarriesSchemeAndTLS(t *testing.T) {
 // unless it is explicitly turned off.
 func TestServiceSettingsPassesOnlyWhatWasSet(t *testing.T) {
 	t.Run("an empty config sets nothing", func(t *testing.T) {
-		settings := service.NewSettings(nil, serviceSettings(Config{})...)
+		opts := serviceSettings(Config{})
+		settings := service.NewSettings(nil, opts...)
+
+		// This is where the spare capacity was largest, and it is why the slice
+		// is clipped: it goes to gokrb5 variadically and is closed over by the
+		// handler, so its backing array is shared by every concurrent request.
+		// A gokrb5 that appended to it rather than to a fresh slice of its own
+		// would be writing into that array from several goroutines at once.
+		require.Equal(t, len(opts), cap(opts),
+			"a config that sets nothing must not hand gokrb5 room to append into")
 
 		require.Empty(t, settings.KeytabPrincipal())
 		require.Equal(t, 5*time.Minute, settings.MaxClockSkew(),
@@ -1174,11 +1189,6 @@ func TestServiceSettingsPassesOnlyWhatWasSet(t *testing.T) {
 		// here rather than left to a behavioural test.
 		require.Equal(t, len(opts), cap(opts),
 			"the options slice must not carry spare capacity into gokrb5")
-		// The empty config is where the spare capacity was largest, so it is
-		// the case worth stating separately.
-		empty := serviceSettings(Config{})
-		require.Equal(t, len(empty), cap(empty),
-			"a config that sets nothing must not hand gokrb5 room to append into")
 
 		// Wrapped rather than passed through, so that a New which refuses is
 		// known as a fact instead of being read back out of the response the
@@ -1454,6 +1464,37 @@ func TestSessionCookieIsReplayedOnSuccess(t *testing.T) {
 	require.Contains(t, string(ctx.Response.Header.Peek(fiber.HeaderSetCookie)), "opaque-session-id",
 		"a session the client never receives is a session it can never present")
 	require.Equal(t, "Negotiate accepted", string(ctx.Response.Header.Peek(fiber.HeaderWWWAuthenticate)))
+}
+
+// TestEveryValueOfARepeatedHeaderIsReplayed pins Add over Set in copyHeadersTo.
+//
+// Set-Cookie alone would not: fasthttp routes it through its special-header
+// path, where Set appends like Add does, so it survives either way. Any other
+// repeated header does not — a manager emitting two Vary lines before the
+// request authenticates would have all but the last silently dropped, and the
+// response would then be cached against the wrong key.
+func TestEveryValueOfARepeatedHeaderIsReplayed(t *testing.T) {
+	user := goidentity.NewUser("alice")
+	stubAuthenticate(t, func(w http.ResponseWriter, _ *http.Request) goidentity.Identity {
+		w.Header().Add(fiber.HeaderVary, fiber.HeaderCookie)
+		w.Header().Add(fiber.HeaderVary, fiber.HeaderAuthorization)
+		w.Header().Set(fiber.HeaderWWWAuthenticate, "Negotiate accepted")
+		return &user
+	})
+
+	ctx := serveProtected(t, Config{
+		KeytabLookup:   testKeytabLookup(t),
+		SessionManager: &recordingSessionManager{},
+	})
+
+	var vary []string
+	for key, value := range ctx.Response.Header.All() {
+		if string(key) == fiber.HeaderVary {
+			vary = append(vary, string(value))
+		}
+	}
+	require.ElementsMatch(t, []string{fiber.HeaderCookie, fiber.HeaderAuthorization}, vary,
+		"every value of a repeated header must survive the replay, not just the last")
 }
 
 // TestSPNEGOInternalFailureDoesNotLeakTheHandlerBody covers what the 5xx branch
@@ -2850,10 +2891,13 @@ func TestSessionManagerProbeSeesThroughAWrappedWriter(t *testing.T) {
 // whose Unwrap cycles. Neither can be allowed to panic or spin — the signal is
 // lost, which is what the log line is for, but the request still completes.
 func TestSessionManagerProbeSurvivesAForeignWriter(t *testing.T) {
-	// The two exits are reported apart because they call for different things:
+	// The two exits are reported apart because they point somewhere different:
 	// a writer gokrb5 swapped out is a dependency change to look at, while a
-	// chain deeper than the bound just means raising the bound. A single
-	// message would send whoever reads it after the wrong one.
+	// walk that runs out has a chain it could not get to the end of. The
+	// reasons are matched in full rather than by fragment, because that second
+	// message has to keep naming both a deeper chain and a loop — raising the
+	// bound fixes only the first, and a message that mentioned only that would
+	// send whoever reads it to redeploy and get the same line back.
 	for name, tc := range map[string]struct {
 		writer     http.ResponseWriter
 		wantReason string
@@ -2864,11 +2908,11 @@ func TestSessionManagerProbeSurvivesAForeignWriter(t *testing.T) {
 		},
 		"a writer that unwraps to itself": {
 			writer:     &selfWrappingWriter{ResponseWriter: httptest.NewRecorder()},
-			wantReason: "nests deeper than the unwrap limit",
+			wantReason: "the response writer chain either nests deeper than the unwrap limit or loops",
 		},
 		"a chain one hop past the limit": {
 			writer:     nestedWriter(maxResponseWriterUnwraps+1, &responseRecorder{}),
-			wantReason: "nests deeper than the unwrap limit",
+			wantReason: "the response writer chain either nests deeper than the unwrap limit or loops",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -2919,8 +2963,9 @@ func TestSessionManagerProbeUnwrapsExactlyAsManyTimesAsItSays(t *testing.T) {
 	require.True(t, atTheLimit.sessionFailed)
 
 	var pastTheLimit responseRecorder
-	require.Contains(t, recordSessionFailure(nestedWriter(maxResponseWriterUnwraps+1, &pastTheLimit)),
-		"nests deeper than the unwrap limit")
+	require.Equal(t,
+		"the response writer chain either nests deeper than the unwrap limit or loops",
+		recordSessionFailure(nestedWriter(maxResponseWriterUnwraps+1, &pastTheLimit)))
 	require.False(t, pastTheLimit.sessionFailed)
 }
 

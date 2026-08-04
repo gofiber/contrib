@@ -217,7 +217,9 @@ const internalErrorLogEvery = 30 * time.Second
 // lock, so a slow sink cannot become latency on the request path this sits on.
 type logThrottle struct {
 	every time.Duration
-	// nowFn is a seam for tests; the wall clock is used when it is nil.
+	// nowFn is a seam for tests; the wall clock is used when it is nil. Set it
+	// before the throttle is shared and leave it alone afterwards: it is read
+	// without the mutex, which guards only last.
 	nowFn func() time.Time
 
 	mu   sync.Mutex
@@ -241,7 +243,16 @@ func (t *logThrottle) window() time.Duration {
 //
 // Sub against the zero time saturates, so the first event always runs.
 func (t *logThrottle) do(write func()) {
-	if t.claimWindow() {
+	// Read before the lock, not under it. nowFn is caller-supplied — a test's
+	// clock — and holding the mutex across it would put arbitrary code inside
+	// the critical section of a type every request handler contends on, which
+	// is the same reason write is called with the lock released.
+	//
+	// That leaves nowFn itself unguarded, and it has to stay that way: taking
+	// the lock to read it would not help, because nothing takes the lock to
+	// write it. It is a construction-time seam, set before the throttle is
+	// shared and not written again — a locked read would only look safe.
+	if t.claimWindow(nowOr(t.nowFn)) {
 		write()
 	}
 }
@@ -251,14 +262,9 @@ func (t *logThrottle) do(write func()) {
 // obviously wrong: claiming without writing swallows the line for a full
 // window. Split out from do only so the lock can be defer-guarded, since do
 // must call write with the lock released.
-func (t *logThrottle) claimWindow() bool {
+func (t *logThrottle) claimWindow(now time.Time) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	// The clock is read here rather than by the caller so that nowFn, which
-	// tests write, is covered by the same lock as the rest of the state. It is
-	// otherwise the one field a concurrent writer could race on, in a type
-	// whose whole purpose is to be called from every request handler at once.
-	now := nowOr(t.nowFn)
 	if now.Sub(t.last) < t.window() {
 		return false
 	}
@@ -408,9 +414,10 @@ func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
 	// middleware ran first, and a session cookie on the second line would go
 	// missing — which reads as "no session" and mints a fresh one per request.
 	//
-	// Rebuilding is also what makes this one owned: the Builder accumulates its
-	// own bytes, so unlike Host and the Authorization value there is nothing
-	// here still pointing into the request buffer.
+	// Rebuilding is also what makes this one owned for free: the Builder
+	// accumulates its own bytes, so unlike Host and the Authorization value —
+	// which have to be copied explicitly a few lines either side of here —
+	// there is nothing to do.
 	if withCookies {
 		var cookies strings.Builder
 		for key, value := range fasthttpCtx.Request.Header.Cookies() {
