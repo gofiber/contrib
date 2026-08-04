@@ -147,10 +147,15 @@ type Config struct {
 	// included — is replayed onto the Fiber response.
 	//
 	// The two failure paths are not symmetric. A New that cannot persist makes
-	// gokrb5 answer 5xx, which surfaces as ErrSPNEGOHandlerFailed. A Get that
-	// fails is discarded by gokrb5, which falls through to full ticket
-	// validation — so a broken read path costs performance silently rather
-	// than failing requests, and is worth monitoring on the store's own side.
+	// gokrb5 abandon the request from inside its handler, which surfaces as
+	// ErrSPNEGOHandlerFailed. A Get that fails is discarded by gokrb5, which
+	// falls through to full ticket validation — so a broken read path costs
+	// performance silently rather than failing requests, and is worth
+	// monitoring on the store's own side.
+	//
+	// Whatever the manager writes on a request that then fails is discarded,
+	// status included: a Set-Cookie written just before the failure would
+	// otherwise advertise a session that was never stored.
 	//
 	// Optional. Default: nil (every request is validated in full).
 	SessionManager service.SessionMgr
@@ -169,9 +174,10 @@ type Config struct {
 	//
 	//   - ErrLookupKeytabFailed, when KeytabLookup returns an error or no
 	//     keytab. The error also carries the underlying cause.
-	//   - ErrSPNEGOHandlerFailed, when gokrb5 answers 5xx from inside its own
-	//     handler, which in v8.4.4 means a SessionManager that could not
-	//     persist a session.
+	//   - ErrSPNEGOHandlerFailed, when gokrb5 fails inside its own handler
+	//     without reaching an authentication outcome, which in v8.4.4 means a
+	//     SessionManager that could not persist a session. The error carries
+	//     the status and body the handler had written, for the log.
 	//
 	// Match on those rather than on text. The keytab cause names paths and OS
 	// errors, so treat what arrives here as internal diagnostics rather than

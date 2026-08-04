@@ -135,19 +135,6 @@ A failed keytab lookup is answered with a bare `500`. The detail from `NewKeytab
 
 The detail is logged at error level instead, throttled to one line per 30 seconds, so a persistent fault cannot be turned into a log flood by unauthenticated callers.
 
-The returned error still matches the package's sentinels, so an application `ErrorHandler` can tell one of these from any other 500:
-
-```go
-app := fiber.New(fiber.Config{
-	ErrorHandler: func(c fiber.Ctx, err error) error {
-		if errors.Is(err, spnego.ErrLookupKeytabFailed) {
-			alertOnCall()
-		}
-		return fiber.DefaultErrorHandler(c, err)
-	},
-})
-```
-
 The status is always `500`: a `*fiber.Error` returned by your own `KeytabLookupFunc` deliberately does not set the response status, since an infrastructure fault reported as, say, `401` would make clients retry credentials against a server that cannot check them.
 
 There are two sentinels, and both reach the `ErrorHandler` and `OnError` the same way, with the same sanitised body:
@@ -155,9 +142,21 @@ There are two sentinels, and both reach the `ErrorHandler` and `OnError` the sam
 | Sentinel | Raised when |
 | --- | --- |
 | `ErrLookupKeytabFailed` | `KeytabLookup` returned an error, or no keytab |
-| `ErrSPNEGOHandlerFailed` | gokrb5 answered something other than an authentication outcome — in v8.4.4, a `SessionManager` that could not persist a session |
+| `ErrSPNEGOHandlerFailed` | gokrb5 stopped short of an authentication outcome — in v8.4.4, a `SessionManager` that could not persist a session |
 
-Match on both if you alert from the `ErrorHandler`; matching only the first misses every broken-session-store failure.
+The returned error still matches them, so an application `ErrorHandler` can tell either from any other 500. Match on both: matching only the first misses every broken-session-store failure.
+
+```go
+app := fiber.New(fiber.Config{
+	ErrorHandler: func(c fiber.Ctx, err error) error {
+		if errors.Is(err, spnego.ErrLookupKeytabFailed) ||
+			errors.Is(err, spnego.ErrSPNEGOHandlerFailed) {
+			alertOnCall()
+		}
+		return fiber.DefaultErrorHandler(c, err)
+	},
+})
+```
 
 ```go
 // Example: Retrieve keytab from a database
@@ -215,7 +214,7 @@ The `Config` struct supports the following fields:
 - `RequireHostAddress`: Reject a ticket that carries no host addresses (optional, defaults to `false`)
 - `SessionManager`: A `service.SessionMgr` letting gokrb5 serve later requests from a session instead of revalidating a ticket each time (optional, defaults to `nil`). See [Sessions](#sessions).
 - `OnSuccess`: A `func(fiber.Ctx, goidentity.Identity)` called once per authenticated request, before the rest of the chain (optional, defaults to `nil`)
-- `OnError`: A `func(fiber.Ctx, error)` called when the middleware itself fails — a keytab lookup failure, or a `5xx` raised inside the SPNEGO handler such as a session store that cannot be reached — just before the response (optional, defaults to `nil`)
+- `OnError`: A `func(fiber.Ctx, error)` called when the middleware itself fails — a keytab lookup failure, or a failure inside the SPNEGO handler such as a session store that cannot be reached — just before the response (optional, defaults to `nil`)
 
 `ConfigDefault` records these defaults if you would rather start from it than from a zero `Config` — the two are equal. `New` applies them by treating a zero field as unset rather than by reading the variable, so copy it; mutating it changes nothing.
 
@@ -267,7 +266,7 @@ If you went looking for gokrb5's `service.SName` and wondered why it is not expo
 
 `SessionManager` is the largest saving available on an authenticated hot path: gokrb5 establishes a session after the first successful authentication and serves later requests from it, skipping ticket validation entirely.
 
-It also changes the trust model. The session becomes a credential in its own right, so whatever your implementation stores must be unguessable, bound to the client, and expired deliberately — a predictable session identifier is a full authentication bypass. The middleware forwards the request's cookies to gokrb5 only when this is set, and replays what the manager writes — `Set-Cookie` included — onto the Fiber response **for a request that goes on to authenticate**. On a request the manager fails, its headers are dropped rather than replayed, so a cookie written just before the failure never advertises a session that was not stored.
+It also changes the trust model. The session becomes a credential in its own right, so whatever your implementation stores must be unguessable, bound to the client, and expired deliberately — a predictable session identifier is a full authentication bypass. The middleware forwards the request's cookies to gokrb5 only when this is set, and replays what the manager writes — `Set-Cookie` included — onto the Fiber response **for a request that reaches an authentication outcome**, which means one that authenticates as well as one that gets a challenge or a refusal. On a request that instead fails inside the handler, everything the manager wrote is dropped — headers, body and status alike — so a cookie written just before the failure never advertises a session that was not stored.
 
 The request handed to your manager is built by this middleware rather than by `net/http`, so it carries only what gokrb5 reads plus what a session store needs to make its decisions: method, host, remote address, cookies, `URL.Scheme`, and `TLS`. The path and query are deliberately absent, so do not key a session on them.
 
@@ -275,7 +274,9 @@ The request handed to your manager is built by this middleware rather than by `n
 
 `URL.Scheme` is not a drop-in replacement: Fiber returns `http` regardless of `X-Forwarded-Proto` unless `Config.TrustProxy` is on **and** the peer matches `TrustProxyConfig`. So behind a proxy, both fields can say "not secure" for a connection the client made over HTTPS. Either configure `TrustProxy` for your proxy's address and then trust the scheme, or set `Secure` unconditionally if the service is only ever reached over HTTPS.
 
-The two failure paths are not symmetric, which matters for monitoring. A manager whose `New` cannot persist makes gokrb5 answer `5xx` from inside its handler; the middleware treats that as an internal failure rather than an ordinary response — logged on its own throttle, passed to `OnError` as `ErrSPNEGOHandlerFailed`, and answered with the same sanitised `Internal Server Error` body a keytab failure gets, so a manager that reports a DSN or a driver error cannot leak it to an unauthenticated caller. A manager whose `Get` fails is different: gokrb5 discards that error and falls through to full ticket validation, so a broken read path degrades performance silently and is worth watching on the store's own side.
+The two failure paths are not symmetric, which matters for monitoring. A manager whose `New` cannot persist makes gokrb5 abandon the request from inside its handler; the middleware treats that as an internal failure rather than an ordinary response — logged on its own throttle, passed to `OnError` as `ErrSPNEGOHandlerFailed`, and answered with the same sanitised `Internal Server Error` body a keytab failure gets, so a manager that reports a DSN or a driver error cannot leak it to an unauthenticated caller. A manager whose `Get` fails is different: gokrb5 discards that error and falls through to full ticket validation, so a broken read path degrades performance silently and is worth watching on the store's own side.
+
+The two are told apart by `WWW-Authenticate`, not by the status. gokrb5 sets a `Negotiate` value on every authentication outcome and on none of its internal failures, whereas the status is only ever the first one written — and a manager holding the raw `ResponseWriter` can write its own before it fails, which would otherwise mask the failure as an ordinary `200` or `4xx`.
 
 ### Observability
 

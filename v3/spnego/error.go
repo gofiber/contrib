@@ -35,10 +35,16 @@ var ErrConfigInvalidOfKeytabPrincipalRealm = errors.New("config invalid: keytab 
 var errNilKeytab = errors.New("keytab lookup returned no keytab")
 
 // ErrSPNEGOHandlerFailed is returned, and passed to Config.OnError, when gokrb5
-// answers 5xx from inside its own handler rather than reaching an
-// authentication outcome. In gokrb5 v8.4.4 that means one thing: a
-// Config.SessionManager whose New could not persist a session, which
-// spnego/http.go reports through spnegoInternalServerError.
+// fails inside its own handler rather than reaching an authentication outcome.
+// In gokrb5 v8.4.4 that means one thing: a Config.SessionManager whose New could
+// not persist a session, which spnego/http.go reports through
+// spnegoInternalServerError.
+//
+// The two are told apart by WWW-Authenticate, not by status. gokrb5 sets that
+// header on every authentication outcome it produces and on none of its
+// internal failures, whereas the status a failed request carries is whatever
+// the session manager wrote first — it holds the raw ResponseWriter and may
+// answer before it fails.
 //
 // A session manager whose Get fails does not land here. gokrb5 discards that
 // error and falls through to full ticket validation, so a session store with a

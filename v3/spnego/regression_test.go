@@ -814,6 +814,48 @@ func TestRequestForSPNEGODropsLeadingEqualsCookies(t *testing.T) {
 	require.Equal(t, "opaque", session.Value)
 }
 
+// TestRequestForSPNEGOSkipsNamelessCookiesWithoutLeavingAGap covers the
+// nameless cookie arriving somewhere other than first, which is where dropping
+// it and writing the separator can go wrong independently.
+//
+// Both other nameless-cookie tests put it at the head, where the separator is
+// not written at all, so neither notices a separator emitted before the skip.
+// That ordering yields "a=1; ; b=2" — a stray empty element every cookie parser
+// downstream then has to make sense of.
+func TestRequestForSPNEGOSkipsNamelessCookiesWithoutLeavingAGap(t *testing.T) {
+	raw := "GET /authenticate HTTP/1.1\r\n" +
+		"Host: sso.example.com\r\n" +
+		"Cookie: first=one\r\n" +
+		"Cookie: =sneaky\r\n" +
+		"Cookie: last=two\r\n\r\n"
+
+	ctx := &fasthttp.RequestCtx{}
+	require.NoError(t, ctx.Request.Read(bufio.NewReader(bytes.NewBufferString(raw))))
+
+	var got *http.Request
+	app := fiber.New()
+	app.All("/*", func(c fiber.Ctx) error {
+		got = requestForSPNEGO(c, true)
+		return nil
+	})
+	app.Handler()(ctx)
+
+	require.NotNil(t, got)
+	// Asserted on the header text rather than on parsed cookies: Go's parser
+	// discards an empty element silently, so it would report the same cookies
+	// either way and the gap would survive.
+	require.Equal(t, "first=one; last=two", got.Header.Get("Cookie"))
+
+	named := &http.Request{Header: got.Header}
+	for name, want := range map[string]string{"first": "one", "last": "two"} {
+		cookie, err := named.Cookie(name)
+		require.NoError(t, err)
+		require.Equal(t, want, cookie.Value)
+	}
+	_, err := named.Cookie("sneaky")
+	require.Error(t, err, "a cookie the client never named must not be invented")
+}
+
 // TestRequestForSPNEGOCarriesSchemeAndTLS pins the two fields a session store
 // reads to decide whether its cookie may be marked Secure. Leaving them unset
 // would issue the session — which the middleware treats as a credential —
@@ -2208,6 +2250,9 @@ func TestRecorderStatusRules(t *testing.T) {
 		wantBody   string
 	}{
 		{
+			// The recorder keeps the first status, and because a challenge
+			// header is present this counts as an authentication outcome and is
+			// replayed as written.
 			name: "the first status written wins",
 			write: func(w http.ResponseWriter) {
 				w.Header().Set(fiber.HeaderWWWAuthenticate, spnegoRejected)
@@ -2219,18 +2264,20 @@ func TestRecorderStatusRules(t *testing.T) {
 			wantBody:   "denied",
 		},
 		{
-			name:       "declining without writing anything is 401",
+			// gokrb5 v8.4.4 always writes something, so this is the shape of a
+			// handler that failed to produce a response at all rather than of
+			// any authentication outcome — no challenge for the client to
+			// answer, so nothing to pass through.
+			name:       "declining without writing anything is a handler failure",
 			write:      func(http.ResponseWriter) {},
-			wantStatus: fiber.StatusUnauthorized,
+			wantStatus: fiber.StatusInternalServerError,
+			wantBody:   "Internal Server Error",
 		},
 		{
-			// The recorder itself still reports 200 for this — that is
-			// net/http's rule and responseRecorder follows it. What the
-			// middleware does with it is the point: a request that did not
-			// authenticate cannot be answered 200, so this is treated as the
-			// handler failing and sanitised. It is exactly the shape a session
-			// manager produces when it writes its own message before failing.
-			name: "a body without a status is a handler failure, not a 200",
+			// No challenge header, so whatever the status says this is not an
+			// outcome the client can answer. It is the shape a session manager
+			// produces when it writes its own message before failing.
+			name: "a body without a challenge header is a handler failure",
 			write: func(w http.ResponseWriter) {
 				_, _ = w.Write([]byte("body without a status"))
 			},
@@ -2238,9 +2285,20 @@ func TestRecorderStatusRules(t *testing.T) {
 			wantBody:   "Internal Server Error",
 		},
 		{
-			// A 4xx other than 401 is still an authentication outcome as far as
-			// this middleware is concerned, so it passes through untouched.
-			name: "a 4xx passes through",
+			// The case both earlier status-based gates let through: a manager
+			// picks its own 4xx before failing. Only the absent challenge
+			// header distinguishes it.
+			name: "a 4xx without a challenge header is a handler failure",
+			write: func(w http.ResponseWriter) {
+				http.Error(w, "session store rejected: dsn", http.StatusConflict)
+			},
+			wantStatus: fiber.StatusInternalServerError,
+			wantBody:   "Internal Server Error",
+		},
+		{
+			// A challenge header makes it an outcome, and it is replayed as
+			// written even though the status is not 401.
+			name: "a 4xx with a challenge header passes through",
 			write: func(w http.ResponseWriter) {
 				w.Header().Set(fiber.HeaderWWWAuthenticate, spnegoRejected)
 				http.Error(w, "denied", http.StatusForbidden)
@@ -2261,6 +2319,118 @@ func TestRecorderStatusRules(t *testing.T) {
 			require.Equal(t, tc.wantBody, string(ctx.Response.Body()))
 		})
 	}
+}
+
+// TestRecorderDefaultsToOKOnABareWrite asserts the recorder's own rule directly
+// rather than through a served request. End to end, a handler that writes a
+// body without a status is classified by its missing challenge header, so the
+// response is the same 500 whatever default the recorder picked — which leaves
+// the default itself unpinned. This is the only assertion that fails if it
+// changes.
+func TestRecorderDefaultsToOKOnABareWrite(t *testing.T) {
+	var recorder responseRecorder
+
+	require.Zero(t, recorder.status, "nothing written yet, so no status")
+
+	n, err := recorder.Write([]byte("hello"))
+	require.NoError(t, err)
+	require.Equal(t, 5, n)
+	require.Equal(t, http.StatusOK, recorder.status,
+		"a body with no explicit status is a 200, as net/http defines it")
+	require.Equal(t, "hello", recorder.body.String())
+
+	// The implicit status is set once, like an explicit one: a second Write
+	// appends to the body and leaves the status alone.
+	_, err = recorder.Write([]byte(" again"))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, recorder.status)
+	require.Equal(t, "hello again", recorder.body.String())
+
+	// And an explicit status arriving after the body does not overwrite it,
+	// which is what makes a manager's early Write mask gokrb5's later 500.
+	recorder.WriteHeader(http.StatusInternalServerError)
+	require.Equal(t, http.StatusOK, recorder.status)
+}
+
+// TestRecorderHeaderIsUsableBeforeAnyWrite pins the lazy map. gokrb5 calls
+// Header().Set before writing anything, so returning a nil map here would panic
+// on the first challenge rather than on some later edge case.
+func TestRecorderHeaderIsUsableBeforeAnyWrite(t *testing.T) {
+	var recorder responseRecorder
+
+	recorder.Header().Set(fiber.HeaderWWWAuthenticate, spnegoScheme)
+	require.Equal(t, spnegoScheme, recorder.Header().Get(fiber.HeaderWWWAuthenticate))
+	require.Zero(t, recorder.status, "setting a header is not writing a response")
+
+	// Flush is part of the ResponseWriter surface a session manager may assert
+	// for. It buffers like everything else, so the only thing to pin is that it
+	// neither panics nor invents a status.
+	require.NotPanics(t, recorder.Flush)
+	require.Zero(t, recorder.status)
+	require.Empty(t, recorder.body.String())
+}
+
+// TestIsNegotiate pins which WWW-Authenticate values count as gokrb5's own.
+// Everything else is classified as the handler failing, so a value that is
+// merely prefixed by the scheme's letters must not pass: a session manager
+// holding the raw ResponseWriter can set whatever it likes before it fails.
+func TestIsNegotiate(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  bool
+	}{
+		{value: "Negotiate", want: true},
+		{value: spnegoContinueNeeded, want: true},
+		{value: spnegoRejected, want: true},
+		{value: "Negotiate oRQwEqADCgEAoQsGCSqGSIb3EgECAg==", want: true},
+		{value: "", want: false},
+		{value: "Basic realm=\"session store\"", want: false},
+		{value: "Bearer", want: false},
+		// Prefixed by the scheme but a different scheme: the boundary that
+		// separates a token from the rest of a longer word.
+		{value: "NegotiateNot", want: false},
+		{value: "Negotiated token", want: false},
+		// Carries the scheme's letters somewhere other than the front, which is
+		// what separates comparing the scheme from merely finding it.
+		{value: "Bearer realm=\"Negotiate\"", want: false},
+		// The scheme is case-sensitive here on purpose. gokrb5 writes exactly
+		// one spelling, so anything else did not come from it.
+		{value: "negotiate abc", want: false},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			require.Equal(t, tc.want, isNegotiate(tc.value))
+		})
+	}
+}
+
+// TestSessionManagerCannotForgeAnOutcomeHeader is the end-to-end consequence of
+// checking the scheme rather than mere presence. A manager that sets its own
+// WWW-Authenticate and then fails would otherwise be read as an authentication
+// outcome and replayed wholesale — its status, its message, and the Set-Cookie
+// for the session it never stored.
+func TestSessionManagerCannotForgeAnOutcomeHeader(t *testing.T) {
+	stubAuthenticate(t, func(w http.ResponseWriter, _ *http.Request) goidentity.Identity {
+		w.Header().Set(fiber.HeaderWWWAuthenticate, `Basic realm="session store"`)
+		w.Header().Set(fiber.HeaderSetCookie, "spnego-session=never-stored; Path=/")
+		http.Error(w, "postgres://user:hunter2@db.internal/sessions is down", http.StatusConflict)
+		return nil
+	})
+
+	var hookErr error
+	ctx := serveProtected(t, Config{
+		KeytabLookup: testKeytabLookup(t),
+		OnError:      func(_ fiber.Ctx, err error) { hookErr = err },
+	})
+
+	require.Equal(t, fiber.StatusInternalServerError, ctx.Response.StatusCode())
+	require.Equal(t, "Internal Server Error", string(ctx.Response.Body()))
+	require.Empty(t, ctx.Response.Header.Peek(fiber.HeaderSetCookie),
+		"a session that was never stored must not be advertised")
+	require.Empty(t, ctx.Response.Header.Peek(fiber.HeaderWWWAuthenticate),
+		"a header the manager forged must not reach the client")
+	require.ErrorIs(t, hookErr, ErrSPNEGOHandlerFailed)
+	require.Contains(t, hookErr.Error(), "hunter2",
+		"the cause belongs in the log, where the operator can act on it")
 }
 
 // TestMergedKeytabIsSerialisable pins why readAll builds on keytab.New rather
