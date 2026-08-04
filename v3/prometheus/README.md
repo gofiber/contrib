@@ -50,7 +50,7 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | NativeHistogramMinResetDuration | `time.Duration` | Minimum time before a native histogram may be reset to control its bucket count. | `0` |
 | TrackUnmatchedRequests | `bool` | Records metrics for requests that do not resolve to a registered route. | `false` |
 | UnmatchedRouteLabel | `string` | Path label used for unmatched requests when `TrackUnmatchedRequests` is enabled. Must be valid UTF-8. | `"/__unmatched__"` |
-| EnableOpenMetrics | `bool` | Negotiates the experimental OpenMetrics encoding, which is what exports exemplars. | `false` |
+| EnableOpenMetrics | `bool` | Negotiates the experimental OpenMetrics encoding. Not required for exemplars — protobuf carries them too. | `false` |
 | EnableOpenMetricsTextCreatedSamples | `bool` | Adds synthetic `_created` samples to OpenMetrics responses. Requires `EnableOpenMetrics`. | `false` |
 | DisableExemplars | `bool` | Skips trace exemplar collection, and with it the request-context read every instrumented request otherwise pays. | `false` |
 | DisableCompression | `bool` | Serves metrics uncompressed even when the client requests gzip or zstd. | `false` |
@@ -403,9 +403,11 @@ app.Use(fiberprometheus.New(fiberprometheus.Config{
 
 When the request context carries a valid OpenTelemetry trace, the duration and
 size histograms record the trace ID as an exemplar under the `traceID` label.
-Exemplars are only serialized in the OpenMetrics encoding, so set
-`EnableOpenMetrics: true` and scrape with an OpenMetrics-capable client to see
-them.
+Reaching a scraper takes an encoding that carries exemplars. Protobuf does, and
+promhttp negotiates it without any configuration — which is what a Prometheus
+server asks for once native histograms are enabled. OpenMetrics text does too,
+but only when you set `EnableOpenMetrics: true`; the plain text exposition
+carries no exemplars in either case.
 
 Collecting one costs a request-context read on every instrumented request: Fiber
 installs a background context when the application never set one, which the

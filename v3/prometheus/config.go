@@ -214,6 +214,10 @@ type Config struct {
 
 	// EnableOpenMetrics exposes the experimental OpenMetrics encoding.
 	//
+	// It is not what makes exemplars reachable: the protobuf exposition carries
+	// them too, and that is what a Prometheus server negotiates once native
+	// histograms are on. Set this for a scraper that wants OpenMetrics text.
+	//
 	// Optional. Default: false.
 	EnableOpenMetrics bool
 
@@ -234,6 +238,10 @@ type Config struct {
 	// no tracing middleware pays that on every instrumented request for
 	// exemplars that can never be produced, so turn this on when nothing in the
 	// stack starts spans.
+	//
+	// Reaching a scraper takes an encoding that carries exemplars: OpenMetrics
+	// text, which EnableOpenMetrics offers, or protobuf, which promhttp
+	// negotiates without it.
 	//
 	// Optional. Default: false (exemplars collected when a span is present).
 	DisableExemplars bool
@@ -441,6 +449,10 @@ func configDefault(config ...Config) Config {
 		}
 	}
 
+	// Trimmed for the same reason as MetricsPath: a value carrying a trailing
+	// newline would become part of every unmatched series' label, valid UTF-8
+	// and matched by no dashboard, recording rule or SkipURIs entry.
+	cfg.UnmatchedRouteLabel = strings.TrimSpace(cfg.UnmatchedRouteLabel)
 	if cfg.UnmatchedRouteLabel == "" {
 		cfg.UnmatchedRouteLabel = ConfigDefault.UnmatchedRouteLabel
 	} else {

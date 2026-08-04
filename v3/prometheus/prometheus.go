@@ -247,6 +247,15 @@ func New(config ...Config) fiber.Handler {
 	// above. Skipping a disabled family's bounds would only defer the failure:
 	// the application boots today and refuses to start the day someone drops
 	// that family from DisabledMetrics, over a slice they did not touch.
+	// A factor of 0 disables native histograms; anything above 1 sets their
+	// resolution. Between the two - 0.1 for the documented 1.1, say -
+	// client_golang enables nothing, and then substitutes its latency defaults
+	// for any bucket slice deliberately left empty, so a byte histogram ends up
+	// bucketed in seconds and every real payload lands in +Inf alone.
+	if factor := cfg.NativeHistogramBucketFactor; math.IsNaN(factor) || (factor > 0 && factor <= 1) {
+		panic("prometheus middleware: NativeHistogramBucketFactor must be 0 to disable native histograms, or greater than 1")
+	}
+
 	validateBuckets("RequestDurationBuckets", cfg.RequestDurationBuckets)
 	validateBuckets("RequestSizeBuckets", cfg.RequestSizeBuckets)
 	validateBuckets("ResponseSizeBuckets", cfg.ResponseSizeBuckets)
@@ -359,6 +368,15 @@ func (m *middleware) resolveFilters(cfg Config) bool {
 	for _, path := range cfg.SkipURIs {
 		path = strings.TrimSpace(path)
 		if path == "" {
+			continue
+		}
+
+		// The unmatched label is a label value rather than a route and is taken
+		// as given, so an entry naming it has to be too. Without this, a filter
+		// for unmatched traffic would work only while the label happened to
+		// start with a slash - and Config recommends spelling it "unmatched".
+		if normalizePath(path) == m.unmatchedLabel {
+			m.skipURIs[strings.Clone(m.unmatchedLabel)] = struct{}{}
 			continue
 		}
 
@@ -701,6 +719,17 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		}
 	}
 
+	// Read here rather than at the observation below: everything between the
+	// two is this middleware's own bookkeeping - the route lookup, the skip
+	// scan, the counter increment, the request-context read, and any
+	// DynamicLabels function the application supplied. Charging that to the
+	// request would put instrumentation overhead into the metric people set
+	// latency alerts on, and a slow label function would dominate it entirely.
+	var elapsed float64
+	if m.requestDuration != nil {
+		elapsed = time.Since(start).Seconds()
+	}
+
 	routePath, ok := m.routeLabel(ctx)
 	if !ok {
 		return nil
@@ -763,7 +792,7 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		}
 
 		if m.requestDuration != nil {
-			observe(m.requestDuration.WithLabelValues(values...), time.Since(start).Seconds())
+			observe(m.requestDuration.WithLabelValues(values...), elapsed)
 		}
 
 		if m.requestSize != nil {

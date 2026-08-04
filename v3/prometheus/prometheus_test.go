@@ -3541,3 +3541,109 @@ func TestDisabledDurationHistogram(t *testing.T) {
 		t.Fatalf("expected the request to still be counted, got %q", metrics)
 	}
 }
+
+// TestDurationExcludesInstrumentationOverhead pins where the stopwatch stops.
+// Everything between the chain unwinding and the observation is this
+// middleware's own work - the route lookup, the skip scan, the counter
+// increment, the context read, and any DynamicLabels function the application
+// supplied - and charging that to the request would put instrumentation
+// overhead into the metric people alert on.
+func TestDurationExcludesInstrumentationOverhead(t *testing.T) {
+	const labelCost = 120 * time.Millisecond
+
+	app := newAppWithMiddleware(Config{
+		DynamicLabels: map[string]func(fiber.Ctx) string{
+			"slow": func(fiber.Ctx) string {
+				time.Sleep(labelCost)
+				return "x"
+			},
+		},
+	}, "")
+	app.Get("/fast", func(c fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/fast", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	series := `http_request_duration_seconds_sum{method="GET",path="/fast",slow="x",status_code="200"}`
+	if seconds := gaugeValue(t, metrics, series); seconds >= labelCost.Seconds()/2 {
+		t.Fatalf("expected the label function's cost to stay out of the request duration, got %vs", seconds)
+	}
+}
+
+// TestUnusableNativeHistogramFactorPanics covers a factor between 0 and 1 - 0.1
+// where 1.1 was meant. client_golang enables nothing below 1, then substitutes
+// its latency defaults for any bucket slice deliberately left empty, so a byte
+// histogram silently ends up bucketed in seconds.
+func TestUnusableNativeHistogramFactorPanics(t *testing.T) {
+	for _, factor := range []float64{0.1, 1, math.NaN()} {
+		t.Run(fmt.Sprint(factor), func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatalf("expected factor %v to be rejected", factor)
+				}
+				if msg := fmt.Sprint(r); !strings.Contains(msg, "NativeHistogramBucketFactor") {
+					t.Fatalf("expected the panic to name the field, got %v", r)
+				}
+			}()
+
+			_ = New(Config{NativeHistogramBucketFactor: factor})
+		})
+	}
+}
+
+// TestSkipURIsMatchesUnmatchedLabel covers filtering unmatched traffic with the
+// label spelled the way Config recommends. Forcing a leading slash onto the
+// entry would leave the filter working in the default config and silently
+// failing the moment the operator took that advice.
+func TestSkipURIsMatchesUnmatchedLabel(t *testing.T) {
+	for _, label := range []string{"unmatched", "/__unmatched__"} {
+		t.Run(label, func(t *testing.T) {
+			app := newAppWithMiddleware(Config{
+				TrackUnmatchedRequests: true,
+				UnmatchedRouteLabel:    label,
+				SkipURIs:               []string{label},
+			}, "")
+			app.Get("/kept", func(c fiber.Ctx) error {
+				return c.SendStatus(fiber.StatusOK)
+			})
+
+			for _, path := range []string{"/nothing/here", "/kept"} {
+				if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+					t.Fatalf("requesting %s: %v", path, err)
+				}
+			}
+
+			metrics := getMetrics(t, app, "")
+			if !strings.Contains(metrics, `path="/kept"`) {
+				t.Fatalf("expected the ordinary route to be recorded, got %q", metrics)
+			}
+			if strings.Contains(metrics, `path="`+label+`"`) {
+				t.Fatalf("expected unmatched traffic to be skipped, got %q", metrics)
+			}
+		})
+	}
+}
+
+// TestUnmatchedRouteLabelIsTrimmed covers the trailing newline a mounted secret
+// picks up, which is valid UTF-8 and would otherwise become part of every
+// unmatched series' label.
+func TestUnmatchedRouteLabelIsTrimmed(t *testing.T) {
+	app := newAppWithMiddleware(Config{
+		TrackUnmatchedRequests: true,
+		UnmatchedRouteLabel:    "unmatched\n",
+	}, "")
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/nothing/here", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `path="unmatched"`) {
+		t.Fatalf("expected the label to be trimmed, got %q", metrics)
+	}
+}
