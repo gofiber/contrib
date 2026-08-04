@@ -170,9 +170,11 @@ rejects before routing — a body over `BodyLimit`, oversized headers, a read
 timeout — is counted as a `200`. Fiber answers those through its server error
 handler, which replays the `Use` chain with non-`Use` routes skipped and writes
 the real status only afterwards, and Fiber v3.4.0 offers no way to tell that
-replay apart from an ordinary request answered by `Use` handlers. A request answered entirely by `app.Use` handlers counts
-as one of those: `static.New`, or a `Use`-mounted guard returning 401, never
-matches a non-`Use` route, so nothing is recorded for it by default.
+replay apart from an ordinary request answered by `Use` handlers.
+
+A request answered entirely by `app.Use` handlers counts as unmatched too:
+`static.New`, or a `Use`-mounted guard returning 401, never matches a non-`Use`
+route, so nothing is recorded for it by default.
 
 One case is attributed to the wrong pattern. If the matched handler delegates
 onwards with `c.Next()` and a trailing `app.Use` middleware runs last, Fiber has
@@ -235,10 +237,11 @@ Fiber's zero-copy strings such as `c.Get(...)` or `c.Params(...)` directly.
 `SkipURIs` matches the registered route pattern — note that fiberzap's option
 of the same name matches the request path instead. A trailing `*` matches by
 prefix and stops at a path segment boundary, so `/admin/*` excludes `/admin` and
-`/admin/users` but not `/administration`. Trailing stars are stripped as a group,
-so the glob spelling `/admin/**` means the same thing. `/*` excludes everything, and then no
-metric family is registered at all — not even the in-flight gauge, which is
-incremented before routing and so beyond the reach of any per-route filter.
+`/admin/users` but not `/administration`. Trailing stars are stripped as a
+group, so the glob spelling `/admin/**` means the same thing. `/*` excludes
+everything, and then no metric family is registered at all — not even the
+in-flight gauge, which is incremented before routing and so beyond the reach of
+any per-route filter.
 Trailing slashes are ignored, and a leading `/` is added when missing — route
 patterns always carry one, so `admin` without it would otherwise match nothing.
 The match is case-sensitive against the pattern as registered, while Fiber routes

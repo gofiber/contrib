@@ -310,9 +310,11 @@ type Config struct {
 	// glob spelling "/admin/**" means the same thing. "/*" excludes everything,
 	// and then no metric family is registered at all - not even
 	// MetricRequestsInProgress, which is otherwise incremented before routing
-	// and so beyond the reach of any per-route filter. Such an entry also still matches a route pattern named
-	// exactly that, since Fiber patterns may end in "*" themselves - "/static*"
-	// excludes the route "/static*" as well as anything under "/static".
+	// and so beyond the reach of any per-route filter.
+	//
+	// Such an entry also still matches a route pattern named exactly that,
+	// since Fiber patterns may end in "*" themselves - "/static*" excludes the
+	// route "/static*" as well as anything under "/static".
 	//
 	// Optional. Default: none.
 	SkipURIs []string
@@ -423,6 +425,10 @@ func configDefault(config ...Config) Config {
 		cfg.Namespace = ConfigDefault.Namespace
 	}
 
+	// Trimmed like the list-valued options, so that a value carrying the
+	// trailing newline an environment variable or mounted secret picks up does
+	// not silently make the scrape endpoint unreachable.
+	cfg.MetricsPath = strings.TrimSpace(cfg.MetricsPath)
 	if cfg.MetricsPath == "" {
 		cfg.MetricsPath = ConfigDefault.MetricsPath
 	} else {

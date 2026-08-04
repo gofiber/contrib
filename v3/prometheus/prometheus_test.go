@@ -2869,14 +2869,24 @@ func (c *syntheticRouteCtx) Route() *fiber.Route {
 	return &fiber.Route{Path: c.Path(), Method: c.Method()}
 }
 
-// TestDisabledFamilyBucketsAreNotValidated pins that bucket bounds belonging to
-// a disabled family are dead configuration rather than a reason to refuse to
-// boot - otherwise disabling the family would not be a way past a bad slice.
-func TestDisabledFamilyBucketsAreNotValidated(t *testing.T) {
+// TestDisabledFamilyBucketsAreStillValidated pins that bad bounds are rejected
+// whatever is disabled. Skipping them would only defer the failure: the
+// application boots today and refuses to start the day someone drops that
+// family from DisabledMetrics, over a slice they never touched.
+func TestDisabledFamilyBucketsAreStillValidated(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected the bounds to be rejected even though the family is off")
+		}
+		if msg := fmt.Sprint(r); !strings.Contains(msg, "RequestSizeBuckets") {
+			t.Fatalf("expected the panic to name the field, got %v", r)
+		}
+	}()
+
 	_ = New(Config{
-		DisabledMetrics:     []Metric{MetricRequestSize, MetricResponseSize},
-		RequestSizeBuckets:  []float64{2, 1},
-		ResponseSizeBuckets: []float64{100, 100},
+		DisabledMetrics:    []Metric{MetricRequestSize, MetricResponseSize},
+		RequestSizeBuckets: []float64{2, 1},
 	})
 }
 
@@ -3476,5 +3486,58 @@ func TestDoubledWildcardSkipsEverything(t *testing.T) {
 		if strings.Contains(metrics, name) {
 			t.Fatalf("expected %s to be absent with everything excluded, got %q", name, metrics)
 		}
+	}
+}
+
+// TestInvalidServiceNamePanicsByName pins that the panic names the field the
+// caller set. ServiceName becomes the "service" label, so validating it only
+// after the merge would point at a key they never wrote.
+func TestInvalidServiceNamePanicsByName(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected the invalid service name to be rejected")
+		}
+		if msg := fmt.Sprint(r); !strings.Contains(msg, "ServiceName") {
+			t.Fatalf("expected the panic to name ServiceName, got %v", r)
+		}
+	}()
+
+	_ = New(Config{ServiceName: "svc-\xff"})
+}
+
+// TestMetricsPathIsTrimmed covers the trailing newline an environment variable
+// or a mounted secret picks up, which would otherwise leave the scrape endpoint
+// unreachable with no warning at all.
+func TestMetricsPathIsTrimmed(t *testing.T) {
+	for _, path := range []string{"/telemetry\n", " /telemetry", "/telemetry "} {
+		t.Run(strconv.Quote(path), func(t *testing.T) {
+			app := newAppWithMiddleware(Config{MetricsPath: path}, "")
+			if body := getMetrics(t, app, "/telemetry"); !strings.Contains(body, "go_goroutines") {
+				t.Fatalf("expected /telemetry to be served, got %q", body)
+			}
+		})
+	}
+}
+
+// TestDisabledDurationHistogram covers the path taken when the only consumer of
+// the request clock is gone. It pins the behaviour - everything else is still
+// recorded - not the saved clock reads, which produce no observable difference.
+func TestDisabledDurationHistogram(t *testing.T) {
+	app := newAppWithMiddleware(Config{DisabledMetrics: []Metric{MetricRequestDuration}}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if strings.Contains(metrics, "http_request_duration_seconds") {
+		t.Fatalf("expected the duration histogram to be absent, got %q", metrics)
+	}
+	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/hello",status_code="200"}`) {
+		t.Fatalf("expected the request to still be counted, got %q", metrics)
 	}
 }

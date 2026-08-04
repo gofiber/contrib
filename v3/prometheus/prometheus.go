@@ -148,6 +148,11 @@ func New(config ...Config) fiber.Handler {
 	// "service" entry goes straight into it. ServiceName wins over a "service"
 	// key supplied through Labels.
 	if cfg.ServiceName != "" {
+		// Checked before it becomes a label, so the panic names the field the
+		// caller set rather than a "service" key they never wrote.
+		if !utf8.ValidString(cfg.ServiceName) {
+			panic("prometheus middleware: ServiceName is not valid UTF-8")
+		}
 		cfg.Labels["service"] = cfg.ServiceName
 	}
 	labels := cfg.Labels
@@ -238,20 +243,13 @@ func New(config ...Config) fiber.Handler {
 		validateMetricName(cfg.Namespace, cfg.Subsystem, metric)
 	}
 
-	// Bucket bounds belong to one family each, so a disabled family's bounds are
-	// dead configuration and rejecting them would stop an application from
-	// booting over settings that can no longer reach a histogram. The reserved
-	// "le" label is deliberately not gated the same way: it applies to how the
-	// middleware labels everything it exposes, not to one family's options.
-	if enabled(MetricRequestDuration) {
-		validateBuckets("RequestDurationBuckets", cfg.RequestDurationBuckets)
-	}
-	if enabled(MetricRequestSize) {
-		validateBuckets("RequestSizeBuckets", cfg.RequestSizeBuckets)
-	}
-	if enabled(MetricResponseSize) {
-		validateBuckets("ResponseSizeBuckets", cfg.ResponseSizeBuckets)
-	}
+	// Checked whatever is disabled, for the same reason as the metric names
+	// above. Skipping a disabled family's bounds would only defer the failure:
+	// the application boots today and refuses to start the day someone drops
+	// that family from DisabledMetrics, over a slice they did not touch.
+	validateBuckets("RequestDurationBuckets", cfg.RequestDurationBuckets)
+	validateBuckets("RequestSizeBuckets", cfg.RequestSizeBuckets)
+	validateBuckets("ResponseSizeBuckets", cfg.ResponseSizeBuckets)
 
 	// Both label sets carry the dynamic names last so that the value buffer
 	// built per request can be shared between them.
@@ -432,7 +430,10 @@ func (m *middleware) resolveFilters(cfg Config) bool {
 		if !validStatusClasses[normalized] {
 			panic("prometheus middleware: status class " + strconv.Quote(class) + ` is not one of "1xx" through "5xx" or "unknown"`)
 		}
-		m.skipStatusClasses[normalized] = struct{}{}
+		// Cloned for the same reason as the SkipURIs keys: ToLower and TrimSpace
+		// both hand back a view of the caller's string when there is nothing to
+		// change, and these are map keys for the process lifetime.
+		m.skipStatusClasses[strings.Clone(normalized)] = struct{}{}
 	}
 
 	return skipAll
@@ -683,7 +684,12 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		return ctx.Next()
 	}
 
-	start := time.Now()
+	// Only the duration histogram needs the clock, and two reads per request is
+	// the one hot-path cost this function had left ungated.
+	var start time.Time
+	if m.requestDuration != nil {
+		start = time.Now()
+	}
 
 	// Fiber runs the application error handler only after the entire handler
 	// chain has unwound, so the response is still empty when Next reports an
@@ -694,8 +700,6 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 			_ = ctx.SendStatus(fiber.StatusInternalServerError) //nolint:errcheck // mirrors Fiber's own fallback
 		}
 	}
-
-	elapsed := time.Since(start).Seconds()
 
 	routePath, ok := m.routeLabel(ctx)
 	if !ok {
@@ -759,7 +763,7 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		}
 
 		if m.requestDuration != nil {
-			observe(m.requestDuration.WithLabelValues(values...), elapsed)
+			observe(m.requestDuration.WithLabelValues(values...), time.Since(start).Seconds())
 		}
 
 		if m.requestSize != nil {
