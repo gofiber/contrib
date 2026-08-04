@@ -15,6 +15,12 @@ type Metric string
 
 // The metric families the middleware exposes. Any of them can be turned off
 // through Config.DisabledMetrics.
+//
+// MetricRequestSize and MetricResponseSize record a payload only when its size
+// is known: either Content-Length is set, or the body is buffered and can be
+// measured. A stream of unannounced length - c.SendStream without a size, an SSE
+// response, a chunked upload read through fiber.Config.StreamRequestBody - is
+// left out of the histogram rather than recorded as zero bytes.
 const (
 	MetricRequestsTotal            Metric = "requests_total"
 	MetricRequestsStatusClassTotal Metric = "requests_status_class_total"
@@ -45,13 +51,15 @@ type Config struct {
 	// format. Unless Next returns true, requests to it are answered by the
 	// middleware itself and are not instrumented.
 	//
-	// It is compared against the full request path, byte for byte. Two
-	// consequences: mounting the middleware on a group leaves the default
-	// endpoint unreachable, because a request to "/api/metrics" never equals
-	// "/metrics" and one to "/metrics" never reaches the group - set this to the
-	// full path, "/api/metrics". And because Fiber routes case-insensitively by
-	// default while this comparison does not, "/METRICS" is instrumented as an
-	// ordinary request rather than answered.
+	// It is compared against the full request path, case-sensitively, with
+	// trailing slashes ignored on both sides - "/metrics/" is served too. A
+	// leading slash is added when missing. Two consequences: mounting the
+	// middleware on a group leaves the default endpoint unreachable, because a
+	// request to "/api/metrics" never equals "/metrics" and one to "/metrics"
+	// never reaches the group - set this to the full path, "/api/metrics". And
+	// because Fiber routes case-insensitively by default while this comparison
+	// does not, "/METRICS" is instrumented as an ordinary request rather than
+	// answered.
 	//
 	// Optional. Default: "/metrics".
 	MetricsPath string
@@ -215,13 +223,22 @@ type Config struct {
 	// or record. Use it to drop families that are not worth their cardinality,
 	// most commonly MetricRequestSize and MetricResponseSize.
 	//
+	// MetricRequestsStatusClassTotal is worth a look too: status_class is a
+	// function of status_code, so every query against it has an equivalent
+	// against MetricRequestsTotal - rate(...status_class_total{status_class=
+	// "5xx"}[5m]) is rate(...requests_total{status_code=~"5.."}[5m]). Keeping it
+	// buys shorter queries at the price of a second series per route, method and
+	// class.
+	//
 	// Optional. Default: none (every family is enabled).
 	DisabledMetrics []Metric
 
 	// SkipURIs excludes matching routes from instrumentation. Entries are
 	// matched against the registered route pattern rather than the request
 	// path, so use "/user/:id" instead of "/user/42" - fiberzap's option of the
-	// same name matches the request path instead. Trailing slashes are ignored.
+	// same name matches the request path instead. Trailing slashes are ignored
+	// and a leading slash is added when missing, since route patterns always
+	// carry one.
 	//
 	// An entry ending in "*" matches by prefix: "/admin/*" excludes "/admin"
 	// and every route below it, and "/*" excludes everything. It also still
@@ -289,17 +306,25 @@ var ConfigDefault = Config{
 	ResponseSizeBuckets:    defaultResponseSizeBuckets,
 }
 
-func configDefault(config ...Config) Config {
-	if len(config) == 0 {
-		cfg := ConfigDefault
-		cfg.Labels = make(prometheus.Labels)
-		cfg.RequestDurationBuckets = append([]float64(nil), ConfigDefault.RequestDurationBuckets...)
-		cfg.RequestSizeBuckets = append([]float64(nil), ConfigDefault.RequestSizeBuckets...)
-		cfg.ResponseSizeBuckets = append([]float64(nil), ConfigDefault.ResponseSizeBuckets...)
-		return cfg
+// cloneBuckets returns a private copy of the supplied bucket bounds, falling
+// back to the defaults when none were given. The copy matters because
+// client_golang aliases the slice it is handed into the live histogram, so a
+// caller mutating its own slice afterwards would otherwise reshape a metric.
+func cloneBuckets(supplied, defaults []float64) []float64 {
+	if supplied == nil {
+		supplied = defaults
 	}
+	return append([]float64(nil), supplied...)
+}
 
-	cfg := config[0]
+// configDefault fills in the defaults and takes private copies of everything
+// the caller could still mutate. A missing config is the zero config: keeping
+// one code path means the two cannot drift apart.
+func configDefault(config ...Config) Config {
+	var cfg Config
+	if len(config) > 0 {
+		cfg = config[0]
+	}
 
 	if cfg.Namespace == "" {
 		cfg.Namespace = ConfigDefault.Namespace
@@ -320,23 +345,9 @@ func configDefault(config ...Config) Config {
 		cfg.UnmatchedRouteLabel = strings.Clone(cfg.UnmatchedRouteLabel)
 	}
 
-	if cfg.RequestDurationBuckets == nil {
-		cfg.RequestDurationBuckets = append([]float64(nil), ConfigDefault.RequestDurationBuckets...)
-	} else {
-		cfg.RequestDurationBuckets = append([]float64(nil), cfg.RequestDurationBuckets...)
-	}
-
-	if cfg.RequestSizeBuckets == nil {
-		cfg.RequestSizeBuckets = append([]float64(nil), ConfigDefault.RequestSizeBuckets...)
-	} else {
-		cfg.RequestSizeBuckets = append([]float64(nil), cfg.RequestSizeBuckets...)
-	}
-
-	if cfg.ResponseSizeBuckets == nil {
-		cfg.ResponseSizeBuckets = append([]float64(nil), ConfigDefault.ResponseSizeBuckets...)
-	} else {
-		cfg.ResponseSizeBuckets = append([]float64(nil), cfg.ResponseSizeBuckets...)
-	}
+	cfg.RequestDurationBuckets = cloneBuckets(cfg.RequestDurationBuckets, ConfigDefault.RequestDurationBuckets)
+	cfg.RequestSizeBuckets = cloneBuckets(cfg.RequestSizeBuckets, ConfigDefault.RequestSizeBuckets)
+	cfg.ResponseSizeBuckets = cloneBuckets(cfg.ResponseSizeBuckets, ConfigDefault.ResponseSizeBuckets)
 
 	if cfg.Labels == nil {
 		cfg.Labels = make(prometheus.Labels)

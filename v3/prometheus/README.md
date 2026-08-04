@@ -36,7 +36,7 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | ServiceName | `string` | Added as the `service` const label on every metric. Omitted when empty. | `""` |
 | Namespace | `string` | Prefixes every metric name. | `"http"` |
 | Subsystem | `string` | Prefixes every metric name after `Namespace`. | `""` |
-| MetricsPath | `string` | Path served with the Prometheus exposition format. Unless `Next` returns true, requests to it are answered by the middleware and are not instrumented. Compared byte-for-byte against the full request path. | `"/metrics"` |
+| MetricsPath | `string` | Path served with the Prometheus exposition format. Unless `Next` returns true, requests to it are answered by the middleware and are not instrumented. Compared case-sensitively against the full request path, ignoring trailing slashes. | `"/metrics"` |
 | Labels | `prometheus.Labels` | Extra const labels attached to every metric. | `nil` |
 | Registerer | `prometheus.Registerer` | Registry used to register the metrics. Reusing one across two `New` calls panics on duplicate registration. | private registry |
 | Gatherer | `prometheus.Gatherer` | Source the metrics endpoint gathers from. | private registry |
@@ -58,7 +58,7 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | MetricsErrorLog | `promhttp.Logger` | Receives errors raised while gathering or writing metrics. | `nil` |
 | MetricsErrorHandling | `promhttp.HandlerErrorHandling` | How gathering errors are reported to the scraper. | `promhttp.HTTPErrorOnError` |
 | DisabledMetrics | `[]Metric` | Metric families to skip registering and recording. | `nil` |
-| SkipURIs | `[]string` | Route patterns excluded from instrumentation, e.g. `/user/:id`. A trailing `*` matches by prefix. | `nil` |
+| SkipURIs | `[]string` | Route patterns excluded from instrumentation, e.g. `/user/:id`. A trailing `*` matches by prefix; a leading `/` is added when missing. | `nil` |
 | SkipStatusCodes | `[]int` | Response status codes excluded from metrics. | `nil` |
 | SkipStatusClasses | `[]string` | Status classes excluded from metrics, `"1xx"` through `"5xx"`. | `nil` |
 | DynamicLabels | `map[string]func(fiber.Ctx) string` | Extra labels computed per request. | `nil` |
@@ -142,6 +142,20 @@ cardinality stays bounded no matter what clients request.
 incremented before the router picks a handler, at which point the route pattern
 is not known yet.
 
+`http_request_size_bytes` and `http_response_size_bytes` record a payload only
+when its size is known — either `Content-Length` is set, or the body is buffered
+and can be measured. A stream of unannounced length, such as `c.SendStream`
+without a size or an SSE response, is left out of those histograms rather than
+recorded as zero bytes, which would drag the reported percentiles towards
+nothing.
+
+`http_requests_status_class_total` is convenience, not new information:
+`status_class` is a function of `status_code`, so
+`rate(http_requests_status_class_total{status_class="5xx"}[5m])` is
+`rate(http_requests_total{status_code=~"5.."}[5m])`. It costs a second series
+per route, method and class — drop it through `DisabledMetrics` if that trade is
+not worth it to you.
+
 Requests that miss every registered route are not recorded unless
 `TrackUnmatchedRequests` is enabled, in which case they are labeled with
 `UnmatchedRouteLabel`. A request answered entirely by `app.Use` handlers counts
@@ -209,7 +223,9 @@ Fiber's zero-copy strings such as `c.Get(...)` or `c.Params(...)` directly.
 `SkipURIs` matches the registered route pattern — note that fiberzap's option
 of the same name matches the request path instead. A trailing `*` matches by
 prefix and stops at a path segment boundary, so `/admin/*` excludes `/admin` and
-`/admin/users` but not `/administration`. `/*` excludes everything.
+`/admin/users` but not `/administration`. `/*` excludes everything. Trailing
+slashes are ignored, and a leading `/` is added when missing — route patterns
+always carry one, so `admin` without it would otherwise match nothing.
 
 Because Fiber route patterns can themselves end in `*`, such an entry also
 matches the pattern named exactly that: `/static*` excludes both the route
@@ -264,9 +280,9 @@ app.Use(fiberprometheus.New(fiberprometheus.Config{
 
 ### Where the endpoint is served
 
-`MetricsPath` is compared byte-for-byte against the full request path, which has
-two consequences worth knowing before you mount the middleware anywhere but the
-root.
+`MetricsPath` is compared case-sensitively against the full request path, with
+trailing slashes ignored on both sides, which has two consequences worth knowing
+before you mount the middleware anywhere but the root.
 
 Mounting on a group leaves the default endpoint unreachable — `/api/metrics`
 never equals `/metrics`, and `/metrics` never reaches the group, so both 404.

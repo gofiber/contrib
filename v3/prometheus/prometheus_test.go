@@ -435,6 +435,11 @@ func TestMetricsEndpointRejectsOtherMethods(t *testing.T) {
 	if resp.StatusCode != fiber.StatusMethodNotAllowed {
 		t.Fatalf("expected status 405, got %d", resp.StatusCode)
 	}
+	// RFC 9110 requires Allow on a 405, and setting it is the only reason
+	// serveMetrics does not simply return the error.
+	if allow := resp.Header.Get(fiber.HeaderAllow); allow != "GET, HEAD" {
+		t.Fatalf("expected Allow header %q, got %q", "GET, HEAD", allow)
+	}
 }
 
 func TestHeadRequestsMatchGetRoutes(t *testing.T) {
@@ -1852,5 +1857,175 @@ func TestErrorHandlerFailureFallsBackTo500(t *testing.T) {
 	metrics := getMetrics(t, app, "")
 	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/boom",status_code="500"}`) {
 		t.Fatalf("expected the fallback status to be recorded, got %q", metrics)
+	}
+}
+
+// TestUnknownResponseSizeIsNotObserved covers a streamed response of
+// unannounced length. Observing it as zero bytes would leave a file-serving or
+// SSE app reporting a median response size of nothing, so the sample is left
+// out of the histogram entirely while the request still counts.
+func TestUnknownResponseSizeIsNotObserved(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{}, "")
+	app.Get("/stream", func(c fiber.Ctx) error {
+		return c.SendStream(strings.NewReader(strings.Repeat("s", 5000)))
+	})
+	app.Get("/sized", func(c fiber.Ctx) error {
+		return c.SendString(strings.Repeat("s", 5000))
+	})
+
+	for _, path := range []string{"/stream", "/sized"} {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+			t.Fatalf("requesting %s: %v", path, err)
+		}
+	}
+
+	metrics := getMetrics(t, app, "")
+
+	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/stream",status_code="200"}`) {
+		t.Fatalf("expected the streamed request to be counted, got %q", metrics)
+	}
+	if strings.Contains(metrics, `http_response_size_bytes_sum{method="GET",path="/stream",status_code="200"}`) {
+		t.Fatalf("expected no response size series for a stream of unknown length, got %q", metrics)
+	}
+	if size := gaugeValue(t, metrics, `http_response_size_bytes_sum{method="GET",path="/sized",status_code="200"}`); size != 5000 {
+		t.Fatalf("expected response size 5000 for the buffered body, got %v", size)
+	}
+}
+
+// fakePayload stands in for *fasthttp.Request and *fasthttp.Response so
+// bodySize can be exercised on both sides without a live connection.
+type fakePayload struct {
+	stream bool
+	body   []byte
+}
+
+func (p fakePayload) IsBodyStream() bool { return p.stream }
+func (p fakePayload) Body() []byte       { return p.body }
+
+func TestBodySize(t *testing.T) {
+	tests := []struct {
+		name          string
+		contentLength int
+		payload       fakePayload
+		want          float64
+		wantKnown     bool
+	}{
+		{name: "content length wins over the buffered body", contentLength: 42, payload: fakePayload{body: []byte("ignored")}, want: 42, wantKnown: true},
+		{name: "content length wins over a stream", contentLength: 42, payload: fakePayload{stream: true}, want: 42, wantKnown: true},
+		{name: "buffered body is measured", contentLength: -1, payload: fakePayload{body: []byte("hello")}, want: 5, wantKnown: true},
+		{name: "empty body is a known zero", contentLength: 0, payload: fakePayload{}, want: 0, wantKnown: true},
+		{name: "stream of unknown length is undetermined", contentLength: -1, payload: fakePayload{stream: true}, wantKnown: false},
+		{name: "identity encoding stream is undetermined", contentLength: -2, payload: fakePayload{stream: true}, wantKnown: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			size, known := bodySize(tt.contentLength, tt.payload)
+			if known != tt.wantKnown {
+				t.Fatalf("expected known=%v, got %v", tt.wantKnown, known)
+			}
+			if known && size != tt.want {
+				t.Fatalf("expected size %v, got %v", tt.want, size)
+			}
+		})
+	}
+}
+
+// TestSkipURIsWithoutLeadingSlash pins that an entry is matched against route
+// patterns, which Fiber always registers with a leading slash. Requiring the
+// caller to supply one would make "hello" a silent no-op.
+func TestSkipURIsWithoutLeadingSlash(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{SkipURIs: []string{"hello", "admin/*"}}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+	app.Get("/admin/users", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+	app.Get("/kept", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	for _, path := range []string{"/hello", "/admin/users", "/kept"} {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+			t.Fatalf("requesting %s: %v", path, err)
+		}
+	}
+
+	metrics := getMetrics(t, app, "")
+
+	for _, path := range []string{"/hello", "/admin/users"} {
+		if strings.Contains(metrics, `path="`+path+`"`) {
+			t.Fatalf("expected %s to be skipped, got %q", path, metrics)
+		}
+	}
+	if !strings.Contains(metrics, `path="/kept"`) {
+		t.Fatalf("expected /kept to be recorded, got %q", metrics)
+	}
+}
+
+// TestNewWithoutConfigUsesDefaults exercises the argument-less call, which the
+// rest of the suite never takes.
+func TestNewWithoutConfigUsesDefaults(t *testing.T) {
+	app := fiber.New()
+	app.Use(New())
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+
+	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/hello",status_code="200"}`) {
+		t.Fatalf("expected the default namespace and path label, got %q", metrics)
+	}
+	if !strings.Contains(metrics, `http_request_duration_seconds_bucket{method="GET",path="/hello",status_code="200",le="0.005"}`) {
+		t.Fatalf("expected the default duration buckets, got %q", metrics)
+	}
+	if !strings.Contains(metrics, "go_goroutines") {
+		t.Fatalf("expected the Go collector to be registered by default, got %q", metrics)
+	}
+}
+
+// nilRouteCtx reports a match without exposing a route, which DefaultCtx never
+// does but a Ctx supplied through fiber.NewWithCustomCtx may.
+type nilRouteCtx struct {
+	*fiber.DefaultCtx
+}
+
+func (*nilRouteCtx) Route() *fiber.Route { return nil }
+
+func newNilRouteApp() *fiber.App {
+	return fiber.NewWithCustomCtx(func(app *fiber.App) fiber.CustomCtx {
+		return &nilRouteCtx{DefaultCtx: fiber.NewDefaultCtx(app)}
+	})
+}
+
+// TestMatchedRequestWithoutRouteObeysTrackUnmatched pins that the unmatched
+// label is only ever emitted when the caller asked for it. A match the Ctx
+// cannot name is indistinguishable from no match at all, so it follows the same
+// opt-in rather than smuggling a series past it.
+func TestMatchedRequestWithoutRouteObeysTrackUnmatched(t *testing.T) {
+	for _, tracked := range []bool{false, true} {
+		t.Run(fmt.Sprintf("tracked=%v", tracked), func(t *testing.T) {
+			app := newNilRouteApp()
+			app.Use(New(Config{TrackUnmatchedRequests: tracked}))
+			app.Get("/hello", func(c fiber.Ctx) error {
+				return c.SendStatus(fiber.StatusOK)
+			})
+
+			if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
+				t.Fatalf("unexpected request error: %v", err)
+			}
+
+			metrics := getMetrics(t, app, "")
+			recorded := strings.Contains(metrics, `path="/__unmatched__"`)
+			if recorded != tracked {
+				t.Fatalf("expected recorded=%v with TrackUnmatchedRequests=%v, got %q", tracked, tracked, metrics)
+			}
+		})
 	}
 }

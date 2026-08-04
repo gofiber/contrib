@@ -24,8 +24,10 @@ import (
 // middleware encapsulates all state required to expose metrics and instrument
 // Fiber requests. Every metric vector is nil when its family is disabled
 // through Config.DisabledMetrics.
+// Only the two configuration fields read per request are kept; everything else
+// Config carries is consumed by New and would otherwise be retained - along
+// with configDefault's defensive copies of it - for the lifetime of the process.
 type middleware struct {
-	cfg               Config
 	requestsTotal     *prometheus.CounterVec
 	requestsByClass   *prometheus.CounterVec
 	requestDuration   *prometheus.HistogramVec
@@ -33,6 +35,7 @@ type middleware struct {
 	responseSize      *prometheus.HistogramVec
 	requestInFlight   *prometheus.GaugeVec
 	metricsHandler    fiber.Handler
+	next              func(fiber.Ctx) bool
 	metricsPath       string
 	unmatchedLabel    string
 	skipURIs          map[string]struct{}
@@ -40,7 +43,9 @@ type middleware struct {
 	skipStatusCodes   map[int]struct{}
 	skipStatusClasses map[string]struct{}
 	dynamicLabels     []dynamicLabel
+	trackUnmatched    bool
 	records           bool
+	observes          bool
 }
 
 // dynamicLabel binds a configured label name to the function producing its
@@ -91,15 +96,15 @@ func New(config ...Config) fiber.Handler {
 		registerCollector(registry, collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	}
 
-	labels := make(prometheus.Labels, len(cfg.Labels)+1)
-	for key, value := range cfg.Labels {
-		labels[key] = value
-	}
+	// configDefault already handed over a private copy of Labels, so the
+	// "service" entry goes straight into it. ServiceName wins over a "service"
+	// key supplied through Labels.
 	if cfg.ServiceName != "" {
-		labels["service"] = cfg.ServiceName
+		cfg.Labels["service"] = cfg.ServiceName
 	}
+	labels := cfg.Labels
 
-	dynamic := resolveDynamicLabels(cfg, labels)
+	dynamic := resolveDynamicLabels(cfg)
 
 	disabled := make(map[Metric]struct{}, len(cfg.DisabledMetrics))
 	for _, metric := range cfg.DisabledMetrics {
@@ -126,14 +131,15 @@ func New(config ...Config) fiber.Handler {
 	}))
 
 	m := &middleware{
-		cfg:               cfg,
 		metricsHandler:    metricsHandler,
+		next:              cfg.Next,
 		metricsPath:       normalizePath(cfg.MetricsPath),
 		unmatchedLabel:    normalizePath(cfg.UnmatchedRouteLabel),
 		skipURIs:          make(map[string]struct{}, len(cfg.SkipURIs)),
 		skipStatusCodes:   make(map[int]struct{}, len(cfg.SkipStatusCodes)),
 		skipStatusClasses: make(map[string]struct{}, len(cfg.SkipStatusClasses)),
 		dynamicLabels:     dynamic,
+		trackUnmatched:    cfg.TrackUnmatchedRequests,
 	}
 
 	if enabled(MetricRequestsTotal) {
@@ -200,10 +206,16 @@ func New(config ...Config) fiber.Handler {
 		)
 	}
 
-	m.records = m.requestsTotal != nil || m.requestsByClass != nil ||
-		m.requestDuration != nil || m.requestSize != nil || m.responseSize != nil
+	m.observes = m.requestDuration != nil || m.requestSize != nil || m.responseSize != nil
+	m.records = m.requestsTotal != nil || m.requestsByClass != nil || m.observes
 
 	for _, path := range cfg.SkipURIs {
+		// Fiber's register prepends "/" to every pattern, so an entry without
+		// one could never match. Add it, as MetricsPath does.
+		if !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+
 		// Normalize before looking for the star, so that a trailing slash after
 		// it - "/admin/*/" - still registers the prefix. Trailing slashes are
 		// documented as ignored.
@@ -261,7 +273,7 @@ func histogramOpts(cfg Config, name Metric, help string, labels prometheus.Label
 // the ones that would clash with a label the middleware already sets. Sorting
 // keeps the label order of a metric stable across restarts, which map iteration
 // order would not.
-func resolveDynamicLabels(cfg Config, constLabels prometheus.Labels) []dynamicLabel {
+func resolveDynamicLabels(cfg Config) []dynamicLabel {
 	if len(cfg.DynamicLabels) == 0 {
 		return nil
 	}
@@ -277,7 +289,7 @@ func resolveDynamicLabels(cfg Config, constLabels prometheus.Labels) []dynamicLa
 		if _, reserved := reservedLabels[name]; reserved {
 			panic("prometheus middleware: dynamic label " + strconv.Quote(name) + " collides with a built-in label")
 		}
-		if _, ok := constLabels[name]; ok {
+		if _, ok := cfg.Labels[name]; ok {
 			panic("prometheus middleware: dynamic label " + strconv.Quote(name) + " collides with a constant label")
 		}
 		fn := cfg.DynamicLabels[name]
@@ -359,7 +371,7 @@ func differentSource(a, b prometheus.Gatherer) bool {
 // handle serves the metrics endpoint or instruments the request, depending on
 // the requested path.
 func (m *middleware) handle(ctx fiber.Ctx) error {
-	if m.cfg.Next != nil && m.cfg.Next(ctx) {
+	if m.next != nil && m.next(ctx) {
 		return ctx.Next()
 	}
 
@@ -458,53 +470,46 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		m.requestsTotal.WithLabelValues(values...).Inc()
 	}
 
-	spanCtx := trace.SpanContextFromContext(ctx.Context())
-	traceID := spanCtx.TraceID()
-	var exemplarLabels prometheus.Labels
-	if traceID.IsValid() {
-		exemplarLabels = prometheus.Labels{"traceID": traceID.String()}
-	}
+	// Everything below feeds the histograms only, and reading the request
+	// context is not free: Fiber's DefaultCtx.Context installs a background
+	// context on the request when none was set, which then costs the request an
+	// extra user value to clear on release. Skip the lot when every histogram
+	// family is disabled.
+	if m.observes {
+		spanCtx := trace.SpanContextFromContext(ctx.Context())
+		traceID := spanCtx.TraceID()
+		var exemplarLabels prometheus.Labels
+		if traceID.IsValid() {
+			exemplarLabels = prometheus.Labels{"traceID": traceID.String()}
+		}
 
-	observe := func(observer prometheus.Observer, value float64) {
-		if exemplarLabels != nil {
-			if exemplarObserver, ok := observer.(prometheus.ExemplarObserver); ok {
-				exemplarObserver.ObserveWithExemplar(value, exemplarLabels)
-				return
+		observe := func(observer prometheus.Observer, value float64) {
+			if exemplarLabels != nil {
+				if exemplarObserver, ok := observer.(prometheus.ExemplarObserver); ok {
+					exemplarObserver.ObserveWithExemplar(value, exemplarLabels)
+					return
+				}
+			}
+			observer.Observe(value)
+		}
+
+		if m.requestDuration != nil {
+			observe(m.requestDuration.WithLabelValues(values...), elapsed)
+		}
+
+		if m.requestSize != nil {
+			req := ctx.Request()
+			if size, known := bodySize(req.Header.ContentLength(), req); known {
+				observe(m.requestSize.WithLabelValues(values...), size)
 			}
 		}
-		observer.Observe(value)
-	}
 
-	if m.requestDuration != nil {
-		observe(m.requestDuration.WithLabelValues(values...), elapsed)
-	}
-
-	// Content-Length is authoritative when present and is the only usable
-	// source for file-backed or streamed payloads. Otherwise fall back to the
-	// buffered body, but never for a body stream: reading it would drain the
-	// stream into memory just to measure it.
-	if m.requestSize != nil {
-		req := ctx.Request()
-		requestLength := req.Header.ContentLength()
-		if requestLength <= 0 {
-			requestLength = 0
-			if !req.IsBodyStream() {
-				requestLength = len(req.Body())
+		if m.responseSize != nil {
+			resp := ctx.Response()
+			if size, known := bodySize(resp.Header.ContentLength(), resp); known {
+				observe(m.responseSize.WithLabelValues(values...), size)
 			}
 		}
-		observe(m.requestSize.WithLabelValues(values...), float64(requestLength))
-	}
-
-	if m.responseSize != nil {
-		resp := ctx.Response()
-		responseLength := resp.Header.ContentLength()
-		if responseLength <= 0 {
-			responseLength = 0
-			if !resp.IsBodyStream() {
-				responseLength = len(resp.Body())
-			}
-		}
-		observe(m.responseSize.WithLabelValues(values...), float64(responseLength))
 	}
 
 	if m.requestsByClass != nil {
@@ -513,6 +518,35 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	}
 
 	return nil
+}
+
+// payload is the part of *fasthttp.Request and *fasthttp.Response that bodySize
+// needs.
+type payload interface {
+	IsBodyStream() bool
+	Body() []byte
+}
+
+// bodySize reports the payload size in bytes and whether it could be determined
+// at all. Content-Length is authoritative when present and is the only usable
+// source for file-backed or streamed payloads. Otherwise the buffered body is
+// measured - but never for a body stream, because reading it would drain the
+// stream into memory just to size it.
+//
+// A stream of unknown length is therefore left out of the histogram rather than
+// observed as zero: an app serving files or SSE would otherwise report a median
+// response of no bytes at all, since a zero still increments _count and lands in
+// the lowest bucket while adding nothing to _sum.
+func bodySize(contentLength int, p payload) (float64, bool) {
+	if contentLength > 0 {
+		return float64(contentLength), true
+	}
+
+	if p.IsBodyStream() {
+		return 0, false
+	}
+
+	return float64(len(p.Body())), true
 }
 
 // skipped reports whether the route pattern is excluded by Config.SkipURIs,
@@ -560,10 +594,12 @@ func (m *middleware) routeLabel(ctx fiber.Ctx) (string, bool) {
 		if route := ctx.Route(); route != nil {
 			return normalizePath(route.Path), true
 		}
-		return m.unmatchedLabel, true
+		// A Ctx implementation installed through app.NewCtxFunc may report a
+		// match without exposing the route. Nothing identifies the endpoint
+		// then, so the request counts as unmatched and obeys the same opt-in.
 	}
 
-	if !m.cfg.TrackUnmatchedRequests {
+	if !m.trackUnmatched {
 		return "", false
 	}
 
