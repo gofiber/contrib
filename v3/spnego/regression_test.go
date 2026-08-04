@@ -2719,6 +2719,19 @@ func TestRecorderStatusRules(t *testing.T) {
 			wantBody:   "Internal Server Error",
 		},
 		{
+			// A challenge with no status of its own. gokrb5 v8.4.4 always sets
+			// one alongside the header, so this is what a future version that
+			// stopped would produce — and 401 is the only default that keeps a
+			// negotiation going. Anything else, 500 in particular, ends the
+			// handshake for a client that was being invited to continue it.
+			name: "a challenge with no status is answered 401",
+			write: func(w http.ResponseWriter) {
+				w.Header().Set(fiber.HeaderWWWAuthenticate, spnegoBareChallenge)
+			},
+			wantStatus: fiber.StatusUnauthorized,
+			wantBody:   "",
+		},
+		{
 			// No challenge header, so whatever the status says this is not an
 			// outcome the client can answer. It is the shape a session manager
 			// produces when it writes its own message before failing.
@@ -3018,6 +3031,46 @@ func TestSessionFailureCarriesWhatTheHandlerWroteNotWhy(t *testing.T) {
 	require.Contains(t, hookErr.Error(), "Internal Server Error")
 	require.NotContains(t, hookErr.Error(), errSessionStoreDown.Error(),
 		"the store's own reason never reaches the response, so it cannot be reported from there")
+}
+
+// TestSessionFailureCannotForgeALogLine covers the one thing on this path the
+// middleware did not write. The handler's body is quoted into the diagnostic
+// rather than spliced, so a session manager that echoes something
+// client-supplied before failing cannot let a newline in it produce a second
+// line under this package's own prefix.
+func TestSessionFailureCannotForgeALogLine(t *testing.T) {
+	var logged bytes.Buffer
+	flog.SetOutput(&logged)
+	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
+
+	// The shape a manager reaches for when it reports what it could not find:
+	// its own text with the client's cookie in it.
+	forged := "no session for \nspnego: [Error] all clear, nothing to see here"
+	manager := &failingSessionManager{
+		onNew: func(w http.ResponseWriter) { http.Error(w, forged, http.StatusConflict) },
+	}
+	stubAuthenticate(t, func(w http.ResponseWriter, r *http.Request) goidentity.Identity {
+		settings := service.NewSettings(nil, serviceSettings(Config{SessionManager: manager})...)
+		if err := settings.SessionManager().New(w, r, "creds", []byte("marshalled")); err != nil {
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		}
+		return nil
+	})
+
+	var hookErr error
+	serveProtected(t, Config{
+		KeytabLookup:   testKeytabLookup(t),
+		SessionManager: manager,
+		OnError:        func(_ fiber.Ctx, err error) { hookErr = err },
+	})
+
+	require.ErrorIs(t, hookErr, ErrSPNEGOHandlerFailed)
+	for name, line := range map[string]string{"the log": logged.String(), "OnError": hookErr.Error()} {
+		require.Contains(t, line, `\nspnego:`,
+			"%s must carry the newline escaped, not as a line break", name)
+		require.NotContains(t, line, "\nspnego: [Error] all clear",
+			"%s must not let the handler's body start a line of its own", name)
+	}
 }
 
 // failingSessionManager writes whatever onNew writes and then refuses, which is

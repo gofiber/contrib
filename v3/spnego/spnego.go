@@ -68,19 +68,21 @@ const (
 	// seen on a path that returns before the check that reads these.
 	spnegoBareChallenge = "Negotiate"
 	spnegoAccepted      = "Negotiate oRQwEqADCgEAoQsGCSqGSIb3EgECAg=="
-
-	// The values Fiber and fasthttp answer with when nothing has to be read out
-	// of the request buffer. Matching them lets requestForSPNEGO assign a
-	// constant instead of a copy; see the switches there for why that matters.
-	schemeHTTP  = "http"
-	schemeHTTPS = "https"
 )
 
-// protocolHTTP11 and protocolHTTP10 are the two request protocols fasthttp
-// serves, as bytes, so the comparison does not convert.
-var (
-	protocolHTTP11 = []byte("HTTP/1.1")
-	protocolHTTP10 = []byte("HTTP/1.0")
+// The values Fiber and fasthttp answer with when nothing has to be read out of
+// the request buffer. requestForSPNEGO matches against these so it can assign
+// the constant rather than a copy; see the switches there for why that matters.
+//
+// Each is both the thing matched and the thing stored, so there is one source
+// of truth per value rather than a literal in the arm that has to be kept in
+// step with the constant in the case.
+const (
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
+
+	protocolHTTP11 = "HTTP/1.1"
+	protocolHTTP10 = "HTTP/1.0"
 )
 
 // spnegoOutcomes is every WWW-Authenticate value gokrb5 v8.4.4 sets, and so the
@@ -585,21 +587,28 @@ func requestForSPNEGO(ctx fiber.Ctx, forSessionManager bool) *http.Request {
 		default:
 			req.URL.Scheme = strings.Clone(scheme)
 		}
-		// Same shape, and for the same reason: req.Proto escapes, so converting
-		// fasthttp's bytes would allocate on every request. fasthttp serves
-		// these two and nothing else, but the parse is kept for the default arm
-		// rather than assuming that.
+		// Same shape, and for the same reason: req.Proto escapes, so a copy
+		// would allocate on every request. The conversion in the switch does
+		// not — the compiler elides it for a comparison — so this is the same
+		// cost as comparing bytes and reads as the scheme switch does.
+		//
+		// fasthttp accepts only HTTP/<digit>.<digit> on a request line and
+		// substitutes HTTP/1.1 for an absent one, so the default arm is not
+		// reachable through it today. It is kept rather than assumed: what
+		// arrives there is parsed, and a version net/http will not parse leaves
+		// all three fields unset rather than pairing a string with numbers that
+		// contradict it.
 		//
 		// The numbers are stated alongside the string so a manager comparing
 		// ProtoAtLeast against Proto is not told two different things.
 		// RequestURI stays empty along with the rest of the path, which cannot
 		// be reconstructed faithfully.
-		switch proto := fasthttpCtx.Request.Header.Protocol(); {
-		case bytes.Equal(proto, protocolHTTP11):
-			req.Proto, req.ProtoMajor, req.ProtoMinor = "HTTP/1.1", 1, 1
-		case bytes.Equal(proto, protocolHTTP10):
-			req.Proto, req.ProtoMajor, req.ProtoMinor = "HTTP/1.0", 1, 0
-		case len(proto) > 0:
+		switch proto := fasthttpCtx.Request.Header.Protocol(); string(proto) {
+		case protocolHTTP11:
+			req.Proto, req.ProtoMajor, req.ProtoMinor = protocolHTTP11, 1, 1
+		case protocolHTTP10:
+			req.Proto, req.ProtoMajor, req.ProtoMinor = protocolHTTP10, 1, 0
+		default:
 			parsed := string(proto)
 			if major, minor, ok := http.ParseHTTPVersion(parsed); ok {
 				req.Proto, req.ProtoMajor, req.ProtoMinor = parsed, major, minor
@@ -721,11 +730,6 @@ func New(cfg Config) (fiber.Handler, error) {
 	// by the line about the store being down.
 	lookupFailures := &logThrottle{every: internalErrorLogEvery}
 	handlerFailures := &logThrottle{every: internalErrorLogEvery}
-	logInternal := func(throttle *logThrottle, failure error) {
-		throttle.do(func() {
-			flog.Errorf("spnego: %v", failure)
-		})
-	}
 	// Return the middleware handler
 	return func(ctx fiber.Ctx) error {
 		if cfg.Next != nil && cfg.Next(ctx) {
@@ -741,8 +745,11 @@ func New(cfg Config) (fiber.Handler, error) {
 			err = errNilKeytab
 		}
 		if err != nil {
+			// Built once here, unlike the handler failure below: this value is
+			// the returned error's cause as well as the log line, so a caller
+			// matching on the underlying error needs it either way.
 			failure := fmt.Errorf("%w: %w", ErrLookupKeytabFailed, err)
-			logInternal(lookupFailures, failure)
+			lookupFailures.do(func() { flog.Errorf("spnego: %v", failure) })
 			if cfg.OnError != nil {
 				// Given the wrapped cause rather than the client-safe wrapper:
 				// the hook is internal diagnostics, and a caller that wanted the
@@ -820,13 +827,27 @@ func New(cfg Config) (fiber.Handler, error) {
 		// handler wrote goes to the log instead — where it belongs, and where
 		// it is the only description of what broke unless Config.Log is set.
 		if recorder.sessionFailed || !isSPNEGOOutcome(recorder.headers.Get(fiber.HeaderWWWAuthenticate)) {
-			failure := fmt.Errorf("%w: status %d: %s",
-				ErrSPNEGOHandlerFailed, status, strings.TrimSpace(recorder.body.String()))
-			logInternal(handlerFailures, failure)
-			if cfg.OnError != nil {
-				cfg.OnError(ctx, failure)
+			// Built on demand, not up front. Nothing outside this package can
+			// read the detail off the returned error — clientSafeError shows
+			// the client a fixed string and exposes no Unwrap — so the only
+			// readers are the log line, which the throttle silences for all but
+			// one request per window, and OnError, which is usually nil. During
+			// a session-store outage this path runs on every request at a rate
+			// the caller sets, and the manager's body has no bound.
+			//
+			// %q rather than %s: the body is the one thing here the middleware
+			// did not write. A manager that echoes anything client-supplied
+			// before failing would otherwise let a newline in it forge a second
+			// log line under this package's own prefix.
+			describe := func() error {
+				return fmt.Errorf("%w: status %d: %q",
+					ErrSPNEGOHandlerFailed, status, strings.TrimSpace(recorder.body.String()))
 			}
-			return &clientSafeError{cause: failure}
+			handlerFailures.do(func() { flog.Errorf("spnego: %v", describe()) })
+			if cfg.OnError != nil {
+				cfg.OnError(ctx, describe())
+			}
+			return &clientSafeError{cause: ErrSPNEGOHandlerFailed}
 		}
 
 		// Replay SPNEGO's own challenge.
