@@ -274,6 +274,10 @@ What the manager writes is replayed selectively. **Headers** — `Set-Cookie` in
 
 The request handed to your manager is built by this middleware rather than by `net/http`, so it carries only what gokrb5 reads plus what a session store needs to make its decisions: method, host, remote address, cookies, protocol, `URL.Scheme`, `TLS`, and the context. `Body` is `http.NoBody` — non-nil, so the usual `defer r.Body.Close()` is safe, but empty. `RequestURI` and the URL's path and query are deliberately absent, so do not key a session on them.
 
+One thing on it is credential material: `Authorization` carries the client's base64 Kerberos ticket, because that is what gokrb5 reads. Do not log or serialise `r.Header` wholesale from a manager.
+
+Only `Flush` is provided beyond the `http.ResponseWriter` methods themselves, and it buffers rather than sending — the middleware has to see the whole response before it can tell an authentication outcome from a failure, so nothing streams through here. Probe for anything else with comma-ok or `http.ResponseController`; a bare `w.(http.Hijacker)` panics, and there is no connection behind this writer to hijack.
+
 `r.Context()` is Fiber's, so a deadline or a tracing span installed by middleware upstream reaches your store through the usual `QueryContext`. Do not expect more of it than the application put there: Fiber's context is `context.Background()` unless something calls `SetContext`, and Fiber does not cancel it when a client disconnects.
 
 Its strings are yours to keep. Fiber hands out header and URI values as views into fasthttp's request buffer, and fasthttp pools those buffers across connections — so retaining one normally means reading back whichever client came next, not just more of the same one. This middleware copies them before building the request, so a manager that stores `r.Host` alongside a session records the host it actually saw. The copies are made only when `SessionManager` is set, since nothing else outlives the buffer.

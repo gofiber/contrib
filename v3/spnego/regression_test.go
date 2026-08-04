@@ -854,6 +854,11 @@ func sharesStorage(s string, b []byte) bool {
 	return start >= low && start < low+uintptr(len(b))
 }
 
+// carriedValueKey is the key both context tests store under. Unexported and
+// named, as context.WithValue requires: a key any other package can construct —
+// the anonymous struct{}{} in particular — collides silently.
+type carriedValueKey struct{}
+
 // TestRequestForSPNEGOCarriesFibersContext pins the context a session manager
 // gets. A manager is ordinary net/http code, so its store call is likely to be
 // a QueryContext or an outbound request taking r.Context(); left unset that is
@@ -862,14 +867,12 @@ func sharesStorage(s string, b []byte) bool {
 // store that hangs would then hold the request goroutine for its own driver
 // timeout rather than for Fiber's.
 func TestRequestForSPNEGOCarriesFibersContext(t *testing.T) {
-	type key struct{}
-
 	build := func(t *testing.T, forSessionManager bool) *http.Request {
 		t.Helper()
 		var got *http.Request
 		app := fiber.New()
 		app.All("/*", func(c fiber.Ctx) error {
-			c.SetContext(context.WithValue(context.Background(), key{}, "from the application"))
+			c.SetContext(context.WithValue(context.Background(), carriedValueKey{}, "from the application"))
 			got = requestForSPNEGO(c, forSessionManager)
 			return nil
 		})
@@ -881,14 +884,66 @@ func TestRequestForSPNEGOCarriesFibersContext(t *testing.T) {
 		return got
 	}
 
-	require.Equal(t, "from the application", build(t, true).Context().Value(key{}),
+	require.Equal(t, "from the application", build(t, true).Context().Value(carriedValueKey{}),
 		"a session manager must reach its store under the application's context")
 
 	// Not carried without one, like everything else only a manager reads:
 	// WithContext shallow-copies the whole request, and nothing on that path
 	// would look at it.
-	require.Nil(t, build(t, false).Context().Value(key{}),
+	require.Nil(t, build(t, false).Context().Value(carriedValueKey{}),
 		"the context is only for a session manager")
+}
+
+// TestRequestForSPNEGOReportsEverySchemeFaithfully covers the three arms the
+// scheme goes through. Two assign a constant, because Fiber answers with its
+// own for an untrusted proxy and a copy would allocate on every request; the
+// third copies, because a trusted X-Forwarded-Proto comes out of the request
+// buffer and can say anything.
+//
+// What every arm has to hold is the same: the value is what Fiber reported, and
+// it does not point back into the buffer.
+func TestRequestForSPNEGOReportsEverySchemeFaithfully(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		forwarded  string
+		wantScheme string
+	}{
+		{name: "http", forwarded: "http", wantScheme: "http"},
+		{name: "https", forwarded: "https", wantScheme: "https"},
+		// Neither constant, so it takes the copying arm. A proxy would have to
+		// be misconfigured to send this, but Fiber passes it through and the
+		// value is as much a view into the buffer as the other two.
+		{name: "something else entirely", forwarded: "wss", wantScheme: "wss"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := "GET /authenticate HTTP/1.1\r\n" +
+				"Host: sso.example.com\r\n" +
+				"X-Forwarded-Proto: " + tc.forwarded + "\r\n\r\n"
+
+			ctx := &fasthttp.RequestCtx{}
+			require.NoError(t, ctx.Request.Read(bufio.NewReader(bytes.NewBufferString(raw))))
+			ctx.SetRemoteAddr(&net.TCPAddr{IP: net.IPv4(203, 0, 113, 7), Port: 55123})
+
+			var got *http.Request
+			app := fiber.New(fiber.Config{
+				TrustProxy: true,
+				TrustProxyConfig: fiber.TrustProxyConfig{
+					Proxies: []string{"203.0.113.7"},
+				},
+			})
+			app.All("/*", func(c fiber.Ctx) error {
+				got = requestForSPNEGO(c, true)
+				return nil
+			})
+			app.Handler()(ctx)
+
+			require.NotNil(t, got)
+			require.Equal(t, tc.wantScheme, got.URL.Scheme)
+			require.False(t,
+				sharesStorage(got.URL.Scheme, ctx.Request.Header.Peek(fiber.HeaderXForwardedProto)),
+				"the scheme must not alias the request buffer, whichever arm it took")
+		})
+	}
 }
 
 // TestRequestForSPNEGOSkipsTheContextCopyWhenThereIsNothingToCarry pins the
@@ -908,7 +963,7 @@ func TestRequestForSPNEGOSkipsTheContextCopyWhenThereIsNothingToCarry(t *testing
 		app := fiber.New()
 		app.All("/*", func(c fiber.Ctx) error {
 			if setContext {
-				c.SetContext(context.WithValue(context.Background(), struct{}{}, "x"))
+				c.SetContext(context.WithValue(context.Background(), carriedValueKey{}, "x"))
 			}
 			measured = testing.AllocsPerRun(100, func() {
 				_ = requestForSPNEGO(c, true)
@@ -935,25 +990,58 @@ func TestRequestForSPNEGOSkipsTheContextCopyWhenThereIsNothingToCarry(t *testing
 // copy the protocol out of the request buffer and parse it.
 func TestRequestForSPNEGOStatesTheProtocol(t *testing.T) {
 	for _, tc := range []struct {
-		raw         string
+		name string
+		raw  string
+		// protocol overrides what the request line said, for versions fasthttp
+		// will hold but not parse.
+		protocol    string
 		wantProto   string
 		wantMajor   int
 		wantMinor   int
 		wantAtLeast bool
 	}{
 		{
+			name:      "HTTP/1.1",
 			raw:       "GET /authenticate HTTP/1.1\r\nHost: sso.example.com\r\n\r\n",
 			wantProto: "HTTP/1.1", wantMajor: 1, wantMinor: 1, wantAtLeast: true,
 		},
 		{
+			name:      "HTTP/1.0",
 			raw:       "GET /authenticate HTTP/1.0\r\nHost: sso.example.com\r\n\r\n",
 			wantProto: "HTTP/1.0", wantMajor: 1, wantMinor: 0, wantAtLeast: false,
 		},
+		{
+			// Anything but the two above takes the parsing arm. fasthttp does
+			// not reject an unfamiliar version on the request line, it just
+			// records it, so this is not a hypothetical.
+			name:      "an unfamiliar version is parsed rather than assumed",
+			raw:       "GET /authenticate HTTP/2.0\r\nHost: sso.example.com\r\n\r\n",
+			wantProto: "HTTP/2.0", wantMajor: 2, wantMinor: 0, wantAtLeast: true,
+		},
+		{
+			// And one net/http's parser refuses leaves all three fields alone,
+			// rather than pairing a version string with numbers that do not
+			// match it. Set on the header rather than sent on the request line:
+			// fasthttp rejects a multi-digit version while reading, so this is
+			// only reachable from a version installed afterwards — a shape a
+			// future fasthttp could produce, and the reason the parse is kept
+			// rather than the numbers assumed.
+			name:      "a version that will not parse is left unstated",
+			protocol:  "HTTP/11.1",
+			wantProto: "", wantMajor: 0, wantMinor: 0, wantAtLeast: false,
+		},
 	} {
-		t.Run(tc.wantProto, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			build := func(forSessionManager bool) *http.Request {
+				raw := tc.raw
+				if raw == "" {
+					raw = "GET /authenticate HTTP/1.1\r\nHost: sso.example.com\r\n\r\n"
+				}
 				ctx := &fasthttp.RequestCtx{}
-				require.NoError(t, ctx.Request.Read(bufio.NewReader(bytes.NewBufferString(tc.raw))))
+				require.NoError(t, ctx.Request.Read(bufio.NewReader(bytes.NewBufferString(raw))))
+				if tc.protocol != "" {
+					ctx.Request.Header.SetProtocol(tc.protocol)
+				}
 
 				var got *http.Request
 				app := fiber.New()

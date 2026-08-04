@@ -153,6 +153,15 @@ type Config struct {
 	// middleware forwards the request's cookies to gokrb5 only when this is
 	// set, so a cookie-backed manager can find its session.
 	//
+	// The request it is handed carries the client's Authorization header,
+	// because that is what gokrb5 reads: a base64 Kerberos ticket. Do not log
+	// or serialise the whole header set from a manager.
+	//
+	// The ResponseWriter it is handed is this middleware's recorder. It buffers
+	// — the response has to be seen whole before an authentication outcome can
+	// be told from a failure — and implements Flush but nothing else optional,
+	// so probe with comma-ok or http.ResponseController rather than asserting.
+	//
 	// Headers the manager sets on a request that goes on to authenticate —
 	// Set-Cookie included — are replayed onto the Fiber response. Headers are
 	// all that is replayed: the body and status belong to the handler the

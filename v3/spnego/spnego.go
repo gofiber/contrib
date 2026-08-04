@@ -68,6 +68,19 @@ const (
 	// seen on a path that returns before the check that reads these.
 	spnegoBareChallenge = "Negotiate"
 	spnegoAccepted      = "Negotiate oRQwEqADCgEAoQsGCSqGSIb3EgECAg=="
+
+	// The values Fiber and fasthttp answer with when nothing has to be read out
+	// of the request buffer. Matching them lets requestForSPNEGO assign a
+	// constant instead of a copy; see the switches there for why that matters.
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
+)
+
+// protocolHTTP11 and protocolHTTP10 are the two request protocols fasthttp
+// serves, as bytes, so the comparison does not convert.
+var (
+	protocolHTTP11 = []byte("HTTP/1.1")
+	protocolHTTP10 = []byte("HTTP/1.0")
 )
 
 // spnegoOutcomes is every WWW-Authenticate value gokrb5 v8.4.4 sets, and so the
@@ -318,6 +331,12 @@ func (r *responseRecorder) WriteHeader(status int) {
 // gokrb5 hands it this recorder as the raw ResponseWriter — does not panic on a
 // w.(http.Flusher) assertion.
 //
+// It is the only optional interface implemented, and the only one worth
+// implementing: Hijacker and CloseNotifier both need a connection, and there is
+// none behind a buffer. A manager that asserts either without comma-ok panics,
+// which is documented on Config.SessionManager rather than papered over with a
+// method that could not honour the contract anyway.
+//
 // Nothing is sent. The middleware has to see the whole response before it can
 // tell an authentication outcome from a failure, so everything stays buffered
 // until it decides, and a manager cannot stream through this. Implementing the
@@ -547,15 +566,43 @@ func requestForSPNEGO(ctx fiber.Ctx, forSessionManager bool) *http.Request {
 		// net/http documents a server request's Host as "host or host:port", so
 		// it is Host rather than Hostname, which drops the port.
 		req.Host = strings.Clone(ctx.Host())
-		req.URL.Scheme = strings.Clone(ctx.Scheme())
 		req.TLS = fasthttpCtx.TLSConnectionState()
-		// The numbers are parsed rather than assumed 1.1, so a manager
-		// comparing ProtoAtLeast against Proto is not told two different
-		// things; fasthttp also serves HTTP/1.0. RequestURI stays empty along
-		// with the rest of the path, which cannot be stated faithfully.
-		if proto := string(fasthttpCtx.Request.Header.Protocol()); proto != "" {
-			if major, minor, ok := http.ParseHTTPVersion(proto); ok {
-				req.Proto, req.ProtoMajor, req.ProtoMinor = proto, major, minor
+		// Matched against the two schemes Fiber can answer with before falling
+		// back to a copy. Without Config.TrustProxy — the default — Fiber
+		// returns its own constants here, which cannot alias the request buffer
+		// and so need no copy; assigning one anyway would allocate on every
+		// request, since this escapes into the URL. Only the trusted-proxy path
+		// can produce anything else, and that one does come out of the buffer.
+		// Each arm assigns its own constant rather than the matched value: what
+		// comes back from Fiber may be a view into the request buffer even when
+		// its contents are one of these two, and matching a constant does not
+		// change where a string's bytes live.
+		switch scheme := ctx.Scheme(); scheme {
+		case schemeHTTP:
+			req.URL.Scheme = schemeHTTP
+		case schemeHTTPS:
+			req.URL.Scheme = schemeHTTPS
+		default:
+			req.URL.Scheme = strings.Clone(scheme)
+		}
+		// Same shape, and for the same reason: req.Proto escapes, so converting
+		// fasthttp's bytes would allocate on every request. fasthttp serves
+		// these two and nothing else, but the parse is kept for the default arm
+		// rather than assuming that.
+		//
+		// The numbers are stated alongside the string so a manager comparing
+		// ProtoAtLeast against Proto is not told two different things.
+		// RequestURI stays empty along with the rest of the path, which cannot
+		// be reconstructed faithfully.
+		switch proto := fasthttpCtx.Request.Header.Protocol(); {
+		case bytes.Equal(proto, protocolHTTP11):
+			req.Proto, req.ProtoMajor, req.ProtoMinor = "HTTP/1.1", 1, 1
+		case bytes.Equal(proto, protocolHTTP10):
+			req.Proto, req.ProtoMajor, req.ProtoMinor = "HTTP/1.0", 1, 0
+		case len(proto) > 0:
+			parsed := string(proto)
+			if major, minor, ok := http.ParseHTTPVersion(parsed); ok {
+				req.Proto, req.ProtoMajor, req.ProtoMinor = parsed, major, minor
 			}
 		}
 	}
