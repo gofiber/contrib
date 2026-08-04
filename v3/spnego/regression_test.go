@@ -694,12 +694,12 @@ func TestRequestForSPNEGO(t *testing.T) {
 // inside the authentication middleware, and Fiber installs no recover by
 // default, so the connection would simply drop.
 func TestRequestForSPNEGOHasANonNilBody(t *testing.T) {
-	build := func(t *testing.T, withCookies bool) *http.Request {
+	build := func(t *testing.T, forSessionManager bool) *http.Request {
 		t.Helper()
 		var got *http.Request
 		app := fiber.New()
 		app.All("/*", func(c fiber.Ctx) error {
-			got = requestForSPNEGO(c, withCookies)
+			got = requestForSPNEGO(c, forSessionManager)
 			return nil
 		})
 		ctx := &fasthttp.RequestCtx{}
@@ -712,8 +712,8 @@ func TestRequestForSPNEGOHasANonNilBody(t *testing.T) {
 
 	// Both shapes: the field is set on the literal, so a future refactor that
 	// moves it behind the session-manager gate would leave the other nil.
-	for _, withCookies := range []bool{false, true} {
-		got := build(t, withCookies)
+	for _, forSessionManager := range []bool{false, true} {
+		got := build(t, forSessionManager)
 		require.NotNil(t, got.Body, "net/http guarantees a server request has a body")
 		require.NotPanics(t, func() {
 			require.NoError(t, got.Body.Close(), "the idiom a manager will use")
@@ -864,13 +864,13 @@ func sharesStorage(s string, b []byte) bool {
 func TestRequestForSPNEGOCarriesFibersContext(t *testing.T) {
 	type key struct{}
 
-	build := func(t *testing.T, withCookies bool) *http.Request {
+	build := func(t *testing.T, forSessionManager bool) *http.Request {
 		t.Helper()
 		var got *http.Request
 		app := fiber.New()
 		app.All("/*", func(c fiber.Ctx) error {
 			c.SetContext(context.WithValue(context.Background(), key{}, "from the application"))
-			got = requestForSPNEGO(c, withCookies)
+			got = requestForSPNEGO(c, forSessionManager)
 			return nil
 		})
 		ctx := &fasthttp.RequestCtx{}
@@ -916,14 +916,14 @@ func TestRequestForSPNEGOStatesTheProtocol(t *testing.T) {
 		},
 	} {
 		t.Run(tc.wantProto, func(t *testing.T) {
-			build := func(withCookies bool) *http.Request {
+			build := func(forSessionManager bool) *http.Request {
 				ctx := &fasthttp.RequestCtx{}
 				require.NoError(t, ctx.Request.Read(bufio.NewReader(bytes.NewBufferString(tc.raw))))
 
 				var got *http.Request
 				app := fiber.New()
 				app.All("/*", func(c fiber.Ctx) error {
-					got = requestForSPNEGO(c, withCookies)
+					got = requestForSPNEGO(c, forSessionManager)
 					return nil
 				})
 				app.Handler()(ctx)
@@ -1408,6 +1408,16 @@ func TestSessionManagerServesFromSessionWithoutATicket(t *testing.T) {
 
 	require.Positive(t, manager.getCalls(),
 		"gokrb5 must have consulted the session manager")
+
+	// The premise copyHeadersTo's comment rests on, checked against live gokrb5
+	// rather than asserted in prose: a resumed session carries no
+	// accept-completed token, because the token proves an exchange and this
+	// request had none. The manager cannot have written one either — the resume
+	// path calls only Get, which is handed the request and not the writer. So
+	// there is nothing at all to replay here, and a gokrb5 that started sending
+	// a token before serving an established session would land right here.
+	require.Empty(t, ctx.Response.Header.Peek(fiber.HeaderWWWAuthenticate),
+		"a session served without an exchange has no token to prove one")
 }
 
 // TestSPNEGOInternalFailureIsReportedNotSwallowed covers the 5xx the session
@@ -2694,6 +2704,58 @@ func TestRecorderFlushCommitsTheImplicitStatus(t *testing.T) {
 	chosen.Flush()
 	require.Equal(t, http.StatusConflict, chosen.status)
 }
+
+// TestCopyHeadersToLeavesAnUnwrittenRecorderAlone pins the read as a read.
+//
+// Every request served from an established session reaches copyHeadersTo with
+// nothing recorded — gokrb5 writes no token and the manager never holds the
+// writer — so going through Header() would allocate the map there just to
+// iterate nothing, once per request on the hot path sessions exist to make
+// cheap. A nil map ranges zero times.
+func TestCopyHeadersToLeavesAnUnwrittenRecorderAlone(t *testing.T) {
+	var recorder responseRecorder
+
+	app := fiber.New()
+	app.All("/*", func(c fiber.Ctx) error {
+		recorder.copyHeadersTo(c)
+		return nil
+	})
+	fasthttpCtx := &fasthttp.RequestCtx{}
+	fasthttpCtx.Request.SetRequestURI("/authenticate")
+	app.Handler()(fasthttpCtx)
+
+	require.Nil(t, recorder.headers,
+		"replaying an empty recorder must not allocate its header map")
+}
+
+// TestRequestForSPNEGOToleratesANilContext covers the guard on WithContext,
+// which panics rather than returning an error. Fiber's own Ctx never yields a
+// nil context, but an application may supply its own through app.NewCtxFunc,
+// and a panic here takes down the connection: Fiber installs no recover.
+func TestRequestForSPNEGOToleratesANilContext(t *testing.T) {
+	var got *http.Request
+	app := fiber.New()
+	app.All("/*", func(c fiber.Ctx) error {
+		require.NotPanics(t, func() {
+			got = requestForSPNEGO(nilContextCtx{Ctx: c}, true)
+		})
+		return nil
+	})
+	fasthttpCtx := &fasthttp.RequestCtx{}
+	fasthttpCtx.Request.SetRequestURI("/authenticate")
+	fasthttpCtx.Request.Header.Set(fiber.HeaderHost, "sso.example.com")
+	app.Handler()(fasthttpCtx)
+
+	require.NotNil(t, got)
+	require.NotNil(t, got.Context(), "the request still has net/http's own default")
+	require.Equal(t, "sso.example.com", got.Host, "the rest of the request is still built")
+}
+
+// nilContextCtx is a fiber.Ctx whose Context returns nil, which only a
+// caller-supplied implementation could do.
+type nilContextCtx struct{ fiber.Ctx }
+
+func (nilContextCtx) Context() context.Context { return nil }
 
 // TestRecorderSatisfiesFlusher pins why Flush exists at all: a session manager
 // is ordinary net/http code, and gokrb5 hands it this recorder as the raw

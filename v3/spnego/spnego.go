@@ -345,18 +345,24 @@ func (r *responseRecorder) Write(b []byte) (int, error) {
 // sets WWW-Authenticate on success as well as on failure, and the client needs
 // it in both cases to complete mutual authentication.
 //
-// Not on every success, though: a request served from an established session
-// goes straight to the inner handler without an accept-completed token, so
-// there is nothing to replay but whatever the session manager wrote. That is
-// gokrb5's design — the token proves this exchange, and a resumed session had
-// no exchange — and it is why this copies whatever is there rather than
-// expecting a particular header.
+// Not on every success, though. A request served from an established session
+// goes straight to the inner handler with nothing recorded at all: gokrb5 sends
+// no accept-completed token, because the token proves an exchange and a resumed
+// session had none, and the session manager cannot have written anything either
+// — the resume path calls only SessionMgr.Get, which is handed the request and
+// not the writer. So this replays an empty set on every resumed request, which
+// is why it copies what is there rather than expecting a particular header.
 //
-// Add rather than Set: a manager may write a header more than once, and Set
-// would keep only the last. Set-Cookie would survive either way, since fasthttp
-// routes it through a path where Set appends, but nothing else would.
+// r.headers is ranged directly rather than through Header(), which would
+// allocate the map on exactly that path to iterate nothing. A nil map ranges
+// zero times.
+//
+// Add rather than Set: a manager may write a header more than once — during
+// New, the one path where it does hold the writer — and Set would keep only the
+// last. Set-Cookie would survive either way, since fasthttp routes it through a
+// path where Set appends, but nothing else would.
 func (r *responseRecorder) copyHeadersTo(ctx fiber.Ctx) {
-	for key, values := range r.Header() {
+	for key, values := range r.headers {
 		for _, value := range values {
 			ctx.Response().Header.Add(key, value)
 		}
@@ -384,7 +390,7 @@ func resolveLogger(cfg Config, fiberLogger flog.AllLogger[*log.Logger]) *log.Log
 //
 // gokrb5 v8.4.4's server path reads the Authorization header and the remote
 // address, and reads cookies only behind a session-manager check — which is why
-// withCookies mirrors whether Config.SessionManager is set. Re-check this when
+// forSessionManager mirrors whether Config.SessionManager is set. Re-check this when
 // upgrading gokrb5.
 //
 // Strings that come out of the request buffer are copied, but only when a
@@ -405,11 +411,11 @@ func resolveLogger(cfg Config, fiberLogger flog.AllLogger[*log.Logger]) *log.Log
 // Three fields need no copy either way, and say so where they are set: Method
 // comes from Fiber's table of constants, RemoteAddr from net.Addr.String, and
 // the Cookie header is rebuilt through a strings.Builder.
-func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
+func requestForSPNEGO(ctx fiber.Ctx, forSessionManager bool) *http.Request {
 	fasthttpCtx := ctx.RequestCtx()
 	header := make(http.Header, 2)
 	if auth := ctx.Get(fiber.HeaderAuthorization); auth != "" {
-		if withCookies {
+		if forSessionManager {
 			auth = strings.Clone(auth)
 		}
 		header.Set(fiber.HeaderAuthorization, auth)
@@ -429,7 +435,7 @@ func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
 	// accumulates its own bytes, so unlike Host and the Authorization value —
 	// which have to be copied explicitly a few lines either side of here —
 	// there is nothing to do.
-	if withCookies {
+	if forSessionManager {
 		var cookies strings.Builder
 		for key, value := range fasthttpCtx.Request.Header.Cookies() {
 			// A cookie with no name is dropped rather than rendered. fasthttp
@@ -480,13 +486,13 @@ func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
 		// fasthttp's is not an io.ReadCloser — so it is the empty one.
 		Body: http.NoBody,
 	}
-	// The context, host, protocol, scheme and TLS exist only for a session
-	// manager, which is the sole reader of any of them — gokrb5 looks at none —
-	// so they sit behind the same gate as the cookies. An ordinary request then
-	// pays for none: WithContext shallow-copies the request, reading the TLS
-	// state copies and heap-allocates a tls.ConnectionState, ctx.Scheme and
-	// ctx.Host each walk the headers once TrustProxy is on, and the protocol
-	// has to be copied out of the request buffer and parsed.
+	// Host, protocol, scheme and TLS exist only for a session manager, which is
+	// the sole reader of any of them — gokrb5 looks at none — so they sit behind
+	// the same gate as the cookies, along with the context. An ordinary request
+	// then pays for none of it: reading the TLS state copies and heap-allocates
+	// a tls.ConnectionState, ctx.Scheme and ctx.Host each walk the headers once
+	// TrustProxy is on, and the protocol has to be copied out of the request
+	// buffer and parsed. The context is dearer than it looks — see below.
 	//
 	// Neither TLS nor Scheme is a dependable signal on its own. TLS is non-nil
 	// only where Fiber terminates TLS itself, and Scheme reports https from
@@ -494,16 +500,38 @@ func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
 	// without Config.TrustProxy it answers http regardless of the header. So
 	// behind a TLS-terminating proxy both can say "not secure" for a connection
 	// the client made over HTTPS.
-	if withCookies {
+	if forSessionManager {
 		// A session manager is ordinary net/http code, so its store call is
 		// likely to be a QueryContext or an outbound request taking
-		// r.Context(). Left unset that is context.Background(): no deadline, no
-		// cancellation when the client goes away, and detached from whatever
-		// trace the application is carrying — so a session store that hangs
-		// holds the request goroutine for its own driver timeout instead of
-		// Fiber's. This is Fiber's context, so a timeout or tracing middleware
-		// upstream reaches the store.
-		req = req.WithContext(ctx.Context())
+		// r.Context(). Left unset that is context.Background(), detached from
+		// whatever the application is carrying; with this, a deadline or a
+		// tracing span set by middleware upstream reaches the store.
+		//
+		// Do not read more into it than that. Fiber's own context is
+		// context.Background() unless something calls SetContext, and Fiber
+		// never cancels it when a client disconnects — Deadline, Done and Err
+		// on its default Ctx are all documented as no-ops. So this carries what
+		// the application put there and adds nothing of its own: a hung session
+		// store is still bounded by its driver, or by fasthttp's read and write
+		// timeouts, and not by anything visible here.
+		//
+		// Gated, and not only for the shallow copy WithContext makes: on a
+		// request where nothing has called SetContext, Fiber's Context()
+		// installs Background as a side effect, which writes a user value that
+		// every later Locals lookup then scans past and that release has to
+		// clear.
+		//
+		// gokrb5 does read this one, unlike the other four here: goidentity's
+		// AddToHTTPRequestContext derives the identity's context from it. That
+		// changes nothing, because the identity is taken from the Fiber context
+		// rather than from the request gokrb5 builds.
+		//
+		// Guarded because a caller may supply its own fiber.Ctx through
+		// app.NewCtxFunc, and WithContext panics on a nil context. Fiber's own
+		// implementation never returns one.
+		if requestCtx := ctx.Context(); requestCtx != nil {
+			req = req.WithContext(requestCtx)
+		}
 		// net/http documents a server request's Host as "host or host:port", so
 		// it is Host rather than Hostname, which drops the port.
 		req.Host = strings.Clone(ctx.Host())
@@ -731,7 +759,7 @@ func New(cfg Config) (fiber.Handler, error) {
 		// drops the cookie rather than advertising that session. Whatever the
 		// handler wrote goes to the log instead — where it belongs, and where
 		// it is the only description of what broke unless Config.Log is set.
-		if recorder.sessionFailed || !isSPNEGOOutcome(recorder.Header().Get(fiber.HeaderWWWAuthenticate)) {
+		if recorder.sessionFailed || !isSPNEGOOutcome(recorder.headers.Get(fiber.HeaderWWWAuthenticate)) {
 			failure := fmt.Errorf("%w: status %d: %s",
 				ErrSPNEGOHandlerFailed, status, strings.TrimSpace(recorder.body.String()))
 			logInternal(handlerFailures, failure)
@@ -747,7 +775,7 @@ func New(cfg Config) (fiber.Handler, error) {
 		// Only a refusal reaches the caller's handler. The opening challenge
 		// and the continuation token are legs of a handshake that can still
 		// succeed, and clients renegotiate only when they arrive untouched.
-		if cfg.Unauthorized != nil && isRejection(recorder.Header()) {
+		if cfg.Unauthorized != nil && isRejection(recorder.headers) {
 			return cfg.Unauthorized(ctx)
 		}
 		return ctx.Send(recorder.body.Bytes()) //nolint:wrapcheck // Fiber's own error
