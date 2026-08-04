@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -155,10 +156,12 @@ func (p sessionManagerProbe) New(w http.ResponseWriter, r *http.Request, k strin
 // itself uses in http.ResponseController, so a gokrb5 that wrapped the writer to
 // add a capability would still be seen through.
 //
-// The two failures are told apart because they call for different things. An
-// unrecognised writer means gokrb5 replaced it, which is a dependency change to
-// look at; an exhausted walk means the recorder is still down there and the
-// bound is simply too low.
+// The two failures are told apart because they point somewhere different. A
+// writer that does not unwrap is one gokrb5 substituted, so the thing to look at
+// is what changed in gokrb5. A walk that runs out has a chain it could not get
+// to the end of, which is either deeper than the bound or a cycle — the message
+// says both, because the two are not distinguishable from here without tracking
+// every writer seen, and only one of them is fixed by raising the bound.
 func recordSessionFailure(w http.ResponseWriter) string {
 	// Bounded because a writer whose Unwrap returns itself, or a pair that
 	// returns each other, would otherwise hang the request. Written as an
@@ -171,7 +174,7 @@ func recordSessionFailure(w http.ResponseWriter) string {
 			return ""
 		}
 		if unwraps == maxResponseWriterUnwraps {
-			return "the response writer nests deeper than the unwrap limit"
+			return "the response writer chain either nests deeper than the unwrap limit or loops"
 		}
 		wrapper, ok := w.(interface{ Unwrap() http.ResponseWriter })
 		if !ok {
@@ -238,7 +241,7 @@ func (t *logThrottle) window() time.Duration {
 //
 // Sub against the zero time saturates, so the first event always runs.
 func (t *logThrottle) do(write func()) {
-	if t.claimWindow(nowOr(t.nowFn)) {
+	if t.claimWindow() {
 		write()
 	}
 }
@@ -248,9 +251,14 @@ func (t *logThrottle) do(write func()) {
 // obviously wrong: claiming without writing swallows the line for a full
 // window. Split out from do only so the lock can be defer-guarded, since do
 // must call write with the lock released.
-func (t *logThrottle) claimWindow(now time.Time) bool {
+func (t *logThrottle) claimWindow() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	// The clock is read here rather than by the caller so that nowFn, which
+	// tests write, is covered by the same lock as the rest of the state. It is
+	// otherwise the one field a concurrent writer could race on, in a type
+	// whose whole purpose is to be called from every request handler at once.
+	now := nowOr(t.nowFn)
 	if now.Sub(t.last) < t.window() {
 		return false
 	}
@@ -353,16 +361,6 @@ func resolveLogger(cfg Config, fiberLogger flog.AllLogger[*log.Logger]) *log.Log
 	return fiberLogger.Logger()
 }
 
-// ownedIf copies s when the caller needs a string that outlives the request,
-// and hands back Fiber's own view when it does not. See requestForSPNEGO for
-// which of the two each field is.
-func ownedIf(owned bool, s string) string {
-	if !owned {
-		return s
-	}
-	return strings.Clone(s)
-}
-
 // requestForSPNEGO builds the net/http request gokrb5 inspects. Assembling it
 // directly avoids adaptor.ConvertRequest, which parses the client-supplied URI
 // and copies every header on each authenticated request.
@@ -394,7 +392,10 @@ func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
 	fasthttpCtx := ctx.RequestCtx()
 	header := make(http.Header, 2)
 	if auth := ctx.Get(fiber.HeaderAuthorization); auth != "" {
-		header.Set(fiber.HeaderAuthorization, ownedIf(withCookies, auth))
+		if withCookies {
+			auth = strings.Clone(auth)
+		}
+		header.Set(fiber.HeaderAuthorization, auth)
 	}
 	// Forwarded only for a session manager, which reads the session out of the
 	// cookies. Sending them unconditionally would hand gokrb5 every cookie the
@@ -447,12 +448,7 @@ func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
 		// percent-encoded or not depending on Config.UnescapePath, and net/url
 		// cannot represent a malformed escape at all. The scheme, unlike the
 		// path, can be stated truthfully.
-		URL: &url.URL{},
-		// net/http documents a server request's Host as "host or host:port", so
-		// it is Host rather than Hostname, which drops the port. gokrb5 does
-		// not read it; it is set because it can be set faithfully, unlike the
-		// rest of the URL.
-		Host:   ownedIf(withCookies, ctx.Host()),
+		URL:    &url.URL{},
 		Header: header,
 		// Not copied: net.Addr.String builds a new string every call, so this
 		// never pointed into the request buffer to begin with.
@@ -466,12 +462,12 @@ func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
 		// fasthttp's is not an io.ReadCloser — so it is the empty one.
 		Body: http.NoBody,
 	}
-	// Protocol, scheme and TLS exist only for a session manager, which is the
-	// sole reader of any of them — gokrb5 looks at none — so they sit behind the
-	// same gate as the cookies. An ordinary request then pays for none: reading
-	// the TLS state copies and heap-allocates a tls.ConnectionState, ctx.Scheme
-	// walks every header once TrustProxy is on, and the protocol has to be
-	// copied out of the request buffer and parsed.
+	// Host, protocol, scheme and TLS exist only for a session manager, which is
+	// the sole reader of any of them — gokrb5 looks at none — so they sit behind
+	// the same gate as the cookies. An ordinary request then pays for none:
+	// reading the TLS state copies and heap-allocates a tls.ConnectionState,
+	// ctx.Scheme and ctx.Host each walk the headers once TrustProxy is on, and
+	// the protocol has to be copied out of the request buffer and parsed.
 	//
 	// Neither TLS nor Scheme is a dependable signal on its own. TLS is non-nil
 	// only where Fiber terminates TLS itself, and Scheme reports https from
@@ -480,6 +476,9 @@ func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
 	// behind a TLS-terminating proxy both can say "not secure" for a connection
 	// the client made over HTTPS.
 	if withCookies {
+		// net/http documents a server request's Host as "host or host:port", so
+		// it is Host rather than Hostname, which drops the port.
+		req.Host = strings.Clone(ctx.Host())
 		req.URL.Scheme = strings.Clone(ctx.Scheme())
 		req.TLS = fasthttpCtx.TLSConnectionState()
 		// The numbers are parsed rather than assumed 1.1, so a manager
@@ -532,7 +531,14 @@ func serviceSettings(cfg Config) []func(*service.Settings) {
 	if cfg.SessionManager != nil {
 		opts = append(opts, service.SessionManager(newSessionManagerProbe(cfg.SessionManager)))
 	}
-	return opts
+	// Clipped because this slice is passed variadically to gokrb5 and closed
+	// over by the handler, so every concurrent request shares its backing
+	// array. gokrb5 v8.4.4 only ranges over it and appends onto a fresh slice
+	// of its own, but a version that appended to this one would be writing into
+	// that shared array from several goroutines at once. Removing the spare
+	// capacity turns that into a copy rather than a race, and costs nothing
+	// here: Clip only narrows the header.
+	return slices.Clip(opts)
 }
 
 // authenticate wraps a handler in SPNEGO acceptance. It is a variable so tests
@@ -583,14 +589,20 @@ func New(cfg Config) (fiber.Handler, error) {
 	// Internal failures are logged here rather than returned to the client, and
 	// throttled so a persistent fault cannot become a log flood.
 	//
-	// There are two kinds, and each gets its own throttle: a keytab lookup that
-	// fails, and a SPNEGO handler that answered something other than an
-	// authentication outcome — which today means a session manager that could
-	// not persist a session. Sharing one
-	// throttle would let either suppress the other, so an operator chasing a
-	// broken session store could be looking at a keytab line instead. Keying on
-	// the cause is what to avoid: that would let a caller defeat the throttle
-	// by varying client-controlled text inside it.
+	// Two kinds are throttled here, each on its own: a keytab lookup that fails,
+	// and a SPNEGO handler that answered something other than an authentication
+	// outcome — which today means a session manager that could not persist a
+	// session. Sharing one throttle would let either suppress the other, so an
+	// operator chasing a broken session store could be looking at a keytab line
+	// instead. Keying on the cause is what to avoid: that would let a caller
+	// defeat the throttle by varying client-controlled text inside it.
+	//
+	// A third lives on sessionManagerProbe, and is separate for the same
+	// reason even though it reports on the same fault as the second. It fires
+	// only when the probe cannot record what it saw, which is a defect in this
+	// middleware's grip on gokrb5 rather than a fault in the caller's session
+	// store — different audience, different fix, so it must not be suppressed
+	// by the line about the store being down.
 	lookupFailures := &logThrottle{every: internalErrorLogEvery}
 	handlerFailures := &logThrottle{every: internalErrorLogEvery}
 	logInternal := func(throttle *logThrottle, failure error) {

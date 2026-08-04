@@ -655,9 +655,9 @@ func TestRequestForSPNEGO(t *testing.T) {
 	// handed every cookie the site sets on requests that have no use for them.
 	require.Empty(t, got.Header.Get(fiber.HeaderCookie),
 		"cookies must not be forwarded without a session manager")
-	// net/http documents a server request's Host as "host or host:port", so the
-	// port must survive.
-	require.Equal(t, "sso.example.com:8443", got.Host)
+	// Host sits behind the same gate: nothing reads it without a session
+	// manager, and asking Fiber for it walks the headers once TrustProxy is on.
+	require.Empty(t, got.Host, "the host is only for a session manager")
 
 	// RemoteAddr is the one field gokrb5 reads: it parses it with
 	// types.GetHostAddress and, on success, constrains ticket verification to
@@ -806,10 +806,15 @@ func TestRequestForSPNEGOCopiesOutOfTheRequestBuffer(t *testing.T) {
 		}
 	}
 
-	// Without a session manager nothing outlives the handler, so the copies are
-	// not made — a Kerberos Authorization header runs to kilobytes and arrives
-	// as often as an unauthenticated caller cares to send one. Asserted rather
-	// than assumed, because the gate is invisible from the outside otherwise.
+	// Without a session manager nothing outlives the handler, so the copy is not
+	// made — a Kerberos Authorization header runs to kilobytes and arrives as
+	// often as an unauthenticated caller cares to send one. Asserted rather than
+	// assumed, because the gate is otherwise invisible from the outside.
+	//
+	// This is the one assertion here that pins an optimisation rather than a
+	// safety property, so it is the one to delete rather than work around: if a
+	// gokrb5 upgrade starts retaining the request, copy unconditionally and drop
+	// this. The half above is what must keep holding.
 	var bare *http.Request
 	bareCtx := &fasthttp.RequestCtx{}
 	require.NoError(t, bareCtx.Request.Read(bufio.NewReader(bytes.NewBufferString(raw))))
@@ -824,9 +829,9 @@ func TestRequestForSPNEGOCopiesOutOfTheRequestBuffer(t *testing.T) {
 	require.True(t,
 		sharesStorage(bare.Header.Get(fiber.HeaderAuthorization),
 			bareCtx.Request.Header.Peek(fiber.HeaderAuthorization)),
-		"without a session manager the Authorization value has no reason to be copied")
-	require.True(t, sharesStorage(bare.Host, bareCtx.Request.URI().Host()),
-		"without a session manager Host has no reason to be copied")
+		"without a session manager the Authorization value has no reason to be copied; "+
+			"if gokrb5 now retains the request, clone it unconditionally and delete this")
+	require.Empty(t, bare.Host, "the host is only for a session manager")
 }
 
 // sharesStorage reports whether s begins inside b, which is what a string
@@ -1139,14 +1144,15 @@ func TestServiceSettingsPassesOnlyWhatWasSet(t *testing.T) {
 	t.Run("every field reaches gokrb5", func(t *testing.T) {
 		manager := &recordingSessionManager{}
 		logger := log.New(io.Discard, "", 0)
-		settings := service.NewSettings(nil, serviceSettings(Config{
+		opts := serviceSettings(Config{
 			Log:                logger,
 			KeytabPrincipal:    "HTTP/other.example.com",
 			MaxClockSkew:       90 * time.Second,
 			DisablePACDecoding: true,
 			RequireHostAddress: true,
 			SessionManager:     manager,
-		})...)
+		})
+		settings := service.NewSettings(nil, opts...)
 
 		// SName is deliberately never set: gokrb5's SPNEGO path does not read
 		// it, so wiring it up would promise a restriction that does nothing.
@@ -1160,6 +1166,20 @@ func TestServiceSettingsPassesOnlyWhatWasSet(t *testing.T) {
 		require.Equal(t, 90*time.Second, settings.MaxClockSkew())
 		require.False(t, settings.DecodePAC())
 		require.True(t, settings.RequireHostAddr())
+		// No spare capacity. The slice is passed variadically to gokrb5 and
+		// closed over by the handler, so its backing array is shared by every
+		// concurrent request; a gokrb5 that appended to it rather than to a
+		// fresh slice would be writing into that array from several goroutines.
+		// Nothing observable depends on this today, which is why it is asserted
+		// here rather than left to a behavioural test.
+		require.Equal(t, len(opts), cap(opts),
+			"the options slice must not carry spare capacity into gokrb5")
+		// The empty config is where the spare capacity was largest, so it is
+		// the case worth stating separately.
+		empty := serviceSettings(Config{})
+		require.Equal(t, len(empty), cap(empty),
+			"a config that sets nothing must not hand gokrb5 room to append into")
+
 		// Wrapped rather than passed through, so that a New which refuses is
 		// known as a fact instead of being read back out of the response the
 		// manager itself was just holding. The caller's manager has to be
