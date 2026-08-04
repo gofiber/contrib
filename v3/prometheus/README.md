@@ -33,7 +33,7 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 
 | Property | Type | Description | Default |
 |:---------|:-----|:------------|:--------|
-| ServiceName | `string` | Added as the `service` const label on every metric. Omitted when empty. | `""` |
+| ServiceName | `string` | Added as the `service` const label on every metric. Omitted when empty. Must be valid UTF-8. | `""` |
 | Namespace | `string` | Prefixes every metric name. | `"http"` |
 | Subsystem | `string` | Prefixes every metric name after `Namespace`. | `""` |
 | MetricsPath | `string` | Path served with the Prometheus exposition format. Unless `Next` returns true, requests to it are answered by the middleware and are not instrumented. Compared case-sensitively against the full request path, ignoring trailing slashes. | `"/metrics"` |
@@ -56,7 +56,7 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | DisableCompression | `bool` | Serves metrics uncompressed even when the client requests gzip or zstd. | `false` |
 | MetricsMaxRequestsInFlight | `int` | Caps concurrent scrapes; the excess is answered with 503. | `0` (unlimited) |
 | MetricsTimeout | `time.Duration` | Bounds a single scrape before it is answered with 503. | `0` (no timeout) |
-| MetricsErrorLog | `promhttp.Logger` | Receives errors raised while gathering or writing metrics. | `nil` |
+| MetricsErrorLog | `promhttp.Logger` | Receives errors raised while gathering or writing metrics. A typed nil panics. | `nil` |
 | MetricsErrorHandling | `promhttp.HandlerErrorHandling` | How gathering errors are reported to the scraper. | `promhttp.HTTPErrorOnError` |
 | DisabledMetrics | `[]Metric` | Metric families to skip registering and recording. An unknown name panics. | `nil` |
 | SkipURIs | `[]string` | Route patterns excluded from instrumentation, e.g. `/user/:id`. A trailing `*` matches by prefix; a leading `/` is added when missing. | `nil` |
@@ -151,8 +151,10 @@ when its size is known — either `Content-Length` is set, or the body is buffer
 and can be measured. A stream of unannounced length, such as `c.SendStream`
 without a size or an SSE response, is left out of those histograms rather than
 recorded as zero bytes, which would drag the reported percentiles towards
-nothing. A `HEAD` response records zero: Fiber runs the `GET` handler for it, but
-fasthttp drops the body, so no payload bytes reach the client.
+nothing. A response that carries no body on the wire records zero however much
+the handler wrote — a `HEAD`, or any status RFC 9110 forbids a body on (`1xx`,
+`204`, `304`) — because fasthttp drops the body and no payload bytes reach the
+client.
 
 `http_requests_status_class_total` is convenience, not new information:
 `status_class` is a function of `status_code`, so

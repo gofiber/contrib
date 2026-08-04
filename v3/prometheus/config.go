@@ -22,8 +22,9 @@ type Metric string
 // is known: either Content-Length is set, or the body is buffered and can be
 // measured. A stream of unannounced length - c.SendStream without a size, an SSE
 // response, a chunked upload read through fiber.Config.StreamRequestBody - is
-// left out of the histogram rather than recorded as zero bytes. A HEAD response
-// records zero, since fasthttp drops the body the handler generated.
+// left out of the histogram rather than recorded as zero bytes. A response that
+// carries no body on the wire records zero however much the handler wrote: a
+// HEAD, or any status RFC 9110 forbids a body on - 1xx, 204 and 304.
 //
 // The path label is the registered route pattern with trailing slashes trimmed,
 // so under fiber.Config.StrictRouting two routes differing only by a trailing
@@ -76,7 +77,8 @@ type Config struct {
 	// ServiceName when that is also set.
 	//
 	// Names must not collide with the reserved "status_code", "status_class",
-	// "method", "path" and "le" labels; New panics if they do.
+	// "method", "path" and "le" labels, and values have to be valid UTF-8; New
+	// panics if either is violated.
 	//
 	// Optional. Default: no labels.
 	Labels prometheus.Labels
@@ -242,7 +244,8 @@ type Config struct {
 	MetricsTimeout time.Duration
 
 	// MetricsErrorLog receives errors encountered while gathering or writing
-	// metrics, which are otherwise silent.
+	// metrics, which are otherwise silent. A typed nil panics: promhttp would
+	// accept it and dereference it on the first gather failure instead.
 	//
 	// Optional. Default: nil (errors are not logged).
 	MetricsErrorLog promhttp.Logger

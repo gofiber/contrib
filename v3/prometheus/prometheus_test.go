@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -1923,8 +1924,10 @@ func TestBodySize(t *testing.T) {
 		want          float64
 		wantKnown     bool
 	}{
-		{name: "content length wins over the buffered body", contentLength: 42, payload: fakePayload{body: []byte("ignored")}, want: 42, wantKnown: true},
-		{name: "content length wins over a stream", contentLength: 42, payload: fakePayload{stream: true}, want: 42, wantKnown: true},
+		// fasthttp recomputes Content-Length from the body it writes, so a
+		// hand-set or stale header never describes what the client receives.
+		{name: "buffered body wins over content length", contentLength: 999999, payload: fakePayload{body: []byte("tiny")}, want: 4, wantKnown: true},
+		{name: "content length is all a stream has", contentLength: 42, payload: fakePayload{stream: true}, want: 42, wantKnown: true},
 		{name: "buffered body is measured", contentLength: -1, payload: fakePayload{body: []byte("hello")}, want: 5, wantKnown: true},
 		{name: "empty body is a known zero", contentLength: 0, payload: fakePayload{}, want: 0, wantKnown: true},
 		{name: "stream of unknown length is undetermined", contentLength: -1, payload: fakePayload{stream: true}, wantKnown: false},
@@ -2164,11 +2167,18 @@ func (g *blockingGatherer) Gather() ([]*dto.MetricFamily, error) {
 // queued behind it.
 func TestMetricsMaxRequestsInFlightRejectsExcess(t *testing.T) {
 	registry := prometheus.NewRegistry()
+	// Buffered, and released through Cleanup: should the limiter ever stop
+	// reaching promhttp, the second scrape enters Gather too and must not block
+	// forever on a send nobody reads - a hung test says nothing, a failing one
+	// says everything.
 	gatherer := &blockingGatherer{
 		Gatherer: registry,
-		entered:  make(chan struct{}),
+		entered:  make(chan struct{}, 2),
 		release:  make(chan struct{}),
 	}
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(gatherer.release) }) }
+	t.Cleanup(release)
 
 	app, _ := newAppWithMiddleware(Config{
 		Registerer:                 registry,
@@ -2188,15 +2198,15 @@ func TestMetricsMaxRequestsInFlightRejectsExcess(t *testing.T) {
 
 	<-gatherer.entered
 
-	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/metrics", nil), noTimeoutConfig)
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/metrics", nil), fiber.TestConfig{Timeout: 5 * time.Second})
 	if err != nil {
-		t.Fatalf("fetching metrics: %v", err)
+		t.Fatalf("the second scrape was not turned away: %v", err)
 	}
 	if resp.StatusCode != fiber.StatusServiceUnavailable {
 		t.Fatalf("expected status 503 while the only slot is taken, got %d", resp.StatusCode)
 	}
 
-	close(gatherer.release)
+	release()
 	if status := <-firstDone; status != fiber.StatusOK {
 		t.Fatalf("expected the first scrape to succeed, got %d", status)
 	}
@@ -2942,4 +2952,119 @@ func TestMetricsErrorHandlingContinuesOnError(t *testing.T) {
 	if resp.StatusCode != fiber.StatusOK {
 		t.Fatalf("expected ContinueOnError to still answer 200, got %d", resp.StatusCode)
 	}
+}
+
+// TestBodylessResponsesRecordNoPayload covers the statuses RFC 9110 forbids a
+// body on. Fiber's error handler and any handler are free to write one, but
+// fasthttp drops it, so counting those bytes overstates egress for a
+// cache-fronted app serving mostly 304s.
+func TestBodylessResponsesRecordNoPayload(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{}, "")
+	for _, status := range []int{fiber.StatusContinue, fiber.StatusNoContent, fiber.StatusNotModified} {
+		app.Get("/"+strconv.Itoa(status), func(c fiber.Ctx) error {
+			return c.Status(status).SendString(strings.Repeat("b", 4096))
+		})
+	}
+	app.Get("/ok", func(c fiber.Ctx) error {
+		return c.SendString(strings.Repeat("b", 4096))
+	})
+
+	for _, path := range []string{"/100", "/204", "/304", "/ok"} {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+			t.Fatalf("requesting %s: %v", path, err)
+		}
+	}
+
+	metrics := getMetrics(t, app, "")
+	for _, c := range []struct {
+		path   string
+		status string
+	}{{"/100", "100"}, {"/204", "204"}, {"/304", "304"}} {
+		series := `http_response_size_bytes_sum{method="GET",path="` + c.path + `",status_code="` + c.status + `"}`
+		if size := gaugeValue(t, metrics, series); size != 0 {
+			t.Fatalf("expected %s to record no payload, got %v", c.path, size)
+		}
+	}
+
+	// The positive control: an ordinary response still records its body.
+	if size := gaugeValue(t, metrics, `http_response_size_bytes_sum{method="GET",path="/ok",status_code="200"}`); size != 4096 {
+		t.Fatalf("expected the ordinary response to record 4096, got %v", size)
+	}
+}
+
+// TestStaleContentLengthDoesNotInflateSize covers a header left behind by a
+// body-rewriting handler. fasthttp recomputes Content-Length from the body it
+// writes, so the buffer is what the client receives.
+func TestStaleContentLengthDoesNotInflateSize(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{}, "")
+	app.Get("/stale", func(c fiber.Ctx) error {
+		c.Set(fiber.HeaderContentLength, "999999")
+		return c.SendString("tiny")
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/stale", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if size := gaugeValue(t, metrics, `http_response_size_bytes_sum{method="GET",path="/stale",status_code="200"}`); size != 4 {
+		t.Fatalf("expected the buffered body to be measured, got %v", size)
+	}
+}
+
+// TestInvalidConstantLabelValuePanicsBeforeRegistration pins that a bad label
+// value is caught at the boundary rather than by client_golang, which would
+// only reject it once the first family was built - after the collectors had
+// gone into a caller's registry.
+func TestInvalidConstantLabelValuePanicsBeforeRegistration(t *testing.T) {
+	for name, cfg := range map[string]Config{
+		"service name": {ServiceName: "svc-\xff"},
+		"labels":       {Labels: prometheus.Labels{"zone": "eu-\xff"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			registry := prometheus.NewRegistry()
+			cfg.Registerer = registry
+			cfg.Gatherer = registry
+
+			func() {
+				defer func() {
+					r := recover()
+					if r == nil {
+						t.Fatal("expected the invalid label value to be rejected")
+					}
+					if msg := fmt.Sprint(r); !strings.Contains(msg, "not valid UTF-8") {
+						t.Fatalf("expected a UTF-8 panic, got %v", r)
+					}
+				}()
+
+				_ = New(cfg)
+			}()
+
+			families, err := registry.Gather()
+			if err != nil {
+				t.Fatalf("gathering after the rejected config: %v", err)
+			}
+			if len(families) != 0 {
+				t.Fatalf("expected the registry to be untouched, got %d families", len(families))
+			}
+		})
+	}
+}
+
+// TestTypedNilErrorLogPanics covers a nil *log.Logger in the interface, which
+// promhttp tests against nil, passes, and then dereferences the first time a
+// gather fails - long after the process started.
+func TestTypedNilErrorLogPanics(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected a panic for a typed nil logger")
+		}
+		if msg := fmt.Sprint(r); !strings.Contains(msg, "MetricsErrorLog") {
+			t.Fatalf("expected the panic to name the field, got %v", r)
+		}
+	}()
+
+	var logger *log.Logger
+	_ = New(Config{MetricsErrorLog: logger})
 }

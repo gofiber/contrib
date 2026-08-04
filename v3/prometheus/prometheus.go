@@ -149,15 +149,27 @@ func New(config ...Config) fiber.Handler {
 	}
 	labels := cfg.Labels
 
-	// A const label sharing a name with a variable one reaches client_golang as
-	// an invalid Desc, whose panic names neither Labels nor the offending key.
-	for name := range labels {
+	// A const label sharing a name with a variable one, or carrying a value that
+	// is not valid UTF-8, reaches client_golang as an invalid Desc - and its
+	// panic names neither Labels nor ServiceName. Worse, it would fire from
+	// inside the first promauto call, leaving a caller's registry holding the
+	// collectors registered by then.
+	for name, value := range labels {
 		if _, reserved := reservedLabels[name]; reserved {
 			panic("prometheus middleware: constant label " + strconv.Quote(name) + " collides with a reserved label")
+		}
+		if !utf8.ValidString(value) {
+			panic("prometheus middleware: constant label " + strconv.Quote(name) + " has a value that is not valid UTF-8")
 		}
 	}
 
 	dynamic := resolveDynamicLabels(cfg)
+
+	// promhttp tests its logger against nil, which a typed nil passes, and then
+	// dereferences it the first time a gather fails - long after startup.
+	if typedNil(cfg.MetricsErrorLog) {
+		panic("prometheus middleware: MetricsErrorLog is a typed nil; leave it unset to discard errors")
+	}
 
 	// The label the middleware supplies itself for unmatched requests is the
 	// only one client_golang does not see until a request arrives: const labels
@@ -699,10 +711,7 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		}
 
 		if m.responseSize != nil {
-			// fasthttp drops the body of a HEAD response, so nothing the
-			// handler generated reaches the client. It sets Response.SkipBody
-			// only after the chain returns, hence the method check here.
-			if method == fiber.MethodHead {
+			if bodyless(method, status) {
 				observe(m.responseSize.WithLabelValues(values...), 0)
 			} else {
 				resp := ctx.Response()
@@ -797,25 +806,44 @@ type payload interface {
 }
 
 // bodySize reports the payload size in bytes and whether it could be determined
-// at all. Content-Length is authoritative when present and is the only usable
-// source for file-backed or streamed payloads. Otherwise the buffered body is
-// measured - but never for a body stream, because reading it would drain the
-// stream into memory just to size it.
+// at all.
 //
-// A stream of unknown length is therefore left out of the histogram rather than
-// observed as zero: an app serving files or SSE would otherwise report a median
-// response of no bytes at all, since a zero still increments _count and lands in
-// the lowest bucket while adding nothing to _sum.
+// A body stream cannot be measured without draining it into memory, so the
+// announced Content-Length is all there is to go on; without one the size stays
+// unknown and the caller leaves the payload out of the histogram rather than
+// observing zero. Recording a zero would be worse than recording nothing: it
+// still increments _count and lands in the lowest bucket while adding nothing to
+// _sum, so an app serving files or SSE would report a median response of no
+// bytes at all.
+//
+// Anything else is buffered, and then the buffer is the ground truth rather than
+// the header: fasthttp recomputes Content-Length from the body it is about to
+// write, so a stale or hand-set value never reaches the client.
 func bodySize(contentLength int, p payload) (float64, bool) {
-	if contentLength > 0 {
-		return float64(contentLength), true
-	}
-
 	if p.IsBodyStream() {
+		if contentLength > 0 {
+			return float64(contentLength), true
+		}
 		return 0, false
 	}
 
 	return float64(len(p.Body())), true
+}
+
+// bodyless reports whether fasthttp will drop the body the handler generated, so
+// that no payload bytes reach the client however much the handler wrote. It
+// answers from the method and status because Response.SkipBody is set only after
+// the handler chain returns.
+func bodyless(method string, status int) bool {
+	if method == fiber.MethodHead {
+		return true
+	}
+
+	// The set RFC 9110 forbids a body on, which fasthttp enforces in
+	// ResponseHeader.mustSkipContentLength.
+	return (status >= 100 && status < 200) ||
+		status == fiber.StatusNoContent ||
+		status == fiber.StatusNotModified
 }
 
 // skipped reports whether the route pattern is excluded by Config.SkipURIs,
