@@ -424,7 +424,13 @@ var (
 	defaultResponseSizeBuckets    = []float64{256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152, 5242880}
 )
 
-// ConfigDefault holds the default middleware configuration.
+// ConfigDefault holds the default middleware configuration. Copy it as a
+// starting point; treat it as read-only after that.
+//
+// New resolves the bucket bounds from private values rather than from here, so
+// adjusting one in place on a copy - which shares the backing array with this
+// variable - changes neither this default nor what New falls back to. The
+// scalar fields have no such indirection and are read from here as they stand.
 var ConfigDefault = Config{
 	Namespace:           "http",
 	MetricsPath:         "/metrics",
