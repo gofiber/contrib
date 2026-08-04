@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -70,13 +71,17 @@ const (
 	spnegoAccepted      = "Negotiate oRQwEqADCgEAoQsGCSqGSIb3EgECAg=="
 )
 
-// The values Fiber and fasthttp answer with when nothing has to be read out of
-// the request buffer. requestForSPNEGO matches against these so it can assign
-// the constant rather than a copy; see the switches there for why that matters.
+// The scheme and protocol values worth recognising. requestForSPNEGO matches
+// against these so it can assign the constant rather than what it was handed,
+// which may be a view into fasthttp's request buffer: Fiber returns the scheme
+// from the buffer once TrustProxy is on, and fasthttp's Protocol returns the
+// version parsed off the request line. Assigning the matched value instead
+// would keep pointing at storage the next request reuses, and copying it would
+// allocate — both fields escape into the request.
 //
-// Each is both the thing matched and the thing stored, so there is one source
-// of truth per value rather than a literal in the arm that has to be kept in
-// step with the constant in the case.
+// Each is the thing matched and the thing stored, so there is one source of
+// truth per value rather than a literal in the arm to keep in step with the
+// constant in the case.
 const (
 	schemeHTTP  = "http"
 	schemeHTTPS = "https"
@@ -204,6 +209,27 @@ const maxResponseWriterUnwraps = 8
 
 func (p sessionManagerProbe) Get(r *http.Request, k string) ([]byte, error) {
 	return p.delegate.Get(r, k) //nolint:wrapcheck // passed through to gokrb5 untouched
+}
+
+// loggedBodyLimit bounds how much of a handler's body reaches the log. A
+// session manager holds the raw ResponseWriter and may write as much as it
+// likes before failing — a driver dumping a failed query and its rows, say —
+// and quoting inflates every control byte severalfold. This is enough to
+// identify what broke; the rest belongs in the store's own logs.
+const loggedBodyLimit = 512
+
+// quoteForLog renders untrusted bytes as a single quoted token, truncated.
+//
+// Quoting is what stops a body from forging log lines: a session manager that
+// echoes something client-supplied before failing would otherwise let a newline
+// in it start a line of its own under this package's prefix.
+func quoteForLog(body []byte) string {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) <= loggedBodyLimit {
+		return strconv.Quote(string(trimmed))
+	}
+	return strconv.Quote(string(trimmed[:loggedBodyLimit])) +
+		fmt.Sprintf(" (+%d bytes)", len(trimmed)-loggedBodyLimit)
 }
 
 // isRejection reports whether the response SPNEGO produced is a refusal rather
@@ -749,7 +775,16 @@ func New(cfg Config) (fiber.Handler, error) {
 			// the returned error's cause as well as the log line, so a caller
 			// matching on the underlying error needs it either way.
 			failure := fmt.Errorf("%w: %w", ErrLookupKeytabFailed, err)
-			lookupFailures.do(func() { flog.Errorf("spnego: %v", failure) })
+			// Quoted for the same reason the handler's body is: a
+			// KeytabLookupFunc is caller-supplied and documented as a hook for
+			// databases and remote services, so what it reports can carry an
+			// upstream's text — and a newline in that would start a line of its
+			// own under this package's prefix. Only the log line is quoted; the
+			// error itself goes to OnError and the ErrorHandler unchanged, so
+			// errors.Is and any message a caller reads there are untouched.
+			lookupFailures.do(func() {
+				flog.Errorf("spnego: %s: %s", ErrLookupKeytabFailed, quoteForLog([]byte(err.Error())))
+			})
 			if cfg.OnError != nil {
 				// Given the wrapped cause rather than the client-safe wrapper:
 				// the hook is internal diagnostics, and a caller that wanted the
@@ -827,21 +862,26 @@ func New(cfg Config) (fiber.Handler, error) {
 		// handler wrote goes to the log instead — where it belongs, and where
 		// it is the only description of what broke unless Config.Log is set.
 		if recorder.sessionFailed || !isSPNEGOOutcome(recorder.headers.Get(fiber.HeaderWWWAuthenticate)) {
-			// Built on demand, not up front. Nothing outside this package can
-			// read the detail off the returned error — clientSafeError shows
-			// the client a fixed string and exposes no Unwrap — so the only
-			// readers are the log line, which the throttle silences for all but
-			// one request per window, and OnError, which is usually nil. During
-			// a session-store outage this path runs on every request at a rate
-			// the caller sets, and the manager's body has no bound.
+			// Built on demand and at most once. Nothing outside this package
+			// can read the detail off the returned error — clientSafeError
+			// shows the client a fixed string and exposes no Unwrap — so the
+			// only readers are the log line, which the throttle silences for
+			// all but one request per window, and OnError, which is usually
+			// nil. During a session-store outage this path runs on every
+			// request at a rate the caller sets.
 			//
-			// %q rather than %s: the body is the one thing here the middleware
-			// did not write. A manager that echoes anything client-supplied
-			// before failing would otherwise let a newline in it forge a second
-			// log line under this package's own prefix.
+			// recorder.status rather than the status replayed below: that one
+			// falls back to 401 for the challenge path, and reporting it here
+			// would describe a handler that wrote nothing as having answered
+			// 401 — sending whoever reads the line to a responder that never
+			// ran.
+			var detail error
 			describe := func() error {
-				return fmt.Errorf("%w: status %d: %q",
-					ErrSPNEGOHandlerFailed, status, strings.TrimSpace(recorder.body.String()))
+				if detail == nil {
+					detail = fmt.Errorf("%w: status %d: %s", ErrSPNEGOHandlerFailed,
+						recorder.status, quoteForLog(recorder.body.Bytes()))
+				}
+				return detail
 			}
 			handlerFailures.do(func() { flog.Errorf("spnego: %v", describe()) })
 			if cfg.OnError != nil {

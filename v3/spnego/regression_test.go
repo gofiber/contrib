@@ -16,6 +16,7 @@ import (
 	"os"
 	"path"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -2772,8 +2773,9 @@ func TestRecorderStatusRules(t *testing.T) {
 			})
 			ctx := serveProtected(t, Config{KeytabLookup: testKeytabLookup(t)})
 			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode())
-			// Asserted unconditionally: the declining row expects an empty
-			// body, and a "" that means "do not check" could not express that.
+			// Asserted unconditionally: the bare-challenge row expects an
+			// empty body, and a "" that meant "do not check" could not
+			// express that.
 			require.Equal(t, tc.wantBody, string(ctx.Response.Body()))
 		})
 	}
@@ -3071,6 +3073,88 @@ func TestSessionFailureCannotForgeALogLine(t *testing.T) {
 		require.NotContains(t, line, "\nspnego: [Error] all clear",
 			"%s must not let the handler's body start a line of its own", name)
 	}
+}
+
+// TestQuoteForLog pins both jobs the rendering does: escaping, so untrusted
+// bytes cannot start a line of their own, and truncation, so one log write
+// cannot carry a whole failed query and its rows.
+func TestQuoteForLog(t *testing.T) {
+	require.Equal(t, `""`, quoteForLog(nil))
+	require.Equal(t, `""`, quoteForLog([]byte("  \n\t ")),
+		"surrounding whitespace is the handler's formatting, not its message")
+	require.Equal(t, `"a\nb"`, quoteForLog([]byte("a\nb")))
+	require.Equal(t, `"session store unreachable"`,
+		quoteForLog([]byte("\n session store unreachable \n")))
+
+	// Exactly at the limit is not truncated; one byte past it is, and says by
+	// how much rather than trailing off.
+	atLimit := bytes.Repeat([]byte("x"), loggedBodyLimit)
+	require.Equal(t, strconv.Quote(string(atLimit)), quoteForLog(atLimit))
+
+	over := bytes.Repeat([]byte("x"), loggedBodyLimit+37)
+	rendered := quoteForLog(over)
+	require.Equal(t, strconv.Quote(string(atLimit))+" (+37 bytes)", rendered)
+	require.Less(t, len(rendered), len(over),
+		"the point of truncating is that the line is shorter than the body")
+
+	// Truncation happens before quoting, so an escape-heavy body cannot get
+	// past the limit by inflating.
+	newlines := bytes.Repeat([]byte("\n"), loggedBodyLimit*4)
+	require.NotContains(t, quoteForLog(newlines), "\n",
+		"no raw newline may survive, however many there were")
+}
+
+// TestSessionFailureReportsTheStatusTheHandlerWrote covers which status the
+// diagnostic names. The status replayed to a client falls back to 401 for the
+// challenge path; using it here would describe a handler that wrote nothing as
+// having answered 401, and send whoever reads the line to a responder that
+// never ran.
+func TestSessionFailureReportsTheStatusTheHandlerWrote(t *testing.T) {
+	stubAuthenticate(t, func(http.ResponseWriter, *http.Request) goidentity.Identity {
+		// Nothing written at all: no header, no body, no status.
+		return nil
+	})
+
+	var hookErr error
+	ctx := serveProtected(t, Config{
+		KeytabLookup: testKeytabLookup(t),
+		OnError:      func(_ fiber.Ctx, err error) { hookErr = err },
+	})
+
+	require.Equal(t, fiber.StatusInternalServerError, ctx.Response.StatusCode())
+	require.ErrorIs(t, hookErr, ErrSPNEGOHandlerFailed)
+	require.Contains(t, hookErr.Error(), "status 0",
+		"a handler that wrote no status must not be reported as having written one")
+	require.NotContains(t, hookErr.Error(), "status 401")
+}
+
+// TestKeytabFailureCannotForgeALogLine is the lookup path's half of the same
+// rule. A KeytabLookupFunc is caller-supplied and documented as a hook for
+// databases and remote services, so what it reports can carry an upstream's
+// text — which must not be able to start a line under this package's prefix.
+func TestKeytabFailureCannotForgeALogLine(t *testing.T) {
+	var logged bytes.Buffer
+	flog.SetOutput(&logged)
+	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
+
+	forged := errors.New("vault: \nspnego: [Error] keytab loads cleanly again")
+	var hookErr error
+	ctx := serveProtected(t, Config{
+		KeytabLookup: func() (*keytab.Keytab, error) { return nil, forged },
+		OnError:      func(_ fiber.Ctx, err error) { hookErr = err },
+	})
+
+	require.Equal(t, fiber.StatusInternalServerError, ctx.Response.StatusCode())
+	require.Contains(t, logged.String(), `\nspnego:`,
+		"the newline must be escaped, not emitted")
+	require.NotContains(t, logged.String(), "\nspnego: [Error] keytab loads cleanly again",
+		"the lookup's text must not start a line of its own")
+
+	// The error itself is untouched, so errors.Is and anything a caller reads
+	// off it still see what the lookup actually returned.
+	require.ErrorIs(t, hookErr, ErrLookupKeytabFailed)
+	require.ErrorIs(t, hookErr, forged)
+	require.Contains(t, hookErr.Error(), "vault: \nspnego:")
 }
 
 // failingSessionManager writes whatever onNew writes and then refuses, which is
