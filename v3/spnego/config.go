@@ -141,10 +141,16 @@ type Config struct {
 	// Setting it changes the trust model: the session becomes a credential in
 	// its own right, so whatever the implementation stores must be
 	// unguessable, bound to the client, and expired deliberately. The
-	// middleware forwards the request's Cookie header to gokrb5 only when this
-	// is set, so a cookie-backed manager can find its session; anything the
-	// manager writes — Set-Cookie included — is replayed onto the Fiber
-	// response.
+	// middleware forwards the request's cookies to gokrb5 only when this is
+	// set, so a cookie-backed manager can find its session; anything the
+	// manager writes on a request that goes on to authenticate — Set-Cookie
+	// included — is replayed onto the Fiber response.
+	//
+	// The two failure paths are not symmetric. A New that cannot persist makes
+	// gokrb5 answer 5xx, which surfaces as ErrSPNEGOHandlerFailed. A Get that
+	// fails is discarded by gokrb5, which falls through to full ticket
+	// validation — so a broken read path costs performance silently rather
+	// than failing requests, and is worth monitoring on the store's own side.
 	//
 	// Optional. Default: nil (every request is validated in full).
 	SessionManager service.SessionMgr
@@ -154,14 +160,22 @@ type Config struct {
 	//
 	// Optional. Default: nil.
 	OnSuccess func(ctx fiber.Ctx, identity goidentity.Identity)
-	// OnError runs when the middleware itself fails — today, only when the
-	// keytab lookup does — just before the request is answered with 500. It is
-	// not called for authentication outcomes: a rejected ticket is Unauthorized's
-	// business, and a challenge is not a failure.
+	// OnError runs when the middleware itself fails, just before the request is
+	// answered with 500. It is not called for authentication outcomes: a
+	// rejected ticket is Unauthorized's business, and a challenge is not a
+	// failure.
 	//
-	// The error it receives wraps ErrLookupKeytabFailed and the underlying
-	// cause, which names keytab paths and OS errors, so treat it as internal
-	// diagnostics rather than something to echo to a client.
+	// There are two failures, distinguished by sentinel:
+	//
+	//   - ErrLookupKeytabFailed, when KeytabLookup returns an error or no
+	//     keytab. The error also carries the underlying cause.
+	//   - ErrSPNEGOHandlerFailed, when gokrb5 answers 5xx from inside its own
+	//     handler, which in v8.4.4 means a SessionManager that could not
+	//     persist a session.
+	//
+	// Match on those rather than on text. The keytab cause names paths and OS
+	// errors, so treat what arrives here as internal diagnostics rather than
+	// something to echo to a client.
 	//
 	// Optional. Default: nil.
 	OnError func(ctx fiber.Ctx, err error)

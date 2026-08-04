@@ -668,12 +668,21 @@ func TestRequestForSPNEGO(t *testing.T) {
 	require.NoError(t, err, "gokrb5 must be able to parse the address it is handed")
 	require.Equal(t, net.IPv4(203, 0, 113, 7).To4(), net.IP(addr.Address))
 
-	// URL is present purely so a dereference cannot panic. It is deliberately
-	// empty rather than a reconstruction, which could not be faithful for every
-	// request, so nothing here should claim to describe the target.
+	// URL carries at most a scheme — and not even that here, since this request
+	// is built without a session manager. It is never a reconstruction of the
+	// target: the path could not be faithful for every request, so nothing in
+	// it should claim to describe one.
 	require.NotNil(t, got.URL)
 	require.Empty(t, got.URL.Path)
 	require.Empty(t, got.URL.RawQuery)
+	// Scheme and TLS serve a session manager and nothing else, so a request
+	// built without one pays for neither. Reading the TLS state copies and
+	// heap-allocates a tls.ConnectionState, and ctx.Scheme walks every header
+	// once TrustProxy is on — per request, for a field gokrb5 never looks at.
+	require.Empty(t, got.URL.Scheme,
+		"the scheme is only for a session manager")
+	require.Nil(t, got.TLS,
+		"the TLS state is only for a session manager")
 }
 
 // TestRequestForSPNEGOForwardsCookiesForSessionManager covers the other half of
@@ -739,6 +748,40 @@ func TestRequestForSPNEGOForwardsEveryCookie(t *testing.T) {
 	unrelated, err := forwarded.Cookie("unrelated")
 	require.NoError(t, err)
 	require.Equal(t, "1", unrelated.Value)
+}
+
+// TestRequestForSPNEGOSerialisesValuelessCookies covers a cookie sent with no
+// "=". fasthttp parses it as an empty key with the text as the value, and
+// re-serialises it without an "="; emitting one anyway produces "=flag", which
+// net/http drops for an invalid name. Either way the manager would see a
+// different cookie set than the client sent, so the rebuild has to match
+// fasthttp's own rendering.
+func TestRequestForSPNEGOSerialisesValuelessCookies(t *testing.T) {
+	raw := "GET /authenticate HTTP/1.1\r\n" +
+		"Host: sso.example.com\r\n" +
+		"Cookie: legacyflag\r\n" +
+		"Cookie: spnego-session=opaque\r\n\r\n"
+
+	ctx := &fasthttp.RequestCtx{}
+	require.NoError(t, ctx.Request.Read(bufio.NewReader(bytes.NewBufferString(raw))))
+
+	var got *http.Request
+	app := fiber.New()
+	app.All("/*", func(c fiber.Ctx) error {
+		got = requestForSPNEGO(c, true)
+		return nil
+	})
+	app.Handler()(ctx)
+
+	require.NotNil(t, got)
+	forwarded := string(got.Header.Get(fiber.HeaderCookie))
+	require.NotContains(t, forwarded, "=legacyflag",
+		"a valueless cookie must not gain an empty name")
+	require.Contains(t, forwarded, "legacyflag")
+	// And the real session cookie still survives alongside it.
+	session, err := (&http.Request{Header: got.Header}).Cookie("spnego-session")
+	require.NoError(t, err)
+	require.Equal(t, "opaque", session.Value)
 }
 
 // TestRequestForSPNEGOCarriesSchemeAndTLS pins the two fields a session store
@@ -974,9 +1017,9 @@ func TestOnErrorNotCalledOnAuthenticationFailure(t *testing.T) {
 // carrying no ticket at all is served from the session — which is the whole
 // point of the feature, and the only part of it reachable without a KDC.
 //
-// It therefore covers what the middleware is actually responsible for: passing
-// service.SessionManager through, and forwarding cookies so getSessionCredentials
-// has something to find.
+// What it covers is that service.SessionManager is passed through at all: this
+// recordingSessionManager ignores the request, so cookie forwarding is not
+// exercised here — TestCookieForwardingFollowsTheSessionManager does that.
 func TestSessionManagerServesFromSessionWithoutATicket(t *testing.T) {
 	established := credentials.New("alice", "EXAMPLE.LOCAL")
 	established.SetAuthenticated(true)
@@ -1061,9 +1104,92 @@ func TestSPNEGOInternalFailureIsReportedNotSwallowed(t *testing.T) {
 	require.False(t, reached, "a failing handler must not authenticate anyone")
 	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
 	require.Equal(t, 1, hookRuns, "a 5xx from inside SPNEGO must reach OnError")
-	require.ErrorIs(t, hookErr, errSPNEGOInternal)
+	require.ErrorIs(t, hookErr, ErrSPNEGOHandlerFailed)
 	require.Contains(t, logged.String(), "spnego:",
 		"and must reach the log, not just the client")
+}
+
+// TestSessionCookieIsReplayedOnSuccess pins the promise Config.SessionManager's
+// godoc and the README both make: whatever the manager writes reaches the
+// client. A session that is stored but whose Set-Cookie never leaves the server
+// is a session the client can never present, so every request would re-establish
+// one.
+//
+// Nothing else in the suite looks at Set-Cookie, so without this copyHeadersTo
+// could be deleted, moved after the response is written, or switched from Add
+// to Set and the suite would stay green.
+func TestSessionCookieIsReplayedOnSuccess(t *testing.T) {
+	user := goidentity.NewUser("alice")
+	stubAuthenticate(t, func(w http.ResponseWriter, _ *http.Request) goidentity.Identity {
+		// The order gokrb5 uses: the session cookie is written before the
+		// accept-completed header, and both before the inner handler runs.
+		http.SetCookie(w, &http.Cookie{Name: "spnego-session", Value: "opaque-session-id", Path: "/"})
+		w.Header().Set(fiber.HeaderWWWAuthenticate, "Negotiate accepted")
+		return &user
+	})
+
+	ctx := serveProtected(t, Config{
+		KeytabLookup:   testKeytabLookup(t),
+		SessionManager: &recordingSessionManager{},
+	})
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	require.Contains(t, string(ctx.Response.Header.Peek(fiber.HeaderSetCookie)), "opaque-session-id",
+		"a session the client never receives is a session it can never present")
+	require.Equal(t, "Negotiate accepted", string(ctx.Response.Header.Peek(fiber.HeaderWWWAuthenticate)))
+}
+
+// TestSPNEGOInternalFailureDoesNotLeakTheHandlerBody covers what the 5xx branch
+// withholds. gokrb5 hands the session manager the raw ResponseWriter, so a
+// manager reporting its own failure — a DSN, a host, a driver error — has that
+// captured by the recorder. Replaying it would hand an unauthenticated caller
+// exactly what clientSafeError exists to keep from them.
+//
+// A Set-Cookie written before the failure is dropped for the same reason: it
+// would advertise a session that was never stored.
+func TestSPNEGOInternalFailureDoesNotLeakTheHandlerBody(t *testing.T) {
+	flog.SetOutput(io.Discard)
+	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
+
+	const secret = "postgres://user:hunter2@db.internal:5432/sessions"
+	stubAuthenticate(t, func(w http.ResponseWriter, _ *http.Request) goidentity.Identity {
+		http.SetCookie(w, &http.Cookie{Name: "spnego-session", Value: "never-stored"})
+		http.Error(w, "could not reach "+secret, http.StatusInternalServerError)
+		return nil
+	})
+
+	var handlerErr error
+	middleware, err := New(Config{
+		KeytabLookup:   testKeytabLookup(t),
+		SessionManager: &recordingSessionManager{},
+	})
+	require.NoError(t, err)
+
+	app := fiber.New(fiber.Config{
+		ErrorHandler: func(c fiber.Ctx, e error) error {
+			handlerErr = e
+			return fiber.DefaultErrorHandler(c, e)
+		},
+	})
+	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
+		return c.SendString("authenticated")
+	})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fiber.MethodGet)
+	ctx.Request.SetRequestURI("/authenticate")
+	app.Handler()(ctx)
+
+	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
+	require.NotContains(t, string(ctx.Response.Body()), secret,
+		"the handler's own message must not reach the client")
+	require.NotContains(t, string(ctx.Response.Body()), "hunter2")
+	require.Equal(t, "Internal Server Error", string(ctx.Response.Body()))
+	require.Empty(t, ctx.Response.Header.Peek(fiber.HeaderSetCookie),
+		"a session that failed to store must not be advertised to the client")
+
+	// Unlike the previous behaviour, which returned nil and never reached here.
+	require.ErrorIs(t, handlerErr, ErrSPNEGOHandlerFailed,
+		"the application's ErrorHandler must see it, as it does a keytab failure")
 }
 
 // TestInternalFailureKindsThrottleIndependently pins that the two internal
@@ -1109,7 +1235,7 @@ func TestInternalFailureKindsThrottleIndependently(t *testing.T) {
 	// only the first.
 	require.Contains(t, logged.String(), "keytab boom",
 		"the keytab failure must be logged")
-	require.Contains(t, logged.String(), errSPNEGOInternal.Error(),
+	require.Contains(t, logged.String(), ErrSPNEGOHandlerFailed.Error(),
 		"the handler failure must not be suppressed by the keytab one")
 }
 

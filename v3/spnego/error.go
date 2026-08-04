@@ -34,8 +34,17 @@ var ErrConfigInvalidOfKeytabPrincipalRealm = errors.New("config invalid: keytab 
 // no keytab. It is internal: callers see ErrLookupKeytabFailed.
 var errNilKeytab = errors.New("keytab lookup returned no keytab")
 
-// errSPNEGOInternal marks a 5xx that gokrb5 produced inside the SPNEGO handler
-// rather than one this middleware raised — today, a session manager that could
-// not store or retrieve a session. It is internal: it exists so those failures
-// reach the log and Config.OnError instead of passing as an ordinary response.
-var errSPNEGOInternal = errors.New("spnego handler reported an internal failure")
+// ErrSPNEGOHandlerFailed is returned, and passed to Config.OnError, when gokrb5
+// answers 5xx from inside its own handler rather than reaching an
+// authentication outcome. In gokrb5 v8.4.4 that means one thing: a
+// Config.SessionManager whose New could not persist a session, which
+// spnego/http.go reports through spnegoInternalServerError.
+//
+// A session manager whose Get fails does not land here. gokrb5 discards that
+// error and falls through to full ticket validation, so a session store with a
+// broken read path degrades performance silently rather than failing requests.
+//
+// It is exported because it crosses the API boundary: without it a caller
+// receiving the error from OnError or an ErrorHandler could only classify it by
+// matching on text.
+var ErrSPNEGOHandlerFailed = errors.New("spnego handler reported an internal failure")

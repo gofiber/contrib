@@ -260,9 +260,11 @@ If you went looking for gokrb5's `service.SName` and wondered why it is not expo
 
 It also changes the trust model. The session becomes a credential in its own right, so whatever your implementation stores must be unguessable, bound to the client, and expired deliberately — a predictable session identifier is a full authentication bypass. The middleware forwards the request's cookies to gokrb5 only when this is set, and replays whatever the manager writes — `Set-Cookie` included — onto the Fiber response.
 
-The request handed to your manager is built by this middleware rather than by `net/http`, so it carries only what gokrb5 reads plus what a session store needs to make its decisions: method, host, remote address, cookies, `URL.Scheme`, and `TLS`. The last two are there so the usual `Secure: r.TLS != nil` idiom works — without them a session cookie would be issued without `Secure` on an HTTPS listener. The path and query are deliberately absent, so do not key a session on them.
+The request handed to your manager is built by this middleware rather than by `net/http`, so it carries only what gokrb5 reads plus what a session store needs to make its decisions: method, host, remote address, cookies, `URL.Scheme`, and `TLS`. The path and query are deliberately absent, so do not key a session on them.
 
-A store that cannot be reached surfaces as a `5xx` from inside gokrb5's handler. The middleware treats that as an internal failure rather than an ordinary response: it is logged (throttled separately from keytab failures) and passed to `OnError`, so a broken session store does not fail every authenticated request silently.
+`Secure: r.TLS != nil` — the usual idiom — is reliable only where Fiber terminates TLS itself. Behind a TLS-terminating proxy the connection into Fiber is plaintext, so `TLS` is nil while `URL.Scheme` reports `https` from `X-Forwarded-Proto`. Prefer the scheme there, or set `Secure` unconditionally if the service is only ever reached over HTTPS.
+
+The two failure paths are not symmetric, which matters for monitoring. A manager whose `New` cannot persist makes gokrb5 answer `5xx` from inside its handler; the middleware treats that as an internal failure rather than an ordinary response — logged on its own throttle, passed to `OnError` as `ErrSPNEGOHandlerFailed`, and answered with the same sanitised `Internal Server Error` body a keytab failure gets, so a manager that reports a DSN or a driver error cannot leak it to an unauthenticated caller. A manager whose `Get` fails is different: gokrb5 discards that error and falls through to full ticket validation, so a broken read path degrades performance silently and is worth watching on the store's own side.
 
 ### Observability
 

@@ -2,6 +2,7 @@ package spnego
 
 import (
 	"bytes"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
@@ -219,34 +220,53 @@ func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
 			if cookies.Len() > 0 {
 				cookies.WriteString("; ")
 			}
-			cookies.Write(key)
-			cookies.WriteByte('=')
+			// fasthttp parses a valueless "Cookie: flag" as key "" and value
+			// "flag", and re-serialises it without the "=". Emitting one
+			// anyway would produce "=flag", which net/http then drops for an
+			// invalid name — so the manager would see a different cookie set
+			// than the client sent.
+			if len(key) > 0 {
+				cookies.Write(key)
+				cookies.WriteByte('=')
+			}
 			cookies.Write(value)
 		}
 		if cookies.Len() > 0 {
 			header.Set(fiber.HeaderCookie, cookies.String())
 		}
 	}
+	// Scheme and TLS exist only for a session manager, which is the sole reader
+	// of either — gokrb5 itself looks at neither. They are gated on the same
+	// flag as the cookies so an ordinary request pays for neither: reading the
+	// TLS state copies and heap-allocates a tls.ConnectionState, and ctx.Scheme
+	// walks every header once TrustProxy is on.
+	//
+	// Their guarantee is narrower than it looks. A store deciding Secure from
+	// r.TLS != nil is right only where Fiber terminates TLS itself. Behind a
+	// TLS-terminating proxy the connection into Fiber is plain, so TLS is nil
+	// while Scheme reports https from X-Forwarded-Proto — the two disagree, and
+	// only Scheme reflects what the client actually used.
+	requestURL := &url.URL{}
+	var tlsState *tls.ConnectionState
+	if withCookies {
+		requestURL.Scheme = ctx.Scheme()
+		tlsState = fasthttpCtx.TLSConnectionState()
+	}
 	return &http.Request{
 		Method: ctx.Method(),
-		// Scheme only. gokrb5 never reads the URL, and a faithful path is not
-		// reconstructible from here: Fiber's is percent-encoded or not depending
-		// on Config.UnescapePath, and net/url cannot represent a malformed
-		// escape at all. The scheme, unlike the path, can be stated truthfully,
-		// and a session manager deciding whether to mark its cookie Secure has
-		// nothing else to go on.
-		URL: &url.URL{Scheme: ctx.Scheme()},
+		// Scheme at most. gokrb5 never reads the URL, and a faithful path is
+		// not reconstructible from here: Fiber's is percent-encoded or not
+		// depending on Config.UnescapePath, and net/url cannot represent a
+		// malformed escape at all. The scheme, unlike the path, can be stated
+		// truthfully.
+		URL: requestURL,
 		// net/http documents a server request's Host as "host or host:port", so
 		// it is Host rather than Hostname, which drops the port. gokrb5 does
 		// not read it; it is set because it can be set faithfully, unlike the
 		// rest of the URL.
-		Host:   ctx.Host(),
-		Header: header,
-		// Set for the same reason as the scheme: the usual way a session store
-		// decides whether its cookie may be Secure is r.TLS != nil, and leaving
-		// it nil on an HTTPS listener would quietly issue the session — which
-		// this middleware treats as a credential — without that attribute.
-		TLS:        fasthttpCtx.TLSConnectionState(),
+		Host:       ctx.Host(),
+		Header:     header,
+		TLS:        tlsState,
 		RemoteAddr: fasthttpCtx.RemoteAddr().String(),
 	}
 }
@@ -348,9 +368,9 @@ func New(cfg Config) (fiber.Handler, error) {
 	// by varying client-controlled text inside it.
 	lookupFailures := &logThrottle{every: internalErrorLogEvery}
 	handlerFailures := &logThrottle{every: internalErrorLogEvery}
-	logInternal := func(cause error) {
-		lookupFailures.do(func() {
-			flog.Errorf("spnego: %v: %v", ErrLookupKeytabFailed, cause)
+	logInternal := func(throttle *logThrottle, failure error) {
+		throttle.do(func() {
+			flog.Errorf("spnego: %v", failure)
 		})
 	}
 	// Return the middleware handler
@@ -368,8 +388,8 @@ func New(cfg Config) (fiber.Handler, error) {
 			err = errNilKeytab
 		}
 		if err != nil {
-			logInternal(err)
 			failure := fmt.Errorf("%w: %w", ErrLookupKeytabFailed, err)
+			logInternal(lookupFailures, failure)
 			if cfg.OnError != nil {
 				// Given the wrapped cause rather than the client-safe wrapper:
 				// the hook is internal diagnostics, and a caller that wanted the
@@ -410,26 +430,37 @@ func New(cfg Config) (fiber.Handler, error) {
 			return nextErr
 		}
 
-		// Authentication did not complete. Replay SPNEGO's own challenge.
-		recorder.copyHeadersTo(ctx)
+		// Authentication did not complete.
 		status := recorder.status
 		if status == 0 {
 			status = fiber.StatusUnauthorized
 		}
 		// A 5xx from inside the SPNEGO handler is not an authentication
 		// outcome, it is this service failing. gokrb5 raises one when a session
-		// manager cannot store or fetch a session, and replaying it as an
-		// ordinary response would leave a broken session store 500ing every
-		// authenticated request with nothing in the log and no hook fired.
+		// manager cannot persist a session, and passing it through as an
+		// ordinary response would leave a broken store 500ing every
+		// authenticated request with nothing logged and no hook fired.
+		//
+		// Neither the body nor the headers are replayed here, unlike the
+		// challenge path below. gokrb5 hands the session manager the raw
+		// ResponseWriter, so a manager that reports its own failure — a DSN, a
+		// host, a driver error — would have that captured by the recorder and
+		// echoed to an unauthenticated caller. Returning the error instead
+		// routes it through the application's ErrorHandler with the same
+		// sanitised body a keytab failure gets, and drops any Set-Cookie the
+		// manager wrote before failing, which would otherwise hand out a
+		// session that was never stored.
 		if status >= fiber.StatusInternalServerError {
-			failure := fmt.Errorf("%w: status %d", errSPNEGOInternal, status)
-			handlerFailures.do(func() {
-				flog.Errorf("spnego: %v", failure)
-			})
+			failure := fmt.Errorf("%w: status %d", ErrSPNEGOHandlerFailed, status)
+			logInternal(handlerFailures, failure)
 			if cfg.OnError != nil {
 				cfg.OnError(ctx, failure)
 			}
+			return &clientSafeError{cause: failure}
 		}
+
+		// Replay SPNEGO's own challenge.
+		recorder.copyHeadersTo(ctx)
 		ctx.Status(status)
 		// Only a refusal reaches the caller's handler. The opening challenge
 		// and the continuation token are legs of a handshake that can still
