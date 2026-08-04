@@ -410,7 +410,19 @@ func (c *keytabFileCache) readAll() (*keytab.Keytab, error) {
 		}
 		kt := keytab.New()
 		if err = kt.Unmarshal(raw); err != nil {
-			return nil, fmt.Errorf("%w: file %s load failed: %w: %w", ErrLoadKeytabFileFailed, keytabFile, errKeytabUnparsable, err)
+			// gokrb5's own message is deliberately dropped. Its parse errors
+			// interpolate the bytes they were given — keytab.go:242 and :495
+			// format b and eb with %s — and those bytes are a keytab: for a
+			// single-principal file the whole AES key fits in one error, and
+			// this one travels to the log, to Config.OnError, and to whatever
+			// collects either. What it would add is the offset it gave up at,
+			// which does not identify the fault any better than the file name
+			// and errKeytabUnparsable already do.
+			//
+			// The length is worth keeping: a rotation caught mid-write is a
+			// short read, and a permanently corrupt file usually is not.
+			return nil, fmt.Errorf("%w: file %s load failed: %w (%d bytes read)",
+				ErrLoadKeytabFileFailed, keytabFile, errKeytabUnparsable, len(raw))
 		}
 		mergeKeytab.Entries = append(mergeKeytab.Entries, kt.Entries...)
 	}
@@ -617,6 +629,15 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 // size, modification time or identity differs; see fileStamp for what that
 // does and does not catch.
 func NewKeytabFileLookupFunc(keytabFiles ...string) (KeytabLookupFunc, error) {
+	// An empty path is rejected alongside no paths at all. It is what an unset
+	// environment variable expands to, and accepting it turns a configuration
+	// mistake into a 500 on every request rather than a refusal at startup —
+	// which is the whole point of returning an error from here.
+	for _, keytabFile := range keytabFiles {
+		if keytabFile == "" {
+			return nil, ErrConfigInvalidOfAtLeastOneKeytabFileRequired
+		}
+	}
 	if len(keytabFiles) == 0 {
 		return nil, ErrConfigInvalidOfAtLeastOneKeytabFileRequired
 	}

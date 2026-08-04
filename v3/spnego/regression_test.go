@@ -3230,6 +3230,146 @@ func TestDegradedKeytabEpisodeCannotForgeALogLine(t *testing.T) {
 	require.Less(t, logged.Len(), 4*loggedBodyLimit+512)
 }
 
+// TestUnparsableKeytabDoesNotLeakKeyMaterial is the reason gokrb5's parse error
+// is dropped rather than quoted.
+//
+// Its message interpolates the bytes it was handed, and those bytes are a
+// keytab: for a single-principal file the whole key fits inside one error. That
+// error reaches the log, Config.OnError and anything collecting either, so
+// quoting it would have bounded the noise and shipped the secret.
+func TestUnparsableKeytabDoesNotLeakKeyMaterial(t *testing.T) {
+	var logged bytes.Buffer
+	flog.SetOutput(&logged)
+	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
+
+	dir := t.TempDir()
+	file := path.Join(dir, "sso.keytab")
+	_, clean, err := utils.NewMockKeytab(
+		utils.WithPrincipal("HTTP/sso.example.com"),
+		utils.WithRealm("EXAMPLE.LOCAL"),
+		utils.WithPairs(utils.EncryptTypePair{Version: 3, EncryptType: 18, CreateTime: time.Now()}),
+		utils.WithFilename(file),
+	)
+	require.NoError(t, err)
+	t.Cleanup(clean)
+
+	good, err := os.ReadFile(file)
+	require.NoError(t, err)
+	// The key sits at the end of the entry, after the 16-bit key type and
+	// length. Taking the tail is enough to have something to search for that
+	// appears nowhere else.
+	key := good[len(good)-32:]
+	require.Len(t, key, 32)
+
+	// Header kept so gokrb5 gets past its version check and reaches the length
+	// check, which is the branch that interpolates the file. Everything after
+	// it is the real keytab, so a leak would carry the real key.
+	torn := good[:len(good)-1]
+	require.NoError(t, os.WriteFile(file, torn, 0o600))
+
+	now := time.Now()
+	cache := &keytabFileCache{
+		files:      []string{file},
+		staleGrace: 30 * time.Second,
+		retryEvery: time.Nanosecond,
+		nowFn:      func() time.Time { return now },
+	}
+	// Nothing has parsed yet, so there is no cached keytab to serve and the
+	// parse error is returned as-is. This is the shape a caller sees through
+	// Config.OnError and its ErrorHandler.
+	_, err = cache.load()
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), string(key),
+		"the returned error must not carry the keytab's key material")
+	require.Contains(t, err.Error(), "keytab did not parse")
+	require.Contains(t, err.Error(), file, "the file is what identifies the fault")
+	require.Contains(t, err.Error(), fmt.Sprintf("(%d bytes read)", len(torn)),
+		"the length is what is kept: a torn write is short, a corrupt file usually is not")
+
+	// And now with a cached keytab behind it, which is the path that announces
+	// a degraded episode — the same cause, going to the log this time.
+	require.NoError(t, os.WriteFile(file, good, 0o600))
+	_, err = cache.load()
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(file, torn, 0o600))
+	_, err = cache.load()
+	require.NoError(t, err, "the cached keytab is served through the grace window")
+
+	require.Contains(t, logged.String(), "serving the last keytab that parsed")
+	require.NotContains(t, logged.String(), string(key),
+		"the log must not carry the keytab's key material either")
+	require.Contains(t, logged.String(), "keytab did not parse")
+}
+
+// TestKeytabPathCannotForgeALogLine is what the quoting on the episode lines is
+// for now that gokrb5's message is dropped: the cause still names the keytab
+// file, and a path is not this package's text either. Unix allows a newline in
+// one, so a path chosen badly — or supplied from configuration someone else
+// controls — could otherwise start a line under this package's prefix.
+func TestKeytabPathCannotForgeALogLine(t *testing.T) {
+	var logged bytes.Buffer
+	flog.SetOutput(&logged)
+	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
+
+	dir := t.TempDir()
+	file := path.Join(dir, "sso\nspnego: [Error] keytab loads cleanly again\n.keytab")
+	_, clean, err := utils.NewMockKeytab(
+		utils.WithPrincipal("HTTP/sso.example.com"),
+		utils.WithRealm("EXAMPLE.LOCAL"),
+		utils.WithPairs(utils.EncryptTypePair{Version: 3, EncryptType: 18, CreateTime: time.Now()}),
+		utils.WithFilename(file),
+	)
+	require.NoError(t, err)
+	t.Cleanup(clean)
+
+	now := time.Now()
+	cache := &keytabFileCache{
+		files:      []string{file},
+		staleGrace: 30 * time.Second,
+		retryEvery: time.Nanosecond,
+		nowFn:      func() time.Time { return now },
+	}
+	_, err = cache.load()
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(file, []byte("not a keytab"), 0o600))
+	_, err = cache.load()
+	require.NoError(t, err, "the cached keytab is served through the grace window")
+
+	require.Contains(t, logged.String(), "serving the last keytab that parsed")
+	require.NotContains(t, logged.String(), "\nspnego: [Error] keytab loads cleanly again",
+		"the degraded line must not let the path start a line of its own")
+
+	// And the expiry line, which carries the same cause.
+	logged.Reset()
+	now = now.Add(2 * cache.staleGrace)
+	_, err = cache.load()
+	require.Error(t, err)
+	require.Contains(t, logged.String(), "keytab still unusable after")
+	require.NotContains(t, logged.String(), "\nspnego: [Error] keytab loads cleanly again",
+		"the expiry line must not either")
+}
+
+// TestKeytabFileLookupRejectsAnEmptyPath covers the shape an unset environment
+// variable takes. Accepting it would defer a configuration mistake into a 500
+// on every request, which is what returning an error from the constructor
+// exists to prevent.
+func TestKeytabFileLookupRejectsAnEmptyPath(t *testing.T) {
+	for name, files := range map[string][]string{
+		"no files at all": {},
+		"one empty path":  {""},
+		"an empty path among others": {
+			"/etc/krb5.keytab", "",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			lookup, err := NewKeytabFileLookupFunc(files...)
+			require.ErrorIs(t, err, ErrConfigInvalidOfAtLeastOneKeytabFileRequired)
+			require.Nil(t, lookup)
+		})
+	}
+}
+
 // TestKeytabFailureCannotForgeALogLine is the lookup path's half of the same
 // rule. A KeytabLookupFunc is caller-supplied and documented as a hook for
 // databases and remote services, so what it reports can carry an upstream's

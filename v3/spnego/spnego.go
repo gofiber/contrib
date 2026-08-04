@@ -247,7 +247,13 @@ func quoteForLog(body []byte) string {
 	// unbounded walk would eat back through arbitrary binary.
 	kept := trimmed[:loggedBodyLimit]
 	for range utf8.UTFMax - 1 {
-		if r, size := utf8.DecodeLastRune(kept); r != utf8.RuneError || size > 1 {
+		// Stops on anything that is not a lone bad byte: a decoded rune, a
+		// genuine U+FFFD (which decodes at its full width), and an empty slice,
+		// which reports RuneError at width zero. Testing the width rather than
+		// its lower bound is what folds that last case in — without it the
+		// slice below would run off the end at any limit short enough to
+		// consume the whole input.
+		if r, size := utf8.DecodeLastRune(kept); r != utf8.RuneError || size != 1 {
 			break
 		}
 		kept = kept[:len(kept)-1]
