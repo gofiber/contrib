@@ -13,7 +13,9 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	flog "github.com/gofiber/fiber/v3/log"
+	"github.com/jcmturner/goidentity/v6"
 	"github.com/jcmturner/gokrb5/v8/keytab"
+	"github.com/jcmturner/gokrb5/v8/service"
 )
 
 type contextKey string
@@ -85,6 +87,102 @@ type Config struct {
 	// is nil, instead of rejecting the configuration. See
 	// NewSystemKeytabLookupFunc for how the path is resolved.
 	FallbackToSystemKeytab bool
+	// ServicePrincipal restricts which service principal a ticket may name,
+	// mapping to gokrb5's service.SName.
+	//
+	// Leaving it empty accepts a ticket for *any* principal held in the keytab.
+	// That is the right default for one service with one SPN, but a keytab
+	// merged from several services then honours a ticket minted for any of
+	// them: a client entitled to one gets into all of them. Set this whenever
+	// the keytab covers more than the service in front of it.
+	//
+	// Optional. Default: "" (any principal in the keytab).
+	ServicePrincipal string
+	// KeytabPrincipal selects which principal's keys are used out of a keytab
+	// holding several. gokrb5 otherwise infers it from the ticket.
+	//
+	// Optional. Default: "" (inferred).
+	KeytabPrincipal string
+	// MaxClockSkew is how far a ticket's issue time may sit from this host's
+	// clock. Kerberos is clock-sensitive, and the usual cause of a service
+	// rejecting every ticket is drift rather than misconfiguration.
+	//
+	// Optional. Default: 0, which leaves gokrb5's own default of 5 minutes.
+	MaxClockSkew time.Duration
+	// DisablePACDecoding turns off decoding of the Privilege Attribute
+	// Certificate that Active Directory embeds in a ticket.
+	//
+	// It is spelled negatively so the zero value preserves gokrb5's default,
+	// which is to decode. Decoding is what populates the group SIDs behind
+	// Identity.Authorized, so disabling it trades authorization data for a
+	// little less work per request — worth it only for a service that never
+	// inspects groups.
+	//
+	// Optional. Default: false (PAC decoded when present).
+	DisablePACDecoding bool
+	// RequireHostAddress rejects a ticket that carries no host addresses,
+	// mapping to gokrb5's service.RequireHostAddr.
+	//
+	// Note that the address a ticket is checked against is the connection's
+	// peer, which behind a reverse proxy is the proxy rather than the client.
+	//
+	// Optional. Default: false.
+	RequireHostAddress bool
+	// SessionManager lets gokrb5 establish a session after the first successful
+	// authentication and serve later requests from it, skipping full ticket
+	// validation. It is the single largest saving available on an authenticated
+	// hot path.
+	//
+	// Setting it changes the trust model: the session becomes a credential in
+	// its own right, so whatever the implementation stores must be
+	// unguessable, bound to the client, and expired deliberately. The
+	// middleware forwards the request's Cookie header to gokrb5 only when this
+	// is set, so a cookie-backed manager can find its session; anything the
+	// manager writes — Set-Cookie included — is replayed onto the Fiber
+	// response.
+	//
+	// Optional. Default: nil (every request is validated in full).
+	SessionManager service.SessionMgr
+	// OnSuccess runs once per request that authenticated, after the identity is
+	// in the Fiber context and before the next handler. Intended for metrics
+	// and audit; it cannot change the outcome.
+	//
+	// Optional. Default: nil.
+	OnSuccess func(ctx fiber.Ctx, identity goidentity.Identity)
+	// OnError runs when the middleware itself fails — today, only when the
+	// keytab lookup does — just before the request is answered with 500. It is
+	// not called for authentication outcomes: a rejected ticket is Unauthorized's
+	// business, and a challenge is not a failure.
+	//
+	// The error it receives wraps ErrLookupKeytabFailed and the underlying
+	// cause, which names keytab paths and OS errors, so treat it as internal
+	// diagnostics rather than something to echo to a client.
+	//
+	// Optional. Default: nil.
+	OnError func(ctx fiber.Ctx, err error)
+}
+
+// ConfigDefault is the configuration New falls back to field by field. Every
+// field is optional except KeytabLookup, which has no usable default: it is
+// required unless FallbackToSystemKeytab is set.
+var ConfigDefault = Config{
+	Next:                   nil,
+	KeytabLookup:           nil,
+	Log:                    nil,
+	UseFiberLogger:         false,
+	Unauthorized:           nil,
+	FallbackToSystemKeytab: false,
+	ServicePrincipal:       "",
+	KeytabPrincipal:        "",
+	// Zero rather than 5 minutes: gokrb5 substitutes its own default for a zero
+	// value, and naming a number here would silently pin it if gokrb5 ever
+	// changed.
+	MaxClockSkew:       0,
+	DisablePACDecoding: false,
+	RequireHostAddress: false,
+	SessionManager:     nil,
+	OnSuccess:          nil,
+	OnError:            nil,
 }
 
 // fileStamp identifies a keytab file revision cheaply enough to check on every

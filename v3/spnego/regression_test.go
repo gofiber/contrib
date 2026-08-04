@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	flog "github.com/gofiber/fiber/v3/log"
 	"github.com/jcmturner/gofork/encoding/asn1"
 	"github.com/jcmturner/goidentity/v6"
+	"github.com/jcmturner/gokrb5/v8/credentials"
 	"github.com/jcmturner/gokrb5/v8/gssapi"
 	"github.com/jcmturner/gokrb5/v8/keytab"
 	"github.com/jcmturner/gokrb5/v8/service"
@@ -629,7 +631,7 @@ func TestRequestForSPNEGO(t *testing.T) {
 	// default: asserting a GET against a hardcoded "GET" would hold however the
 	// method was derived.
 	app.All("/*", func(c fiber.Ctx) error {
-		got = requestForSPNEGO(c)
+		got = requestForSPNEGO(c, false)
 		return nil
 	})
 
@@ -638,12 +640,17 @@ func TestRequestForSPNEGO(t *testing.T) {
 	ctx.Request.SetRequestURI("/a%2Fb/c%20d?q=1&x=%41")
 	ctx.Request.Header.Set(fiber.HeaderHost, "sso.example.com:8443")
 	ctx.Request.Header.Set(fiber.HeaderAuthorization, "Negotiate abc")
+	ctx.Request.Header.Set(fiber.HeaderCookie, "session=abc123")
 	ctx.SetRemoteAddr(&net.TCPAddr{IP: net.IPv4(203, 0, 113, 7), Port: 55123})
 	app.Handler()(ctx)
 
 	require.NotNil(t, got)
 	require.Equal(t, fiber.MethodPatch, got.Method)
 	require.Equal(t, "Negotiate abc", got.Header.Get(fiber.HeaderAuthorization))
+	// Cookies are withheld unless a session manager needs them, so gokrb5 is not
+	// handed every cookie the site sets on requests that have no use for them.
+	require.Empty(t, got.Header.Get(fiber.HeaderCookie),
+		"cookies must not be forwarded without a session manager")
 	// net/http documents a server request's Host as "host or host:port", so the
 	// port must survive.
 	require.Equal(t, "sso.example.com:8443", got.Host)
@@ -665,6 +672,382 @@ func TestRequestForSPNEGO(t *testing.T) {
 	require.NotNil(t, got.URL)
 	require.Empty(t, got.URL.Path)
 	require.Empty(t, got.URL.RawQuery)
+}
+
+// TestRequestForSPNEGOForwardsCookiesForSessionManager covers the other half of
+// that rule. A session manager reads its session out of the cookies, so
+// withholding them would make every session lookup miss and quietly reduce the
+// feature to full validation on every request.
+func TestRequestForSPNEGOForwardsCookiesForSessionManager(t *testing.T) {
+	var got *http.Request
+	app := fiber.New()
+	app.All("/*", func(c fiber.Ctx) error {
+		got = requestForSPNEGO(c, true)
+		return nil
+	})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fiber.MethodGet)
+	ctx.Request.SetRequestURI("/authenticate")
+	ctx.Request.Header.Set(fiber.HeaderCookie, "session=abc123")
+	app.Handler()(ctx)
+
+	require.NotNil(t, got)
+	require.Equal(t, "session=abc123", got.Header.Get(fiber.HeaderCookie))
+	cookie, err := (&http.Request{Header: got.Header}).Cookie("session")
+	require.NoError(t, err, "gokrb5's session manager reads cookies off this request")
+	require.Equal(t, "abc123", cookie.Value)
+}
+
+// TestServiceSettingsPassesOnlyWhatWasSet pins the translation from Config into
+// gokrb5's options. The zero value of each field has to leave gokrb5's own
+// default standing rather than pinning a number here — MaxClockSkew in
+// particular resolves to five minutes inside gokrb5, and PAC decoding is on
+// unless it is explicitly turned off.
+func TestServiceSettingsPassesOnlyWhatWasSet(t *testing.T) {
+	t.Run("an empty config sets nothing", func(t *testing.T) {
+		settings := service.NewSettings(nil, serviceSettings(Config{})...)
+
+		require.Empty(t, settings.SName())
+		require.Empty(t, settings.KeytabPrincipal())
+		require.Equal(t, 5*time.Minute, settings.MaxClockSkew(),
+			"a zero skew must leave gokrb5's default, not pin one here")
+		require.True(t, settings.DecodePAC(),
+			"PAC decoding is what populates group SIDs; it must stay on by default")
+		require.False(t, settings.RequireHostAddr())
+		require.Nil(t, settings.SessionManager())
+		require.Nil(t, settings.Logger())
+	})
+
+	t.Run("every field reaches gokrb5", func(t *testing.T) {
+		manager := &recordingSessionManager{}
+		logger := log.New(io.Discard, "", 0)
+		settings := service.NewSettings(nil, serviceSettings(Config{
+			Log:                logger,
+			ServicePrincipal:   "HTTP/sso.example.com",
+			KeytabPrincipal:    "HTTP/other.example.com",
+			MaxClockSkew:       90 * time.Second,
+			DisablePACDecoding: true,
+			RequireHostAddress: true,
+			SessionManager:     manager,
+		})...)
+
+		require.Equal(t, "HTTP/sso.example.com", settings.SName())
+		// gokrb5 parses the override into a PrincipalName rather than keeping
+		// the string, so the assertion has to meet it there.
+		require.NotNil(t, settings.KeytabPrincipal())
+		require.Equal(t, []string{"HTTP", "other.example.com"},
+			settings.KeytabPrincipal().NameString)
+		require.Equal(t, 90*time.Second, settings.MaxClockSkew())
+		require.False(t, settings.DecodePAC())
+		require.True(t, settings.RequireHostAddr())
+		require.Same(t, manager, settings.SessionManager())
+		require.Same(t, logger, settings.Logger())
+	})
+}
+
+// recordingSessionManager is a gokrb5 service.SessionMgr that keeps what it was
+// handed, so a test can tell whether the middleware wired it up at all.
+type recordingSessionManager struct {
+	mu      sync.Mutex
+	stored  []byte
+	gets    int
+	getErr  error
+	newErr  error
+	newCall int
+}
+
+func (m *recordingSessionManager) New(w http.ResponseWriter, _ *http.Request, k string, v []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.newCall++
+	if m.newErr != nil {
+		return m.newErr
+	}
+	m.stored = v
+	// A real manager sets a cookie here; doing the same proves the middleware
+	// replays whatever the manager writes onto the Fiber response.
+	http.SetCookie(w, &http.Cookie{Name: k, Value: "opaque-session-id", Path: "/"})
+	return nil
+}
+
+func (m *recordingSessionManager) Get(_ *http.Request, _ string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.gets++
+	return m.stored, m.getErr
+}
+
+func (m *recordingSessionManager) calls() (news, gets int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.newCall, m.gets
+}
+
+// TestOnSuccessSeesTheIdentity covers the success hook. It runs before the rest
+// of the chain, so a slow downstream handler cannot delay a metric, and it is
+// handed the same identity the handler will read.
+func TestOnSuccessSeesTheIdentity(t *testing.T) {
+	user := goidentity.NewUser("alice")
+	user.SetDomain("EXAMPLE.LOCAL")
+	stubAuthenticate(t, func(http.ResponseWriter, *http.Request) goidentity.Identity {
+		return &user
+	})
+
+	var (
+		order    []string
+		seen     goidentity.Identity
+		hookRuns int
+	)
+	middleware, err := New(Config{
+		KeytabLookup: testKeytabLookup(t),
+		OnSuccess: func(_ fiber.Ctx, identity goidentity.Identity) {
+			hookRuns++
+			seen = identity
+			order = append(order, "hook")
+		},
+	})
+	require.NoError(t, err)
+
+	app := fiber.New()
+	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
+		order = append(order, "handler")
+		return c.SendString("authenticated")
+	})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fiber.MethodGet)
+	ctx.Request.SetRequestURI("/authenticate")
+	app.Handler()(ctx)
+
+	require.Equal(t, 1, hookRuns, "the hook must run once per authenticated request")
+	require.NotNil(t, seen)
+	require.Equal(t, "alice", seen.UserName())
+	require.Equal(t, []string{"hook", "handler"}, order,
+		"the hook must not wait on the rest of the chain")
+}
+
+// TestOnSuccessNotCalledWithoutAuthentication keeps the hook honest: a
+// challenge, a continuation and a rejection are all not-authenticated, and a
+// metric that counted them would overstate successful logins.
+func TestOnSuccessNotCalledWithoutAuthentication(t *testing.T) {
+	var hookRuns int
+	ctx := serveProtected(t, Config{
+		KeytabLookup: testKeytabLookup(t),
+		OnSuccess:    func(fiber.Ctx, goidentity.Identity) { hookRuns++ },
+	})
+
+	require.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode())
+	require.Zero(t, hookRuns, "an opening challenge is not a successful authentication")
+}
+
+// TestOnErrorReceivesTheInternalCause covers the failure hook. It gets the
+// wrapped cause rather than the client-safe wrapper, since a hook handed
+// "Internal Server Error" would have nothing to report.
+func TestOnErrorReceivesTheInternalCause(t *testing.T) {
+	secretPath := path.Join(t.TempDir(), "super-secret-location.keytab")
+	var (
+		hookErr  error
+		hookRuns int
+	)
+	ctx := serveProtected(t, Config{
+		KeytabLookup: func() (*keytab.Keytab, error) {
+			return nil, fmt.Errorf("open %s: permission denied", secretPath)
+		},
+		OnError: func(_ fiber.Ctx, err error) {
+			hookRuns++
+			hookErr = err
+		},
+	})
+
+	require.Equal(t, 1, hookRuns)
+	require.ErrorIs(t, hookErr, ErrLookupKeytabFailed)
+	require.ErrorContains(t, hookErr, secretPath,
+		"the hook is internal diagnostics and needs the cause")
+	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
+	require.NotContains(t, string(ctx.Response.Body()), secretPath,
+		"handing the cause to the hook must not also hand it to the client")
+}
+
+// TestOnErrorNotCalledOnAuthenticationFailure separates the two kinds of
+// not-authenticated. A rejected ticket is Unauthorized's business; treating it
+// as an internal error would page whoever watches OnError for every bad client.
+func TestOnErrorNotCalledOnAuthenticationFailure(t *testing.T) {
+	var hookRuns int
+	ctx := serveProtected(t, Config{
+		KeytabLookup: testKeytabLookup(t),
+		OnError:      func(fiber.Ctx, error) { hookRuns++ },
+	}, func(ctx *fasthttp.RequestCtx) {
+		ctx.Request.Header.Set(fiber.HeaderAuthorization, rejectedNegotiateHeader(t))
+	})
+
+	require.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode())
+	require.Equal(t, spnegoRejected, string(ctx.Response.Header.Peek(fiber.HeaderWWWAuthenticate)))
+	require.Zero(t, hookRuns, "a refused ticket is not an internal failure")
+}
+
+// TestSessionManagerEstablishesAndReusesASession drives the whole session
+// feature through live gokrb5: the first authentication creates a session and
+// its Set-Cookie reaches the client, and a second request carrying that cookie
+// is served from the session without a ticket at all.
+func TestSessionManagerEstablishesAndReusesASession(t *testing.T) {
+	user := goidentity.NewUser("alice")
+	user.SetDomain("EXAMPLE.LOCAL")
+	manager := &recordingSessionManager{}
+
+	// The stub stands in for a validated ticket; the session plumbing under
+	// test is gokrb5's own, driven by the settings the middleware built.
+	stubAuthenticate(t, func(w http.ResponseWriter, r *http.Request) goidentity.Identity {
+		// Mirror gokrb5: a session is created before the accept-completed
+		// header, and its Set-Cookie has to survive onto the Fiber response.
+		require.NoError(t, manager.New(w, r, "spnego-session", []byte("credentials")))
+		return &user
+	})
+
+	var seen goidentity.Identity
+	middleware, err := New(Config{
+		KeytabLookup:   testKeytabLookup(t),
+		SessionManager: manager,
+	})
+	require.NoError(t, err)
+
+	app := fiber.New()
+	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
+		seen, _ = GetAuthenticatedIdentityFromContext(c)
+		return c.SendString("authenticated")
+	})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fiber.MethodGet)
+	ctx.Request.SetRequestURI("/authenticate")
+	ctx.Request.Header.Set(fiber.HeaderCookie, "spnego-session=opaque-session-id")
+	app.Handler()(ctx)
+
+	require.NotNil(t, seen)
+	require.Equal(t, "alice", seen.UserName())
+	require.Contains(t, string(ctx.Response.Header.Peek(fiber.HeaderSetCookie)), "opaque-session-id",
+		"whatever the session manager writes must reach the client")
+
+	news, _ := manager.calls()
+	require.Equal(t, 1, news)
+}
+
+// TestAuthenticatedIdentityCarriesADGroups pins the capability the README
+// documents: against Active Directory, PAC decoding puts the caller's group
+// SIDs on the identity, so Authorized answers group questions without the
+// application parsing anything itself.
+//
+// The identity here is the *credentials.Credentials gokrb5 itself stores, so
+// this exercises the real type rather than a stand-in. What the test cannot do
+// is mint a PAC — that needs a KDC — so it sets the AD credentials the way
+// gokrb5's own APExchange path does.
+func TestAuthenticatedIdentityCarriesADGroups(t *testing.T) {
+	const admins = "S-1-5-21-1004336348-1177238915-682003330-512"
+
+	creds := credentials.New("alice", "EXAMPLE.LOCAL")
+	creds.SetADCredentials(credentials.ADCredentials{
+		EffectiveName:       "alice",
+		LogonDomainName:     "EXAMPLE",
+		GroupMembershipSIDs: []string{admins},
+	})
+	stubAuthenticate(t, func(http.ResponseWriter, *http.Request) goidentity.Identity {
+		return creds
+	})
+
+	var (
+		isAdmin bool
+		isOther bool
+		attrs   []string
+	)
+	middleware, err := New(Config{KeytabLookup: testKeytabLookup(t)})
+	require.NoError(t, err)
+
+	app := fiber.New()
+	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
+		identity, ok := GetAuthenticatedIdentityFromContext(c)
+		require.True(t, ok)
+		isAdmin = identity.Authorized(admins)
+		isOther = identity.Authorized("S-1-5-21-0000000000-0000000000-0000000000-999")
+		attrs = identity.AuthzAttributes()
+		return c.SendString("authenticated")
+	})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fiber.MethodGet)
+	ctx.Request.SetRequestURI("/authenticate")
+	app.Handler()(ctx)
+
+	require.True(t, isAdmin, "a group the caller is in must authorize")
+	require.False(t, isOther, "a group the caller is not in must not")
+	require.Contains(t, attrs, admins)
+}
+
+// TestCookieForwardingFollowsTheSessionManager covers the wiring between the
+// two, which asserting on requestForSPNEGO directly cannot reach: that helper
+// takes the decision as an argument, so only an end-to-end request shows
+// whether Config.SessionManager is what decides it.
+func TestCookieForwardingFollowsTheSessionManager(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		manager service.SessionMgr
+		want    string
+	}{
+		{
+			name:    "withheld without a session manager",
+			manager: nil,
+			want:    "",
+		},
+		{
+			name:    "forwarded for a session manager",
+			manager: &recordingSessionManager{},
+			want:    "session=abc123",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var handed *http.Request
+			stubAuthenticate(t, func(_ http.ResponseWriter, r *http.Request) goidentity.Identity {
+				handed = r
+				return nil
+			})
+
+			serveProtected(t, Config{
+				KeytabLookup:   testKeytabLookup(t),
+				SessionManager: tc.manager,
+			}, func(ctx *fasthttp.RequestCtx) {
+				ctx.Request.Header.Set(fiber.HeaderCookie, "session=abc123")
+			})
+
+			require.NotNil(t, handed, "the stub must have seen the built request")
+			require.Equal(t, tc.want, handed.Header.Get(fiber.HeaderCookie))
+		})
+	}
+}
+
+// TestConfigDefault pins the documented defaults. Every one of them is load
+// bearing: a non-zero MaxClockSkew would override gokrb5's five minutes, and a
+// true DisablePACDecoding would silently strip the group SIDs that
+// Identity.Authorized reads.
+func TestConfigDefault(t *testing.T) {
+	require.Nil(t, ConfigDefault.Next)
+	require.Nil(t, ConfigDefault.KeytabLookup)
+	require.Nil(t, ConfigDefault.Log)
+	require.False(t, ConfigDefault.UseFiberLogger)
+	require.Nil(t, ConfigDefault.Unauthorized)
+	require.False(t, ConfigDefault.FallbackToSystemKeytab)
+	require.Empty(t, ConfigDefault.ServicePrincipal)
+	require.Empty(t, ConfigDefault.KeytabPrincipal)
+	require.Zero(t, ConfigDefault.MaxClockSkew)
+	require.False(t, ConfigDefault.DisablePACDecoding)
+	require.False(t, ConfigDefault.RequireHostAddress)
+	require.Nil(t, ConfigDefault.SessionManager)
+	require.Nil(t, ConfigDefault.OnSuccess)
+	require.Nil(t, ConfigDefault.OnError)
+
+	// The zero Config and ConfigDefault have to stay interchangeable, or the
+	// documented defaults would describe something New never applies.
+	require.Equal(t, Config{}.ServicePrincipal, ConfigDefault.ServicePrincipal)
+	require.Equal(t, Config{}.MaxClockSkew, ConfigDefault.MaxClockSkew)
+	require.Equal(t, Config{}.DisablePACDecoding, ConfigDefault.DisablePACDecoding)
+	require.Equal(t, Config{}.RequireHostAddress, ConfigDefault.RequireHostAddress)
 }
 
 // TestLogThrottle pins all three properties: the first event passes, repeats

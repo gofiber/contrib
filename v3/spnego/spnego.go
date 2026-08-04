@@ -192,14 +192,22 @@ func resolveLogger(cfg Config, fiberLogger flog.AllLogger[*log.Logger]) *log.Log
 // directly avoids adaptor.ConvertRequest, which parses the client-supplied URI
 // and copies every header on each authenticated request.
 //
-// gokrb5 v8.4.4's server path reads only the Authorization header and the
-// remote address; it consults cookies solely behind a session-manager check,
-// and this middleware configures no session manager. Re-check this when
-// upgrading gokrb5 or if a session manager is ever exposed through Config.
-func requestForSPNEGO(ctx fiber.Ctx) *http.Request {
-	header := make(http.Header, 1)
+// gokrb5 v8.4.4's server path reads the Authorization header and the remote
+// address, and reads cookies only behind a session-manager check — which is why
+// withCookies mirrors whether Config.SessionManager is set. Re-check this when
+// upgrading gokrb5.
+func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
+	header := make(http.Header, 2)
 	if auth := ctx.Get(fiber.HeaderAuthorization); auth != "" {
 		header.Set(fiber.HeaderAuthorization, auth)
+	}
+	// Forwarded only for a session manager, which reads the session out of the
+	// cookies. Sending them unconditionally would hand gokrb5 every cookie the
+	// site sets on requests that have no use for them.
+	if withCookies {
+		if cookies := ctx.Get(fiber.HeaderCookie); cookies != "" {
+			header.Set(fiber.HeaderCookie, cookies)
+		}
 	}
 	return &http.Request{
 		Method: ctx.Method(),
@@ -217,6 +225,45 @@ func requestForSPNEGO(ctx fiber.Ctx) *http.Request {
 		Header:     header,
 		RemoteAddr: ctx.RequestCtx().RemoteAddr().String(),
 	}
+}
+
+// serviceSettings translates Config into the options gokrb5 accepts. Only the
+// fields the caller actually set are passed on, so gokrb5's own defaults stand
+// everywhere else — notably MaxClockSkew, which it resolves to five minutes
+// when left at zero, and PAC decoding, which it performs unless told not to.
+func serviceSettings(cfg Config) []func(*service.Settings) {
+	// gokrb5 logs unconditionally, once per request and without a level, so it
+	// is wired up only when the caller asks for it. Config.Log takes priority;
+	// otherwise Fiber's logger is used, but only when it is backed by a
+	// *log.Logger. DefaultLogger returns a nil interface when it is not, so the
+	// result has to be checked before calling Logger on it.
+	opts := make([]func(*service.Settings), 0, 7)
+	if l := resolveLogger(cfg, flog.DefaultLogger[*log.Logger]()); l != nil {
+		opts = append(opts, service.Logger(l))
+	}
+	if cfg.ServicePrincipal != "" {
+		opts = append(opts, service.SName(cfg.ServicePrincipal))
+	}
+	if cfg.KeytabPrincipal != "" {
+		opts = append(opts, service.KeytabPrincipal(cfg.KeytabPrincipal))
+	}
+	// Not observable today: gokrb5 maps an explicitly-set zero to the same five
+	// minutes it uses for unset. The guard is against that changing — a version
+	// that read zero as "no skew tolerated" would reject every ticket on any
+	// host whose clock is not exact, which is all of them.
+	if cfg.MaxClockSkew > 0 {
+		opts = append(opts, service.MaxClockSkew(cfg.MaxClockSkew))
+	}
+	if cfg.DisablePACDecoding {
+		opts = append(opts, service.DecodePAC(false))
+	}
+	if cfg.RequireHostAddress {
+		opts = append(opts, service.RequireHostAddr(true))
+	}
+	if cfg.SessionManager != nil {
+		opts = append(opts, service.SessionManager(cfg.SessionManager))
+	}
+	return opts
 }
 
 // authenticate wraps a handler in SPNEGO acceptance. It is a variable so tests
@@ -251,15 +298,10 @@ func New(cfg Config) (fiber.Handler, error) {
 			return nil, err
 		}
 	}
-	// gokrb5 logs unconditionally, once per request and without a level, so it
-	// is wired up only when the caller asks for it. Config.Log takes priority;
-	// otherwise Fiber's logger is used, but only when it is backed by a
-	// *log.Logger. DefaultLogger returns a nil interface when it is not, so the
-	// result has to be checked before calling Logger on it.
-	var opts = make([]func(settings *service.Settings), 0, 1)
-	if l := resolveLogger(cfg, flog.DefaultLogger[*log.Logger]()); l != nil {
-		opts = append(opts, service.Logger(l))
-	}
+	opts := serviceSettings(cfg)
+	// Captured once: gokrb5 looks at cookies only when a session manager is
+	// configured, so nothing else has to pay for copying them.
+	forwardCookies := cfg.SessionManager != nil
 	// Captured at construction; see the note on authenticate.
 	acceptSPNEGO := authenticate
 
@@ -293,9 +335,16 @@ func New(cfg Config) (fiber.Handler, error) {
 		}
 		if err != nil {
 			logInternal(err)
-			return &clientSafeError{cause: fmt.Errorf("%w: %w", ErrLookupKeytabFailed, err)}
+			failure := fmt.Errorf("%w: %w", ErrLookupKeytabFailed, err)
+			if cfg.OnError != nil {
+				// Given the wrapped cause rather than the client-safe wrapper:
+				// the hook is internal diagnostics, and a caller that wanted the
+				// sanitised form would have nothing to inspect.
+				cfg.OnError(ctx, failure)
+			}
+			return &clientSafeError{cause: failure}
 		}
-		req := requestForSPNEGO(ctx)
+		req := requestForSPNEGO(ctx, forwardCookies)
 
 		var (
 			authenticated bool
@@ -312,7 +361,13 @@ func New(cfg Config) (fiber.Handler, error) {
 			// point; the client needs it to authenticate the server.
 			recorder.copyHeadersTo(ctx)
 			// Set the authenticated identity in the Fiber context
-			SetAuthenticatedIdentityToContext(ctx, goidentity.FromHTTPRequestContext(r))
+			identity := goidentity.FromHTTPRequestContext(r)
+			SetAuthenticatedIdentityToContext(ctx, identity)
+			// Before ctx.Next, so a hook counting authentications is not ordered
+			// behind however long the rest of the chain takes.
+			if cfg.OnSuccess != nil {
+				cfg.OnSuccess(ctx, identity)
+			}
 			// Call the next handler in the chain
 			nextErr = ctx.Next()
 		})

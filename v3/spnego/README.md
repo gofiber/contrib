@@ -16,6 +16,10 @@ This middleware provides SPNEGO (Simple and Protected GSSAPI Negotiation Mechani
 - Flexible keytab lookup system
 - Support for dynamic keytab retrieval from various sources
 - Integration with Fiber context for authenticated identity storage
+- Group-based authorization from Active Directory's PAC, with no extra parsing
+- Optional sessions, so an authenticated client is not revalidated per request
+- Service principal, keytab principal, clock skew and host-address controls
+- Success and failure hooks for metrics and audit
 - Configurable logging
 
 ## Version Compatibility
@@ -196,6 +200,84 @@ The `Config` struct supports the following fields:
 - `UseFiberLogger`: Send gokrb5's diagnostics to Fiber's default logger when `Log` is nil (optional, defaults to `false`)
 - `Unauthorized`: A `func(fiber.Ctx) error` invoked when a presented Kerberos ticket is rejected, in place of SPNEGO's own rejection response (optional)
 - `FallbackToSystemKeytab`: Load the system keytab when `KeytabLookup` is nil, instead of rejecting the configuration (optional, defaults to `false`). The resolved keytab is loaded once during `New`, so a misconfigured host fails at startup rather than on every request.
+- `ServicePrincipal`: Restrict which service principal a ticket may name (optional, defaults to `""` — any principal in the keytab). See [Restricting the accepted principal](#restricting-the-accepted-principal).
+- `KeytabPrincipal`: Choose which principal's keys to use out of a keytab holding several (optional, defaults to `""` — gokrb5 infers it from the ticket)
+- `MaxClockSkew`: How far a ticket's issue time may sit from this host's clock (optional, defaults to `0`, which leaves gokrb5's own 5 minutes)
+- `DisablePACDecoding`: Turn off decoding of Active Directory's PAC (optional, defaults to `false` — the PAC *is* decoded). Decoding is what populates the group SIDs behind `Identity.Authorized`, so only disable it on a service that never inspects groups.
+- `RequireHostAddress`: Reject a ticket that carries no host addresses (optional, defaults to `false`)
+- `SessionManager`: A `service.SessionMgr` letting gokrb5 serve later requests from a session instead of revalidating a ticket each time (optional, defaults to `nil`). See [Sessions](#sessions).
+- `OnSuccess`: A `func(fiber.Ctx, goidentity.Identity)` called once per authenticated request, before the rest of the chain (optional, defaults to `nil`)
+- `OnError`: A `func(fiber.Ctx, error)` called when the middleware itself fails — today only a keytab lookup failure — just before the `500` (optional, defaults to `nil`)
+
+`ConfigDefault` holds these defaults if you would rather start from it than from a zero `Config`; the two are interchangeable.
+
+### Group-based authorization
+
+Against Active Directory the middleware gives you more than a username. AD embeds a PAC in the ticket, gokrb5 decodes it by default, and the caller's group SIDs land on the identity — so authorization needs no extra parsing:
+
+```go
+const admins = "S-1-5-21-1004336348-1177238915-682003330-512"
+
+app.Get("/admin", authMiddleware, func(c fiber.Ctx) error {
+    identity, ok := spnego.GetAuthenticatedIdentityFromContext(c)
+    if !ok || !identity.Authorized(admins) {
+        return fiber.ErrForbidden
+    }
+    return c.SendString("Hello, " + identity.UserName())
+})
+```
+
+`identity.AuthzAttributes()` returns every SID if you would rather match against a set. For the full AD payload — effective name, logon domain, primary group — type-assert to gokrb5's concrete type:
+
+```go
+if creds, ok := identity.(*credentials.Credentials); ok {
+    ad := creds.GetADCredentials()
+    log.Printf("%s logged on from %s", ad.EffectiveName, ad.LogonDomainName)
+}
+```
+
+MIT Kerberos does not normally issue a PAC, so on a non-AD realm expect `AuthzAttributes()` to be empty and authorize on the principal name instead.
+
+### Restricting the accepted principal
+
+With `ServicePrincipal` unset, a ticket naming **any** principal in the keytab is accepted. That is the right behaviour for one service with one SPN, and the wrong one as soon as a keytab is merged from several: a client entitled to one of them gets into all of them. Set it whenever the keytab covers more than the service sitting behind it.
+
+```go
+authMiddleware, err := spnego.New(spnego.Config{
+    KeytabLookup:     keytabLookup,
+    ServicePrincipal: "HTTP/sso.example.com",
+})
+```
+
+### Sessions
+
+`SessionManager` is the largest saving available on an authenticated hot path: gokrb5 establishes a session after the first successful authentication and serves later requests from it, skipping ticket validation entirely.
+
+It also changes the trust model. The session becomes a credential in its own right, so whatever your implementation stores must be unguessable, bound to the client, and expired deliberately — a predictable session identifier is a full authentication bypass. The middleware forwards the request's `Cookie` header to gokrb5 only when this is set, and replays whatever the manager writes — `Set-Cookie` included — onto the Fiber response.
+
+### Observability
+
+`OnSuccess` and `OnError` are for metrics and audit; neither can change the outcome.
+
+```go
+authMiddleware, err := spnego.New(spnego.Config{
+    KeytabLookup: keytabLookup,
+    OnSuccess: func(c fiber.Ctx, identity goidentity.Identity) {
+        authSuccesses.Inc()
+    },
+    OnError: func(c fiber.Ctx, err error) {
+        authInternalErrors.Inc()
+    },
+})
+```
+
+The two do not cover every outcome, deliberately. `OnSuccess` fires only for a request that authenticated — a challenge, a continuation and a rejection are all *not* authenticated, and counting them as successes would overstate logins. `OnError` fires only when the middleware itself fails; a refused ticket is `Unauthorized`'s business, not an internal error. The error `OnError` receives carries the underlying cause, which names keytab paths and OS errors, so treat it as internal diagnostics rather than something to echo back.
+
+### Behind a reverse proxy
+
+gokrb5 binds ticket validation to the connection's peer address, which behind a proxy is the proxy rather than the client. A client presenting an address-restricted ticket will therefore be refused.
+
+The middleware deliberately does **not** read `X-Forwarded-For` here: doing so would let a client choose the address its own ticket is validated against, which defeats the restriction entirely. If your clients use address-restricted tickets, terminate Kerberos at the edge or issue tickets without address restrictions.
 
 ### Logging
 
