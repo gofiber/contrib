@@ -37,7 +37,7 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | Namespace | `string` | Prefixes every metric name. | `"http"` |
 | Subsystem | `string` | Prefixes every metric name after `Namespace`. | `""` |
 | MetricsPath | `string` | Path served with the Prometheus exposition format. Unless `Next` returns true, requests to it are answered by the middleware and are not instrumented. Compared case-sensitively against the full request path, ignoring trailing slashes. | `"/metrics"` |
-| Labels | `prometheus.Labels` | Extra const labels attached to every metric. | `nil` |
+| Labels | `prometheus.Labels` | Extra const labels attached to every metric. A key colliding with a built-in label panics. | `nil` |
 | Registerer | `prometheus.Registerer` | Registry used to register the metrics. Reusing one across two `New` calls panics on duplicate registration. | private registry |
 | Gatherer | `prometheus.Gatherer` | Source the metrics endpoint gathers from. | private registry |
 | DisableGoCollector | `bool` | Skips registration of the Go runtime metrics collector. | `false` |
@@ -60,7 +60,7 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | DisabledMetrics | `[]Metric` | Metric families to skip registering and recording. | `nil` |
 | SkipURIs | `[]string` | Route patterns excluded from instrumentation, e.g. `/user/:id`. A trailing `*` matches by prefix; a leading `/` is added when missing. | `nil` |
 | SkipStatusCodes | `[]int` | Response status codes excluded from metrics. | `nil` |
-| SkipStatusClasses | `[]string` | Status classes excluded from metrics, `"1xx"` through `"5xx"`. | `nil` |
+| SkipStatusClasses | `[]string` | Status classes excluded from metrics, `"1xx"` through `"5xx"`. Anything else panics. | `nil` |
 | DynamicLabels | `map[string]func(fiber.Ctx) string` | Extra labels computed per request. | `nil` |
 | Next | `func(fiber.Ctx) bool` | Skips the middleware when it returns true, including for `MetricsPath`. | `nil` |
 
@@ -231,6 +231,9 @@ Because Fiber route patterns can themselves end in `*`, such an entry also
 matches the pattern named exactly that: `/static*` excludes both the route
 registered as `/static*` and anything under `/static`.
 
+Blank entries are ignored, so splitting an unset environment variable on `,`
+does not silently exclude the root route; ask for `/` explicitly to do that.
+
 `SkipStatusCodes` takes exact codes; `SkipStatusClasses` takes whole classes
 so you do not have to enumerate them:
 
@@ -249,6 +252,19 @@ returns an error. This is what Fiber's own logger middleware does, and it is
 what allows the recorded status code and response size to match what the client
 actually received. The error is therefore consumed by this middleware and does
 not propagate to handlers mounted *before* it.
+
+Mount `recover.New()` **after** this middleware, not before it:
+
+```go
+app.Use(prometheus.New(prometheus.Config{}))
+app.Use(recover.New())
+```
+
+A panic unwinds straight past the recording step, so with `recover` mounted
+first the middleware never sees the request complete and the resulting 500
+appears in no metric family at all — only the in-flight gauge, which is
+deferred, stays balanced. Recovering downstream turns the panic into an ordinary
+error return, which this middleware records as the 500 the client received.
 
 ## Registry and collectors
 
@@ -324,6 +340,12 @@ app.Use(fiberprometheus.New(fiberprometheus.Config{
     MetricsErrorLog:            log.New(os.Stderr, "prometheus: ", log.LstdFlags),
 }))
 ```
+
+`MetricsTimeout` bounds the *answer*, not the gather: `promhttp` replies 503 and
+returns while the gathering goroutine runs on to completion, still holding its
+`MetricsMaxRequestsInFlight` slot. A gatherer that regularly outruns the timeout
+will therefore still exhaust the cap — fix the slow collector rather than raising
+the limit.
 
 ## Native histograms
 

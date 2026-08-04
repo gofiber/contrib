@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	recoverer "github.com/gofiber/fiber/v3/middleware/recover"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"go.opentelemetry.io/otel"
@@ -2027,5 +2028,226 @@ func TestMatchedRequestWithoutRouteObeysTrackUnmatched(t *testing.T) {
 				t.Fatalf("expected recorded=%v with TrackUnmatchedRequests=%v, got %q", tracked, tracked, metrics)
 			}
 		})
+	}
+}
+
+// TestConstantLabelCollisionPanics pins the middleware's own message for a
+// Labels key that shadows a variable label. Left unchecked, client_golang
+// rejects the descriptor with a panic naming neither Labels nor the key.
+func TestConstantLabelCollisionPanics(t *testing.T) {
+	for _, name := range []string{"path", "method", "status_code", "status_class"} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatalf("expected a panic for the constant label %q", name)
+				}
+				if msg := fmt.Sprint(r); !strings.Contains(msg, "constant label") || !strings.Contains(msg, name) {
+					t.Fatalf("expected the panic to name the offending constant label, got %v", r)
+				}
+			}()
+
+			_ = New(Config{Labels: prometheus.Labels{name: "x"}})
+		})
+	}
+}
+
+// TestInvalidStatusClassPanics covers a typo in SkipStatusClasses, which would
+// otherwise sit in the filter matching nothing while the operator believes the
+// class is excluded.
+func TestInvalidStatusClassPanics(t *testing.T) {
+	for _, class := range []string{"4x", "400", "6xx", "xx"} {
+		t.Run(class, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatalf("expected a panic for the status class %q", class)
+				}
+				if msg := fmt.Sprint(r); !strings.Contains(msg, "status class") {
+					t.Fatalf("expected a status class panic, got %v", r)
+				}
+			}()
+
+			_ = New(Config{SkipStatusClasses: []string{class}})
+		})
+	}
+}
+
+// TestValidStatusClassesAreAccepted guards the validation against rejecting the
+// documented spellings, including the padding and casing it normalizes away.
+func TestValidStatusClassesAreAccepted(t *testing.T) {
+	_ = New(Config{SkipStatusClasses: []string{"1xx", "2xx", "3xx", " 4XX ", "5Xx"}})
+}
+
+// TestBlankSkipURIIsIgnored covers the shape an unset environment variable
+// takes after strings.Split: a single empty entry, which would normalize to "/"
+// and silently drop the root route from every metric.
+func TestBlankSkipURIIsIgnored(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{SkipURIs: []string{"", "   "}}, "")
+	app.Get("/", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/",status_code="200"}`) {
+		t.Fatalf("expected the root route to stay instrumented, got %q", metrics)
+	}
+}
+
+// TestExplicitRootSkipURI is the counterpart: asking for "/" still works.
+func TestExplicitRootSkipURI(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{SkipURIs: []string{"/"}}, "")
+	app.Get("/", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if strings.Contains(metrics, `path="/"`) {
+		t.Fatalf("expected the root route to be skipped, got %q", metrics)
+	}
+}
+
+// TestMetricsTimeoutServesScrape exercises the promhttp timeout path, which
+// wraps the handler in http.TimeoutHandler and so runs it on its own goroutine.
+func TestMetricsTimeoutServesScrape(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{MetricsTimeout: 5 * time.Second}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/hello",status_code="200"}`) {
+		t.Fatalf("expected the scrape to be served under a timeout, got %q", metrics)
+	}
+}
+
+// blockingGatherer holds a scrape inside Gather until it is released, so a
+// second scrape can be made to arrive while the first is still in flight.
+type blockingGatherer struct {
+	prometheus.Gatherer
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (g *blockingGatherer) Gather() ([]*dto.MetricFamily, error) {
+	g.entered <- struct{}{}
+	<-g.release
+	return g.Gatherer.Gather()
+}
+
+// TestMetricsMaxRequestsInFlightRejectsExcess pins that the promhttp limiter is
+// wired up: with one slot taken, the next scrape is turned away rather than
+// queued behind it.
+func TestMetricsMaxRequestsInFlightRejectsExcess(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	gatherer := &blockingGatherer{
+		Gatherer: registry,
+		entered:  make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+
+	app, _ := newAppWithMiddleware(Config{
+		Registerer:                 registry,
+		Gatherer:                   gatherer,
+		MetricsMaxRequestsInFlight: 1,
+	}, "")
+
+	firstDone := make(chan int, 1)
+	go func() {
+		resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/metrics", nil), noTimeoutConfig)
+		if err != nil {
+			firstDone <- 0
+			return
+		}
+		firstDone <- resp.StatusCode
+	}()
+
+	<-gatherer.entered
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/metrics", nil), noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("fetching metrics: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusServiceUnavailable {
+		t.Fatalf("expected status 503 while the only slot is taken, got %d", resp.StatusCode)
+	}
+
+	close(gatherer.release)
+	if status := <-firstDone; status != fiber.StatusOK {
+		t.Fatalf("expected the first scrape to succeed, got %d", status)
+	}
+}
+
+// TestDetachRequestCopiesHeader covers the wrapper that keeps a promhttp
+// goroutine outliving the Fiber handler from reading recycled buffers.
+func TestDetachRequestCopiesHeader(t *testing.T) {
+	var seen *http.Request
+	handler := detachRequest(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		seen = r
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Accept", "text/plain")
+	req.Header.Add("Accept-Encoding", "gzip")
+	req.Header.Add("Accept-Encoding", "zstd")
+	original := req.Header
+
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if seen == nil {
+		t.Fatal("expected the wrapped handler to run")
+	}
+	if len(seen.Header) != len(original) {
+		t.Fatalf("expected %d header names, got %d", len(original), len(seen.Header))
+	}
+	for name, values := range original {
+		got := seen.Header[name]
+		if len(got) != len(values) {
+			t.Fatalf("expected %d values for %s, got %d", len(values), name, len(got))
+		}
+		for i, value := range values {
+			if got[i] != value {
+				t.Fatalf("expected %s[%d] to be %q, got %q", name, i, value, got[i])
+			}
+		}
+		if &got[0] == &values[0] {
+			t.Fatalf("expected the values of %s to be a fresh slice", name)
+		}
+	}
+}
+
+// TestPanicWithDownstreamRecoverIsRecorded pins the mounting order the New doc
+// prescribes: recovering downstream turns the panic into an error return the
+// middleware can attribute, so the 500 the client received is not invisible.
+func TestPanicWithDownstreamRecoverIsRecorded(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{}, "")
+	app.Use(recoverer.New())
+	app.Get("/boom", func(fiber.Ctx) error {
+		panic("boom")
+	})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/boom", nil), noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusInternalServerError {
+		t.Fatalf("expected status 500, got %d", resp.StatusCode)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/boom",status_code="500"}`) {
+		t.Fatalf("expected the panic-induced 500 to be recorded, got %q", metrics)
 	}
 }

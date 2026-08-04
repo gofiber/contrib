@@ -317,9 +317,14 @@ func cloneBuckets(supplied, defaults []float64) []float64 {
 	return append([]float64(nil), supplied...)
 }
 
-// configDefault fills in the defaults and takes private copies of everything
-// the caller could still mutate. A missing config is the zero config: keeping
-// one code path means the two cannot drift apart.
+// configDefault fills in the defaults and takes private copies of the two
+// things that outlive the call: the bucket bounds, which client_golang aliases
+// into the live histogram, and Labels, which New writes the "service" key into.
+// Everything else New drains into its own maps before returning, so a caller
+// mutating it afterwards cannot reach anything.
+//
+// A missing config is the zero config: keeping one code path means the two
+// cannot drift apart.
 func configDefault(config ...Config) Config {
 	var cfg Config
 	if len(config) > 0 {
@@ -358,21 +363,6 @@ func configDefault(config ...Config) Config {
 		}
 		cfg.Labels = labels
 	}
-
-	if cfg.DynamicLabels == nil {
-		cfg.DynamicLabels = make(map[string]func(fiber.Ctx) string)
-	} else {
-		dynamic := make(map[string]func(fiber.Ctx) string, len(cfg.DynamicLabels))
-		for name, fn := range cfg.DynamicLabels {
-			dynamic[name] = fn
-		}
-		cfg.DynamicLabels = dynamic
-	}
-
-	cfg.SkipURIs = append([]string(nil), cfg.SkipURIs...)
-	cfg.SkipStatusCodes = append([]int(nil), cfg.SkipStatusCodes...)
-	cfg.SkipStatusClasses = append([]string(nil), cfg.SkipStatusClasses...)
-	cfg.DisabledMetrics = append([]Metric(nil), cfg.DisabledMetrics...)
 
 	return cfg
 }

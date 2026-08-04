@@ -4,6 +4,7 @@ package prometheus
 
 import (
 	"errors"
+	"net/http"
 	"reflect"
 	"sort"
 	"strconv"
@@ -43,6 +44,7 @@ type middleware struct {
 	skipStatusCodes   map[int]struct{}
 	skipStatusClasses map[string]struct{}
 	dynamicLabels     []dynamicLabel
+	skipAll           bool
 	trackUnmatched    bool
 	records           bool
 	observes          bool
@@ -64,6 +66,16 @@ var reservedLabels = map[string]struct{}{
 	"path":         {},
 }
 
+// validStatusClasses are the classes Config.SkipStatusClasses accepts, which is
+// exactly the set statusClass can return for a real response.
+var validStatusClasses = map[string]bool{
+	"1xx": true,
+	"2xx": true,
+	"3xx": true,
+	"4xx": true,
+	"5xx": true,
+}
+
 // New creates a new Prometheus middleware handler.
 //
 // The handler is meant to be mounted globally so that it observes every
@@ -83,6 +95,18 @@ var reservedLabels = map[string]struct{}{
 // middleware and is what allows the recorded status code and response size to
 // match what the client received. As a consequence the error is consumed by
 // this middleware and is not propagated to handlers mounted before it.
+//
+// Mount recover.New() after this middleware, not before it:
+//
+//	app.Use(prometheus.New(prometheus.Config{}))
+//	app.Use(recover.New())
+//
+// A panic unwinds straight past the recording below, so with recover mounted
+// first the middleware never sees the request complete and the resulting 500
+// appears in no metric family at all - only the in-flight gauge, which is
+// deferred, stays balanced. Recovering downstream turns the panic into an
+// ordinary error return, which this middleware records as the 500 the client
+// received.
 func New(config ...Config) fiber.Handler {
 	cfg := configDefault(config...)
 
@@ -104,6 +128,14 @@ func New(config ...Config) fiber.Handler {
 	}
 	labels := cfg.Labels
 
+	// A const label sharing a name with a variable one reaches client_golang as
+	// an invalid Desc, whose panic names neither Labels nor the offending key.
+	for name := range labels {
+		if _, reserved := reservedLabels[name]; reserved {
+			panic("prometheus middleware: constant label " + strconv.Quote(name) + " collides with a built-in label")
+		}
+	}
+
 	dynamic := resolveDynamicLabels(cfg)
 
 	disabled := make(map[Metric]struct{}, len(cfg.DisabledMetrics))
@@ -120,7 +152,7 @@ func New(config ...Config) fiber.Handler {
 	byStatusCode := variableLabels("status_code", dynamic)
 	byStatusClass := variableLabels("status_class", dynamic)
 
-	metricsHandler := adaptor.HTTPHandler(promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{
+	scrapeHandler := promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{
 		EnableOpenMetrics:                   cfg.EnableOpenMetrics,
 		EnableOpenMetricsTextCreatedSamples: cfg.EnableOpenMetricsTextCreatedSamples,
 		DisableCompression:                  cfg.DisableCompression,
@@ -128,7 +160,13 @@ func New(config ...Config) fiber.Handler {
 		Timeout:                             cfg.MetricsTimeout,
 		ErrorLog:                            cfg.MetricsErrorLog,
 		ErrorHandling:                       cfg.MetricsErrorHandling,
-	}))
+	})
+
+	if cfg.MetricsTimeout > 0 {
+		scrapeHandler = detachRequest(scrapeHandler)
+	}
+
+	metricsHandler := adaptor.HTTPHandler(scrapeHandler)
 
 	m := &middleware{
 		metricsHandler:    metricsHandler,
@@ -210,6 +248,13 @@ func New(config ...Config) fiber.Handler {
 	m.records = m.requestsTotal != nil || m.requestsByClass != nil || m.observes
 
 	for _, path := range cfg.SkipURIs {
+		// A blank entry - what splitting an unset environment variable on ","
+		// yields - would otherwise normalize to "/" and quietly drop the root
+		// route from every metric. Excluding "/" stays possible by asking for it.
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+
 		// Fiber's register prepends "/" to every pattern, so an entry without
 		// one could never match. Add it, as MetricsPath does.
 		if !strings.HasPrefix(path, "/") {
@@ -227,9 +272,23 @@ func New(config ...Config) fiber.Handler {
 		// stripped prefix "/static" matches neither it nor "/static/...".
 		m.skipURIs[normalized] = struct{}{}
 
-		if prefix, found := strings.CutSuffix(normalized, "*"); found {
-			m.skipPrefixes = append(m.skipPrefixes, normalizePath(prefix))
+		prefix, found := strings.CutSuffix(normalized, "*")
+		if !found {
+			continue
 		}
+
+		// "/*" normalizes to "/" and excludes everything.
+		if prefix = normalizePath(prefix); prefix == "/" {
+			m.skipAll = true
+			continue
+		}
+
+		// The prefix stands for the route named exactly that as well as
+		// everything below it. Registering the bare form as an exact match
+		// leaves the per-request scan a single HasPrefix against a separator
+		// already appended here rather than rebuilt on every request.
+		m.skipURIs[prefix] = struct{}{}
+		m.skipPrefixes = append(m.skipPrefixes, prefix+"/")
 	}
 
 	for _, code := range cfg.SkipStatusCodes {
@@ -237,10 +296,47 @@ func New(config ...Config) fiber.Handler {
 	}
 
 	for _, class := range cfg.SkipStatusClasses {
-		m.skipStatusClasses[strings.ToLower(strings.TrimSpace(class))] = struct{}{}
+		normalized := strings.ToLower(strings.TrimSpace(class))
+		// Anything statusClass never returns would sit in the map unmatched, so
+		// the operator would believe a class was filtered while every response
+		// in it kept being recorded.
+		if !validStatusClasses[normalized] {
+			panic("prometheus middleware: status class " + strconv.Quote(class) + ` is not one of "1xx" through "5xx"`)
+		}
+		m.skipStatusClasses[normalized] = struct{}{}
 	}
 
 	return m.handle
+}
+
+// detachRequest hands the wrapped handler a request whose header no longer
+// aliases the connection buffers.
+//
+// The adaptor builds the net/http request with zero-copy views into memory
+// fasthttp reuses the moment the Fiber handler returns, which is safe only
+// while that handler owns the request. Config.MetricsTimeout breaks the
+// assumption: promhttp then wraps itself in http.TimeoutHandler, which answers
+// 503 and returns as soon as the deadline fires while the gathering goroutine
+// runs on. That goroutine negotiates the exposition format off req.Header only
+// after Gather returns - by which point the Fiber handler is gone and the
+// buffers have been recycled underneath it. Copying the header first leaves the
+// straggler reading memory nothing else will touch.
+func detachRequest(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(rsp http.ResponseWriter, req *http.Request) {
+		// Both names and values alias: the adaptor clones only Cookie, and a
+		// header name already in canonical form is passed through untouched.
+		header := make(http.Header, len(req.Header))
+		for name, values := range req.Header {
+			detached := make([]string, len(values))
+			for i, value := range values {
+				detached[i] = strings.Clone(value)
+			}
+			header[strings.Clone(name)] = detached
+		}
+		req.Header = header
+
+		h.ServeHTTP(rsp, req)
+	})
 }
 
 // variableLabels builds a metric's variable label names: the status label the
@@ -552,13 +648,18 @@ func bodySize(contentLength int, p payload) (float64, bool) {
 // skipped reports whether the route pattern is excluded by Config.SkipURIs,
 // either as an exact match or through a "*" prefix entry.
 func (m *middleware) skipped(routePath string) bool {
+	if m.skipAll {
+		return true
+	}
+
 	if _, ok := m.skipURIs[routePath]; ok {
 		return true
 	}
 
+	// Each prefix already carries its trailing separator, so a route equal to
+	// the bare prefix is caught by the exact map above rather than here.
 	for _, prefix := range m.skipPrefixes {
-		// "/*" normalizes to "/" and excludes everything.
-		if prefix == "/" || routePath == prefix || strings.HasPrefix(routePath, prefix+"/") {
+		if strings.HasPrefix(routePath, prefix) {
 			return true
 		}
 	}
@@ -594,9 +695,10 @@ func (m *middleware) routeLabel(ctx fiber.Ctx) (string, bool) {
 		if route := ctx.Route(); route != nil {
 			return normalizePath(route.Path), true
 		}
-		// A Ctx implementation installed through app.NewCtxFunc may report a
-		// match without exposing the route. Nothing identifies the endpoint
-		// then, so the request counts as unmatched and obeys the same opt-in.
+		// A Ctx implementation installed through fiber.NewWithCustomCtx may
+		// report a match without exposing the route. Nothing identifies the
+		// endpoint then, so the request counts as unmatched and obeys the same
+		// opt-in.
 	}
 
 	if !m.trackUnmatched {
