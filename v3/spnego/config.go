@@ -60,14 +60,16 @@ type Config struct {
 	//
 	// Whatever error it returns is logged and passed to OnError, so it must not
 	// carry anything secret. This is not hypothetical for a keytab: gokrb5's
-	// own parse errors interpolate the whole file they were handed, which for a
+	// length checks interpolate the whole buffer they were handed, which for a
 	// single-principal keytab is the entire key, so
 	//
 	//	func lookup() (*keytab.Keytab, error) { return keytab.Load(path) }
 	//
-	// writes that key to the log on any file it cannot parse — a rotation
-	// caught mid-write is enough. Report the failure without the cause, or with
-	// a cause of your own:
+	// writes that key to the log whenever a file ends earlier than its own
+	// headers say — which is exactly what a rotation caught mid-write looks
+	// like. Not every parse failure reaches those branches; a bad magic byte or
+	// version is reported without the contents. Report the failure without the
+	// cause, or with a cause of your own:
 	//
 	//	kt, err := keytab.Load(path)
 	//	if err != nil {

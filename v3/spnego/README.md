@@ -147,7 +147,7 @@ func remoteKeytabLookup() (*keytab.Keytab, error) {
 }
 ```
 
-> **Whatever error your lookup returns is logged and passed to `OnError`, so it must not carry anything secret.** That is easy to get wrong with a keytab: gokrb5's parse errors interpolate the whole file they were handed, which for a single-principal keytab is the entire key. So `return keytab.Load(path)` writes that key to your logs on any file it cannot parse — a rotation caught mid-write is enough to trigger it. Report the failure without gokrb5's cause:
+> **Whatever error your lookup returns is logged and passed to `OnError`, so it must not carry anything secret.** That is easy to get wrong with a keytab: gokrb5's length checks interpolate the whole buffer they were handed, which for a single-principal keytab is the entire key. So `return keytab.Load(path)` writes that key to your logs whenever a file ends earlier than its own headers say — which is exactly what a rotation caught mid-write looks like. Report the failure without gokrb5's cause:
 >
 > ```go
 > kt, err := keytab.Load(path)
