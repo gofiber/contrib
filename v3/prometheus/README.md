@@ -240,6 +240,12 @@ Fiber's zero-copy strings such as `c.Get(...)` or `c.Params(...)` directly.
 
 ### Filtering
 
+An entry may also name `UnmatchedRouteLabel` to exclude the traffic
+`TrackUnmatchedRequests` records. The label is matched as a whole value, and the
+separator tells that apart from an ordinary prefix rule: with the label set to
+`/api`, `/api` and `/api*` exclude it while `/api/*` does not, so a filter
+written for real routes never takes 404 monitoring with it.
+
 `SkipURIs` matches the registered route pattern — note that fiberzap's option
 of the same name matches the request path instead. A trailing `*` matches by
 prefix and stops at a path segment boundary, so `/admin/*` excludes `/admin` and

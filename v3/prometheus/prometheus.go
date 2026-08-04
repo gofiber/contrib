@@ -372,19 +372,20 @@ func (m *middleware) resolveFilters(cfg Config) bool {
 			continue
 		}
 
-		// The unmatched label is a label value rather than a route and is taken
-		// as given, so an entry naming it has to be too. Without this, a filter
-		// for unmatched traffic would work only while the label happened to
-		// start with a slash - and Config recommends spelling it "unmatched".
-		// Compared before any path fixup, and with trailing stars stripped as
-		// well, because the label is a value rather than a path: it never gets
-		// the leading slash forced onto the entries below, so "unmatched" and
-		// "unmatched*" both have to be recognised here or not at all.
+		// The unmatched label is a value rather than a route, so it never gets
+		// the leading slash forced onto the entries below. An entry naming it
+		// therefore has to be recognised here, before any path fixup, and with
+		// trailing stars stripped too - Config recommends spelling the label
+		// "unmatched", and both "unmatched" and "unmatched*" have to work.
 		//
 		// Deliberately not a "continue": an entry naming the unmatched label may
 		// equally name a route, and still has to reach the wildcard handling.
+		// The star-stripped form is compared without normalizing, so that the
+		// separator tells the two shapes apart: "unmatched*" names the label,
+		// while "/api/*" is a prefix rule for the routes below "/api" and must
+		// not exclude a label that happens to be spelled "/api".
 		if normalizePath(path) == m.unmatchedLabel ||
-			normalizePath(strings.TrimRight(path, "*")) == m.unmatchedLabel {
+			strings.TrimRight(path, "*") == m.unmatchedLabel {
 			// No clone - configDefault already gave the middleware a private
 			// copy, unlike the caller-supplied entries below.
 			m.skipURIs[m.unmatchedLabel] = struct{}{}
@@ -434,7 +435,14 @@ func (m *middleware) resolveFilters(cfg Config) bool {
 		// everything below it. Registering the bare form as an exact match
 		// leaves the per-request scan a single HasPrefix against a separator
 		// already appended here rather than rebuilt on every request.
-		m.skipURIs[prefix] = struct{}{}
+		//
+		// Except when it would name the unmatched label: that key is a prefix
+		// rule's byproduct, and a filter written for "/api/*" must not take 404
+		// monitoring with it because the label happens to be "/api". An entry
+		// naming the label deliberately is handled at the top of the loop.
+		if prefix != m.unmatchedLabel {
+			m.skipURIs[prefix] = struct{}{}
+		}
 		// Several spellings normalize to one prefix - "/admin/*", "/admin/**"
 		// and "/admin/*/" all do - and each duplicate would repeat an identical
 		// HasPrefix on every instrumented request for the process lifetime.

@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -4041,5 +4042,123 @@ func TestConfigDefaultBucketsAreNotShared(t *testing.T) {
 	resolved := configDefault(Config{})
 	if resolved.RequestDurationBuckets[0] != want {
 		t.Fatalf("expected the defaults to survive, got %v", resolved.RequestDurationBuckets[0])
+	}
+}
+
+// TestRoutePatternTrailingSlashIsTrimmed pins the trimming that lets a SkipURIs
+// entry match a pattern however it was spelled, and that keeps "/x" and "/x/"
+// from becoming two series for one endpoint.
+func TestRoutePatternTrailingSlashIsTrimmed(t *testing.T) {
+	app := newAppWithMiddleware(Config{SkipURIs: []string{"/skipped"}}, "")
+	app.Get("/trailing/", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+	app.Get("/skipped/", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	for _, path := range []string{"/trailing/", "/skipped/"} {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+			t.Fatalf("requesting %s: %v", path, err)
+		}
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `path="/trailing"`) {
+		t.Fatalf("expected the pattern to be recorded without its trailing slash, got %q", metrics)
+	}
+	if strings.Contains(metrics, `path="/trailing/"`) {
+		t.Fatalf("expected no series carrying the trailing slash, got %q", metrics)
+	}
+	// The entry was spelled without the slash the route carries, which only
+	// matches because both sides are trimmed.
+	if strings.Contains(metrics, "skipped") {
+		t.Fatalf("expected the skip entry to match the pattern, got %q", metrics)
+	}
+}
+
+// TestDynamicLabelsAreSortedDeterministically pins the ordering the label buffer
+// depends on. Prometheus sorts label pairs alphabetically for the exposition, so
+// map iteration order is invisible there - what it would change is the order the
+// names are declared in each Desc, which has to stay the same across restarts.
+func TestDynamicLabelsAreSortedDeterministically(t *testing.T) {
+	fn := func(fiber.Ctx) string { return "x" }
+	cfg := configDefault(Config{DynamicLabels: map[string]func(fiber.Ctx) string{
+		"zone": fn, "tenant": fn, "region": fn, "cluster": fn, "shard": fn,
+	}})
+
+	// Repeated, because Go randomizes map iteration per range: one unsorted
+	// build would be indistinguishable from a sorted one by luck.
+	for range 20 {
+		resolved := resolveDynamicLabels(cfg)
+		names := make([]string, len(resolved))
+		for i, label := range resolved {
+			names[i] = label.name
+		}
+		if !slices.IsSorted(names) {
+			t.Fatalf("expected the dynamic labels to be sorted, got %v", names)
+		}
+	}
+}
+
+// TestWildcardPrefixDoesNotSwallowUnmatchedLabel covers the exact key a wildcard
+// entry leaves behind. "/api/*" registers "/api" so that the route of that name
+// is skipped too - but when the unmatched label is "/api", that byproduct would
+// silently take every 404 with it.
+func TestWildcardPrefixDoesNotSwallowUnmatchedLabel(t *testing.T) {
+	app := newAppWithMiddleware(Config{
+		TrackUnmatchedRequests: true,
+		UnmatchedRouteLabel:    "/api",
+		SkipURIs:               []string{"/api/*"},
+	}, "")
+	app.Get("/api/users", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+	app.Get("/kept", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	for _, path := range []string{"/api/users", "/kept", "/nothing/here"} {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+			t.Fatalf("requesting %s: %v", path, err)
+		}
+	}
+
+	metrics := getMetrics(t, app, "")
+	if strings.Contains(metrics, `path="/api/users"`) {
+		t.Fatalf("expected the wildcard to still exclude routes below it, got %q", metrics)
+	}
+	if !strings.Contains(metrics, `path="/api"`) {
+		t.Fatalf("expected unmatched traffic to survive the wildcard, got %q", metrics)
+	}
+	if !strings.Contains(metrics, `path="/kept"`) {
+		t.Fatalf("expected the unfiltered route to be recorded, got %q", metrics)
+	}
+}
+
+// TestExplicitEntryStillSkipsUnmatchedLabel is the counterpart: naming the label
+// deliberately still works, wildcard or not.
+func TestExplicitEntryStillSkipsUnmatchedLabel(t *testing.T) {
+	app := newAppWithMiddleware(Config{
+		TrackUnmatchedRequests: true,
+		UnmatchedRouteLabel:    "/api",
+		SkipURIs:               []string{"/api", "/api/*"},
+	}, "")
+	app.Get("/kept", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	for _, path := range []string{"/kept", "/nothing/here"} {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+			t.Fatalf("requesting %s: %v", path, err)
+		}
+	}
+
+	metrics := getMetrics(t, app, "")
+	if strings.Contains(metrics, `path="/api"`) {
+		t.Fatalf("expected the explicit entry to skip unmatched traffic, got %q", metrics)
+	}
+	if !strings.Contains(metrics, `path="/kept"`) {
+		t.Fatalf("expected the unfiltered route to be recorded, got %q", metrics)
 	}
 }

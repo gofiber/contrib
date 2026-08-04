@@ -338,8 +338,13 @@ type Config struct {
 	// whole value rather than as a path, so "/__unmatched__" and
 	// "/__unmatched__*" both exclude it - the star is stripped and the
 	// remainder compared - and it works the same for a label without a leading
-	// slash. No prefix rule reaches it, so a "/api/*" entry cannot take the
-	// unmatched traffic with it when the label happens to live under "/api".
+	// slash.
+	//
+	// The separator is what tells that apart from an ordinary prefix rule: with
+	// the label set to "/api", "/api*" excludes it while "/api/*" does not, and
+	// neither the prefix scan nor the bare key a wildcard leaves behind can
+	// reach it. A filter written for real routes therefore never takes 404
+	// monitoring with it.
 	//
 	// An entry ending in "*" matches by prefix: "/admin/*" excludes "/admin"
 	// and every route below it. Trailing stars are stripped as a group, so the
