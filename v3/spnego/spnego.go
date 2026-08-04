@@ -521,15 +521,27 @@ func requestForSPNEGO(ctx fiber.Ctx, forSessionManager bool) *http.Request {
 		// every later Locals lookup then scans past and that release has to
 		// clear.
 		//
-		// gokrb5 does read this one, unlike the other four here: goidentity's
-		// AddToHTTPRequestContext derives the identity's context from it. That
-		// changes nothing, because the identity is taken from the Fiber context
-		// rather than from the request gokrb5 builds.
+		// Skipped entirely when there is nothing to carry, which is the common
+		// case: an application that never calls SetContext gets Background from
+		// Fiber, and a request with no context of its own already answers
+		// Background, so the copy would produce an identical request for the
+		// price of one. Comparing contexts cannot panic here — the dynamic
+		// types differ unless both are Background, and that one is comparable.
 		//
-		// Guarded because a caller may supply its own fiber.Ctx through
-		// app.NewCtxFunc, and WithContext panics on a nil context. Fiber's own
-		// implementation never returns one.
-		if requestCtx := ctx.Context(); requestCtx != nil {
+		// gokrb5 does read this, unlike the other four here: goidentity's
+		// AddToHTTPRequestContext derives the identity's context from it, and
+		// the inner handler reads the identity back out of that request. What
+		// makes the base harmless is that AddToHTTPRequestContext only wraps
+		// whatever it is handed with a WithValue, so nothing in the base can
+		// shadow or displace the identity.
+		//
+		// The nil check is net/http's own: WithContext panics rather than
+		// returning an error, and this takes the fiber.Ctx interface, which an
+		// application may implement itself through app.NewCtxFunc. It is not a
+		// general defence against such a Ctx — a nil RequestCtx would already
+		// have brought the request down several lines above — only the one
+		// place where a nil costs a panic instead of a zero value.
+		if requestCtx := ctx.Context(); requestCtx != nil && requestCtx != req.Context() {
 			req = req.WithContext(requestCtx)
 		}
 		// net/http documents a server request's Host as "host or host:port", so
@@ -636,9 +648,10 @@ func New(cfg Config) (fiber.Handler, error) {
 		}
 	}
 	opts := serviceSettings(cfg)
-	// Captured once: gokrb5 looks at cookies only when a session manager is
-	// configured, so nothing else has to pay for copying them.
-	forwardCookies := cfg.SessionManager != nil
+	// Captured once. A session manager is the only reader of most of what
+	// requestForSPNEGO can put on the request — cookies, host, scheme, TLS,
+	// protocol and the context — so without one none of it is assembled.
+	forSessionManager := cfg.SessionManager != nil
 	// Captured at construction; see the note on authenticate.
 	acceptSPNEGO := authenticate
 
@@ -691,7 +704,7 @@ func New(cfg Config) (fiber.Handler, error) {
 			}
 			return &clientSafeError{cause: failure}
 		}
-		req := requestForSPNEGO(ctx, forwardCookies)
+		req := requestForSPNEGO(ctx, forSessionManager)
 
 		var (
 			authenticated bool

@@ -891,6 +891,41 @@ func TestRequestForSPNEGOCarriesFibersContext(t *testing.T) {
 		"the context is only for a session manager")
 }
 
+// TestRequestForSPNEGOSkipsTheContextCopyWhenThereIsNothingToCarry pins the
+// skip. WithContext shallow-copies the whole http.Request, and for an
+// application that never calls SetContext the copy is a no-op: Fiber answers
+// with Background and a request that has no context of its own already reports
+// Background. Paying for it anyway would put an allocation on every request a
+// session manager is configured for, including the resumed ones sessions exist
+// to make cheap.
+//
+// Measured relatively rather than against a fixed count, so it does not have to
+// be revisited whenever an unrelated allocation moves.
+func TestRequestForSPNEGOSkipsTheContextCopyWhenThereIsNothingToCarry(t *testing.T) {
+	allocs := func(t *testing.T, setContext bool) float64 {
+		t.Helper()
+		var measured float64
+		app := fiber.New()
+		app.All("/*", func(c fiber.Ctx) error {
+			if setContext {
+				c.SetContext(context.WithValue(context.Background(), struct{}{}, "x"))
+			}
+			measured = testing.AllocsPerRun(100, func() {
+				_ = requestForSPNEGO(c, true)
+			})
+			return nil
+		})
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/authenticate")
+		ctx.Request.Header.Set(fiber.HeaderHost, "sso.example.com")
+		app.Handler()(ctx)
+		return measured
+	}
+
+	require.Less(t, allocs(t, false), allocs(t, true),
+		"a context with nothing in it must not cost a copy of the request")
+}
+
 // TestRequestForSPNEGOStatesTheProtocol pins Proto against its numbers. A
 // manager that compares ProtoAtLeast with Proto must not be told two different
 // things, and fasthttp serves HTTP/1.0 as well as 1.1.
