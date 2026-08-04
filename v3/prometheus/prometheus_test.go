@@ -3943,3 +3943,103 @@ func TestDuplicateWildcardEntriesShareOnePrefix(t *testing.T) {
 		t.Fatalf("expected the prefix to be /admin/, got %q", mw.skipPrefixes[0])
 	}
 }
+
+// TestSkipURIsWildcardMatchesUnmatchedLabel covers the star spelling against a
+// label without a leading slash - the one Config recommends. The comparison has
+// to happen before the entry is given a slash it never wears itself.
+func TestSkipURIsWildcardMatchesUnmatchedLabel(t *testing.T) {
+	for _, label := range []string{"unmatched", "/__unmatched__"} {
+		t.Run(label, func(t *testing.T) {
+			app := newAppWithMiddleware(Config{
+				TrackUnmatchedRequests: true,
+				UnmatchedRouteLabel:    label,
+				SkipURIs:               []string{label + "*"},
+			}, "")
+			app.Get("/kept", func(c fiber.Ctx) error {
+				return c.SendStatus(fiber.StatusOK)
+			})
+
+			for _, path := range []string{"/nothing/here", "/kept"} {
+				if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+					t.Fatalf("requesting %s: %v", path, err)
+				}
+			}
+
+			metrics := getMetrics(t, app, "")
+			if !strings.Contains(metrics, `path="/kept"`) {
+				t.Fatalf("expected the ordinary route to be recorded, got %q", metrics)
+			}
+			if strings.Contains(metrics, `path="`+label+`"`) {
+				t.Fatalf("expected unmatched traffic to be skipped, got %q", metrics)
+			}
+		})
+	}
+}
+
+// TestPrefixSkipDoesNotSwallowUnmatchedLabel pins that a filter written for real
+// routes cannot take 404 monitoring with it. The label is a value, not a path,
+// so no prefix rule applies to it however it is spelled.
+func TestPrefixSkipDoesNotSwallowUnmatchedLabel(t *testing.T) {
+	app := newAppWithMiddleware(Config{
+		TrackUnmatchedRequests: true,
+		UnmatchedRouteLabel:    "/api/unmatched",
+		SkipURIs:               []string{"/api/*"},
+	}, "")
+	app.Get("/api/users", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	for _, path := range []string{"/api/users", "/nothing/here"} {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+			t.Fatalf("requesting %s: %v", path, err)
+		}
+	}
+
+	metrics := getMetrics(t, app, "")
+	if strings.Contains(metrics, `path="/api/users"`) {
+		t.Fatalf("expected the API route to be skipped, got %q", metrics)
+	}
+	if !strings.Contains(metrics, `path="/api/unmatched"`) {
+		t.Fatalf("expected unmatched traffic to survive a prefix filter, got %q", metrics)
+	}
+}
+
+// TestServiceNameIsTrimmed covers the trailing newline an environment variable
+// picks up. It is valid UTF-8, so nothing panics - the whole application's
+// metrics simply stop matching any dashboard selecting on the service label.
+func TestServiceNameIsTrimmed(t *testing.T) {
+	app := newAppWithMiddleware(Config{ServiceName: "svc\n"}, "")
+	app.Get("/kept", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/kept", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `service="svc"`) {
+		t.Fatalf("expected the service label to be trimmed, got %q", metrics)
+	}
+}
+
+// TestConfigDefaultBucketsAreNotShared pins that ConfigDefault is a value a
+// caller may copy and adjust in place. Aliasing the package defaults would let
+// one bound edited on that copy reshape every later New that supplies none.
+func TestConfigDefaultBucketsAreNotShared(t *testing.T) {
+	// Captured by value first: were the slices shared, the write below would
+	// corrupt the very array an assertion against it would read back.
+	want := defaultRequestDurationBuckets[0]
+
+	cfg := ConfigDefault
+	cfg.RequestDurationBuckets[0] = 30
+	t.Cleanup(func() {
+		cfg.RequestDurationBuckets[0] = want
+		defaultRequestDurationBuckets[0] = want
+	})
+
+	resolved := configDefault(Config{})
+	if resolved.RequestDurationBuckets[0] != want {
+		t.Fatalf("expected the defaults to survive, got %v", resolved.RequestDurationBuckets[0])
+	}
+}

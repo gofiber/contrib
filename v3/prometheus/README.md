@@ -33,7 +33,7 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 
 | Property | Type | Description | Default |
 |:---------|:-----|:------------|:--------|
-| ServiceName | `string` | Added as the `service` const label on every metric. Omitted when empty. Must be valid UTF-8. | `""` |
+| ServiceName | `string` | Added as the `service` const label on every metric. Omitted when empty. Trimmed; must be valid UTF-8. | `""` |
 | Namespace | `string` | Prefixes every metric name. Must be valid UTF-8. | `"http"` |
 | Subsystem | `string` | Prefixes every metric name after `Namespace`. Must be valid UTF-8. | `""` |
 | MetricsPath | `string` | Path served with the Prometheus exposition format. Unless `Next` returns true, requests to it are answered by the middleware and are not instrumented. Compared case-sensitively against the full request path, ignoring trailing slashes. | `"/metrics"` |

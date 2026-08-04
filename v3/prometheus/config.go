@@ -48,6 +48,8 @@ const (
 // Config defines the middleware configuration.
 type Config struct {
 	// ServiceName is added as the `service` const label on every metric.
+	// Surrounding whitespace is trimmed, so a value read from an environment
+	// variable does not carry a newline into every series.
 	//
 	// Optional. Default: "" (label omitted).
 	ServiceName string
@@ -335,7 +337,9 @@ type Config struct {
 	// TrackUnmatchedRequests would otherwise record. The label is matched as a
 	// whole value rather than as a path, so "/__unmatched__" and
 	// "/__unmatched__*" both exclude it - the star is stripped and the
-	// remainder compared - but no prefix rule applies beyond that.
+	// remainder compared - and it works the same for a label without a leading
+	// slash. No prefix rule reaches it, so a "/api/*" entry cannot take the
+	// unmatched traffic with it when the label happens to live under "/api".
 	//
 	// An entry ending in "*" matches by prefix: "/admin/*" excludes "/admin"
 	// and every route below it. Trailing stars are stripped as a group, so the
@@ -417,12 +421,14 @@ var (
 
 // ConfigDefault holds the default middleware configuration.
 var ConfigDefault = Config{
-	Namespace:              "http",
-	MetricsPath:            "/metrics",
-	UnmatchedRouteLabel:    "/__unmatched__",
-	RequestDurationBuckets: defaultRequestDurationBuckets,
-	RequestSizeBuckets:     defaultRequestSizeBuckets,
-	ResponseSizeBuckets:    defaultResponseSizeBuckets,
+	Namespace:           "http",
+	MetricsPath:         "/metrics",
+	UnmatchedRouteLabel: "/__unmatched__",
+	// Copies, so that a caller who starts from ConfigDefault and adjusts one
+	// bound in place cannot reshape the defaults every later New falls back to.
+	RequestDurationBuckets: slices.Clone(defaultRequestDurationBuckets),
+	RequestSizeBuckets:     slices.Clone(defaultRequestSizeBuckets),
+	ResponseSizeBuckets:    slices.Clone(defaultResponseSizeBuckets),
 }
 
 // cloneBuckets returns a private copy of the supplied bucket bounds, falling
@@ -452,6 +458,11 @@ func configDefault(config ...Config) Config {
 	if len(config) > 0 {
 		cfg = config[0]
 	}
+
+	// Trimmed like the other single-value options: this one becomes a const
+	// label on every family, so a trailing newline would leave the whole
+	// application's metrics matching no dashboard or alert.
+	cfg.ServiceName = strings.TrimSpace(cfg.ServiceName)
 
 	if cfg.Namespace == "" {
 		cfg.Namespace = ConfigDefault.Namespace
@@ -483,9 +494,11 @@ func configDefault(config ...Config) Config {
 		cfg.UnmatchedRouteLabel = strings.Clone(cfg.UnmatchedRouteLabel)
 	}
 
-	cfg.RequestDurationBuckets = cloneBuckets(cfg.RequestDurationBuckets, ConfigDefault.RequestDurationBuckets)
-	cfg.RequestSizeBuckets = cloneBuckets(cfg.RequestSizeBuckets, ConfigDefault.RequestSizeBuckets)
-	cfg.ResponseSizeBuckets = cloneBuckets(cfg.ResponseSizeBuckets, ConfigDefault.ResponseSizeBuckets)
+	// From the private arrays rather than ConfigDefault, which is exported and
+	// so is a value a caller may have edited.
+	cfg.RequestDurationBuckets = cloneBuckets(cfg.RequestDurationBuckets, defaultRequestDurationBuckets)
+	cfg.RequestSizeBuckets = cloneBuckets(cfg.RequestSizeBuckets, defaultRequestSizeBuckets)
+	cfg.ResponseSizeBuckets = cloneBuckets(cfg.ResponseSizeBuckets, defaultResponseSizeBuckets)
 
 	if cfg.Labels == nil {
 		cfg.Labels = make(prometheus.Labels)

@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -52,8 +51,6 @@ type middleware struct {
 	skipStatusCodes   map[int]struct{}
 	skipStatusClasses map[string]struct{}
 	dynamicLabels     []dynamicLabel
-	bodyLimitOnce     sync.Once
-	bodyLimit         int
 	exemplars         bool
 	trackUnmatched    bool
 	records           bool
@@ -379,10 +376,15 @@ func (m *middleware) resolveFilters(cfg Config) bool {
 		// as given, so an entry naming it has to be too. Without this, a filter
 		// for unmatched traffic would work only while the label happened to
 		// start with a slash - and Config recommends spelling it "unmatched".
-		// This is deliberately not a "continue": an entry naming the unmatched
-		// label may equally name a route, and it still has to reach the
-		// wildcard handling below.
-		if normalizePath(path) == m.unmatchedLabel {
+		// Compared before any path fixup, and with trailing stars stripped as
+		// well, because the label is a value rather than a path: it never gets
+		// the leading slash forced onto the entries below, so "unmatched" and
+		// "unmatched*" both have to be recognised here or not at all.
+		//
+		// Deliberately not a "continue": an entry naming the unmatched label may
+		// equally name a route, and still has to reach the wildcard handling.
+		if normalizePath(path) == m.unmatchedLabel ||
+			normalizePath(strings.TrimRight(path, "*")) == m.unmatchedLabel {
 			// No clone - configDefault already gave the middleware a private
 			// copy, unlike the caller-supplied entries below.
 			m.skipURIs[m.unmatchedLabel] = struct{}{}
@@ -980,17 +982,16 @@ func requestBodySize(contentLength, bodyLimit int, preParsedForm bool, p payload
 // parts before the handler chain runs.
 var multipartFormPrefix = []byte("multipart/form-data")
 
-// bodyLimitOf returns the application's configured body limit, read once:
-// App.Config hands back the whole configuration by value, and only the request
-// shapes that cannot measure their own body need this.
+// bodyLimitOf returns the limit of the app currently serving the request.
 //
-// One handler is meant for one app - mounting it twice double-counts, as the
-// package documents - so caching the first app's limit is safe.
+// Read every time rather than cached: App.Config hands back the whole
+// configuration by value, but one handler may be mounted on two apps with
+// different limits, and caching the first would let a request to the stricter
+// one be sized against the laxer one's ceiling - which is the inflation the
+// limit is consulted to prevent. Only the request shapes that cannot measure
+// their own body reach this, so an ordinary request never pays for it.
 func (m *middleware) bodyLimitOf(ctx fiber.Ctx) int {
-	m.bodyLimitOnce.Do(func() {
-		m.bodyLimit = ctx.App().Config().BodyLimit
-	})
-	return m.bodyLimit
+	return ctx.App().Config().BodyLimit
 }
 
 // responseBodySize reports the size of the payload about to be sent, and whether
@@ -1035,6 +1036,14 @@ func bodyless(method string, status int) bool {
 func (m *middleware) skipped(routePath string) bool {
 	if _, ok := m.skipURIs[routePath]; ok {
 		return true
+	}
+
+	// The unmatched label is a value, not a path, so the prefix rules below do
+	// not apply to it. Letting them would mean a filter written for real routes
+	// - "/api/*" with the label set to "/api/unmatched" - silently swallowed
+	// every 404 the operator was watching for.
+	if routePath == m.unmatchedLabel {
+		return false
 	}
 
 	// Each prefix already carries its trailing separator, so a route equal to
