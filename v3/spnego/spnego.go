@@ -113,17 +113,40 @@ type sessionManagerProbe struct {
 
 func (p sessionManagerProbe) New(w http.ResponseWriter, r *http.Request, k string, v []byte) error {
 	err := p.delegate.New(w, r, k, v)
-	if err != nil {
-		// Always this middleware's own recorder: gokrb5 passes the
-		// ResponseWriter it was given straight through. The check is for the
-		// day that stops being true, where losing the signal is better than a
-		// panic.
-		if recorder, ok := w.(*responseRecorder); ok {
-			recorder.sessionFailed = true
-		}
+	if err != nil && !recordSessionFailure(w) {
+		// Losing the signal is not fatal — isSPNEGOOutcome still classifies
+		// most of these correctly — but it is exactly the hole this probe
+		// closed, so it must not go unnoticed. gokrb5 v8.4.4 passes the
+		// ResponseWriter straight through, so reaching here means a version
+		// that no longer does, which is a dependency bump to look at.
+		flog.Errorf("spnego: session failure could not be recorded: gokrb5 replaced the response writer with %T; "+
+			"a session manager that writes a Negotiate header before failing may now be misread as authenticated", w)
 	}
 	return err //nolint:wrapcheck // gokrb5 inspects only whether this is nil
 }
+
+// recordSessionFailure marks the middleware's recorder, reporting whether it
+// found one. The writer is unwrapped along the way, following the convention
+// net/http itself uses in http.ResponseController, so a gokrb5 that wrapped the
+// writer to add a capability would still be seen through.
+func recordSessionFailure(w http.ResponseWriter) bool {
+	for range maxResponseWriterUnwraps {
+		if recorder, ok := w.(*responseRecorder); ok {
+			recorder.sessionFailed = true
+			return true
+		}
+		wrapper, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return false
+		}
+		w = wrapper.Unwrap()
+	}
+	return false
+}
+
+// maxResponseWriterUnwraps bounds the walk. A writer whose Unwrap returns
+// itself, or a pair that returns each other, would otherwise hang the request.
+const maxResponseWriterUnwraps = 8
 
 func (p sessionManagerProbe) Get(r *http.Request, k string) ([]byte, error) {
 	return p.delegate.Get(r, k) //nolint:wrapcheck // passed through to gokrb5 untouched
@@ -302,11 +325,24 @@ func resolveLogger(cfg Config, fiberLogger flog.AllLogger[*log.Logger]) *log.Log
 // address, and reads cookies only behind a session-manager check — which is why
 // withCookies mirrors whether Config.SessionManager is set. Re-check this when
 // upgrading gokrb5.
+//
+// Every string that comes out of the request buffer is copied. Fiber returns
+// those as views into fasthttp's storage unless Config.Immutable is set, and
+// that storage is reused by the next request on the same worker — so a
+// Config.SessionManager that keeps one, which is ordinary enough for a manager
+// recording the host it issued a session for, would read back another
+// connection's bytes. The copies cost a few small allocations on a path that is
+// already decoding base64 and unmarshalling ASN.1; a session record naming the
+// wrong client cannot be undone.
+//
+// Three of the fields need no copy and say so where they are set: Method comes
+// from Fiber's table of constants, RemoteAddr from net.Addr.String, and the
+// Cookie header is rebuilt through a strings.Builder.
 func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
 	fasthttpCtx := ctx.RequestCtx()
 	header := make(http.Header, 2)
 	if auth := ctx.Get(fiber.HeaderAuthorization); auth != "" {
-		header.Set(fiber.HeaderAuthorization, auth)
+		header.Set(fiber.HeaderAuthorization, strings.Clone(auth))
 	}
 	// Forwarded only for a session manager, which reads the session out of the
 	// cookies. Sending them unconditionally would hand gokrb5 every cookie the
@@ -346,6 +382,9 @@ func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
 		}
 	}
 	req := &http.Request{
+		// Not cloned, unlike Host and the header values: Fiber answers this
+		// from its own table of method constants rather than from the request
+		// buffer, so there is nothing here to be invalidated.
 		Method: ctx.Method(),
 		// Scheme at most, filled in below. gokrb5 never reads the URL, and a
 		// faithful path is not reconstructible from here: Fiber's is
@@ -357,7 +396,7 @@ func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
 		// it is Host rather than Hostname, which drops the port. gokrb5 does
 		// not read it; it is set because it can be set faithfully, unlike the
 		// rest of the URL.
-		Host:       ctx.Host(),
+		Host:       strings.Clone(ctx.Host()),
 		Header:     header,
 		RemoteAddr: fasthttpCtx.RemoteAddr().String(),
 		// net/http guarantees a server request's Body is never nil, and a
@@ -369,31 +408,31 @@ func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
 		// fasthttp's is not an io.ReadCloser — so it is the empty one.
 		Body: http.NoBody,
 	}
-	// Stated because it can be: this is the protocol Fiber parsed. Unlike
-	// RequestURI, which stays empty along with the rest of the path. The
-	// numbers are parsed rather than assumed 1.1, so a manager comparing
-	// ProtoAtLeast against Proto is not told two different things; fasthttp
-	// also serves HTTP/1.0.
-	if proto := string(fasthttpCtx.Request.Header.Protocol()); proto != "" {
-		if major, minor, ok := http.ParseHTTPVersion(proto); ok {
-			req.Proto, req.ProtoMajor, req.ProtoMinor = proto, major, minor
-		}
-	}
-	// Scheme and TLS exist only for a session manager, which is the sole reader
-	// of either — gokrb5 looks at neither — so they sit behind the same gate as
-	// the cookies. An ordinary request then pays for neither: reading the TLS
-	// state copies and heap-allocates a tls.ConnectionState, and ctx.Scheme
-	// walks every header once TrustProxy is on.
+	// Protocol, scheme and TLS exist only for a session manager, which is the
+	// sole reader of any of them — gokrb5 looks at none — so they sit behind the
+	// same gate as the cookies. An ordinary request then pays for none: reading
+	// the TLS state copies and heap-allocates a tls.ConnectionState, ctx.Scheme
+	// walks every header once TrustProxy is on, and the protocol has to be
+	// copied out of the request buffer and parsed.
 	//
-	// Neither is a dependable signal on its own. TLS is non-nil only where
-	// Fiber terminates TLS itself, and Scheme reports https from
+	// Neither TLS nor Scheme is a dependable signal on its own. TLS is non-nil
+	// only where Fiber terminates TLS itself, and Scheme reports https from
 	// X-Forwarded-Proto only when Fiber is configured to trust the proxy —
 	// without Config.TrustProxy it answers http regardless of the header. So
 	// behind a TLS-terminating proxy both can say "not secure" for a connection
 	// the client made over HTTPS.
 	if withCookies {
-		req.URL.Scheme = ctx.Scheme()
+		req.URL.Scheme = strings.Clone(ctx.Scheme())
 		req.TLS = fasthttpCtx.TLSConnectionState()
+		// The numbers are parsed rather than assumed 1.1, so a manager
+		// comparing ProtoAtLeast against Proto is not told two different
+		// things; fasthttp also serves HTTP/1.0. RequestURI stays empty along
+		// with the rest of the path, which cannot be stated faithfully.
+		if proto := string(fasthttpCtx.Request.Header.Protocol()); proto != "" {
+			if major, minor, ok := http.ParseHTTPVersion(proto); ok {
+				req.Proto, req.ProtoMajor, req.ProtoMinor = proto, major, minor
+			}
+		}
 	}
 	return req
 }

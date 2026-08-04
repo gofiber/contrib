@@ -40,11 +40,10 @@ var errNilKeytab = errors.New("keytab lookup returned no keytab")
 // not persist a session, which spnego/http.go reports through
 // spnegoInternalServerError.
 //
-// The two are told apart by WWW-Authenticate, not by status. gokrb5 sets that
-// header on every authentication outcome it produces and on none of its
-// internal failures, whereas the status a failed request carries is whatever
-// the session manager wrote first — it holds the raw ResponseWriter and may
-// answer before it fails.
+// This is told from an authentication outcome by the error the session manager
+// returned, and failing that by WWW-Authenticate — never by the status, which
+// is only ever the first one written and so is whatever a manager holding the
+// raw ResponseWriter chose before it failed.
 //
 // A session manager whose Get fails does not land here. gokrb5 discards that
 // error and falls through to full ticket validation, so a session store with a

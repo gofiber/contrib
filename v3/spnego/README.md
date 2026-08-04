@@ -274,6 +274,8 @@ What the manager writes is replayed selectively. **Headers** — `Set-Cookie` in
 
 The request handed to your manager is built by this middleware rather than by `net/http`, so it carries only what gokrb5 reads plus what a session store needs to make its decisions: method, host, remote address, cookies, protocol, `URL.Scheme`, and `TLS`. `Body` is `http.NoBody` — non-nil, so the usual `defer r.Body.Close()` is safe, but empty. `RequestURI` and the URL's path and query are deliberately absent, so do not key a session on them.
 
+Its strings are yours to keep. Fiber hands out header and URI values as views into fasthttp's request buffer, which is reused by the next request on the same connection, so retaining one normally means reading back another client's bytes later. This middleware copies them before building the request, so a manager that stores `r.Host` alongside a session records the host it actually saw.
+
 `Secure: r.TLS != nil` — the usual idiom — is reliable only where Fiber terminates TLS itself. Behind a TLS-terminating proxy the connection into Fiber is plaintext, so `TLS` is nil.
 
 `URL.Scheme` is not a drop-in replacement: Fiber returns `http` regardless of `X-Forwarded-Proto` unless `Config.TrustProxy` is on **and** the peer matches `TrustProxyConfig`. So behind a proxy, both fields can say "not secure" for a connection the client made over HTTPS. Either configure `TrustProxy` for your proxy's address and then trust the scheme, or set `Secure` unconditionally if the service is only ever reached over HTTPS.

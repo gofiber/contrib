@@ -19,6 +19,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/gofiber/contrib/v3/spnego/utils"
 	"github.com/gofiber/fiber/v3"
@@ -722,9 +723,110 @@ func TestRequestForSPNEGOHasANonNilBody(t *testing.T) {
 	}
 }
 
+// TestRequestForSPNEGOCopiesOutOfTheRequestBuffer pins that nothing handed to a
+// session manager points back into fasthttp's storage.
+//
+// Fiber returns header and URI strings as views into the request buffer unless
+// Config.Immutable is set, and fasthttp reuses that buffer for the next request
+// on the same worker. A manager that keeps r.Host — ordinary enough for one
+// recording which host it issued a session for — would then read back another
+// connection's bytes, and write a session record naming the wrong client.
+//
+// The property is asserted on the strings' storage rather than by serving a
+// second request and looking for corruption. That is the aliasing itself and not
+// a reproduction of it: whether a reused buffer happens to land on the same
+// bytes depends on fasthttp's pooling, so a value test would pass or fail for
+// reasons unrelated to this middleware.
+func TestRequestForSPNEGOCopiesOutOfTheRequestBuffer(t *testing.T) {
+	raw := "POST /authenticate HTTP/1.1\r\n" +
+		"Host: sso.example.com\r\n" +
+		"Authorization: Negotiate dGlja2V0\r\n" +
+		"X-Forwarded-Proto: https\r\n" +
+		"Cookie: spnego-session=opaque\r\n\r\n"
+
+	ctx := &fasthttp.RequestCtx{}
+	require.NoError(t, ctx.Request.Read(bufio.NewReader(bytes.NewBufferString(raw))))
+	ctx.SetRemoteAddr(&net.TCPAddr{IP: net.IPv4(203, 0, 113, 7), Port: 55123})
+
+	var got *http.Request
+	// TrustProxy on, because that is the only configuration where Scheme comes
+	// out of the request buffer at all: without it Fiber answers with a
+	// constant, and the check on Scheme below would hold whatever it liked.
+	app := fiber.New(fiber.Config{
+		TrustProxy: true,
+		TrustProxyConfig: fiber.TrustProxyConfig{
+			Proxies: []string{"203.0.113.7"},
+		},
+	})
+	app.All("/*", func(c fiber.Ctx) error {
+		got = requestForSPNEGO(c, true)
+		return nil
+	})
+	app.Handler()(ctx)
+	require.NotNil(t, got)
+
+	require.Equal(t, "sso.example.com", got.Host)
+	require.Equal(t, "Negotiate dGlja2V0", got.Header.Get(fiber.HeaderAuthorization))
+	require.Equal(t, "https", got.URL.Scheme,
+		"the proxy must be trusted, or Scheme is a constant and proves nothing")
+
+	// Every byte range Fiber could have handed out a view of. A copied string
+	// starts outside all of them; an aliasing one starts inside its own.
+	buffers := [][]byte{
+		ctx.Request.Header.Peek(fiber.HeaderAuthorization),
+		ctx.Request.Header.Peek(fiber.HeaderHost),
+		ctx.Request.Header.Peek(fiber.HeaderXForwardedProto),
+		ctx.Request.URI().Host(),
+		ctx.Request.URI().FullURI(),
+		ctx.Request.Header.Method(),
+		ctx.Request.Header.Protocol(),
+		ctx.Request.Header.Header(),
+	}
+	for _, tc := range []struct{ field, value string }{
+		// Method is here despite not being cloned: Fiber answers it from its
+		// own table of constants, and if that ever stops being true this is
+		// where it shows up.
+		{field: "Method", value: got.Method},
+		{field: "Host", value: got.Host},
+		{field: "the Authorization value", value: got.Header.Get(fiber.HeaderAuthorization)},
+		{field: "URL.Scheme", value: got.URL.Scheme},
+		{field: "Proto", value: got.Proto},
+		{field: "the Cookie value", value: got.Header.Get(fiber.HeaderCookie)},
+		{field: "RemoteAddr", value: got.RemoteAddr},
+	} {
+		require.NotEmpty(t, tc.value, "%s must be set, or the check below is vacuous", tc.field)
+		for _, buffer := range buffers {
+			// Not require: every field is worth reporting, and stopping at the
+			// first would hide how many of them alias.
+			if sharesStorage(tc.value, buffer) {
+				t.Errorf("%s aliases the request buffer; a session manager that keeps it "+
+					"would read back the next request's bytes", tc.field)
+				break
+			}
+		}
+	}
+}
+
+// sharesStorage reports whether s begins inside b, which is what a string
+// handed out as a view of a request buffer looks like. Comparing the start is
+// enough: Fiber hands out whole values, never a copy that happens to land in
+// the middle of one.
+func sharesStorage(s string, b []byte) bool {
+	if len(s) == 0 || len(b) == 0 {
+		return false
+	}
+	start := uintptr(unsafe.Pointer(unsafe.StringData(s)))
+	low := uintptr(unsafe.Pointer(unsafe.SliceData(b)))
+	return start >= low && start < low+uintptr(len(b))
+}
+
 // TestRequestForSPNEGOStatesTheProtocol pins Proto against its numbers. A
 // manager that compares ProtoAtLeast with Proto must not be told two different
 // things, and fasthttp serves HTTP/1.0 as well as 1.1.
+//
+// It also pins the gate. A session manager is the only reader — gokrb5 looks at
+// none of Proto, Scheme or TLS — so a request built without one must not pay to
+// copy the protocol out of the request buffer and parse it.
 func TestRequestForSPNEGOStatesTheProtocol(t *testing.T) {
 	for _, tc := range []struct {
 		raw         string
@@ -743,18 +845,22 @@ func TestRequestForSPNEGOStatesTheProtocol(t *testing.T) {
 		},
 	} {
 		t.Run(tc.wantProto, func(t *testing.T) {
-			ctx := &fasthttp.RequestCtx{}
-			require.NoError(t, ctx.Request.Read(bufio.NewReader(bytes.NewBufferString(tc.raw))))
+			build := func(withCookies bool) *http.Request {
+				ctx := &fasthttp.RequestCtx{}
+				require.NoError(t, ctx.Request.Read(bufio.NewReader(bytes.NewBufferString(tc.raw))))
 
-			var got *http.Request
-			app := fiber.New()
-			app.All("/*", func(c fiber.Ctx) error {
-				got = requestForSPNEGO(c, false)
-				return nil
-			})
-			app.Handler()(ctx)
+				var got *http.Request
+				app := fiber.New()
+				app.All("/*", func(c fiber.Ctx) error {
+					got = requestForSPNEGO(c, withCookies)
+					return nil
+				})
+				app.Handler()(ctx)
+				require.NotNil(t, got)
+				return got
+			}
 
-			require.NotNil(t, got)
+			got := build(true)
 			require.Equal(t, tc.wantProto, got.Proto)
 			require.Equal(t, tc.wantMajor, got.ProtoMajor)
 			require.Equal(t, tc.wantMinor, got.ProtoMinor)
@@ -763,6 +869,11 @@ func TestRequestForSPNEGOStatesTheProtocol(t *testing.T) {
 			// RequestURI stays empty along with the rest of the path: it cannot
 			// be reconstructed faithfully, so it is not claimed.
 			require.Empty(t, got.RequestURI)
+
+			bare := build(false)
+			require.Empty(t, bare.Proto, "the protocol is only for a session manager")
+			require.Zero(t, bare.ProtoMajor)
+			require.Zero(t, bare.ProtoMinor)
 		})
 	}
 }
@@ -2659,14 +2770,95 @@ func TestSessionManagerProbeLeavesGetAlone(t *testing.T) {
 	require.False(t, clean.sessionFailed)
 }
 
-// TestSessionManagerProbeSurvivesAForeignWriter covers the guard on the type
-// assertion. gokrb5 v8.4.4 passes the ResponseWriter straight through, so the
-// writer is always this middleware's recorder; if that ever stops being true
-// the signal is lost, but the request must not panic.
-func TestSessionManagerProbeSurvivesAForeignWriter(t *testing.T) {
+// wrappedWriter is a ResponseWriter that hides another, the shape a future
+// gokrb5 would take if it wrapped the writer to add a capability. Unwrap is the
+// convention net/http itself follows in http.ResponseController.
+type wrappedWriter struct {
+	http.ResponseWriter
+	inner http.ResponseWriter
+}
+
+func (w wrappedWriter) Unwrap() http.ResponseWriter { return w.inner }
+
+// selfWrappingWriter unwraps to itself, which is what a cycle looks like from
+// inside the walk.
+type selfWrappingWriter struct{ http.ResponseWriter }
+
+func (w *selfWrappingWriter) Unwrap() http.ResponseWriter { return w }
+
+// TestSessionManagerProbeSeesThroughAWrappedWriter covers what happens if
+// gokrb5 stops passing the ResponseWriter straight through. The recorder is
+// still found, so the signal that classifies a session failure survives a
+// dependency bump that adds a wrapper.
+func TestSessionManagerProbeSeesThroughAWrappedWriter(t *testing.T) {
+	var recorder responseRecorder
+	writer := wrappedWriter{
+		ResponseWriter: httptest.NewRecorder(),
+		inner:          wrappedWriter{ResponseWriter: httptest.NewRecorder(), inner: &recorder},
+	}
+
 	probe := sessionManagerProbe{delegate: &failingSessionManager{}}
-	err := probe.New(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "creds", nil)
-	require.ErrorIs(t, err, errSessionStoreDown, "the error still reaches gokrb5")
+	err := probe.New(writer, httptest.NewRequest(http.MethodGet, "/", nil), "creds", nil)
+	require.ErrorIs(t, err, errSessionStoreDown)
+	require.True(t, recorder.sessionFailed, "the walk must reach the recorder through the wrappers")
+}
+
+// TestSessionManagerProbeSurvivesAForeignWriter covers the two ways the walk can
+// end without finding a recorder: a writer that does not unwrap at all, and one
+// whose Unwrap cycles. Neither can be allowed to panic or spin — the signal is
+// lost, which is what the log line is for, but the request still completes.
+func TestSessionManagerProbeSurvivesAForeignWriter(t *testing.T) {
+	for name, writer := range map[string]http.ResponseWriter{
+		"a writer that does not unwrap": httptest.NewRecorder(),
+		"a writer that unwraps to itself": &selfWrappingWriter{
+			ResponseWriter: httptest.NewRecorder(),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var logged bytes.Buffer
+			flog.SetOutput(&logged)
+			t.Cleanup(func() { flog.SetOutput(os.Stderr) })
+
+			probe := sessionManagerProbe{delegate: &failingSessionManager{}}
+			done := make(chan error, 1)
+			go func() {
+				done <- probe.New(writer, httptest.NewRequest(http.MethodGet, "/", nil), "creds", nil)
+			}()
+			select {
+			case err := <-done:
+				require.ErrorIs(t, err, errSessionStoreDown, "the error still reaches gokrb5")
+			case <-time.After(5 * time.Second):
+				t.Fatal("the unwrap walk did not terminate")
+			}
+
+			// Losing the signal is the hole the probe exists to close, so it
+			// must not be silent: this is the line that points at the
+			// dependency bump that caused it.
+			require.Contains(t, logged.String(), "session failure could not be recorded",
+				"a lost signal must be reported, not swallowed")
+			require.Contains(t, logged.String(), "gokrb5 replaced the response writer",
+				"the line must say what to look at")
+		})
+	}
+}
+
+// TestSessionManagerProbeIsQuietWhenItFindsTheRecorder is the other half. The
+// diagnostic above marks a dependency bump worth investigating, so emitting it
+// on the ordinary path would train whoever reads the log to ignore it.
+func TestSessionManagerProbeIsQuietWhenItFindsTheRecorder(t *testing.T) {
+	var logged bytes.Buffer
+	flog.SetOutput(&logged)
+	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
+
+	var recorder responseRecorder
+	probe := sessionManagerProbe{delegate: &failingSessionManager{}}
+	require.ErrorIs(t,
+		probe.New(&recorder, httptest.NewRequest(http.MethodGet, "/", nil), "creds", nil),
+		errSessionStoreDown)
+
+	require.True(t, recorder.sessionFailed)
+	require.Empty(t, logged.String(),
+		"the ordinary failure is reported through OnError and the throttled log, not from here")
 }
 
 // TestMergedKeytabIsSerialisable pins why readAll builds on keytab.New rather
