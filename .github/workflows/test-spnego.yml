@@ -60,3 +60,24 @@ jobs:
           packages: ./...
           rerun-fails: '2'
           args: -race -count=1
+      # This middleware decides who is authenticated, so a silent drop in test
+      # coverage is worth failing on rather than noticing at review time. The
+      # floor sits well below the current figure so ordinary changes do not trip
+      # it; raise it deliberately, do not lower it to make a change fit.
+      #
+      # ./example is excluded rather than left to score 0%. It is a runnable
+      # demo with no tests by design, and Go 1.26 folds such packages into the
+      # total where 1.25 omitted them — measuring it would make the same tree
+      # report two different numbers per matrix entry, and would sink the total
+      # further every time the demo grew.
+      - name: Check coverage
+        working-directory: ./v3/spnego
+        run: |
+          packages=$(go list ./... | grep -v '/example$')
+          go test -count=1 -covermode=atomic -coverprofile=cover.out ${packages}
+          total=$(go tool cover -func=cover.out | awk '/^total:/ {print $3}' | tr -d '%')
+          echo "total statement coverage: ${total}%"
+          if ! awk -v t="${total}" 'BEGIN { exit !(t + 0 >= 85) }'; then
+            echo "::error::coverage ${total}% is below the 85% floor"
+            exit 1
+          fi
