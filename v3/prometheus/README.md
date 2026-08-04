@@ -49,9 +49,9 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | NativeHistogramMaxBucketNumber | `uint32` | Bounds the native histogram buckets kept per series. | `0` (unlimited) |
 | NativeHistogramMinResetDuration | `time.Duration` | Minimum time before a native histogram may be reset to control its bucket count. | `0` |
 | TrackUnmatchedRequests | `bool` | Records metrics for requests that do not resolve to a registered route. | `false` |
-| UnmatchedRouteLabel | `string` | Path label used for unmatched requests when `TrackUnmatchedRequests` is enabled. | `"/__unmatched__"` |
+| UnmatchedRouteLabel | `string` | Path label used for unmatched requests when `TrackUnmatchedRequests` is enabled. Must be valid UTF-8. | `"/__unmatched__"` |
 | EnableOpenMetrics | `bool` | Negotiates the experimental OpenMetrics encoding, which is what exports exemplars. | `false` |
-| EnableOpenMetricsTextCreatedSamples | `bool` | Adds synthetic `_created` samples to OpenMetrics responses. | `false` |
+| EnableOpenMetricsTextCreatedSamples | `bool` | Adds synthetic `_created` samples to OpenMetrics responses. Requires `EnableOpenMetrics`. | `false` |
 | DisableExemplars | `bool` | Skips trace exemplar collection, and with it the request-context read every instrumented request otherwise pays. | `false` |
 | DisableCompression | `bool` | Serves metrics uncompressed even when the client requests gzip or zstd. | `false` |
 | MetricsMaxRequestsInFlight | `int` | Caps concurrent scrapes; the excess is answered with 503. | `0` (unlimited) |
@@ -137,7 +137,10 @@ http_response_size_bytes
 
 Every metric except `http_requests_in_progress` is labeled with the *registered
 route pattern* (for example `/user/:id`), not the request path, so label
-cardinality stays bounded no matter what clients request.
+cardinality stays bounded no matter what clients request. Trailing slashes are
+trimmed from the pattern, which is what lets a `SkipURIs` entry match however it
+was spelled — so under `fiber.Config{StrictRouting: true}`, `/foo` and `/foo/`
+are two endpoints sharing one series.
 
 `http_requests_in_progress` is labeled by HTTP method only. It has to be
 incremented before the router picks a handler, at which point the route pattern
@@ -148,7 +151,8 @@ when its size is known — either `Content-Length` is set, or the body is buffer
 and can be measured. A stream of unannounced length, such as `c.SendStream`
 without a size or an SSE response, is left out of those histograms rather than
 recorded as zero bytes, which would drag the reported percentiles towards
-nothing.
+nothing. A `HEAD` response records zero: Fiber runs the `GET` handler for it, but
+fasthttp drops the body, so no payload bytes reach the client.
 
 `http_requests_status_class_total` is convenience, not new information:
 `status_class` is a function of `status_code`, so

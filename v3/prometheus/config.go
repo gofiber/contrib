@@ -22,7 +22,13 @@ type Metric string
 // is known: either Content-Length is set, or the body is buffered and can be
 // measured. A stream of unannounced length - c.SendStream without a size, an SSE
 // response, a chunked upload read through fiber.Config.StreamRequestBody - is
-// left out of the histogram rather than recorded as zero bytes.
+// left out of the histogram rather than recorded as zero bytes. A HEAD response
+// records zero, since fasthttp drops the body the handler generated.
+//
+// The path label is the registered route pattern with trailing slashes trimmed,
+// so under fiber.Config.StrictRouting two routes differing only by a trailing
+// slash - "/foo" and "/foo/" - share one series. Trimming is what lets a
+// SkipURIs entry match a pattern however it was spelled.
 const (
 	MetricRequestsTotal            Metric = "requests_total"
 	MetricRequestsStatusClassTotal Metric = "requests_status_class_total"
@@ -183,6 +189,10 @@ type Config struct {
 	// visibly distinct from real route patterns. Only trailing slashes are
 	// trimmed, so that "/other/" and "/other" cannot become two series.
 	//
+	// It has to be valid UTF-8, which New checks: unlike Labels, this value
+	// never passes through a descriptor, so client_golang would not see it until
+	// the first unmatched request.
+	//
 	// Optional. Default: "/__unmatched__".
 	UnmatchedRouteLabel string
 
@@ -192,7 +202,9 @@ type Config struct {
 	EnableOpenMetrics bool
 
 	// EnableOpenMetricsTextCreatedSamples adds synthetic `_created` samples to
-	// OpenMetrics responses.
+	// OpenMetrics responses. It does nothing on its own: the samples reach only
+	// a scrape that negotiated the OpenMetrics encoding, so EnableOpenMetrics
+	// has to be set as well.
 	//
 	// Optional. Default: false.
 	EnableOpenMetricsTextCreatedSamples bool
@@ -309,6 +321,13 @@ type Config struct {
 	// Every distinct value creates a new series, so returning request data
 	// unchanged lets a client grow the registry without bound. Map untrusted
 	// input onto a fixed set of values first.
+	//
+	// A function that panics costs its request every metric rather than the
+	// request itself: the sample is dropped and the response is unaffected. The
+	// middleware cannot do better, since it calls these after the handler chain
+	// has unwound, past any recover the application mounted - letting the panic
+	// through would kill the connection instead. Guard your type assertions
+	// rather than relying on that.
 	//
 	// Returned values are copied, so a zero-copy string from c.Get or c.Params
 	// is safe to return directly.

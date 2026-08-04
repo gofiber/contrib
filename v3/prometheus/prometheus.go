@@ -159,9 +159,14 @@ func New(config ...Config) fiber.Handler {
 
 	dynamic := resolveDynamicLabels(cfg)
 
-	validateBuckets("RequestDurationBuckets", cfg.RequestDurationBuckets)
-	validateBuckets("RequestSizeBuckets", cfg.RequestSizeBuckets)
-	validateBuckets("ResponseSizeBuckets", cfg.ResponseSizeBuckets)
+	// The label the middleware supplies itself for unmatched requests is the
+	// only one client_golang does not see until a request arrives: const labels
+	// are validated when the Desc is built, but this one reaches
+	// WithLabelValues, which panics on invalid UTF-8 from the connection
+	// goroutine.
+	if !utf8.ValidString(cfg.UnmatchedRouteLabel) {
+		panic("prometheus middleware: UnmatchedRouteLabel is not valid UTF-8")
+	}
 
 	disabled := make(map[Metric]struct{}, len(cfg.DisabledMetrics))
 	for _, metric := range cfg.DisabledMetrics {
@@ -175,6 +180,21 @@ func New(config ...Config) fiber.Handler {
 	enabled := func(metric Metric) bool {
 		_, off := disabled[metric]
 		return !off
+	}
+
+	// Bucket bounds belong to one family each, so a disabled family's bounds are
+	// dead configuration and rejecting them would stop an application from
+	// booting over settings that can no longer reach a histogram. The reserved
+	// "le" label is deliberately not gated the same way: it applies to how the
+	// middleware labels everything it exposes, not to one family's options.
+	if enabled(MetricRequestDuration) {
+		validateBuckets("RequestDurationBuckets", cfg.RequestDurationBuckets)
+	}
+	if enabled(MetricRequestSize) {
+		validateBuckets("RequestSizeBuckets", cfg.RequestSizeBuckets)
+	}
+	if enabled(MetricResponseSize) {
+		validateBuckets("ResponseSizeBuckets", cfg.ResponseSizeBuckets)
 	}
 
 	m := &middleware{
@@ -629,32 +649,11 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	// they are given, so element 0 can be swapped from the status code to the
 	// status class for the last counter.
 	values := make([]string, 3+len(m.dynamicLabels))
-	values[0] = strconv.Itoa(status)
+	values[0] = statusLabel(status)
 	values[1] = method
 	values[2] = routePath
-	for i, label := range m.dynamicLabels {
-		// Two hazards, both reachable from a value taken off the request.
-		//
-		// Prometheus rejects label values that are not valid UTF-8 by panicking
-		// inside WithLabelValues, so a single header of raw bytes would take the
-		// process down. Invalid sequences are replaced instead.
-		//
-		// And unless the app sets fiber.Config.Immutable, Fiber hands out
-		// strings aliasing the connection read buffer. Prometheus keeps label
-		// values for the lifetime of the series, so without a copy the buffer is
-		// reused by the next request and every series rewrites itself to
-		// whatever arrived last, collapsing distinct series onto one label set
-		// and leaving the registry unable to gather at all. ToValidUTF8 returns
-		// its input untouched when the value is already valid, so the clone has
-		// to stay.
-		value := label.fn(ctx)
-		if utf8.ValidString(value) {
-			values[3+i] = strings.Clone(value)
-		} else {
-			// ToValidUTF8 allocates whenever it substitutes, so its result is
-			// already detached from the read buffer.
-			values[3+i] = strings.ToValidUTF8(value, "�")
-		}
+	if !m.resolveDynamicValues(ctx, values) {
+		return nil
 	}
 
 	if m.requestsTotal != nil {
@@ -700,9 +699,16 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		}
 
 		if m.responseSize != nil {
-			resp := ctx.Response()
-			if size, known := bodySize(resp.Header.ContentLength(), resp); known {
-				observe(m.responseSize.WithLabelValues(values...), size)
+			// fasthttp drops the body of a HEAD response, so nothing the
+			// handler generated reaches the client. It sets Response.SkipBody
+			// only after the chain returns, hence the method check here.
+			if method == fiber.MethodHead {
+				observe(m.responseSize.WithLabelValues(values...), 0)
+			} else {
+				resp := ctx.Response()
+				if size, known := bodySize(resp.Header.ContentLength(), resp); known {
+					observe(m.responseSize.WithLabelValues(values...), size)
+				}
 			}
 		}
 	}
@@ -713,6 +719,74 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	}
 
 	return nil
+}
+
+// resolveDynamicValues fills the dynamic part of the label buffer, reporting
+// whether the request can be recorded at all.
+//
+// The functions are supplied by the application and Config invites them to read
+// whatever the handlers left on the context, so a nil Locals cast is an easy
+// mistake to make. It would be a costly one: this runs after the handler chain
+// has unwound, past any recover the application mounted where this package
+// prescribes, so the panic would reach the fasthttp connection goroutine and the
+// client would get no response at all. Instrumentation must not be able to take
+// the request down, so a panicking function drops the sample instead - inventing
+// a label value would quietly put a fabricated series in the registry.
+func (m *middleware) resolveDynamicValues(ctx fiber.Ctx, values []string) (ok bool) {
+	if len(m.dynamicLabels) == 0 {
+		return true
+	}
+
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+
+	for i, label := range m.dynamicLabels {
+		// Two hazards, both reachable from a value taken off the request.
+		//
+		// Prometheus rejects label values that are not valid UTF-8 by panicking
+		// inside WithLabelValues, so a single header of raw bytes would take the
+		// process down. Invalid sequences are replaced instead.
+		//
+		// And unless the app sets fiber.Config.Immutable, Fiber hands out
+		// strings aliasing the connection read buffer. Prometheus keeps label
+		// values for the lifetime of the series, so without a copy the buffer is
+		// reused by the next request and every series rewrites itself to
+		// whatever arrived last, collapsing distinct series onto one label set
+		// and leaving the registry unable to gather at all.
+		value := label.fn(ctx)
+		if utf8.ValidString(value) {
+			values[3+i] = strings.Clone(value)
+		} else {
+			// ToValidUTF8 allocates whenever it substitutes, so its result is
+			// already detached from the read buffer.
+			values[3+i] = strings.ToValidUTF8(value, "�")
+		}
+	}
+
+	return true
+}
+
+// statusStrings holds the decimal form of every status code a response can
+// carry, because strconv.Itoa allocates above 99 - which is every HTTP status -
+// and this is the hottest path in the middleware.
+var statusStrings = func() [1000]string {
+	var table [1000]string
+	for code := 100; code < 1000; code++ {
+		table[code] = strconv.Itoa(code)
+	}
+	return table
+}()
+
+// statusLabel renders the status code without allocating for the codes a
+// response can actually carry.
+func statusLabel(status int) string {
+	if status >= 100 && status < 1000 {
+		return statusStrings[status]
+	}
+	return strconv.Itoa(status)
 }
 
 // payload is the part of *fasthttp.Request and *fasthttp.Response that bodySize
@@ -787,13 +861,16 @@ func (m *middleware) skipped(routePath string) bool {
 // UnmatchedRouteLabel when TrackUnmatchedRequests is set.
 func (m *middleware) routeLabel(ctx fiber.Ctx) (string, bool) {
 	if ctx.Matched() {
-		if route := ctx.Route(); route != nil {
+		// A registered route always carries at least one handler. DefaultCtx
+		// substitutes a synthetic Route holding the raw request path when it has
+		// no route to report, and a Ctx installed through
+		// fiber.NewWithCustomCtx may return nil outright; taking either at face
+		// value would put one series per distinct URL in the registry, which is
+		// the unbounded cardinality this label exists to prevent. Neither names
+		// an endpoint, so both count as unmatched and obey the same opt-in.
+		if route := ctx.Route(); route != nil && len(route.Handlers) > 0 {
 			return normalizePath(route.Path), true
 		}
-		// A Ctx implementation installed through fiber.NewWithCustomCtx may
-		// report a match without exposing the route. Nothing identifies the
-		// endpoint then, so the request counts as unmatched and obeys the same
-		// opt-in.
 	}
 
 	if !m.trackUnmatched {

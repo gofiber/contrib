@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unsafe"
@@ -17,6 +18,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	recoverer "github.com/gofiber/fiber/v3/middleware/recover"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	dto "github.com/prometheus/client_model/go"
 	"go.opentelemetry.io/otel"
 	tracesdk "go.opentelemetry.io/otel/sdk/trace"
@@ -2736,5 +2738,208 @@ func TestEmptyBucketsStayEmpty(t *testing.T) {
 
 	if cfg := configDefault(Config{}); len(cfg.RequestDurationBuckets) != len(defaultRequestDurationBuckets) {
 		t.Fatalf("expected nil to select the defaults, got %v", cfg.RequestDurationBuckets)
+	}
+}
+
+// TestInvalidUnmatchedRouteLabelPanics covers the one label value the
+// middleware supplies itself that client_golang never sees at startup: const
+// labels are validated when the descriptor is built, this one only reaches
+// WithLabelValues, on the first unmatched request.
+func TestInvalidUnmatchedRouteLabelPanics(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected the invalid label to be rejected by New")
+		}
+		if msg := fmt.Sprint(r); !strings.Contains(msg, "UnmatchedRouteLabel") {
+			t.Fatalf("expected the panic to name the field, got %v", r)
+		}
+	}()
+
+	_ = New(Config{TrackUnmatchedRequests: true, UnmatchedRouteLabel: "bad-\xff\xfe"})
+}
+
+// TestPanickingDynamicLabelDropsSample pins that instrumentation cannot take the
+// request down. The functions run after the handler chain has unwound, past any
+// recover the application mounted, so an unguarded panic would reach the
+// connection goroutine and the client would get nothing at all.
+func TestPanickingDynamicLabelDropsSample(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{
+		DynamicLabels: map[string]func(fiber.Ctx) string{
+			"tenant": func(c fiber.Ctx) string {
+				// The shape Config invites: a local the handler may not have set.
+				return c.Locals("tenant").(string)
+			},
+		},
+	}, "")
+	app.Get("/tenanted", func(c fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+	app.Get("/set", func(c fiber.Ctx) error {
+		c.Locals("tenant", "acme")
+		return c.SendString("ok")
+	})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/tenanted", nil), noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("the panicking label function reached the connection: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected the response to be unaffected, got %d", resp.StatusCode)
+	}
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/set", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if strings.Contains(metrics, `path="/tenanted"`) {
+		t.Fatalf("expected the sample to be dropped, got %q", metrics)
+	}
+	if !strings.Contains(metrics, `tenant="acme"`) {
+		t.Fatalf("expected the working route to still be recorded, got %q", metrics)
+	}
+}
+
+// TestHeadResponseRecordsNoPayload covers the body Fiber generates for a HEAD by
+// running the GET handler and fasthttp then discards: no payload bytes reach the
+// client, so counting them would overstate egress for anything polled with HEAD.
+func TestHeadResponseRecordsNoPayload(t *testing.T) {
+	app, _ := newAppWithMiddleware(Config{}, "")
+	app.Get("/big", func(c fiber.Ctx) error {
+		return c.SendString(strings.Repeat("b", 4096))
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodHead, "/big", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if size := gaugeValue(t, metrics, `http_response_size_bytes_sum{method="HEAD",path="/big",status_code="200"}`); size != 0 {
+		t.Fatalf("expected a HEAD response to record no payload, got %v", size)
+	}
+}
+
+// TestSyntheticRouteIsNotARoutePattern covers the Route DefaultCtx substitutes
+// when it has none to report: it carries the raw request path, so taking it at
+// face value would put one series per distinct URL in the registry.
+func TestSyntheticRouteIsNotARoutePattern(t *testing.T) {
+	app := fiber.NewWithCustomCtx(func(app *fiber.App) fiber.CustomCtx {
+		return &syntheticRouteCtx{DefaultCtx: fiber.NewDefaultCtx(app)}
+	})
+	app.Use(New(Config{TrackUnmatchedRequests: true}))
+	app.Get("/user/:id", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	for _, id := range []string{"42", "1337"} {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/user/"+id, nil), noTimeoutConfig); err != nil {
+			t.Fatalf("unexpected request error: %v", err)
+		}
+	}
+
+	metrics := getMetrics(t, app, "")
+	for _, id := range []string{"42", "1337"} {
+		if strings.Contains(metrics, `path="/user/`+id+`"`) {
+			t.Fatalf("expected no series for the raw request path, got %q", metrics)
+		}
+	}
+	if !strings.Contains(metrics, `path="/__unmatched__"`) {
+		t.Fatalf("expected the requests to count as unmatched, got %q", metrics)
+	}
+}
+
+// syntheticRouteCtx reports the Route that DefaultCtx builds when it has none:
+// the raw request path, with no handlers.
+type syntheticRouteCtx struct {
+	*fiber.DefaultCtx
+}
+
+func (c *syntheticRouteCtx) Route() *fiber.Route {
+	return &fiber.Route{Path: c.Path(), Method: c.Method()}
+}
+
+// TestDisabledFamilyBucketsAreNotValidated pins that bucket bounds belonging to
+// a disabled family are dead configuration rather than a reason to refuse to
+// boot - otherwise disabling the family would not be a way past a bad slice.
+func TestDisabledFamilyBucketsAreNotValidated(t *testing.T) {
+	_ = New(Config{
+		DisabledMetrics:     []Metric{MetricRequestSize, MetricResponseSize},
+		RequestSizeBuckets:  []float64{2, 1},
+		ResponseSizeBuckets: []float64{100, 100},
+	})
+}
+
+// failingGatherer stands in for a registry where one collector errors while the
+// rest gather fine, which is what separates the two error-handling modes:
+// promhttp answers 500 either way when nothing at all was gathered.
+type failingGatherer struct {
+	prometheus.Gatherer
+}
+
+func (g failingGatherer) Gather() ([]*dto.MetricFamily, error) {
+	families, _ := g.Gatherer.Gather()
+	return families, errors.New("gather exploded")
+}
+
+// recordingLogger captures what promhttp reports, which is otherwise silent.
+type recordingLogger struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *recordingLogger) Println(v ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, fmt.Sprint(v...))
+}
+
+func (l *recordingLogger) count() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.lines)
+}
+
+// TestMetricsErrorLogReceivesGatherErrors pins that the logger reaches promhttp;
+// without it a failing collector is silent forever.
+func TestMetricsErrorLogReceivesGatherErrors(t *testing.T) {
+	logger := &recordingLogger{}
+	registry := prometheus.NewRegistry()
+
+	app, _ := newAppWithMiddleware(Config{
+		Registerer:      registry,
+		Gatherer:        failingGatherer{Gatherer: registry},
+		MetricsErrorLog: logger,
+	}, "")
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/metrics", nil), noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("fetching metrics: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusInternalServerError {
+		t.Fatalf("expected the default HTTPErrorOnError to answer 500, got %d", resp.StatusCode)
+	}
+	if logger.count() == 0 {
+		t.Fatal("expected the gather error to reach MetricsErrorLog")
+	}
+}
+
+// TestMetricsErrorHandlingContinuesOnError pins the other half: the handling
+// mode decides what the scraper sees.
+func TestMetricsErrorHandlingContinuesOnError(t *testing.T) {
+	registry := prometheus.NewRegistry()
+
+	app, _ := newAppWithMiddleware(Config{
+		Registerer:           registry,
+		Gatherer:             failingGatherer{Gatherer: registry},
+		MetricsErrorHandling: promhttp.ContinueOnError,
+	}, "")
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/metrics", nil), noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("fetching metrics: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected ContinueOnError to still answer 200, got %d", resp.StatusCode)
 	}
 }
