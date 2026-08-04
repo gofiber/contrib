@@ -1937,9 +1937,12 @@ func TestRequestBodySize(t *testing.T) {
 		{name: "chunked body is measured", contentLength: -1, payload: fakePayload{body: []byte("hello")}, want: 5, wantKnown: true},
 		// A pre-parsed form is the one case where the buffer is not the body.
 		{name: "form takes the announced length", contentLength: 2048, bodyLimit: 4096, preParsedForm: true, payload: fakePayload{}, want: 2048, wantKnown: true},
-		{name: "form length is clamped to the body limit", contentLength: 500000000, bodyLimit: 4096, preParsedForm: true, payload: fakePayload{}, want: 4096, wantKnown: true},
+		// Beyond the limit the body was never received in full, so there is no
+		// honest size to record - fabricating one would be worse than none.
+		{name: "form beyond the limit is undetermined", contentLength: 500000000, bodyLimit: 4096, preParsedForm: true, payload: fakePayload{}, wantKnown: false},
 		{name: "form without a limit takes the announced length", contentLength: 2048, preParsedForm: true, payload: fakePayload{}, want: 2048, wantKnown: true},
-		{name: "stream takes the announced length", contentLength: 42, payload: fakePayload{stream: true}, want: 42, wantKnown: true},
+		{name: "stream takes the announced length", contentLength: 42, bodyLimit: 4096, payload: fakePayload{stream: true}, want: 42, wantKnown: true},
+		{name: "stream beyond the limit is undetermined", contentLength: 500000000, bodyLimit: 1024, payload: fakePayload{stream: true}, wantKnown: false},
 		{name: "stream announcing zero is a known zero", contentLength: 0, payload: fakePayload{stream: true}, want: 0, wantKnown: true},
 		{name: "stream of unknown length is undetermined", contentLength: -1, payload: fakePayload{stream: true}, wantKnown: false},
 		{name: "identity encoding stream is undetermined", contentLength: -2, payload: fakePayload{stream: true}, wantKnown: false},
@@ -3856,6 +3859,18 @@ func TestNegativeNativeHistogramFactorPanics(t *testing.T) {
 // it. Fiber then replays the Use chain, and trusting the announced length would
 // let a few hundred bytes of traffic bill the histogram for half a gigabyte.
 func TestInflatedContentLengthIsNotRecorded(t *testing.T) {
+	// Both shapes: an ordinary body, and the multipart one whose announced
+	// length the middleware does consult when the form was actually parsed.
+	for _, contentType := range []string{"application/octet-stream", "multipart/form-data; boundary=zzz"} {
+		t.Run(contentType, func(t *testing.T) {
+			testInflatedContentLength(t, contentType)
+		})
+	}
+}
+
+func testInflatedContentLength(t *testing.T, contentType string) {
+	t.Helper()
+
 	app := fiber.New(fiber.Config{BodyLimit: 1024})
 	app.Use(New(Config{TrackUnmatchedRequests: true}))
 	app.Post("/upload", func(c fiber.Ctx) error {
@@ -3863,7 +3878,7 @@ func TestInflatedContentLengthIsNotRecorded(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(fiber.MethodPost, "/upload", strings.NewReader("tiny"))
-	req.Header.Set(fiber.HeaderContentType, "application/octet-stream")
+	req.Header.Set(fiber.HeaderContentType, contentType)
 	req.Header.Set(fiber.HeaderContentLength, "500000000")
 	req.ContentLength = 500000000
 	// fasthttp rejects the request at the connection level, which app.Test
@@ -3882,8 +3897,8 @@ func TestInflatedContentLengthIsNotRecorded(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parsing %q: %v", line, err)
 		}
-		if size > 1024 {
-			t.Fatalf("expected no request larger than the body limit, got %v in %q", size, line)
+		if size > 4 {
+			t.Fatalf("expected no size beyond what arrived, got %v in %q", size, line)
 		}
 	}
 }

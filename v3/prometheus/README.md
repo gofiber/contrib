@@ -155,8 +155,9 @@ nothing. On the request side what actually arrived is measured, so a client
 cannot bill the histogram for a body it never sent. The exception is a pre-parsed
 multipart form: fasthttp keeps the parsed parts — the large ones spilled to temp
 files — so reading the body back would re-marshal every uploaded file into memory
-just to size it, and the announced `Content-Length` is used instead, clamped to
-`BodyLimit`. A response that carries no body on the wire records zero however
+just to size it, and the announced `Content-Length` is used instead — unless it
+exceeds `BodyLimit`, which means the body was never received in full and no
+honest size exists to record. A response that carries no body on the wire records zero however
 much the handler wrote — a `HEAD`, or any status RFC 9110 forbids a body on (`1xx`,
 `204`, `304`) — because fasthttp drops the body and no payload bytes reach the
 client.

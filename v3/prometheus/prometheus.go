@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -51,6 +52,8 @@ type middleware struct {
 	skipStatusCodes   map[int]struct{}
 	skipStatusClasses map[string]struct{}
 	dynamicLabels     []dynamicLabel
+	bodyLimitOnce     sync.Once
+	bodyLimit         int
 	exemplars         bool
 	trackUnmatched    bool
 	records           bool
@@ -538,9 +541,9 @@ func detachRequest(h http.Handler) http.Handler {
 // variableLabels builds a metric's variable label names: the status label the
 // family is keyed by, the request labels, then the dynamic names in sorted
 // order.
-func variableLabels(statusLabel string, dynamic []dynamicLabel) []string {
+func variableLabels(statusLabelName string, dynamic []dynamicLabel) []string {
 	names := make([]string, 0, 3+len(dynamic))
-	names = append(names, statusLabel, "method", "path")
+	names = append(names, statusLabelName, "method", "path")
 	for _, label := range dynamic {
 		names = append(names, label.name)
 	}
@@ -570,8 +573,6 @@ func resolveDynamicLabels(cfg Config) []dynamicLabel {
 		return nil
 	}
 
-	// Sorting keeps the label order of a metric stable across restarts, which
-	// map iteration order would not.
 	names := slices.Sorted(maps.Keys(cfg.DynamicLabels))
 
 	dynamic := make([]dynamicLabel, 0, len(names))
@@ -782,9 +783,6 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	if m.observes {
 		var exemplarLabels prometheus.Labels
 		if m.exemplars {
-			// Reading the request context is what costs: with no user context
-			// set - the norm without tracing middleware - Fiber installs a
-			// background one, which the request then has to clear on release.
 			spanCtx := trace.SpanContextFromContext(ctx.Context())
 			// Sampled, not merely valid. Under head-based sampling every
 			// request carries a valid trace ID, and Prometheus keeps one
@@ -812,14 +810,15 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 
 		if m.requestSize != nil {
 			req := ctx.Request()
-			// The body limit is read only for a multipart form, which is the
-			// one shape that consults it - App.Config returns the whole config
-			// by value, so this stays off the ordinary path.
 			preParsedForm := bytes.HasPrefix(req.Header.ContentType(), multipartFormPrefix)
+
+			// Only the two paths that fall back to the announced length consult
+			// the limit, so an ordinary request never pays for it.
 			bodyLimit := 0
-			if preParsedForm {
-				bodyLimit = ctx.App().Config().BodyLimit
+			if preParsedForm || req.IsBodyStream() {
+				bodyLimit = m.bodyLimitOf(ctx)
 			}
+
 			if size, known := requestBodySize(req.Header.ContentLength(), bodyLimit, preParsedForm, req); known {
 				observe(m.requestSize.WithLabelValues(values...), size)
 			}
@@ -954,18 +953,24 @@ type payload interface {
 // histogram. Recording a zero would be worse than recording nothing - it still
 // increments _count and lands in the lowest bucket while adding nothing to _sum.
 func requestBodySize(contentLength, bodyLimit int, preParsedForm bool, p payload) (float64, bool) {
-	if p.IsBodyStream() {
-		if contentLength >= 0 {
-			return float64(contentLength), true
+	// announced is used where the body cannot be measured. A length beyond what
+	// the server accepts describes nothing that arrived: fasthttp either refused
+	// the request unread, or - with StreamRequestBody - swallowed the error and
+	// installed a stream carrying the client's figure. Either way the size is
+	// unknowable, and recording a fabricated one is worse than recording none.
+	announced := func() (float64, bool) {
+		if contentLength < 0 || (bodyLimit > 0 && contentLength > bodyLimit) {
+			return 0, false
 		}
-		return 0, false
+		return float64(contentLength), true
+	}
+
+	if p.IsBodyStream() {
+		return announced()
 	}
 
 	if preParsedForm && contentLength > 0 {
-		if bodyLimit > 0 && contentLength > bodyLimit {
-			return float64(bodyLimit), true
-		}
-		return float64(contentLength), true
+		return announced()
 	}
 
 	return float64(len(p.Body())), true
@@ -974,6 +979,19 @@ func requestBodySize(contentLength, bodyLimit int, preParsedForm bool, p payload
 // multipartFormPrefix is the media type whose body fasthttp consumes into parsed
 // parts before the handler chain runs.
 var multipartFormPrefix = []byte("multipart/form-data")
+
+// bodyLimitOf returns the application's configured body limit, read once:
+// App.Config hands back the whole configuration by value, and only the request
+// shapes that cannot measure their own body need this.
+//
+// One handler is meant for one app - mounting it twice double-counts, as the
+// package documents - so caching the first app's limit is safe.
+func (m *middleware) bodyLimitOf(ctx fiber.Ctx) int {
+	m.bodyLimitOnce.Do(func() {
+		m.bodyLimit = ctx.App().Config().BodyLimit
+	})
+	return m.bodyLimit
+}
 
 // responseBodySize reports the size of the payload about to be sent, and whether
 // it could be determined at all.

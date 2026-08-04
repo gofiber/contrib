@@ -26,8 +26,9 @@ type Metric string
 // side what arrived is measured, so a client cannot bill the histogram for a
 // body it never sent; the exception is a pre-parsed multipart form, where the
 // buffer is not the body and reading it back would re-marshal every uploaded
-// part into memory just to size it, so the announced length is used and clamped
-// to fiber.Config.BodyLimit. A response that
+// part into memory just to size it, so the announced length is used - unless it
+// exceeds fiber.Config.BodyLimit, which means the body was never received in
+// full and there is no honest size to record. A response that
 // carries no body on the wire records zero however much the handler wrote: a
 // HEAD, or any status RFC 9110 forbids a body on - 1xx, 204 and 304.
 //
@@ -330,10 +331,11 @@ type Config struct {
 	// serves GET /admin and is labelled "/Admin", so an entry of "/admin" would
 	// exclude nothing. Spell the entry the way the route was registered.
 	//
-	// An entry may also name UnmatchedRouteLabel, which excludes unmatched
-	// traffic from the metrics TrackUnmatchedRequests would otherwise record.
-	// That one is matched exactly - the label is a value, not a path, so a
-	// wildcard against it means nothing and excludes nothing.
+	// An entry may also name UnmatchedRouteLabel, which excludes the traffic
+	// TrackUnmatchedRequests would otherwise record. The label is matched as a
+	// whole value rather than as a path, so "/__unmatched__" and
+	// "/__unmatched__*" both exclude it - the star is stripped and the
+	// remainder compared - but no prefix rule applies beyond that.
 	//
 	// An entry ending in "*" matches by prefix: "/admin/*" excludes "/admin"
 	// and every route below it. Trailing stars are stripped as a group, so the
