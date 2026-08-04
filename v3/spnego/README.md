@@ -147,12 +147,18 @@ func remoteKeytabLookup() (*keytab.Keytab, error) {
 }
 ```
 
-> **Whatever error your lookup returns is logged and passed to `OnError`, so it must not carry anything secret.** That is easy to get wrong with a keytab: gokrb5's length checks interpolate the whole buffer they were handed, which for a single-principal keytab is the entire key. So `return keytab.Load(path)` writes that key to your logs whenever a file ends earlier than its own headers say — which is exactly what a rotation caught mid-write looks like. Report the failure without gokrb5's cause:
+> **Whatever error your lookup returns is logged and passed to `OnError`, so it must not carry anything secret.** That is easy to get wrong with a keytab: gokrb5's length checks interpolate the whole buffer they were handed, which for a single-principal keytab is the entire key. So `return keytab.Load(path)` writes that key to your logs whenever a file ends earlier than its own headers say — which is exactly what a rotation caught mid-write looks like.
+>
+> Only the parse cause has to go. Reading the file is where the diagnostics worth keeping are — a missing file, a permission change — and none of that carries the contents, so separate the two rather than flattening both into one message:
 >
 > ```go
-> kt, err := keytab.Load(path)
+> raw, err := os.ReadFile(path)
 > if err != nil {
->     return nil, fmt.Errorf("loading %s: keytab did not parse", path)
+>     return nil, fmt.Errorf("reading %s: %w", path, err)
+> }
+> kt := keytab.New()
+> if err := kt.Unmarshal(raw); err != nil {
+>     return nil, fmt.Errorf("%s did not parse (%d bytes read)", path, len(raw))
 > }
 > ```
 >
@@ -160,7 +166,7 @@ func remoteKeytabLookup() (*keytab.Keytab, error) {
 
 ### Errors
 
-A failed keytab lookup is answered with a bare `500`. The detail from `NewKeytabFileLookupFunc` names the keytab's path and the underlying OS error — a custom `KeytabLookupFunc` may report whatever it likes — and none of that should reach an unauthenticated caller, so the response body carries only `Internal Server Error`.
+A failed keytab lookup is answered with a bare `500`. The detail from `NewKeytabFileLookupFunc` names the keytab's path, and for a file it could not read the underlying OS error too — a file that read but did not parse reports only its length, for the reason above. A custom `KeytabLookupFunc` may report whatever it likes. None of it should reach an unauthenticated caller, so the response body carries only `Internal Server Error`.
 
 The detail is logged at error level instead, throttled to one line per 30 seconds, so a persistent fault cannot be turned into a log flood by unauthenticated callers.
 

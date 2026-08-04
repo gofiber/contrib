@@ -68,16 +68,24 @@ type Config struct {
 	// writes that key to the log whenever a file ends earlier than its own
 	// headers say — which is exactly what a rotation caught mid-write looks
 	// like. Not every parse failure reaches those branches; a bad magic byte or
-	// version is reported without the contents. Report the failure without the
-	// cause, or with a cause of your own:
+	// version is reported without the contents.
 	//
-	//	kt, err := keytab.Load(path)
+	// Only the parse cause has to go. Reading the file is where the diagnostics
+	// worth keeping are — a missing file, a permission change — and none of
+	// that carries the contents, so separate the two rather than flattening
+	// both into one message:
+	//
+	//	raw, err := os.ReadFile(path)
 	//	if err != nil {
-	//		return nil, fmt.Errorf("loading %s: keytab did not parse", path)
+	//		return nil, fmt.Errorf("reading %s: %w", path, err)
+	//	}
+	//	kt := keytab.New()
+	//	if err := kt.Unmarshal(raw); err != nil {
+	//		return nil, fmt.Errorf("%s did not parse (%d bytes read)", path, len(raw))
 	//	}
 	//
-	// NewKeytabFileLookupFunc does exactly that, which is the other reason to
-	// prefer it.
+	// NewKeytabFileLookupFunc does this, which is the other reason to prefer
+	// it.
 	KeytabLookup KeytabLookupFunc
 	// Log receives gokrb5's diagnostics, which carry no level of their own.
 	// gokrb5 writes a line for every request carrying a Negotiate token — one
@@ -433,14 +441,20 @@ func (c *keytabFileCache) readAll() (*keytab.Keytab, error) {
 		}
 		kt := keytab.New()
 		if err = kt.Unmarshal(raw); err != nil {
-			// gokrb5's own message is deliberately dropped. Its parse errors
-			// interpolate the bytes they were given — keytab.go:242 and :495
-			// format b and eb with %s — and those bytes are a keytab: for a
-			// single-principal file the whole AES key fits in one error, and
-			// this one travels to the log, to Config.OnError, and to whatever
-			// collects either. What it would add is the offset it gave up at,
-			// which does not identify the fault any better than the file name
-			// and errKeytabUnparsable already do.
+			// gokrb5's own message is deliberately dropped. Its length checks
+			// interpolate the bytes they were given, and those bytes are a
+			// keytab: for a single-principal file the whole AES key fits in one
+			// error, which then travels to the log, to Config.OnError, and to
+			// whatever collects either. What the message would add is the
+			// offset it gave up at, which identifies the fault no better than
+			// the file name and errKeytabUnparsable already do.
+			//
+			// Five branches interpolate, all in keytab.go at v8.4.4: :242 and
+			// :495 format an entry's bytes, and readInt8, readInt16 and
+			// readInt32 at :449, :464 and :480 format whatever buffer they were
+			// passed — which from Unmarshal is the whole file. Re-check all
+			// five when upgrading gokrb5, not just the first two: verifying a
+			// subset is how this leak would come back.
 			//
 			// The length is worth keeping: a rotation caught mid-write is a
 			// short read, and a permanently corrupt file usually is not.
