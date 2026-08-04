@@ -1,7 +1,9 @@
 package spnego
 
 import (
+	"bufio"
 	"bytes"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -699,6 +701,91 @@ func TestRequestForSPNEGOForwardsCookiesForSessionManager(t *testing.T) {
 	require.Equal(t, "abc123", cookie.Value)
 }
 
+// TestRequestForSPNEGOForwardsEveryCookie covers a client that sends more than
+// one Cookie line.
+//
+// The header is parsed from a raw request rather than built with Add, because
+// the two behave differently and only the raw form reproduces the bug: Add
+// merges into one line, so Peek returns everything, while two real lines leave
+// Peek returning just the first until something in the chain makes fasthttp
+// collect the rest. Copying the raw header would therefore forward a subset
+// that varies with whatever unrelated middleware ran earlier, and a session
+// cookie on the second line would go missing — which reads as "no session" and
+// mints a fresh one per request.
+func TestRequestForSPNEGOForwardsEveryCookie(t *testing.T) {
+	raw := "GET /authenticate HTTP/1.1\r\n" +
+		"Host: sso.example.com\r\n" +
+		"Cookie: unrelated=1\r\n" +
+		"Cookie: spnego-session=opaque\r\n\r\n"
+
+	ctx := &fasthttp.RequestCtx{}
+	require.NoError(t, ctx.Request.Read(bufio.NewReader(bytes.NewBufferString(raw))))
+	require.Equal(t, "unrelated=1", string(ctx.Request.Header.Peek(fiber.HeaderCookie)),
+		"the fixture must actually reproduce the split-header case")
+
+	var got *http.Request
+	app := fiber.New()
+	app.All("/*", func(c fiber.Ctx) error {
+		got = requestForSPNEGO(c, true)
+		return nil
+	})
+	app.Handler()(ctx)
+
+	require.NotNil(t, got)
+	forwarded := &http.Request{Header: got.Header}
+	session, err := forwarded.Cookie("spnego-session")
+	require.NoError(t, err, "a session cookie on a later line must still arrive")
+	require.Equal(t, "opaque", session.Value)
+	unrelated, err := forwarded.Cookie("unrelated")
+	require.NoError(t, err)
+	require.Equal(t, "1", unrelated.Value)
+}
+
+// TestRequestForSPNEGOCarriesSchemeAndTLS pins the two fields a session store
+// reads to decide whether its cookie may be marked Secure. Leaving them unset
+// would issue the session — which the middleware treats as a credential —
+// without that attribute on an HTTPS listener.
+//
+// The TLS case needs a context backed by a real *tls.Conn: fasthttp derives
+// TLSConnectionState from the connection, so nothing short of one distinguishes
+// "read from the connection" from "hardcoded nil".
+func TestRequestForSPNEGOCarriesSchemeAndTLS(t *testing.T) {
+	build := func(t *testing.T, ctx *fasthttp.RequestCtx) *http.Request {
+		t.Helper()
+		var got *http.Request
+		app := fiber.New()
+		app.All("/*", func(c fiber.Ctx) error {
+			got = requestForSPNEGO(c, true)
+			return nil
+		})
+		ctx.Request.Header.SetMethod(fiber.MethodGet)
+		ctx.Request.SetRequestURI("/authenticate")
+		app.Handler()(ctx)
+		require.NotNil(t, got)
+		return got
+	}
+
+	t.Run("plaintext", func(t *testing.T) {
+		got := build(t, &fasthttp.RequestCtx{})
+		require.NotNil(t, got.URL)
+		require.Equal(t, "http", got.URL.Scheme)
+		require.Nil(t, got.TLS, "a plaintext connection must not look secure")
+	})
+
+	t.Run("tls", func(t *testing.T) {
+		client, server := net.Pipe()
+		t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+		// Never handshaken, which is fine: ConnectionState is readable either
+		// way, and what is under test is that the field is taken from the
+		// connection at all.
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Init2(tls.Server(server, &tls.Config{MinVersion: tls.VersionTLS12}), nil, true)
+
+		got := build(t, ctx)
+		require.NotNil(t, got.TLS, "a TLS connection must be visible to a session store")
+	})
+}
+
 // TestServiceSettingsPassesOnlyWhatWasSet pins the translation from Config into
 // gokrb5's options. The zero value of each field has to leave gokrb5's own
 // default standing rather than pinning a number here — MaxClockSkew in
@@ -708,7 +795,6 @@ func TestServiceSettingsPassesOnlyWhatWasSet(t *testing.T) {
 	t.Run("an empty config sets nothing", func(t *testing.T) {
 		settings := service.NewSettings(nil, serviceSettings(Config{})...)
 
-		require.Empty(t, settings.SName())
 		require.Empty(t, settings.KeytabPrincipal())
 		require.Equal(t, 5*time.Minute, settings.MaxClockSkew(),
 			"a zero skew must leave gokrb5's default, not pin one here")
@@ -724,7 +810,6 @@ func TestServiceSettingsPassesOnlyWhatWasSet(t *testing.T) {
 		logger := log.New(io.Discard, "", 0)
 		settings := service.NewSettings(nil, serviceSettings(Config{
 			Log:                logger,
-			ServicePrincipal:   "HTTP/sso.example.com",
 			KeytabPrincipal:    "HTTP/other.example.com",
 			MaxClockSkew:       90 * time.Second,
 			DisablePACDecoding: true,
@@ -732,7 +817,10 @@ func TestServiceSettingsPassesOnlyWhatWasSet(t *testing.T) {
 			SessionManager:     manager,
 		})...)
 
-		require.Equal(t, "HTTP/sso.example.com", settings.SName())
+		// SName is deliberately never set: gokrb5's SPNEGO path does not read
+		// it, so wiring it up would promise a restriction that does nothing.
+		require.Empty(t, settings.SName(),
+			"SName must stay unset — VerifyAPREQ ignores it")
 		// gokrb5 parses the override into a PrincipalName rather than keeping
 		// the string, so the assertion has to meet it there.
 		require.NotNil(t, settings.KeytabPrincipal())
@@ -752,8 +840,6 @@ type recordingSessionManager struct {
 	mu      sync.Mutex
 	stored  []byte
 	gets    int
-	getErr  error
-	newErr  error
 	newCall int
 }
 
@@ -761,9 +847,6 @@ func (m *recordingSessionManager) New(w http.ResponseWriter, _ *http.Request, k 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.newCall++
-	if m.newErr != nil {
-		return m.newErr
-	}
 	m.stored = v
 	// A real manager sets a cookie here; doing the same proves the middleware
 	// replays whatever the manager writes onto the Fiber response.
@@ -775,7 +858,7 @@ func (m *recordingSessionManager) Get(_ *http.Request, _ string) ([]byte, error)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.gets++
-	return m.stored, m.getErr
+	return m.stored, nil
 }
 
 func (m *recordingSessionManager) calls() (news, gets int) {
@@ -885,31 +968,29 @@ func TestOnErrorNotCalledOnAuthenticationFailure(t *testing.T) {
 	require.Zero(t, hookRuns, "a refused ticket is not an internal failure")
 }
 
-// TestSessionManagerEstablishesAndReusesASession drives the whole session
-// feature through live gokrb5: the first authentication creates a session and
-// its Set-Cookie reaches the client, and a second request carrying that cookie
-// is served from the session without a ticket at all.
-func TestSessionManagerEstablishesAndReusesASession(t *testing.T) {
-	user := goidentity.NewUser("alice")
-	user.SetDomain("EXAMPLE.LOCAL")
-	manager := &recordingSessionManager{}
+// TestSessionManagerServesFromSessionWithoutATicket drives gokrb5's real
+// session path. It does not stub authenticate: SPNEGOKRB5Authenticate consults
+// the session manager before it looks at the Authorization header, so a request
+// carrying no ticket at all is served from the session — which is the whole
+// point of the feature, and the only part of it reachable without a KDC.
+//
+// It therefore covers what the middleware is actually responsible for: passing
+// service.SessionManager through, and forwarding cookies so getSessionCredentials
+// has something to find.
+func TestSessionManagerServesFromSessionWithoutATicket(t *testing.T) {
+	established := credentials.New("alice", "EXAMPLE.LOCAL")
+	established.SetAuthenticated(true)
+	marshalled, err := established.Marshal()
+	require.NoError(t, err)
 
-	// The stub stands in for a validated ticket; the session plumbing under
-	// test is gokrb5's own, driven by the settings the middleware built.
-	stubAuthenticate(t, func(w http.ResponseWriter, r *http.Request) goidentity.Identity {
-		// Mirror gokrb5: a session is created before the accept-completed
-		// header, and its Set-Cookie has to survive onto the Fiber response.
-		require.NoError(t, manager.New(w, r, "spnego-session", []byte("credentials")))
-		return &user
-	})
-
-	var seen goidentity.Identity
+	manager := &recordingSessionManager{stored: marshalled}
 	middleware, err := New(Config{
 		KeytabLookup:   testKeytabLookup(t),
 		SessionManager: manager,
 	})
 	require.NoError(t, err)
 
+	var seen goidentity.Identity
 	app := fiber.New()
 	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
 		seen, _ = GetAuthenticatedIdentityFromContext(c)
@@ -919,16 +1000,136 @@ func TestSessionManagerEstablishesAndReusesASession(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod(fiber.MethodGet)
 	ctx.Request.SetRequestURI("/authenticate")
-	ctx.Request.Header.Set(fiber.HeaderCookie, "spnego-session=opaque-session-id")
+	ctx.Request.Header.SetCookie("spnego-session", "opaque-session-id")
 	app.Handler()(ctx)
 
-	require.NotNil(t, seen)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	require.Equal(t, "authenticated", string(ctx.Response.Body()))
+	require.NotNil(t, seen, "the session identity must reach the handler")
 	require.Equal(t, "alice", seen.UserName())
-	require.Contains(t, string(ctx.Response.Header.Peek(fiber.HeaderSetCookie)), "opaque-session-id",
-		"whatever the session manager writes must reach the client")
 
-	news, _ := manager.calls()
-	require.Equal(t, 1, news)
+	_, gets := manager.calls()
+	require.Positive(t, gets, "gokrb5 must have consulted the session manager")
+}
+
+// TestSPNEGOInternalFailureIsReportedNotSwallowed covers the 5xx the session
+// feature makes reachable. gokrb5 answers 500 from inside its own handler when
+// a session cannot be stored — spnegoInternalServerError, via newSession at
+// spnego/http.go:365 and :371 — and returns without calling the inner handler.
+// Replaying that as an ordinary response would leave a broken session store
+// failing every authenticated request with nothing logged and OnError silent.
+//
+// The 500 is written by the stub rather than by a real session manager because
+// gokrb5 only reaches newSession after validating a ticket, which needs a KDC.
+// What is under test is this middleware's handling of a 5xx from the handler,
+// which is the part it owns; the stub writes exactly what
+// spnegoInternalServerError does.
+func TestSPNEGOInternalFailureIsReportedNotSwallowed(t *testing.T) {
+	var logged bytes.Buffer
+	flog.SetOutput(&logged)
+	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
+
+	stubAuthenticate(t, func(w http.ResponseWriter, _ *http.Request) goidentity.Identity {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return nil
+	})
+
+	var (
+		hookErr  error
+		hookRuns int
+		reached  bool
+	)
+	middleware, err := New(Config{
+		KeytabLookup: testKeytabLookup(t),
+		OnError: func(_ fiber.Ctx, err error) {
+			hookRuns++
+			hookErr = err
+		},
+	})
+	require.NoError(t, err)
+
+	app := fiber.New()
+	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
+		reached = true
+		return c.SendString("authenticated")
+	})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fiber.MethodGet)
+	ctx.Request.SetRequestURI("/authenticate")
+	app.Handler()(ctx)
+
+	require.False(t, reached, "a failing handler must not authenticate anyone")
+	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
+	require.Equal(t, 1, hookRuns, "a 5xx from inside SPNEGO must reach OnError")
+	require.ErrorIs(t, hookErr, errSPNEGOInternal)
+	require.Contains(t, logged.String(), "spnego:",
+		"and must reach the log, not just the client")
+}
+
+// TestInternalFailureKindsThrottleIndependently pins that the two internal
+// failures have separate throttles. Sharing one would let either suppress the
+// other for a full window, so an operator chasing a broken session store could
+// find only a keytab line and conclude the store was fine.
+func TestInternalFailureKindsThrottleIndependently(t *testing.T) {
+	var logged bytes.Buffer
+	flog.SetOutput(&logged)
+	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
+
+	// Fails once, then succeeds, so one request takes the keytab path and the
+	// next reaches the SPNEGO handler.
+	lookup := testKeytabLookup(t)
+	var calls int
+	failing := func() (*keytab.Keytab, error) {
+		calls++
+		if calls == 1 {
+			return nil, errors.New("keytab boom")
+		}
+		return lookup()
+	}
+	stubAuthenticate(t, func(w http.ResponseWriter, _ *http.Request) goidentity.Identity {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return nil
+	})
+
+	middleware, err := New(Config{KeytabLookup: failing})
+	require.NoError(t, err)
+	app := fiber.New()
+	app.Get("/authenticate", middleware, func(c fiber.Ctx) error {
+		return c.SendString("authenticated")
+	})
+	handler := app.Handler()
+	for range 2 {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(fiber.MethodGet)
+		ctx.Request.SetRequestURI("/authenticate")
+		handler(ctx)
+	}
+
+	// Both land inside one throttle window, so a shared throttle would show
+	// only the first.
+	require.Contains(t, logged.String(), "keytab boom",
+		"the keytab failure must be logged")
+	require.Contains(t, logged.String(), errSPNEGOInternal.Error(),
+		"the handler failure must not be suppressed by the keytab one")
+}
+
+// TestChallengeIsNotAnInternalFailure keeps the 5xx rule from swallowing the
+// ordinary outcomes: a 401 challenge must leave the log and OnError alone, or
+// every unauthenticated request would look like a service fault.
+func TestChallengeIsNotAnInternalFailure(t *testing.T) {
+	var logged bytes.Buffer
+	flog.SetOutput(&logged)
+	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
+
+	var hookRuns int
+	ctx := serveProtected(t, Config{
+		KeytabLookup: testKeytabLookup(t),
+		OnError:      func(fiber.Ctx, error) { hookRuns++ },
+	})
+
+	require.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode())
+	require.Zero(t, hookRuns)
+	require.NotContains(t, logged.String(), "spnego:")
 }
 
 // TestAuthenticatedIdentityCarriesADGroups pins the capability the README
@@ -1022,32 +1223,60 @@ func TestCookieForwardingFollowsTheSessionManager(t *testing.T) {
 	}
 }
 
-// TestConfigDefault pins the documented defaults. Every one of them is load
-// bearing: a non-zero MaxClockSkew would override gokrb5's five minutes, and a
-// true DisablePACDecoding would silently strip the group SIDs that
-// Identity.Authorized reads.
+// TestConfigDefault pins what the godoc promises: ConfigDefault equals the zero
+// Config. New applies its defaults by treating a zero field as unset rather
+// than by reading the variable, so the two diverging would leave the documented
+// defaults describing something New never does.
+//
+// Compared whole rather than field by field. Naming fields individually is what
+// let the previous version of this test check four of them and miss the rest —
+// a later field with a non-zero default would have sailed through.
+// reflect.DeepEqual, which require.Equal uses, treats two nil func values as
+// equal, so the hooks compare cleanly.
 func TestConfigDefault(t *testing.T) {
-	require.Nil(t, ConfigDefault.Next)
-	require.Nil(t, ConfigDefault.KeytabLookup)
-	require.Nil(t, ConfigDefault.Log)
-	require.False(t, ConfigDefault.UseFiberLogger)
-	require.Nil(t, ConfigDefault.Unauthorized)
-	require.False(t, ConfigDefault.FallbackToSystemKeytab)
-	require.Empty(t, ConfigDefault.ServicePrincipal)
-	require.Empty(t, ConfigDefault.KeytabPrincipal)
+	require.Equal(t, Config{}, ConfigDefault)
+
+	// Spelled out for the two whose default is load bearing rather than merely
+	// conventional: a non-zero MaxClockSkew would override gokrb5's five
+	// minutes, and a true DisablePACDecoding would strip the group SIDs behind
+	// Identity.Authorized.
 	require.Zero(t, ConfigDefault.MaxClockSkew)
 	require.False(t, ConfigDefault.DisablePACDecoding)
-	require.False(t, ConfigDefault.RequireHostAddress)
-	require.Nil(t, ConfigDefault.SessionManager)
-	require.Nil(t, ConfigDefault.OnSuccess)
-	require.Nil(t, ConfigDefault.OnError)
+}
 
-	// The zero Config and ConfigDefault have to stay interchangeable, or the
-	// documented defaults would describe something New never applies.
-	require.Equal(t, Config{}.ServicePrincipal, ConfigDefault.ServicePrincipal)
-	require.Equal(t, Config{}.MaxClockSkew, ConfigDefault.MaxClockSkew)
-	require.Equal(t, Config{}.DisablePACDecoding, ConfigDefault.DisablePACDecoding)
-	require.Equal(t, Config{}.RequireHostAddress, ConfigDefault.RequireHostAddress)
+// TestNewRejectsInvalidConfig covers the two settings that cannot be validated
+// later. Both fail the same way if let through — every request refused, with
+// the cause visible only if gokrb5 logging happens to be on — so they are
+// caught while the caller still has a stack to blame.
+func TestNewRejectsInvalidConfig(t *testing.T) {
+	t.Run("a negative clock skew", func(t *testing.T) {
+		// Silently dropped by the > 0 guard otherwise, leaving gokrb5's five
+		// minutes while the configuration says something tighter.
+		_, err := New(Config{
+			KeytabLookup: testKeytabLookup(t),
+			MaxClockSkew: -30 * time.Second,
+		})
+		require.ErrorIs(t, err, ErrConfigInvalidOfNegativeMaxClockSkew)
+	})
+
+	t.Run("a keytab principal carrying a realm", func(t *testing.T) {
+		// types.ParseSPNString drops everything after the "@" and reports
+		// nothing, so this would pin a different principal than was written.
+		_, err := New(Config{
+			KeytabLookup:    testKeytabLookup(t),
+			KeytabPrincipal: "HTTP/sso.example.com@EXAMPLE.LOCAL",
+		})
+		require.ErrorIs(t, err, ErrConfigInvalidOfKeytabPrincipalRealm)
+	})
+
+	t.Run("a bare keytab principal is accepted", func(t *testing.T) {
+		_, err := New(Config{
+			KeytabLookup:    testKeytabLookup(t),
+			KeytabPrincipal: "HTTP/sso.example.com",
+			MaxClockSkew:    30 * time.Second,
+		})
+		require.NoError(t, err)
+	})
 }
 
 // TestLogThrottle pins all three properties: the first event passes, repeats

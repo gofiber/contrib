@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -197,6 +198,7 @@ func resolveLogger(cfg Config, fiberLogger flog.AllLogger[*log.Logger]) *log.Log
 // withCookies mirrors whether Config.SessionManager is set. Re-check this when
 // upgrading gokrb5.
 func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
+	fasthttpCtx := ctx.RequestCtx()
 	header := make(http.Header, 2)
 	if auth := ctx.Get(fiber.HeaderAuthorization); auth != "" {
 		header.Set(fiber.HeaderAuthorization, auth)
@@ -204,26 +206,48 @@ func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
 	// Forwarded only for a session manager, which reads the session out of the
 	// cookies. Sending them unconditionally would hand gokrb5 every cookie the
 	// site sets on requests that have no use for them.
+	//
+	// Rebuilt from the parsed cookies rather than copied from the header,
+	// because fasthttp's Peek returns only the first Cookie line until
+	// something in the chain has read a cookie and made it collect the rest.
+	// Copying it would forward a subset that varies with whatever unrelated
+	// middleware ran first, and a session cookie on the second line would go
+	// missing — which reads as "no session" and mints a fresh one per request.
 	if withCookies {
-		if cookies := ctx.Get(fiber.HeaderCookie); cookies != "" {
-			header.Set(fiber.HeaderCookie, cookies)
+		var cookies strings.Builder
+		for key, value := range fasthttpCtx.Request.Header.Cookies() {
+			if cookies.Len() > 0 {
+				cookies.WriteString("; ")
+			}
+			cookies.Write(key)
+			cookies.WriteByte('=')
+			cookies.Write(value)
+		}
+		if cookies.Len() > 0 {
+			header.Set(fiber.HeaderCookie, cookies.String())
 		}
 	}
 	return &http.Request{
 		Method: ctx.Method(),
-		// A non-nil but empty URL. gokrb5 never reads it, and reconstructing a
-		// faithful one is not possible from here: Fiber's path is
-		// percent-encoded or not depending on Config.UnescapePath, and net/url
-		// cannot represent a malformed escape at all, so any attempt would
-		// misrepresent some requests. An empty URL states nothing false and
-		// still guards against a dereference.
-		URL: &url.URL{},
+		// Scheme only. gokrb5 never reads the URL, and a faithful path is not
+		// reconstructible from here: Fiber's is percent-encoded or not depending
+		// on Config.UnescapePath, and net/url cannot represent a malformed
+		// escape at all. The scheme, unlike the path, can be stated truthfully,
+		// and a session manager deciding whether to mark its cookie Secure has
+		// nothing else to go on.
+		URL: &url.URL{Scheme: ctx.Scheme()},
 		// net/http documents a server request's Host as "host or host:port", so
 		// it is Host rather than Hostname, which drops the port. gokrb5 does
-		// not read it; it is set because it can be set faithfully, unlike URL.
-		Host:       ctx.Host(),
-		Header:     header,
-		RemoteAddr: ctx.RequestCtx().RemoteAddr().String(),
+		// not read it; it is set because it can be set faithfully, unlike the
+		// rest of the URL.
+		Host:   ctx.Host(),
+		Header: header,
+		// Set for the same reason as the scheme: the usual way a session store
+		// decides whether its cookie may be Secure is r.TLS != nil, and leaving
+		// it nil on an HTTPS listener would quietly issue the session — which
+		// this middleware treats as a credential — without that attribute.
+		TLS:        fasthttpCtx.TLSConnectionState(),
+		RemoteAddr: fasthttpCtx.RemoteAddr().String(),
 	}
 }
 
@@ -237,13 +261,14 @@ func serviceSettings(cfg Config) []func(*service.Settings) {
 	// otherwise Fiber's logger is used, but only when it is backed by a
 	// *log.Logger. DefaultLogger returns a nil interface when it is not, so the
 	// result has to be checked before calling Logger on it.
-	opts := make([]func(*service.Settings), 0, 7)
+	opts := make([]func(*service.Settings), 0, 6)
 	if l := resolveLogger(cfg, flog.DefaultLogger[*log.Logger]()); l != nil {
 		opts = append(opts, service.Logger(l))
 	}
-	if cfg.ServicePrincipal != "" {
-		opts = append(opts, service.SName(cfg.ServicePrincipal))
-	}
+	// service.SName is deliberately not wired up. gokrb5 v8.4.4 reads it only
+	// in KRB5BasicAuthenticator; the SPNEGO accept path runs VerifyAPREQ, which
+	// never looks at it, so exposing it would promise a restriction that does
+	// nothing. KeytabPrincipal is the control that actually pins the principal.
 	if cfg.KeytabPrincipal != "" {
 		opts = append(opts, service.KeytabPrincipal(cfg.KeytabPrincipal))
 	}
@@ -282,6 +307,12 @@ var authenticate = spnego.SPNEGOKRB5Authenticate
 // SPNEGO protocol, verifying client credentials against the configured keytab.
 func New(cfg Config) (fiber.Handler, error) {
 	// Validate configuration
+	if cfg.MaxClockSkew < 0 {
+		return nil, ErrConfigInvalidOfNegativeMaxClockSkew
+	}
+	if strings.Contains(cfg.KeytabPrincipal, "@") {
+		return nil, ErrConfigInvalidOfKeytabPrincipalRealm
+	}
 	keytabLookup := cfg.KeytabLookup
 	if keytabLookup == nil {
 		if !cfg.FallbackToSystemKeytab {
@@ -308,12 +339,15 @@ func New(cfg Config) (fiber.Handler, error) {
 	// Internal failures are logged here rather than returned to the client, and
 	// throttled so a persistent fault cannot become a log flood.
 	//
-	// A keytab lookup failure is the only internal failure this middleware
-	// reports, so one throttle covers it. Adding a second kind of failure means
-	// giving it its own: sharing this one would let each suppress the other,
-	// and keying on the cause would let a caller defeat the throttle by varying
-	// client-controlled text inside it.
+	// There are two kinds, and each gets its own throttle: a keytab lookup that
+	// fails, and a 5xx raised inside the SPNEGO handler — which today means a
+	// session manager that could not store or fetch a session. Sharing one
+	// throttle would let either suppress the other, so an operator chasing a
+	// broken session store could be looking at a keytab line instead. Keying on
+	// the cause is what to avoid: that would let a caller defeat the throttle
+	// by varying client-controlled text inside it.
 	lookupFailures := &logThrottle{every: internalErrorLogEvery}
+	handlerFailures := &logThrottle{every: internalErrorLogEvery}
 	logInternal := func(cause error) {
 		lookupFailures.do(func() {
 			flog.Errorf("spnego: %v: %v", ErrLookupKeytabFailed, cause)
@@ -381,6 +415,20 @@ func New(cfg Config) (fiber.Handler, error) {
 		status := recorder.status
 		if status == 0 {
 			status = fiber.StatusUnauthorized
+		}
+		// A 5xx from inside the SPNEGO handler is not an authentication
+		// outcome, it is this service failing. gokrb5 raises one when a session
+		// manager cannot store or fetch a session, and replaying it as an
+		// ordinary response would leave a broken session store 500ing every
+		// authenticated request with nothing in the log and no hook fired.
+		if status >= fiber.StatusInternalServerError {
+			failure := fmt.Errorf("%w: status %d", errSPNEGOInternal, status)
+			handlerFailures.do(func() {
+				flog.Errorf("spnego: %v", failure)
+			})
+			if cfg.OnError != nil {
+				cfg.OnError(ctx, failure)
+			}
 		}
 		ctx.Status(status)
 		// Only a refusal reaches the caller's handler. The opening challenge

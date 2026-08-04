@@ -87,25 +87,30 @@ type Config struct {
 	// is nil, instead of rejecting the configuration. See
 	// NewSystemKeytabLookupFunc for how the path is resolved.
 	FallbackToSystemKeytab bool
-	// ServicePrincipal restricts which service principal a ticket may name,
-	// mapping to gokrb5's service.SName.
+	// KeytabPrincipal selects which principal's key decrypts an incoming
+	// ticket, out of a keytab that holds several. gokrb5 otherwise infers it
+	// from the ticket itself, which means a ticket for *any* principal in the
+	// keytab is accepted.
 	//
-	// Leaving it empty accepts a ticket for *any* principal held in the keytab.
-	// That is the right default for one service with one SPN, but a keytab
-	// merged from several services then honours a ticket minted for any of
-	// them: a client entitled to one gets into all of them. Set this whenever
-	// the keytab covers more than the service in front of it.
+	// That inference is the right behaviour for one service with one SPN, and
+	// the wrong one as soon as a keytab is merged from several: a client
+	// entitled to one of them gets into all of them. Setting this pins the key,
+	// so a ticket minted for a different principal fails to decrypt and is
+	// refused. It is the only control gokrb5's SPNEGO path offers here —
+	// service.SName exists but is read solely by gokrb5's Basic-auth
+	// authenticator, never by SPNEGO acceptance.
 	//
-	// Optional. Default: "" (any principal in the keytab).
-	ServicePrincipal string
-	// KeytabPrincipal selects which principal's keys are used out of a keytab
-	// holding several. gokrb5 otherwise infers it from the ticket.
+	// The realm is not part of it: gokrb5 parses this with types.ParseSPNString,
+	// which silently drops anything after an "@". New rejects a value
+	// containing one rather than letting it look effective.
 	//
-	// Optional. Default: "" (inferred).
+	// Optional. Default: "" (inferred from the ticket).
 	KeytabPrincipal string
 	// MaxClockSkew is how far a ticket's issue time may sit from this host's
 	// clock. Kerberos is clock-sensitive, and the usual cause of a service
 	// rejecting every ticket is drift rather than misconfiguration.
+	//
+	// Must not be negative; New rejects that rather than silently ignoring it.
 	//
 	// Optional. Default: 0, which leaves gokrb5's own default of 5 minutes.
 	MaxClockSkew time.Duration
@@ -162,9 +167,15 @@ type Config struct {
 	OnError func(ctx fiber.Ctx, err error)
 }
 
-// ConfigDefault is the configuration New falls back to field by field. Every
-// field is optional except KeytabLookup, which has no usable default: it is
-// required unless FallbackToSystemKeytab is set.
+// ConfigDefault records what an unset field does, for callers who would rather
+// start from it than from a zero Config. Every field is optional except
+// KeytabLookup, which has no usable default: it is required unless
+// FallbackToSystemKeytab is set.
+//
+// It is deliberately equal to the zero Config, and New applies these defaults
+// by treating a zero field as unset rather than by reading this variable. So
+// copying it is supported and mutating it is not — a package-level write would
+// change nothing and TestConfigDefault would start failing.
 var ConfigDefault = Config{
 	Next:                   nil,
 	KeytabLookup:           nil,
@@ -172,7 +183,6 @@ var ConfigDefault = Config{
 	UseFiberLogger:         false,
 	Unauthorized:           nil,
 	FallbackToSystemKeytab: false,
-	ServicePrincipal:       "",
 	KeytabPrincipal:        "",
 	// Zero rather than 5 minutes: gokrb5 substitutes its own default for a zero
 	// value, and naming a number here would silently pin it if gokrb5 ever

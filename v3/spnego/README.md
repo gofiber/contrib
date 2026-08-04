@@ -200,16 +200,15 @@ The `Config` struct supports the following fields:
 - `UseFiberLogger`: Send gokrb5's diagnostics to Fiber's default logger when `Log` is nil (optional, defaults to `false`)
 - `Unauthorized`: A `func(fiber.Ctx) error` invoked when a presented Kerberos ticket is rejected, in place of SPNEGO's own rejection response (optional)
 - `FallbackToSystemKeytab`: Load the system keytab when `KeytabLookup` is nil, instead of rejecting the configuration (optional, defaults to `false`). The resolved keytab is loaded once during `New`, so a misconfigured host fails at startup rather than on every request.
-- `ServicePrincipal`: Restrict which service principal a ticket may name (optional, defaults to `""` — any principal in the keytab). See [Restricting the accepted principal](#restricting-the-accepted-principal).
-- `KeytabPrincipal`: Choose which principal's keys to use out of a keytab holding several (optional, defaults to `""` — gokrb5 infers it from the ticket)
-- `MaxClockSkew`: How far a ticket's issue time may sit from this host's clock (optional, defaults to `0`, which leaves gokrb5's own 5 minutes)
+- `KeytabPrincipal`: Pin which principal's key decrypts an incoming ticket, out of a keytab holding several (optional, defaults to `""` — gokrb5 infers it from the ticket). See [Restricting the accepted principal](#restricting-the-accepted-principal).
+- `MaxClockSkew`: How far a ticket's issue time may sit from this host's clock (optional, defaults to `0`, which leaves gokrb5's own 5 minutes). A negative value is rejected by `New`.
 - `DisablePACDecoding`: Turn off decoding of Active Directory's PAC (optional, defaults to `false` — the PAC *is* decoded). Decoding is what populates the group SIDs behind `Identity.Authorized`, so only disable it on a service that never inspects groups.
 - `RequireHostAddress`: Reject a ticket that carries no host addresses (optional, defaults to `false`)
 - `SessionManager`: A `service.SessionMgr` letting gokrb5 serve later requests from a session instead of revalidating a ticket each time (optional, defaults to `nil`). See [Sessions](#sessions).
 - `OnSuccess`: A `func(fiber.Ctx, goidentity.Identity)` called once per authenticated request, before the rest of the chain (optional, defaults to `nil`)
-- `OnError`: A `func(fiber.Ctx, error)` called when the middleware itself fails — today only a keytab lookup failure — just before the `500` (optional, defaults to `nil`)
+- `OnError`: A `func(fiber.Ctx, error)` called when the middleware itself fails — a keytab lookup failure, or a `5xx` raised inside the SPNEGO handler such as a session store that cannot be reached — just before the response (optional, defaults to `nil`)
 
-`ConfigDefault` holds these defaults if you would rather start from it than from a zero `Config`; the two are interchangeable.
+`ConfigDefault` records these defaults if you would rather start from it than from a zero `Config` — the two are equal. `New` applies them by treating a zero field as unset rather than by reading the variable, so copy it; mutating it changes nothing.
 
 ### Group-based authorization
 
@@ -240,20 +239,30 @@ MIT Kerberos does not normally issue a PAC, so on a non-AD realm expect `AuthzAt
 
 ### Restricting the accepted principal
 
-With `ServicePrincipal` unset, a ticket naming **any** principal in the keytab is accepted. That is the right behaviour for one service with one SPN, and the wrong one as soon as a keytab is merged from several: a client entitled to one of them gets into all of them. Set it whenever the keytab covers more than the service sitting behind it.
+Left unset, gokrb5 infers the decrypting key from the ticket, so a ticket naming **any** principal in the keytab is accepted. That is the right behaviour for one service with one SPN, and the wrong one as soon as a keytab is merged from several: a client entitled to one of them gets into all of them.
+
+`KeytabPrincipal` pins the key, so a ticket minted for a different principal fails to decrypt and is refused. Set it whenever the keytab covers more than the service sitting behind it.
 
 ```go
 authMiddleware, err := spnego.New(spnego.Config{
-    KeytabLookup:     keytabLookup,
-    ServicePrincipal: "HTTP/sso.example.com",
+    KeytabLookup:    keytabLookup,
+    KeytabPrincipal: "HTTP/sso.example.com",
 })
 ```
+
+Give the principal without a realm. gokrb5 parses this with `types.ParseSPNString`, which drops anything after an `@` without reporting it, so `New` rejects a value containing one rather than letting it look effective.
+
+If you went looking for gokrb5's `service.SName` and wondered why it is not exposed: it has no effect here. In v8.4.4 the SPNEGO accept path runs `service.VerifyAPREQ`, which never reads it — the only reader is `KRB5BasicAuthenticator`, a different flow. Wiring it up would promise a restriction that does nothing.
 
 ### Sessions
 
 `SessionManager` is the largest saving available on an authenticated hot path: gokrb5 establishes a session after the first successful authentication and serves later requests from it, skipping ticket validation entirely.
 
-It also changes the trust model. The session becomes a credential in its own right, so whatever your implementation stores must be unguessable, bound to the client, and expired deliberately — a predictable session identifier is a full authentication bypass. The middleware forwards the request's `Cookie` header to gokrb5 only when this is set, and replays whatever the manager writes — `Set-Cookie` included — onto the Fiber response.
+It also changes the trust model. The session becomes a credential in its own right, so whatever your implementation stores must be unguessable, bound to the client, and expired deliberately — a predictable session identifier is a full authentication bypass. The middleware forwards the request's cookies to gokrb5 only when this is set, and replays whatever the manager writes — `Set-Cookie` included — onto the Fiber response.
+
+The request handed to your manager is built by this middleware rather than by `net/http`, so it carries only what gokrb5 reads plus what a session store needs to make its decisions: method, host, remote address, cookies, `URL.Scheme`, and `TLS`. The last two are there so the usual `Secure: r.TLS != nil` idiom works — without them a session cookie would be issued without `Secure` on an HTTPS listener. The path and query are deliberately absent, so do not key a session on them.
+
+A store that cannot be reached surfaces as a `5xx` from inside gokrb5's handler. The middleware treats that as an internal failure rather than an ordinary response: it is logged (throttled separately from keytab failures) and passed to `OnError`, so a broken session store does not fail every authenticated request silently.
 
 ### Observability
 
