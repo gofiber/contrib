@@ -50,20 +50,19 @@ func getMetrics(t *testing.T, app *fiber.App, path string) string {
 	return string(body)
 }
 
-func newAppWithMiddleware(cfg Config, metricsPath string) (*fiber.App, fiber.Handler) {
+func newAppWithMiddleware(cfg Config, metricsPath string) *fiber.App {
 	if metricsPath != "" {
 		cfg.MetricsPath = metricsPath
 	}
 
 	app := fiber.New()
-	handler := New(cfg)
-	app.Use(handler)
+	app.Use(New(cfg))
 
-	return app, handler
+	return app
 }
 
 func TestMiddlewareRecordsMetrics(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{ServiceName: "test-service"}, "")
+	app := newAppWithMiddleware(Config{ServiceName: "test-service"}, "")
 	app.Get("/hello", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -118,7 +117,7 @@ func TestMiddlewareRecordsMetrics(t *testing.T) {
 }
 
 func TestDefaultRuntimeCollectorsEnabled(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{}, "")
+	app := newAppWithMiddleware(Config{}, "")
 
 	metrics := getMetrics(t, app, "/metrics")
 
@@ -132,7 +131,7 @@ func TestDefaultRuntimeCollectorsEnabled(t *testing.T) {
 }
 
 func TestSkipURIs(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{SkipURIs: []string{"/skip"}}, "")
+	app := newAppWithMiddleware(Config{SkipURIs: []string{"/skip"}}, "")
 	app.Get("/skip", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -170,7 +169,7 @@ func TestSkipURIs(t *testing.T) {
 }
 
 func TestSkipStatusCodes(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{SkipStatusCodes: []int{fiber.StatusUnauthorized}}, "")
+	app := newAppWithMiddleware(Config{SkipStatusCodes: []int{fiber.StatusUnauthorized}}, "")
 	app.Get("/deny", func(c fiber.Ctx) error {
 		return fiber.ErrUnauthorized
 	})
@@ -235,7 +234,7 @@ func gaugeValue(t *testing.T, metrics, series string) float64 {
 // instrumentation for every reason the middleware supports. Each of them still
 // has to leave the in-flight gauge where it found it.
 func TestInFlightGaugeIsBalanced(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{
+	app := newAppWithMiddleware(Config{
 		SkipStatusCodes: []int{fiber.StatusUnauthorized},
 		SkipURIs:        []string{"/skip"},
 	}, "")
@@ -267,7 +266,7 @@ func TestCustomHistogramBuckets(t *testing.T) {
 		RequestSizeBuckets:     []float64{111, 222},
 		ResponseSizeBuckets:    []float64{333, 444},
 	}
-	app, _ := newAppWithMiddleware(cfg, "")
+	app := newAppWithMiddleware(cfg, "")
 	app.Post("/bucket", func(c fiber.Ctx) error {
 		return c.SendString("ok")
 	})
@@ -299,7 +298,7 @@ func TestCustomHistogramBuckets(t *testing.T) {
 }
 
 func TestTrackUnmatchedRequestsDisabled(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{}, "")
+	app := newAppWithMiddleware(Config{}, "")
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/unmatched", nil), noTimeoutConfig)
 	if err != nil {
@@ -316,7 +315,7 @@ func TestTrackUnmatchedRequestsDisabled(t *testing.T) {
 }
 
 func TestTrackUnmatchedRequestsEnabled(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{TrackUnmatchedRequests: true}, "")
+	app := newAppWithMiddleware(Config{TrackUnmatchedRequests: true}, "")
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/unmatched", nil), noTimeoutConfig)
 	if err != nil {
@@ -339,7 +338,7 @@ func TestTrackUnmatchedRequestsEnabled(t *testing.T) {
 }
 
 func TestRoutesRefreshAfterInitialRequest(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{}, "")
+	app := newAppWithMiddleware(Config{}, "")
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/late", nil), noTimeoutConfig)
 	if err != nil {
@@ -369,7 +368,7 @@ func TestRoutesRefreshAfterInitialRequest(t *testing.T) {
 }
 
 func TestNextSkipsInstrumentation(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{
+	app := newAppWithMiddleware(Config{
 		Next: func(c fiber.Ctx) bool {
 			return c.Path() == "/healthz"
 		},
@@ -399,7 +398,7 @@ func TestNextSkipsInstrumentation(t *testing.T) {
 }
 
 func TestCustomMetricsPath(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{}, "/internal/metrics")
+	app := newAppWithMiddleware(Config{}, "/internal/metrics")
 	app.Get("/hello", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -428,7 +427,7 @@ func TestCustomMetricsPath(t *testing.T) {
 }
 
 func TestMetricsEndpointAllowsHead(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{}, "")
+	app := newAppWithMiddleware(Config{}, "")
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodHead, "/metrics", nil), noTimeoutConfig)
 	if err != nil {
@@ -440,7 +439,7 @@ func TestMetricsEndpointAllowsHead(t *testing.T) {
 }
 
 func TestMetricsEndpointRejectsOtherMethods(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{}, "")
+	app := newAppWithMiddleware(Config{}, "")
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, "/metrics", nil), noTimeoutConfig)
 	if err != nil {
@@ -457,7 +456,7 @@ func TestMetricsEndpointRejectsOtherMethods(t *testing.T) {
 }
 
 func TestHeadRequestsMatchGetRoutes(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{}, "")
+	app := newAppWithMiddleware(Config{}, "")
 
 	app.Get("/head-get", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
@@ -488,7 +487,7 @@ func TestHeadRequestsMatchGetRoutes(t *testing.T) {
 
 func TestCustomRegistry(t *testing.T) {
 	registry := prometheus.NewRegistry()
-	app, _ := newAppWithMiddleware(Config{Registerer: registry}, "")
+	app := newAppWithMiddleware(Config{Registerer: registry}, "")
 	app.Get("/hello", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -548,7 +547,7 @@ func TestRegistererWithoutGathererPanics(t *testing.T) {
 }
 
 func TestEnableOpenMetricsNegotiation(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{EnableOpenMetrics: true}, "")
+	app := newAppWithMiddleware(Config{EnableOpenMetrics: true}, "")
 	app.Get("/hello", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -584,7 +583,7 @@ func TestEnableOpenMetricsNegotiation(t *testing.T) {
 }
 
 func TestEnableOpenMetricsTextCreatedSamples(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{
+	app := newAppWithMiddleware(Config{
 		EnableOpenMetrics:                   true,
 		EnableOpenMetricsTextCreatedSamples: true,
 	}, "")
@@ -618,7 +617,7 @@ func TestEnableOpenMetricsTextCreatedSamples(t *testing.T) {
 }
 
 func TestDisableCompression(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{DisableCompression: true}, "")
+	app := newAppWithMiddleware(Config{DisableCompression: true}, "")
 	app.Get("/hello", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -644,7 +643,7 @@ func TestDisableCompression(t *testing.T) {
 }
 
 func TestDisableGoCollector(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{DisableGoCollector: true}, "")
+	app := newAppWithMiddleware(Config{DisableGoCollector: true}, "")
 
 	metrics := getMetrics(t, app, "")
 
@@ -658,7 +657,7 @@ func TestDisableGoCollector(t *testing.T) {
 }
 
 func TestDisableProcessCollector(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{DisableProcessCollector: true}, "")
+	app := newAppWithMiddleware(Config{DisableProcessCollector: true}, "")
 
 	metrics := getMetrics(t, app, "")
 
@@ -672,7 +671,7 @@ func TestDisableProcessCollector(t *testing.T) {
 }
 
 func TestStatusClassMetrics(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{}, "")
+	app := newAppWithMiddleware(Config{}, "")
 
 	app.Get("/ok", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
@@ -794,7 +793,7 @@ func TestSizeHistogramsIncludeTraceExemplars(t *testing.T) {
 }
 
 func TestMiddlewareDoesNotHijackRootRoute(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{}, "")
+	app := newAppWithMiddleware(Config{}, "")
 	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendString("Hello World")
 	})
@@ -819,7 +818,7 @@ func TestMiddlewareDoesNotHijackRootRoute(t *testing.T) {
 }
 
 func TestParameterizedRoutesUseRoutePattern(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{}, "")
+	app := newAppWithMiddleware(Config{}, "")
 	app.Get("/user/:id", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -887,7 +886,7 @@ func TestCustomErrorHandlerStatusAndResponseSize(t *testing.T) {
 }
 
 func TestWrappedFiberErrorUsesWrappedStatus(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{}, "")
+	app := newAppWithMiddleware(Config{}, "")
 	app.Get("/missing", func(_ fiber.Ctx) error {
 		return fmt.Errorf("looking up record: %w", fiber.ErrNotFound)
 	})
@@ -910,7 +909,7 @@ func TestWrappedFiberErrorUsesWrappedStatus(t *testing.T) {
 }
 
 func TestWrappedFiberErrorRespectsSkipStatusCodes(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{SkipStatusCodes: []int{fiber.StatusNotFound}}, "")
+	app := newAppWithMiddleware(Config{SkipStatusCodes: []int{fiber.StatusNotFound}}, "")
 	app.Get("/missing", func(_ fiber.Ctx) error {
 		return fmt.Errorf("looking up record: %w", fiber.ErrNotFound)
 	})
@@ -926,7 +925,7 @@ func TestWrappedFiberErrorRespectsSkipStatusCodes(t *testing.T) {
 }
 
 func TestNextSkipsMetricsEndpoint(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{
+	app := newAppWithMiddleware(Config{
 		Next: func(_ fiber.Ctx) bool {
 			return true
 		},
@@ -942,7 +941,7 @@ func TestNextSkipsMetricsEndpoint(t *testing.T) {
 }
 
 func TestMetricsPathConfig(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{MetricsPath: "internal/metrics"}, "")
+	app := newAppWithMiddleware(Config{MetricsPath: "internal/metrics"}, "")
 	app.Get("/hello", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -1002,7 +1001,7 @@ func TestMismatchedRegistryPanics(t *testing.T) {
 }
 
 func TestMetricsEndpointIsNotInstrumented(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{TrackUnmatchedRequests: true}, "")
+	app := newAppWithMiddleware(Config{TrackUnmatchedRequests: true}, "")
 
 	getMetrics(t, app, "")
 	metrics := getMetrics(t, app, "")
@@ -1016,7 +1015,7 @@ func TestMetricsEndpointIsNotInstrumented(t *testing.T) {
 }
 
 func TestPayloadSizesAreRecorded(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{}, "")
+	app := newAppWithMiddleware(Config{}, "")
 	app.Post("/echo", func(c fiber.Ctx) error {
 		return c.SendString(strings.Repeat("b", 654))
 	})
@@ -1041,7 +1040,7 @@ func TestPayloadSizesAreRecorded(t *testing.T) {
 // middleware's own `use` route as a registered endpoint, which would make any
 // method on "/" look matched.
 func TestMiddlewareRoutesAreNotTreatedAsEndpoints(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{}, "")
+	app := newAppWithMiddleware(Config{}, "")
 	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -1061,7 +1060,7 @@ func TestMiddlewareRoutesAreNotTreatedAsEndpoints(t *testing.T) {
 }
 
 func TestDisabledMetricsRemovesFamilies(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{
+	app := newAppWithMiddleware(Config{
 		DisabledMetrics: []Metric{MetricRequestSize, MetricResponseSize},
 	}, "")
 	app.Get("/hello", func(c fiber.Ctx) error {
@@ -1086,7 +1085,7 @@ func TestDisabledMetricsRemovesFamilies(t *testing.T) {
 }
 
 func TestDisabledInProgressGauge(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{
+	app := newAppWithMiddleware(Config{
 		DisabledMetrics: []Metric{MetricRequestsInProgress},
 	}, "")
 	app.Get("/hello", func(c fiber.Ctx) error {
@@ -1107,7 +1106,7 @@ func TestDisabledInProgressGauge(t *testing.T) {
 }
 
 func TestAllRecordingMetricsDisabled(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{
+	app := newAppWithMiddleware(Config{
 		DisabledMetrics: []Metric{
 			MetricRequestsTotal,
 			MetricRequestsStatusClassTotal,
@@ -1138,7 +1137,7 @@ func TestAllRecordingMetricsDisabled(t *testing.T) {
 }
 
 func TestSkipURIsPrefixWildcard(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{SkipURIs: []string{"/admin/*"}}, "")
+	app := newAppWithMiddleware(Config{SkipURIs: []string{"/admin/*"}}, "")
 	for _, path := range []string{"/admin", "/admin/users", "/administration"} {
 		app.Get(path, func(c fiber.Ctx) error {
 			return c.SendStatus(fiber.StatusOK)
@@ -1164,7 +1163,7 @@ func TestSkipURIsPrefixWildcard(t *testing.T) {
 }
 
 func TestSkipURIsWildcardMatchesEverything(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{SkipURIs: []string{"/*"}}, "")
+	app := newAppWithMiddleware(Config{SkipURIs: []string{"/*"}}, "")
 	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -1185,7 +1184,7 @@ func TestSkipURIsWildcardMatchesEverything(t *testing.T) {
 }
 
 func TestSkipStatusClasses(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{SkipStatusClasses: []string{"4xx"}}, "")
+	app := newAppWithMiddleware(Config{SkipStatusClasses: []string{"4xx"}}, "")
 	app.Get("/ok", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -1214,7 +1213,7 @@ func TestSkipStatusClasses(t *testing.T) {
 }
 
 func TestDynamicLabels(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{
+	app := newAppWithMiddleware(Config{
 		DynamicLabels: map[string]func(fiber.Ctx) string{
 			"tenant": func(c fiber.Ctx) string { return c.Get("X-Tenant") },
 		},
@@ -1250,7 +1249,7 @@ func TestDynamicLabels(t *testing.T) {
 // to prove each dynamic name is paired with its own function's value rather than
 // a neighbour's.
 func TestDynamicLabelsPairNamesWithValues(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{
+	app := newAppWithMiddleware(Config{
 		DynamicLabels: map[string]func(fiber.Ctx) string{
 			"zone":   func(fiber.Ctx) string { return "eu" },
 			"tenant": func(fiber.Ctx) string { return "acme" },
@@ -1348,7 +1347,7 @@ func newAppWithRegistry(t *testing.T, cfg Config) (*fiber.App, *prometheus.Regis
 	cfg.Registerer = registry
 	cfg.Gatherer = registry
 
-	app, _ := newAppWithMiddleware(cfg, "")
+	app := newAppWithMiddleware(cfg, "")
 	app.Get("/hello", func(c fiber.Ctx) error {
 		return c.SendString("hi")
 	})
@@ -1412,7 +1411,7 @@ func TestNativeHistogramsWithoutClassicBuckets(t *testing.T) {
 // pattern, or every 401 from a guard collapses into one series and SkipURIs
 // entries for the route stop matching.
 func TestShortCircuitRouteGuardKeepsRoutePattern(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{}, "")
+	app := newAppWithMiddleware(Config{}, "")
 	app.Get("/admin", func(c fiber.Ctx) error {
 		return fiber.ErrUnauthorized
 	}, func(c fiber.Ctx) error {
@@ -1433,7 +1432,7 @@ func TestShortCircuitRouteGuardKeepsRoutePattern(t *testing.T) {
 // regression: skipped() is handed the route label, so a wrong label silently
 // disables SkipURIs for guarded routes.
 func TestSkipURIsAppliesToShortCircuitRouteGuard(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{SkipURIs: []string{"/admin"}}, "")
+	app := newAppWithMiddleware(Config{SkipURIs: []string{"/admin"}}, "")
 	app.Get("/admin", func(c fiber.Ctx) error {
 		return fiber.ErrUnauthorized
 	}, func(c fiber.Ctx) error {
@@ -1457,7 +1456,7 @@ func TestSkipURIsAppliesToShortCircuitRouteGuard(t *testing.T) {
 // pattern is gone; Fiber exposes nothing that distinguishes a Use route, so the
 // case cannot be detected either.
 func TestFallThroughToTrailingMiddlewareUsesMountPath(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{}, "")
+	app := newAppWithMiddleware(Config{}, "")
 	app.Get("/user/:id", func(c fiber.Ctx) error {
 		return c.Next()
 	})
@@ -1479,7 +1478,7 @@ func TestFallThroughToTrailingMiddlewareUsesMountPath(t *testing.T) {
 // must not disturb: extra handlers on the route itself still resolve to the
 // route pattern.
 func TestRouteLevelMiddlewareKeepsRoutePattern(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{}, "")
+	app := newAppWithMiddleware(Config{}, "")
 	app.Get("/user/:id", func(c fiber.Ctx) error {
 		return c.Next()
 	}, func(c fiber.Ctx) error {
@@ -1508,7 +1507,7 @@ func TestWrappingRegistererWithMatchingGatherer(t *testing.T) {
 		}
 	}()
 
-	app, _ := newAppWithMiddleware(Config{
+	app := newAppWithMiddleware(Config{
 		Registerer: prometheus.WrapRegistererWithPrefix("app_", registry),
 		Gatherer:   registry,
 	}, "")
@@ -1548,7 +1547,7 @@ func TestEmptyBucketsWithoutNativeHistogramsKeepsDefaults(t *testing.T) {
 // itself to whatever request arrived last, collapsing them onto one label set
 // and leaving the registry unable to gather at all.
 func TestDynamicLabelValuesAreCopied(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{
+	app := newAppWithMiddleware(Config{
 		DynamicLabels: map[string]func(fiber.Ctx) string{
 			"tenant": func(c fiber.Ctx) string { return c.Get("X-Tenant", "unknown") },
 		},
@@ -1586,7 +1585,7 @@ func TestDynamicLabelValuesAreCopied(t *testing.T) {
 // route pattern. An entry ending in "*" therefore has to match the route
 // literally named that, not only the paths beneath its prefix.
 func TestSkipURIsMatchesWildcardRoutePattern(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{SkipURIs: []string{"/static*", "/files/*"}}, "")
+	app := newAppWithMiddleware(Config{SkipURIs: []string{"/static*", "/files/*"}}, "")
 	app.Get("/static*", func(c fiber.Ctx) error {
 		return c.SendString("static")
 	})
@@ -1620,7 +1619,7 @@ func TestSkipURIsMatchesWildcardRoutePattern(t *testing.T) {
 // return a request value directly. A single header of raw bytes would take the
 // server down.
 func TestDynamicLabelValuesSurviveInvalidUTF8(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{
+	app := newAppWithMiddleware(Config{
 		DynamicLabels: map[string]func(fiber.Ctx) string{
 			"tenant": func(c fiber.Ctx) string { return c.Get("X-Tenant") },
 		},
@@ -1652,7 +1651,7 @@ func TestDynamicLabelValuesSurviveInvalidUTF8(t *testing.T) {
 // TestSkipURIsIgnoresTrailingSlashAfterWildcard pins that "/admin/*/" behaves
 // as "/admin/*", since trailing slashes are documented as ignored.
 func TestSkipURIsIgnoresTrailingSlashAfterWildcard(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{SkipURIs: []string{"/admin/*/"}}, "")
+	app := newAppWithMiddleware(Config{SkipURIs: []string{"/admin/*/"}}, "")
 	app.Get("/admin/users", func(c fiber.Ctx) error {
 		return c.SendString("users")
 	})
@@ -1676,7 +1675,7 @@ func TestSkipURIsIgnoresTrailingSlashAfterWildcard(t *testing.T) {
 }
 
 func TestLabelsAreAttachedToEveryMetric(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{
+	app := newAppWithMiddleware(Config{
 		Labels: prometheus.Labels{"env": "staging", "region": "eu"},
 	}, "")
 	app.Get("/hello", func(c fiber.Ctx) error {
@@ -1714,7 +1713,7 @@ func TestLabelsAreAttachedToEveryMetric(t *testing.T) {
 // "service" key and Service is also set: Service wins, because it is applied
 // after the configured labels are copied.
 func TestServiceOverridesLabelsCollision(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{
+	app := newAppWithMiddleware(Config{
 		ServiceName: "from-service",
 		Labels:      prometheus.Labels{"service": "from-labels"},
 	}, "")
@@ -1736,7 +1735,7 @@ func TestServiceOverridesLabelsCollision(t *testing.T) {
 }
 
 func TestNamespaceAndSubsystemPrefixMetricNames(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{Namespace: "svc", Subsystem: "api"}, "")
+	app := newAppWithMiddleware(Config{Namespace: "svc", Subsystem: "api"}, "")
 	app.Get("/hello", func(c fiber.Ctx) error {
 		return c.SendString("hi")
 	})
@@ -1768,7 +1767,7 @@ func TestNamespaceAndSubsystemPrefixMetricNames(t *testing.T) {
 func TestGathererOnlyResolvesRegisterer(t *testing.T) {
 	registry := prometheus.NewRegistry()
 
-	app, _ := newAppWithMiddleware(Config{Gatherer: registry}, "")
+	app := newAppWithMiddleware(Config{Gatherer: registry}, "")
 	app.Get("/hello", func(c fiber.Ctx) error {
 		return c.SendString("hi")
 	})
@@ -1879,7 +1878,7 @@ func TestErrorHandlerFailureFallsBackTo500(t *testing.T) {
 // SSE app reporting a median response size of nothing, so the sample is left
 // out of the histogram entirely while the request still counts.
 func TestUnknownResponseSizeIsNotObserved(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{}, "")
+	app := newAppWithMiddleware(Config{}, "")
 	app.Get("/stream", func(c fiber.Ctx) error {
 		return c.SendStream(strings.NewReader(strings.Repeat("s", 5000)))
 	})
@@ -1951,7 +1950,7 @@ func TestBodySize(t *testing.T) {
 // patterns, which Fiber always registers with a leading slash. Requiring the
 // caller to supply one would make "hello" a silent no-op.
 func TestSkipURIsWithoutLeadingSlash(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{SkipURIs: []string{"hello", "admin/*"}}, "")
+	app := newAppWithMiddleware(Config{SkipURIs: []string{"hello", "admin/*"}}, "")
 	app.Get("/hello", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -2098,7 +2097,7 @@ func TestValidStatusClassesAreAccepted(t *testing.T) {
 // takes after strings.Split: a single empty entry, which would normalize to "/"
 // and silently drop the root route from every metric.
 func TestBlankSkipURIIsIgnored(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{SkipURIs: []string{"", "   "}}, "")
+	app := newAppWithMiddleware(Config{SkipURIs: []string{"", "   "}}, "")
 	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -2115,7 +2114,7 @@ func TestBlankSkipURIIsIgnored(t *testing.T) {
 
 // TestExplicitRootSkipURI is the counterpart: asking for "/" still works.
 func TestExplicitRootSkipURI(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{SkipURIs: []string{"/"}}, "")
+	app := newAppWithMiddleware(Config{SkipURIs: []string{"/"}}, "")
 	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -2133,7 +2132,7 @@ func TestExplicitRootSkipURI(t *testing.T) {
 // TestMetricsTimeoutServesScrape exercises the promhttp timeout path, which
 // wraps the handler in http.TimeoutHandler and so runs it on its own goroutine.
 func TestMetricsTimeoutServesScrape(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{MetricsTimeout: 5 * time.Second}, "")
+	app := newAppWithMiddleware(Config{MetricsTimeout: 5 * time.Second}, "")
 	app.Get("/hello", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -2180,7 +2179,7 @@ func TestMetricsMaxRequestsInFlightRejectsExcess(t *testing.T) {
 	release := func() { releaseOnce.Do(func() { close(gatherer.release) }) }
 	t.Cleanup(release)
 
-	app, _ := newAppWithMiddleware(Config{
+	app := newAppWithMiddleware(Config{
 		Registerer:                 registry,
 		Gatherer:                   gatherer,
 		MetricsMaxRequestsInFlight: 1,
@@ -2275,7 +2274,7 @@ func TestDetachRequestCopiesHeader(t *testing.T) {
 // prescribes: recovering downstream turns the panic into an error return the
 // middleware can attribute, so the 500 the client received is not invisible.
 func TestPanicWithDownstreamRecoverIsRecorded(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{}, "")
+	app := newAppWithMiddleware(Config{}, "")
 	app.Use(recoverer.New())
 	app.Get("/boom", func(fiber.Ctx) error {
 		panic("boom")
@@ -2299,7 +2298,7 @@ func TestPanicWithDownstreamRecoverIsRecorded(t *testing.T) {
 // entry an unset environment variable produces: an empty setting must not stop
 // the process from booting.
 func TestBlankSkipStatusClassIsIgnored(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{SkipStatusClasses: []string{"", "  "}}, "")
+	app := newAppWithMiddleware(Config{SkipStatusClasses: []string{"", "  "}}, "")
 	app.Get("/hello", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -2318,7 +2317,7 @@ func TestBlankSkipStatusClassIsIgnored(t *testing.T) {
 // ",": the entries after the first carry a leading space, which would otherwise
 // land behind the slash the middleware prepends and match no route.
 func TestSkipURIsTrimsWhitespace(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{SkipURIs: strings.Split("/health, /ping", ",")}, "")
+	app := newAppWithMiddleware(Config{SkipURIs: strings.Split("/health, /ping", ",")}, "")
 	for _, path := range []string{"/health", "/ping"} {
 		app.Get(path, func(c fiber.Ctx) error {
 			return c.SendStatus(fiber.StatusOK)
@@ -2348,7 +2347,7 @@ func TestUnknownStatusClassIsFilterable(t *testing.T) {
 				cfg.SkipStatusClasses = []string{"unknown"}
 			}
 
-			app, _ := newAppWithMiddleware(cfg, "")
+			app := newAppWithMiddleware(cfg, "")
 			app.Get("/odd", func(c fiber.Ctx) error {
 				return c.Status(999).SendString("odd")
 			})
@@ -2478,7 +2477,7 @@ func TestMetricsTimeoutBoundsScrape(t *testing.T) {
 	}
 	t.Cleanup(func() { close(gatherer.release) })
 
-	app, _ := newAppWithMiddleware(Config{
+	app := newAppWithMiddleware(Config{
 		Registerer:     registry,
 		Gatherer:       gatherer,
 		MetricsTimeout: 50 * time.Millisecond,
@@ -2524,7 +2523,7 @@ func TestScrapeHandlerDetachesOnlyWithTimeout(t *testing.T) {
 func TestBucketsAreCopiedFromConfig(t *testing.T) {
 	buckets := []float64{1, 2, 3}
 
-	app, _ := newAppWithMiddleware(Config{
+	app := newAppWithMiddleware(Config{
 		RequestDurationBuckets: buckets,
 		DisabledMetrics:        []Metric{MetricRequestSize, MetricResponseSize},
 	}, "")
@@ -2552,7 +2551,7 @@ func TestBucketsAreCopiedFromConfig(t *testing.T) {
 // unlike MetricsPath, the label is used verbatim - normalizing it would rename a
 // live series and break every dashboard keyed on it.
 func TestUnmatchedRouteLabelIsTakenAsGiven(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{
+	app := newAppWithMiddleware(Config{
 		TrackUnmatchedRequests: true,
 		UnmatchedRouteLabel:    "unmatched",
 	}, "")
@@ -2571,14 +2570,14 @@ func TestUnmatchedRouteLabelIsTakenAsGiven(t *testing.T) {
 // tolerance: a request with a trailing slash, and a configured path carrying one.
 func TestMetricsPathIgnoresTrailingSlash(t *testing.T) {
 	t.Run("request", func(t *testing.T) {
-		app, _ := newAppWithMiddleware(Config{}, "")
+		app := newAppWithMiddleware(Config{}, "")
 		if body := getMetrics(t, app, "/metrics/"); !strings.Contains(body, "go_goroutines") {
 			t.Fatalf("expected /metrics/ to be served, got %q", body)
 		}
 	})
 
 	t.Run("config", func(t *testing.T) {
-		app, _ := newAppWithMiddleware(Config{MetricsPath: "/telemetry/"}, "")
+		app := newAppWithMiddleware(Config{MetricsPath: "/telemetry/"}, "")
 		if body := getMetrics(t, app, "/telemetry"); !strings.Contains(body, "go_goroutines") {
 			t.Fatalf("expected /telemetry to be served, got %q", body)
 		}
@@ -2774,7 +2773,7 @@ func TestInvalidUnmatchedRouteLabelPanics(t *testing.T) {
 // recover the application mounted, so an unguarded panic would reach the
 // connection goroutine and the client would get nothing at all.
 func TestPanickingDynamicLabelDropsSample(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{
+	app := newAppWithMiddleware(Config{
 		DynamicLabels: map[string]func(fiber.Ctx) string{
 			"tenant": func(c fiber.Ctx) string {
 				// The shape Config invites: a local the handler may not have set.
@@ -2815,7 +2814,7 @@ func TestPanickingDynamicLabelDropsSample(t *testing.T) {
 // running the GET handler and fasthttp then discards: no payload bytes reach the
 // client, so counting them would overstate egress for anything polled with HEAD.
 func TestHeadResponseRecordsNoPayload(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{}, "")
+	app := newAppWithMiddleware(Config{}, "")
 	app.Get("/big", func(c fiber.Ctx) error {
 		return c.SendString(strings.Repeat("b", 4096))
 	})
@@ -2916,7 +2915,7 @@ func TestMetricsErrorLogReceivesGatherErrors(t *testing.T) {
 	logger := &recordingLogger{}
 	registry := prometheus.NewRegistry()
 
-	app, _ := newAppWithMiddleware(Config{
+	app := newAppWithMiddleware(Config{
 		Registerer:      registry,
 		Gatherer:        failingGatherer{Gatherer: registry},
 		MetricsErrorLog: logger,
@@ -2939,7 +2938,7 @@ func TestMetricsErrorLogReceivesGatherErrors(t *testing.T) {
 func TestMetricsErrorHandlingContinuesOnError(t *testing.T) {
 	registry := prometheus.NewRegistry()
 
-	app, _ := newAppWithMiddleware(Config{
+	app := newAppWithMiddleware(Config{
 		Registerer:           registry,
 		Gatherer:             failingGatherer{Gatherer: registry},
 		MetricsErrorHandling: promhttp.ContinueOnError,
@@ -2959,7 +2958,7 @@ func TestMetricsErrorHandlingContinuesOnError(t *testing.T) {
 // fasthttp drops it, so counting those bytes overstates egress for a
 // cache-fronted app serving mostly 304s.
 func TestBodylessResponsesRecordNoPayload(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{}, "")
+	app := newAppWithMiddleware(Config{}, "")
 	for _, status := range []int{fiber.StatusContinue, fiber.StatusNoContent, fiber.StatusNotModified} {
 		app.Get("/"+strconv.Itoa(status), func(c fiber.Ctx) error {
 			return c.Status(status).SendString(strings.Repeat("b", 4096))
@@ -2996,7 +2995,7 @@ func TestBodylessResponsesRecordNoPayload(t *testing.T) {
 // body-rewriting handler. fasthttp recomputes Content-Length from the body it
 // writes, so the buffer is what the client receives.
 func TestStaleContentLengthDoesNotInflateSize(t *testing.T) {
-	app, _ := newAppWithMiddleware(Config{}, "")
+	app := newAppWithMiddleware(Config{}, "")
 	app.Get("/stale", func(c fiber.Ctx) error {
 		c.Set(fiber.HeaderContentLength, "999999")
 		return c.SendString("tiny")
@@ -3067,4 +3066,113 @@ func TestTypedNilErrorLogPanics(t *testing.T) {
 
 	var logger *log.Logger
 	_ = New(Config{MetricsErrorLog: logger})
+}
+
+// TestInvalidRoutePatternIsSanitised covers the last label value that reached
+// Prometheus unchecked. A pattern is registration-time data, but an application
+// registering routes from external config can still put raw bytes in one, and
+// the panic would land on the connection goroutine - where neither fasthttp nor
+// Fiber installs a recover, so the process would go with it.
+func TestInvalidRoutePatternIsSanitised(t *testing.T) {
+	// UnescapePath is what turns a percent-escaped request into the raw bytes
+	// the pattern was registered with.
+	app := fiber.New(fiber.Config{UnescapePath: true})
+	app.Use(New(Config{}))
+	app.Get("/caf\xe9", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/caf%E9", nil), noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("the invalid route pattern reached the connection: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected the response to be unaffected, got %d", resp.StatusCode)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, "�") {
+		t.Fatalf("expected the pattern to be recorded with a replacement rune, got %q", metrics)
+	}
+}
+
+// TestInvalidNamesPanicBeforeRegistration covers the config shapes client_golang
+// rejects while building a descriptor, which is after the runtime collectors
+// have gone into a caller-supplied registry.
+func TestInvalidNamesPanicBeforeRegistration(t *testing.T) {
+	for name, cfg := range map[string]Config{
+		"empty label name":     {Labels: prometheus.Labels{"": "x"}},
+		"invalid label name":   {Labels: prometheus.Labels{"zone-\xff": "x"}},
+		"empty dynamic name":   {DynamicLabels: map[string]func(fiber.Ctx) string{"": func(fiber.Ctx) string { return "x" }}},
+		"invalid dynamic name": {DynamicLabels: map[string]func(fiber.Ctx) string{"z-\xff": func(fiber.Ctx) string { return "x" }}},
+		"invalid namespace":    {Namespace: "ns-\xff"},
+		"invalid subsystem":    {Subsystem: "sub-\xff"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			registry := prometheus.NewRegistry()
+			cfg.Registerer = registry
+			cfg.Gatherer = registry
+
+			func() {
+				defer func() {
+					if recover() == nil {
+						t.Fatal("expected the invalid config to be rejected")
+					}
+				}()
+
+				_ = New(cfg)
+			}()
+
+			families, err := registry.Gather()
+			if err != nil {
+				t.Fatalf("gathering after the rejected config: %v", err)
+			}
+			if len(families) != 0 {
+				t.Fatalf("expected the registry to be untouched, got %d families", len(families))
+			}
+		})
+	}
+}
+
+// TestSkipAllExcludesTheInFlightGauge pins the documented meaning of a "/*"
+// entry. The gauge is incremented before routing, so nothing downstream can drop
+// it - without this it would be the one family still exporting series for an
+// application that asked for no instrumentation at all.
+func TestSkipAllExcludesTheInFlightGauge(t *testing.T) {
+	app := newAppWithMiddleware(Config{SkipURIs: []string{"/*"}}, "")
+	app.Get("/a", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/a", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if strings.Contains(metrics, "http_requests_in_progress") {
+		t.Fatalf("expected no in-flight gauge with everything excluded, got %q", metrics)
+	}
+	if !strings.Contains(metrics, "go_goroutines") {
+		t.Fatalf("expected the runtime collectors to still be exposed, got %q", metrics)
+	}
+}
+
+// TestBlankDisabledMetricIsIgnored matches the tolerance the skip lists have for
+// the entry an unset environment variable produces.
+func TestBlankDisabledMetricIsIgnored(t *testing.T) {
+	app := newAppWithMiddleware(Config{DisabledMetrics: []Metric{"", "  "}}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	for _, name := range []string{"http_requests_total", "http_request_duration_seconds", "http_requests_in_progress"} {
+		if !strings.Contains(metrics, name) {
+			t.Fatalf("expected %s to still be exposed, got %q", name, metrics)
+		}
+	}
 }

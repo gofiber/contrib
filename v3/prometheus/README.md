@@ -34,8 +34,8 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | Property | Type | Description | Default |
 |:---------|:-----|:------------|:--------|
 | ServiceName | `string` | Added as the `service` const label on every metric. Omitted when empty. Must be valid UTF-8. | `""` |
-| Namespace | `string` | Prefixes every metric name. | `"http"` |
-| Subsystem | `string` | Prefixes every metric name after `Namespace`. | `""` |
+| Namespace | `string` | Prefixes every metric name. Must be valid UTF-8. | `"http"` |
+| Subsystem | `string` | Prefixes every metric name after `Namespace`. Must be valid UTF-8. | `""` |
 | MetricsPath | `string` | Path served with the Prometheus exposition format. Unless `Next` returns true, requests to it are answered by the middleware and are not instrumented. Compared case-sensitively against the full request path, ignoring trailing slashes. | `"/metrics"` |
 | Labels | `prometheus.Labels` | Extra const labels attached to every metric. A key colliding with a reserved label (`status_code`, `status_class`, `method`, `path`, `le`) panics. | `nil` |
 | Registerer | `prometheus.Registerer` | Registry used to register the metrics. Reusing one across two `New` calls panics on duplicate registration. | private registry |
@@ -62,7 +62,7 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | SkipURIs | `[]string` | Route patterns excluded from instrumentation, e.g. `/user/:id`. A trailing `*` matches by prefix; a leading `/` is added when missing. | `nil` |
 | SkipStatusCodes | `[]int` | Response status codes excluded from metrics. Codes are three digits; anything else panics. | `nil` |
 | SkipStatusClasses | `[]string` | Status classes excluded from metrics, `"1xx"` through `"5xx"` or `"unknown"`. Anything else panics. | `nil` |
-| DynamicLabels | `map[string]func(fiber.Ctx) string` | Extra labels computed per request. | `nil` |
+| DynamicLabels | `map[string]func(fiber.Ctx) string` | Extra labels computed per request. Names follow the same rules as `Labels`. | `nil` |
 | Next | `func(fiber.Ctx) bool` | Skips the middleware when it returns true, including for `MetricsPath`. | `nil` |
 
 ## Default Config
@@ -230,7 +230,9 @@ Fiber's zero-copy strings such as `c.Get(...)` or `c.Params(...)` directly.
 `SkipURIs` matches the registered route pattern — note that fiberzap's option
 of the same name matches the request path instead. A trailing `*` matches by
 prefix and stops at a path segment boundary, so `/admin/*` excludes `/admin` and
-`/admin/users` but not `/administration`. `/*` excludes everything. Trailing
+`/admin/users` but not `/administration`. `/*` excludes everything, the
+in-flight gauge included — it is incremented before routing, so no per-route
+filter would otherwise reach it. Trailing
 slashes are ignored, and a leading `/` is added when missing — route patterns
 always carry one, so `admin` without it would otherwise match nothing.
 

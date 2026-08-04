@@ -158,9 +158,19 @@ func New(config ...Config) fiber.Handler {
 		if _, reserved := reservedLabels[name]; reserved {
 			panic("prometheus middleware: constant label " + strconv.Quote(name) + " collides with a reserved label")
 		}
+		validateLabelName("constant label", name)
 		if !utf8.ValidString(value) {
 			panic("prometheus middleware: constant label " + strconv.Quote(name) + " has a value that is not valid UTF-8")
 		}
+	}
+
+	// Both prefix every metric name, so an invalid one is rejected when the
+	// first descriptor is built - by which point the collectors are registered.
+	if !utf8.ValidString(cfg.Namespace) {
+		panic("prometheus middleware: Namespace is not valid UTF-8")
+	}
+	if !utf8.ValidString(cfg.Subsystem) {
+		panic("prometheus middleware: Subsystem is not valid UTF-8")
 	}
 
 	dynamic := resolveDynamicLabels(cfg)
@@ -182,6 +192,12 @@ func New(config ...Config) fiber.Handler {
 
 	disabled := make(map[Metric]struct{}, len(cfg.DisabledMetrics))
 	for _, metric := range cfg.DisabledMetrics {
+		// Blank entries are skipped for the same reason as in the skip lists:
+		// splitting an unset environment variable on "," yields one, and that
+		// should not stop the process from booting.
+		if strings.TrimSpace(string(metric)) == "" {
+			continue
+		}
 		// An unrecognised name would disable nothing and say nothing, leaving
 		// the family it was meant to drop registered and recording.
 		if _, known := allMetrics[metric]; !known {
@@ -290,7 +306,11 @@ func New(config ...Config) fiber.Handler {
 		)
 	}
 
-	if enabled(MetricRequestsInProgress) {
+	// A "/*" entry excludes every route, and the gauge is the one family that
+	// would otherwise keep exporting: it is incremented before routing, so
+	// nothing downstream can drop it. Documenting an exemption would be worse
+	// than honouring the claim.
+	if enabled(MetricRequestsInProgress) && !m.skipAll {
 		// The in-flight gauge has to be incremented before the router picks a
 		// handler, at which point the route pattern is still unknown. Labelling
 		// it by method only keeps the gauge balanced and its cardinality
@@ -497,6 +517,7 @@ func resolveDynamicLabels(cfg Config) []dynamicLabel {
 		if _, reserved := reservedLabels[name]; reserved {
 			panic("prometheus middleware: dynamic label " + strconv.Quote(name) + " collides with a reserved label")
 		}
+		validateLabelName("dynamic label", name)
 		if _, ok := cfg.Labels[name]; ok {
 			panic("prometheus middleware: dynamic label " + strconv.Quote(name) + " collides with a constant label")
 		}
@@ -778,6 +799,16 @@ func (m *middleware) resolveDynamicValues(ctx fiber.Ctx, values []string) (ok bo
 	return true
 }
 
+// validLabel replaces invalid UTF-8 so that a value can never be rejected by
+// Prometheus. The common case is a scan and no allocation; ToValidUTF8 allocates
+// only when it has something to substitute.
+func validLabel(value string) string {
+	if utf8.ValidString(value) {
+		return value
+	}
+	return strings.ToValidUTF8(value, "�")
+}
+
 // statusStrings holds the decimal form of every status code a response can
 // carry, because strconv.Itoa allocates above 99 - which is every HTTP status -
 // and this is the hottest path in the middleware.
@@ -897,7 +928,13 @@ func (m *middleware) routeLabel(ctx fiber.Ctx) (string, bool) {
 		// the unbounded cardinality this label exists to prevent. Neither names
 		// an endpoint, so both count as unmatched and obey the same opt-in.
 		if route := ctx.Route(); route != nil && len(route.Handlers) > 0 {
-			return normalizePath(route.Path), true
+			// Registration-time data, so no copy is needed - but an application
+			// registering routes from external config can still put raw bytes
+			// in a pattern, and Prometheus panics on a label value that is not
+			// valid UTF-8. That panic would land on the connection goroutine,
+			// where neither fasthttp nor Fiber installs a recover, and take the
+			// process with it.
+			return validLabel(normalizePath(route.Path)), true
 		}
 	}
 
@@ -934,6 +971,19 @@ func normalizePath(routePath string) string {
 		return "/"
 	}
 	return normalized
+}
+
+// validateLabelName rejects the two shapes client_golang refuses as a label
+// name. It refuses them while building a descriptor, which happens after the
+// collectors have gone into the registry, so a caller who supplied their own
+// would be left with a registry they never successfully configured.
+func validateLabelName(kind, name string) {
+	if name == "" {
+		panic("prometheus middleware: " + kind + " has an empty name")
+	}
+	if !utf8.ValidString(name) {
+		panic("prometheus middleware: " + kind + " " + strconv.Quote(name) + " is not valid UTF-8")
+	}
 }
 
 // validateBuckets rejects bucket bounds client_golang would reject, which it

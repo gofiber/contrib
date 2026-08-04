@@ -46,12 +46,15 @@ type Config struct {
 	// Optional. Default: "" (label omitted).
 	ServiceName string
 
-	// Namespace prefixes every metric name.
+	// Namespace prefixes every metric name. It has to be valid UTF-8; New
+	// panics otherwise, since client_golang would only reject it once the first
+	// descriptor was built.
 	//
 	// Optional. Default: "http".
 	Namespace string
 
-	// Subsystem prefixes every metric name after Namespace.
+	// Subsystem prefixes every metric name after Namespace. It has to be valid
+	// UTF-8, as Namespace does.
 	//
 	// Optional. Default: "".
 	Subsystem string
@@ -76,9 +79,9 @@ type Config struct {
 	// Labels are attached to every metric. A "service" key here is overridden by
 	// ServiceName when that is also set.
 	//
-	// Names must not collide with the reserved "status_code", "status_class",
-	// "method", "path" and "le" labels, and values have to be valid UTF-8; New
-	// panics if either is violated.
+	// Names must not be empty, must be valid UTF-8, and must not collide with
+	// the reserved "status_code", "status_class", "method", "path" and "le"
+	// labels; values have to be valid UTF-8 too. New panics on any of those.
 	//
 	// Optional. Default: no labels.
 	Labels prometheus.Labels
@@ -260,7 +263,8 @@ type Config struct {
 	// or record. Use it to drop families that are not worth their cardinality,
 	// most commonly MetricRequestSize and MetricResponseSize. New panics on a
 	// name that is not one of the Metric constants, which would otherwise
-	// disable nothing and say nothing.
+	// disable nothing and say nothing; blank entries are skipped, as in the
+	// skip lists, so an unset environment variable split on "," is harmless.
 	//
 	// MetricRequestsStatusClassTotal is worth a look too: status_class is a
 	// function of status_code, so every query against it has an equivalent
@@ -281,7 +285,9 @@ type Config struct {
 	// the root route by asking for "/" explicitly.
 	//
 	// An entry ending in "*" matches by prefix: "/admin/*" excludes "/admin"
-	// and every route below it, and "/*" excludes everything. It also still
+	// and every route below it, and "/*" excludes everything - including
+	// MetricRequestsInProgress, which is otherwise incremented before routing
+	// and so beyond the reach of any per-route filter. It also still
 	// matches a route pattern named exactly that, since Fiber patterns may end
 	// in "*" themselves - "/static*" excludes the route "/static*" as well as
 	// anything under "/static".
@@ -317,9 +323,10 @@ type Config struct {
 	// the context.
 	//
 	// The labels are added to every metric except MetricRequestsInProgress,
-	// which is incremented before routing and so cannot see them. Names must not
-	// collide with the reserved "status_code", "status_class", "method", "path"
-	// and "le" labels, or with Labels; New panics if they do.
+	// which is incremented before routing and so cannot see them. Names follow
+	// the same rules as Labels: not empty, valid UTF-8, and clear of the
+	// reserved "status_code", "status_class", "method", "path" and "le" labels
+	// as well as of Labels itself. New panics if they are not.
 	//
 	// Every distinct value creates a new series, so returning request data
 	// unchanged lets a client grow the registry without bound. Map untrusted
