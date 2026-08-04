@@ -142,9 +142,13 @@ type Config struct {
 	// its own right, so whatever the implementation stores must be
 	// unguessable, bound to the client, and expired deliberately. The
 	// middleware forwards the request's cookies to gokrb5 only when this is
-	// set, so a cookie-backed manager can find its session; anything the
-	// manager writes on a request that goes on to authenticate — Set-Cookie
-	// included — is replayed onto the Fiber response.
+	// set, so a cookie-backed manager can find its session.
+	//
+	// Headers the manager sets on a request that goes on to authenticate —
+	// Set-Cookie included — are replayed onto the Fiber response. Headers are
+	// all that is replayed: the body and status belong to the handler the
+	// request is being authenticated for, so anything the manager writes there
+	// is discarded. Report through headers, or through the manager's own log.
 	//
 	// The two failure paths are not symmetric. A New that cannot persist makes
 	// gokrb5 abandon the request from inside its handler, which surfaces as
@@ -176,8 +180,14 @@ type Config struct {
 	//     keytab. The error also carries the underlying cause.
 	//   - ErrSPNEGOHandlerFailed, when gokrb5 fails inside its own handler
 	//     without reaching an authentication outcome, which in v8.4.4 means a
-	//     SessionManager that could not persist a session. The error carries
-	//     the status and body the handler had written, for the log.
+	//     SessionManager that could not persist a session.
+	//
+	// The second carries the status and body the handler had written, which is
+	// worth knowing what to expect from: gokrb5 sends the manager's actual
+	// reason to its own logger and writes only "Internal Server Error" to the
+	// response. So unless the manager wrote something itself, that boilerplate
+	// is all the error carries, and seeing the reason means setting Log or
+	// UseFiberLogger.
 	//
 	// Match on those rather than on text. The keytab cause names paths and OS
 	// errors, so treat what arrives here as internal diagnostics rather than

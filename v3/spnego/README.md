@@ -129,6 +129,24 @@ The middleware is designed with extensibility in mind, allowing keytab retrieval
 
 Note that revoking a keytab with `chmod` alone is not enough: changing permissions moves only the file's ctime, which the cache does not track, so an already-loaded keytab keeps being served until something else changes. Remove or replace the file to revoke it.
 
+A `KeytabLookupFunc` is any function returning a `*keytab.Keytab`, so the source is yours to choose:
+
+```go
+// Example: Retrieve keytab from a database
+func dbKeytabLookup() (*keytab.Keytab, error) {
+    // Your database lookup logic here
+    // ...
+    return keytabFromDatabase, nil
+}
+
+// Example: Retrieve keytab from a remote service
+func remoteKeytabLookup() (*keytab.Keytab, error) {
+    // Your remote service call logic here
+    // ...
+    return keytabFromRemote, nil
+}
+```
+
 ### Errors
 
 A failed keytab lookup is answered with a bare `500`. The detail from `NewKeytabFileLookupFunc` names the keytab's path and the underlying OS error — a custom `KeytabLookupFunc` may report whatever it likes — and none of that should reach an unauthenticated caller, so the response body carries only `Internal Server Error`.
@@ -156,22 +174,6 @@ app := fiber.New(fiber.Config{
 		return fiber.DefaultErrorHandler(c, err)
 	},
 })
-```
-
-```go
-// Example: Retrieve keytab from a database
-func dbKeytabLookup() (*keytab.Keytab, error) {
-    // Your database lookup logic here
-    // ...
-    return keytabFromDatabase, nil
-}
-
-// Example: Retrieve keytab from a remote service
-func remoteKeytabLookup() (*keytab.Keytab, error) {
-    // Your remote service call logic here
-    // ...
-    return keytabFromRemote, nil
-}
 ```
 
 ## API Reference
@@ -266,9 +268,11 @@ If you went looking for gokrb5's `service.SName` and wondered why it is not expo
 
 `SessionManager` is the largest saving available on an authenticated hot path: gokrb5 establishes a session after the first successful authentication and serves later requests from it, skipping ticket validation entirely.
 
-It also changes the trust model. The session becomes a credential in its own right, so whatever your implementation stores must be unguessable, bound to the client, and expired deliberately — a predictable session identifier is a full authentication bypass. The middleware forwards the request's cookies to gokrb5 only when this is set, and replays what the manager writes — `Set-Cookie` included — onto the Fiber response **for a request that reaches an authentication outcome**, which means one that authenticates as well as one that gets a challenge or a refusal. On a request that instead fails inside the handler, everything the manager wrote is dropped — headers, body and status alike — so a cookie written just before the failure never advertises a session that was not stored.
+It also changes the trust model. The session becomes a credential in its own right, so whatever your implementation stores must be unguessable, bound to the client, and expired deliberately — a predictable session identifier is a full authentication bypass. The middleware forwards the request's cookies to gokrb5 only when this is set.
 
-The request handed to your manager is built by this middleware rather than by `net/http`, so it carries only what gokrb5 reads plus what a session store needs to make its decisions: method, host, remote address, cookies, `URL.Scheme`, and `TLS`. The path and query are deliberately absent, so do not key a session on them.
+What the manager writes is replayed selectively. **Headers** — `Set-Cookie` included — reach the Fiber response on any request that gets to an authentication outcome, meaning one that authenticates as well as one that gets a challenge or a refusal. The **body and status do not**, ever: they belong to the handler the request is being authenticated for, and are overwritten by it. Report through headers, or through your own logger. On a request that instead fails inside the handler, all three are dropped, so a cookie written just before the failure never advertises a session that was not stored.
+
+The request handed to your manager is built by this middleware rather than by `net/http`, so it carries only what gokrb5 reads plus what a session store needs to make its decisions: method, host, remote address, cookies, protocol, `URL.Scheme`, and `TLS`. `Body` is `http.NoBody` — non-nil, so the usual `defer r.Body.Close()` is safe, but empty. `RequestURI` and the URL's path and query are deliberately absent, so do not key a session on them.
 
 `Secure: r.TLS != nil` — the usual idiom — is reliable only where Fiber terminates TLS itself. Behind a TLS-terminating proxy the connection into Fiber is plaintext, so `TLS` is nil.
 
@@ -276,7 +280,9 @@ The request handed to your manager is built by this middleware rather than by `n
 
 The two failure paths are not symmetric, which matters for monitoring. A manager whose `New` cannot persist makes gokrb5 abandon the request from inside its handler; the middleware treats that as an internal failure rather than an ordinary response — logged on its own throttle, passed to `OnError` as `ErrSPNEGOHandlerFailed`, and answered with the same sanitised `Internal Server Error` body a keytab failure gets, so a manager that reports a DSN or a driver error cannot leak it to an unauthenticated caller. A manager whose `Get` fails is different: gokrb5 discards that error and falls through to full ticket validation, so a broken read path degrades performance silently and is worth watching on the store's own side.
 
-The two are told apart by `WWW-Authenticate`, not by the status. gokrb5 sets a `Negotiate` value on every authentication outcome and on none of its internal failures, whereas the status is only ever the first one written — and a manager holding the raw `ResponseWriter` can write its own before it fails, which would otherwise mask the failure as an ordinary `200` or `4xx`.
+The two are told apart by the error your `New` returns, and by `WWW-Authenticate` — never by the status. The status is only ever the first one written, and a manager holding the raw `ResponseWriter` can write its own before it fails, which would otherwise mask the failure as an ordinary `200` or `4xx`.
+
+One caveat for whoever is on call. gokrb5 sends your manager's actual error to *its own* logger and writes only `Internal Server Error` to the response, so that boilerplate is what `ErrSPNEGOHandlerFailed` carries unless your manager wrote something itself. To see why the store refused, set `Log` or `UseFiberLogger` — or log it inside your manager, which is the more direct route.
 
 ### Observability
 

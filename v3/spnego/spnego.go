@@ -39,33 +39,94 @@ import (
 // at v8.4.4. Re-check them against the source when upgrading gokrb5: a change
 // there would silently reclassify responses. The tests that would catch a drift
 // are the ones that drive live gokrb5 and compare what it emitted —
-// TestUnauthorizedNotCalledOnContinueNeeded, TestUnauthorizedCalledOnRejection
-// and TestRejectionWithoutHandlerPassesThrough. TestIsRejection is not one of
-// them: it builds its table from these same constants, so it holds whatever
-// they say.
+// TestUnauthorizedNotCalledOnContinueNeeded, TestUnauthorizedCalledOnRejection,
+// TestRejectionWithoutHandlerPassesThrough and TestChallengeIsNotAnInternalFailure.
+// TestIsRejection and TestIsSPNEGOOutcome are not among them: they build their
+// tables from these same constants, so they hold whatever the constants say.
+//
+// One premise here has no live test and cannot get one: that
+// spnegoInternalServerError sets no WWW-Authenticate, which is what lets
+// isSPNEGOOutcome tell a failure from an outcome. Reaching it for real needs a
+// ticket, and so a KDC. Check it by reading the source on every upgrade.
+//
+// A gokrb5 release that started setting a Negotiate header on that path would
+// make this middleware read an internal failure as an authentication outcome.
+// The consequence is bounded but not nil: sessionManagerProbe covers the case
+// that occurs in practice, a session manager refusing to persist, and would
+// still classify it correctly. What would be misread is the other one, gokrb5
+// failing to marshal the credentials — a response with no session cookie to
+// leak, and a body gokrb5 wrote itself.
 const (
 	spnegoContinueNeeded = "Negotiate oRQwEqADCgEBoQsGCSqGSIb3EgECAg=="
 	spnegoRejected       = "Negotiate oQcwBaADCgEC"
-	// spnegoScheme prefixes all four values gokrb5 sets on WWW-Authenticate:
-	// the bare challenge is exactly this, and the continuation, the acceptance
-	// and the rejection are this plus a token.
-	spnegoScheme = "Negotiate"
+	// spnegoBareChallenge is what gokrb5 sets when the request carried no
+	// usable Authorization header, and spnegoAccepted when authentication
+	// completed. Neither has its own named test the way the two challenge
+	// tokens above do: the bare challenge is compared live in
+	// TestChallengeIsNotAnInternalFailure, and the accepted value is only ever
+	// seen on a path that returns before the check that reads these.
+	spnegoBareChallenge = "Negotiate"
+	spnegoAccepted      = "Negotiate oRQwEqADCgEAoQsGCSqGSIb3EgECAg=="
 )
 
-// isNegotiate reports whether a WWW-Authenticate value is one gokrb5 wrote,
-// which is what separates an authentication outcome from the handler failing.
+// spnegoOutcomes is every WWW-Authenticate value gokrb5 v8.4.4 sets, and so the
+// set that marks a response as an authentication outcome rather than the
+// handler failing.
+var spnegoOutcomes = map[string]struct{}{
+	spnegoBareChallenge:  {},
+	spnegoContinueNeeded: {},
+	spnegoRejected:       {},
+	spnegoAccepted:       {},
+}
+
+// isSPNEGOOutcome reports whether a WWW-Authenticate value is one gokrb5 wrote.
 //
-// Presence alone would not: gokrb5 hands a Config.SessionManager the raw
-// ResponseWriter, so a manager may set a header of its own before failing.
-// Matching the scheme is what keeps that out.
+// The values are compared exactly rather than by scheme. gokrb5 hands a
+// Config.SessionManager the raw ResponseWriter, so the header is not gokrb5's
+// alone, and a manager that set a Negotiate header of its own before failing
+// would otherwise have the failure read as an outcome and replayed — its
+// status, its message, and the Set-Cookie for a session it never stored.
 //
-// The scheme is compared whole rather than by prefix. "Negotiate" alone is the
-// bare challenge and the other three are the scheme then a token, so cutting at
-// the first space yields the scheme in every case — and a longer word starting
-// with the same letters cuts to itself and fails the comparison.
-func isNegotiate(value string) bool {
-	scheme, _, _ := strings.Cut(value, " ")
-	return scheme == spnegoScheme
+// This narrows that to a manager writing one of these four values verbatim, and
+// is deliberately not the only defence: a manager whose New refuses is recorded
+// as a fact by sessionManagerProbe, which no header can talk the gate out of.
+// What is left to this check is the one internal failure that happens before
+// the manager is reached, gokrb5 failing to marshal the credentials.
+func isSPNEGOOutcome(value string) bool {
+	_, ok := spnegoOutcomes[value]
+	return ok
+}
+
+// sessionManagerProbe wraps the caller's session manager so a New that refused
+// to persist is known rather than inferred. gokrb5 reports that refusal through
+// spnegoInternalServerError, which writes no WWW-Authenticate — but it writes to
+// a ResponseWriter the manager itself was just holding, so reading the absence
+// of a header back as "the manager failed" trusts the manager not to have left
+// one. This does not: the error the manager returned is the signal.
+//
+// Get is passed through untouched. gokrb5 discards its error and falls through
+// to full ticket validation, so a failed Get is not a failed request and must
+// not be recorded as one.
+type sessionManagerProbe struct {
+	delegate service.SessionMgr
+}
+
+func (p sessionManagerProbe) New(w http.ResponseWriter, r *http.Request, k string, v []byte) error {
+	err := p.delegate.New(w, r, k, v)
+	if err != nil {
+		// Always this middleware's own recorder: gokrb5 passes the
+		// ResponseWriter it was given straight through. The check is for the
+		// day that stops being true, where losing the signal is better than a
+		// panic.
+		if recorder, ok := w.(*responseRecorder); ok {
+			recorder.sessionFailed = true
+		}
+	}
+	return err //nolint:wrapcheck // gokrb5 inspects only whether this is nil
+}
+
+func (p sessionManagerProbe) Get(r *http.Request, k string) ([]byte, error) {
+	return p.delegate.Get(r, k) //nolint:wrapcheck // passed through to gokrb5 untouched
 }
 
 // isRejection reports whether the response SPNEGO produced is a refusal rather
@@ -161,6 +222,10 @@ type responseRecorder struct {
 	headers http.Header
 	status  int
 	body    bytes.Buffer
+	// sessionFailed is set by sessionManagerProbe when the caller's session
+	// manager refused to persist a session. It is the one internal failure the
+	// middleware learns as a fact rather than reading back out of the response.
+	sessionFailed bool
 }
 
 func (r *responseRecorder) Header() http.Header {
@@ -178,9 +243,23 @@ func (r *responseRecorder) WriteHeader(status int) {
 
 // Flush exists so a session manager written against net/http conventions —
 // gokrb5 hands it this recorder as the raw ResponseWriter — does not panic on a
-// w.(http.Flusher) assertion. There is nothing to flush: everything is buffered
-// until the middleware replays it.
-func (r *responseRecorder) Flush() {}
+// w.(http.Flusher) assertion.
+//
+// Nothing is sent. The middleware has to see the whole response before it can
+// tell an authentication outcome from a failure, so everything stays buffered
+// until it decides, and a manager cannot stream through this. Implementing the
+// method makes a comma-ok probe answer yes to a writer that cannot honour it,
+// which is the lesser of the two: the alternative is a panic that drops the
+// connection, and a manager that streams could not work here either way.
+//
+// Committing the implicit status is what a real ResponseWriter does on flush,
+// and matches httptest.ResponseRecorder. It costs nothing here because the
+// status is no longer what classifies the response.
+func (r *responseRecorder) Flush() {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+}
 
 func (r *responseRecorder) Write(b []byte) (int, error) {
 	if r.status == 0 {
@@ -281,6 +360,24 @@ func requestForSPNEGO(ctx fiber.Ctx, withCookies bool) *http.Request {
 		Host:       ctx.Host(),
 		Header:     header,
 		RemoteAddr: fasthttpCtx.RemoteAddr().String(),
+		// net/http guarantees a server request's Body is never nil, and a
+		// Config.SessionManager is ordinary net/http code that may well hold
+		// the usual "defer r.Body.Close()". Leaving it nil would turn that into
+		// a panic inside the authentication middleware on every request; Fiber
+		// installs no recover by default, so the connection would simply drop.
+		// There is no body to offer — gokrb5 reads only the header, and
+		// fasthttp's is not an io.ReadCloser — so it is the empty one.
+		Body: http.NoBody,
+	}
+	// Stated because it can be: this is the protocol Fiber parsed. Unlike
+	// RequestURI, which stays empty along with the rest of the path. The
+	// numbers are parsed rather than assumed 1.1, so a manager comparing
+	// ProtoAtLeast against Proto is not told two different things; fasthttp
+	// also serves HTTP/1.0.
+	if proto := string(fasthttpCtx.Request.Header.Protocol()); proto != "" {
+		if major, minor, ok := http.ParseHTTPVersion(proto); ok {
+			req.Proto, req.ProtoMajor, req.ProtoMinor = proto, major, minor
+		}
 	}
 	// Scheme and TLS exist only for a session manager, which is the sole reader
 	// of either — gokrb5 looks at neither — so they sit behind the same gate as
@@ -336,7 +433,7 @@ func serviceSettings(cfg Config) []func(*service.Settings) {
 		opts = append(opts, service.RequireHostAddr(true))
 	}
 	if cfg.SessionManager != nil {
-		opts = append(opts, service.SessionManager(cfg.SessionManager))
+		opts = append(opts, service.SessionManager(sessionManagerProbe{delegate: cfg.SessionManager}))
 	}
 	return opts
 }
@@ -467,19 +564,22 @@ func New(cfg Config) (fiber.Handler, error) {
 			status = fiber.StatusUnauthorized
 		}
 		// Reaching here means the request did not authenticate. Whether that is
-		// an authentication outcome or the handler failing is decided by the
-		// WWW-Authenticate header, not by the status: gokrb5 v8.4.4 sets a
-		// Negotiate one on every outcome it produces — the bare challenge, the
-		// continuation and the rejection — and spnegoInternalServerError, its
-		// only other responder, sets none.
+		// an authentication outcome or the handler failing is decided by two
+		// things, neither of them the status.
 		//
-		// The scheme is checked rather than mere presence because the header is
-		// not gokrb5's alone. A session manager holds the raw ResponseWriter
-		// and could set a WWW-Authenticate of its own before failing; matching
-		// on presence would read that as an outcome and replay it. gokrb5's
-		// four values all begin "Negotiate", and on a request that does
-		// authenticate it Sets its own over anything the manager left, so
-		// requiring the scheme costs nothing and admits nothing.
+		// sessionFailed is the reliable one, and covers the only internal
+		// failure that occurs in practice: sessionManagerProbe saw the caller's
+		// session manager refuse to persist, which nothing written to the
+		// response can contradict.
+		//
+		// The header covers the rest. gokrb5 v8.4.4 sets one of four
+		// WWW-Authenticate values on every outcome it produces, and
+		// spnegoInternalServerError — its only other responder, reached when it
+		// cannot marshal the credentials — sets none. Those four are compared
+		// exactly rather than by scheme: the manager held this same
+		// ResponseWriter a moment ago, so a looser test would let it pass its
+		// own failure off as an outcome. Exact comparison does not make that
+		// impossible, only deliberate.
 		//
 		// The status cannot be used for this at all. The recorder keeps the
 		// first status written, so a manager that reports its own trouble
@@ -491,10 +591,10 @@ func New(cfg Config) (fiber.Handler, error) {
 		// Neither body nor headers are replayed, unlike the challenge path
 		// below. Returning the error routes it through the application's
 		// ErrorHandler with the same sanitised body a keytab failure gets, and
-		// drops the cookie rather than advertising that session. The manager's
-		// own message is the only description of what broke, so it goes to the
-		// log — where it belongs — and not to the client.
-		if !isNegotiate(recorder.Header().Get(fiber.HeaderWWWAuthenticate)) {
+		// drops the cookie rather than advertising that session. Whatever the
+		// handler wrote goes to the log instead — where it belongs, and where
+		// it is the only description of what broke unless Config.Log is set.
+		if recorder.sessionFailed || !isSPNEGOOutcome(recorder.Header().Get(fiber.HeaderWWWAuthenticate)) {
 			failure := fmt.Errorf("%w: status %d: %s",
 				ErrSPNEGOHandlerFailed, status, strings.TrimSpace(recorder.body.String()))
 			logInternal(handlerFailures, failure)
