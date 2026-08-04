@@ -3092,16 +3092,44 @@ func TestQuoteForLog(t *testing.T) {
 	require.Equal(t, strconv.Quote(string(atLimit)), quoteForLog(atLimit))
 
 	over := bytes.Repeat([]byte("x"), loggedBodyLimit+37)
-	rendered := quoteForLog(over)
-	require.Equal(t, strconv.Quote(string(atLimit))+" (+37 bytes)", rendered)
-	require.Less(t, len(rendered), len(over),
-		"the point of truncating is that the line is shorter than the body")
+	require.Equal(t, strconv.Quote(string(atLimit))+" (+37 bytes)", quoteForLog(over))
 
-	// Truncation happens before quoting, so an escape-heavy body cannot get
-	// past the limit by inflating.
-	newlines := bytes.Repeat([]byte("\n"), loggedBodyLimit*4)
-	require.NotContains(t, quoteForLog(newlines), "\n",
+	// Truncation happens before quoting, so a body cannot get past the limit by
+	// inflating through the escaping. The anchors keep TrimSpace from deleting
+	// the escape-heavy middle, which would make this pass without truncating
+	// anything.
+	//
+	// The bound is on the input, not the output: a byte can escape to four
+	// characters, so the rendered form runs to about four times the limit. That
+	// is what "bounded" means here — not "shorter than the body", which is
+	// false for anything escape-heavy.
+	inflating := append(append([]byte("a"), bytes.Repeat([]byte("\n"), loggedBodyLimit*4)...), 'b')
+	rendered := quoteForLog(inflating)
+	require.NotContains(t, rendered, "\n",
 		"no raw newline may survive, however many there were")
+	require.Contains(t, rendered, "bytes)", "a body this long must be truncated")
+	require.LessOrEqual(t, len(rendered), 4*loggedBodyLimit+len(` (+9999 bytes)`),
+		"the rendered line must stay within four characters per kept byte")
+
+	// A rune straddling the cut is dropped rather than left as loose bytes,
+	// which strconv.Quote would render as hex escapes. 512 is not a multiple of
+	// 3, so this cut lands two bytes into a rune.
+	wide := bytes.Repeat([]byte("世"), loggedBodyLimit)
+	rune3 := quoteForLog(wide)
+	require.NotContains(t, rune3, `\x`,
+		"the cut must fall on a rune boundary, not mid-character")
+	// And the count reports what was actually kept, not where the cut was
+	// aimed: backing up two bytes means two more are left over.
+	require.Equal(t,
+		strconv.Quote(string(wide[:loggedBodyLimit-2]))+
+			fmt.Sprintf(" (+%d bytes)", len(wide)-(loggedBodyLimit-2)),
+		rune3)
+
+	// Binary that is not UTF-8 at all still gets through: the backup is capped
+	// at the length of one rune, so it cannot eat back through a keytab.
+	binary := bytes.Repeat([]byte{0x80}, loggedBodyLimit*2)
+	require.Contains(t, quoteForLog(binary), `\x80`)
+	require.Contains(t, quoteForLog(binary), "bytes)")
 }
 
 // TestSessionFailureReportsTheStatusTheHandlerWrote covers which status the
@@ -3110,6 +3138,9 @@ func TestQuoteForLog(t *testing.T) {
 // having answered 401, and send whoever reads the line to a responder that
 // never ran.
 func TestSessionFailureReportsTheStatusTheHandlerWrote(t *testing.T) {
+	flog.SetOutput(io.Discard)
+	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
+
 	stubAuthenticate(t, func(http.ResponseWriter, *http.Request) goidentity.Identity {
 		// Nothing written at all: no header, no body, no status.
 		return nil
@@ -3126,6 +3157,77 @@ func TestSessionFailureReportsTheStatusTheHandlerWrote(t *testing.T) {
 	require.Contains(t, hookErr.Error(), "status 0",
 		"a handler that wrote no status must not be reported as having written one")
 	require.NotContains(t, hookErr.Error(), "status 401")
+}
+
+// TestDegradedKeytabEpisodeCannotForgeALogLine covers the third place untrusted
+// text reaches this package's log, and the worst of them: gokrb5's keytab
+// parser interpolates the whole file it was handed into its errors, so the
+// half-written keytab the stale-grace path exists to absorb arrives as raw
+// binary with newlines of its own.
+func TestDegradedKeytabEpisodeCannotForgeALogLine(t *testing.T) {
+	var logged bytes.Buffer
+	flog.SetOutput(&logged)
+	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
+
+	dir := t.TempDir()
+	file := path.Join(dir, "sso.keytab")
+	_, clean, err := utils.NewMockKeytab(
+		utils.WithPrincipal("HTTP/sso.example.com"),
+		utils.WithRealm("EXAMPLE.LOCAL"),
+		utils.WithPairs(utils.EncryptTypePair{Version: 3, EncryptType: 18, CreateTime: time.Now()}),
+		utils.WithFilename(file),
+	)
+	require.NoError(t, err)
+	t.Cleanup(clean)
+
+	now := time.Now()
+	cache := &keytabFileCache{
+		files:      []string{file},
+		staleGrace: 30 * time.Second,
+		retryEvery: time.Nanosecond,
+		nowFn:      func() time.Time { return now },
+	}
+	_, err = cache.load()
+	require.NoError(t, err, "the first load must succeed, or there is no cache to degrade")
+
+	// A keytab that reads but does not parse. The first two bytes are kept so
+	// gokrb5 gets past its version check and reaches a length check — the
+	// branch that interpolates the whole file into the error. Anything that
+	// fails earlier is reported without the contents, and would not exercise
+	// this at all.
+	//
+	// What follows them is the shape a rotation caught mid-write can leave: in
+	// this case text that reads like one of this package's own lines, on a line
+	// of its own.
+	good, err := os.ReadFile(file)
+	require.NoError(t, err)
+	forged := append(append([]byte{}, good[:2]...),
+		bytes.Repeat([]byte("\nspnego: [Error] keytab loads cleanly again\n"), 200)...)
+	require.NoError(t, os.WriteFile(file, forged, 0o600))
+
+	_, err = cache.load()
+	require.NoError(t, err, "the cached keytab must still be served during the grace window")
+
+	require.Contains(t, logged.String(), "serving the last keytab that parsed",
+		"the degraded episode must be announced")
+	require.NotContains(t, logged.String(), "\nspnego: [Error] keytab loads cleanly again",
+		"the keytab's own bytes must not start a line under this package's prefix")
+	require.Less(t, logged.Len(), 4*loggedBodyLimit+512,
+		"one bad keytab must not become a log line the size of the file")
+
+	// The expiry line carries the same cause and needs the same treatment. It
+	// is the one an operator is most likely to be looking at, since it is where
+	// the middleware stops serving the stale keytab and starts failing.
+	logged.Reset()
+	now = now.Add(2 * cache.staleGrace)
+
+	_, err = cache.load()
+	require.Error(t, err, "the grace window has passed, so requests must fail")
+	require.Contains(t, logged.String(), "keytab still unusable after",
+		"the expiry must be announced")
+	require.NotContains(t, logged.String(), "\nspnego: [Error] keytab loads cleanly again",
+		"the expiry line must quote the cause too")
+	require.Less(t, logged.Len(), 4*loggedBodyLimit+512)
 }
 
 // TestKeytabFailureCannotForgeALogLine is the lookup path's half of the same

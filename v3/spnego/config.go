@@ -207,6 +207,10 @@ type Config struct {
 	// is all the error carries, and seeing the reason means setting Log or
 	// UseFiberLogger.
 	//
+	// The body is quoted and capped, with a "(+N bytes)" suffix when it ran
+	// long, so it is a diagnostic rather than a transcript — a manager with
+	// more to say should say it to its own logger.
+	//
 	// Match on those rather than on text. The keytab cause names paths and OS
 	// errors, so treat what arrives here as internal diagnostics rather than
 	// something to echo to a client.
@@ -429,8 +433,13 @@ func (c *keytabFileCache) serveStale(cause error, now time.Time) (*keytab.Keytab
 		// begins only when the files on disk actually change, so the rate is
 		// bounded by rotations, not by request volume.
 		grace := c.grace()
+		// Quoted: gokrb5's keytab parser interpolates the whole file it was
+		// given into its errors, so the truncated keytab this path exists to
+		// absorb would otherwise arrive here as raw binary with newlines of its
+		// own — one log line becoming many, under this package's prefix.
+		detail := quoteForLog([]byte(cause.Error()))
 		c.announce(func() {
-			flog.Warnf("spnego: %v; serving the last keytab that parsed for up to %s", cause, grace)
+			flog.Warnf("spnego: %s; serving the last keytab that parsed for up to %s", detail, grace)
 		})
 		return snap.merged, nil
 	}
@@ -440,8 +449,9 @@ func (c *keytabFileCache) serveStale(cause error, now time.Time) (*keytab.Keytab
 			// The transition from degraded to failing is the one an operator
 			// most needs to see, so it gets its own line at error level.
 			grace := c.grace()
+			detail := quoteForLog([]byte(cause.Error()))
 			c.announce(func() {
-				flog.Errorf("spnego: keytab still unusable after %s, failing requests: %v", grace, cause)
+				flog.Errorf("spnego: keytab still unusable after %s, failing requests: %s", grace, detail)
 			})
 		}
 		return nil, cause

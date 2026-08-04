@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gofiber/fiber/v3"
 	flog "github.com/gofiber/fiber/v3/log"
@@ -211,25 +212,48 @@ func (p sessionManagerProbe) Get(r *http.Request, k string) ([]byte, error) {
 	return p.delegate.Get(r, k) //nolint:wrapcheck // passed through to gokrb5 untouched
 }
 
-// loggedBodyLimit bounds how much of a handler's body reaches the log. A
-// session manager holds the raw ResponseWriter and may write as much as it
-// likes before failing — a driver dumping a failed query and its rows, say —
-// and quoting inflates every control byte severalfold. This is enough to
-// identify what broke; the rest belongs in the store's own logs.
+// loggedBodyLimit bounds how much of any text this package did not write
+// reaches the log. Three things qualify, and none of them is bounded at source:
+// the body a session manager wrote before failing, which is whatever it chose;
+// a KeytabLookupFunc's error, which may carry an upstream's response; and
+// gokrb5's keytab parse errors, which interpolate the entire file they were
+// handed — so the truncated keytab the stale-grace path exists to absorb
+// arrives as raw binary.
+//
+// 512 bytes is enough to tell which of those happened and roughly why. When
+// there is more to know, the store, the upstream and the file itself are all
+// still there to look at; an unbounded log line is not a better place for them.
 const loggedBodyLimit = 512
 
 // quoteForLog renders untrusted bytes as a single quoted token, truncated.
 //
-// Quoting is what stops a body from forging log lines: a session manager that
+// Quoting is what stops the text from forging log lines: a session manager that
 // echoes something client-supplied before failing would otherwise let a newline
-// in it start a line of its own under this package's prefix.
+// in it start a line of its own under this package's prefix. Truncation happens
+// first, so a body cannot get past the limit by inflating through the escaping
+// — though the rendered form is still up to four times the limit, since a byte
+// can escape to four characters.
 func quoteForLog(body []byte) string {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) <= loggedBodyLimit {
 		return strconv.Quote(string(trimmed))
 	}
-	return strconv.Quote(string(trimmed[:loggedBodyLimit])) +
-		fmt.Sprintf(" (+%d bytes)", len(trimmed)-loggedBodyLimit)
+	// Backed up to a rune boundary. Cutting at a fixed offset splits whatever
+	// straddles it, and strconv.Quote renders the orphaned bytes as hex escapes
+	// — mojibake at the end of every localised message that runs long.
+	//
+	// At most UTFMax-1 bytes, which is as long as a split rune can be. Bounding
+	// it matters for the keytab case, where the text is not UTF-8 at all and an
+	// unbounded walk would eat back through arbitrary binary.
+	kept := trimmed[:loggedBodyLimit]
+	for range utf8.UTFMax - 1 {
+		if r, size := utf8.DecodeLastRune(kept); r != utf8.RuneError || size > 1 {
+			break
+		}
+		kept = kept[:len(kept)-1]
+	}
+	return strconv.Quote(string(kept)) +
+		fmt.Sprintf(" (+%d bytes)", len(trimmed)-len(kept))
 }
 
 // isRejection reports whether the response SPNEGO produced is a refusal rather
@@ -825,11 +849,6 @@ func New(cfg Config) (fiber.Handler, error) {
 			return nextErr
 		}
 
-		// Authentication did not complete.
-		status := recorder.status
-		if status == 0 {
-			status = fiber.StatusUnauthorized
-		}
 		// Reaching here means the request did not authenticate. Whether that is
 		// an authentication outcome or the handler failing is decided by two
 		// things, neither of them the status.
@@ -870,19 +889,16 @@ func New(cfg Config) (fiber.Handler, error) {
 			// nil. During a session-store outage this path runs on every
 			// request at a rate the caller sets.
 			//
-			// recorder.status rather than the status replayed below: that one
-			// falls back to 401 for the challenge path, and reporting it here
-			// would describe a handler that wrote nothing as having answered
-			// 401 — sending whoever reads the line to a responder that never
-			// ran.
-			var detail error
-			describe := func() error {
-				if detail == nil {
-					detail = fmt.Errorf("%w: status %d: %s", ErrSPNEGOHandlerFailed,
-						recorder.status, quoteForLog(recorder.body.Bytes()))
-				}
-				return detail
-			}
+			// The status reported is the one the handler wrote, zero included.
+			// The challenge path below substitutes 401 for a missing one, and
+			// borrowing that here would describe a handler that wrote nothing
+			// as having answered 401 — sending whoever reads the line to a
+			// responder that never ran. It is computed there, next to its only
+			// use, so it cannot be borrowed by accident.
+			describe := sync.OnceValue(func() error {
+				return fmt.Errorf("%w: status %d: %s", ErrSPNEGOHandlerFailed,
+					recorder.status, quoteForLog(recorder.body.Bytes()))
+			})
 			handlerFailures.do(func() { flog.Errorf("spnego: %v", describe()) })
 			if cfg.OnError != nil {
 				cfg.OnError(ctx, describe())
@@ -890,7 +906,13 @@ func New(cfg Config) (fiber.Handler, error) {
 			return &clientSafeError{cause: ErrSPNEGOHandlerFailed}
 		}
 
-		// Replay SPNEGO's own challenge.
+		// Replay SPNEGO's own challenge. gokrb5 v8.4.4 always writes a status
+		// alongside the header; 401 is the fallback if one ever stops, since it
+		// is the only answer that leaves a negotiation open.
+		status := recorder.status
+		if status == 0 {
+			status = fiber.StatusUnauthorized
+		}
 		recorder.copyHeadersTo(ctx)
 		ctx.Status(status)
 		// Only a refusal reaches the caller's handler. The opening challenge

@@ -294,6 +294,8 @@ The two are told apart by the error your `New` returns, and by `WWW-Authenticate
 
 One caveat for whoever is on call. gokrb5 sends your manager's actual error to *its own* logger and writes only `Internal Server Error` to the response, so that boilerplate is what `ErrSPNEGOHandlerFailed` carries unless your manager wrote something itself. To see why the store refused, set `Log` or `UseFiberLogger` — or log it inside your manager, which is the more direct route.
 
+What it does carry is quoted and capped at 512 bytes, with a `(+N bytes)` suffix when there was more. Every string in this package's logs that the package did not write is treated that way — a manager's body, a `KeytabLookupFunc`'s error, gokrb5's keytab parse errors — because a newline in any of them would otherwise start a line of its own under the `spnego:` prefix, and gokrb5's parse errors in particular embed the whole keytab file they were handed.
+
 ### Observability
 
 `OnSuccess` and `OnError` are for metrics and audit; neither can change the outcome.
