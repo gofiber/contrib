@@ -449,12 +449,17 @@ func (c *keytabFileCache) readAll() (*keytab.Keytab, error) {
 			// offset it gave up at, which identifies the fault no better than
 			// the file name and errKeytabUnparsable already do.
 			//
-			// Five branches interpolate, all in keytab.go at v8.4.4: :242 and
-			// :495 format an entry's bytes, and readInt8, readInt16 and
-			// readInt32 at :449, :464 and :480 format whatever buffer they were
-			// passed — which from Unmarshal is the whole file. Re-check all
-			// five when upgrading gokrb5, not just the first two: verifying a
-			// subset is how this leak would come back.
+			// Five branches interpolate, all in keytab.go at v8.4.4. Two of them
+			// see the whole file: Unmarshal's own bounds check at :242, and
+			// readInt32 at :480, which Unmarshal calls with b to read each
+			// entry's length (:228 and :298). The other three — readInt8 at
+			// :449, readInt16 at :464, readBytes at :495 — are reached only
+			// from entry parsing, so they format one entry's bytes, which for a
+			// single-principal keytab is the same key either way.
+			//
+			// Re-check all five when upgrading gokrb5, and which buffer each is
+			// handed: verifying a subset, or assuming an entry slice is
+			// harmless, is how this leak would come back.
 			//
 			// The length is worth keeping: a rotation caught mid-write is a
 			// short read, and a permanently corrupt file usually is not.
