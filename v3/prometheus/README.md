@@ -34,8 +34,8 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | Property | Type | Description | Default |
 |:---------|:-----|:------------|:--------|
 | ServiceName | `string` | Added as the `service` const label on every metric. Omitted when empty. Trimmed; must be valid UTF-8. | `""` |
-| Namespace | `string` | Prefixes every metric name. Must be valid UTF-8. | `"http"` |
-| Subsystem | `string` | Prefixes every metric name after `Namespace`. Must be valid UTF-8. | `""` |
+| Namespace | `string` | Prefixes every metric name. Trimmed; must form a valid metric name. | `"http"` |
+| Subsystem | `string` | Prefixes every metric name after `Namespace`. Trimmed and validated the same way. | `""` |
 | MetricsPath | `string` | Path served with the Prometheus exposition format. Unless `Next` returns true, requests to it are answered by the middleware and are not instrumented. Compared case-sensitively against the full request path, ignoring trailing slashes. | `"/metrics"` |
 | Labels | `prometheus.Labels` | Extra const labels attached to every metric. A key that is empty, starts with `__`, or collides with a reserved label (`status_code`, `status_class`, `method`, `path`, `le`) panics. | `nil` |
 | Registerer | `prometheus.Registerer` | Registry used to register the metrics. Reusing one across two `New` calls panics on duplicate registration. | private registry |
@@ -57,7 +57,7 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | MetricsMaxRequestsInFlight | `int` | Caps concurrent scrapes; the excess is answered with 503. | `0` (unlimited) |
 | MetricsTimeout | `time.Duration` | Bounds a single scrape before it is answered with 503. | `0` (no timeout) |
 | MetricsErrorLog | `promhttp.Logger` | Receives errors raised while gathering or writing metrics. A typed nil panics. | `nil` |
-| MetricsErrorHandling | `promhttp.HandlerErrorHandling` | How gathering errors are reported to the scraper. Avoid `PanicOnError` — it takes the process down. | `promhttp.HTTPErrorOnError` |
+| MetricsErrorHandling | `promhttp.HandlerErrorHandling` | How gathering errors are reported to the scraper. An unknown value panics; avoid `PanicOnError` — it takes the process down. | `promhttp.HTTPErrorOnError` |
 | DisabledMetrics | `[]Metric` | Metric families to skip registering and recording. Entries are trimmed; an unknown name panics. | `nil` |
 | SkipURIs | `[]string` | Route patterns excluded from instrumentation, e.g. `/user/:id`. A trailing `*` matches by prefix; a leading `/` is added when missing. | `nil` |
 | SkipStatusCodes | `[]int` | Response status codes excluded from metrics. Codes are three digits; anything else panics. | `nil` |
@@ -241,10 +241,12 @@ Fiber's zero-copy strings such as `c.Get(...)` or `c.Params(...)` directly.
 ### Filtering
 
 An entry may also name `UnmatchedRouteLabel` to exclude the traffic
-`TrackUnmatchedRequests` records. The label is matched as a whole value, and the
-separator tells that apart from an ordinary prefix rule: with the label set to
-`/api`, `/api` and `/api*` exclude it while `/api/*` does not, so a filter
-written for real routes never takes 404 monitoring with it.
+`TrackUnmatchedRequests` records. That is a separate namespace — this list holds
+route patterns, the label is a value — so a real route spelled the same as the
+label still obeys the pattern rules, and a rule written for real routes never
+takes 404 monitoring with it. The separator distinguishes the two shapes: with
+the label set to `/api`, `/api`, `/api*` and `/api*/` name the label, while
+`/api/*` is a prefix rule for the routes below it.
 
 `SkipURIs` matches the registered route pattern — note that fiberzap's option
 of the same name matches the request path instead. A trailing `*` matches by

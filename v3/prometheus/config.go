@@ -54,15 +54,15 @@ type Config struct {
 	// Optional. Default: "" (label omitted).
 	ServiceName string
 
-	// Namespace prefixes every metric name. It has to be valid UTF-8; New
-	// panics otherwise, since client_golang would only reject it once the first
-	// descriptor was built.
+	// Namespace prefixes every metric name. Surrounding whitespace is trimmed;
+	// the result has to be a valid metric name, and New panics otherwise, since
+	// client_golang would only reject it once the first descriptor was built.
 	//
 	// Optional. Default: "http".
 	Namespace string
 
-	// Subsystem prefixes every metric name after Namespace. It has to be valid
-	// UTF-8, as Namespace does.
+	// Subsystem prefixes every metric name after Namespace, and is trimmed and
+	// validated the same way.
 	//
 	// Optional. Default: "".
 	Subsystem string
@@ -137,9 +137,12 @@ type Config struct {
 	// NativeHistogramBucketFactor is also set: client_golang substitutes its
 	// own defaults for a histogram that would otherwise have no buckets at all.
 	//
-	// Bounds must be strictly increasing, with +Inf allowed only last. New
-	// panics otherwise: client_golang checks them when it builds the first
-	// histogram for a label set, which is on a request rather than at startup.
+	// Bounds must be strictly increasing, with +Inf allowed only last and never
+	// alone, and -Inf not at all. New panics otherwise: client_golang checks the
+	// ordering only when it builds the first histogram for a label set, which is
+	// on a request rather than at startup, and accepts the two degenerate shapes
+	// outright - a lone +Inf leaves the histogram with no buckets, and -Inf adds
+	// one that can never be exceeded.
 	//
 	// Optional. Default: []float64{0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 10, 15, 30, 60}.
 	RequestDurationBuckets []float64
@@ -295,9 +298,13 @@ type Config struct {
 	// MetricsErrorHandling selects how gathering errors are reported to the
 	// scraper.
 	//
-	// Avoid promhttp.PanicOnError: the panic unwinds to the fasthttp connection
-	// goroutine, which neither fasthttp nor Fiber guards, so a single failing
-	// scrape takes the process down.
+	// New panics on a value outside the three promhttp defines: its own switch
+	// has no default case, so an unrecognised mode neither reports the failure
+	// to the scraper nor logs it, and serves a partial exposition as healthy.
+	//
+	// Avoid promhttp.PanicOnError even so: the panic unwinds to the fasthttp
+	// connection goroutine, which neither fasthttp nor Fiber guards, so a single
+	// failing scrape takes the process down.
 	//
 	// Optional. Default: promhttp.HTTPErrorOnError.
 	MetricsErrorHandling promhttp.HandlerErrorHandling
@@ -334,17 +341,15 @@ type Config struct {
 	// exclude nothing. Spell the entry the way the route was registered.
 	//
 	// An entry may also name UnmatchedRouteLabel, which excludes the traffic
-	// TrackUnmatchedRequests would otherwise record. The label is matched as a
-	// whole value rather than as a path, so "/__unmatched__" and
-	// "/__unmatched__*" both exclude it - the star is stripped and the
-	// remainder compared - and it works the same for a label without a leading
-	// slash.
+	// TrackUnmatchedRequests would otherwise record. That is a separate
+	// namespace: this list holds route patterns, the label is a value, and
+	// neither filter reaches the other - so a real route spelled the same as the
+	// label still obeys the pattern rules, and a rule written for real routes
+	// never takes 404 monitoring with it.
 	//
-	// The separator is what tells that apart from an ordinary prefix rule: with
-	// the label set to "/api", "/api*" excludes it while "/api/*" does not, and
-	// neither the prefix scan nor the bare key a wildcard leaves behind can
-	// reach it. A filter written for real routes therefore never takes 404
-	// monitoring with it.
+	// The separator distinguishes the two shapes. With the label set to "/api",
+	// "/api", "/api*" and "/api*/" name the label, while "/api/*" is a prefix
+	// rule for the routes below it.
 	//
 	// An entry ending in "*" matches by prefix: "/admin/*" excludes "/admin"
 	// and every route below it. Trailing stars are stripped as a group, so the
@@ -398,7 +403,9 @@ type Config struct {
 	// input onto a fixed set of values first.
 	//
 	// A function that panics costs its request every metric rather than the
-	// request itself: the sample is dropped and the response is unaffected. The
+	// request itself: the sample is dropped, the response is unaffected, and the
+	// drop is reported to MetricsErrorLog so a bad type assertion does not turn
+	// the middleware into a silent no-op. The
 	// middleware cannot do better, since it calls these after the handler chain
 	// has unwound, past any recover the application mounted - letting the panic
 	// through would kill the connection instead. Guard your type assertions
@@ -427,10 +434,11 @@ var (
 // ConfigDefault holds the default middleware configuration. Copy it as a
 // starting point; treat it as read-only after that.
 //
-// New resolves the bucket bounds from private values rather than from here, so
-// adjusting one in place on a copy - which shares the backing array with this
-// variable - changes neither this default nor what New falls back to. The
-// scalar fields have no such indirection and are read from here as they stand.
+// Its bucket slices are shared with any copy, so adjusting a bound in place -
+// `cfg := ConfigDefault; cfg.RequestSizeBuckets[0] = x` - writes through to this
+// variable and to every other copy. What it does not reach is New: the fallback
+// bounds come from private values, so a mutation here cannot reshape a histogram
+// registered later. Assign a fresh slice rather than editing one in place.
 var ConfigDefault = Config{
 	Namespace:           "http",
 	MetricsPath:         "/metrics",
@@ -473,7 +481,16 @@ func configDefault(config ...Config) Config {
 	// Trimmed like the other single-value options: this one becomes a const
 	// label on every family, so a trailing newline would leave the whole
 	// application's metrics matching no dashboard or alert.
-	cfg.ServiceName = strings.TrimSpace(cfg.ServiceName)
+	// Cloned as well as trimmed: TrimSpace returns a view, and this becomes a
+	// const label on every family for the lifetime of the process, so a value
+	// sliced out of a large config blob would pin the whole blob.
+	cfg.ServiceName = strings.Clone(strings.TrimSpace(cfg.ServiceName))
+
+	// Trimmed like the others: these prefix every metric name, and under the
+	// default UTF-8 validation scheme a stray newline is accepted rather than
+	// rejected, so it silently renames all six families instead of failing.
+	cfg.Namespace = strings.TrimSpace(cfg.Namespace)
+	cfg.Subsystem = strings.TrimSpace(cfg.Subsystem)
 
 	if cfg.Namespace == "" {
 		cfg.Namespace = ConfigDefault.Namespace

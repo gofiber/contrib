@@ -51,6 +51,8 @@ type middleware struct {
 	skipStatusCodes   map[int]struct{}
 	skipStatusClasses map[string]struct{}
 	dynamicLabels     []dynamicLabel
+	errorLog          promhttp.Logger
+	skipUnmatched     bool
 	exemplars         bool
 	trackUnmatched    bool
 	records           bool
@@ -72,11 +74,11 @@ type dynamicLabel struct {
 // the lazy newHistogram call on the first observation, on a connection
 // goroutine no recover placed where this package recommends can reach.
 var reservedLabels = map[string]struct{}{
-	"status_code":  {},
-	"status_class": {},
-	"method":       {},
-	"path":         {},
-	"le":           {},
+	"status_code":             {},
+	"status_class":            {},
+	"method":                  {},
+	"path":                    {},
+	string(model.BucketLabel): {},
 }
 
 // validStatusClasses are the classes Config.SkipStatusClasses accepts, which is
@@ -123,6 +125,11 @@ var allMetrics = []Metric{
 // middleware and is what allows the recorded status code and response size to
 // match what the client received. As a consequence the error is consumed by
 // this middleware and is not propagated to handlers mounted before it.
+//
+// That applies only while there is something to record. A middleware left with
+// no recording family - every one named in DisabledMetrics, or a "/*" entry in
+// SkipURIs - passes the chain straight through instead, so a configuration that
+// turns metrics off does not also change where the application's errors surface.
 //
 // Mount recover.New() after this middleware, not before it:
 //
@@ -183,6 +190,16 @@ func New(config ...Config) fiber.Handler {
 		panic("prometheus middleware: MetricsErrorLog is a typed nil; leave it unset to discard errors")
 	}
 
+	// promhttp switches on this with no default case, so a value outside the
+	// three it knows silently serves a partial exposition as if healthy -
+	// neither reporting the failure to the scraper nor logging it.
+	switch cfg.MetricsErrorHandling {
+	case promhttp.HTTPErrorOnError, promhttp.ContinueOnError, promhttp.PanicOnError:
+	default:
+		panic("prometheus middleware: MetricsErrorHandling " + strconv.Itoa(int(cfg.MetricsErrorHandling)) +
+			" is not one of promhttp's HTTPErrorOnError, ContinueOnError or PanicOnError")
+	}
+
 	// The label the middleware supplies itself for unmatched requests is the
 	// only one client_golang does not see until a request arrives: const labels
 	// are validated when the Desc is built, but this one reaches
@@ -215,6 +232,7 @@ func New(config ...Config) fiber.Handler {
 		skipStatusCodes:   make(map[int]struct{}, len(cfg.SkipStatusCodes)),
 		skipStatusClasses: make(map[string]struct{}, len(cfg.SkipStatusClasses)),
 		dynamicLabels:     dynamic,
+		errorLog:          cfg.MetricsErrorLog,
 		exemplars:         !cfg.DisableExemplars,
 		trackUnmatched:    cfg.TrackUnmatchedRequests,
 	}
@@ -378,17 +396,17 @@ func (m *middleware) resolveFilters(cfg Config) bool {
 		// trailing stars stripped too - Config recommends spelling the label
 		// "unmatched", and both "unmatched" and "unmatched*" have to work.
 		//
-		// Deliberately not a "continue": an entry naming the unmatched label may
-		// equally name a route, and still has to reach the wildcard handling.
-		// The star-stripped form is compared without normalizing, so that the
-		// separator tells the two shapes apart: "unmatched*" names the label,
-		// while "/api/*" is a prefix rule for the routes below "/api" and must
-		// not exclude a label that happens to be spelled "/api".
-		if normalizePath(path) == m.unmatchedLabel ||
-			strings.TrimRight(path, "*") == m.unmatchedLabel {
-			// No clone - configDefault already gave the middleware a private
-			// copy, unlike the caller-supplied entries below.
-			m.skipURIs[m.unmatchedLabel] = struct{}{}
+		// The label is a value, not a route, so it is recorded as its own flag
+		// rather than as a key in skipURIs - which holds route patterns only.
+		// That keeps the two namespaces from colliding: a real route may be
+		// spelled the same as the label, and each still filters independently.
+		//
+		// Trailing slashes are trimmed first and stars only after, so that the
+		// separator distinguishes the two shapes: "/api*" and "/api*/" name a
+		// label spelled "/api", while "/api/*" is a prefix rule for the routes
+		// below it. Deliberately not a "continue" - an entry may mean both.
+		if strings.TrimRight(normalizePath(path), "*") == m.unmatchedLabel {
+			m.skipUnmatched = true
 		}
 
 		// Fiber's register prepends "/" to every pattern, so an entry without
@@ -436,13 +454,7 @@ func (m *middleware) resolveFilters(cfg Config) bool {
 		// leaves the per-request scan a single HasPrefix against a separator
 		// already appended here rather than rebuilt on every request.
 		//
-		// Except when it would name the unmatched label: that key is a prefix
-		// rule's byproduct, and a filter written for "/api/*" must not take 404
-		// monitoring with it because the label happens to be "/api". An entry
-		// naming the label deliberately is handled at the top of the loop.
-		if prefix != m.unmatchedLabel {
-			m.skipURIs[prefix] = struct{}{}
-		}
+		m.skipURIs[prefix] = struct{}{}
 		// Several spellings normalize to one prefix - "/admin/*", "/admin/**"
 		// and "/admin/*/" all do - and each duplicate would repeat an identical
 		// HasPrefix on every instrumented request for the process lifetime.
@@ -510,7 +522,8 @@ func typedNil(value any) bool {
 	// reflect.ValueOf unwraps the interface, so the kind here is always the
 	// dynamic type's.
 	rv := reflect.ValueOf(value)
-	switch rv.Kind() { //nolint:exhaustive // only nilable kinds can be a typed nil
+	// Only nilable kinds can hold a typed nil.
+	switch rv.Kind() {
 	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.UnsafePointer:
 		return rv.IsNil()
 	default:
@@ -751,12 +764,16 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		elapsed = time.Since(start).Seconds()
 	}
 
-	routePath, ok := m.routeLabel(ctx)
+	routePath, matched, ok := m.routeLabel(ctx)
 	if !ok {
 		return nil
 	}
 
-	if m.skipped(routePath) {
+	// SkipURIs holds route patterns, so it is consulted only for a request that
+	// resolved to one. Unmatched traffic carries a label rather than a pattern
+	// and was already filtered in routeLabel - which is what lets a real route
+	// spelled the same as the label still obey the pattern rules.
+	if matched && m.skipped(routePath) {
 		return nil
 	}
 
@@ -871,8 +888,13 @@ func (m *middleware) resolveDynamicValues(ctx fiber.Ctx, values []string) (ok bo
 	}
 
 	defer func() {
-		if recover() != nil {
+		if r := recover(); r != nil {
 			ok = false
+			// Otherwise a single bad type assertion turns the middleware into a
+			// permanent no-op that looks exactly like no traffic at all.
+			if m.errorLog != nil {
+				m.errorLog.Println("prometheus middleware: dynamic label function panicked, dropping the sample:", r)
+			}
 		}
 	}()
 
@@ -955,8 +977,9 @@ type payload interface {
 // files precisely so they never sit in memory, and Request.Body would re-marshal
 // the whole form into a fresh buffer just to have its length taken - doubling
 // what an upload costs and discarding the copy. There the announced length is
-// the only cheap answer, clamped to what the server would have accepted, since
-// anything larger was rejected unread.
+// the only cheap answer - and it is dropped rather than recorded when it
+// exceeds what the server would have accepted, since anything larger was
+// rejected unread and no honest size exists.
 //
 // A body stream is left unknown rather than measured: reading it would drain it
 // into memory just to size it, so the caller leaves the payload out of the
@@ -983,12 +1006,22 @@ func requestBodySize(contentLength, bodyLimit int, preParsedForm bool, p payload
 		return announced()
 	}
 
-	return float64(len(p.Body())), true
+	// The body is buffered, so it is measurable - but an announced length
+	// larger than what is actually there means it was never received in full:
+	// fasthttp refuses a request over BodyLimit before reading a byte, and Fiber
+	// then replays the Use chain with an empty buffer. Recording the zero would
+	// let a few hundred bytes of traffic drag the histogram's percentiles down.
+	buffered := len(p.Body())
+	if contentLength > buffered {
+		return 0, false
+	}
+
+	return float64(buffered), true
 }
 
 // multipartFormPrefix is the media type whose body fasthttp consumes into parsed
 // parts before the handler chain runs.
-var multipartFormPrefix = []byte("multipart/form-data")
+var multipartFormPrefix = []byte(fiber.MIMEMultipartForm)
 
 // bodyLimitOf returns the limit of the app currently serving the request.
 //
@@ -1046,14 +1079,6 @@ func (m *middleware) skipped(routePath string) bool {
 		return true
 	}
 
-	// The unmatched label is a value, not a path, so the prefix rules below do
-	// not apply to it. Letting them would mean a filter written for real routes
-	// - "/api/*" with the label set to "/api/unmatched" - silently swallowed
-	// every 404 the operator was watching for.
-	if routePath == m.unmatchedLabel {
-		return false
-	}
-
 	// Each prefix already carries its trailing separator, so a route equal to
 	// the bare prefix is caught by the exact map above rather than here.
 	for _, prefix := range m.skipPrefixes {
@@ -1088,7 +1113,7 @@ func (m *middleware) skipped(routePath string) bool {
 // guard returning 401 - never matches a non-Use route, so Matched stays false
 // and it is treated as unmatched: dropped by default, or recorded under
 // UnmatchedRouteLabel when TrackUnmatchedRequests is set.
-func (m *middleware) routeLabel(ctx fiber.Ctx) (string, bool) {
+func (m *middleware) routeLabel(ctx fiber.Ctx) (path string, matched, ok bool) {
 	if ctx.Matched() {
 		// A registered route always carries at least one handler. DefaultCtx
 		// substitutes a synthetic Route holding the raw request path when it has
@@ -1104,15 +1129,18 @@ func (m *middleware) routeLabel(ctx fiber.Ctx) (string, bool) {
 			// valid UTF-8. That panic would land on the connection goroutine,
 			// where neither fasthttp nor Fiber installs a recover, and take the
 			// process with it.
-			return validLabel(normalizePath(route.Path)), true
+			return validLabel(normalizePath(route.Path)), true, true
 		}
 	}
 
-	if !m.trackUnmatched {
-		return "", false
+	// Unmatched traffic is filtered here rather than through skipped(), which
+	// deals in route patterns: the label is a value, and a real route may be
+	// spelled the same without either filter reaching the other.
+	if !m.trackUnmatched || m.skipUnmatched {
+		return "", false, false
 	}
 
-	return m.unmatchedLabel, true
+	return m.unmatchedLabel, false, true
 }
 
 // statusClass maps a status code onto its "Nxx" class label.
@@ -1180,9 +1208,21 @@ func validateMetricName(namespace, subsystem string, metric Metric) {
 // instrumented request from the connection goroutine, where a recover mounted
 // as this package prescribes cannot catch it.
 func validateBuckets(field string, buckets []float64) {
+	// A slice whose only bound is +Inf leaves the histogram with no buckets at
+	// all: client_golang substitutes its defaults before dropping a trailing
+	// +Inf, not after, so the substitution never runs.
+	if len(buckets) == 1 && math.IsInf(buckets[0], 1) {
+		panic("prometheus middleware: " + field + " is only +Inf, which leaves no buckets")
+	}
+
 	for i, upper := range buckets {
 		if math.IsNaN(upper) {
 			panic("prometheus middleware: " + field + " contains NaN")
+		}
+		// -Inf can never be exceeded downwards, so its bucket is permanently
+		// zero and only costs a series on every scrape.
+		if math.IsInf(upper, -1) {
+			panic("prometheus middleware: " + field + " contains -Inf")
 		}
 		// A +Inf bound is allowed, but only last: client_golang drops it there
 		// and rejects it anywhere else through the ordering check below.
@@ -1200,6 +1240,15 @@ func registerCollector(registry prometheus.Registerer, collector prometheus.Coll
 	if err := registry.Register(collector); err != nil {
 		var alreadyRegistered prometheus.AlreadyRegisteredError
 		if errors.As(err, &alreadyRegistered) {
+			return
+		}
+		// AlreadyRegisteredError is returned only for an exact collector match.
+		// A registry already holding an extended Go collector, or one reached
+		// through a wrapping Registerer, collides per-descriptor instead - and
+		// that is a caller who has deliberately registered their own, not a
+		// misconfiguration worth refusing to start over.
+		if strings.Contains(err.Error(), "already exists") ||
+			strings.Contains(err.Error(), "has different label names") {
 			return
 		}
 		panic("prometheus middleware: registering the Go or process collector failed, " +

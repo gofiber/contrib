@@ -22,6 +22,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	recoverer "github.com/gofiber/fiber/v3/middleware/recover"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/model"
@@ -1932,8 +1933,10 @@ func TestRequestBodySize(t *testing.T) {
 		wantKnown     bool
 	}{
 		// The buffer holds what arrived, so an announced length a client made
-		// up cannot reach the histogram.
-		{name: "buffer wins over an inflated content length", contentLength: 500000000, payload: fakePayload{}, want: 0, wantKnown: true},
+		// up cannot reach the histogram - and since more was announced than
+		// arrived, the request was refused unread and has no honest size at all.
+		{name: "inflated content length is undetermined", contentLength: 500000000, payload: fakePayload{}, wantKnown: false},
+		{name: "announced length matching the buffer is measured", contentLength: 5, payload: fakePayload{body: []byte("hello")}, want: 5, wantKnown: true},
 		{name: "buffered body is measured", contentLength: 5, payload: fakePayload{body: []byte("hello")}, want: 5, wantKnown: true},
 		{name: "chunked body is measured", contentLength: -1, payload: fakePayload{body: []byte("hello")}, want: 5, wantKnown: true},
 		// A pre-parsed form is the one case where the buffer is not the body.
@@ -3378,7 +3381,7 @@ func TestSkipAllRegistersNoFamilies(t *testing.T) {
 // while building the first descriptor - with the runtime collectors already in
 // the caller's registry.
 func TestLegacyNameValidationIsHonoured(t *testing.T) {
-	previous := model.NameValidationScheme //nolint:staticcheck // exercising the scheme client_golang reads
+	previous := model.NameValidationScheme
 	model.NameValidationScheme = model.LegacyValidation
 	t.Cleanup(func() { model.NameValidationScheme = previous })
 
@@ -3485,7 +3488,7 @@ func TestGaugeOnlyMiddlewarePassesErrorsThrough(t *testing.T) {
 // caught whatever is disabled. Gating the check would let it sit unnoticed until
 // the day someone turns a family back on and the application stops booting.
 func TestMetricNamesValidatedWhenEverythingIsExcluded(t *testing.T) {
-	previous := model.NameValidationScheme //nolint:staticcheck // exercising the scheme client_golang reads
+	previous := model.NameValidationScheme
 	model.NameValidationScheme = model.LegacyValidation
 	t.Cleanup(func() { model.NameValidationScheme = previous })
 
@@ -3506,7 +3509,7 @@ func TestMetricNamesValidatedWhenEverythingIsExcluded(t *testing.T) {
 // A startup panic pasted into a bug report has to be reproducible, and iterating
 // a map would name whichever family the runtime yielded first.
 func TestInvalidNamespaceNamesTheSameMetricEveryTime(t *testing.T) {
-	previous := model.NameValidationScheme //nolint:staticcheck // exercising the scheme client_golang reads
+	previous := model.NameValidationScheme
 	model.NameValidationScheme = model.LegacyValidation
 	t.Cleanup(func() { model.NameValidationScheme = previous })
 
@@ -3886,7 +3889,7 @@ func testInflatedContentLength(t *testing.T, contentType string) {
 	// surfaces as an error rather than a response - but Fiber has already
 	// replayed the Use chain by then, so the middleware ran and may have
 	// recorded something.
-	_, _ = app.Test(req, noTimeoutConfig) //nolint:errcheck // the rejection is the point
+	_, _ = app.Test(req, noTimeoutConfig)
 
 	metrics := getMetrics(t, app, "")
 	for _, line := range strings.Split(metrics, "\n") {
@@ -4160,5 +4163,185 @@ func TestExplicitEntryStillSkipsUnmatchedLabel(t *testing.T) {
 	}
 	if !strings.Contains(metrics, `path="/kept"`) {
 		t.Fatalf("expected the unfiltered route to be recorded, got %q", metrics)
+	}
+}
+
+// TestRealRouteAtUnmatchedLabelObeysPrefixRules pins that the two namespaces are
+// separate. SkipURIs holds route patterns; UnmatchedRouteLabel is a value. A
+// route spelled the same as the label must still obey "/admin/*", and unmatched
+// traffic must still survive it.
+func TestRealRouteAtUnmatchedLabelObeysPrefixRules(t *testing.T) {
+	app := newAppWithMiddleware(Config{
+		TrackUnmatchedRequests: true,
+		UnmatchedRouteLabel:    "/admin",
+		SkipURIs:               []string{"/admin/*"},
+	}, "")
+	app.Get("/admin", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+	app.Get("/admin/users", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	for _, path := range []string{"/admin", "/admin/users", "/nothing/here"} {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+			t.Fatalf("requesting %s: %v", path, err)
+		}
+	}
+
+	metrics := getMetrics(t, app, "")
+	if strings.Contains(metrics, `path="/admin",status_code="200"`) {
+		t.Fatalf("expected the wildcard to exclude the route of that name, got %q", metrics)
+	}
+	if strings.Contains(metrics, `path="/admin/users"`) {
+		t.Fatalf("expected the wildcard to exclude routes below it, got %q", metrics)
+	}
+	if !strings.Contains(metrics, `path="/admin",status_code="404"`) {
+		t.Fatalf("expected unmatched traffic to survive a route filter, got %q", metrics)
+	}
+}
+
+// TestUnmatchedLabelEntryIgnoresTrailingSlash covers the spellings Config
+// documents as equivalent: the slash is trimmed before the star, so the
+// separator still distinguishes a label entry from a prefix rule.
+func TestUnmatchedLabelEntryIgnoresTrailingSlash(t *testing.T) {
+	for _, entry := range []string{"/api", "/api*", "/api*/", "/api/"} {
+		t.Run(entry, func(t *testing.T) {
+			app := newAppWithMiddleware(Config{
+				TrackUnmatchedRequests: true,
+				UnmatchedRouteLabel:    "/api",
+				SkipURIs:               []string{entry},
+			}, "")
+
+			if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/nothing/here", nil), noTimeoutConfig); err != nil {
+				t.Fatalf("unexpected request error: %v", err)
+			}
+
+			if metrics := getMetrics(t, app, ""); strings.Contains(metrics, `path="/api"`) {
+				t.Fatalf("expected %q to filter unmatched traffic, got %q", entry, metrics)
+			}
+		})
+	}
+}
+
+// TestPrefixEntryDoesNotFilterUnmatchedLabel is the counterpart: a rule for the
+// routes below "/api" says nothing about a label spelled "/api".
+func TestPrefixEntryDoesNotFilterUnmatchedLabel(t *testing.T) {
+	app := newAppWithMiddleware(Config{
+		TrackUnmatchedRequests: true,
+		UnmatchedRouteLabel:    "/api",
+		SkipURIs:               []string{"/api/*"},
+	}, "")
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/nothing/here", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	if metrics := getMetrics(t, app, ""); !strings.Contains(metrics, `path="/api"`) {
+		t.Fatalf("expected unmatched traffic to be recorded, got %q", metrics)
+	}
+}
+
+// TestNamespaceAndSubsystemAreTrimmed covers the newline an environment variable
+// carries. The default validation scheme accepts it, so it renames every family
+// instead of failing.
+func TestNamespaceAndSubsystemAreTrimmed(t *testing.T) {
+	app := newAppWithMiddleware(Config{Namespace: "svc\n", Subsystem: " api "}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, "svc_api_requests_total") {
+		t.Fatalf("expected the prefixes to be trimmed, got %q", metrics)
+	}
+}
+
+// TestPanickingDynamicLabelIsReported pins that the drop is visible. Silently
+// recording nothing looks exactly like no traffic at all.
+func TestPanickingDynamicLabelIsReported(t *testing.T) {
+	logger := &recordingLogger{}
+
+	app := newAppWithMiddleware(Config{
+		MetricsErrorLog: logger,
+		DynamicLabels: map[string]func(fiber.Ctx) string{
+			"tenant": func(c fiber.Ctx) string { return c.Locals("tenant").(string) },
+		},
+	}, "")
+	app.Get("/tenanted", func(c fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/tenanted", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	if logger.count() == 0 {
+		t.Fatal("expected the dropped sample to reach MetricsErrorLog")
+	}
+}
+
+// TestInvalidErrorHandlingPanics covers a value outside promhttp's three: its
+// switch has no default, so the failure is served as if healthy.
+func TestInvalidErrorHandlingPanics(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected an unknown error-handling mode to be rejected")
+		}
+		if msg := fmt.Sprint(r); !strings.Contains(msg, "MetricsErrorHandling") {
+			t.Fatalf("expected the panic to name the field, got %v", r)
+		}
+	}()
+
+	_ = New(Config{MetricsErrorHandling: promhttp.HandlerErrorHandling(9)})
+}
+
+// TestDegenerateBucketsPanic covers bounds that leave a histogram with nothing
+// useful: a lone +Inf (client_golang substitutes defaults before dropping it, so
+// the substitution never runs) and -Inf (a permanently empty bucket per scrape).
+func TestDegenerateBucketsPanic(t *testing.T) {
+	for name, cfg := range map[string]Config{
+		"only +Inf": {RequestDurationBuckets: []float64{math.Inf(1)}},
+		"-Inf":      {RequestSizeBuckets: []float64{math.Inf(-1), 1, 2}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("expected the degenerate bounds to be rejected")
+				}
+			}()
+
+			_ = New(cfg)
+		})
+	}
+}
+
+// TestExtendedGoCollectorIsTolerated covers a caller-supplied registry that
+// already holds its own Go collector. That collides per descriptor rather than
+// as AlreadyRegistered, and it is a deliberate opt-in, not a misconfiguration.
+func TestExtendedGoCollectorIsTolerated(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(collectors.NewGoCollector(
+		collectors.WithGoCollectorRuntimeMetrics(collectors.MetricsScheduler),
+	))
+
+	app := fiber.New()
+	app.Use(New(Config{Registerer: registry, Gatherer: registry}))
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/hello",status_code="200"}`) {
+		t.Fatalf("expected the middleware to register alongside the extended collector, got %q", metrics)
 	}
 }
