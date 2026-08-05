@@ -157,7 +157,22 @@ func NewMockKeytab(opts ...MockOption) (*keytab.Keytab, func(), error) {
 	var clean = func() {}
 	if len(opt.Filename) > 0 {
 		// Keytabs hold key material, so keep them readable only by the owner.
-		file, err := defaultFileOperator.OpenFile(opt.Filename, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
+		//
+		// Removed first, then created exclusively, rather than truncating what
+		// is there. OpenFile applies its permission argument only when it
+		// creates the file, so opening an existing path keeps whatever mode
+		// that path already had — and writing a fresh keytab into a file left
+		// at 0644 by something else would hand the key to every local account
+		// while looking like it had been protected.
+		//
+		// O_EXCL rather than a chmod after the fact: it leaves no window in
+		// which the key material is on disk under the wrong mode, and it fails
+		// loudly if something recreates the path in between instead of writing
+		// into whatever turned up.
+		if err = defaultFileOperator.Remove(opt.Filename); err != nil && !os.IsNotExist(err) {
+			return nil, nil, fmt.Errorf("error removing existing file: %w", err)
+		}
+		file, err := defaultFileOperator.OpenFile(opt.Filename, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
 			return nil, nil, fmt.Errorf("error opening file: %w", err)
 		}

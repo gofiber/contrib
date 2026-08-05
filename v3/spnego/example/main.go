@@ -67,7 +67,11 @@ func main() {
 	log.Info("Server is running on sso.example.local:3000")
 	go func() {
 		<-time.After(time.Second * 1)
-		fmt.Println("use curl -kv --negotiate http://sso.example.local:3000/protected/resource")
+		// -u : is not optional. curl activates its Negotiate code only when a
+		// credential option is present, and an empty user:password is the
+		// documented way to say "use the ticket cache" — without it curl never
+		// sends the Negotiate exchange, however well Kerberos is configured.
+		fmt.Println("use curl -kv --negotiate -u : http://sso.example.local:3000/protected/resource")
 		fmt.Println("Note: In /etc/hosts, sso.example.local must be bound to a LAN address; 127.0.0.1 won't work.")
 		fmt.Println("if response is 401, execute `klist` to check your Kerberos session")
 		<-time.After(time.Second * 2)

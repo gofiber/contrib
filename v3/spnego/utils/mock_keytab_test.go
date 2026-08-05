@@ -27,6 +27,9 @@ const (
 	// closeFailsFileOperator writes successfully and fails only on close, the
 	// one combination a real *os.File cannot produce.
 	closeFailsFileOperator = 0x08
+	// removeFailsFileOperator refuses to remove the existing file, which is
+	// where a stale keytab at the wrong mode would otherwise be written into.
+	removeFailsFileOperator = 0x10
 )
 
 // errCloseFailed is what closeFailsFileOperator reports, distinct from any
@@ -62,6 +65,9 @@ func (m mockFileOperator) OpenFile(filename string, flag int, perm os.FileMode) 
 }
 
 func (m mockFileOperator) Remove(filename string) error {
+	if m.flag&removeFailsFileOperator != 0 {
+		return os.ErrPermission
+	}
 	return os.Remove(filename)
 }
 
@@ -333,4 +339,59 @@ func TestNewMockKeytabRejectsUnrepresentableVersion(t *testing.T) {
 		}),
 	)
 	require.ErrorIs(t, err, ErrInvalidKeyVersion)
+}
+
+// TestNewMockKeytabResetsPermissionsOfAnExistingFile covers what os.OpenFile
+// does not do: its permission argument applies only when it creates the file,
+// so opening a path that already exists keeps whatever mode was there. Writing
+// a keytab into a file left at 0644 by something else would hand the key to
+// every local account while looking like it had been protected.
+func TestNewMockKeytabResetsPermissionsOfAnExistingFile(t *testing.T) {
+	filename := path.Join(t.TempDir(), "temp.keytab")
+	require.NoError(t, os.WriteFile(filename, []byte("previous occupant"), 0o644))
+
+	info, err := os.Stat(filename)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o644), info.Mode().Perm(),
+		"the fixture must start world-readable, or this proves nothing")
+
+	_, clean, err := NewMockKeytab(
+		WithPrincipal("HTTP/sso.example.com"),
+		WithRealm("TEST.LOCAL"),
+		WithPairs(EncryptTypePair{Version: 3, EncryptType: 18, CreateTime: time.Now()}),
+		WithFilename(filename),
+	)
+	require.NoError(t, err)
+	t.Cleanup(clean)
+
+	info, err = os.Stat(filename)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm(),
+		"key material must not be left readable by other accounts")
+}
+
+// TestNewMockKeytabReportsAFailedRemove pins that a remove which fails for a
+// reason other than "not there" is reported as itself.
+//
+// Without the check the failure still surfaces, because the exclusive create
+// that follows hits the file that is still present — but it surfaces as "file
+// exists", which points at the wrong thing. The real cause is that the old
+// keytab could not be cleared, and that is what has to be said.
+func TestNewMockKeytabReportsAFailedRemove(t *testing.T) {
+	prevFileOperator := defaultFileOperator
+	defaultFileOperator = mockFileOperator{flag: removeFailsFileOperator}
+	t.Cleanup(func() { defaultFileOperator = prevFileOperator })
+
+	filename := path.Join(t.TempDir(), "temp.keytab")
+	require.NoError(t, os.WriteFile(filename, []byte("previous occupant"), 0o644))
+
+	_, _, err := NewMockKeytab(
+		WithPrincipal("HTTP/sso.example.com"),
+		WithRealm("TEST.LOCAL"),
+		WithPairs(EncryptTypePair{Version: 3, EncryptType: 18, CreateTime: time.Now()}),
+		WithFilename(filename),
+	)
+	require.ErrorIs(t, err, os.ErrPermission)
+	require.ErrorContains(t, err, "error removing existing file",
+		"the cause is the stale keytab that could not be cleared, not the create that then found it")
 }

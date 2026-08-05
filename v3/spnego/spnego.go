@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -265,6 +266,29 @@ func quoteForLog(body []byte) string {
 		fmt.Sprintf(" (+%d bytes)", len(trimmed)-len(kept))
 }
 
+// serveSPNEGO runs gokrb5's handler and turns a panic out of it into an error,
+// returning nil when it completed normally.
+//
+// Only gokrb5's own frames are covered. The handler it is given records the
+// outcome and returns without running the application's chain, so a panic from
+// a downstream handler never reaches this recover and keeps propagating with
+// its own value and stack — which is the reason this middleware runs that chain
+// on the request goroutine in the first place.
+//
+// The panic value is rendered with %v and quoted, like every other piece of
+// text this package logs that it did not write: a panic value is arbitrary, and
+// on this path it is reached from a client-supplied token.
+func serveSPNEGO(handler http.Handler, recorder *responseRecorder, req *http.Request) (failure error) {
+	defer func() {
+		if p := recover(); p != nil {
+			failure = fmt.Errorf("%w: gokrb5 panicked: %s",
+				ErrSPNEGOHandlerFailed, quoteForLog(fmt.Appendf(nil, "%v", p)))
+		}
+	}()
+	handler.ServeHTTP(recorder, req)
+	return nil
+}
+
 // isRejection reports whether the response SPNEGO produced is a refusal rather
 // than a leg of an ongoing negotiation. Only a refusal is handed to
 // Config.Unauthorized; rewriting either challenge would stop clients from ever
@@ -449,17 +473,29 @@ func (r *responseRecorder) copyHeadersTo(ctx fiber.Ctx) {
 	}
 }
 
-// resolveLogger picks the logger handed to gokrb5, or nil to leave its logging
-// off. fiberLogger is Fiber's default logger for *log.Logger, which is a nil
-// interface whenever the registered logger is backed by something else — a zap
-// or zerolog adapter, say — so it must be checked before Logger is called on
-// it.
+// discardLogger is what gokrb5 gets when the caller asked for no logging. It
+// must not simply be left nil: gokrb5 passes the configured logger down to
+// Ticket.GetPACType, which calls Printf on it — without checking — when a
+// ticket's AD-IfRelevant authorization data fails to unmarshal
+// (messages/Ticket.go:223 in v8.4.4). A nil *log.Logger panics there, on the
+// PAC path that is enabled by default.
+//
+// The cost is one formatted string per request thrown away. That is the same
+// work gokrb5 does for a caller who did configure a logger, and it buys the
+// difference between a rejected ticket and a panicked request.
+var discardLogger = log.New(io.Discard, "", 0)
+
+// resolveLogger picks the logger handed to gokrb5, falling back to one that
+// discards rather than to nil. fiberLogger is Fiber's default logger for
+// *log.Logger, which is a nil interface whenever the registered logger is
+// backed by something else — a zap or zerolog adapter, say — so it must be
+// checked before Logger is called on it.
 func resolveLogger(cfg Config, fiberLogger flog.AllLogger[*log.Logger]) *log.Logger {
 	if cfg.Log != nil {
 		return cfg.Log
 	}
 	if !cfg.UseFiberLogger || fiberLogger == nil {
-		return nil
+		return discardLogger
 	}
 	return fiberLogger.Logger()
 }
@@ -682,15 +718,13 @@ func requestForSPNEGO(ctx fiber.Ctx, forSessionManager bool) *http.Request {
 // everywhere else — notably MaxClockSkew, which it resolves to five minutes
 // when left at zero, and PAC decoding, which it performs unless told not to.
 func serviceSettings(cfg Config) []func(*service.Settings) {
-	// gokrb5 logs unconditionally, once per request and without a level, so it
-	// is wired up only when the caller asks for it. Config.Log takes priority;
-	// otherwise Fiber's logger is used, but only when it is backed by a
-	// *log.Logger. DefaultLogger returns a nil interface when it is not, so the
-	// result has to be checked before calling Logger on it.
+	// gokrb5 logs unconditionally, once per request and without a level, so
+	// where those lines go is the caller's choice: Config.Log takes priority,
+	// otherwise Fiber's logger when it is backed by a *log.Logger, otherwise
+	// one that discards. What is never passed is nil — see discardLogger for
+	// the panic that would invite.
 	opts := make([]func(*service.Settings), 0, 6)
-	if l := resolveLogger(cfg, flog.DefaultLogger[*log.Logger]()); l != nil {
-		opts = append(opts, service.Logger(l))
-	}
+	opts = append(opts, service.Logger(resolveLogger(cfg, flog.DefaultLogger[*log.Logger]())))
 	// service.SName is deliberately not wired up. gokrb5 v8.4.4 reads it only
 	// in KRB5BasicAuthenticator; the SPNEGO accept path runs VerifyAPREQ, which
 	// never looks at it, so exposing it would promise a restriction that does
@@ -830,34 +864,63 @@ func New(cfg Config) (fiber.Handler, error) {
 
 		var (
 			authenticated bool
-			nextErr       error
+			identity      goidentity.Identity
 		)
 		recorder := &responseRecorder{}
-		// The inner handler runs synchronously, on this goroutine, only once
-		// SPNEGO has accepted the ticket. Keeping it on this goroutine means a
-		// panic from a downstream handler propagates with its original value
-		// and stack.
+		// The inner handler records what SPNEGO decided and returns. It
+		// deliberately does not run the rest of the chain: gokrb5 calls it from
+		// inside its own ServeHTTP, and everything on that stack is covered by
+		// the recover below. Calling ctx.Next() here would put the
+		// application's handlers under that recover too, so a panic from one of
+		// them would be caught and reported as this middleware's fault instead
+		// of propagating with its own value and stack.
+		//
+		// gokrb5 v8.4.4 does nothing after inner.ServeHTTP returns on either
+		// path that reaches it — accept-completed and session-resume both
+		// return immediately — so deferring the chain to after ServeHTTP
+		// changes no ordering that gokrb5 depends on.
 		inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 			authenticated = true
-			// SPNEGO has already written its accept-completed header at this
-			// point; the client needs it to authenticate the server.
+			identity = goidentity.FromHTTPRequestContext(r)
+		})
+
+		// gokrb5 indexes a client-supplied slice without checking it is
+		// non-empty: a base64-valid NegTokenInit whose MechTypes sequence is
+		// present but empty reaches SPNEGO.AcceptSecContext, which evaluates
+		// MechTypes[0] before Verify can reject the mechanisms
+		// (spnego/spnego.go:78 in v8.4.4). That panics, and the request needs
+		// no credentials to send, so an unauthenticated caller could take down
+		// every protected route.
+		//
+		// Recovered rather than pre-validated: parsing the token here to check
+		// one field would duplicate gokrb5's ASN.1 work on every authenticated
+		// request, and would only cover the one input already known about — the
+		// same unchecked-index pattern appears throughout that package. This
+		// catches the class.
+		//
+		// It surfaces as an internal failure rather than a rejection because
+		// that is what it is: a defect, in a dependency, that this middleware
+		// cannot answer for. Reporting 401 would tell a client its ticket was
+		// refused when nothing got far enough to judge it.
+		if failure := serveSPNEGO(acceptSPNEGO(inner, kt, opts...), recorder, req); failure != nil {
+			handlerFailures.do(func() { flog.Errorf("spnego: %v", failure) })
+			if cfg.OnError != nil {
+				cfg.OnError(ctx, failure)
+			}
+			return &clientSafeError{cause: ErrSPNEGOHandlerFailed}
+		}
+		if authenticated {
+			// SPNEGO wrote its accept-completed header before calling the inner
+			// handler; the client needs it to authenticate the server.
 			recorder.copyHeadersTo(ctx)
-			// Set the authenticated identity in the Fiber context
-			identity := goidentity.FromHTTPRequestContext(r)
 			SetAuthenticatedIdentityToContext(ctx, identity)
-			// Before ctx.Next, so a hook counting authentications is not ordered
-			// behind however long the rest of the chain takes.
+			// Before ctx.Next, so a hook counting authentications is not
+			// ordered behind however long the rest of the chain takes.
 			if cfg.OnSuccess != nil {
 				cfg.OnSuccess(ctx, identity)
 			}
-			// Call the next handler in the chain
-			nextErr = ctx.Next()
-		})
-		acceptSPNEGO(inner, kt, opts...).ServeHTTP(recorder, req)
-		if authenticated {
-			return nextErr
+			return ctx.Next()
 		}
-
 		// Reaching here means the request did not authenticate. Whether that is
 		// an authentication outcome or the handler failing is decided by two
 		// things, neither of them the status.

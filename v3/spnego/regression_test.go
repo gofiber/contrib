@@ -171,12 +171,18 @@ func TestNextSkipsMiddleware(t *testing.T) {
 func TestResolveLoggerNilFiberLogger(t *testing.T) {
 	t.Run("nil fiber logger does not panic", func(t *testing.T) {
 		require.NotPanics(t, func() {
-			require.Nil(t, resolveLogger(Config{UseFiberLogger: true}, nil))
+			require.Same(t, discardLogger, resolveLogger(Config{UseFiberLogger: true}, nil))
 		})
 	})
 
-	t.Run("gokrb5 logging is off unless asked for", func(t *testing.T) {
-		require.Nil(t, resolveLogger(Config{}, flog.DefaultLogger[*log.Logger]()))
+	// "Off" is a logger that throws the lines away, never nil. gokrb5 hands
+	// whatever it is given to Ticket.GetPACType, which calls Printf on it
+	// without checking — so nil is a panic on the PAC path, which is on by
+	// default.
+	t.Run("gokrb5 logging is discarded unless asked for", func(t *testing.T) {
+		got := resolveLogger(Config{}, flog.DefaultLogger[*log.Logger]())
+		require.Same(t, discardLogger, got)
+		require.NotPanics(t, func() { got.Printf("a nil logger would panic here") })
 	})
 
 	t.Run("explicit logger wins", func(t *testing.T) {
@@ -1315,7 +1321,11 @@ func TestServiceSettingsPassesOnlyWhatWasSet(t *testing.T) {
 			"PAC decoding is what populates group SIDs; it must stay on by default")
 		require.False(t, settings.RequireHostAddr())
 		require.Nil(t, settings.SessionManager())
-		require.Nil(t, settings.Logger())
+		// The one thing an empty config does set. gokrb5 calls Printf on
+		// whatever logger it holds, without checking, from the PAC path that
+		// DecodePAC above leaves on — so "no logging" has to mean a logger that
+		// discards, not the absence of one.
+		require.Same(t, discardLogger, settings.Logger())
 	})
 
 	t.Run("every field reaches gokrb5", func(t *testing.T) {
@@ -3794,4 +3804,84 @@ func serveProtected(t *testing.T, cfg Config, decorate ...func(*fasthttp.Request
 	}
 	app.Handler()(ctx)
 	return ctx
+}
+
+// TestMalformedTokenCannotPanicTheRequest covers a defect in gokrb5 v8.4.4 that
+// an unauthenticated caller can reach.
+//
+// SPNEGO.AcceptSecContext evaluates NegTokenInit.MechTypes[0] before Verify can
+// reject the mechanisms (spnego/spnego.go:78), so a base64-valid token whose
+// MechTypes sequence is present but empty indexes an empty slice. Nothing in
+// the unmarshal path rejects it, and the request needs no credentials, so
+// without the recover every protected route could be taken down by one header.
+func TestMalformedTokenCannotPanicTheRequest(t *testing.T) {
+	flog.SetOutput(io.Discard)
+	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
+
+	// A NegTokenInit carrying an empty MechTypes SEQUENCE, wrapped as a GSSAPI
+	// token with the SPNEGO OID — built by hand because no honest client emits
+	// one.
+	type negTokenInit struct {
+		MechTypes []asn1.ObjectIdentifier `asn1:"explicit,tag:0"`
+	}
+	body, err := asn1.Marshal(negTokenInit{MechTypes: []asn1.ObjectIdentifier{}})
+	require.NoError(t, err)
+	negToken, err := asn1.Marshal(asn1.RawValue{Tag: 0, Class: 2, IsCompound: true, Bytes: body})
+	require.NoError(t, err)
+	oid, err := asn1.Marshal(asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 2})
+	require.NoError(t, err)
+	token, err := asn1.Marshal(asn1.RawValue{
+		Class: 1, Tag: 0, IsCompound: true, Bytes: append(oid, negToken...),
+	})
+	require.NoError(t, err)
+
+	var hookErr error
+	ctx := serveProtected(t, Config{
+		KeytabLookup: testKeytabLookup(t),
+		OnError:      func(_ fiber.Ctx, err error) { hookErr = err },
+	}, func(c *fasthttp.RequestCtx) {
+		c.Request.Header.Set(fiber.HeaderAuthorization,
+			"Negotiate "+base64.StdEncoding.EncodeToString(token))
+	})
+
+	require.Equal(t, fiber.StatusInternalServerError, ctx.Response.StatusCode(),
+		"a token gokrb5 cannot parse safely must not take the request down")
+	require.Equal(t, "Internal Server Error", string(ctx.Response.Body()),
+		"and must not tell the caller what broke")
+	require.ErrorIs(t, hookErr, ErrSPNEGOHandlerFailed)
+	require.Contains(t, hookErr.Error(), "gokrb5 panicked")
+	// Quoted like every other text this package did not write: a panic value is
+	// arbitrary, and this one is reached from a client-supplied token.
+	require.Contains(t, hookErr.Error(), `"runtime error: index out of range`)
+}
+
+// TestDownstreamPanicIsNotCaught pins what the recover must not do. The chain
+// runs after gokrb5's handler returns, not inside it, so an application's panic
+// keeps its own value and stack instead of being reported as this middleware's
+// internal failure — which is the reason the chain is run on this goroutine at
+// all.
+func TestDownstreamPanicIsNotCaught(t *testing.T) {
+	user := goidentity.NewUser("alice")
+	stubAuthenticate(t, func(w http.ResponseWriter, _ *http.Request) goidentity.Identity {
+		w.Header().Set(fiber.HeaderWWWAuthenticate, spnegoAccepted)
+		return &user
+	})
+
+	handler, err := New(Config{
+		KeytabLookup: testKeytabLookup(t),
+		OnError: func(fiber.Ctx, error) {
+			t.Error("a downstream panic is not this middleware's failure")
+		},
+	})
+	require.NoError(t, err)
+
+	app := fiber.New()
+	app.Use(handler)
+	app.Get("/*", func(fiber.Ctx) error { panic("from the application") })
+
+	fasthttpCtx := &fasthttp.RequestCtx{}
+	fasthttpCtx.Request.SetRequestURI("/protected")
+	require.PanicsWithValue(t, "from the application", func() {
+		app.Handler()(fasthttpCtx)
+	}, "the panic must reach the caller unchanged, not become a 500")
 }
