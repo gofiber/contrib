@@ -21,6 +21,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	recoverer "github.com/gofiber/fiber/v3/middleware/recover"
+	"github.com/gofiber/fiber/v3/middleware/timeout"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -1945,11 +1946,18 @@ func TestRequestBodySize(t *testing.T) {
 		// honest size to record - fabricating one would be worse than none.
 		{name: "form beyond the limit is undetermined", contentLength: 500000000, bodyLimit: 4096, preParsedForm: true, payload: fakePayload{}, wantKnown: false},
 		{name: "form without a limit takes the announced length", contentLength: 2048, preParsedForm: true, payload: fakePayload{}, want: 2048, wantKnown: true},
-		{name: "stream takes the announced length", contentLength: 42, bodyLimit: 4096, payload: fakePayload{stream: true}, want: 42, wantKnown: true},
+		// A stream is never sized from the header, however modest or well-formed
+		// the announcement: under StreamRequestBody a handler that returns
+		// without reading leaves the remainder undrained, so the figure
+		// describes what a client claimed rather than what the server received.
+		{name: "stream announcing a plausible length is undetermined", contentLength: 42, bodyLimit: 4096, payload: fakePayload{stream: true}, wantKnown: false},
 		{name: "stream beyond the limit is undetermined", contentLength: 500000000, bodyLimit: 1024, payload: fakePayload{stream: true}, wantKnown: false},
-		{name: "stream announcing zero is a known zero", contentLength: 0, payload: fakePayload{stream: true}, want: 0, wantKnown: true},
+		{name: "stream announcing zero is undetermined", contentLength: 0, payload: fakePayload{stream: true}, wantKnown: false},
 		{name: "stream of unknown length is undetermined", contentLength: -1, payload: fakePayload{stream: true}, wantKnown: false},
 		{name: "identity encoding stream is undetermined", contentLength: -2, payload: fakePayload{stream: true}, wantKnown: false},
+		// A stream whose buffer happens to hold the prefetched prefix is still
+		// not measured: the prefix is not the body.
+		{name: "stream with a prefetched prefix is undetermined", contentLength: 4096, payload: fakePayload{stream: true, body: []byte("prefix")}, wantKnown: false},
 	}
 
 	for _, tt := range tests {
@@ -4533,5 +4541,125 @@ func TestExtendedGoCollectorIsTolerated(t *testing.T) {
 	metrics := getMetrics(t, app, "")
 	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/hello",status_code="200"}`) {
 		t.Fatalf("expected the middleware to register alongside the extended collector, got %q", metrics)
+	}
+}
+
+// TestFiberTimeoutIsRecordedAsTimeout covers Fiber's timeout middleware, whose
+// default path answers through RequestCtx.TimeoutErrorWithCode. fasthttp parks
+// that 408 and copies it over the live response only after the whole handler
+// chain has unwound, so reading ctx.Response() here sees the default 200 the
+// timed-out handler left behind - reporting every production timeout as a
+// success, and letting it slip past SkipStatusCodes as one.
+func TestFiberTimeoutIsRecordedAsTimeout(t *testing.T) {
+	app := newAppWithMiddleware(Config{}, "")
+	app.Get("/slow", timeout.New(func(c fiber.Ctx) error {
+		select {
+		case <-c.Context().Done():
+			return c.Context().Err()
+		case <-time.After(2 * time.Second):
+			return c.SendString("too late")
+		}
+	}, timeout.Config{Timeout: 20 * time.Millisecond}))
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/slow", nil), noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusRequestTimeout {
+		t.Fatalf("expected the client to receive 408, got %d", resp.StatusCode)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/slow",status_code="408"} 1`) {
+		t.Fatalf("expected the timeout to be recorded as 408, got %q", metrics)
+	}
+	if strings.Contains(metrics, `path="/slow",status_code="200"`) {
+		t.Fatalf("expected no 200 series for the timed-out request, got %q", metrics)
+	}
+}
+
+// TestSkippedURIErrorPropagates covers a route excluded by SkipURIs that
+// returns an error. The middleware runs the application error handler itself so
+// the recorded status matches what the client received - but a skipped route
+// records nothing, so there is no status to buy, and consuming the error would
+// silently move where it surfaces for a route the operator asked it to leave
+// alone. The two other stand-aside paths, Config.Next and an all-metrics-off
+// config, already return it.
+func TestSkippedURIErrorPropagates(t *testing.T) {
+	var upstream []string
+
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		err := c.Next()
+		if err != nil {
+			// Cloned: c.Path() aliases the request buffer, which the next
+			// request reuses.
+			upstream = append(upstream, strings.Clone(c.Path()))
+		}
+		return err
+	})
+	app.Use(New(Config{SkipURIs: []string{"/skipped"}}))
+
+	boom := func(c fiber.Ctx) error {
+		return fiber.NewError(fiber.StatusTeapot, "boom")
+	}
+	app.Get("/skipped", boom)
+	app.Get("/tracked", boom)
+
+	for _, path := range []string{"/skipped", "/tracked"} {
+		resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig)
+		if err != nil {
+			t.Fatalf("unexpected request error for %s: %v", path, err)
+		}
+		if resp.StatusCode != fiber.StatusTeapot {
+			t.Fatalf("expected %s to answer 418, got %d", path, resp.StatusCode)
+		}
+	}
+
+	if !slices.Equal(upstream, []string{"/skipped"}) {
+		t.Fatalf("expected only the skipped route's error to reach the middleware mounted first, got %v", upstream)
+	}
+
+	// The control: the tracked route is still recorded with the status the
+	// error handler produced, which is what consuming the error buys.
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/tracked",status_code="418"}`) {
+		t.Fatalf("expected the tracked route to be recorded as 418, got %q", metrics)
+	}
+	if strings.Contains(metrics, `path="/skipped"`) {
+		t.Fatalf("expected the skipped route to record nothing, got %q", metrics)
+	}
+}
+
+// TestSkipBodyResponseRecordsZero covers a handler that sets SkipBody itself.
+// fasthttp then writes the headers and drops the buffer however much was
+// written into it, so measuring the buffer reports bytes that never left the
+// process. The cases fasthttp decides for itself - HEAD, 204, 304 - are settled
+// by method and status instead, because it sets the flag after this runs.
+func TestSkipBodyResponseRecordsZero(t *testing.T) {
+	app := newAppWithMiddleware(Config{}, "")
+	app.Get("/suppressed", func(c fiber.Ctx) error {
+		if err := c.SendString(strings.Repeat("x", 4096)); err != nil {
+			return err
+		}
+		c.Response().SkipBody = true
+		return nil
+	})
+	app.Get("/sent", func(c fiber.Ctx) error {
+		return c.SendString(strings.Repeat("x", 4096))
+	})
+
+	for _, path := range []string{"/suppressed", "/sent"} {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+			t.Fatalf("unexpected request error for %s: %v", path, err)
+		}
+	}
+
+	metrics := getMetrics(t, app, "")
+	if size := gaugeValue(t, metrics, `http_response_size_bytes_sum{method="GET",path="/suppressed",status_code="200"}`); size != 0 {
+		t.Fatalf("expected the suppressed body to be recorded as 0 bytes, got %v", size)
+	}
+	if size := gaugeValue(t, metrics, `http_response_size_bytes_sum{method="GET",path="/sent",status_code="200"}`); size != 4096 {
+		t.Fatalf("expected the sent body to be recorded as 4096 bytes, got %v", size)
 	}
 }

@@ -30,7 +30,8 @@ type Metric string
 // exceeds fiber.Config.BodyLimit, which means the body was never received in
 // full and there is no honest size to record. A response that
 // carries no body on the wire records zero however much the handler wrote: a
-// HEAD, or any status RFC 9110 forbids a body on - 1xx, 204 and 304.
+// HEAD, any status RFC 9110 forbids a body on - 1xx, 204 and 304 - or a handler
+// that sets Response.SkipBody itself.
 //
 // The path label is the registered route pattern with trailing slashes trimmed,
 // so under fiber.Config.StrictRouting two routes differing only by a trailing
@@ -370,6 +371,11 @@ type Config struct {
 	// "/api", "/api*" and "/api*/" name the label, while "/api/*" is a prefix
 	// rule for the routes below it.
 	//
+	// A skipped route's errors propagate as they would without this middleware
+	// mounted. Recording a request is what makes it worth taking over the
+	// application error handler - to see the status the client received - and a
+	// route excluded from instrumentation buys nothing by it.
+	//
 	// An entry ending in "*" matches by prefix: "/admin/*" excludes "/admin"
 	// and every route below it. Trailing stars are stripped as a group, so the
 	// glob spelling "/admin/**" means the same thing. "/*" excludes everything,
@@ -438,7 +444,8 @@ type Config struct {
 
 	// Next skips the middleware when it returns true. It runs before the
 	// MetricsPath check, so returning true also stops the middleware from
-	// serving a scrape.
+	// serving a scrape, and the handler chain's error is returned unchanged
+	// rather than consumed by the application error handler.
 	//
 	// A function that panics is treated as having returned false and reported to
 	// MetricsErrorLog once, as for DynamicLabels. This one runs before the

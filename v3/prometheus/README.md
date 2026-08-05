@@ -59,7 +59,7 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | MetricsErrorLog | `promhttp.Logger` | Receives errors raised while gathering or writing metrics, plus the faults the middleware absorbs (a panicking `DynamicLabels` or `Next`, a refused runtime collector). A typed nil panics. | `nil` |
 | MetricsErrorHandling | `promhttp.HandlerErrorHandling` | How gathering errors are reported to the scraper. An unknown value panics; avoid `PanicOnError` — it takes the process down. | `promhttp.HTTPErrorOnError` |
 | DisabledMetrics | `[]Metric` | Metric families to skip registering and recording. Entries are trimmed; an unknown name panics. | `nil` |
-| SkipURIs | `[]string` | Route patterns excluded from instrumentation, e.g. `/user/:id`. A trailing `*` matches by prefix; a leading `/` is added when missing. | `nil` |
+| SkipURIs | `[]string` | Route patterns excluded from instrumentation, e.g. `/user/:id`. A trailing `*` matches by prefix; a leading `/` is added when missing. A skipped route's error propagates normally. | `nil` |
 | SkipStatusCodes | `[]int` | Response status codes excluded from metrics. Codes are three digits; anything else panics. | `nil` |
 | SkipStatusClasses | `[]string` | Status classes excluded from metrics, `"1xx"` through `"5xx"` or `"unknown"`. Anything else panics. | `nil` |
 | DynamicLabels | `map[string]func(fiber.Ctx) string` | Extra labels computed per request. Names follow the same rules as `Labels`. A panicking function drops the sample. | `nil` |
@@ -157,10 +157,20 @@ multipart form: fasthttp keeps the parsed parts — the large ones spilled to te
 files — so reading the body back would re-marshal every uploaded file into memory
 just to size it, and the announced `Content-Length` is used instead — unless it
 exceeds `BodyLimit`, which means the body was never received in full and no
-honest size exists to record. A response that carries no body on the wire records zero however
-much the handler wrote — a `HEAD`, or any status RFC 9110 forbids a body on (`1xx`,
-`204`, `304`) — because fasthttp drops the body and no payload bytes reach the
-client.
+honest size exists to record.
+
+Under `fiber.Config{StreamRequestBody: true}` request payloads are left out of
+`http_request_size_bytes` entirely. fasthttp prefetches a bounded prefix and
+hands the rest to the handler, and a handler that returns without reading it —
+an auth rejection, a 404, any route that ignores its body — leaves the remainder
+undrained. The announced `Content-Length` is then a client's claim rather than a
+measurement, and draining the stream to check would defeat the point of
+streaming.
+
+A response that carries no body on the wire records zero however much the
+handler wrote — a `HEAD`, any status RFC 9110 forbids a body on (`1xx`, `204`,
+`304`), or a handler that sets `c.Response().SkipBody` itself — because fasthttp
+drops the body and no payload bytes reach the client.
 
 `http_requests_status_class_total` is convenience, not new information:
 `status_class` is a function of `status_code`, so
@@ -300,6 +310,17 @@ returns an error. This is what Fiber's own logger middleware does, and it is
 what allows the recorded status code and response size to match what the client
 actually received. The error is therefore consumed by this middleware and does
 not propagate to handlers mounted *before* it.
+
+That applies only to requests it records. When the middleware stands aside —
+`Next` returns true, every metric family is disabled, or the route matched a
+`SkipURIs` pattern — there is no status code to be gained, so the error is
+returned unchanged and surfaces where it would without the middleware mounted.
+
+A request answered by Fiber's `timeout` middleware is recorded with the `408` the
+client receives. That middleware answers through fasthttp's
+`RequestCtx.TimeoutErrorWithCode`, which parks the response and installs it only
+after the whole chain has unwound, so the live response still reads `200` at the
+point metrics are taken; the middleware reads the parked one instead.
 
 Mount `recover.New()` **after** this middleware, not before it:
 

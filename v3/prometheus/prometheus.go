@@ -776,15 +776,7 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		start = time.Now()
 	}
 
-	// Fiber runs the application error handler only after the entire handler
-	// chain has unwound, so the response is still empty when Next reports an
-	// error. Running it here - as Fiber's own logger middleware does - means
-	// the status code and response size below are the ones the client sees.
-	if chainErr := ctx.Next(); chainErr != nil {
-		if err := ctx.App().ErrorHandler(ctx, chainErr); err != nil {
-			_ = ctx.SendStatus(fiber.StatusInternalServerError) //nolint:errcheck // mirrors Fiber's own fallback
-		}
-	}
+	chainErr := ctx.Next()
 
 	// Read here rather than at the observation below: everything between the
 	// two is this middleware's own bookkeeping - the route lookup, the skip
@@ -792,25 +784,56 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	// DynamicLabels function the application supplied. Charging that to the
 	// request would put instrumentation overhead into the metric people set
 	// latency alerts on, and a slow label function would dominate it entirely.
-	var elapsed float64
+	var chainTime time.Duration
 	if m.requestDuration != nil {
-		elapsed = time.Since(start).Seconds()
+		chainTime = time.Since(start)
 	}
 
 	routePath, matched, ok := m.routeLabel(ctx)
-	if !ok {
-		return nil
-	}
 
 	// SkipURIs holds route patterns, so it is consulted only for a request that
 	// resolved to one. Unmatched traffic carries a label rather than a pattern
 	// and was already filtered in routeLabel - which is what lets a real route
 	// spelled the same as the label still obey the pattern rules.
-	if matched && m.skipped(routePath) {
-		return nil
+	if !ok || (matched && m.skipped(routePath)) {
+		// Nothing will be recorded, so there is no accurate status code to buy
+		// by taking over the error handler below - and returning the error is
+		// what the two paths above that also stand aside already do. Excluding
+		// a route from instrumentation should not quietly move where its errors
+		// surface.
+		return chainErr
 	}
 
-	status := ctx.Response().StatusCode()
+	// Fiber runs the application error handler only after the entire handler
+	// chain has unwound, so the response is still empty when Next reports an
+	// error. Running it here - as Fiber's own logger middleware does - means
+	// the status code and response size below are the ones the client sees.
+	// Its cost is the client's wait, so it is added to the recorded duration;
+	// the clock is read twice rather than once so that the route lookup and
+	// skip scan between the two stay out of the measurement.
+	if chainErr != nil {
+		errorHandlerStart := time.Now()
+		if err := ctx.App().ErrorHandler(ctx, chainErr); err != nil {
+			_ = ctx.SendStatus(fiber.StatusInternalServerError) //nolint:errcheck // mirrors Fiber's own fallback
+		}
+		if m.requestDuration != nil {
+			chainTime += time.Since(errorHandlerStart)
+		}
+	}
+
+	elapsed := chainTime.Seconds()
+
+	// Fiber's timeout middleware answers through RequestCtx.TimeoutErrorWithCode,
+	// which parks the 408 fasthttp will actually send and copies it over the live
+	// response only after the whole handler chain has unwound. Reading
+	// ctx.Response() here would therefore see whatever the timed-out handler left
+	// behind - a default 200 - and report every production timeout as a success.
+	resp := ctx.Response()
+	if timedOut := ctx.RequestCtx().LastTimeoutErrorResponse(); timedOut != nil {
+		resp = timedOut
+	}
+
+	status := resp.StatusCode()
 	if _, ignore := m.skipStatusCodes[status]; ignore {
 		return nil
 	}
@@ -872,10 +895,10 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 			req := ctx.Request()
 			preParsedForm := bytes.HasPrefix(req.Header.ContentType(), multipartFormPrefix)
 
-			// Only the two paths that fall back to the announced length consult
+			// Only the one path that falls back to the announced length consults
 			// the limit, so an ordinary request never pays for it.
 			bodyLimit := 0
-			if preParsedForm || req.IsBodyStream() {
+			if preParsedForm {
 				bodyLimit = m.bodyLimitOf(ctx)
 			}
 
@@ -885,13 +908,14 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		}
 
 		if m.responseSize != nil {
-			if bodyless(method, status) {
+			// A handler may set SkipBody itself, and fasthttp then writes the
+			// headers and drops the buffer however much was written into it.
+			// bodyless covers the cases fasthttp decides for itself, which it
+			// does after this runs.
+			if bodyless(method, status) || resp.SkipBody {
 				observe(m.responseSize.WithLabelValues(values...), 0)
-			} else {
-				resp := ctx.Response()
-				if size, known := responseBodySize(resp.Header.ContentLength(), resp); known {
-					observe(m.responseSize.WithLabelValues(values...), size)
-				}
+			} else if size, known := responseBodySize(resp.Header.ContentLength(), resp); known {
+				observe(m.responseSize.WithLabelValues(values...), size)
 			}
 		}
 	}
@@ -1020,29 +1044,30 @@ type payload interface {
 // exceeds what the server would have accepted, since anything larger was
 // rejected unread and no honest size exists.
 //
-// A body stream is left unknown rather than measured: reading it would drain it
-// into memory just to size it, so the caller leaves the payload out of the
-// histogram. Recording a zero would be worse than recording nothing - it still
-// increments _count and lands in the lowest bucket while adding nothing to _sum.
+// A body stream is left unknown rather than measured, and the announced length
+// is no substitute. Under fiber.Config{StreamRequestBody} fasthttp prefetches a
+// bounded prefix and hands the rest to the handler; a handler that returns
+// without reading - an auth rejection, a 404, any route that ignores its body -
+// leaves the remainder undrained, and releasing the stream does not go back for
+// it. Recording the header would let a client announce BodyLimit, send a few
+// hundred bytes, and bill the histogram for the difference on every request.
+// Draining the stream to size it would defeat the point of streaming, and a
+// zero would be worse than nothing - it still increments _count and lands in
+// the lowest bucket while adding nothing to _sum.
 func requestBodySize(contentLength, bodyLimit int, preParsedForm bool, p payload) (float64, bool) {
-	// announced is used where the body cannot be measured. A length beyond what
-	// the server accepts describes nothing that arrived: fasthttp either refused
-	// the request unread, or - with StreamRequestBody - swallowed the error and
-	// installed a stream carrying the client's figure. Either way the size is
+	if p.IsBodyStream() {
+		return 0, false
+	}
+
+	// The announced length is used only where the body cannot be measured and
+	// the server is known to have read it. Beyond the limit it describes nothing
+	// that arrived - fasthttp refused the request unread - so the size is
 	// unknowable, and recording a fabricated one is worse than recording none.
-	announced := func() (float64, bool) {
-		if contentLength < 0 || (bodyLimit > 0 && contentLength > bodyLimit) {
+	if preParsedForm && contentLength > 0 {
+		if bodyLimit > 0 && contentLength > bodyLimit {
 			return 0, false
 		}
 		return float64(contentLength), true
-	}
-
-	if p.IsBodyStream() {
-		return announced()
-	}
-
-	if preParsedForm && contentLength > 0 {
-		return announced()
 	}
 
 	// The body is buffered, so it is measurable - but an announced length
