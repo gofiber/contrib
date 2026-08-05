@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -52,6 +53,8 @@ type middleware struct {
 	skipStatusClasses map[string]struct{}
 	dynamicLabels     []dynamicLabel
 	errorLog          promhttp.Logger
+	reportNextPanic   sync.Once
+	reportLabelPanic  sync.Once
 	skipUnmatched     bool
 	exemplars         bool
 	trackUnmatched    bool
@@ -190,6 +193,15 @@ func New(config ...Config) fiber.Handler {
 		panic("prometheus middleware: MetricsErrorLog is a typed nil; leave it unset to discard errors")
 	}
 
+	// promhttp reads either as "unlimited", so an operator whose env parse
+	// produced a negative believes scrapes are bounded when they are not.
+	if cfg.MetricsTimeout < 0 {
+		panic("prometheus middleware: MetricsTimeout is negative; leave it zero to disable the bound")
+	}
+	if cfg.MetricsMaxRequestsInFlight < 0 {
+		panic("prometheus middleware: MetricsMaxRequestsInFlight is negative; leave it zero for no limit")
+	}
+
 	// promhttp switches on this with no default case, so a value outside the
 	// three it knows silently serves a partial exposition as if healthy -
 	// neither reporting the failure to the scraper nor logging it.
@@ -271,7 +283,8 @@ func New(config ...Config) fiber.Handler {
 	// client_golang enables nothing, and then substitutes its latency defaults
 	// for any bucket slice deliberately left empty, so a byte histogram ends up
 	// bucketed in seconds and every real payload lands in +Inf alone.
-	if factor := cfg.NativeHistogramBucketFactor; math.IsNaN(factor) || (factor != 0 && factor <= 1) {
+	if factor := cfg.NativeHistogramBucketFactor; math.IsNaN(factor) || math.IsInf(factor, 0) ||
+		(factor != 0 && factor <= 1) {
 		panic("prometheus middleware: NativeHistogramBucketFactor must be 0 to disable native histograms, or greater than 1")
 	}
 
@@ -290,11 +303,11 @@ func New(config ...Config) fiber.Handler {
 
 	// Past this point the config is known good and registration can begin.
 	if !cfg.DisableGoCollector {
-		registerCollector(registry, collectors.NewGoCollector())
+		registerCollector(registry, collectors.NewGoCollector(), cfg.MetricsErrorLog)
 	}
 
 	if !cfg.DisableProcessCollector {
-		registerCollector(registry, collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+		registerCollector(registry, collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}), cfg.MetricsErrorLog)
 	}
 
 	if enabled(MetricRequestsTotal) {
@@ -694,7 +707,7 @@ func differentSource(a, b prometheus.Gatherer) bool {
 // handle serves the metrics endpoint or instruments the request, depending on
 // the requested path.
 func (m *middleware) handle(ctx fiber.Ctx) error {
-	if m.next != nil && m.next(ctx) {
+	if m.next != nil && m.skipRequested(ctx) {
 		return ctx.Next()
 	}
 
@@ -703,6 +716,26 @@ func (m *middleware) handle(ctx fiber.Ctx) error {
 	}
 
 	return m.instrument(ctx)
+}
+
+// skipRequested asks Config.Next whether to stand aside, treating a panic in
+// that application-supplied function as "no". It runs before the handler chain,
+// so a panic here would reach the connection goroutine, which neither fasthttp
+// nor Fiber guards - the same hazard DynamicLabels is protected from.
+func (m *middleware) skipRequested(ctx fiber.Ctx) (skip bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			skip = false
+			m.reportNextPanic.Do(func() {
+				if m.errorLog != nil {
+					m.errorLog.Println("prometheus middleware: Config.Next panicked; "+
+						"instrumenting the request anyway, reported only once:", r)
+				}
+			})
+		}
+	}()
+
+	return m.next(ctx)
 }
 
 // serveMetrics answers a scrape request, rejecting methods the Prometheus
@@ -890,11 +923,17 @@ func (m *middleware) resolveDynamicValues(ctx fiber.Ctx, values []string) (ok bo
 	defer func() {
 		if r := recover(); r != nil {
 			ok = false
-			// Otherwise a single bad type assertion turns the middleware into a
-			// permanent no-op that looks exactly like no traffic at all.
-			if m.errorLog != nil {
-				m.errorLog.Println("prometheus middleware: dynamic label function panicked, dropping the sample:", r)
-			}
+			// Reported once, not per request: a bad type assertion panics on
+			// every request, and logging each one would serialise every
+			// connection goroutine through the sink after the response is
+			// already generated. One line is enough to stop the silent no-op
+			// from looking like no traffic at all.
+			m.reportLabelPanic.Do(func() {
+				if m.errorLog != nil {
+					m.errorLog.Println("prometheus middleware: a DynamicLabels function panicked; "+
+						"samples are being dropped and this is reported only once:", r)
+				}
+			})
 		}
 	}()
 
@@ -1236,22 +1275,21 @@ func validateBuckets(field string, buckets []float64) {
 
 // registerCollector attempts to register the provided collector, suppressing
 // the AlreadyRegistered error so callers can opt-in without coordination.
-func registerCollector(registry prometheus.Registerer, collector prometheus.Collector) {
+func registerCollector(registry prometheus.Registerer, collector prometheus.Collector, errorLog promhttp.Logger) {
 	if err := registry.Register(collector); err != nil {
+		// These two are conveniences the caller can turn off outright, so a
+		// registry that will not take them is not a reason to refuse to start.
+		// The common case is a caller who registered their own - an extended Go
+		// collector collides per descriptor rather than as AlreadyRegisteredError
+		// - and matching client_golang's unversioned error text to tell the
+		// cases apart would break on any rewording, in both directions.
 		var alreadyRegistered prometheus.AlreadyRegisteredError
 		if errors.As(err, &alreadyRegistered) {
 			return
 		}
-		// AlreadyRegisteredError is returned only for an exact collector match.
-		// A registry already holding an extended Go collector, or one reached
-		// through a wrapping Registerer, collides per-descriptor instead - and
-		// that is a caller who has deliberately registered their own, not a
-		// misconfiguration worth refusing to start over.
-		if strings.Contains(err.Error(), "already exists") ||
-			strings.Contains(err.Error(), "has different label names") {
-			return
+		if errorLog != nil {
+			errorLog.Println("prometheus middleware: the runtime collector was not registered "+
+				"(disable it with DisableGoCollector or DisableProcessCollector):", err)
 		}
-		panic("prometheus middleware: registering the Go or process collector failed, " +
-			"disable it with DisableGoCollector or DisableProcessCollector: " + err.Error())
 	}
 }

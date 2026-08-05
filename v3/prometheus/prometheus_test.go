@@ -3640,9 +3640,11 @@ func TestDurationExcludesInstrumentationOverhead(t *testing.T) {
 // TestUnusableNativeHistogramFactorPanics covers a factor between 0 and 1 - 0.1
 // where 1.1 was meant. client_golang enables nothing below 1, then substitutes
 // its latency defaults for any bucket slice deliberately left empty, so a byte
-// histogram silently ends up bucketed in seconds.
+// histogram silently ends up bucketed in seconds. An infinity passes a naive
+// "greater than 1" test and is then degraded to the coarsest schema there is,
+// which is a single bucket wearing a native histogram's name.
 func TestUnusableNativeHistogramFactorPanics(t *testing.T) {
-	for _, factor := range []float64{0.1, 1, math.NaN()} {
+	for _, factor := range []float64{0.1, 1, math.NaN(), math.Inf(1), math.Inf(-1)} {
 		t.Run(fmt.Sprint(factor), func(t *testing.T) {
 			defer func() {
 				r := recover()
@@ -4282,6 +4284,194 @@ func TestPanickingDynamicLabelIsReported(t *testing.T) {
 
 	if logger.count() == 0 {
 		t.Fatal("expected the dropped sample to reach MetricsErrorLog")
+	}
+}
+
+// TestPanickingDynamicLabelIsReportedOnce covers the volume of that report. A
+// bad type assertion panics on every request, so reporting per request would
+// funnel every connection goroutine through the log sink for a fault that one
+// line describes completely.
+func TestPanickingDynamicLabelIsReportedOnce(t *testing.T) {
+	logger := &recordingLogger{}
+
+	app := newAppWithMiddleware(Config{
+		MetricsErrorLog: logger,
+		DynamicLabels: map[string]func(fiber.Ctx) string{
+			"tenant": func(c fiber.Ctx) string { return c.Locals("tenant").(string) },
+		},
+	}, "")
+	app.Get("/tenanted", func(c fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	for range 5 {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/tenanted", nil), noTimeoutConfig); err != nil {
+			t.Fatalf("unexpected request error: %v", err)
+		}
+	}
+
+	if lines := logger.count(); lines != 1 {
+		t.Fatalf("expected the repeated panic to be reported once, got %d lines", lines)
+	}
+}
+
+// TestPanickingNextIsContained covers a Config.Next that panics. It runs before
+// the handler chain, so nothing downstream - not the recover middleware, not
+// Fiber's error handler - is in a position to catch it, and the panic would
+// reach the connection goroutine and take the process with it.
+func TestPanickingNextIsContained(t *testing.T) {
+	logger := &recordingLogger{}
+
+	app := newAppWithMiddleware(Config{
+		MetricsErrorLog: logger,
+		Next: func(c fiber.Ctx) bool {
+			return c.Locals("skip").(bool)
+		},
+	}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+
+	for range 3 {
+		resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig)
+		if err != nil {
+			t.Fatalf("unexpected request error: %v", err)
+		}
+		if resp.StatusCode != fiber.StatusOK {
+			t.Fatalf("expected the request to be served, got %d", resp.StatusCode)
+		}
+	}
+
+	// Undecidable means instrument: dropping the sample would hide the traffic
+	// on top of hiding the fault.
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/hello",status_code="200"} 3`) {
+		t.Fatalf("expected the requests to be instrumented anyway, got %q", metrics)
+	}
+	if lines := logger.count(); lines != 1 {
+		t.Fatalf("expected the repeated panic to be reported once, got %d lines", lines)
+	}
+}
+
+// TestPanickingNextAndLabelAreReportedSeparately covers two independent faults
+// sharing one report budget. Collapsing them onto a single sync.Once would let
+// whichever panicked first silence the other for the process lifetime.
+func TestPanickingNextAndLabelAreReportedSeparately(t *testing.T) {
+	logger := &recordingLogger{}
+
+	app := newAppWithMiddleware(Config{
+		MetricsErrorLog: logger,
+		Next: func(c fiber.Ctx) bool {
+			return c.Locals("skip").(bool)
+		},
+		DynamicLabels: map[string]func(fiber.Ctx) string{
+			"tenant": func(c fiber.Ctx) string { return c.Locals("tenant").(string) },
+		},
+	}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+
+	for range 3 {
+		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
+			t.Fatalf("unexpected request error: %v", err)
+		}
+	}
+
+	if lines := logger.count(); lines != 2 {
+		t.Fatalf("expected each fault to be reported once, got %d lines", lines)
+	}
+}
+
+// TestNegativeScrapeBoundsPanic covers the two promhttp limits that read a
+// negative as "unlimited", which is the opposite of what an operator whose
+// environment parse produced one is asking for.
+func TestNegativeScrapeBoundsPanic(t *testing.T) {
+	for field, cfg := range map[string]Config{
+		"MetricsTimeout":             {MetricsTimeout: -time.Second},
+		"MetricsMaxRequestsInFlight": {MetricsMaxRequestsInFlight: -1},
+	} {
+		t.Run(field, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatalf("expected a negative %s to be rejected", field)
+				}
+				if msg := fmt.Sprint(r); !strings.Contains(msg, field) {
+					t.Fatalf("expected the panic to name the field, got %v", r)
+				}
+			}()
+
+			_ = New(cfg)
+		})
+	}
+}
+
+// refusingRegisterer rejects the runtime collectors with an error that is
+// neither AlreadyRegistered nor a duplicate-descriptor collision, standing in
+// for a wrapping Registerer that enforces rules of its own.
+type refusingRegisterer struct {
+	*prometheus.Registry
+}
+
+func (r *refusingRegisterer) Register(collector prometheus.Collector) error {
+	if runtimeCollector(collector) {
+		return errors.New("this registry does not accept runtime collectors")
+	}
+
+	return r.Registry.Register(collector)
+}
+
+// runtimeCollector reports whether every descriptor the collector describes
+// belongs to the Go or process runtime. The channel is drained to completion
+// either way, since Describe runs on its own goroutine and blocks on the send.
+func runtimeCollector(collector prometheus.Collector) bool {
+	descs := make(chan *prometheus.Desc)
+	go func() {
+		defer close(descs)
+		collector.Describe(descs)
+	}()
+
+	described, runtime := 0, 0
+	for desc := range descs {
+		described++
+		if name := desc.String(); strings.Contains(name, `fqName: "go_`) || strings.Contains(name, `fqName: "process_`) {
+			runtime++
+		}
+	}
+
+	return described > 0 && described == runtime
+}
+
+// TestRuntimeCollectorFailureIsNotFatal covers a registry that refuses the Go
+// and process collectors. They are conveniences the caller can turn off
+// outright, so refusing to start over them would take down an application for
+// metrics it never asked for - and telling a deliberate opt-in apart from a
+// misconfiguration would mean matching client_golang's unversioned error text.
+func TestRuntimeCollectorFailureIsNotFatal(t *testing.T) {
+	logger := &recordingLogger{}
+	registry := prometheus.NewRegistry()
+
+	app := fiber.New()
+	app.Use(New(Config{
+		Registerer:      &refusingRegisterer{Registry: registry},
+		Gatherer:        registry,
+		MetricsErrorLog: logger,
+	}))
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/hello",status_code="200"}`) {
+		t.Fatalf("expected the request metrics to survive the refusal, got %q", metrics)
+	}
+	if lines := logger.count(); lines != 2 {
+		t.Fatalf("expected both refusals to reach MetricsErrorLog, got %d lines", lines)
 	}
 }
 

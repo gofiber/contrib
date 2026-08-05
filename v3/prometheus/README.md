@@ -40,12 +40,12 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | Labels | `prometheus.Labels` | Extra const labels attached to every metric. A key that is empty, starts with `__`, or collides with a reserved label (`status_code`, `status_class`, `method`, `path`, `le`) panics. | `nil` |
 | Registerer | `prometheus.Registerer` | Registry used to register the metrics. Reusing one across two `New` calls panics on duplicate registration. | private registry |
 | Gatherer | `prometheus.Gatherer` | Source the metrics endpoint gathers from. | private registry |
-| DisableGoCollector | `bool` | Skips registration of the Go runtime metrics collector. | `false` |
-| DisableProcessCollector | `bool` | Skips registration of the process metrics collector. | `false` |
+| DisableGoCollector | `bool` | Skips registration of the Go runtime metrics collector. A registry that refuses the collector is reported to `MetricsErrorLog`, not fatal. | `false` |
+| DisableProcessCollector | `bool` | Skips registration of the process metrics collector. A refusal is handled as for `DisableGoCollector`. | `false` |
 | RequestDurationBuckets | `[]float64` | Histogram buckets for request latency, in seconds. `nil` selects the defaults; an empty non-nil slice drops the classic buckets, but only alongside `NativeHistogramBucketFactor`. Bounds must be strictly increasing, `+Inf` last only, or `New` panics. | see [Default Config](#default-config) |
 | RequestSizeBuckets | `[]float64` | Histogram buckets for request payload size, in bytes. | see [Default Config](#default-config) |
 | ResponseSizeBuckets | `[]float64` | Histogram buckets for response payload size, in bytes. | see [Default Config](#default-config) |
-| NativeHistogramBucketFactor | `float64` | Enables native histograms when greater than 1, capping the growth factor between buckets. Any other non-zero value panics. | `0` |
+| NativeHistogramBucketFactor | `float64` | Enables native histograms when greater than 1, capping the growth factor between buckets. Any other non-zero value panics, including a NaN or an infinity. | `0` |
 | NativeHistogramMaxBucketNumber | `uint32` | Bounds the native histogram buckets kept per series. | `0` (unlimited) |
 | NativeHistogramMinResetDuration | `time.Duration` | Minimum time before a native histogram may be reset to control its bucket count. | `0` |
 | TrackUnmatchedRequests | `bool` | Records metrics for requests that do not resolve to a registered route. | `false` |
@@ -54,16 +54,16 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | EnableOpenMetricsTextCreatedSamples | `bool` | Adds synthetic `_created` samples to OpenMetrics responses. Requires `EnableOpenMetrics`. | `false` |
 | DisableExemplars | `bool` | Skips trace exemplar collection, and with it the request-context read every instrumented request otherwise pays. | `false` |
 | DisableCompression | `bool` | Serves metrics uncompressed even when the client requests gzip or zstd. | `false` |
-| MetricsMaxRequestsInFlight | `int` | Caps concurrent scrapes; the excess is answered with 503. | `0` (unlimited) |
-| MetricsTimeout | `time.Duration` | Bounds a single scrape before it is answered with 503. | `0` (no timeout) |
-| MetricsErrorLog | `promhttp.Logger` | Receives errors raised while gathering or writing metrics. A typed nil panics. | `nil` |
+| MetricsMaxRequestsInFlight | `int` | Caps concurrent scrapes; the excess is answered with 503. A negative panics — `promhttp` would read it as unlimited. | `0` (unlimited) |
+| MetricsTimeout | `time.Duration` | Bounds a single scrape before it is answered with 503. A negative panics, as for `MetricsMaxRequestsInFlight`. | `0` (no timeout) |
+| MetricsErrorLog | `promhttp.Logger` | Receives errors raised while gathering or writing metrics, plus the faults the middleware absorbs (a panicking `DynamicLabels` or `Next`, a refused runtime collector). A typed nil panics. | `nil` |
 | MetricsErrorHandling | `promhttp.HandlerErrorHandling` | How gathering errors are reported to the scraper. An unknown value panics; avoid `PanicOnError` — it takes the process down. | `promhttp.HTTPErrorOnError` |
 | DisabledMetrics | `[]Metric` | Metric families to skip registering and recording. Entries are trimmed; an unknown name panics. | `nil` |
 | SkipURIs | `[]string` | Route patterns excluded from instrumentation, e.g. `/user/:id`. A trailing `*` matches by prefix; a leading `/` is added when missing. | `nil` |
 | SkipStatusCodes | `[]int` | Response status codes excluded from metrics. Codes are three digits; anything else panics. | `nil` |
 | SkipStatusClasses | `[]string` | Status classes excluded from metrics, `"1xx"` through `"5xx"` or `"unknown"`. Anything else panics. | `nil` |
-| DynamicLabels | `map[string]func(fiber.Ctx) string` | Extra labels computed per request. Names follow the same rules as `Labels`. | `nil` |
-| Next | `func(fiber.Ctx) bool` | Skips the middleware when it returns true, including for `MetricsPath`. | `nil` |
+| DynamicLabels | `map[string]func(fiber.Ctx) string` | Extra labels computed per request. Names follow the same rules as `Labels`. A panicking function drops the sample. | `nil` |
+| Next | `func(fiber.Ctx) bool` | Skips the middleware when it returns true, including for `MetricsPath`. A panicking function is read as false. | `nil` |
 
 ## Default Config
 
@@ -237,6 +237,15 @@ the reserved `status_code`, `status_class`, `method`, `path` and `le` labels or 
 
 The middleware copies each returned value, so it is safe to return one of
 Fiber's zero-copy strings such as `c.Get(...)` or `c.Params(...)` directly.
+
+A function that panics costs its request every metric, not the request itself:
+the sample is dropped, the response is unaffected, and the drop is reported to
+`MetricsErrorLog` — once, since a bad type assertion panics on every request, and
+a line per request would funnel every connection through the log sink. The
+middleware cannot do better than drop it, because these run after the handler
+chain has unwound, past any `recover` the application mounted. `Config.Next` is
+guarded the same way and treated as having returned false. Guard your type
+assertions rather than relying on either.
 
 ### Filtering
 

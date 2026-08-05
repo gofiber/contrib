@@ -122,10 +122,17 @@ type Config struct {
 
 	// DisableGoCollector disables the Go runtime metrics collector registration.
 	//
+	// A Registerer that refuses the collector - one already holding an extended
+	// Go collector, say - is reported to MetricsErrorLog rather than treated as
+	// fatal, since this is an opt-out convenience and not something worth
+	// refusing to start over.
+	//
 	// Optional. Default: false (collector enabled).
 	DisableGoCollector bool
 
 	// DisableProcessCollector disables the process metrics collector registration.
+	//
+	// A refusal is handled as for DisableGoCollector.
 	//
 	// Optional. Default: false (collector enabled).
 	DisableProcessCollector bool
@@ -173,11 +180,13 @@ type Config struct {
 	// resolve latency without hand-tuned buckets, but require a Prometheus
 	// server with native histograms enabled.
 	//
-	// New panics on anything else non-zero - a negative value, or one between 0
-	// and 1. client_golang enables native histograms above 1 only, and then
-	// substitutes its latency defaults for any bucket slice deliberately left
-	// empty, so 0.1 where 1.1 was meant would leave the byte histograms
-	// bucketed in seconds with every real payload in +Inf alone.
+	// New panics on anything else non-zero - a negative value, one between 0
+	// and 1, a NaN, or an infinity. client_golang enables native histograms
+	// above 1 only, and then substitutes its latency defaults for any bucket
+	// slice deliberately left empty, so 0.1 where 1.1 was meant would leave the
+	// byte histograms bucketed in seconds with every real payload in +Inf
+	// alone. An infinity clears that bar and is then degraded to the coarsest
+	// schema there is, which is one bucket wearing a native histogram's name.
 	//
 	// Optional. Default: 0 (classic buckets only).
 	NativeHistogramBucketFactor float64
@@ -279,18 +288,28 @@ type Config struct {
 	// serves concurrently. Requests beyond the limit are answered with 503 so a
 	// slow gatherer cannot pile up.
 	//
+	// New panics on a negative value. promhttp reads one as "unlimited", which
+	// is the opposite of what an operator whose environment parse produced it
+	// is asking for.
+	//
 	// Optional. Default: 0 (unlimited).
 	MetricsMaxRequestsInFlight int
 
 	// MetricsTimeout bounds how long a single scrape may take before it is
 	// answered with 503.
 	//
+	// New panics on a negative value, for the same reason as
+	// MetricsMaxRequestsInFlight.
+	//
 	// Optional. Default: 0 (no timeout).
 	MetricsTimeout time.Duration
 
 	// MetricsErrorLog receives errors encountered while gathering or writing
-	// metrics, which are otherwise silent. A typed nil panics: promhttp would
-	// accept it and dereference it on the first gather failure instead.
+	// metrics, along with the faults the middleware absorbs rather than
+	// propagates: a panicking DynamicLabels function or Next, and a Registerer
+	// that refuses the Go or process collector. All of them are otherwise
+	// silent. A typed nil panics: promhttp would accept it and dereference it on
+	// the first gather failure instead.
 	//
 	// Optional. Default: nil (errors are not logged).
 	MetricsErrorLog promhttp.Logger
@@ -404,12 +423,12 @@ type Config struct {
 	//
 	// A function that panics costs its request every metric rather than the
 	// request itself: the sample is dropped, the response is unaffected, and the
-	// drop is reported to MetricsErrorLog so a bad type assertion does not turn
-	// the middleware into a silent no-op. The
-	// middleware cannot do better, since it calls these after the handler chain
-	// has unwound, past any recover the application mounted - letting the panic
-	// through would kill the connection instead. Guard your type assertions
-	// rather than relying on that.
+	// drop is reported to MetricsErrorLog - once, since a bad type assertion
+	// panics on every request - so it does not turn the middleware into a silent
+	// no-op. The middleware cannot do better, since it calls these after the
+	// handler chain has unwound, past any recover the application mounted -
+	// letting the panic through would kill the connection instead. Guard your
+	// type assertions rather than relying on that.
 	//
 	// Returned values are copied, so a zero-copy string from c.Get or c.Params
 	// is safe to return directly.
@@ -420,6 +439,11 @@ type Config struct {
 	// Next skips the middleware when it returns true. It runs before the
 	// MetricsPath check, so returning true also stops the middleware from
 	// serving a scrape.
+	//
+	// A function that panics is treated as having returned false and reported to
+	// MetricsErrorLog once, as for DynamicLabels. This one runs before the
+	// handler chain rather than after it, so a recover the application mounted
+	// downstream is not yet in place either.
 	//
 	// Optional. Default: nil.
 	Next func(fiber.Ctx) bool
