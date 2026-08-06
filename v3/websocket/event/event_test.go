@@ -499,6 +499,81 @@ func TestCloseSendsFormatCloseMessage(t *testing.T) {
 	require.Equal(t, "Connection closed", ce.Text)
 }
 
+func TestCloseInterruptsReadDespitePongs(t *testing.T) {
+	resetState()
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	upgraded := make(chan *Websocket, 1)
+	app.Use(upgradeMiddleware)
+	app.Get("/", NewWithConfig(func(kws *Websocket) {
+		upgraded <- kws
+	}, Config{
+		PingInterval: time.Hour,
+		// Long enough that shutdown completing at all proves it does not
+		// depend on the read deadline expiring, whether the initial one or
+		// one refreshed by a pong racing with Close.
+		ReadIdleTimeout: time.Hour,
+	}))
+
+	go func() { _ = app.Listener(ln) }()
+
+	dialer := &websocket.Dialer{
+		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+		HandshakeTimeout: 5 * time.Second,
+	}
+	conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+
+	var kws *Websocket
+	select {
+	case kws = <-upgraded:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upgrade did not complete")
+	}
+
+	// Keep pongs in flight before and during Close so a pong handler can be
+	// mid-flight, past its done check, exactly when shutdown starts.
+	stopPongs := make(chan struct{})
+	pongsStopped := make(chan struct{})
+	go func() {
+		defer close(pongsStopped)
+		for {
+			select {
+			case <-stopPongs:
+				return
+			default:
+			}
+			if err := conn.WriteControl(websocket.PongMessage, nil, time.Now().Add(time.Second)); err != nil {
+				// The server closed the connection; nothing left to send.
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	defer func() {
+		close(stopPongs)
+		<-pongsStopped
+	}()
+
+	// Give the pong flood a moment to reach the read goroutine.
+	time.Sleep(20 * time.Millisecond)
+
+	kws.Close()
+
+	require.Eventually(t, func() bool {
+		kws.mu.RLock()
+		defer kws.mu.RUnlock()
+		return kws.Conn == nil
+	}, 2*time.Second, 10*time.Millisecond)
+}
+
 func TestCloseConnNilsConnField(t *testing.T) {
 	kws := createWS()
 	kws.settings = resolveSettings(Config{})
