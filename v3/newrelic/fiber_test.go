@@ -427,7 +427,7 @@ func TestCreateWebRequest(t *testing.T) {
 	t.Run("should include only agent consumed headers by default", func(t *testing.T) {
 		app := fiber.New()
 		app.Get("/", func(ctx fiber.Ctx) error {
-			req := createWebRequest(ctx, ctx.Hostname(), ctx.Method(), string(ctx.Request().URI().Scheme()), defaultRequestHeaderFilter)
+			req := createWebRequest(ctx, ctx.Hostname(), ctx.Method(), string(ctx.Request().URI().Scheme()), DefaultRequestHeaderFilter)
 			assert.Equal(t, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", req.Header.Get("traceparent"))
 			assert.Equal(t, "synthetics-payload", req.Header.Get("X-NewRelic-Synthetics"))
 			assert.Equal(t, "synthetics-info-payload", req.Header.Get("X-NewRelic-Synthetics-Info"))
