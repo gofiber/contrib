@@ -239,7 +239,7 @@ func normalizeFaviconURL(rawURL string) (string, error) {
 	if err != nil {
 		return "", errors.New("uptime: ui favicon url is invalid")
 	}
-	if strings.HasPrefix(rawURL, "/") && !strings.HasPrefix(rawURL, "//") && parsed.Scheme == "" && parsed.Host == "" {
+	if strings.HasPrefix(rawURL, "/") && !strings.HasPrefix(rawURL, "//") && !strings.HasPrefix(rawURL, "/\\") && parsed.Scheme == "" && parsed.Host == "" {
 		return rawURL, nil
 	}
 	if (strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https")) && parsed.Host != "" && parsed.User == nil {

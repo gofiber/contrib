@@ -180,6 +180,15 @@ func TestConfigValidation(t *testing.T) {
 			},
 		},
 		{
+			name: "favicon url backslash authority",
+			config: Config{
+				ServiceID: "api",
+				UI: UIConfig{
+					FaviconURL: `/\example.com/favicon.svg`,
+				},
+			},
+		},
+		{
 			name: "endpoint id missing",
 			config: Config{
 				Endpoints: []EndpointConfig{{URL: "https://example.com/health"}},
