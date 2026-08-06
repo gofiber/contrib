@@ -10,6 +10,8 @@ id: websocket
 
 Based on [Fasthttp WebSocket](https://github.com/fasthttp/websocket) for [Fiber](https://github.com/gofiber/fiber) with available `fiber.Ctx` methods like [Locals](http://docs.gofiber.io/ctx#locals), [Params](http://docs.gofiber.io/ctx#params), [Query](http://docs.gofiber.io/ctx#query) and [Cookies](http://docs.gofiber.io/ctx#cookies).
 
+For a plain WebSocket event-bus helper, use the [`event`](./event/README.md) subpackage. It keeps ordinary WebSocket wire compatibility and is separate from the Socket.IO protocol implementation in `github.com/gofiber/contrib/v3/socketio`.
+
 
 **Compatible with Fiber v3.**
 

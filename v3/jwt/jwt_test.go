@@ -69,6 +69,11 @@ var (
 			Token:         "eyJhbGciOiJFUzUxMiIsInR5cCI6IkpXVCIsImtpZCI6ImdvZmliZXItcC01MjEifQ.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTUxNjIzOTAyMn0.ADwlteggILiCM_oCkxsyJTRK6BpQyH2FBQD_Tw_ph0vpLPRrpAkyh_CZIY9uZqqpb3J_eohscCzj5Vo9jrhP9DFRAdvLZCgehLj6N8P9aro2uy9jAl7kowxe0nEErv1SrD9qlyLWJh80jJVHRBVHXXysQ2WUD0KiRBq4x1p8jdEw5vHy",
 		},
 	}
+
+	expiredToken = TestToken{
+		SigningMethod: jwtware.HS256,
+		Token:         "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiZXhwIjoxMjU3MTk0MDAwLCJhZG1pbiI6dHJ1ZSwiaWF0IjoxNTE2MjM5MDIyfQ.oBrtoSSaiLZvI2KfnahRb7NoJ7DZqLIGqEJ3AU7mxFo",
+	}
 )
 
 const (
@@ -795,4 +800,53 @@ func TestFromContext_PassLocalsToContext(t *testing.T) {
 	resp, err := app.Test(req)
 	assert.NoError(t, err)
 	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+}
+
+func TestParserOptionsWithoutClaimsValidationSuccess(t *testing.T) {
+	t.Parallel()
+	// Arrange
+	app := fiber.New()
+
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{Key: []byte(defaultSigningKey)},
+		ParserOptions: []jwt.ParserOption{
+			jwt.WithoutClaimsValidation(),
+		},
+	}))
+
+	app.Get("/ok", func(c fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+
+	req := httptest.NewRequest("GET", "/ok", nil)
+	req.Header.Add("Authorization", "Bearer "+expiredToken.Token)
+	// Act
+	resp, err := app.Test(req)
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Equal(t, 200, resp.StatusCode)
+}
+
+func TestParserOptions(t *testing.T) {
+	t.Parallel()
+	// Arrange
+	app := fiber.New()
+
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{Key: []byte(defaultSigningKey)},
+	}))
+
+	app.Get("/ok", func(c fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+
+	req := httptest.NewRequest("GET", "/ok", nil)
+	req.Header.Add("Authorization", "Bearer "+expiredToken.Token)
+	// Act
+	resp, err := app.Test(req)
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Equal(t, 401, resp.StatusCode)
 }

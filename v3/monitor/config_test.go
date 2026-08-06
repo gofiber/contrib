@@ -161,3 +161,24 @@ func Test_Config_Default(t *testing.T) {
 		assert.Equal(t, newIndex(viewBag{defaultTitle, defaultRefresh, defaultFontURL, defaultChartJSURL, defaultCustomHead}), cfg.index)
 	})
 }
+
+// Test_Config_Default_APIOnly_Global verifies that ConfigDefault.APIOnly is
+// inherited by per-handler configs that omit the field. This test must NOT be
+// parallel because it mutates package-level state (ConfigDefault.APIOnly).
+func Test_Config_Default_APIOnly_Global(t *testing.T) {
+	orig := ConfigDefault.APIOnly
+	t.Cleanup(func() { ConfigDefault.APIOnly = orig })
+
+	ConfigDefault.APIOnly = true
+
+	t.Run("inherited when no config provided", func(t *testing.T) {
+		cfg := configDefault()
+		assert.Equal(t, true, cfg.APIOnly)
+	})
+
+	t.Run("inherited when other fields overridden", func(t *testing.T) {
+		// Caller sets Title but leaves APIOnly unset — should inherit from ConfigDefault.
+		cfg := configDefault(Config{Title: "custom"})
+		assert.Equal(t, true, cfg.APIOnly)
+	})
+}

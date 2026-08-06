@@ -45,7 +45,7 @@ func New(config ...Config) fiber.Handler {
 
 		var token *jwt.Token
 		if _, ok := cfg.Claims.(jwt.MapClaims); ok {
-			token, err = jwt.Parse(auth, cfg.KeyFunc)
+			token, err = jwt.Parse(auth, cfg.KeyFunc, cfg.ParserOptions...)
 		} else {
 			claimsType := reflect.TypeOf(cfg.Claims)
 			if claimsType == nil {
@@ -60,7 +60,7 @@ func New(config ...Config) fiber.Handler {
 			if !ok {
 				return cfg.ErrorHandler(c, fiber.NewError(fiber.StatusInternalServerError, "claims type does not implement jwt.Claims"))
 			}
-			token, err = jwt.ParseWithClaims(auth, claims, cfg.KeyFunc)
+			token, err = jwt.ParseWithClaims(auth, claims, cfg.KeyFunc, cfg.ParserOptions...)
 		}
 		if err == nil && token.Valid {
 			// Store user information from token into context.
