@@ -528,6 +528,47 @@ func Test_Res_Headers_WrapHeaders(t *testing.T) {
 	assert.Equal(t, expected, logs)
 }
 
+func Test_Res_Headers_RedactsSensitiveValues(t *testing.T) {
+	for _, wrapHeaders := range []bool{false, true} {
+		t.Run(fmt.Sprintf("wrap=%t", wrapHeaders), func(t *testing.T) {
+			t.Parallel()
+
+			var buf bytes.Buffer
+			logger := zerolog.New(&buf)
+
+			app := fiber.New()
+			app.Use(New(Config{
+				Logger:      &logger,
+				Fields:      []string{FieldResHeaders},
+				WrapHeaders: wrapHeaders,
+			}))
+
+			app.Get("/", func(c fiber.Ctx) error {
+				c.Set(fiber.HeaderSetCookie, "session=secret")
+				c.Set(fiber.HeaderLocation, "/reset?token=secret")
+				c.Set("X-Csrf-Token", "secret")
+				c.Set("X-Safe", "visible")
+				return c.SendStatus(fiber.StatusNoContent)
+			})
+
+			resp, err := app.Test(httptest.NewRequest("GET", "/", nil))
+			assert.NoError(t, err)
+			assert.Equal(t, fiber.StatusNoContent, resp.StatusCode)
+
+			var logs map[string]any
+			assert.NoError(t, json.Unmarshal(buf.Bytes(), &logs))
+			if wrapHeaders {
+				logs = logs[FieldResHeaders].(map[string]any)
+			}
+
+			assert.Equal(t, "[REDACTED]", logs["Set-Cookie"])
+			assert.Equal(t, "[REDACTED]", logs["Location"])
+			assert.Equal(t, "[REDACTED]", logs["X-Csrf-Token"])
+			assert.Equal(t, "visible", logs["X-Safe"])
+		})
+	}
+}
+
 func Test_FieldsSnakeCase(t *testing.T) {
 	t.Parallel()
 

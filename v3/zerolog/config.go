@@ -2,6 +2,7 @@ package zerolog
 
 import (
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -92,6 +93,11 @@ type Config struct {
 	//
 	// Optional. Default: nil
 	SkipHeader func(header string, c fiber.Ctx) bool
+
+	// RedactHeader defines a function that returns true if a header value should be redacted.
+	// By default, common credential-bearing request and response headers are redacted.
+	// Set this explicitly to customize which headers are redacted.
+	RedactHeader func(header string, c fiber.Ctx) bool
 
 	// Wrap headers into a dictionary.
 	// If false: {"method":"POST", "header-key":"header value"}
@@ -223,6 +229,9 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 					if c.SkipHeader != nil && c.SkipHeader(header, fc) {
 						continue
 					}
+					if c.RedactHeader != nil && c.RedactHeader(header, fc) {
+						values = []string{"[REDACTED]"}
+					}
 
 					if len(values) == 1 {
 						dict.Str(header, values[0])
@@ -240,6 +249,9 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 
 					if c.SkipHeader != nil && c.SkipHeader(header, fc) {
 						continue
+					}
+					if c.RedactHeader != nil && c.RedactHeader(header, fc) {
+						values = []string{"[REDACTED]"}
 					}
 
 					if len(values) == 1 {
@@ -264,6 +276,9 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 					if c.SkipHeader != nil && c.SkipHeader(header, fc) {
 						continue
 					}
+					if c.RedactHeader != nil && c.RedactHeader(header, fc) {
+						values = []string{"[REDACTED]"}
+					}
 
 					if len(values) == 1 {
 						dict.Str(header, values[0])
@@ -282,6 +297,9 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 					if c.SkipHeader != nil && c.SkipHeader(header, fc) {
 						continue
 					}
+					if c.RedactHeader != nil && c.RedactHeader(header, fc) {
+						values = []string{"[REDACTED]"}
+					}
 
 					if len(values) == 1 {
 						zc = zc.Str(header, values[0])
@@ -299,13 +317,23 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 
 var logger = zerolog.New(os.Stderr).With().Timestamp().Logger()
 
+func redactSensitiveHeader(header string, _ fiber.Ctx) bool {
+	switch strings.ToLower(header) {
+	case "authorization", "proxy-authorization", "cookie", "set-cookie", "location", "x-csrf-token", "x-xsrf-token":
+		return true
+	default:
+		return false
+	}
+}
+
 // ConfigDefault is the default config
 var ConfigDefault = Config{
-	Next:     nil,
-	Logger:   &logger,
-	Fields:   []string{FieldIP, FieldLatency, FieldStatus, FieldMethod, FieldURL, FieldError},
-	Messages: []string{"Server error", "Client error", "Success"},
-	Levels:   []zerolog.Level{zerolog.ErrorLevel, zerolog.WarnLevel, zerolog.InfoLevel},
+	Next:         nil,
+	Logger:       &logger,
+	Fields:       []string{FieldIP, FieldLatency, FieldStatus, FieldMethod, FieldURL, FieldError},
+	RedactHeader: redactSensitiveHeader,
+	Messages:     []string{"Server error", "Client error", "Success"},
+	Levels:       []zerolog.Level{zerolog.ErrorLevel, zerolog.WarnLevel, zerolog.InfoLevel},
 }
 
 // Helper function to set default values
@@ -329,6 +357,10 @@ func configDefault(config ...Config) Config {
 
 	if cfg.Fields == nil {
 		cfg.Fields = ConfigDefault.Fields
+	}
+
+	if cfg.RedactHeader == nil {
+		cfg.RedactHeader = ConfigDefault.RedactHeader
 	}
 
 	if cfg.Messages == nil {
