@@ -183,6 +183,28 @@ each request. Use Fiber's cache middleware around the uptime route if you want
 HTTP-level caching. The same snapshot payload is available at
 `UI.Path + "/api/status"` for custom dashboards.
 
+## Dashboard favicon
+
+The built-in dashboard includes an embedded favicon by default. Set
+`UI.FaviconURL` to override it with either a root-relative path served by the
+same application or an absolute HTTP(S) URL:
+
+```go
+app.Use(uptime.New(uptime.Config{
+	App:       app,
+	Store:     store,
+	ServiceID: "api",
+	UI: uptime.UIConfig{
+		FaviconURL: "/assets/favicon.svg",
+	},
+}))
+```
+
+Filesystem paths such as `./favicon.ico` are not supported directly.
+Expose a local file through a Fiber route or static handler, then configure its
+URL. Remote favicon URLs cause each dashboard visitor's browser to contact that
+remote host, so a same-origin URL is preferred for private deployments.
+
 ## Config
 
 | Property | Type | Description | Default |
@@ -202,7 +224,7 @@ HTTP-level caching. The same snapshot payload is available at
 | IDGenerator | `uptime.IDGenerator` | Custom instance ID generator. | `nil` |
 | Store | `*fiberredis.Storage` | Fiber Redis storage instance from `github.com/gofiber/storage/redis/v3`. | Required |
 | StorageKeyPrefix | `string` | Prefix for all uptime Redis keys. | `"fiber:uptime"` |
-| UI | `uptime.UIConfig` | Dashboard copy and thresholds. Threshold values are configurable in `(0, 1]`; zero uses the defaults. | Light English UI, green at `99.9%`, yellow at `99%` |
+| UI | `uptime.UIConfig` | Dashboard copy, favicon, and thresholds. `FaviconURL` accepts a root-relative path or absolute HTTP(S) URL. Threshold values are configurable in `(0, 1]`; zero uses the defaults. | Embedded favicon, light English UI, green at `99.9%`, yellow at `99%` |
 
 ### EndpointConfig
 
