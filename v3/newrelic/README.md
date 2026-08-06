@@ -10,7 +10,7 @@ id: newrelic
 
 [New Relic](https://github.com/newrelic/go-agent) support for Fiber.
 
-Only distributed tracing headers (`traceparent`, `tracestate`, `newrelic`, and `baggage`) are forwarded to New Relic transactions by default. Use `RequestHeaderFilter` to customize which headers are forwarded.
+Only the headers the New Relic agent itself consumes are forwarded to New Relic transactions by default: the distributed tracing headers (`traceparent`, `tracestate`, `newrelic`), the synthetic monitor headers (`X-NewRelic-Synthetics`, `X-NewRelic-Synthetics-Info`) and the queue timing headers (`X-Request-Start`, `X-Queue-Start`). Any other header, including W3C `baggage`, has to be opted into with `RequestHeaderFilter`.
 
 
 **Compatible with Fiber v3.**
@@ -46,7 +46,7 @@ middleware.FromContext(ctx any) *nr.Transaction     // nr "github.com/newrelic/g
 | Application            | `Application`    | Existing New Relic App                                      | `nil`                           |
 | ErrorStatusCodeHandler | `func(c fiber.Ctx, err error) int`    | If you want to change newrelic status code, you can use it. | `DefaultErrorStatusCodeHandler` |
 | Next                   | `func(c fiber.Ctx) bool`    | Next defines a function to skip this middleware when returned true.                                                           | `nil`                           |
-| RequestHeaderFilter    | `func(key, value string) bool`    | Return `true` to forward a request header to New Relic, `false` to skip it. | Distributed tracing headers only |
+| RequestHeaderFilter    | `func(key, value string) bool`    | Return `true` to forward a request header to New Relic, `false` to skip it. | Distributed tracing, synthetics and queue timing headers only |
 
 ## Usage
 

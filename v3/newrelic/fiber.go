@@ -42,7 +42,7 @@ type Config struct {
 	// RequestHeaderFilter controls which inbound request headers are forwarded to
 	// New Relic via WebRequest.Header.
 	// Return true to include a header, false to exclude it.
-	// Optional. Default: distributed tracing headers only.
+	// Optional. Default: distributed tracing, synthetics and queue timing headers only.
 	RequestHeaderFilter func(key, value string) bool
 }
 
@@ -167,12 +167,19 @@ func createWebRequest(c fiber.Ctx, host, method, scheme string, filter func(key,
 	}
 }
 
+// defaultRequestHeaderFilter allows only the headers the New Relic agent itself
+// consumes from WebRequest.Header: distributed tracing headers, the synthetic
+// monitor headers and the queue timing headers. Everything else, including
+// W3C baggage, has to be opted into with a custom RequestHeaderFilter.
 func defaultRequestHeaderFilter(key, _ string) bool {
 	switch {
 	case strings.EqualFold(key, "traceparent"),
 		strings.EqualFold(key, "tracestate"),
 		strings.EqualFold(key, "newrelic"),
-		strings.EqualFold(key, "baggage"):
+		strings.EqualFold(key, "x-newrelic-synthetics"),
+		strings.EqualFold(key, "x-newrelic-synthetics-info"),
+		strings.EqualFold(key, "x-request-start"),
+		strings.EqualFold(key, "x-queue-start"):
 		return true
 	default:
 		return false
