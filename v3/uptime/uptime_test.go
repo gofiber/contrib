@@ -974,6 +974,7 @@ func TestEndpointProbeSkipsHeartbeatOnUnexpectedStatus(t *testing.T) {
 	if len(store.today) != 0 {
 		t.Fatalf("endpoint failure wrote heartbeat rows: %+v", store.today)
 	}
+	requireEqual(t, 2, store.upsertServiceCalls)
 }
 
 func TestEndpointProbeFailureDoesNotClearStorageErrorWhenMaintenanceSkipped(t *testing.T) {

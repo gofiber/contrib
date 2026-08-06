@@ -448,6 +448,11 @@ func (u *runtime) recordTarget(ctx context.Context, target recordTarget, now tim
 		return err
 	}
 	if target.probe != nil && !u.probeEndpoint(ctx, target.probe) {
+		// A failed probe intentionally does not write a heartbeat, but the
+		// configured service is still active and must retain its metadata.
+		if err := u.store.UpsertService(ctx, target.service); err != nil {
+			return fmt.Errorf("refresh service registration: %w", err)
+		}
 		if err := u.runMaintenance(ctx, now, false); err != nil {
 			return err
 		}
