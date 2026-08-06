@@ -499,6 +499,71 @@ func TestCloseSendsFormatCloseMessage(t *testing.T) {
 	require.Equal(t, "Connection closed", ce.Text)
 }
 
+func TestCloseInterruptsReadDespitePongs(t *testing.T) {
+	resetState()
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	upgraded := make(chan *Websocket, 1)
+	app.Use(upgradeMiddleware)
+	app.Get("/", NewWithConfig(func(kws *Websocket) {
+		upgraded <- kws
+	}, Config{
+		PingInterval:    time.Hour,
+		ReadIdleTimeout: 120 * time.Millisecond,
+	}))
+
+	go func() { _ = app.Listener(ln) }()
+
+	dialer := &websocket.Dialer{
+		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+		HandshakeTimeout: 5 * time.Second,
+	}
+	conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+
+	var kws *Websocket
+	select {
+	case kws = <-upgraded:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upgrade did not complete")
+	}
+
+	kws.Close()
+
+	stopPongs := make(chan struct{})
+	pongsStopped := make(chan struct{})
+	go func() {
+		defer close(pongsStopped)
+		ticker := time.NewTicker(40 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				_ = conn.WriteControl(websocket.PongMessage, nil, time.Now().Add(time.Second))
+			case <-stopPongs:
+				return
+			}
+		}
+	}()
+	defer func() {
+		close(stopPongs)
+		<-pongsStopped
+	}()
+
+	require.Eventually(t, func() bool {
+		kws.mu.RLock()
+		defer kws.mu.RUnlock()
+		return kws.Conn == nil
+	}, time.Second, 10*time.Millisecond)
+}
+
 func TestCloseConnNilsConnField(t *testing.T) {
 	kws := createWS()
 	kws.settings = resolveSettings(Config{})

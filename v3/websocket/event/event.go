@@ -734,6 +734,11 @@ func (kws *Websocket) run() {
 	if kws.Conn != nil {
 		_ = kws.Conn.SetReadDeadline(time.Now().Add(kws.settings.readIdleTimeout))
 		kws.Conn.SetPongHandler(func(string) error {
+			select {
+			case <-kws.done:
+				return nil
+			default:
+			}
 			_ = kws.Conn.SetReadDeadline(time.Now().Add(kws.settings.readIdleTimeout))
 			kws.fireEvent(EventPong, nil, nil)
 			return nil
@@ -771,6 +776,7 @@ func (kws *Websocket) run() {
 
 	<-kws.done
 	cancelFunc()
+	kws.interruptRead()
 	wg.Wait()
 	kws.closeConn()
 }
@@ -832,6 +838,15 @@ func (kws *Websocket) disconnected(err error) {
 	kws.fireEvent(EventDisconnect, nil, err)
 	if err != nil {
 		kws.fireEvent(EventError, nil, err)
+	}
+}
+
+func (kws *Websocket) interruptRead() {
+	kws.mu.RLock()
+	conn := kws.Conn
+	kws.mu.RUnlock()
+	if conn != nil {
+		_ = conn.SetReadDeadline(time.Now())
 	}
 }
 
