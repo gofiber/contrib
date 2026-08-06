@@ -165,6 +165,10 @@ var (
 	// repeated oversized POSTs would otherwise keep sessions alive
 	// until heartbeat reaped them.
 	ErrPollingBodyTooLarge = errors.New("socketio: polling POST body exceeds PollingMaxBufferSize")
+	// ErrPollingBeforeConnect is delivered to EventDisconnect when a
+	// polling session sends any Socket.IO payload before the first
+	// SIO CONNECT packet completes auth/namespace validation.
+	ErrPollingBeforeConnect = errors.New("socketio: polling packet received before SIO CONNECT")
 	// ErrUnknownEIOPacket is surfaced via EventError when the inbound EIO
 	// packet type byte does not match any recognised Engine.IO opcode.
 	ErrUnknownEIOPacket = errors.New("socketio: unknown EIO packet type")
@@ -2222,6 +2226,11 @@ func (kws *Websocket) handleSIOPacket(payload []byte) {
 	}
 
 	sioType := payload[0]
+	if kws.pollQ != nil && !kws.connectFired.Load() && sioType != sioConnect {
+		kws.fireEvent(EventError, payload, fmt.Errorf("socketio: polling packet %q before connect", sioType))
+		kws.disconnected(ErrPollingBeforeConnect)
+		return
+	}
 	data := payload[1:]
 
 	// Capture optional namespace prefix (e.g., "/admin,") BEFORE stripping

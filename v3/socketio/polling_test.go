@@ -647,6 +647,82 @@ func TestPollingBinaryInbound(t *testing.T) {
 	}
 }
 
+func TestPollingEventRejectedBeforeConnect(t *testing.T) {
+	resetSIOGlobals(t)
+
+	fired := make(chan struct{}, 1)
+	disc := make(chan error, 1)
+	On("privilegedEvent", func(_ *EventPayload) {
+		select {
+		case fired <- struct{}{}:
+		default:
+		}
+	})
+	On(EventDisconnect, func(p *EventPayload) {
+		select {
+		case disc <- p.Error:
+		default:
+		}
+	})
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	_, st := pollPost(t, c, sid, []byte(`42["privilegedEvent",{"action":"admin"}]`))
+	require.Equal(t, http.StatusOK, st)
+
+	select {
+	case <-fired:
+		t.Fatal("event fired before connect")
+	case <-time.After(200 * time.Millisecond):
+	}
+	select {
+	case err := <-disc:
+		require.ErrorIs(t, err, ErrPollingBeforeConnect)
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected disconnect for pre-connect event")
+	}
+}
+
+func TestPollingBinaryRejectedBeforeConnect(t *testing.T) {
+	resetSIOGlobals(t)
+
+	msg := make(chan struct{}, 1)
+	disc := make(chan error, 1)
+	On(EventMessage, func(_ *EventPayload) {
+		select {
+		case msg <- struct{}{}:
+		default:
+		}
+	})
+	On(EventDisconnect, func(p *EventPayload) {
+		select {
+		case disc <- p.Error:
+		default:
+		}
+	})
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	_, st := pollPost(t, c, sid, []byte("baGVsbG8="))
+	require.Equal(t, http.StatusOK, st)
+
+	select {
+	case <-msg:
+		t.Fatal("binary message fired before connect")
+	case <-time.After(200 * time.Millisecond):
+	}
+	select {
+	case err := <-disc:
+		require.ErrorIs(t, err, ErrPollingBeforeConnect)
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected disconnect for pre-connect binary payload")
+	}
+}
+
 // TestPollingEmitWithAckRoundTrip verifies a server-initiated
 // EmitWithAck round-trips its callback id over polling: the event
 // frame is delivered on a GET, and the client's POST of the matching
