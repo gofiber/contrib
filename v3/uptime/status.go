@@ -33,7 +33,7 @@ type StorageResponse struct {
 	Driver string `json:"driver"`
 	// Status is "ok" when the store is currently healthy.
 	Status string `json:"status"`
-	// LastError is the latest runtime storage error, if any.
+	// LastError is a non-sensitive indicator of the latest runtime storage error.
 	LastError string `json:"last_error,omitempty"`
 	// LastErrorAt is when LastError was recorded.
 	LastErrorAt *time.Time `json:"last_error_at,omitempty"`
@@ -78,8 +78,9 @@ type DayStatus struct {
 }
 
 const (
-	statusUp   = "up"
-	statusDown = "down"
+	statusUp                = "up"
+	statusDown              = "down"
+	storageErrorPublicLabel = "storage operation failed"
 )
 
 func (u *runtime) snapshot(ctx context.Context) (Snapshot, error) {
@@ -288,7 +289,9 @@ func (u *runtime) storageStatus() StorageResponse {
 	}
 	if err != nil {
 		storage.Status = "degraded"
-		storage.LastError = err.Error()
+		// Keep backend error details in server-side logs and expose only a stable,
+		// non-sensitive diagnostic through the public status payload.
+		storage.LastError = storageErrorPublicLabel
 		storage.LastErrorAt = &at
 	}
 	return storage

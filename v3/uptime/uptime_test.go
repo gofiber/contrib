@@ -307,6 +307,25 @@ func TestHandlerStatusJSON(t *testing.T) {
 	requireEqual(t, "ok", status.Storage.Status)
 }
 
+func TestHandlerStatusJSONRedactsStorageError(t *testing.T) {
+	t.Parallel()
+
+	const sensitiveDetail = "postgres://app_user:secret@db-internal.prod.local/customerdb"
+	u := newSnapshotUptime(newSnapshotStore())
+	u.setLastError(errors.New(sensitiveDetail))
+	app := newSnapshotApp(u)
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/uptime/api/status", nil))
+	requireNoError(t, err)
+	t.Cleanup(func() { requireNoError(t, resp.Body.Close()) })
+
+	body, err := io.ReadAll(resp.Body)
+	requireNoError(t, err)
+	requireEqual(t, fiber.StatusOK, resp.StatusCode)
+	requireNotContains(t, string(body), sensitiveDetail)
+	requireContains(t, string(body), `"last_error":"`+storageErrorPublicLabel+`"`)
+}
+
 func TestHandlerStatusHead(t *testing.T) {
 	t.Parallel()
 
@@ -676,7 +695,7 @@ func TestBuildStatusDoesNotClearRuntimeError(t *testing.T) {
 	status, err := u.buildStatus(context.Background(), store.now)
 	requireNoError(t, err)
 	requireEqual(t, "degraded", status.Storage.Status)
-	requireContains(t, status.Storage.LastError, "write heartbeat failed")
+	requireEqual(t, storageErrorPublicLabel, status.Storage.LastError)
 
 	_, lastErr := u.lastError()
 	if !errors.Is(lastErr, runtimeErr) {
@@ -1031,7 +1050,7 @@ func TestEndpointProbeFailureDoesNotClearStorageErrorWhenMaintenanceSkipped(t *t
 	status, err := u.buildStatus(context.Background(), store.now)
 	requireNoError(t, err)
 	requireEqual(t, "degraded", status.Storage.Status)
-	requireContains(t, status.Storage.LastError, "write heartbeat failed")
+	requireEqual(t, storageErrorPublicLabel, status.Storage.LastError)
 }
 
 func TestCustomIDGenerator(t *testing.T) {
