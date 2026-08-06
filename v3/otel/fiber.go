@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,6 +36,7 @@ const (
 	UnitDimensionless = "1"
 	UnitBytes         = "By"
 	UnitSeconds       = "s"
+	UnitRequest       = "{request}"
 
 	// Deprecated: use MetricNameHTTPServerRequestDuration.
 	MetricNameHttpServerDuration = MetricNameHTTPServerRequestDuration
@@ -138,7 +140,7 @@ func Middleware(opts ...Option) fiber.Handler {
 		if err != nil {
 			otel.Handle(err)
 		}
-		httpServerActiveRequests, err = meter.Int64UpDownCounter(MetricNameHTTPServerActiveRequests, metric.WithUnit(UnitDimensionless), metric.WithDescription("Number of active HTTP server requests."))
+		httpServerActiveRequests, err = meter.Int64UpDownCounter(MetricNameHTTPServerActiveRequests, metric.WithUnit(UnitRequest), metric.WithDescription("Number of active HTTP server requests."))
 		if err != nil {
 			otel.Handle(err)
 		}
@@ -181,7 +183,12 @@ func Middleware(opts ...Option) fiber.Handler {
 				request.SetBodyStream(requestBodyStreamSizeReader, -1)
 			}
 		} else {
-			requestSize = int64(len(request.Body()))
+			// use Content-Length to avoid re-marshaling the multipart body, including files, into memory.
+			if contentLength := request.Header.ContentLength(); contentLength > 0 {
+				requestSize = int64(contentLength)
+			} else if !isRequestBodyStream {
+				requestSize = int64(len(request.Body()))
+			}
 		}
 
 		reqHeader := make(http.Header)
@@ -220,6 +227,10 @@ func Middleware(opts ...Option) fiber.Handler {
 		responseAttrs := []attribute.KeyValue{
 			semconv.HTTPResponseStatusCode(c.Response().StatusCode()),
 			semconv.HTTPRouteKey.String(c.Route().Path), // no need to copy c.Route().Path: route strings should be immutable across app lifecycle
+		}
+
+		if c.Response().StatusCode() >= 500 {
+			responseAttrs = append(responseAttrs, semconv.ErrorTypeKey.String(strconv.Itoa(c.Response().StatusCode())))
 		}
 
 		response := c.Response()
@@ -297,5 +308,9 @@ func Middleware(opts ...Option) fiber.Handler {
 // defaultSpanNameFormatter is the default formatter for spans created with the fiber
 // integration. Returns the route pathRaw
 func defaultSpanNameFormatter(ctx fiber.Ctx) string {
-	return ctx.Route().Path
+	route := ctx.Route().Path
+	if route == "" {
+		return utils.CopyString(ctx.Method())
+	}
+	return utils.CopyString(ctx.Method()) + " " + route
 }

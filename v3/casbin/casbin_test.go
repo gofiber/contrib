@@ -6,10 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/casbin/casbin/v2"
-
-	"github.com/casbin/casbin/v2/model"
-	"github.com/casbin/casbin/v2/persist"
+	"github.com/casbin/casbin/v3"
+	"github.com/casbin/casbin/v3/model"
+	"github.com/casbin/casbin/v3/persist"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -23,16 +22,16 @@ const (
 	modelConf = `
 	[request_definition]
 	r = sub, obj, act
-	
+
 	[policy_definition]
 	p = sub, obj, act
-	
+
 	[role_definition]
 	g = _, _
-	
+
 	[policy_effect]
 	e = some(where (p.eft == allow))
-	
+
 	[matchers]
 	m = g(r.sub, p.sub) && r.obj == p.obj && r.act == p.act`
 
@@ -54,15 +53,13 @@ const (
 	g,bob,user`
 )
 
-// mockAdapter
+// mockAdapter is an in-memory policy adapter for testing.
 type mockAdapter struct {
 	text string
 }
 
 func newMockAdapter(text string) *mockAdapter {
-	return &mockAdapter{
-		text: text,
-	}
+	return &mockAdapter{text: text}
 }
 
 func (ma *mockAdapter) LoadPolicy(model model.Model) error {
@@ -70,14 +67,13 @@ func (ma *mockAdapter) LoadPolicy(model model.Model) error {
 		return errors.New("text is required")
 	}
 
-	strs := strings.Split(ma.text, "\n")
-
-	for _, str := range strs {
+	for _, str := range strings.Split(ma.text, "\n") {
 		if str == "" {
 			continue
 		}
-
-		persist.LoadPolicyLine(str, model)
+		if err := persist.LoadPolicyLine(str, model); err != nil {
+			return err
+		}
 	}
 
 	return nil

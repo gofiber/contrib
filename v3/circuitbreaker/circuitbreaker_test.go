@@ -520,6 +520,7 @@ func TestCircuitBreakerReset(t *testing.T) {
 		Timeout:               5 * time.Second,
 		SuccessThreshold:      2,
 		HalfOpenMaxConcurrent: 1,
+		Interval:              10 * time.Second,
 	})
 	cb.now = mockClock.Now
 
@@ -585,6 +586,18 @@ func TestCircuitBreakerReset(t *testing.T) {
 
 		// Verify lastStateChange was updated
 		require.True(t, cb.lastStateChange.After(initialTime))
+	})
+
+	t.Run("Reset updates expiry", func(t *testing.T) {
+		cb.Reset()
+		require.True(t, cb.expiry.Equal(mockClock.Now().Add(cb.config.Interval)))
+
+		// Advance the mock clock by 6s (still before the original 10s expiry)
+		// to verify that Reset recalculates expiry from the current time.
+		mockClock.Add(6 * time.Second)
+
+		cb.Reset()
+		require.True(t, cb.expiry.Equal(mockClock.Now().Add(cb.config.Interval)))
 	})
 
 	// Clean up
@@ -660,6 +673,86 @@ func TestForceOpen(t *testing.T) {
 	cb.Stop()
 }
 
+func newIntervalCB(t *testing.T, interval time.Duration) (*CircuitBreaker, *mockTime) {
+	t.Helper()
+	mockClock := newMockTime(time.Now())
+	cb := New(Config{
+		FailureThreshold:      5,
+		Timeout:               5 * time.Second,
+		SuccessThreshold:      2,
+		HalfOpenMaxConcurrent: 1,
+		Interval:              interval,
+	})
+	cb.now = mockClock.Now
+	t.Cleanup(func() { cb.Stop() })
+	return cb, mockClock
+}
+
+func TestInterval(t *testing.T) {
+	defaultInterval := 10 * time.Second
+	t.Run("Init Sets Expiry", func(t *testing.T) {
+		// New() derives the initial expiry from the real clock, so bound it
+		// between two real timestamps instead of asserting with a tolerance.
+		before := time.Now()
+		cb, _ := newIntervalCB(t, defaultInterval)
+		after := time.Now()
+		require.False(t, cb.expiry.IsZero())
+		require.False(t, cb.expiry.Before(before.Add(defaultInterval)))
+		require.False(t, cb.expiry.After(after.Add(defaultInterval)))
+	})
+
+	t.Run("Init with 0 interval does not set expiry", func(t *testing.T) {
+		cb, _ := newIntervalCB(t, 0)
+		require.True(t, cb.expiry.IsZero())
+	})
+
+	t.Run("Interval Resets Failure Count", func(t *testing.T) {
+		cb, mockClock := newIntervalCB(t, defaultInterval)
+
+		for i := 0; i < 4; i++ {
+			cb.ReportFailure()
+		}
+		require.Equal(t, int64(4), atomic.LoadInt64(&cb.failureCount))
+
+		// Advance time past the interval to trigger reset
+		mockClock.Add(11 * time.Second)
+
+		// Next failure triggers the expiry reset first, then increments
+		cb.ReportFailure()
+		require.Equal(t, int64(1), atomic.LoadInt64(&cb.failureCount))
+	})
+
+	t.Run("Failures spaced multiple intervals apart do not accumulate", func(t *testing.T) {
+		cb, mockClock := newIntervalCB(t, defaultInterval)
+
+		cb.ReportFailure()
+		require.Equal(t, int64(1), atomic.LoadInt64(&cb.failureCount))
+
+		mockClock.Add(3 * defaultInterval)
+
+		// Each failure after a full interval elapses should start a fresh window
+		cb.ReportFailure()
+		require.Equal(t, int64(1), atomic.LoadInt64(&cb.failureCount))
+	})
+
+	t.Run("Interval does not reset Failure Count prematurely", func(t *testing.T) {
+		cb, mockClock := newIntervalCB(t, defaultInterval)
+
+		for i := 0; i < 3; i++ {
+			cb.ReportFailure()
+		}
+		require.Equal(t, int64(3), atomic.LoadInt64(&cb.failureCount))
+
+		require.True(t, cb.expiry.After(mockClock.Now()))
+		// Advance time but not past the interval
+		mockClock.Add(5 * time.Second)
+
+		// Failure count should continue accumulating
+		cb.ReportFailure()
+		require.Equal(t, int64(4), atomic.LoadInt64(&cb.failureCount))
+	})
+}
+
 // TestHealthHandler tests the health check endpoint handler
 func TestHealthHandler(t *testing.T) {
 	cb := New(Config{
@@ -722,8 +815,8 @@ func TestHealthHandler(t *testing.T) {
 
 func TestDefaultOnCloseDoesNotAdvanceChainTwice(t *testing.T) {
 	cb := New(Config{
-		FailureThreshold:  1,
-		SuccessThreshold:  1,
+		FailureThreshold:      1,
+		SuccessThreshold:      1,
 		HalfOpenMaxConcurrent: 1,
 	})
 	defer cb.Stop()
