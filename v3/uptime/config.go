@@ -115,6 +115,10 @@ type UIConfig struct {
 	Description string
 	// Footer is shown at the bottom of the dashboard.
 	Footer string
+	// FaviconURL overrides the built-in dashboard favicon.
+	// It must be a root-relative path or an absolute HTTP(S) URL.
+	// Empty uses the built-in favicon.
+	FaviconURL string
 
 	// GreenThreshold is the minimum uptime ratio for a green day.
 	// Configurable values must be in (0, 1]; zero uses the default.
@@ -200,6 +204,11 @@ func (c Config) normalized() (Config, error) {
 	if c.UI.Footer == "" {
 		c.UI.Footer = defaultUIFooter
 	}
+	faviconURL, err := normalizeFaviconURL(c.UI.FaviconURL)
+	if err != nil {
+		return Config{}, err
+	}
+	c.UI.FaviconURL = faviconURL
 	if c.UI.GreenThreshold == 0 {
 		c.UI.GreenThreshold = defaultGreenThreshold
 	}
@@ -219,6 +228,24 @@ func (c Config) normalized() (Config, error) {
 		c.StorageKeyPrefix = defaultStorageKeyPrefix
 	}
 	return c, nil
+}
+
+func normalizeFaviconURL(rawURL string) (string, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", errors.New("uptime: ui favicon url is invalid")
+	}
+	if strings.HasPrefix(rawURL, "/") && !strings.HasPrefix(rawURL, "//") && parsed.Scheme == "" && parsed.Host == "" {
+		return rawURL, nil
+	}
+	if (strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https")) && parsed.Host != "" && parsed.User == nil {
+		return rawURL, nil
+	}
+	return "", errors.New("uptime: ui favicon url must be a root-relative path or an absolute http(s) url")
 }
 
 func normalizeEndpoints(serviceID string, endpoints []EndpointConfig, sampleInterval time.Duration) ([]EndpointConfig, error) {

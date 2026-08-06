@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -30,6 +31,7 @@ func TestConfigDefaults(t *testing.T) {
 	requireEqual(t, defaultUITitle, cfg.UI.Title)
 	requireEqual(t, defaultUIDescription, cfg.UI.Description)
 	requireEqual(t, defaultUIFooter, cfg.UI.Footer)
+	requireEqual(t, "", cfg.UI.FaviconURL)
 	requireEqual(t, defaultGreenThreshold, cfg.UI.GreenThreshold)
 	requireEqual(t, defaultYellowThreshold, cfg.UI.YellowThreshold)
 }
@@ -47,6 +49,30 @@ func TestConfigZeroThresholdsUseDefaults(t *testing.T) {
 
 	requireEqual(t, defaultGreenThreshold, cfg.UI.GreenThreshold)
 	requireEqual(t, defaultYellowThreshold, cfg.UI.YellowThreshold)
+}
+
+func TestConfigFaviconURLs(t *testing.T) {
+	t.Parallel()
+
+	tests := []string{
+		"/assets/favicon.svg?v=1",
+		"http://127.0.0.1:8080/favicon.ico",
+		"https://cdn.example.com/favicon.png",
+		"HTTPS://cdn.example.com/favicon.svg",
+	}
+	for _, faviconURL := range tests {
+		faviconURL := faviconURL
+		t.Run(faviconURL, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizedTestConfig(t, Config{
+				ServiceID: "api",
+				UI: UIConfig{
+					FaviconURL: faviconURL,
+				},
+			})
+			requireEqual(t, faviconURL, cfg.UI.FaviconURL)
+		})
+	}
 }
 
 func TestConfigEndpointDefaults(t *testing.T) {
@@ -132,6 +158,24 @@ func TestConfigValidation(t *testing.T) {
 				UI: UIConfig{
 					GreenThreshold:  1,
 					YellowThreshold: 1.1,
+				},
+			},
+		},
+		{
+			name: "favicon url scheme invalid",
+			config: Config{
+				ServiceID: "api",
+				UI: UIConfig{
+					FaviconURL: "javascript:alert(1)",
+				},
+			},
+		},
+		{
+			name: "favicon url protocol relative",
+			config: Config{
+				ServiceID: "api",
+				UI: UIConfig{
+					FaviconURL: "//example.com/favicon.svg",
 				},
 			},
 		},
@@ -231,6 +275,7 @@ func TestHandlerDashboardHTML(t *testing.T) {
 	requireEqual(t, fiber.StatusOK, resp.StatusCode)
 	requireEqual(t, fiber.MIMETextHTMLCharsetUTF8, resp.Header.Get(fiber.HeaderContentType))
 	requireContains(t, bodyText, "<title>Fiber Uptime</title>")
+	requireContains(t, html.UnescapeString(bodyText), `<link rel="icon" href="`+defaultUIFaviconURL+`">`)
 	requireContains(t, bodyText, `const apiPath = "/uptime/api/status";`)
 	requireContains(t, bodyText, `id="summary-services"`)
 	requireContains(t, bodyText, `id="summary-up"`)
@@ -249,6 +294,28 @@ func TestHandlerDashboardHTML(t *testing.T) {
 	requireNotContains(t, bodyText, `data-background=`)
 	requireNotContains(t, bodyText, `lang-toggle`)
 	requireNotContains(t, bodyText, `theme-toggle`)
+}
+
+func TestHandlerDashboardCustomFaviconURL(t *testing.T) {
+	t.Parallel()
+
+	const faviconURL = "/assets/favicon.svg?v=1"
+	up := newSnapshotUptimeWithConfig(newSnapshotStore(), Config{
+		ServiceID:      "api",
+		SampleInterval: time.Second,
+		UI: UIConfig{
+			FaviconURL: faviconURL,
+		},
+	})
+	app := newSnapshotApp(up)
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/uptime", nil))
+	requireNoError(t, err)
+	t.Cleanup(func() { requireNoError(t, resp.Body.Close()) })
+
+	body, err := io.ReadAll(resp.Body)
+	requireNoError(t, err)
+	requireContains(t, string(body), `<link rel="icon" href="/assets/favicon.svg?v=1">`)
 }
 
 func TestHandlerHeadDashboard(t *testing.T) {
