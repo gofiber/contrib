@@ -566,6 +566,11 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 		// decoded slice owns its memory; safe to surface to listeners
 		// even after fasthttp recycles the request body.
 		if packet[0] == 'b' {
+			if !kws.connectFired.Load() {
+				kws.fireEvent(EventError, packet, ErrPollingBeforeConnect)
+				kws.disconnected(ErrPollingBeforeConnect)
+				break
+			}
 			decoded := make([]byte, base64.StdEncoding.DecodedLen(len(packet)-1))
 			n, decErr := base64.StdEncoding.Decode(decoded, packet[1:])
 			if decErr != nil {
