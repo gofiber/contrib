@@ -327,6 +327,16 @@ func TestHandlerDashboardCustomFaviconURL(t *testing.T) {
 	requireContains(t, string(body), `<link rel="icon" href="/assets/favicon.svg?v=1">`)
 }
 
+func TestRenderDashboardHTMLSanitizesCustomFaviconURL(t *testing.T) {
+	t.Parallel()
+
+	body, err := renderDashboardHTML(Config{
+		UI: UIConfig{FaviconURL: "javascript:alert(1)"},
+	}, StatusResponse{}, "/uptime/api/status")
+	requireNoError(t, err)
+	requireContains(t, body, `<link rel="icon" href="#ZgotmplZ">`)
+}
+
 func TestHandlerHeadDashboard(t *testing.T) {
 	t.Parallel()
 

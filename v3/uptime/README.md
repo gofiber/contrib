@@ -200,7 +200,7 @@ app.Use(uptime.New(uptime.Config{
 }))
 ```
 
-Filesystem paths such as `/path/to/favicon.ico` are not supported directly.
+Filesystem paths such as `./favicon.ico` are not supported directly.
 Expose a local file through a Fiber route or static handler, then configure its
 URL. Remote favicon URLs cause each dashboard visitor's browser to contact that
 remote host, so a same-origin URL is preferred for private deployments.

@@ -20,7 +20,7 @@ type dashboardPage struct {
 	Title       string
 	Description string
 	Footer      string
-	FaviconURL  template.URL
+	FaviconURL  any
 	APIPathJSON template.JS
 	RefreshMS   int64
 	StatusJSON  template.JS
@@ -29,9 +29,9 @@ type dashboardPage struct {
 var dashboardTemplate = template.Must(template.New("uptime").Parse(dashboardHTML))
 
 func renderDashboardHTML(config Config, status StatusResponse, apiPath string) (string, error) {
-	faviconURL := config.UI.FaviconURL
-	if faviconURL == "" {
-		faviconURL = defaultUIFaviconURL
+	var faviconURL any = config.UI.FaviconURL
+	if config.UI.FaviconURL == "" {
+		faviconURL = template.URL(defaultUIFaviconURL) // #nosec G203 -- this is the package-owned embedded favicon.
 	}
 	statusJSON, err := json.Marshal(status)
 	if err != nil {
@@ -45,7 +45,7 @@ func renderDashboardHTML(config Config, status StatusResponse, apiPath string) (
 		Title:       config.UI.Title,
 		Description: config.UI.Description,
 		Footer:      config.UI.Footer,
-		FaviconURL:  template.URL(faviconURL), // #nosec G203 -- URL scheme is validated during normalization.
+		FaviconURL:  faviconURL,
 		APIPathJSON: template.JS(string(apiPathJSON)),
 		RefreshMS:   max(int64(config.SampleInterval/time.Millisecond), 10000),
 		StatusJSON:  template.JS(string(statusJSON)),
