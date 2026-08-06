@@ -79,6 +79,21 @@ func defaultRecover(c *Conn) {
 	}
 }
 
+var (
+	keepHijackedConnsMu      sync.Mutex
+	keepHijackedConnsServers = make(map[*fasthttp.Server]struct{})
+)
+
+func ensureKeepHijackedConns(server *fasthttp.Server) {
+	keepHijackedConnsMu.Lock()
+	defer keepHijackedConnsMu.Unlock()
+	if _, ok := keepHijackedConnsServers[server]; ok {
+		return
+	}
+	server.KeepHijackedConns = true
+	keepHijackedConnsServers[server] = struct{}{}
+}
+
 // New returns a new `handler func(*Conn)` that upgrades a client to the
 // websocket protocol, you can pass an optional config.
 func New(handler func(*Conn), config ...Config) fiber.Handler {
@@ -141,9 +156,7 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
 		}
-		if !c.App().Server().KeepHijackedConns {
-			c.App().Server().KeepHijackedConns = true
-		}
+		ensureKeepHijackedConns(c.App().Server())
 
 		conn := acquireConn()
 		// locals

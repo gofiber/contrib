@@ -7,12 +7,17 @@ on:
             - main
     workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 permissions:
     contents: read
 
 jobs:
     changes:
         runs-on: ubuntu-latest
+        timeout-minutes: 10
         permissions:
             contents: read
             pull-requests: read
@@ -20,7 +25,7 @@ jobs:
             packages: ${{ github.event_name == 'workflow_dispatch' && steps.filter-setup.outputs.packages || steps.map-packages.outputs.packages || '[]' }}
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v6
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
             - name: Generate filters
               id: filter-setup
@@ -58,7 +63,7 @@ jobs:
 
             - name: Filter changes
               id: filter
-              uses: dorny/paths-filter@v4
+              uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
               if: github.event_name != 'workflow_dispatch'
               with:
                   filters: ${{ steps.filter-setup.outputs.filters }}
@@ -91,7 +96,7 @@ jobs:
                 package: ${{ fromJSON(needs.changes.outputs.packages || '[]') }}
         steps:
             - name: Checkout shared config
-              uses: actions/checkout@v6
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   repository: gofiber/.github
                   sparse-checkout: .github/release-drafter-module.yml
@@ -103,6 +108,6 @@ jobs:
                       .github/release-drafter-module.yml > .github/release-drafter-parsed.yml
 
             - name: Run release drafter
-              uses: release-drafter/release-drafter@v7
+              uses: release-drafter/release-drafter@34d80673e067bdc0c24568d3af899c216adcfaa9 # v7
               with:
                   config-name: file:release-drafter-parsed.yml

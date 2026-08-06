@@ -41,6 +41,7 @@ You can configure the middleware using functional parameters
 | `WithMeterProvider`           | `otelmetric.MeterProvider`      | Specifies a meter provider to use for reporting.                                     | nil - the global meter provider is used                                                             |
 | `WithPort`                    | `int`                          | Specifies the value to use when setting the `server.port` attribute on metrics/spans.                            | Defaults to (`80` for `http`, `443` for `https`)              |
 | `WithPropagators`             | `propagation.TextMapPropagator` | Specifies propagators to use for extracting information from the HTTP requests.                     | If none are specified, global ones will be used                                                               |
+| `WithTraceResponseHeader`     | `string`                       | Specifies a response header used to expose the current trace ID.                                                  | Empty - no dedicated trace ID response header                                                           |
 | (❌ **Removed**) `WithServerName`             | `string`                       | This option was removed because the `http.server_name` attribute is deprecated in the OpenTelemetry semantic conventions. The recommended attribute is `server.address`, which this middleware already fills with the hostname reported by Fiber.                                            | -                                                                   |
 | `WithSpanNameFormatter`       | `func(fiber.Ctx) string`       | Takes a function that will be called on every request and the returned string will become the span Name.                                   | Default formatter returns the route pathRaw |
 | `WithCustomAttributes`        | `func(fiber.Ctx) []attribute.KeyValue` | Define a function to add custom attributes to the span.                  | nil                                                                 |
@@ -58,6 +59,16 @@ Please refer to [example](./example)
 - `http.server.request.size` and `http.server.response.size` are measured without buffering full streamed bodies into memory.
 - For streamed responses, size is recorded when the stream reaches EOF.
 - For `text/event-stream` responses (SSE), response body size is not recorded.
+
+## Trace ID Response Header
+
+You can optionally expose the current trace ID in a dedicated response header:
+
+```go
+app.Use(fiberotel.Middleware(
+    fiberotel.WithTraceResponseHeader("X-Trace-Id"),
+))
+```
 
 ## Example
 

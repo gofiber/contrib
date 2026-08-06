@@ -122,7 +122,7 @@ func TestTrace200(t *testing.T) {
 	span := spans[0]
 	attr := span.Attributes()
 
-	assert.Equal(t, "/user/:id", span.Name())
+	assert.Equal(t, "GET /user/:id", span.Name())
 	assert.Equal(t, oteltrace.SpanKindServer, span.SpanKind())
 	assert.Contains(t, attr, attribute.String("server.address", r.Host))
 	assert.Contains(t, attr, attribute.Int("http.response.status_code", http.StatusOK))
@@ -154,8 +154,9 @@ func TestError(t *testing.T) {
 	span := spans[0]
 	attr := span.Attributes()
 
-	assert.Equal(t, "/server_err", span.Name())
+	assert.Equal(t, "GET /server_err", span.Name())
 	assert.Contains(t, attr, attribute.Int("http.response.status_code", http.StatusInternalServerError))
+	assert.Contains(t, attr, attribute.String("error.type", "500"))
 	assert.Equal(t, attribute.StringValue("oh no"), span.Events()[0].Attributes[1].Value)
 	// server errors set the status
 	assert.Equal(t, codes.Error, span.Status().Code)
@@ -338,6 +339,47 @@ func TestMetric(t *testing.T) {
 	assertScopeMetrics(t, metrics.ScopeMetrics[0], route, requestAttrs, append(requestAttrs, responseAttrs...))
 }
 
+func TestRequestBodySizeUsesContentLength(t *testing.T) {
+	const contentLength = 1024
+
+	reader := metric.NewManualReader()
+	provider := metric.NewMeterProvider(metric.WithReader(reader))
+
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		// Simulate a pre-parsed body whose in-memory representation differs from
+		// the size declared by the request, as can happen for multipart forms.
+		c.Request().Header.SetContentLength(contentLength)
+		return c.Next()
+	})
+	app.Use(fiberotel.Middleware(fiberotel.WithMeterProvider(provider)))
+	app.Post("/upload", func(c fiber.Ctx) error {
+		return c.SendStatus(http.StatusNoContent)
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodPost, "/upload", bytes.NewBufferString("body")))
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	metrics := metricdata.ResourceMetrics{}
+	require.NoError(t, reader.Collect(context.Background(), &metrics))
+	require.Len(t, metrics.ScopeMetrics, 1)
+
+	for _, m := range metrics.ScopeMetrics[0].Metrics {
+		if m.Name != fiberotel.MetricNameHTTPServerRequestBodySize {
+			continue
+		}
+
+		histogram, ok := m.Data.(metricdata.Histogram[int64])
+		require.True(t, ok)
+		require.Len(t, histogram.DataPoints, 1)
+		assert.Equal(t, int64(contentLength), histogram.DataPoints[0].Sum)
+		return
+	}
+
+	t.Fatal("request body size metric not found")
+}
+
 func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, requestAttrs []attribute.KeyValue, responseAttrs []attribute.KeyValue) {
 	assert.Equal(t, instrumentation.Scope{
 		Name:    instrumentationName,
@@ -379,7 +421,7 @@ func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, 
 	want = metricdata.Metrics{
 		Name:        fiberotel.MetricNameHTTPServerActiveRequests,
 		Description: "Number of active HTTP server requests.",
-		Unit:        fiberotel.UnitDimensionless,
+		Unit:        fiberotel.UnitRequest,
 		Data: metricdata.Sum[int64]{
 			DataPoints: []metricdata.DataPoint[int64]{
 				{Attributes: attribute.NewSet(requestAttrs...), Value: 0},
@@ -459,7 +501,7 @@ func TestCustomAttributes(t *testing.T) {
 	span := spans[0]
 	attr := span.Attributes()
 
-	assert.Equal(t, "/user/:id", span.Name())
+	assert.Equal(t, "GET /user/:id", span.Name())
 	assert.Equal(t, oteltrace.SpanKindServer, span.SpanKind())
 	assert.Contains(t, attr, attribute.Int("http.response.status_code", http.StatusOK))
 	assert.Contains(t, attr, attribute.String("http.request.method", "GET"))
@@ -572,6 +614,75 @@ func TestOutboundTracingPropagationWithInboundContext(t *testing.T) {
 	assert.NotEmpty(t, resp.Header.Get("X-B3-SpanId"))
 	assert.Equal(t, traceId, resp.Header.Get("X-B3-TraceId"))
 	assert.Equal(t, "1", resp.Header.Get("X-B3-Sampled"))
+}
+
+func TestTraceResponseHeader(t *testing.T) {
+	sr := new(tracetest.SpanRecorder)
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+
+	app := fiber.New()
+	app.Use(fiberotel.Middleware(
+		fiberotel.WithTracerProvider(provider),
+		fiberotel.WithTraceResponseHeader("X-Trace-Id"),
+	))
+	app.Get("/foo", func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(http.StatusNoContent)
+	})
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/foo", nil), fiber.TestConfig{Timeout: 3 * time.Second})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+
+	assert.Equal(t, spans[0].SpanContext().TraceID().String(), resp.Header.Get("X-Trace-Id"))
+}
+
+func TestTraceResponseHeaderDisabledByDefault(t *testing.T) {
+	sr := new(tracetest.SpanRecorder)
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+
+	app := fiber.New()
+	app.Use(fiberotel.Middleware(
+		fiberotel.WithTracerProvider(provider),
+	))
+	app.Get("/foo", func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(http.StatusNoContent)
+	})
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/foo", nil), fiber.TestConfig{Timeout: 3 * time.Second})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	assert.Empty(t, resp.Header.Get("X-Trace-Id"))
+}
+
+func TestTraceResponseHeaderUsesInboundTraceID(t *testing.T) {
+	sr := new(tracetest.SpanRecorder)
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	propagator := propagation.TraceContext{}
+
+	req := httptest.NewRequest(http.MethodGet, "/foo", nil)
+	ctx, span := provider.Tracer(instrumentationName).Start(context.Background(), "test")
+	defer span.End()
+	propagator.Inject(ctx, propagation.HeaderCarrier(req.Header))
+
+	app := fiber.New()
+	app.Use(fiberotel.Middleware(
+		fiberotel.WithTracerProvider(provider),
+		fiberotel.WithPropagators(propagator),
+		fiberotel.WithTraceResponseHeader("X-Trace-Id"),
+	))
+	app.Get("/foo", func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(http.StatusNoContent)
+	})
+
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 3 * time.Second})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	assert.Equal(t, span.SpanContext().TraceID().String(), resp.Header.Get("X-Trace-Id"))
 }
 
 func TestCollectClientIP(t *testing.T) {

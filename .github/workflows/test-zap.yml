@@ -5,22 +5,25 @@ on:
     branches:
       - master
       - main
-    paths:
-      - 'v3/zap/**/*.go'
-      - 'v3/zap/go.mod'
   pull_request:
     paths:
       - 'v3/zap/**/*.go'
       - 'v3/zap/go.mod'
+      - 'v3/zap/go.sum'
 
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
   Tests:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
     env:
       GOWORK: off
     strategy:
@@ -29,11 +32,17 @@ jobs:
           - 1.25.x
     steps:
       - name: Fetch Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '${{ matrix.go-version }}'
+          check-latest: true
+          cache-dependency-path: v3/zap/go.sum
       - name: Run Test
-        working-directory: ./v3/zap
-        run: go test -v -race ./...
+        uses: gofiber/.github/.github/actions/gotestsum@main
+        with:
+          working-directory: ./v3/zap
+          packages: ./...
+          rerun-fails: '2'
+          args: -race -count=1

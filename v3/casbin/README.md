@@ -12,6 +12,12 @@ Casbin middleware for Fiber.
 
 **Compatible with Fiber v3.**
 
+> This middleware targets **Casbin v3**. Casbin v2 is no longer supported here;
+> if you still need it, pin the previous major
+> (`github.com/gofiber/contrib/v3/casbin` at its last `v1` tag). Migrating from
+> Casbin v2 to v3 is mostly an import-path change; see the
+> [Casbin upgrade guide](https://casbin.org/docs/upgrade).
+
 ## Go version support
 
 We only support the latest two versions of Go. Visit [https://go.dev/doc/devel/release](https://go.dev/doc/devel/release) for more information.
@@ -19,11 +25,11 @@ We only support the latest two versions of Go. Visit [https://go.dev/doc/devel/r
 ## Install
 ```sh
 go get -u github.com/gofiber/fiber/v3
-go get -u github.com/gofiber/contrib/v3/casbin
+go get -u github.com/gofiber/contrib/v3/casbin/v2
 ```
 choose an adapter from [here](https://casbin.org/docs/adapters)
 ```sh
-go get -u github.com/casbin/xorm-adapter
+go get -u github.com/casbin/gorm-adapter/v3
 ```
 
 ## Signature
@@ -53,19 +59,20 @@ package main
 
 import (
   "github.com/gofiber/fiber/v3"
-  "github.com/gofiber/contrib/v3/casbin"
+  "github.com/gofiber/contrib/v3/casbin/v2"
   _ "github.com/go-sql-driver/mysql"
-  "github.com/casbin/xorm-adapter/v2"
+  gormadapter "github.com/casbin/gorm-adapter/v3"
 )
 
 func main() {
   app := fiber.New()
 
+  adapter, _ := gormadapter.NewAdapter("mysql", "root:@tcp(127.0.0.1:3306)/")
   authz := casbin.New(casbin.Config{
       ModelFilePath: "path/to/rbac_model.conf",
-      PolicyAdapter: xormadapter.NewAdapter("mysql", "root:@tcp(127.0.0.1:3306)/"),
+      PolicyAdapter: adapter,
       Lookup: func(c fiber.Ctx) string {
-          // fetch authenticated user subject
+          return "" // fetch authenticated user subject
       },
   })
 
@@ -75,7 +82,7 @@ func main() {
         // your handler
       },
   )
-  
+
   app.Delete("/blog/:id",
     authz.RequiresPermissions([]string{"blog:create", "blog:delete"}, casbin.WithValidationRule(casbin.AtLeastOneRule)),
     func(c fiber.Ctx) error {
@@ -94,19 +101,20 @@ package main
 
 import (
   "github.com/gofiber/fiber/v3"
-  "github.com/gofiber/contrib/v3/casbin"
+  "github.com/gofiber/contrib/v3/casbin/v2"
   _ "github.com/go-sql-driver/mysql"
-  "github.com/casbin/xorm-adapter/v2"
+  gormadapter "github.com/casbin/gorm-adapter/v3"
 )
 
 func main() {
   app := fiber.New()
 
+  adapter, _ := gormadapter.NewAdapter("mysql", "root:@tcp(127.0.0.1:3306)/")
   authz := casbin.New(casbin.Config{
       ModelFilePath: "path/to/rbac_model.conf",
-      PolicyAdapter: xormadapter.NewAdapter("mysql", "root:@tcp(127.0.0.1:3306)/"),
+      PolicyAdapter: adapter,
       Lookup: func(c fiber.Ctx) string {
-          // fetch authenticated user subject
+          return "" // fetch authenticated user subject
       },
   })
 
@@ -129,22 +137,23 @@ package main
 
 import (
   "github.com/gofiber/fiber/v3"
-  "github.com/gofiber/contrib/v3/casbin"
+  "github.com/gofiber/contrib/v3/casbin/v2"
   _ "github.com/go-sql-driver/mysql"
-  "github.com/casbin/xorm-adapter/v2"
+  gormadapter "github.com/casbin/gorm-adapter/v3"
 )
 
 func main() {
   app := fiber.New()
 
+  adapter, _ := gormadapter.NewAdapter("mysql", "root:@tcp(127.0.0.1:3306)/")
   authz := casbin.New(casbin.Config{
       ModelFilePath: "path/to/rbac_model.conf",
-      PolicyAdapter: xormadapter.NewAdapter("mysql", "root:@tcp(127.0.0.1:3306)/"),
+      PolicyAdapter: adapter,
       Lookup: func(c fiber.Ctx) string {
-          // fetch authenticated user subject
+          return "" // fetch authenticated user subject
       },
   })
-  
+
   app.Put("/blog/:id",
     authz.RequiresRoles([]string{"admin"}),
     func(c fiber.Ctx) error {
