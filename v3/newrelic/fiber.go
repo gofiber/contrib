@@ -173,13 +173,13 @@ func createWebRequest(c fiber.Ctx, host, method, scheme string, filter func(key,
 // W3C baggage, has to be opted into with a custom RequestHeaderFilter.
 func defaultRequestHeaderFilter(key, _ string) bool {
 	switch {
-	case strings.EqualFold(key, "traceparent"),
-		strings.EqualFold(key, "tracestate"),
-		strings.EqualFold(key, "newrelic"),
-		strings.EqualFold(key, "x-newrelic-synthetics"),
-		strings.EqualFold(key, "x-newrelic-synthetics-info"),
-		strings.EqualFold(key, "x-request-start"),
-		strings.EqualFold(key, "x-queue-start"):
+	case utils.EqualFold(key, "traceparent"),
+		utils.EqualFold(key, "tracestate"),
+		utils.EqualFold(key, "newrelic"),
+		utils.EqualFold(key, "x-newrelic-synthetics"),
+		utils.EqualFold(key, "x-newrelic-synthetics-info"),
+		utils.EqualFold(key, "x-request-start"),
+		utils.EqualFold(key, "x-queue-start"):
 		return true
 	default:
 		return false

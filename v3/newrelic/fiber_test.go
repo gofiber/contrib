@@ -4,10 +4,10 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
 	"github.com/newrelic/go-agent/v3/newrelic"
 	"github.com/stretchr/testify/assert"
 )
@@ -460,7 +460,7 @@ func TestCreateWebRequest(t *testing.T) {
 		app := fiber.New()
 		app.Get("/", func(ctx fiber.Ctx) error {
 			req := createWebRequest(ctx, ctx.Hostname(), ctx.Method(), string(ctx.Request().URI().Scheme()), func(key, _ string) bool {
-				return strings.EqualFold(key, "traceparent")
+				return utils.EqualFold(key, "traceparent")
 			})
 			assert.Equal(t, "trace-value", req.Header.Get("traceparent"))
 			assert.Empty(t, req.Header.Values("Authorization"))
