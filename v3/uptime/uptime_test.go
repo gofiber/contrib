@@ -105,8 +105,9 @@ func TestConfigValidation(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		config Config
+		name    string
+		config  Config
+		wantErr error
 	}{
 		{name: "missing app", config: Config{ServiceID: "api"}},
 		{name: "missing service id", config: Config{}},
@@ -162,7 +163,8 @@ func TestConfigValidation(t *testing.T) {
 			},
 		},
 		{
-			name: "favicon url scheme invalid",
+			name:    "favicon url scheme invalid",
+			wantErr: ErrInvalidFaviconURL,
 			config: Config{
 				ServiceID: "api",
 				UI: UIConfig{
@@ -171,7 +173,8 @@ func TestConfigValidation(t *testing.T) {
 			},
 		},
 		{
-			name: "favicon url protocol relative",
+			name:    "favicon url protocol relative",
+			wantErr: ErrInvalidFaviconURL,
 			config: Config{
 				ServiceID: "api",
 				UI: UIConfig{
@@ -180,7 +183,8 @@ func TestConfigValidation(t *testing.T) {
 			},
 		},
 		{
-			name: "favicon url backslash authority",
+			name:    "favicon url backslash authority",
+			wantErr: ErrInvalidFaviconURL,
 			config: Config{
 				ServiceID: "api",
 				UI: UIConfig{
@@ -253,6 +257,9 @@ func TestConfigValidation(t *testing.T) {
 			}
 			_, err := tt.config.normalized()
 			requireError(t, err)
+			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
 		})
 	}
 }

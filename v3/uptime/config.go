@@ -9,6 +9,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	fiberredis "github.com/gofiber/storage/redis/v3"
+	"github.com/gofiber/utils/v2"
 )
 
 const (
@@ -33,6 +34,8 @@ var (
 	ErrMissingStore = errors.New("uptime: redis storage is required")
 	// ErrMissingApp is returned when Config.App is not set.
 	ErrMissingApp = errors.New("uptime: fiber app is required")
+	// ErrInvalidFaviconURL is returned when UIConfig.FaviconURL is not a supported URL.
+	ErrInvalidFaviconURL = errors.New("uptime: ui favicon url must be a root-relative path or an absolute http(s) url")
 )
 
 // Config defines the configuration for the uptime middleware.
@@ -231,21 +234,21 @@ func (c Config) normalized() (Config, error) {
 }
 
 func normalizeFaviconURL(rawURL string) (string, error) {
-	rawURL = strings.TrimSpace(rawURL)
+	rawURL = utils.TrimSpace(rawURL)
 	if rawURL == "" {
 		return "", nil
 	}
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return "", errors.New("uptime: ui favicon url is invalid")
+		return "", ErrInvalidFaviconURL
 	}
 	if strings.HasPrefix(rawURL, "/") && !strings.HasPrefix(rawURL, "//") && !strings.HasPrefix(rawURL, "/\\") && parsed.Scheme == "" && parsed.Host == "" {
 		return rawURL, nil
 	}
-	if (strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https")) && parsed.Host != "" && parsed.User == nil {
+	if (utils.EqualFold(parsed.Scheme, "http") || utils.EqualFold(parsed.Scheme, "https")) && parsed.Host != "" && parsed.User == nil {
 		return rawURL, nil
 	}
-	return "", errors.New("uptime: ui favicon url must be a root-relative path or an absolute http(s) url")
+	return "", ErrInvalidFaviconURL
 }
 
 func normalizeEndpoints(serviceID string, endpoints []EndpointConfig, sampleInterval time.Duration) ([]EndpointConfig, error) {
