@@ -996,6 +996,66 @@ func TestEndpointProbeSkipsHeartbeatOnUnexpectedStatus(t *testing.T) {
 	requireEqual(t, 2, store.upsertServiceCalls)
 }
 
+func TestEndpointProbeFailureReportsServiceRefreshError(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	store := newSnapshotStore()
+	service := storage.Service{
+		ID:             "health",
+		Name:           "Health",
+		CreatedAt:      store.now.Add(-time.Hour),
+		SampleInterval: time.Second,
+	}
+	store.services = []storage.Service{service}
+	store.today = nil
+	cfg := normalizedTestConfig(t, Config{
+		Endpoints: []EndpointConfig{
+			{
+				ID:       "health",
+				URL:      server.URL,
+				Interval: time.Second,
+				Timeout:  time.Second,
+			},
+		},
+		DaysToShow:    1,
+		RetentionDays: 1,
+		Timezone:      time.UTC,
+	})
+
+	u := newSnapshotUptimeWithConfig(store, cfg)
+	u.httpClient = server.Client()
+	target := recordTarget{
+		service:  service,
+		instance: storage.Instance{ID: 7, ServiceID: "health"},
+		interval: service.SampleInterval,
+		probe:    newEndpointProbe(cfg.Endpoints[0]),
+	}
+	// Registration already happened, so only the post-probe refresh fails.
+	u.registeredTargets = map[string]struct{}{service.ID: {}}
+	upsertErr := errors.New("upsert service failed")
+	store.upsertServiceErr = upsertErr
+
+	err := u.recordTarget(context.Background(), target, store.now)
+	if !errors.Is(err, upsertErr) {
+		t.Fatalf("recordTarget error = %v, want %v", err, upsertErr)
+	}
+	requireEqual(t, 0, store.rollupCalls)
+
+	_, lastErr := u.lastError()
+	if !errors.Is(lastErr, upsertErr) {
+		t.Fatalf("last error = %v, want %v", lastErr, upsertErr)
+	}
+	status, statusErr := u.buildStatus(context.Background(), store.now)
+	requireNoError(t, statusErr)
+	requireEqual(t, "degraded", status.Storage.Status)
+	requireEqual(t, storageErrorPublicLabel, status.Storage.LastError)
+}
+
 func TestEndpointProbeFailureDoesNotClearStorageErrorWhenMaintenanceSkipped(t *testing.T) {
 	t.Parallel()
 
@@ -1184,6 +1244,7 @@ type snapshotStore struct {
 	today                  []storage.TodaySampleStatus
 	sampleSlots            map[string]map[int64]struct{}
 	writeHeartbeatErr      error
+	upsertServiceErr       error
 	initCalls              int
 	upsertServiceCalls     int
 	upsertInstanceCalls    int
@@ -1227,6 +1288,9 @@ func (s *snapshotStore) UpsertService(_ context.Context, service storage.Service
 	s.upsertServiceCalls++
 	if s.requireInitBeforeWrite && !s.initialized {
 		return errors.New("store used before init")
+	}
+	if s.upsertServiceErr != nil {
+		return s.upsertServiceErr
 	}
 	for i := range s.services {
 		if s.services[i].ID == service.ID {
