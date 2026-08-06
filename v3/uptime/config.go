@@ -9,6 +9,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	fiberredis "github.com/gofiber/storage/redis/v3"
+	"github.com/gofiber/utils/v2"
 )
 
 const (
@@ -33,6 +34,8 @@ var (
 	ErrMissingStore = errors.New("uptime: redis storage is required")
 	// ErrMissingApp is returned when Config.App is not set.
 	ErrMissingApp = errors.New("uptime: fiber app is required")
+	// ErrInvalidFaviconURL is returned when UIConfig.FaviconURL is not a supported URL.
+	ErrInvalidFaviconURL = errors.New("uptime: favicon url must be a root-relative path or an absolute http(s) url")
 )
 
 // Config defines the configuration for the uptime middleware.
@@ -115,6 +118,10 @@ type UIConfig struct {
 	Description string
 	// Footer is shown at the bottom of the dashboard.
 	Footer string
+	// FaviconURL overrides the built-in dashboard favicon.
+	// It must be a root-relative path or an absolute HTTP(S) URL.
+	// Empty uses the built-in favicon.
+	FaviconURL string
 
 	// GreenThreshold is the minimum uptime ratio for a green day.
 	// Configurable values must be in (0, 1]; zero uses the default.
@@ -200,6 +207,11 @@ func (c Config) normalized() (Config, error) {
 	if c.UI.Footer == "" {
 		c.UI.Footer = defaultUIFooter
 	}
+	faviconURL, err := normalizeFaviconURL(c.UI.FaviconURL)
+	if err != nil {
+		return Config{}, err
+	}
+	c.UI.FaviconURL = faviconURL
 	if c.UI.GreenThreshold == 0 {
 		c.UI.GreenThreshold = defaultGreenThreshold
 	}
@@ -219,6 +231,24 @@ func (c Config) normalized() (Config, error) {
 		c.StorageKeyPrefix = defaultStorageKeyPrefix
 	}
 	return c, nil
+}
+
+func normalizeFaviconURL(rawURL string) (string, error) {
+	rawURL = utils.TrimSpace(rawURL)
+	if rawURL == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", ErrInvalidFaviconURL
+	}
+	if strings.HasPrefix(rawURL, "/") && !strings.HasPrefix(rawURL, "//") && !strings.HasPrefix(rawURL, "/\\") && parsed.Scheme == "" && parsed.Host == "" {
+		return rawURL, nil
+	}
+	if (utils.EqualFold(parsed.Scheme, "http") || utils.EqualFold(parsed.Scheme, "https")) && parsed.Host != "" && parsed.User == nil {
+		return rawURL, nil
+	}
+	return "", ErrInvalidFaviconURL
 }
 
 func normalizeEndpoints(serviceID string, endpoints []EndpointConfig, sampleInterval time.Duration) ([]EndpointConfig, error) {
