@@ -2226,8 +2226,13 @@ func (kws *Websocket) handleSIOPacket(payload []byte) {
 	}
 
 	sioType := payload[0]
+	// Polling sessions must complete the SIO CONNECT handshake before any
+	// other Socket.IO packet is dispatched, mirroring the WebSocket path's
+	// CONNECT gating. disconnected() marks the session dead, which also
+	// stops ingestPolling's parse loop so frames batched behind the
+	// rejected one (including a trailing CONNECT) are never processed.
 	if kws.pollQ != nil && !kws.connectFired.Load() && sioType != sioConnect {
-		kws.fireEvent(EventError, payload, fmt.Errorf("socketio: polling packet %q before connect", sioType))
+		kws.fireEvent(EventError, payload, fmt.Errorf("%w: packet type %q", ErrPollingBeforeConnect, sioType))
 		kws.disconnected(ErrPollingBeforeConnect)
 		return
 	}
