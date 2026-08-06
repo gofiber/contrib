@@ -36,15 +36,17 @@ type LoggerConfig struct {
 	logger *zap.Logger
 }
 
-// WithContext returns a new LoggerConfig with extra fields from context
-func (l *LoggerConfig) WithContext(ctx context.Context) fiberlog.CommonLogger {
+// WithContext returns a new LoggerConfig with extra fields from context.
+// Fiber v3.3.0 widened log.CommonLogger.WithContext to accept any, so the
+// argument is type-asserted back to context.Context before extracting ExtraKeys.
+func (l *LoggerConfig) WithContext(ctx any) fiberlog.CommonLogger {
 	loggerOptions := l.logger.WithOptions(zap.AddCallerSkip(-1))
 	newLogger := &LoggerConfig{logger: loggerOptions}
 
-	if len(l.ExtraKeys) > 0 {
+	if c, ok := ctx.(context.Context); ok && len(l.ExtraKeys) > 0 {
 		sugar := l.logger.Sugar()
 		for _, k := range l.ExtraKeys {
-			value := ctx.Value(k)
+			value := c.Value(k)
 			sugar = sugar.With(k, value)
 		}
 		// assign the new sugar to the new LoggerConfig

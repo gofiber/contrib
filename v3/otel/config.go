@@ -15,6 +15,7 @@ type config struct {
 	MeterProvider          otelmetric.MeterProvider
 	Port                   *int
 	Propagators            propagation.TextMapPropagator
+	TraceResponseHeader    string
 	SpanNameFormatter      func(fiber.Ctx) string
 	CustomAttributes       func(fiber.Ctx) []attribute.KeyValue
 	CustomMetricAttributes func(fiber.Ctx) []attribute.KeyValue
@@ -47,6 +48,14 @@ func WithNext(f func(ctx fiber.Ctx) bool) Option {
 func WithPropagators(propagators propagation.TextMapPropagator) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.Propagators = propagators
+	})
+}
+
+// WithTraceResponseHeader specifies the response header used to expose
+// the current trace ID. If empty, no dedicated trace ID response header is set.
+func WithTraceResponseHeader(header string) Option {
+	return optionFunc(func(cfg *config) {
+		cfg.TraceResponseHeader = header
 	})
 }
 
