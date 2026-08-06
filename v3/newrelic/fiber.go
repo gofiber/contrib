@@ -42,7 +42,7 @@ type Config struct {
 	// RequestHeaderFilter controls which inbound request headers are forwarded to
 	// New Relic via WebRequest.Header.
 	// Return true to include a header, false to exclude it.
-	// Optional. Default: include all headers.
+	// Optional. Default: distributed tracing headers only.
 	RequestHeaderFilter func(key, value string) bool
 }
 
@@ -53,7 +53,7 @@ var ConfigDefault = Config{
 	Enabled:                false,
 	ErrorStatusCodeHandler: DefaultErrorStatusCodeHandler,
 	Next:                   nil,
-	RequestHeaderFilter:    nil,
+	RequestHeaderFilter:    defaultRequestHeaderFilter,
 }
 
 func New(cfg Config) fiber.Handler {
@@ -62,6 +62,9 @@ func New(cfg Config) fiber.Handler {
 
 	if cfg.ErrorStatusCodeHandler == nil {
 		cfg.ErrorStatusCodeHandler = ConfigDefault.ErrorStatusCodeHandler
+	}
+	if cfg.RequestHeaderFilter == nil {
+		cfg.RequestHeaderFilter = ConfigDefault.RequestHeaderFilter
 	}
 
 	if cfg.Application != nil {
@@ -161,6 +164,18 @@ func createWebRequest(c fiber.Ctx, host, method, scheme string, filter func(key,
 			Path:     string(c.Request().URI().Path()),
 			RawQuery: string(c.Request().URI().QueryString()),
 		},
+	}
+}
+
+func defaultRequestHeaderFilter(key, _ string) bool {
+	switch {
+	case strings.EqualFold(key, "traceparent"),
+		strings.EqualFold(key, "tracestate"),
+		strings.EqualFold(key, "newrelic"),
+		strings.EqualFold(key, "baggage"):
+		return true
+	default:
+		return false
 	}
 }
 
