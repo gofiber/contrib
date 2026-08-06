@@ -514,8 +514,11 @@ func TestCloseInterruptsReadDespitePongs(t *testing.T) {
 	app.Get("/", NewWithConfig(func(kws *Websocket) {
 		upgraded <- kws
 	}, Config{
-		PingInterval:    time.Hour,
-		ReadIdleTimeout: 120 * time.Millisecond,
+		PingInterval: time.Hour,
+		// Long enough that shutdown completing at all proves it does not
+		// depend on the read deadline expiring, whether the initial one or
+		// one refreshed by a pong racing with Close.
+		ReadIdleTimeout: time.Hour,
 	}))
 
 	go func() { _ = app.Listener(ln) }()
@@ -535,21 +538,23 @@ func TestCloseInterruptsReadDespitePongs(t *testing.T) {
 		t.Fatal("upgrade did not complete")
 	}
 
-	kws.Close()
-
+	// Keep pongs in flight before and during Close so a pong handler can be
+	// mid-flight, past its done check, exactly when shutdown starts.
 	stopPongs := make(chan struct{})
 	pongsStopped := make(chan struct{})
 	go func() {
 		defer close(pongsStopped)
-		ticker := time.NewTicker(40 * time.Millisecond)
-		defer ticker.Stop()
 		for {
 			select {
-			case <-ticker.C:
-				_ = conn.WriteControl(websocket.PongMessage, nil, time.Now().Add(time.Second))
 			case <-stopPongs:
 				return
+			default:
 			}
+			if err := conn.WriteControl(websocket.PongMessage, nil, time.Now().Add(time.Second)); err != nil {
+				// The server closed the connection; nothing left to send.
+				return
+			}
+			time.Sleep(time.Millisecond)
 		}
 	}()
 	defer func() {
@@ -557,11 +562,16 @@ func TestCloseInterruptsReadDespitePongs(t *testing.T) {
 		<-pongsStopped
 	}()
 
+	// Give the pong flood a moment to reach the read goroutine.
+	time.Sleep(20 * time.Millisecond)
+
+	kws.Close()
+
 	require.Eventually(t, func() bool {
 		kws.mu.RLock()
 		defer kws.mu.RUnlock()
 		return kws.Conn == nil
-	}, time.Second, 10*time.Millisecond)
+	}, 2*time.Second, 10*time.Millisecond)
 }
 
 func TestCloseConnNilsConnField(t *testing.T) {

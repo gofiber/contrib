@@ -734,6 +734,10 @@ func (kws *Websocket) run() {
 	if kws.Conn != nil {
 		_ = kws.Conn.SetReadDeadline(time.Now().Add(kws.settings.readIdleTimeout))
 		kws.Conn.SetPongHandler(func(string) error {
+			// Best-effort short circuit so a peer that keeps ponging does not
+			// keep firing events once shutdown started. Shutdown correctness
+			// does not depend on winning this race: run closes the underlying
+			// connection, which no deadline refresh can undo.
 			select {
 			case <-kws.done:
 				return nil
@@ -776,7 +780,10 @@ func (kws *Websocket) run() {
 
 	<-kws.done
 	cancelFunc()
-	kws.interruptRead()
+	// Unblock a read goroutine parked in ReadMessage before waiting on it,
+	// otherwise a peer that never sends anything keeps run from reaching
+	// closeConn.
+	kws.unblockRead()
 	wg.Wait()
 	kws.closeConn()
 }
@@ -841,12 +848,21 @@ func (kws *Websocket) disconnected(err error) {
 	}
 }
 
-func (kws *Websocket) interruptRead() {
+// unblockRead closes the underlying network connection so a read goroutine
+// blocked in ReadMessage returns immediately.
+//
+// Close is the only read-unblocking operation the websocket package documents
+// as safe to call concurrently with the read methods, so it is used here
+// instead of SetReadDeadline, which the package classifies as a read method
+// and which a pong handler could immediately push back into the future. The
+// Conn field is deliberately left in place: closeConn performs the final
+// cleanup once the goroutines have exited, and closing twice is harmless.
+func (kws *Websocket) unblockRead() {
 	kws.mu.RLock()
 	conn := kws.Conn
 	kws.mu.RUnlock()
 	if conn != nil {
-		_ = conn.SetReadDeadline(time.Now())
+		_ = conn.Close()
 	}
 }
 
