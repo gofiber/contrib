@@ -35,7 +35,7 @@ var (
 	// ErrMissingApp is returned when Config.App is not set.
 	ErrMissingApp = errors.New("uptime: fiber app is required")
 	// ErrInvalidFaviconURL is returned when UIConfig.FaviconURL is not a supported URL.
-	ErrInvalidFaviconURL = errors.New("uptime: ui favicon url must be a root-relative path or an absolute http(s) url")
+	ErrInvalidFaviconURL = errors.New("uptime: favicon url must be a root-relative path or an absolute http(s) url")
 )
 
 // Config defines the configuration for the uptime middleware.
