@@ -151,10 +151,9 @@ func TestSkipURIs(t *testing.T) {
 		}
 	}
 
-	// getMetrics fails the test on a non-200, which matters here: every
-	// assertion below is a negative, so a scrape that errored out would satisfy
-	// all of them. The positive control on /kept closes the other half of the
-	// gap - a middleware recording nothing at all would pass too.
+	// getMetrics fails on a non-200, which matters here: every assertion below is a
+	// negative, so an errored scrape would satisfy them all. /kept is the positive
+	// control - a middleware recording nothing at all would pass otherwise.
 	metrics := getMetrics(t, app, "")
 
 	if !strings.Contains(metrics, "path=\"/kept\"") {
@@ -1411,11 +1410,8 @@ func TestNativeHistogramsWithoutClassicBuckets(t *testing.T) {
 }
 
 // TestShortCircuitRouteGuardKeepsRoutePattern pins the case a ctx.IsMiddleware()
-// based fallback got wrong: Fiber reports IsMiddleware for any route whose
-// handler chain stopped early, which is exactly what a per-route guard that
-// rejects a request leaves behind. Those requests must keep their own route
-// pattern, or every 401 from a guard collapses into one series and SkipURIs
-// entries for the route stop matching.
+// fallback got wrong: Fiber reports it for any chain that stopped early, which is
+// what a per-route guard leaves behind. Those keep their own route pattern.
 func TestShortCircuitRouteGuardKeepsRoutePattern(t *testing.T) {
 	app := newAppWithMiddleware(Config{}, "")
 	app.Get("/admin", func(c fiber.Ctx) error {
@@ -1455,12 +1451,9 @@ func TestSkipURIsAppliesToShortCircuitRouteGuard(t *testing.T) {
 	}
 }
 
-// TestFallThroughToTrailingMiddlewareUsesMountPath documents a known
-// limitation rather than desired behaviour. Once a handler delegates onwards
-// with c.Next() and a trailing Use middleware runs last, Fiber has replaced the
-// route on the context with that middleware's mount path and the endpoint
-// pattern is gone; Fiber exposes nothing that distinguishes a Use route, so the
-// case cannot be detected either.
+// TestFallThroughToTrailingMiddlewareUsesMountPath documents a known limitation.
+// Once a handler delegates with c.Next() and a trailing Use middleware runs last,
+// Fiber has replaced the route with that mount path and cannot be told apart.
 func TestFallThroughToTrailingMiddlewareUsesMountPath(t *testing.T) {
 	app := newAppWithMiddleware(Config{}, "")
 	app.Get("/user/:id", func(c fiber.Ctx) error {
@@ -1546,12 +1539,9 @@ func TestEmptyBucketsWithoutNativeHistogramsKeepsDefaults(t *testing.T) {
 	}
 }
 
-// TestDynamicLabelValuesAreCopied guards the corruption that follows from
-// storing Fiber's zero-copy strings. A label function reading a header returns
-// a string aliasing the connection read buffer; Prometheus keeps label values
-// for the lifetime of the series, so without a copy every series rewrites
-// itself to whatever request arrived last, collapsing them onto one label set
-// and leaving the registry unable to gather at all.
+// TestDynamicLabelValuesAreCopied guards the corruption from storing Fiber's
+// zero-copy strings: Prometheus keeps label values for the life of the series, so
+// without a copy every series rewrites itself to whatever arrived last.
 func TestDynamicLabelValuesAreCopied(t *testing.T) {
 	app := newAppWithMiddleware(Config{
 		DynamicLabels: map[string]func(fiber.Ctx) string{
@@ -1586,10 +1576,9 @@ func TestDynamicLabelValuesAreCopied(t *testing.T) {
 	}
 }
 
-// TestSkipURIsMatchesWildcardRoutePattern covers the overload in "*": it is
-// both the prefix syntax for SkipURIs and a legitimate character in a Fiber
-// route pattern. An entry ending in "*" therefore has to match the route
-// literally named that, not only the paths beneath its prefix.
+// TestSkipURIsMatchesWildcardRoutePattern covers the overload in "*": both the
+// prefix syntax and a legitimate character in a Fiber pattern. An entry ending in
+// one has to match the route literally named that, not only the paths beneath it.
 func TestSkipURIsMatchesWildcardRoutePattern(t *testing.T) {
 	app := newAppWithMiddleware(Config{SkipURIs: []string{"/static*", "/files/*"}}, "")
 	app.Get("/static*", func(c fiber.Ctx) error {
@@ -1620,10 +1609,8 @@ func TestSkipURIsMatchesWildcardRoutePattern(t *testing.T) {
 }
 
 // TestDynamicLabelValuesSurviveInvalidUTF8 guards a process-killer: Prometheus
-// rejects label values that are not valid UTF-8 by panicking inside
-// WithLabelValues, and the documented way to write a label function is to
-// return a request value directly. A single header of raw bytes would take the
-// server down.
+// panics inside WithLabelValues on a value that is not valid UTF-8, and the
+// documented way to write a label function is to return a request value.
 func TestDynamicLabelValuesSurviveInvalidUTF8(t *testing.T) {
 	app := newAppWithMiddleware(Config{
 		DynamicLabels: map[string]func(fiber.Ctx) string{
@@ -1879,10 +1866,9 @@ func TestErrorHandlerFailureFallsBackTo500(t *testing.T) {
 	}
 }
 
-// TestUnknownResponseSizeIsNotObserved covers a streamed response of
-// unannounced length. Observing it as zero bytes would leave a file-serving or
-// SSE app reporting a median response size of nothing, so the sample is left
-// out of the histogram entirely while the request still counts.
+// TestUnknownResponseSizeIsNotObserved covers a streamed response of unannounced
+// length. Observing zero would leave a file-serving or SSE app reporting a median
+// response size of nothing, so it is left out while the request still counts.
 func TestUnknownResponseSizeIsNotObserved(t *testing.T) {
 	app := newAppWithMiddleware(Config{}, "")
 	app.Get("/stream", func(c fiber.Ctx) error {
@@ -1946,10 +1932,9 @@ func TestRequestBodySize(t *testing.T) {
 		// honest size to record - fabricating one would be worse than none.
 		{name: "form beyond the limit is undetermined", contentLength: 500000000, bodyLimit: 4096, preParsedForm: true, payload: fakePayload{}, wantKnown: false},
 		{name: "form without a limit takes the announced length", contentLength: 2048, preParsedForm: true, payload: fakePayload{}, want: 2048, wantKnown: true},
-		// A stream is never sized from the header, however modest or well-formed
-		// the announcement: under StreamRequestBody a handler that returns
-		// without reading leaves the remainder undrained, so the figure
-		// describes what a client claimed rather than what the server received.
+		// A stream is never sized from the header, however modest the announcement:
+		// under StreamRequestBody a handler that returns without reading leaves the
+		// remainder undrained, so the figure is a claim rather than a measurement.
 		{name: "stream announcing a plausible length is undetermined", contentLength: 42, bodyLimit: 4096, payload: fakePayload{stream: true}, wantKnown: false},
 		{name: "stream beyond the limit is undetermined", contentLength: 500000000, bodyLimit: 1024, payload: fakePayload{stream: true}, wantKnown: false},
 		{name: "stream announcing zero is undetermined", contentLength: 0, payload: fakePayload{stream: true}, wantKnown: false},
@@ -2078,10 +2063,9 @@ func newNilRouteApp() *fiber.App {
 	})
 }
 
-// TestMatchedRequestWithoutRouteObeysTrackUnmatched pins that the unmatched
-// label is only ever emitted when the caller asked for it. A match the Ctx
-// cannot name is indistinguishable from no match at all, so it follows the same
-// opt-in rather than smuggling a series past it.
+// TestMatchedRequestWithoutRouteObeysTrackUnmatched pins that the unmatched label
+// is only emitted when asked for. A match the Ctx cannot name is indistinguishable
+// from no match, so it follows the same opt-in rather than smuggling a series in.
 func TestMatchedRequestWithoutRouteObeysTrackUnmatched(t *testing.T) {
 	for _, tracked := range []bool{false, true} {
 		t.Run(fmt.Sprintf("tracked=%v", tracked), func(t *testing.T) {
@@ -2230,10 +2214,9 @@ func (g *blockingGatherer) Gather() ([]*dto.MetricFamily, error) {
 // queued behind it.
 func TestMetricsMaxRequestsInFlightRejectsExcess(t *testing.T) {
 	registry := prometheus.NewRegistry()
-	// Buffered, and released through Cleanup: should the limiter ever stop
-	// reaching promhttp, the second scrape enters Gather too and must not block
-	// forever on a send nobody reads - a hung test says nothing, a failing one
-	// says everything.
+	// Buffered and released through Cleanup: should the limiter ever stop reaching
+	// promhttp, the second scrape enters Gather too and must not block forever on a
+	// send nobody reads - a hung test says nothing, a failing one says everything.
 	gatherer := &blockingGatherer{
 		Gatherer: registry,
 		entered:  make(chan struct{}, 2),
@@ -2306,10 +2289,9 @@ func TestDetachRequestCopiesHeader(t *testing.T) {
 			if got[i] != value {
 				t.Fatalf("expected %s[%d] to be %q, got %q", name, i, value, got[i])
 			}
-			// Equality alone would survive dropping the clones, since the
-			// values are copied into a fresh slice either way. The point of the
-			// wrapper is that the bytes behind each string are new too, so the
-			// backing arrays are what the test compares.
+			// Equality alone would survive dropping the clones, since the values are copied
+			// into a fresh slice either way. The point is that the bytes behind each string
+			// are new too, so the backing arrays are what this compares.
 			if unsafe.StringData(got[i]) == unsafe.StringData(value) {
 				t.Fatalf("expected %s[%d] to be backed by a fresh allocation", name, i)
 			}
@@ -2466,10 +2448,8 @@ func TestInvalidSkipStatusCodePanics(t *testing.T) {
 }
 
 // TestRejectedConfigLeavesRegistryClean pins that validation happens before the
-// first Register call. Registering half the families and then rejecting the
-// config would leave a shared registry unusable, and the corrected retry would
-// fail on a duplicate registration instead - a message pointing nowhere near the
-// actual mistake.
+// first Register call. Registering half the families and then rejecting the config
+// would leave the corrected retry failing on a duplicate registration instead.
 func TestRejectedConfigLeavesRegistryClean(t *testing.T) {
 	registry := prometheus.NewRegistry()
 
@@ -2495,10 +2475,9 @@ func TestRejectedConfigLeavesRegistryClean(t *testing.T) {
 		})
 	}
 
-	// Untouched means empty, not merely free of the metric families: the Go and
-	// process collectors register through registerCollector, which swallows
-	// AlreadyRegisteredError, so a retry would succeed even with them left
-	// behind by a config the caller never got to work.
+	// Untouched means empty, not merely free of the metric families: the runtime
+	// collectors go through registerCollector, which swallows AlreadyRegistered, so a
+	// retry would succeed even with them left behind by a config that never worked.
 	families, err := registry.Gather()
 	if err != nil {
 		t.Fatalf("gathering after the rejected configs: %v", err)
@@ -2528,16 +2507,14 @@ func TestRejectedConfigLeavesRegistryClean(t *testing.T) {
 	}
 }
 
-// TestMetricsTimeoutBoundsScrape pins that the configured timeout reaches
-// promhttp. Without it a gatherer stuck on a slow collector holds the handler -
-// and its in-flight slot - indefinitely, which is the pile-up the option exists
-// to prevent.
+// TestMetricsTimeoutBoundsScrape pins that the configured timeout reaches promhttp.
+// Without it a gatherer stuck on a slow collector holds the handler - and its
+// in-flight slot - indefinitely, which is the pile-up the option prevents.
 func TestMetricsTimeoutBoundsScrape(t *testing.T) {
 	registry := prometheus.NewRegistry()
-	// MetricsTimeout runs the gather on its own goroutine and answers 503
-	// without it, so the test has to wait for that straggler: it calls
-	// registry.Gather, which reads the process-global model.NameValidationScheme
-	// that later tests write.
+	// MetricsTimeout runs the gather on its own goroutine and answers 503 without
+	// it, so the test waits for that straggler: it calls registry.Gather, which
+	// reads the process-global model.NameValidationScheme later tests write.
 	gatherer := &blockingGatherer{
 		Gatherer: registry,
 		entered:  make(chan struct{}, 1),
@@ -2737,11 +2714,9 @@ func TestTypedNilRegistryPanics(t *testing.T) {
 	}
 }
 
-// TestInvalidBucketsPanicAtStartup covers bounds client_golang rejects. It only
-// checks them inside newHistogram, which HistogramVec calls lazily on the first
-// observation, so an unvalidated slice lets New return and the app boot, then
-// panics on every instrumented request from the connection goroutine - where a
-// recover mounted as this package prescribes cannot catch it.
+// TestInvalidBucketsPanicAtStartup covers bounds client_golang only checks inside
+// newHistogram, called lazily on the first observation - so an unvalidated slice
+// panics per request from the connection goroutine, past any prescribed recover.
 func TestInvalidBucketsPanicAtStartup(t *testing.T) {
 	nan := math.NaN()
 
@@ -2779,10 +2754,9 @@ func TestValidBucketShapesAreAccepted(t *testing.T) {
 	})
 }
 
-// TestReservedHistogramLabelPanics covers "le", which Prometheus keeps for
-// bucket bounds. Counters and gauges accept it, and NewHistogramVec only builds
-// the Desc, so without the check the rejection surfaces on the first request
-// rather than at startup.
+// TestReservedHistogramLabelPanics covers "le", which Prometheus keeps for bucket
+// bounds. Counters and gauges accept it, and NewHistogramVec only builds the Desc,
+// so without the check the rejection surfaces on the first request.
 func TestReservedHistogramLabelPanics(t *testing.T) {
 	for name, cfg := range map[string]Config{
 		"constant": {Labels: prometheus.Labels{"le": "x"}},
@@ -2805,9 +2779,8 @@ func TestReservedHistogramLabelPanics(t *testing.T) {
 }
 
 // TestEmptyBucketsStayEmpty pins the nil-versus-empty distinction Config makes
-// load-bearing: nil selects the defaults, an empty non-nil slice drops the
-// classic buckets. A clone that flattened one into the other would leave the
-// two spellings meaning the same thing.
+// load-bearing: nil selects the defaults, an empty non-nil slice drops the classic
+// buckets. A clone flattening one into the other would merge the two spellings.
 func TestEmptyBucketsStayEmpty(t *testing.T) {
 	cfg := configDefault(Config{RequestDurationBuckets: []float64{}})
 	if cfg.RequestDurationBuckets == nil {
@@ -2822,9 +2795,8 @@ func TestEmptyBucketsStayEmpty(t *testing.T) {
 	}
 }
 
-// TestInvalidUnmatchedRouteLabelPanics covers the one label value the
-// middleware supplies itself that client_golang never sees at startup: const
-// labels are validated when the descriptor is built, this one only reaches
+// TestInvalidUnmatchedRouteLabelPanics covers the one label value the middleware
+// supplies that client_golang never sees at startup: it only reaches
 // WithLabelValues, on the first unmatched request.
 func TestInvalidUnmatchedRouteLabelPanics(t *testing.T) {
 	defer func() {
@@ -2841,9 +2813,8 @@ func TestInvalidUnmatchedRouteLabelPanics(t *testing.T) {
 }
 
 // TestPanickingDynamicLabelDropsSample pins that instrumentation cannot take the
-// request down. The functions run after the handler chain has unwound, past any
-// recover the application mounted, so an unguarded panic would reach the
-// connection goroutine and the client would get nothing at all.
+// request down. These run after the chain has unwound, past any recover the
+// application mounted, so an unguarded panic would reach the connection goroutine.
 func TestPanickingDynamicLabelDropsSample(t *testing.T) {
 	app := newAppWithMiddleware(Config{
 		DynamicLabels: map[string]func(fiber.Ctx) string{
@@ -2941,9 +2912,8 @@ func (c *syntheticRouteCtx) Route() *fiber.Route {
 }
 
 // TestDisabledFamilyBucketsAreStillValidated pins that bad bounds are rejected
-// whatever is disabled. Skipping them would only defer the failure: the
-// application boots today and refuses to start the day someone drops that
-// family from DisabledMetrics, over a slice they never touched.
+// whatever is disabled. Skipping them would defer the failure to the day someone
+// drops that family from DisabledMetrics, over a slice they never touched.
 func TestDisabledFamilyBucketsAreStillValidated(t *testing.T) {
 	defer func() {
 		r := recover()
@@ -3035,10 +3005,9 @@ func TestMetricsErrorHandlingContinuesOnError(t *testing.T) {
 	}
 }
 
-// TestBodylessResponsesRecordNoPayload covers the statuses RFC 9110 forbids a
-// body on. Fiber's error handler and any handler are free to write one, but
-// fasthttp drops it, so counting those bytes overstates egress for a
-// cache-fronted app serving mostly 304s.
+// TestBodylessResponsesRecordNoPayload covers the statuses RFC 9110 forbids a body
+// on. Handlers are free to write one and fasthttp drops it, so counting those
+// bytes overstates egress for a cache-fronted app serving mostly 304s.
 func TestBodylessResponsesRecordNoPayload(t *testing.T) {
 	app := newAppWithMiddleware(Config{}, "")
 	for _, status := range []int{fiber.StatusContinue, fiber.StatusNoContent, fiber.StatusNotModified} {
@@ -3093,10 +3062,9 @@ func TestStaleContentLengthDoesNotInflateSize(t *testing.T) {
 	}
 }
 
-// TestInvalidConstantLabelValuePanicsBeforeRegistration pins that a bad label
-// value is caught at the boundary rather than by client_golang, which would
-// only reject it once the first family was built - after the collectors had
-// gone into a caller's registry.
+// TestInvalidConstantLabelValuePanicsBeforeRegistration pins that a bad label value
+// is caught at the boundary rather than by client_golang, which would reject it
+// only once the first family was built - after the collectors were registered.
 func TestInvalidConstantLabelValuePanicsBeforeRegistration(t *testing.T) {
 	for name, cfg := range map[string]Config{
 		"service name": {ServiceName: "svc-\xff"},
@@ -3151,10 +3119,8 @@ func TestTypedNilErrorLogPanics(t *testing.T) {
 }
 
 // TestInvalidRoutePatternIsSanitised covers the last label value that reached
-// Prometheus unchecked. A pattern is registration-time data, but an application
-// registering routes from external config can still put raw bytes in one, and
-// the panic would land on the connection goroutine - where neither fasthttp nor
-// Fiber installs a recover, so the process would go with it.
+// Prometheus unchecked. A pattern is registration-time data, but one built from
+// external config can hold raw bytes, and the panic lands on the connection.
 func TestInvalidRoutePatternIsSanitised(t *testing.T) {
 	// UnescapePath is what turns a percent-escaped request into the raw bytes
 	// the pattern was registered with.
@@ -3216,10 +3182,9 @@ func TestInvalidNamesPanicBeforeRegistration(t *testing.T) {
 	}
 }
 
-// TestSkipAllExcludesTheInFlightGauge pins the documented meaning of a "/*"
-// entry. The gauge is incremented before routing, so nothing downstream can drop
-// it - without this it would be the one family still exporting series for an
-// application that asked for no instrumentation at all.
+// TestSkipAllExcludesTheInFlightGauge pins the documented meaning of a "/*" entry.
+// The gauge is incremented before routing, so nothing downstream can drop it - it
+// would be the one family still exporting for an app that asked for none.
 func TestSkipAllExcludesTheInFlightGauge(t *testing.T) {
 	app := newAppWithMiddleware(Config{SkipURIs: []string{"/*"}}, "")
 	app.Get("/a", func(c fiber.Ctx) error {
@@ -3349,10 +3314,9 @@ func TestSkipURIMatchesSanitisedRoutePattern(t *testing.T) {
 	}
 }
 
-// TestSkipAllRegistersNoFamilies is the general form of the in-flight gauge
-// case: with every route excluded, nothing can receive a sample, so claiming the
-// metric names in a caller's registry only invites a collision with the next
-// middleware configured the same way.
+// TestSkipAllRegistersNoFamilies is the general form of the in-flight gauge case:
+// with every route excluded nothing can receive a sample, so claiming the metric
+// names only invites a collision with the next middleware configured the same.
 func TestSkipAllRegistersNoFamilies(t *testing.T) {
 	registry := prometheus.NewRegistry()
 
@@ -3384,10 +3348,8 @@ func TestSkipAllRegistersNoFamilies(t *testing.T) {
 }
 
 // TestLegacyNameValidationIsHonoured pins that the middleware applies
-// client_golang's own rule rather than approximating it. Under the legacy
-// scheme a hyphen makes a name invalid, and client_golang would only say so
-// while building the first descriptor - with the runtime collectors already in
-// the caller's registry.
+// client_golang's own rule rather than approximating it. Under the legacy scheme a
+// hyphen is invalid, and client_golang says so only while building the first Desc.
 func TestLegacyNameValidationIsHonoured(t *testing.T) {
 	previous := model.NameValidationScheme
 	model.NameValidationScheme = model.LegacyValidation
@@ -3421,10 +3383,9 @@ func TestLegacyNameValidationIsHonoured(t *testing.T) {
 	}
 }
 
-// TestInertMiddlewarePassesErrorsThrough pins that a middleware with nothing
-// left to record stays out of the way. Taking over the error handler would stop
-// errors from reaching middleware mounted before it, and move where the handler
-// runs in the stack, for no metric at all.
+// TestInertMiddlewarePassesErrorsThrough pins that a middleware with nothing left
+// to record stays out of the way. Taking over the error handler would stop errors
+// reaching middleware mounted before it, and move where the handler runs.
 func TestInertMiddlewarePassesErrorsThrough(t *testing.T) {
 	app := fiber.New()
 
@@ -3451,10 +3412,9 @@ func TestInertMiddlewarePassesErrorsThrough(t *testing.T) {
 	}
 }
 
-// TestGaugeOnlyMiddlewarePassesErrorsThrough is the other half of
-// TestInertMiddlewarePassesErrorsThrough: the in-flight gauge is labelled by
-// method alone and never reads the status, so a configuration that keeps only
-// the gauge has no reason to take over the error handler either.
+// TestGaugeOnlyMiddlewarePassesErrorsThrough is the other half of the case above:
+// the in-flight gauge is labelled by method alone and never reads the status, so
+// keeping only the gauge is no reason to take over the error handler either.
 func TestGaugeOnlyMiddlewarePassesErrorsThrough(t *testing.T) {
 	app := fiber.New()
 
@@ -3614,11 +3574,8 @@ func TestDisabledDurationHistogram(t *testing.T) {
 }
 
 // TestDurationExcludesInstrumentationOverhead pins where the stopwatch stops.
-// Everything between the chain unwinding and the observation is this
-// middleware's own work - the route lookup, the skip scan, the counter
-// increment, the context read, and any DynamicLabels function the application
-// supplied - and charging that to the request would put instrumentation
-// overhead into the metric people alert on.
+// Everything between the chain unwinding and the observation is this middleware's
+// own work, and charging it would put overhead into the metric people alert on.
 func TestDurationExcludesInstrumentationOverhead(t *testing.T) {
 	const labelCost = 120 * time.Millisecond
 
@@ -3646,11 +3603,8 @@ func TestDurationExcludesInstrumentationOverhead(t *testing.T) {
 }
 
 // TestUnusableNativeHistogramFactorPanics covers a factor between 0 and 1 - 0.1
-// where 1.1 was meant. client_golang enables nothing below 1, then substitutes
-// its latency defaults for any bucket slice deliberately left empty, so a byte
-// histogram silently ends up bucketed in seconds. An infinity passes a naive
-// "greater than 1" test and is then degraded to the coarsest schema there is,
-// which is a single bucket wearing a native histogram's name.
+// where 1.1 was meant, which leaves a byte histogram bucketed in seconds - and an
+// infinity, which clears a naive test then degrades to the coarsest schema.
 func TestUnusableNativeHistogramFactorPanics(t *testing.T) {
 	for _, factor := range []float64{0.1, 1, math.NaN(), math.Inf(1), math.Inf(-1)} {
 		t.Run(fmt.Sprint(factor), func(t *testing.T) {
@@ -3670,9 +3624,8 @@ func TestUnusableNativeHistogramFactorPanics(t *testing.T) {
 }
 
 // TestSkipURIsMatchesUnmatchedLabel covers filtering unmatched traffic with the
-// label spelled the way Config recommends. Forcing a leading slash onto the
-// entry would leave the filter working in the default config and silently
-// failing the moment the operator took that advice.
+// label spelled the way Config recommends. Forcing a leading slash onto the entry
+// would leave the filter failing the moment the operator took that advice.
 func TestSkipURIsMatchesUnmatchedLabel(t *testing.T) {
 	for _, label := range []string{"unmatched", "/__unmatched__"} {
 		t.Run(label, func(t *testing.T) {
@@ -3722,10 +3675,8 @@ func TestUnmatchedRouteLabelIsTrimmed(t *testing.T) {
 }
 
 // TestMultipartUploadIsNotReMarshalled covers the request size of a pre-parsed
-// multipart form. fasthttp keeps the parsed parts rather than the raw body -
-// spilling large ones to temp files so they never sit in memory - and
-// Request.Body() re-marshals the whole form into a fresh buffer, so measuring
-// the buffer would double what an upload costs and throw the copy away.
+// multipart form. fasthttp keeps the parsed parts, spilling large ones to temp
+// files, and Request.Body() would re-marshal the lot just to take its length.
 func TestMultipartUploadIsNotReMarshalled(t *testing.T) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
@@ -3767,9 +3718,8 @@ func TestMultipartUploadIsNotReMarshalled(t *testing.T) {
 }
 
 // TestUnsampledTraceProducesNoExemplar pins that an exemplar points somewhere.
-// Under head-based sampling every request carries a valid trace ID, and
-// Prometheus keeps one exemplar per bucket, overwritten on each observation - so
-// recording unsampled traces would evict the links that lead anywhere.
+// Under head-based sampling every request has a valid trace ID, and one exemplar
+// per bucket is overwritten, so unsampled traces would evict the useful links.
 func TestUnsampledTraceProducesNoExemplar(t *testing.T) {
 	prev := otel.GetTracerProvider()
 	tp := tracesdk.NewTracerProvider(tracesdk.WithSampler(tracesdk.NeverSample()))
@@ -3869,9 +3819,8 @@ func TestNegativeNativeHistogramFactorPanics(t *testing.T) {
 }
 
 // TestInflatedContentLengthIsNotRecorded covers the shape a client can send for
-// free: a body over BodyLimit, which fasthttp rejects before reading a byte of
-// it. Fiber then replays the Use chain, and trusting the announced length would
-// let a few hundred bytes of traffic bill the histogram for half a gigabyte.
+// free: a body over BodyLimit, which fasthttp rejects unread. Fiber replays the
+// Use chain, so trusting the header would bill the histogram for what never came.
 func TestInflatedContentLengthIsNotRecorded(t *testing.T) {
 	// Both shapes: an ordinary body, and the multipart one whose announced
 	// length the middleware does consult when the form was actually parsed.
@@ -3895,10 +3844,9 @@ func testInflatedContentLength(t *testing.T, contentType string) {
 	req.Header.Set(fiber.HeaderContentType, contentType)
 	req.Header.Set(fiber.HeaderContentLength, "500000000")
 	req.ContentLength = 500000000
-	// fasthttp rejects the request at the connection level, which app.Test
-	// surfaces as an error rather than a response - but Fiber has already
-	// replayed the Use chain by then, so the middleware ran and may have
-	// recorded something.
+	// fasthttp rejects the request at the connection level, which app.Test surfaces
+	// as an error rather than a response - but Fiber has already replayed the Use
+	// chain by then, so the middleware ran and may have recorded something.
 	_, _ = app.Test(req, noTimeoutConfig)
 
 	metrics := getMetrics(t, app, "")
@@ -4091,9 +4039,8 @@ func TestRoutePatternTrailingSlashIsTrimmed(t *testing.T) {
 }
 
 // TestDynamicLabelsAreSortedDeterministically pins the ordering the label buffer
-// depends on. Prometheus sorts label pairs alphabetically for the exposition, so
-// map iteration order is invisible there - what it would change is the order the
-// names are declared in each Desc, which has to stay the same across restarts.
+// depends on. Prometheus sorts pairs alphabetically for the exposition, so what
+// map order would change is the Desc's declared order, which must stay stable.
 func TestDynamicLabelsAreSortedDeterministically(t *testing.T) {
 	fn := func(fiber.Ctx) string { return "x" }
 	cfg := configDefault(Config{DynamicLabels: map[string]func(fiber.Ctx) string{
@@ -4115,9 +4062,8 @@ func TestDynamicLabelsAreSortedDeterministically(t *testing.T) {
 }
 
 // TestWildcardPrefixDoesNotSwallowUnmatchedLabel covers the exact key a wildcard
-// entry leaves behind. "/api/*" registers "/api" so that the route of that name
-// is skipped too - but when the unmatched label is "/api", that byproduct would
-// silently take every 404 with it.
+// entry leaves behind. "/api/*" registers "/api" so the route of that name is
+// skipped too - but with the label set to "/api" that would take every 404.
 func TestWildcardPrefixDoesNotSwallowUnmatchedLabel(t *testing.T) {
 	app := newAppWithMiddleware(Config{
 		TrackUnmatchedRequests: true,
@@ -4177,9 +4123,8 @@ func TestExplicitEntryStillSkipsUnmatchedLabel(t *testing.T) {
 }
 
 // TestRealRouteAtUnmatchedLabelObeysPrefixRules pins that the two namespaces are
-// separate. SkipURIs holds route patterns; UnmatchedRouteLabel is a value. A
-// route spelled the same as the label must still obey "/admin/*", and unmatched
-// traffic must still survive it.
+// separate. A route spelled the same as the label must still obey "/admin/*", and
+// unmatched traffic must still survive it.
 func TestRealRouteAtUnmatchedLabelObeysPrefixRules(t *testing.T) {
 	app := newAppWithMiddleware(Config{
 		TrackUnmatchedRequests: true,
@@ -4295,10 +4240,9 @@ func TestPanickingDynamicLabelIsReported(t *testing.T) {
 	}
 }
 
-// TestPanickingDynamicLabelIsReportedOnce covers the volume of that report. A
-// bad type assertion panics on every request, so reporting per request would
-// funnel every connection goroutine through the log sink for a fault that one
-// line describes completely.
+// TestPanickingDynamicLabelIsReportedOnce covers the volume of that report. A bad
+// type assertion panics on every request, so reporting per request would funnel
+// every connection goroutine through the sink for a one-line fault.
 func TestPanickingDynamicLabelIsReportedOnce(t *testing.T) {
 	logger := &recordingLogger{}
 
@@ -4323,10 +4267,9 @@ func TestPanickingDynamicLabelIsReportedOnce(t *testing.T) {
 	}
 }
 
-// TestPanickingNextIsContained covers a Config.Next that panics. It runs before
-// the handler chain, so nothing downstream - not the recover middleware, not
-// Fiber's error handler - is in a position to catch it, and the panic would
-// reach the connection goroutine and take the process with it.
+// TestPanickingNextIsContained covers a Config.Next that panics. It runs before the
+// handler chain, so nothing downstream can catch it and the panic would reach the
+// connection goroutine and take the process with it.
 func TestPanickingNextIsContained(t *testing.T) {
 	logger := &recordingLogger{}
 
@@ -4451,11 +4394,9 @@ func runtimeCollector(collector prometheus.Collector) bool {
 	return described > 0 && described == runtime
 }
 
-// TestRuntimeCollectorFailureIsNotFatal covers a registry that refuses the Go
-// and process collectors. They are conveniences the caller can turn off
-// outright, so refusing to start over them would take down an application for
-// metrics it never asked for - and telling a deliberate opt-in apart from a
-// misconfiguration would mean matching client_golang's unversioned error text.
+// TestRuntimeCollectorFailureIsNotFatal covers a registry that refuses the runtime
+// collectors. They are conveniences the caller can turn off, so refusing to start
+// would take down an application over metrics it never asked for.
 func TestRuntimeCollectorFailureIsNotFatal(t *testing.T) {
 	logger := &recordingLogger{}
 	registry := prometheus.NewRegistry()
@@ -4544,12 +4485,9 @@ func TestExtendedGoCollectorIsTolerated(t *testing.T) {
 	}
 }
 
-// TestFiberTimeoutIsRecordedAsTimeout covers Fiber's timeout middleware, whose
-// default path answers through RequestCtx.TimeoutErrorWithCode. fasthttp parks
-// that 408 and copies it over the live response only after the whole handler
-// chain has unwound, so reading ctx.Response() here sees the default 200 the
-// timed-out handler left behind - reporting every production timeout as a
-// success, and letting it slip past SkipStatusCodes as one.
+// TestFiberTimeoutIsRecordedAsTimeout covers Fiber's timeout middleware, which
+// parks its 408 and copies it over the live response only after the chain unwinds
+// - so reading ctx.Response() would report every production timeout as a success.
 func TestFiberTimeoutIsRecordedAsTimeout(t *testing.T) {
 	app := newAppWithMiddleware(Config{}, "")
 	app.Get("/slow", timeout.New(func(c fiber.Ctx) error {
@@ -4578,13 +4516,9 @@ func TestFiberTimeoutIsRecordedAsTimeout(t *testing.T) {
 	}
 }
 
-// TestSkippedURIErrorPropagates covers a route excluded by SkipURIs that
-// returns an error. The middleware runs the application error handler itself so
-// the recorded status matches what the client received - but a skipped route
-// records nothing, so there is no status to buy, and consuming the error would
-// silently move where it surfaces for a route the operator asked it to leave
-// alone. The two other stand-aside paths, Config.Next and an all-metrics-off
-// config, already return it.
+// TestSkippedURIErrorPropagates covers a route excluded by SkipURIs that returns
+// an error. A skipped route records nothing, so there is no status to buy by
+// consuming it - and the two other stand-aside paths already return it.
 func TestSkippedURIErrorPropagates(t *testing.T) {
 	var upstream []string
 
@@ -4632,10 +4566,8 @@ func TestSkippedURIErrorPropagates(t *testing.T) {
 }
 
 // TestSkipBodyResponseRecordsZero covers a handler that sets SkipBody itself.
-// fasthttp then writes the headers and drops the buffer however much was
-// written into it, so measuring the buffer reports bytes that never left the
-// process. The cases fasthttp decides for itself - HEAD, 204, 304 - are settled
-// by method and status instead, because it sets the flag after this runs.
+// fasthttp drops the buffer however much was written, so measuring it reports
+// bytes that never left. HEAD, 204 and 304 are settled by method and status.
 func TestSkipBodyResponseRecordsZero(t *testing.T) {
 	app := newAppWithMiddleware(Config{}, "")
 	app.Get("/suppressed", func(c fiber.Ctx) error {

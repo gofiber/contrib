@@ -28,14 +28,9 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// middleware encapsulates all state required to expose metrics and instrument
-// Fiber requests. Every metric vector is nil when its family is disabled
-// through Config.DisabledMetrics.
-//
-// Only the configuration actually read per request is kept. Everything else
-// Config carries is consumed by New, and holding the struct would retain
-// configDefault's copies of it - the skip lists, the labels - for the lifetime
-// of the process.
+// middleware holds the state needed to serve metrics and instrument requests. A
+// vector is nil when its family is disabled, and only per-request config is kept:
+// retaining Config would pin configDefault's copies for the process life.
 type middleware struct {
 	requestsTotal     *prometheus.CounterVec
 	requestsByClass   *prometheus.CounterVec
@@ -70,12 +65,8 @@ type dynamicLabel struct {
 	fn   func(fiber.Ctx) string
 }
 
-// reservedLabels are the label names Labels and DynamicLabels may not use:
-// the four this middleware sets itself, plus "le", which Prometheus keeps for
-// histogram bucket bounds. CounterVec and GaugeVec would accept "le" happily,
-// but NewHistogramVec only builds the Desc - the rejection comes later, from
-// the lazy newHistogram call on the first observation, on a connection
-// goroutine no recover placed where this package recommends can reach.
+// reservedLabels are the names Labels and DynamicLabels may not use: the four set
+// here, plus "le", which Prometheus keeps for histogram bucket bounds.
 var reservedLabels = map[string]struct{}{
 	"status_code":             {},
 	"status_class":            {},
@@ -84,9 +75,8 @@ var reservedLabels = map[string]struct{}{
 	string(model.BucketLabel): {},
 }
 
-// validStatusClasses are the classes Config.SkipStatusClasses accepts, which is
-// exactly the set statusClass can return - "unknown" included, since a handler
-// is free to answer with a status outside 1xx-5xx.
+// validStatusClasses are the classes Config.SkipStatusClasses accepts - exactly
+// what statusClass can return, "unknown" included.
 var validStatusClasses = map[string]bool{
 	"1xx":     true,
 	"2xx":     true,
@@ -96,10 +86,8 @@ var validStatusClasses = map[string]bool{
 	"unknown": true,
 }
 
-// allMetrics lists every family Config.DisabledMetrics may name. It is a slice
-// rather than a set so that validation reports the same problem the same way on
-// every run: iterating a map would make one bad Namespace panic with whichever
-// metric name the runtime happened to yield first.
+// allMetrics lists every family Config.DisabledMetrics may name, in a fixed order
+// so validation reports the same problem the same way on every run.
 var allMetrics = []Metric{
 	MetricRequestsTotal,
 	MetricRequestsStatusClassTotal,
@@ -109,55 +97,15 @@ var allMetrics = []Metric{
 	MetricRequestsInProgress,
 }
 
-// New creates a new Prometheus middleware handler.
-//
-// The handler is meant to be mounted globally so that it observes every
-// request the application serves:
-//
-//	app.Use(prometheus.New(prometheus.Config{ServiceName: "my-service"}))
-//
-// Requests whose path equals Config.MetricsPath ("/metrics" by default) are
-// answered with the Prometheus exposition format instead of being forwarded to
-// the application; every other request is instrumented and passed along.
-// Config.Next is evaluated first, so returning true from it passes even a
-// scrape straight through to the application.
-//
-// Because Fiber only runs the application error handler after the whole
-// handler chain has unwound, the middleware invokes it itself when a
-// downstream handler returns an error. This mirrors Fiber's own logger
-// middleware and is what allows the recorded status code and response size to
-// match what the client received. As a consequence the error is consumed by
-// this middleware and is not propagated to handlers mounted before it.
-//
-// That applies only while there is something to record. A middleware left with
-// no recording family - every one named in DisabledMetrics, or a "/*" entry in
-// SkipURIs - passes the chain straight through instead, so a configuration that
-// turns metrics off does not also change where the application's errors surface.
-//
-// Mount recover.New() after this middleware, not before it:
-//
-//	app.Use(prometheus.New(prometheus.Config{}))
-//	app.Use(recover.New())
-//
-// A panic unwinds straight past the recording below, so with recover mounted
-// first the middleware never sees the request complete and the resulting 500
-// appears in no metric family at all - only the in-flight gauge, which is
-// deferred, stays balanced. Recovering downstream turns the panic into an
-// ordinary error return, which this middleware records as the 500 the client
-// received.
+// New creates a new Prometheus middleware handler. Mount it globally with app.Use
+// so it observes every request; requests to Config.MetricsPath are answered with
+// the exposition format. Mount recover.New() after it, never before.
 func New(config ...Config) fiber.Handler {
 	cfg := configDefault(config...)
 
-	// Every panic below has to fire before the first Register call. A
-	// configuration rejected half way through registration would leave a
-	// caller-supplied Registerer holding the families this middleware had got to,
-	// so the corrected retry would die on a duplicate registration instead -
-	// a message pointing at the wrong problem, and one no amount of fixing the
-	// original config resolves.
-	//
-	// configDefault already handed over a private copy of Labels, so the
-	// "service" entry goes straight into it. ServiceName wins over a "service"
-	// key supplied through Labels.
+	// Every panic below fires before the first Register call: a config rejected part
+	// way through registration leaves a caller's Registerer holding what got in, so
+	// the corrected retry would die on a duplicate instead. ServiceName wins here.
 	if cfg.ServiceName != "" {
 		// Checked before it becomes a label, so the panic names the field the
 		// caller set rather than a "service" key they never wrote.
@@ -168,12 +116,9 @@ func New(config ...Config) fiber.Handler {
 	}
 	labels := cfg.Labels
 
-	// A const label sharing a name with a variable one, or carrying a value that
-	// is not valid UTF-8, reaches client_golang as an invalid Desc - and its
-	// panic names neither Labels nor ServiceName. Worse, it would fire from
-	// inside the first promauto call, leaving a caller's registry holding the
-	// collectors registered by then.
-	// Sorted so that a config with two bad entries always names the same one.
+	// A const label clashing with a variable one, or holding invalid UTF-8, reaches
+	// client_golang as a bad Desc - whose panic names neither field and fires mid
+	// registration. Sorted so a config with two bad entries always names the same one.
 	for _, name := range slices.Sorted(maps.Keys(labels)) {
 		value := labels[name]
 		if _, reserved := reservedLabels[name]; reserved {
@@ -212,11 +157,9 @@ func New(config ...Config) fiber.Handler {
 			" is not one of promhttp's HTTPErrorOnError, ContinueOnError or PanicOnError")
 	}
 
-	// The label the middleware supplies itself for unmatched requests is the
-	// only one client_golang does not see until a request arrives: const labels
-	// are validated when the Desc is built, but this one reaches
-	// WithLabelValues, which panics on invalid UTF-8 from the connection
-	// goroutine.
+	// The unmatched label is the only one client_golang does not see until a request
+	// arrives: it reaches WithLabelValues, which panics on invalid UTF-8 from the
+	// connection goroutine.
 	if !utf8.ValidString(cfg.UnmatchedRouteLabel) {
 		panic("prometheus middleware: UnmatchedRouteLabel is not valid UTF-8")
 	}
@@ -251,10 +194,8 @@ func New(config ...Config) fiber.Handler {
 
 	skipAll := m.resolveFilters(cfg)
 
-	// A "/*" entry excludes every route, so no family can receive a sample.
-	// Registering them anyway would claim six metric names in a caller's
-	// registry that nothing will ever write to, and make a second middleware
-	// configured the same way collide with the first.
+	// A "/*" entry excludes every route, so registering families would claim six
+	// names nothing will write to and collide with a second middleware like it.
 	enabled := func(metric Metric) bool {
 		if skipAll {
 			return false
@@ -263,26 +204,16 @@ func New(config ...Config) fiber.Handler {
 		return !off
 	}
 
-	// Namespace and Subsystem reach the descriptor only through the assembled
-	// metric names, so validating those covers both - and catches a name that a
-	// stricter validation scheme would reject even though it is valid UTF-8.
-	//
-	// Every family is checked whatever is disabled: the prefixes are the same
-	// for all six, so gating this would let a bad Namespace sit unnoticed until
-	// the day someone enables a family and the application stops booting.
+	// Namespace and Subsystem reach the descriptor only through the assembled names.
+	// Checked for every family whatever is disabled, since the prefixes are shared -
+	// gating it would hide a bad Namespace until someone enables a family.
 	for _, metric := range allMetrics {
 		validateMetricName(cfg.Namespace, cfg.Subsystem, metric)
 	}
 
-	// Checked whatever is disabled, for the same reason as the metric names
-	// above. Skipping a disabled family's bounds would only defer the failure:
-	// the application boots today and refuses to start the day someone drops
-	// that family from DisabledMetrics, over a slice they did not touch.
-	// A factor of 0 disables native histograms; anything above 1 sets their
-	// resolution. Between the two - 0.1 for the documented 1.1, say -
-	// client_golang enables nothing, and then substitutes its latency defaults
-	// for any bucket slice deliberately left empty, so a byte histogram ends up
-	// bucketed in seconds and every real payload lands in +Inf alone.
+	// Checked whatever is disabled, as above. A factor of 0 disables native
+	// histograms and anything above 1 sets their resolution; in between client_golang
+	// enables nothing, then substitutes its latency defaults for empty buckets.
 	if factor := cfg.NativeHistogramBucketFactor; math.IsNaN(factor) || math.IsInf(factor, 0) ||
 		(factor != 0 && factor <= 1) {
 		panic("prometheus middleware: NativeHistogramBucketFactor must be 0 to disable native histograms, or greater than 1")
@@ -360,10 +291,9 @@ func New(config ...Config) fiber.Handler {
 	}
 
 	if enabled(MetricRequestsInProgress) {
-		// The in-flight gauge has to be incremented before the router picks a
-		// handler, at which point the route pattern is still unknown. Labelling
-		// it by method only keeps the gauge balanced and its cardinality
-		// bounded, and is also why dynamic labels are not applied to it.
+		// Incremented before the router picks a handler, when the route pattern is still
+		// unknown, so it is labelled by method only - which also bounds its cardinality
+		// and is why dynamic labels are not applied to it.
 		m.requestInFlight = promauto.With(registry).NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name:        prometheus.BuildFQName(cfg.Namespace, cfg.Subsystem, string(MetricRequestsInProgress)),
@@ -375,25 +305,17 @@ func New(config ...Config) fiber.Handler {
 	}
 
 	m.observes = m.requestDuration != nil || m.requestSize != nil || m.responseSize != nil
-	// A "/*" entry excludes every route, so nothing downstream of the handler
-	// chain can ever be recorded. Saying so here lets instrument return the
-	// moment the chain unwinds, rather than timing and labelling a request only
-	// for skipped to discard it.
-	// enabled reports false for every family when skipAll is set, so the vectors
-	// are already nil in that case.
+	// A "/*" entry excludes every route, so nothing can be recorded; saying so here
+	// lets instrument return as soon as the chain unwinds. enabled already reports
+	// false for every family when skipAll is set, so the vectors are nil anyway.
 	m.records = m.requestsTotal != nil || m.requestsByClass != nil || m.observes
 
 	return m.handle
 }
 
 // resolveFilters parses the three skip lists, rejecting entries that could never
-// match rather than letting them sit in a filter the operator believes is doing
-// something. Blank entries are the exception: splitting an unset environment
-// variable on "," yields one, and treating that as a configuration error would
-// stop the process from booting over an empty setting.
-//
-// It reports whether an entry excludes every route, which New needs but no
-// request does - once nothing is registered, nothing consults it again.
+// match. Blank entries are allowed: splitting an unset env var yields one. It
+// reports whether an entry excludes every route, which only New needs.
 func (m *middleware) resolveFilters(cfg Config) bool {
 	skipAll := false
 
@@ -403,21 +325,9 @@ func (m *middleware) resolveFilters(cfg Config) bool {
 			continue
 		}
 
-		// The unmatched label is a value rather than a route, so it never gets
-		// the leading slash forced onto the entries below. An entry naming it
-		// therefore has to be recognised here, before any path fixup, and with
-		// trailing stars stripped too - Config recommends spelling the label
-		// "unmatched", and both "unmatched" and "unmatched*" have to work.
-		//
-		// The label is a value, not a route, so it is recorded as its own flag
-		// rather than as a key in skipURIs - which holds route patterns only.
-		// That keeps the two namespaces from colliding: a real route may be
-		// spelled the same as the label, and each still filters independently.
-		//
-		// Trailing slashes are trimmed first and stars only after, so that the
-		// separator distinguishes the two shapes: "/api*" and "/api*/" name a
-		// label spelled "/api", while "/api/*" is a prefix rule for the routes
-		// below it. Deliberately not a "continue" - an entry may mean both.
+		// The unmatched label is a value, not a route, so it is recognised before any path
+		// fixup and kept as its own flag rather than a skipURIs key - the two namespaces
+		// must not collide. Deliberately not a "continue": an entry may mean both.
 		if strings.TrimRight(normalizePath(path), "*") == m.unmatchedLabel {
 			m.skipUnmatched = true
 		}
@@ -428,24 +338,13 @@ func (m *middleware) resolveFilters(cfg Config) bool {
 			path = "/" + path
 		}
 
-		// Normalize before looking for the star, so that a trailing slash after
-		// it - "/admin/*/" - still registers the prefix. Trailing slashes are
-		// documented as ignored.
-		//
-		// validLabel matches what routeLabel does to the pattern these are
-		// compared against; without it an entry for a route whose pattern is not
-		// valid UTF-8 would silently stop matching.
-		//
-		// Clone, because these become map keys for the process lifetime and
-		// normalizePath returns a subslice: the documented way to build this
-		// list is strings.Split on an environment variable, whose parts all
-		// point into one blob that would otherwise never be freed.
+		// Normalize before finding the star so "/admin/*/" still registers the prefix.
+		// validLabel matches what routeLabel does to the pattern. Cloned because these
+		// become map keys for the process life and normalizePath returns a subslice.
 		normalized := strings.Clone(validLabel(normalizePath(path)))
 
-		// Every entry is kept as an exact match, including one ending in "*".
-		// Fiber route patterns may themselves end in "*", so registering only
-		// the prefix would leave the route named "/static*" unskippable: the
-		// stripped prefix "/static" matches neither it nor "/static/...".
+		// Kept as an exact match too, including a trailing "*": Fiber patterns may end in
+		// one, so the stripped prefix alone would leave route "/static*" unskippable.
 		m.skipURIs[normalized] = struct{}{}
 
 		// Trailing stars are stripped as a group, so that the "/**" an operator
@@ -462,11 +361,8 @@ func (m *middleware) resolveFilters(cfg Config) bool {
 			continue
 		}
 
-		// The prefix stands for the route named exactly that as well as
-		// everything below it. Registering the bare form as an exact match
-		// leaves the per-request scan a single HasPrefix against a separator
-		// already appended here rather than rebuilt on every request.
-		//
+		// The prefix stands for the route named exactly that and everything below it, so
+		// the per-request scan is one HasPrefix against a separator appended here.
 		m.skipURIs[prefix] = struct{}{}
 		// Several spellings normalize to one prefix - "/admin/*", "/admin/**"
 		// and "/admin/*/" all do - and each duplicate would repeat an identical
@@ -544,18 +440,9 @@ func typedNil(value any) bool {
 	}
 }
 
-// detachRequest hands the wrapped handler a request whose header no longer
-// aliases the connection buffers.
-//
-// The adaptor builds the net/http request with zero-copy views into memory
-// fasthttp reuses the moment the Fiber handler returns, which is safe only
-// while that handler owns the request. Config.MetricsTimeout breaks the
-// assumption: promhttp then wraps itself in http.TimeoutHandler, which answers
-// 503 and returns as soon as the deadline fires while the gathering goroutine
-// runs on. That goroutine negotiates the exposition format off req.Header only
-// after Gather returns - by which point the Fiber handler is gone and the
-// buffers have been recycled underneath it. Copying the header first leaves the
-// straggler reading memory nothing else will touch.
+// detachRequest hands the wrapped handler a request whose header no longer aliases
+// the connection buffers. Under MetricsTimeout promhttp answers 503 and returns
+// while the gather goroutine still reads req.Header from recycled memory.
 func detachRequest(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(rsp http.ResponseWriter, req *http.Request) {
 		// Both names and values alias: the adaptor clones only Cookie, and a
@@ -600,10 +487,9 @@ func histogramOpts(cfg Config, name Metric, help string, labels prometheus.Label
 	}
 }
 
-// resolveDynamicLabels sorts the configured dynamic labels by name and rejects
-// the ones that would clash with a label the middleware already sets. Sorting
-// keeps the label order of a metric stable across restarts, which map iteration
-// order would not.
+// resolveDynamicLabels sorts the configured dynamic labels by name and rejects the
+// ones clashing with a label the middleware sets. Sorting keeps the order stable
+// across restarts, which map iteration would not.
 func resolveDynamicLabels(cfg Config) []dynamicLabel {
 	if len(cfg.DynamicLabels) == 0 {
 		return nil
@@ -666,11 +552,9 @@ func resolveRegistry(cfg Config) (prometheus.Registerer, prometheus.Gatherer) {
 		panic("prometheus middleware: provided Registerer does not implement prometheus.Gatherer; supply a matching Gatherer or use prometheus.Registry")
 	}
 
-	// Both were supplied. Pairing a wrapping Registerer with the registry it
-	// wraps is the main reason to do that, and those wrappers - anything from
-	// prometheus.WrapRegistererWith or WrapRegistererWithPrefix - are not
-	// Gatherers, so requiring one here would reject the very configuration the
-	// panic above recommends. Only provably distinct pairs are rejected.
+	// Both were supplied. Wrapping Registerers - WrapRegistererWith and friends - are
+	// not Gatherers, so requiring one would reject the very pairing the panic above
+	// recommends. Only provably distinct pairs are rejected.
 	if regGatherer, ok := registerer.(prometheus.Gatherer); ok {
 		if differentSource(regGatherer, gatherer) {
 			panic("prometheus middleware: Registerer and Gatherer must reference the same metrics source")
@@ -681,22 +565,15 @@ func resolveRegistry(cfg Config) (prometheus.Registerer, prometheus.Gatherer) {
 }
 
 // differentSource reports whether two gatherers provably reference distinct
-// metrics sources. Comparing interface values directly panics when the dynamic
-// type is not comparable, so identity is established through reflection and
-// cases that cannot be decided are accepted rather than aborting startup.
+// sources. Identity goes through reflection because comparing interface values
+// panics on an uncomparable dynamic type; undecidable cases are accepted.
 func differentSource(a, b prometheus.Gatherer) bool {
 	// Both interfaces are non-nil here, so neither Value can be invalid.
 	av, bv := reflect.ValueOf(a), reflect.ValueOf(b)
 
-	// Mismatched dynamic types say nothing about the underlying source: a
-	// gathering wrapper delegating to the registry it was handed is a different
-	// type but the same source. Only like can be compared with like.
-	//
-	// Pointer identity is then the only comparison worth making. Equality on
-	// anything else risks panicking at startup: reflect.Type.Comparable reports
-	// true for a struct holding an interface field, yet comparing two of them
-	// panics when that field carries an uncomparable dynamic value such as a
-	// prometheus.Gatherers slice. Everything else is treated as undecidable.
+	// Mismatched dynamic types say nothing: a wrapper delegating to the registry it
+	// was handed is a different type, same source. Pointer identity is then the only
+	// safe comparison - equality on a struct holding an interface can panic.
 	if av.Type() != bv.Type() || av.Kind() != reflect.Pointer {
 		return false
 	}
@@ -718,10 +595,9 @@ func (m *middleware) handle(ctx fiber.Ctx) error {
 	return m.instrument(ctx)
 }
 
-// skipRequested asks Config.Next whether to stand aside, treating a panic in
-// that application-supplied function as "no". It runs before the handler chain,
-// so a panic here would reach the connection goroutine, which neither fasthttp
-// nor Fiber guards - the same hazard DynamicLabels is protected from.
+// skipRequested asks Config.Next whether to stand aside, reading a panic there as
+// "no". It runs before the handler chain, so an escaping panic would reach the
+// connection goroutine that neither fasthttp nor Fiber guards.
 func (m *middleware) skipRequested(ctx fiber.Ctx) (skip bool) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -760,17 +636,14 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		defer inFlight.Dec()
 	}
 
-	// The gauge is labelled by method alone and never reads the status, so
-	// nothing below this point serves it. Taking over the error handler anyway
-	// would change where the application's errors surface for no benefit: the
-	// error would stop propagating to middleware mounted before this one, and
-	// run at a different depth in the stack.
+	// The gauge never reads the status, so nothing below serves it. Taking over the
+	// error handler anyway would move where the application's errors surface, and run
+	// them at a different depth in the stack, for no benefit.
 	if !m.records {
 		return ctx.Next()
 	}
 
-	// Only the duration histogram needs the clock, and two reads per request is
-	// the one hot-path cost this function had left ungated.
+	// Only the duration histogram needs the clock.
 	var start time.Time
 	if m.requestDuration != nil {
 		start = time.Now()
@@ -778,12 +651,9 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 
 	chainErr := ctx.Next()
 
-	// Read here rather than at the observation below: everything between the
-	// two is this middleware's own bookkeeping - the route lookup, the skip
-	// scan, the counter increment, the request-context read, and any
-	// DynamicLabels function the application supplied. Charging that to the
-	// request would put instrumentation overhead into the metric people set
-	// latency alerts on, and a slow label function would dominate it entirely.
+	// Read here, not at the observation below: everything between is this middleware's
+	// own bookkeeping, and charging it to the request would put instrumentation
+	// overhead into the metric people set latency alerts on.
 	var chainTime time.Duration
 	if m.requestDuration != nil {
 		chainTime = time.Since(start)
@@ -791,26 +661,17 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 
 	routePath, matched, ok := m.routeLabel(ctx)
 
-	// SkipURIs holds route patterns, so it is consulted only for a request that
-	// resolved to one. Unmatched traffic carries a label rather than a pattern
-	// and was already filtered in routeLabel - which is what lets a real route
-	// spelled the same as the label still obey the pattern rules.
+	// SkipURIs holds route patterns, so it is consulted only for a matched request.
+	// Unmatched traffic carries a label instead and was filtered in routeLabel.
 	if !ok || (matched && m.skipped(routePath)) {
-		// Nothing will be recorded, so there is no accurate status code to buy
-		// by taking over the error handler below - and returning the error is
-		// what the two paths above that also stand aside already do. Excluding
-		// a route from instrumentation should not quietly move where its errors
-		// surface.
+		// Nothing will be recorded, so there is no status code to buy by taking over the
+		// error handler - and the two paths above that also stand aside return it too.
 		return chainErr
 	}
 
-	// Fiber runs the application error handler only after the entire handler
-	// chain has unwound, so the response is still empty when Next reports an
-	// error. Running it here - as Fiber's own logger middleware does - means
-	// the status code and response size below are the ones the client sees.
-	// Its cost is the client's wait, so it is added to the recorded duration;
-	// the clock is read twice rather than once so that the route lookup and
-	// skip scan between the two stay out of the measurement.
+	// Fiber runs the application error handler only after the chain unwinds, so the
+	// response is still empty here. Running it now - as Fiber's logger does - makes
+	// the status and size below the ones the client sees; its cost is the client's.
 	if chainErr != nil {
 		errorHandlerStart := time.Now()
 		if err := ctx.App().ErrorHandler(ctx, chainErr); err != nil {
@@ -823,11 +684,9 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 
 	elapsed := chainTime.Seconds()
 
-	// Fiber's timeout middleware answers through RequestCtx.TimeoutErrorWithCode,
-	// which parks the 408 fasthttp will actually send and copies it over the live
-	// response only after the whole handler chain has unwound. Reading
-	// ctx.Response() here would therefore see whatever the timed-out handler left
-	// behind - a default 200 - and report every production timeout as a success.
+	// Fiber's timeout middleware answers through TimeoutErrorWithCode, which parks the
+	// 408 and copies it over the live response only after the chain unwinds - so
+	// ctx.Response() still holds the default 200 the timed-out handler left.
 	resp := ctx.Response()
 	if timedOut := ctx.RequestCtx().LastTimeoutErrorResponse(); timedOut != nil {
 		resp = timedOut
@@ -858,20 +717,16 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		m.requestsTotal.WithLabelValues(values...).Inc()
 	}
 
-	// Everything below feeds the histograms only, and reading the request
-	// context is not free: Fiber's DefaultCtx.Context installs a background
-	// context on the request when none was set, which then costs the request an
-	// extra user value to clear on release. Skip the lot when every histogram
-	// family is disabled.
+	// Histograms only, and the request-context read is not free: DefaultCtx.Context
+	// installs a background context when none was set, costing an extra user value to
+	// clear on release. Skip it when every histogram family is disabled.
 	if m.observes {
 		var exemplarLabels prometheus.Labels
 		if m.exemplars {
 			spanCtx := trace.SpanContextFromContext(ctx.Context())
-			// Sampled, not merely valid. Under head-based sampling every
-			// request carries a valid trace ID, and Prometheus keeps one
-			// exemplar per bucket, overwritten on each observation - so
-			// recording unsampled traces would evict the links that lead
-			// somewhere and leave the ones that do not.
+			// Sampled, not merely valid: under head-based sampling every request has a
+			// valid trace ID, and one exemplar per bucket is overwritten on each
+			// observation, so unsampled traces would evict the links that lead somewhere.
 			if traceID := spanCtx.TraceID(); traceID.IsValid() && spanCtx.IsSampled() {
 				exemplarLabels = prometheus.Labels{"traceID": traceID.String()}
 			}
@@ -908,10 +763,9 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		}
 
 		if m.responseSize != nil {
-			// A handler may set SkipBody itself, and fasthttp then writes the
-			// headers and drops the buffer however much was written into it.
-			// bodyless covers the cases fasthttp decides for itself, which it
-			// does after this runs.
+			// A handler may set SkipBody itself, and fasthttp then drops the buffer
+			// however much was written. bodyless covers what fasthttp decides
+			// for itself, which it does after this runs.
 			if bodyless(method, status) || resp.SkipBody {
 				observe(m.responseSize.WithLabelValues(values...), 0)
 			} else if size, known := responseBodySize(resp.Header.ContentLength(), resp); known {
@@ -929,16 +783,8 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 }
 
 // resolveDynamicValues fills the dynamic part of the label buffer, reporting
-// whether the request can be recorded at all.
-//
-// The functions are supplied by the application and Config invites them to read
-// whatever the handlers left on the context, so a nil Locals cast is an easy
-// mistake to make. It would be a costly one: this runs after the handler chain
-// has unwound, past any recover the application mounted where this package
-// prescribes, so the panic would reach the fasthttp connection goroutine and the
-// client would get no response at all. Instrumentation must not be able to take
-// the request down, so a panicking function drops the sample instead - inventing
-// a label value would quietly put a fabricated series in the registry.
+// whether the request can be recorded. These run after the chain unwinds, past any
+// recover, so a panicking one drops the sample rather than killing the connection.
 func (m *middleware) resolveDynamicValues(ctx fiber.Ctx, values []string) (ok bool) {
 	if len(m.dynamicLabels) == 0 {
 		return true
@@ -947,11 +793,9 @@ func (m *middleware) resolveDynamicValues(ctx fiber.Ctx, values []string) (ok bo
 	defer func() {
 		if r := recover(); r != nil {
 			ok = false
-			// Reported once, not per request: a bad type assertion panics on
-			// every request, and logging each one would serialise every
-			// connection goroutine through the sink after the response is
-			// already generated. One line is enough to stop the silent no-op
-			// from looking like no traffic at all.
+			// Reported once, not per request: a bad type assertion panics on every
+			// one, and logging each would serialise every connection goroutine
+			// through the sink after the response is already generated.
 			m.reportLabelPanic.Do(func() {
 				if m.errorLog != nil {
 					m.errorLog.Println("prometheus middleware: a DynamicLabels function panicked; "+
@@ -971,9 +815,8 @@ func (m *middleware) resolveDynamicValues(ctx fiber.Ctx, values []string) (ok bo
 // replacementRune stands in for bytes Prometheus will not accept.
 const replacementRune = "�"
 
-// validLabel replaces invalid UTF-8 so that a value can never be rejected by
-// Prometheus, which panics on one. The common case is a scan and no allocation.
-// Use it for values the middleware already owns, such as a registered route
+// validLabel replaces invalid UTF-8, which Prometheus panics on; the common case is
+// a scan and no allocation. Use it for values the middleware owns, such as a route
 // pattern; a value read off the request needs detachedLabel instead.
 func validLabel(value string) string {
 	if utf8.ValidString(value) {
@@ -983,13 +826,8 @@ func validLabel(value string) string {
 }
 
 // detachedLabel is validLabel for a value that may alias fasthttp's read buffer.
-//
-// Unless the app sets fiber.Config.Immutable, Fiber hands out strings pointing
-// into the connection read buffer. Prometheus keeps label values for the
-// lifetime of the series, so without a copy the buffer is reused by the next
-// request and every series rewrites itself to whatever arrived last, collapsing
-// distinct series onto one label set and leaving the registry unable to gather
-// at all.
+// Without fiber.Config.Immutable those strings point into memory the next request
+// reuses, and Prometheus keeps label values for the life of the series.
 func detachedLabel(value string) string {
 	if utf8.ValidString(value) {
 		return strings.Clone(value)
@@ -999,9 +837,8 @@ func detachedLabel(value string) string {
 	return strings.ToValidUTF8(value, replacementRune)
 }
 
-// statusStrings holds the decimal form of every status code a response can
-// carry, because strconv.Itoa allocates above 99 - which is every HTTP status -
-// and this is the hottest path in the middleware.
+// statusStrings holds the decimal form of every status code, because strconv.Itoa
+// allocates above 99 and this is the hottest path in the middleware.
 var statusStrings = func() [1000]string {
 	var table [1000]string
 	for code := 100; code < 1000; code++ {
@@ -1026,43 +863,17 @@ type payload interface {
 	Body() []byte
 }
 
-// requestBodySize reports the size of the payload received, and whether it could
-// be determined at all.
-//
-// The buffer holds what actually arrived, so it is measured wherever it can be.
-// Trusting Content-Length instead would let a client bill the histogram for a
-// body it never sent: fasthttp rejects a request announcing more than BodyLimit
-// before reading a byte of it, Fiber then replays the Use chain, and this would
-// record the announced figure - unbounded, from a few hundred bytes of traffic.
-//
-// A pre-parsed multipart form is the exception, because there the buffer is not
-// the body: fasthttp keeps the parsed parts, the large ones spilled to temp
-// files precisely so they never sit in memory, and Request.Body would re-marshal
-// the whole form into a fresh buffer just to have its length taken - doubling
-// what an upload costs and discarding the copy. There the announced length is
-// the only cheap answer - and it is dropped rather than recorded when it
-// exceeds what the server would have accepted, since anything larger was
-// rejected unread and no honest size exists.
-//
-// A body stream is left unknown rather than measured, and the announced length
-// is no substitute. Under fiber.Config{StreamRequestBody} fasthttp prefetches a
-// bounded prefix and hands the rest to the handler; a handler that returns
-// without reading - an auth rejection, a 404, any route that ignores its body -
-// leaves the remainder undrained, and releasing the stream does not go back for
-// it. Recording the header would let a client announce BodyLimit, send a few
-// hundred bytes, and bill the histogram for the difference on every request.
-// Draining the stream to size it would defeat the point of streaming, and a
-// zero would be worse than nothing - it still increments _count and lands in
-// the lowest bucket while adding nothing to _sum.
+// requestBodySize reports the payload received and whether it could be determined.
+// The buffer is measured wherever possible; a pre-parsed multipart form falls back
+// to the announced length, and a body stream is left unknown. See the README.
 func requestBodySize(contentLength, bodyLimit int, preParsedForm bool, p payload) (float64, bool) {
 	if p.IsBodyStream() {
 		return 0, false
 	}
 
-	// The announced length is used only where the body cannot be measured and
-	// the server is known to have read it. Beyond the limit it describes nothing
-	// that arrived - fasthttp refused the request unread - so the size is
-	// unknowable, and recording a fabricated one is worse than recording none.
+	// The announced length serves only where the body cannot be measured and the
+	// server is known to have read it. Beyond the limit fasthttp refused the
+	// request unread, so no honest size exists.
 	if preParsedForm && contentLength > 0 {
 		if bodyLimit > 0 && contentLength > bodyLimit {
 			return 0, false
@@ -1070,11 +881,9 @@ func requestBodySize(contentLength, bodyLimit int, preParsedForm bool, p payload
 		return float64(contentLength), true
 	}
 
-	// The body is buffered, so it is measurable - but an announced length
-	// larger than what is actually there means it was never received in full:
-	// fasthttp refuses a request over BodyLimit before reading a byte, and Fiber
-	// then replays the Use chain with an empty buffer. Recording the zero would
-	// let a few hundred bytes of traffic drag the histogram's percentiles down.
+	// Buffered, so measurable - but an announced length larger than what is there
+	// means it never arrived in full, and recording the zero would drag the
+	// percentiles down from a few hundred bytes of traffic.
 	buffered := len(p.Body())
 	if contentLength > buffered {
 		return 0, false
@@ -1083,30 +892,19 @@ func requestBodySize(contentLength, bodyLimit int, preParsedForm bool, p payload
 	return float64(buffered), true
 }
 
-// multipartFormPrefix is the media type whose body fasthttp consumes into parsed
-// parts before the handler chain runs.
+// multipartFormPrefix is the media type fasthttp parses before the chain runs.
 var multipartFormPrefix = []byte(fiber.MIMEMultipartForm)
 
-// bodyLimitOf returns the limit of the app currently serving the request.
-//
-// Read every time rather than cached: App.Config hands back the whole
-// configuration by value, but one handler may be mounted on two apps with
-// different limits, and caching the first would let a request to the stricter
-// one be sized against the laxer one's ceiling - which is the inflation the
-// limit is consulted to prevent. Only the request shapes that cannot measure
-// their own body reach this, so an ordinary request never pays for it.
+// bodyLimitOf returns the limit of the app currently serving the request. Read
+// every time rather than cached: one handler may be mounted on two apps, and the
+// laxer ceiling would permit exactly the inflation the limit prevents.
 func (m *middleware) bodyLimitOf(ctx fiber.Ctx) int {
 	return ctx.App().Config().BodyLimit
 }
 
-// responseBodySize reports the size of the payload about to be sent, and whether
-// it could be determined at all.
-//
-// Here the buffer is the ground truth rather than the header, because fasthttp
-// recomputes Content-Length from the body it is about to write - so a stale or
-// hand-set value never reaches the client. A body stream is the exception: it
-// cannot be measured without draining it, so the announced length is all there
-// is, and without one the payload is left out of the histogram as above.
+// responseBodySize reports the payload about to be sent and whether it could be
+// determined. The buffer is ground truth, since fasthttp recomputes Content-Length
+// from it; a body stream can only use the announced length.
 func responseBodySize(contentLength int, p payload) (float64, bool) {
 	if p.IsBodyStream() {
 		// Zero is announced, not absent: fasthttp uses a negative length for a
@@ -1120,8 +918,7 @@ func responseBodySize(contentLength int, p payload) (float64, bool) {
 	return float64(len(p.Body())), true
 }
 
-// bodyless reports whether fasthttp will drop the body the handler generated, so
-// that no payload bytes reach the client however much the handler wrote. It
+// bodyless reports whether fasthttp will drop the body the handler generated. It
 // answers from the method and status because Response.SkipBody is set only after
 // the handler chain returns.
 func bodyless(method string, status int) bool {
@@ -1154,45 +951,18 @@ func (m *middleware) skipped(routePath string) bool {
 	return false
 }
 
-// routeLabel returns the path label for the current request and whether the
-// request should be recorded at all. Matched requests are attributed to the
-// registered route pattern (for example "/user/:id") so that the label
-// cardinality stays bounded; unmatched requests are only recorded when
-// TrackUnmatchedRequests is enabled.
-//
-// The route is read after the handler chain has run because Fiber sets the
-// matched route on the context as it walks the stack: while this middleware
-// runs, the context still points at the middleware's own route.
-//
-// Known limitation: Fiber only ever tracks the route currently executing, so if
-// the endpoint delegates onwards with ctx.Next() and a trailing Use middleware
-// runs last, that middleware's mount path is what remains on the context and
-// the request is attributed to it. The endpoint pattern is not recoverable at
-// that point and Fiber exposes no way to tell a Use route apart from any other
-// - ctx.IsMiddleware() also reports true for a route whose own handler chain
-// stopped early, which is what a short-circuiting per-route guard leaves
-// behind, so it cannot be used to detect this.
-//
-// A request answered entirely by Use handlers - static.New, or a Use-mounted
-// guard returning 401 - never matches a non-Use route, so Matched stays false
-// and it is treated as unmatched: dropped by default, or recorded under
-// UnmatchedRouteLabel when TrackUnmatchedRequests is set.
+// routeLabel returns the path label and whether the request should be recorded.
+// Matched requests are attributed to the route pattern, read after the chain runs;
+// unmatched ones need TrackUnmatchedRequests. See the README for the limitation.
 func (m *middleware) routeLabel(ctx fiber.Ctx) (path string, matched, ok bool) {
 	if ctx.Matched() {
-		// A registered route always carries at least one handler. DefaultCtx
-		// substitutes a synthetic Route holding the raw request path when it has
-		// no route to report, and a Ctx installed through
-		// fiber.NewWithCustomCtx may return nil outright; taking either at face
-		// value would put one series per distinct URL in the registry, which is
-		// the unbounded cardinality this label exists to prevent. Neither names
-		// an endpoint, so both count as unmatched and obey the same opt-in.
+		// A registered route always carries a handler. DefaultCtx substitutes a synthetic
+		// Route holding the raw path, and a custom Ctx may return nil - taking either at
+		// face value would put one series per distinct URL in the registry.
 		if route := ctx.Route(); route != nil && len(route.Handlers) > 0 {
-			// Registration-time data, so no copy is needed - but an application
-			// registering routes from external config can still put raw bytes
-			// in a pattern, and Prometheus panics on a label value that is not
-			// valid UTF-8. That panic would land on the connection goroutine,
-			// where neither fasthttp nor Fiber installs a recover, and take the
-			// process with it.
+			// Registration-time data, so no copy is needed - but a pattern built from
+			// external config can still hold raw bytes, and the resulting panic would
+			// land on the connection goroutine and take the process with it.
 			return validLabel(normalizePath(route.Path)), true, true
 		}
 	}
@@ -1235,12 +1005,9 @@ func normalizePath(routePath string) string {
 	return normalized
 }
 
-// validateLabelName applies client_golang's own rule rather than approximating
-// it, so the two cannot disagree when the process selects a stricter validation
-// scheme than the UTF-8 default. client_golang checks names while building a
-// descriptor, which happens after the collectors have gone into the registry, so
-// a caller who supplied their own would otherwise be left with a registry they
-// never successfully configured.
+// validateLabelName applies client_golang's own rule so the two cannot disagree
+// under a stricter validation scheme. client_golang checks names while building a
+// descriptor, by which point the collectors are already registered.
 func validateLabelName(kind, name string) {
 	//nolint:staticcheck // matching client_golang's own deprecated usage
 	if !model.NameValidationScheme.IsValidLabelName(name) {
@@ -1265,12 +1032,9 @@ func validateMetricName(namespace, subsystem string, metric Metric) {
 	}
 }
 
-// validateBuckets rejects bucket bounds client_golang would reject, which it
-// only does inside newHistogram - and HistogramVec calls that lazily, on the
-// first observation for a label set. Left to it, a bad slice lets New return,
-// the application boot and the scrape endpoint serve, then panics on every
-// instrumented request from the connection goroutine, where a recover mounted
-// as this package prescribes cannot catch it.
+// validateBuckets rejects bounds client_golang only rejects inside newHistogram,
+// which HistogramVec calls lazily on the first observation - too late, from the
+// connection goroutine where a recover mounted as prescribed cannot catch it.
 func validateBuckets(field string, buckets []float64) {
 	// A slice whose only bound is +Inf leaves the histogram with no buckets at
 	// all: client_golang substitutes its defaults before dropping a trailing
@@ -1302,16 +1066,14 @@ func validateBuckets(field string, buckets []float64) {
 // the AlreadyRegistered error so callers can opt-in without coordination.
 func registerCollector(registry prometheus.Registerer, collector prometheus.Collector, errorLog promhttp.Logger) {
 	if err := registry.Register(collector); err != nil {
-		// These two are conveniences the caller can turn off outright, so a
-		// registry that will not take them is not a reason to refuse to start.
-		// The common case is a caller who registered their own - an extended Go
-		// collector collides per descriptor rather than as AlreadyRegisteredError
-		// - and matching client_golang's unversioned error text to tell the
-		// cases apart would break on any rewording, in both directions.
 		var alreadyRegistered prometheus.AlreadyRegisteredError
 		if errors.As(err, &alreadyRegistered) {
 			return
 		}
+
+		// Reported rather than fatal: these are conveniences the caller can turn off,
+		// and telling a deliberate opt-in from a misconfiguration would mean matching
+		// client_golang's unversioned error text, which breaks on any rewording.
 		if errorLog != nil {
 			errorLog.Println("prometheus middleware: the runtime collector was not registered "+
 				"(disable it with DisableGoCollector or DisableProcessCollector):", err)
