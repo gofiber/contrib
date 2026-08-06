@@ -544,7 +544,8 @@ func Test_Res_Headers_RedactsSensitiveValues(t *testing.T) {
 			}))
 
 			app.Get("/", func(c fiber.Ctx) error {
-				c.Set(fiber.HeaderSetCookie, "session=secret")
+				c.Response().Header.Add(fiber.HeaderSetCookie, "session=secret")
+				c.Response().Header.Add(fiber.HeaderSetCookie, "refresh=secret")
 				c.Set(fiber.HeaderLocation, "/reset?token=secret")
 				c.Set("X-Csrf-Token", "secret")
 				c.Set("X-Safe", "visible")
@@ -561,7 +562,8 @@ func Test_Res_Headers_RedactsSensitiveValues(t *testing.T) {
 				logs = logs[FieldResHeaders].(map[string]any)
 			}
 
-			assert.Equal(t, "[REDACTED]", logs["Set-Cookie"])
+			// A multi-value sensitive header stays an array of redacted values.
+			assert.Equal(t, []any{"[REDACTED]", "[REDACTED]"}, logs["Set-Cookie"])
 			assert.Equal(t, "[REDACTED]", logs["Location"])
 			assert.Equal(t, "[REDACTED]", logs["X-Csrf-Token"])
 			assert.Equal(t, "visible", logs["X-Safe"])
