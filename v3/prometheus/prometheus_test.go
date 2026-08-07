@@ -2118,6 +2118,28 @@ func TestNewWithoutConfigUsesDefaults(t *testing.T) {
 	}
 }
 
+// TestNewWithoutConfigHonorsConfigDefault ensures package-level defaults such
+// as an access-control gate are not discarded by the argument-less call.
+func TestNewWithoutConfigHonorsConfigDefault(t *testing.T) {
+	original := ConfigDefault
+	ConfigDefault.Next = func(fiber.Ctx) bool { return true }
+	t.Cleanup(func() { ConfigDefault = original })
+
+	app := fiber.New()
+	app.Use(New())
+	app.Get("/metrics", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusForbidden)
+	})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/metrics", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("expected ConfigDefault.Next to pass the scrape downstream, got status %d", resp.StatusCode)
+	}
+}
+
 // nilRouteCtx reports a match without exposing a route, which DefaultCtx never
 // does but a Ctx supplied through fiber.NewWithCustomCtx may.
 type nilRouteCtx struct {
@@ -3856,6 +3878,14 @@ func TestConfigDefaultBucketsAreNotShared(t *testing.T) {
 	if resolved.RequestDurationBuckets[0] != want {
 		t.Fatalf("expected the defaults to survive, got %v", resolved.RequestDurationBuckets[0])
 	}
+
+	// The argument-less path starts from ConfigDefault so that a Next set there
+	// still gates the endpoint, which puts the edited slice back in reach: the
+	// bounds are no longer increasing, so a New that took them would panic.
+	if resolved := configDefault(); resolved.RequestDurationBuckets[0] != want {
+		t.Fatalf("expected the defaults to survive the argument-less call, got %v", resolved.RequestDurationBuckets[0])
+	}
+	New()
 }
 
 // TestRoutePatternTrailingSlashIsTrimmed pins the trimming that lets a SkipURIs

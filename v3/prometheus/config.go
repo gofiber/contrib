@@ -191,8 +191,12 @@ var (
 	defaultResponseSizeBuckets    = []float64{256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152, 5242880}
 )
 
-// ConfigDefault holds the default middleware configuration. Copy it as a starting
-// point and treat it as read-only: the bucket slices are shared with every copy.
+// ConfigDefault holds the default middleware configuration. New reads it when no
+// Config is supplied, so a package-level edit - a Next gating the metrics
+// endpoint, say - reaches the argument-less call. The bucket fields are the one
+// exception: they are shared with every copy taken from here, so an argument-less
+// New takes its bounds from the package's own arrays rather than from whatever
+// those fields now hold. Pass a Config to choose different buckets.
 var ConfigDefault = Config{
 	Namespace:           "http",
 	MetricsPath:         "/metrics",
@@ -219,11 +223,21 @@ func cloneBuckets(supplied, defaults []float64) []float64 {
 
 // configDefault fills in the defaults and copies the two things that outlive the
 // call: the bucket bounds, which client_golang aliases, and Labels, which New
-// writes "service" into. A missing config is the zero config.
+// writes "service" into.
 func configDefault(config ...Config) Config {
-	var cfg Config
+	cfg := ConfigDefault
 	if len(config) > 0 {
 		cfg = config[0]
+	} else {
+		// ConfigDefault is exported, and its bucket slices are shared with every
+		// copy a caller made from it, so one bound edited in place on any of those
+		// copies is a bound edited here. Dropping them sends the fallback below to
+		// the private arrays, so that "no config" keeps meaning the package
+		// defaults - a caller who edited one into a non-increasing sequence gets a
+		// panic on their own New, not on everyone else's.
+		cfg.RequestDurationBuckets = nil
+		cfg.RequestSizeBuckets = nil
+		cfg.ResponseSizeBuckets = nil
 	}
 
 	// Trimmed and cloned: this becomes a const label on every family, so a trailing
