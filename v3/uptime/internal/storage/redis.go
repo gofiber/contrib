@@ -160,7 +160,13 @@ func (s *RedisStore) UpsertService(ctx context.Context, service Service) error {
 	).Err(); err != nil {
 		return err
 	}
-	return s.setMaxNano(ctx, serviceKey, "last_seen_at", unixNano(service.LastSeenAt))
+	if err := s.setMaxNano(ctx, serviceKey, "last_seen_at", unixNano(service.LastSeenAt)); err != nil {
+		return err
+	}
+	if s.config.StateTTL <= 0 {
+		return nil
+	}
+	return s.client.Expire(ctx, serviceKey, s.config.StateTTL).Err()
 }
 
 func (s *RedisStore) UpsertInstance(ctx context.Context, instance Instance) error {

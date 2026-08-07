@@ -464,6 +464,26 @@ func TestRedisStoreHeartbeatArmsStateTTL(t *testing.T) {
 	}
 }
 
+func TestRedisStoreUpsertServiceArmsStateTTL(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client := newFakeRedisClient()
+	ttl := 91 * 24 * time.Hour
+	store := &RedisStore{config: RedisConfig{KeyPrefix: "test:uptime", StateTTL: ttl}, client: client}
+	mustNoErr(t, store.Init(ctx))
+
+	created := time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC)
+	mustNoErr(t, store.UpsertService(ctx, Service{ID: "api", Name: "API", CreatedAt: created, LastSeenAt: created, SampleInterval: time.Minute}))
+
+	client.mu.Lock()
+	got := client.expirations[store.serviceKey("api")]
+	client.mu.Unlock()
+	if got != ttl {
+		t.Fatalf("ttl for service = %v, want %v", got, ttl)
+	}
+}
+
 func TestRedisStoreRollupSkipsDayWithExpiredSamples(t *testing.T) {
 	t.Parallel()
 

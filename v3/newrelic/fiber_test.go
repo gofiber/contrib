@@ -4,10 +4,10 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
 	"github.com/newrelic/go-agent/v3/newrelic"
 	"github.com/stretchr/testify/assert"
 )
@@ -424,20 +424,32 @@ func TestFromContext(t *testing.T) {
 }
 
 func TestCreateWebRequest(t *testing.T) {
-	t.Run("should include inbound headers for distributed tracing", func(t *testing.T) {
+	t.Run("should include only agent consumed headers by default", func(t *testing.T) {
 		app := fiber.New()
 		app.Get("/", func(ctx fiber.Ctx) error {
-			req := createWebRequest(ctx, ctx.Hostname(), ctx.Method(), string(ctx.Request().URI().Scheme()), nil)
+			req := createWebRequest(ctx, ctx.Hostname(), ctx.Method(), string(ctx.Request().URI().Scheme()), DefaultRequestHeaderFilter)
 			assert.Equal(t, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", req.Header.Get("traceparent"))
-			assert.ElementsMatch(t, []string{"abc", "def"}, req.Header.Values("X-Custom"))
+			assert.Equal(t, "synthetics-payload", req.Header.Get("X-NewRelic-Synthetics"))
+			assert.Equal(t, "synthetics-info-payload", req.Header.Get("X-NewRelic-Synthetics-Info"))
+			assert.Equal(t, "t=1465798814", req.Header.Get("X-Request-Start"))
+			assert.Equal(t, "t=1465798815", req.Header.Get("X-Queue-Start"))
+			assert.Empty(t, req.Header.Values("baggage"))
+			assert.Empty(t, req.Header.Values("X-Custom"))
+			assert.Empty(t, req.Header.Values("Authorization"))
 			return ctx.SendStatus(http.StatusNoContent)
 		})
 
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
 		r.Host = "example.com"
 		r.Header.Set("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+		r.Header.Set("X-NewRelic-Synthetics", "synthetics-payload")
+		r.Header.Set("X-NewRelic-Synthetics-Info", "synthetics-info-payload")
+		r.Header.Set("X-Request-Start", "t=1465798814")
+		r.Header.Set("X-Queue-Start", "t=1465798815")
+		r.Header.Set("baggage", "userId=42")
 		r.Header.Add("X-Custom", "abc")
 		r.Header.Add("X-Custom", "def")
+		r.Header.Set("Authorization", "Bearer secret")
 
 		resp, err := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 		assert.NoError(t, err)
@@ -448,7 +460,7 @@ func TestCreateWebRequest(t *testing.T) {
 		app := fiber.New()
 		app.Get("/", func(ctx fiber.Ctx) error {
 			req := createWebRequest(ctx, ctx.Hostname(), ctx.Method(), string(ctx.Request().URI().Scheme()), func(key, _ string) bool {
-				return strings.EqualFold(key, "traceparent")
+				return utils.EqualFold(key, "traceparent")
 			})
 			assert.Equal(t, "trace-value", req.Header.Get("traceparent"))
 			assert.Empty(t, req.Header.Values("Authorization"))

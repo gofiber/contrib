@@ -1,4 +1,4 @@
-name: "Test Uptime"
+name: "Test Prometheus"
 
 on:
   push:
@@ -7,10 +7,9 @@ on:
       - main
   pull_request:
     paths:
-      - 'v3/uptime/**/*.go'
-      - 'v3/uptime/dashboard.gohtml'
-      - 'v3/uptime/go.mod'
-      - 'v3/uptime/go.sum'
+      - 'v3/prometheus/**/*.go'
+      - 'v3/prometheus/go.mod'
+      - 'v3/prometheus/go.sum'
 
   workflow_dispatch:
 
@@ -40,11 +39,11 @@ jobs:
         with:
           go-version: '${{ matrix.go-version }}'
           check-latest: true
-          cache-dependency-path: v3/uptime/go.sum
+          cache-dependency-path: v3/prometheus/go.sum
       - name: Run Test
         uses: gofiber/.github/.github/actions/gotestsum@main
         with:
-          working-directory: ./v3/uptime
+          working-directory: ./v3/prometheus
           packages: ./...
           rerun-fails: '2'
           args: -race -count=1
