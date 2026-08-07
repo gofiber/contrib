@@ -4,14 +4,9 @@ package spnego
 
 import "io/fs"
 
-// fileRevisionID reports no identity on platforms that expose none through
-// fs.FileInfo, so keytab change detection falls back to size and modification
-// time alone.
-//
-// os.SameFile is deliberately not used instead: on some platforms it resolves
-// identity lazily by re-opening the recorded path, which would both add a
-// syscall per request and compare stamps against whatever currently lives at
-// that path rather than against what was stat'ed.
+// fileRevisionID reports no identity where fs.FileInfo exposes none, so change
+// detection falls back to size and modification time. os.SameFile is not used
+// instead: it re-opens the path, costing a syscall on every request.
 func fileRevisionID(fs.FileInfo) fileID {
 	return fileID{}
 }

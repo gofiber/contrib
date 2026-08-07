@@ -22,68 +22,18 @@ import (
 	"github.com/jcmturner/gokrb5/v8/spnego"
 )
 
-// gokrb5 answers 401 in several situations and distinguishes them only by the
-// WWW-Authenticate value it sets:
-//
-//   - a bare "Negotiate" is the opening challenge, and clients begin SPNEGO
-//     only when they receive it on an untouched 401;
-//   - spnegoContinueNeeded asks the client to retry with KRB5;
-//   - spnegoRejected means the ticket was refused.
-//
-// Only the last is treated as a failure. Note that spnegoContinueNeeded is not
-// exclusively a handshake step: gokrb5 sends it from three places — a genuine
-// GSS-API continue, a Negotiate header that fails base64 decoding, and a token
-// that unmarshals as neither SPNEGO nor raw KRB5 (spnego/http.go:284, :320 and
-// :330 in v8.4.4). A malformed or NTLM-only token is therefore indistinguishable
-// from a real continuation, and such failures cannot reach Config.Unauthorized.
-// Treating them as rejections instead would break genuine continuations, which
-// is the more damaging error, so they are passed through.
-//
-// These values mirror unexported constants in gokrb5/v8/spnego/http.go, pinned
-// at v8.4.4. Re-check them against the source when upgrading gokrb5: a change
-// there would silently reclassify responses. The tests that would catch a drift
-// are the ones that drive live gokrb5 and compare what it emitted —
-// TestUnauthorizedNotCalledOnContinueNeeded, TestUnauthorizedCalledOnRejection,
-// TestRejectionWithoutHandlerPassesThrough and TestChallengeIsNotAnInternalFailure.
-// TestIsRejection and TestIsSPNEGOOutcome are not among them: they build their
-// tables from these same constants, so they hold whatever the constants say.
-//
-// One premise here has no live test and cannot get one: that
-// spnegoInternalServerError sets no WWW-Authenticate, which is what lets
-// isSPNEGOOutcome tell a failure from an outcome. Reaching it for real needs a
-// ticket, and so a KDC. Check it by reading the source on every upgrade.
-//
-// A gokrb5 release that started setting a Negotiate header on that path would
-// make this middleware read an internal failure as an authentication outcome.
-// The consequence is bounded but not nil: sessionManagerProbe covers the case
-// that occurs in practice, a session manager refusing to persist, and would
-// still classify it correctly. What would be misread is the other one, gokrb5
-// failing to marshal the credentials — a response with no session cookie to
-// leak, and a body gokrb5 wrote itself.
+// The WWW-Authenticate values gokrb5 v8.4.4 sets, mirroring unexported
+// constants in its spnego/http.go. Only spnegoRejected is a failure; both
+// challenges are handshake legs. Re-check these when upgrading gokrb5.
 const (
 	spnegoContinueNeeded = "Negotiate oRQwEqADCgEBoQsGCSqGSIb3EgECAg=="
 	spnegoRejected       = "Negotiate oQcwBaADCgEC"
-	// spnegoBareChallenge is what gokrb5 sets when the request carried no
-	// usable Authorization header, and spnegoAccepted when authentication
-	// completed. Neither has its own named test the way the two challenge
-	// tokens above do: the bare challenge is compared live in
-	// TestChallengeIsNotAnInternalFailure, and the accepted value is only ever
-	// seen on a path that returns before the check that reads these.
-	spnegoBareChallenge = "Negotiate"
-	spnegoAccepted      = "Negotiate oRQwEqADCgEAoQsGCSqGSIb3EgECAg=="
+	spnegoBareChallenge  = "Negotiate"
+	spnegoAccepted       = "Negotiate oRQwEqADCgEAoQsGCSqGSIb3EgECAg=="
 )
 
-// The scheme and protocol values worth recognising. requestForSPNEGO matches
-// against these so it can assign the constant rather than what it was handed,
-// which may be a view into fasthttp's request buffer: Fiber returns the scheme
-// from the buffer once TrustProxy is on, and fasthttp's Protocol returns the
-// version parsed off the request line. Assigning the matched value instead
-// would keep pointing at storage the next request reuses, and copying it would
-// allocate — both fields escape into the request.
-//
-// Each is the thing matched and the thing stored, so there is one source of
-// truth per value rather than a literal in the arm to keep in step with the
-// constant in the case.
+// Matched against in requestForSPNEGO so it can store the constant rather than
+// a view into fasthttp's pooled request buffer, without allocating a copy.
 const (
 	schemeHTTP  = "http"
 	schemeHTTPS = "https"
@@ -92,9 +42,8 @@ const (
 	protocolHTTP10 = "HTTP/1.0"
 )
 
-// spnegoOutcomes is every WWW-Authenticate value gokrb5 v8.4.4 sets, and so the
-// set that marks a response as an authentication outcome rather than the
-// handler failing.
+// spnegoOutcomes is every WWW-Authenticate value gokrb5 sets, and so the set
+// that marks a response as an authentication outcome rather than a failure.
 var spnegoOutcomes = map[string]struct{}{
 	spnegoBareChallenge:  {},
 	spnegoContinueNeeded: {},
@@ -103,45 +52,25 @@ var spnegoOutcomes = map[string]struct{}{
 }
 
 // isSPNEGOOutcome reports whether a WWW-Authenticate value is one gokrb5 wrote.
-//
-// The values are compared exactly rather than by scheme. gokrb5 hands a
-// Config.SessionManager the raw ResponseWriter, so the header is not gokrb5's
-// alone, and a manager that set a Negotiate header of its own before failing
-// would otherwise have the failure read as an outcome and replayed — its
-// status, its message, and the Set-Cookie for a session it never stored.
-//
-// This narrows that to a manager writing one of these four values verbatim, and
-// is deliberately not the only defence: a manager whose New refuses is recorded
-// as a fact by sessionManagerProbe, which no header can talk the gate out of.
-// What is left to this check is the one internal failure that happens before
-// the manager is reached, gokrb5 failing to marshal the credentials.
+// Compared exactly, not by scheme: a session manager holds the same writer, so
+// a looser test would let it pass its own failure off as an outcome.
 func isSPNEGOOutcome(value string) bool {
 	_, ok := spnegoOutcomes[value]
 	return ok
 }
 
 // sessionManagerProbe wraps the caller's session manager so a New that refused
-// to persist is known rather than inferred. gokrb5 reports that refusal through
-// spnegoInternalServerError, which writes no WWW-Authenticate — but it writes to
-// a ResponseWriter the manager itself was just holding, so reading the absence
-// of a header back as "the manager failed" trusts the manager not to have left
-// one. This does not: the error the manager returned is the signal.
-//
-// Get is passed through untouched. gokrb5 discards its error and falls through
-// to full ticket validation, so a failed Get is not a failed request and must
-// not be recorded as one.
+// to persist is known from the error it returned, rather than inferred from a
+// response header the manager itself could have written. Get passes through.
 type sessionManagerProbe struct {
 	delegate service.SessionMgr
-	// signalLost throttles the one log line this type emits, which fires per
-	// request for as long as the condition lasts. A pointer because the probe
-	// is copied into gokrb5's settings by value, and a throttle that copied
-	// with it would let every copy through its own first line.
+	// Pointer because the probe is copied by value into gokrb5's settings, and
+	// a throttle copied with it would let every copy through its own first line.
 	signalLost *logThrottle
 }
 
 // newSessionManagerProbe builds the probe with its throttle. Constructing the
-// struct directly leaves that nil, which panics on the path it exists to report
-// — inside the authentication middleware, on a request that was already failing.
+// struct directly leaves that nil, which panics on the path it reports on.
 func newSessionManagerProbe(delegate service.SessionMgr) sessionManagerProbe {
 	return sessionManagerProbe{
 		delegate:   delegate,
@@ -153,14 +82,9 @@ func (p sessionManagerProbe) New(w http.ResponseWriter, r *http.Request, k strin
 	err := p.delegate.New(w, r, k, v)
 	if err != nil {
 		if reason := recordSessionFailure(w); reason != "" {
-			// Losing the signal is not fatal — isSPNEGOOutcome still classifies
-			// most of these correctly — but it is exactly the hole this probe
-			// closed, so it must not go unnoticed.
-			//
-			// Throttled like every other internal failure in this package, and
-			// for the same reason: this fires once per request that reaches a
-			// failing session store, which is a rate the caller does not
-			// control but the store's outage duration does.
+			// Not fatal — isSPNEGOOutcome still classifies most of these — but it
+			// is the hole this probe closed. Throttled because it fires once per
+			// request for as long as the session store stays down.
 			p.signalLost.do(func() {
 				flog.Errorf("spnego: session failure could not be recorded: %s (writer %T); "+
 					"a session manager that writes a Negotiate header before failing may now "+
@@ -171,25 +95,12 @@ func (p sessionManagerProbe) New(w http.ResponseWriter, r *http.Request, k strin
 	return err //nolint:wrapcheck // gokrb5 inspects only whether this is nil
 }
 
-// recordSessionFailure marks the middleware's recorder, and reports why it could
-// not when it could not — the empty string meaning it did.
-//
-// The writer is unwrapped along the way, following the convention net/http
-// itself uses in http.ResponseController, so a gokrb5 that wrapped the writer to
-// add a capability would still be seen through.
-//
-// The two failures are told apart because they point somewhere different. A
-// writer that does not unwrap is one gokrb5 substituted, so the thing to look at
-// is what changed in gokrb5. A walk that runs out has a chain it could not get
-// to the end of, which is either deeper than the bound or a cycle — the message
-// says both, because the two are not distinguishable from here without tracking
-// every writer seen, and only one of them is fixed by raising the bound.
+// recordSessionFailure marks the middleware's recorder, returning why it could
+// not when it could not. The writer is unwrapped along the way, as
+// http.ResponseController does, so a wrapper gokrb5 added is still seen through.
 func recordSessionFailure(w http.ResponseWriter) string {
-	// Bounded because a writer whose Unwrap returns itself, or a pair that
-	// returns each other, would otherwise hang the request. Written as an
-	// unwrap count rather than an inspection count so it means what its name
-	// says: the writer handed in is inspected before any unwrap happens, and
-	// then once more after each one.
+	// Bounded: a writer whose Unwrap returns itself would otherwise hang the
+	// request. Counted in unwraps, so the writer handed in is inspected first.
 	for unwraps := 0; ; unwraps++ {
 		if recorder, ok := w.(*responseRecorder); ok {
 			recorder.sessionFailed = true
@@ -206,57 +117,31 @@ func recordSessionFailure(w http.ResponseWriter) string {
 	}
 }
 
-// maxResponseWriterUnwraps bounds the walk in recordSessionFailure.
 const maxResponseWriterUnwraps = 8
 
 func (p sessionManagerProbe) Get(r *http.Request, k string) ([]byte, error) {
 	return p.delegate.Get(r, k) //nolint:wrapcheck // passed through to gokrb5 untouched
 }
 
-// loggedBodyLimit bounds how much of any text this package did not write
-// reaches the log. Two things qualify and neither is bounded at source: the
-// body a session manager wrote before failing, which is whatever it chose, and
-// a KeytabLookupFunc's error, which may carry an upstream's whole response. The
-// keytab paths this package logs alongside them are quoted for the same reason
-// but are not the size problem.
-//
-// 512 bytes is enough to tell which of those happened and roughly why. When
-// there is more to know, the store and the upstream are still there to look at;
-// an unbounded log line is not a better place for them.
-//
-// Note what this is not for. gokrb5's keytab parse errors interpolate the whole
-// file, which is key material, and readAll drops that message rather than
-// relying on this: a bounded secret is still a secret in the log.
+// loggedBodyLimit bounds text this package did not write: a session manager's
+// body and a KeytabLookupFunc's error, neither bounded at source. Not a
+// redaction — readAll drops gokrb5's parse errors instead of capping them.
 const loggedBodyLimit = 512
 
-// quoteForLog renders untrusted bytes as a single quoted token, truncated.
-//
-// Quoting is what stops the text from forging log lines: a session manager that
-// echoes something client-supplied before failing would otherwise let a newline
-// in it start a line of its own under this package's prefix. Truncation happens
-// first, so a body cannot get past the limit by inflating through the escaping
-// — though the rendered form is still up to four times the limit, since a byte
-// can escape to four characters.
+// quoteForLog renders untrusted bytes as one quoted token, truncated first so
+// the escaping cannot inflate past the limit. Quoting is what stops a newline
+// in the text from forging a log line under this package's prefix.
 func quoteForLog(body []byte) string {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) <= loggedBodyLimit {
 		return strconv.Quote(string(trimmed))
 	}
-	// Backed up to a rune boundary. Cutting at a fixed offset splits whatever
-	// straddles it, and strconv.Quote renders the orphaned bytes as hex escapes
-	// — mojibake at the end of every localised message that runs long.
-	//
-	// At most UTFMax-1 bytes, which is as long as a split rune can be. Bounding
-	// it matters for the keytab case, where the text is not UTF-8 at all and an
-	// unbounded walk would eat back through arbitrary binary.
+	// Backed up to a rune boundary, or a split rune renders as hex escapes.
+	// Bounded at UTFMax-1 because the keytab case is not UTF-8 at all.
 	kept := trimmed[:loggedBodyLimit]
 	for range utf8.UTFMax - 1 {
-		// Stops on anything that is not a lone bad byte: a decoded rune, a
-		// genuine U+FFFD (which decodes at its full width), and an empty slice,
-		// which reports RuneError at width zero. Testing the width rather than
-		// its lower bound is what folds that last case in — without it the
-		// slice below would run off the end at any limit short enough to
-		// consume the whole input.
+		// Stops on a decoded rune, a genuine U+FFFD (full width), and an empty
+		// slice (RuneError at width zero) — hence testing size, not just r.
 		if r, size := utf8.DecodeLastRune(kept); r != utf8.RuneError || size != 1 {
 			break
 		}
@@ -266,18 +151,9 @@ func quoteForLog(body []byte) string {
 		fmt.Sprintf(" (+%d bytes)", len(trimmed)-len(kept))
 }
 
-// serveSPNEGO runs gokrb5's handler and turns a panic out of it into an error,
-// returning nil when it completed normally.
-//
-// Only gokrb5's own frames are covered. The handler it is given records the
-// outcome and returns without running the application's chain, so a panic from
-// a downstream handler never reaches this recover and keeps propagating with
-// its own value and stack — which is the reason this middleware runs that chain
-// on the request goroutine in the first place.
-//
-// The panic value is rendered with %v and quoted, like every other piece of
-// text this package logs that it did not write: a panic value is arbitrary, and
-// on this path it is reached from a client-supplied token.
+// serveSPNEGO runs gokrb5's handler and turns a panic out of it into an error.
+// Only gokrb5's frames are covered: the inner handler records and returns
+// without running the application's chain, so downstream panics still propagate.
 func serveSPNEGO(handler http.Handler, recorder *responseRecorder, req *http.Request) (failure error) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -289,16 +165,14 @@ func serveSPNEGO(handler http.Handler, recorder *responseRecorder, req *http.Req
 	return nil
 }
 
-// isRejection reports whether the response SPNEGO produced is a refusal rather
-// than a leg of an ongoing negotiation. Only a refusal is handed to
-// Config.Unauthorized; rewriting either challenge would stop clients from ever
-// completing the handshake.
+// isRejection reports whether the response is a refusal rather than a leg of an
+// ongoing negotiation. Only a refusal reaches Config.Unauthorized; rewriting a
+// challenge would stop clients from ever completing the handshake.
 func isRejection(headers http.Header) bool {
 	return headers.Get(fiber.HeaderWWWAuthenticate) == spnegoRejected
 }
 
-// nowOr reports fn's time, or the wall clock when fn is nil. The nil case is
-// production; a non-nil fn is a test driving the clock.
+// nowOr reports fn's time, or the wall clock when fn is nil (a test's seam).
 func nowOr(fn func() time.Time) time.Time {
 	if fn != nil {
 		return fn()
@@ -306,18 +180,16 @@ func nowOr(fn func() time.Time) time.Time {
 	return time.Now()
 }
 
-// internalErrorLogEvery throttles the log line for a repeating internal
-// failure. Without it, a keytab the process cannot read turns every request —
-// at a rate unauthenticated callers control — into a log line.
+// internalErrorLogEvery throttles a repeating internal failure, whose rate
+// unauthenticated callers would otherwise control.
 const internalErrorLogEvery = 30 * time.Second
 
 // logThrottle runs at most one write per window. The write happens outside the
-// lock, so a slow sink cannot become latency on the request path this sits on.
+// lock, so a slow sink cannot become latency on the request path.
 type logThrottle struct {
 	every time.Duration
-	// nowFn is a seam for tests; the wall clock is used when it is nil. Set it
-	// before the throttle is shared and leave it alone afterwards: it is read
-	// without the mutex, which guards only last.
+	// nowFn is a test seam read without the mutex, which guards only last. Set
+	// it before the throttle is shared and leave it alone afterwards.
 	nowFn func() time.Time
 
 	mu   sync.Mutex
@@ -325,8 +197,7 @@ type logThrottle struct {
 }
 
 // window reports the throttle interval, defaulting rather than trusting a
-// non-positive value, which would let every event through — the flood the type
-// exists to prevent.
+// non-positive value, which would let every event through.
 func (t *logThrottle) window() time.Duration {
 	if t.every <= 0 {
 		return internalErrorLogEvery
@@ -336,30 +207,19 @@ func (t *logThrottle) window() time.Duration {
 
 // do runs write if the window has elapsed, and consumes the window when it
 // does. Taking the write rather than reporting a verdict keeps the consumption
-// visible at the call site: a predicate would invite a second call that
-// silently swallows the line it was added for.
-//
-// Sub against the zero time saturates, so the first event always runs.
+// at the call site. Sub against the zero time saturates, so the first runs.
 func (t *logThrottle) do(write func()) {
-	// Read before the lock, not under it. nowFn is caller-supplied — a test's
-	// clock — and holding the mutex across it would put arbitrary code inside
-	// the critical section of a type every request handler contends on, which
-	// is the same reason write is called with the lock released.
-	//
-	// That leaves nowFn itself unguarded, and it has to stay that way: taking
-	// the lock to read it would not help, because nothing takes the lock to
-	// write it. It is a construction-time seam, set before the throttle is
-	// shared and not written again — a locked read would only look safe.
+	// nowFn is caller-supplied, so it is read outside the lock for the same
+	// reason write is called outside it: no arbitrary code in the critical
+	// section of a type every request contends on.
 	if t.claimWindow(nowOr(t.nowFn)) {
 		write()
 	}
 }
 
 // claimWindow reports whether the window has elapsed, and claims it when it
-// has. Named for the mutation rather than the question so a second call site is
-// obviously wrong: claiming without writing swallows the line for a full
-// window. Split out from do only so the lock can be defer-guarded, since do
-// must call write with the lock released.
+// has — named for the mutation, since claiming without writing swallows a line.
+// Split from do only so the lock can be defer-guarded.
 func (t *logThrottle) claimWindow(now time.Time) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -371,16 +231,8 @@ func (t *logThrottle) claimWindow(now time.Time) bool {
 }
 
 // clientSafeError keeps an internal cause matchable with errors.Is while
-// showing the client nothing but a generic message. Fiber's DefaultErrorHandler
-// writes err.Error() straight into the response body, and these causes name
-// keytab paths and OS errors.
-//
-// It deliberately implements Is rather than Unwrap. errors.As walks the Unwrap
-// chain, and Fiber derives the response status from any *fiber.Error it finds
-// there, so exposing the chain would let a caller's KeytabLookupFunc returning,
-// say, fiber.ErrUnauthorized turn an infrastructure fault into a 401 with no
-// WWW-Authenticate header. Stopping the walk here pins the status at 500 while
-// leaving the package's sentinels matchable.
+// showing the client a fixed message. It implements Is and not Unwrap on
+// purpose: an exposed chain would let a caller's *fiber.Error set the status.
 type clientSafeError struct{ cause error }
 
 func (e *clientSafeError) Error() string { return "Internal Server Error" }
@@ -393,9 +245,8 @@ type responseRecorder struct {
 	headers http.Header
 	status  int
 	body    bytes.Buffer
-	// sessionFailed is set by sessionManagerProbe when the caller's session
-	// manager refused to persist a session. It is the one internal failure the
-	// middleware learns as a fact rather than reading back out of the response.
+	// Set by sessionManagerProbe: the one internal failure the middleware
+	// learns as a fact rather than reading back out of the response.
 	sessionFailed bool
 }
 
@@ -412,26 +263,9 @@ func (r *responseRecorder) WriteHeader(status int) {
 	}
 }
 
-// Flush exists so a session manager written against net/http conventions —
-// gokrb5 hands it this recorder as the raw ResponseWriter — does not panic on a
-// w.(http.Flusher) assertion.
-//
-// It is the only optional interface implemented, and the only one worth
-// implementing: Hijacker and CloseNotifier both need a connection, and there is
-// none behind a buffer. A manager that asserts either without comma-ok panics,
-// which is documented on Config.SessionManager rather than papered over with a
-// method that could not honour the contract anyway.
-//
-// Nothing is sent. The middleware has to see the whole response before it can
-// tell an authentication outcome from a failure, so everything stays buffered
-// until it decides, and a manager cannot stream through this. Implementing the
-// method makes a comma-ok probe answer yes to a writer that cannot honour it,
-// which is the lesser of the two: the alternative is a panic that drops the
-// connection, and a manager that streams could not work here either way.
-//
-// Committing the implicit status is what a real ResponseWriter does on flush,
-// and matches httptest.ResponseRecorder. It costs nothing here because the
-// status is no longer what classifies the response.
+// Flush exists so a session manager asserting w.(http.Flusher) does not panic.
+// Nothing is sent — the response must be seen whole before it can be classified
+// — and it is the only optional interface a buffer can honour at all.
 func (r *responseRecorder) Flush() {
 	if r.status == 0 {
 		r.status = http.StatusOK
@@ -445,26 +279,9 @@ func (r *responseRecorder) Write(b []byte) (int, error) {
 	return r.body.Write(b) //nolint:wrapcheck // bytes.Buffer.Write never fails
 }
 
-// copyHeadersTo replays the recorded headers onto the Fiber response. SPNEGO
-// sets WWW-Authenticate on success as well as on failure, and the client needs
-// it in both cases to complete mutual authentication.
-//
-// Not on every success, though. A request served from an established session
-// goes straight to the inner handler with nothing recorded at all: gokrb5 sends
-// no accept-completed token, because the token proves an exchange and a resumed
-// session had none, and the session manager cannot have written anything either
-// — the resume path calls only SessionMgr.Get, which is handed the request and
-// not the writer. So this replays an empty set on every resumed request, which
-// is why it copies what is there rather than expecting a particular header.
-//
-// r.headers is ranged directly rather than through Header(), which would
-// allocate the map on exactly that path to iterate nothing. A nil map ranges
-// zero times.
-//
-// Add rather than Set: a manager may write a header more than once — during
-// New, the one path where it does hold the writer — and Set would keep only the
-// last. Set-Cookie would survive either way, since fasthttp routes it through a
-// path where Set appends, but nothing else would.
+// copyHeadersTo replays the recorded headers, which SPNEGO sets on success as
+// well as failure. Ranged directly so a resumed session, which records nothing,
+// does not allocate the map; Add because a manager may write a header twice.
 func (r *responseRecorder) copyHeadersTo(ctx fiber.Ctx) {
 	for key, values := range r.headers {
 		for _, value := range values {
@@ -473,23 +290,14 @@ func (r *responseRecorder) copyHeadersTo(ctx fiber.Ctx) {
 	}
 }
 
-// discardLogger is what gokrb5 gets when the caller asked for no logging. It
-// must not simply be left nil: gokrb5 passes the configured logger down to
-// Ticket.GetPACType, which calls Printf on it — without checking — when a
-// ticket's AD-IfRelevant authorization data fails to unmarshal
-// (messages/Ticket.go:223 in v8.4.4). A nil *log.Logger panics there, on the
-// PAC path that is enabled by default.
-//
-// The cost is one formatted string per request thrown away. That is the same
-// work gokrb5 does for a caller who did configure a logger, and it buys the
-// difference between a rejected ticket and a panicked request.
+// discardLogger is what gokrb5 gets when the caller asked for no logging. Not
+// nil: Ticket.GetPACType calls Printf on it unchecked when a ticket's
+// authorization data fails to unmarshal, and a nil *log.Logger panics there.
 var discardLogger = log.New(io.Discard, "", 0)
 
 // resolveLogger picks the logger handed to gokrb5, falling back to one that
-// discards rather than to nil. fiberLogger is Fiber's default logger for
-// *log.Logger, which is a nil interface whenever the registered logger is
-// backed by something else — a zap or zerolog adapter, say — so it must be
-// checked before Logger is called on it.
+// discards. fiberLogger is a nil interface whenever Fiber's registered logger
+// is backed by something other than *log.Logger, so it is checked first.
 func resolveLogger(cfg Config, fiberLogger flog.AllLogger[*log.Logger]) *log.Logger {
 	if cfg.Log != nil {
 		return cfg.Log
@@ -500,33 +308,13 @@ func resolveLogger(cfg Config, fiberLogger flog.AllLogger[*log.Logger]) *log.Log
 	return fiberLogger.Logger()
 }
 
-// requestForSPNEGO builds the net/http request gokrb5 inspects. Assembling it
-// directly avoids adaptor.ConvertRequest, which parses the client-supplied URI
-// and copies every header on each authenticated request.
+// requestForSPNEGO builds the net/http request gokrb5 inspects, avoiding
+// adaptor.ConvertRequest. gokrb5 v8.4.4 reads only the Authorization header and
+// the remote address; the rest is for a session manager. Recheck on upgrade.
 //
-// gokrb5 v8.4.4's server path reads the Authorization header and the remote
-// address, and reads cookies only behind a session-manager check — which is why
-// forSessionManager mirrors whether Config.SessionManager is set. Re-check this when
-// upgrading gokrb5.
-//
-// Strings that come out of the request buffer are copied, but only when a
-// session manager is configured. Fiber returns those as views into fasthttp's
-// storage unless Config.Immutable is set, and fasthttp pools its request
-// contexts across connections — so a string kept past the handler reads back
-// whichever client came next, not merely more of the same one. Nothing else
-// keeps them: gokrb5 splits and base64-decodes the Authorization header while
-// the handler runs and reads none of the other fields, so only a
-// Config.SessionManager can outlive the buffer, and that is ordinary enough for
-// one recording which host it issued a session for.
-//
-// Gating them matters because the copy is not free on the request that does not
-// need it: a Kerberos Authorization header runs to kilobytes, and an
-// unauthenticated caller controls how often it arrives. A session record naming
-// the wrong client, on the other hand, cannot be undone.
-//
-// Three fields need no copy either way, and say so where they are set: Method
-// comes from Fiber's table of constants, RemoteAddr from net.Addr.String, and
-// the Cookie header is rebuilt through a strings.Builder.
+// Strings out of fasthttp's pooled buffer are copied only when a manager is
+// there to outlive it: a Kerberos header runs to kilobytes, and unauthenticated
+// callers control how often it arrives.
 func requestForSPNEGO(ctx fiber.Ctx, forSessionManager bool) *http.Request {
 	fasthttpCtx := ctx.RequestCtx()
 	header := make(http.Header, 2)
@@ -536,37 +324,19 @@ func requestForSPNEGO(ctx fiber.Ctx, forSessionManager bool) *http.Request {
 		}
 		header.Set(fiber.HeaderAuthorization, auth)
 	}
-	// Forwarded only for a session manager, which reads the session out of the
-	// cookies. Sending them unconditionally would hand gokrb5 every cookie the
-	// site sets on requests that have no use for them.
-	//
-	// Rebuilt from the parsed cookies rather than copied from the header,
-	// because fasthttp's Peek returns only the first Cookie line until
-	// something in the chain has read a cookie and made it collect the rest.
-	// Copying it would forward a subset that varies with whatever unrelated
-	// middleware ran first, and a session cookie on the second line would go
-	// missing — which reads as "no session" and mints a fresh one per request.
-	//
-	// Rebuilding is also what makes this one owned for free: the Builder
-	// accumulates its own bytes, so unlike Host and the Authorization value —
-	// which have to be copied explicitly a few lines either side of here —
-	// there is nothing to do.
+	// Rebuilt from the parsed cookies, not copied from the header: fasthttp's
+	// Peek returns only the first Cookie line until something has read a cookie,
+	// so a session cookie on a later line would go missing. Owned for free.
 	if forSessionManager {
 		var cookies strings.Builder
 		for key, value := range fasthttpCtx.Request.Header.Cookies() {
-			// A cookie with no name is dropped rather than rendered. fasthttp
-			// parses both "Cookie: flag" and "Cookie: =sneaky" as an empty key,
-			// so the two are indistinguishable here: emitting "=flag" produces
-			// something net/http discards for an invalid name, while emitting
-			// "flag" would turn "=sneaky" into a cookie actually named
-			// "sneaky" that the client never sent. Neither form can be looked
-			// up by name, which is all a session manager does, so forwarding
-			// either can only mislead.
+			// fasthttp parses "Cookie: flag" and "Cookie: =sneaky" alike as an
+			// empty key. Neither can be looked up by name, which is all a manager
+			// does, so forwarding either can only mislead.
 			if len(key) == 0 {
 				continue
 			}
-			// Written after the skip, or a dropped cookie would leave an empty
-			// element behind for the manager to parse.
+			// After the skip, or a dropped cookie leaves an empty element behind.
 			if cookies.Len() > 0 {
 				cookies.WriteString("; ")
 			}
@@ -579,101 +349,36 @@ func requestForSPNEGO(ctx fiber.Ctx, forSessionManager bool) *http.Request {
 		}
 	}
 	req := &http.Request{
-		// Not cloned, unlike Host and the header values: Fiber answers this
-		// from its own table of method constants rather than from the request
-		// buffer, so there is nothing here to be invalidated.
+		// Not cloned: Fiber answers this from its own table of constants.
 		Method: ctx.Method(),
-		// Scheme at most, filled in below. gokrb5 never reads the URL, and a
-		// faithful path is not reconstructible from here: Fiber's is
-		// percent-encoded or not depending on Config.UnescapePath, and net/url
-		// cannot represent a malformed escape at all. The scheme, unlike the
-		// path, can be stated truthfully.
+		// Scheme at most, filled in below. gokrb5 never reads the URL, and the
+		// path is not faithfully reconstructible from here.
 		URL:    &url.URL{},
 		Header: header,
-		// Not copied: net.Addr.String builds a new string every call, so this
-		// never pointed into the request buffer to begin with.
+		// Not copied: net.Addr.String builds a new string every call.
 		RemoteAddr: fasthttpCtx.RemoteAddr().String(),
-		// net/http guarantees a server request's Body is never nil, and a
-		// Config.SessionManager is ordinary net/http code that may well hold
-		// the usual "defer r.Body.Close()". Leaving it nil would turn that into
-		// a panic inside the authentication middleware on every request; Fiber
-		// installs no recover by default, so the connection would simply drop.
-		// There is no body to offer — gokrb5 reads only the header, and
-		// fasthttp's is not an io.ReadCloser — so it is the empty one.
+		// net/http guarantees a server request's Body is non-nil, and a session
+		// manager may well hold the usual "defer r.Body.Close()". There is no
+		// body to offer, so it is the empty one rather than nil.
 		Body: http.NoBody,
 	}
-	// Host, protocol, scheme and TLS exist only for a session manager, which is
-	// the sole reader of any of them — gokrb5 looks at none — so they sit behind
-	// the same gate as the cookies, along with the context. An ordinary request
-	// then pays for none of it: reading the TLS state copies and heap-allocates
-	// a tls.ConnectionState, ctx.Scheme and ctx.Host each walk the headers once
-	// TrustProxy is on, and the protocol has to be copied out of the request
-	// buffer and parsed. The context is dearer than it looks — see below.
-	//
-	// Neither TLS nor Scheme is a dependable signal on its own. TLS is non-nil
-	// only where Fiber terminates TLS itself, and Scheme reports https from
-	// X-Forwarded-Proto only when Fiber is configured to trust the proxy —
-	// without Config.TrustProxy it answers http regardless of the header. So
-	// behind a TLS-terminating proxy both can say "not secure" for a connection
-	// the client made over HTTPS.
+	// Host, protocol, scheme, TLS and the context exist only for a session
+	// manager — gokrb5 reads none of them — and each costs a copy, a header walk
+	// or an allocation, so an ordinary request pays for none of it.
 	if forSessionManager {
-		// A session manager is ordinary net/http code, so its store call is
-		// likely to be a QueryContext or an outbound request taking
-		// r.Context(). Left unset that is context.Background(), detached from
-		// whatever the application is carrying; with this, a deadline or a
-		// tracing span set by middleware upstream reaches the store.
-		//
-		// Do not read more into it than that. Fiber's own context is
-		// context.Background() unless something calls SetContext, and Fiber
-		// never cancels it when a client disconnects — Deadline, Done and Err
-		// on its default Ctx are all documented as no-ops. So this carries what
-		// the application put there and adds nothing of its own: a hung session
-		// store is still bounded by its driver, or by fasthttp's read and write
-		// timeouts, and not by anything visible here.
-		//
-		// Gated, and not only for the shallow copy WithContext makes: on a
-		// request where nothing has called SetContext, Fiber's Context()
-		// installs Background as a side effect, which writes a user value that
-		// every later Locals lookup then scans past and that release has to
-		// clear.
-		//
-		// Skipped entirely when there is nothing to carry, which is the common
-		// case: an application that never calls SetContext gets Background from
-		// Fiber, and a request with no context of its own already answers
-		// Background, so the copy would produce an identical request for the
-		// price of one. Comparing contexts cannot panic here — the dynamic
-		// types differ unless both are Background, and that one is comparable.
-		//
-		// gokrb5 does read this, unlike the other four here: goidentity's
-		// AddToHTTPRequestContext derives the identity's context from it, and
-		// the inner handler reads the identity back out of that request. What
-		// makes the base harmless is that AddToHTTPRequestContext only wraps
-		// whatever it is handed with a WithValue, so nothing in the base can
-		// shadow or displace the identity.
-		//
-		// The nil check is net/http's own: WithContext panics rather than
-		// returning an error, and this takes the fiber.Ctx interface, which an
-		// application may implement itself through app.NewCtxFunc. It is not a
-		// general defence against such a Ctx — a nil RequestCtx would already
-		// have brought the request down several lines above — only the one
-		// place where a nil costs a panic instead of a zero value.
+		// Carries a deadline or tracing span the application set. Skipped when
+		// there is nothing to carry, since Context() installs Background as a
+		// side effect that every later Locals lookup then scans past.
 		if requestCtx := ctx.Context(); requestCtx != nil && requestCtx != req.Context() {
 			req = req.WithContext(requestCtx)
 		}
-		// net/http documents a server request's Host as "host or host:port", so
-		// it is Host rather than Hostname, which drops the port.
+		// Host rather than Hostname: net/http documents a server request's Host
+		// as "host or host:port".
 		req.Host = strings.Clone(ctx.Host())
 		req.TLS = fasthttpCtx.TLSConnectionState()
-		// Matched against the two schemes Fiber can answer with before falling
-		// back to a copy. Without Config.TrustProxy — the default — Fiber
-		// returns its own constants here, which cannot alias the request buffer
-		// and so need no copy; assigning one anyway would allocate on every
-		// request, since this escapes into the URL. Only the trusted-proxy path
-		// can produce anything else, and that one does come out of the buffer.
-		// Each arm assigns its own constant rather than the matched value: what
-		// comes back from Fiber may be a view into the request buffer even when
-		// its contents are one of these two, and matching a constant does not
-		// change where a string's bytes live.
+		// Each arm assigns its own constant, not the matched value: what Fiber
+		// returns may be a view into the request buffer even when its contents
+		// are one of these two, and matching does not move a string's bytes.
 		switch scheme := ctx.Scheme(); scheme {
 		case schemeHTTP:
 			req.URL.Scheme = schemeHTTP
@@ -682,22 +387,9 @@ func requestForSPNEGO(ctx fiber.Ctx, forSessionManager bool) *http.Request {
 		default:
 			req.URL.Scheme = strings.Clone(scheme)
 		}
-		// Same shape, and for the same reason: req.Proto escapes, so a copy
-		// would allocate on every request. The conversion in the switch does
-		// not — the compiler elides it for a comparison — so this is the same
-		// cost as comparing bytes and reads as the scheme switch does.
-		//
-		// fasthttp accepts only HTTP/<digit>.<digit> on a request line and
-		// substitutes HTTP/1.1 for an absent one, so the default arm is not
-		// reachable through it today. It is kept rather than assumed: what
-		// arrives there is parsed, and a version net/http will not parse leaves
-		// all three fields unset rather than pairing a string with numbers that
-		// contradict it.
-		//
-		// The numbers are stated alongside the string so a manager comparing
-		// ProtoAtLeast against Proto is not told two different things.
-		// RequestURI stays empty along with the rest of the path, which cannot
-		// be reconstructed faithfully.
+		// Same shape and the same reason. The numbers are stated alongside the
+		// string so a manager comparing ProtoAtLeast against Proto is not told
+		// two different things; an unparsable version leaves all three unset.
 		switch proto := fasthttpCtx.Request.Header.Protocol(); string(proto) {
 		case protocolHTTP11:
 			req.Proto, req.ProtoMajor, req.ProtoMinor = protocolHTTP11, 1, 1
@@ -713,29 +405,21 @@ func requestForSPNEGO(ctx fiber.Ctx, forSessionManager bool) *http.Request {
 	return req
 }
 
-// serviceSettings translates Config into the options gokrb5 accepts. Only the
-// fields the caller actually set are passed on, so gokrb5's own defaults stand
-// everywhere else — notably MaxClockSkew, which it resolves to five minutes
-// when left at zero, and PAC decoding, which it performs unless told not to.
+// serviceSettings translates Config into the options gokrb5 accepts. Only
+// fields the caller set are passed on, so gokrb5's defaults stand elsewhere —
+// notably MaxClockSkew's five minutes and PAC decoding.
 func serviceSettings(cfg Config) []func(*service.Settings) {
-	// gokrb5 logs unconditionally, once per request and without a level, so
-	// where those lines go is the caller's choice: Config.Log takes priority,
-	// otherwise Fiber's logger when it is backed by a *log.Logger, otherwise
-	// one that discards. What is never passed is nil — see discardLogger for
-	// the panic that would invite.
+	// Never nil — see discardLogger for the panic that would invite.
 	opts := make([]func(*service.Settings), 0, 6)
 	opts = append(opts, service.Logger(resolveLogger(cfg, flog.DefaultLogger[*log.Logger]())))
-	// service.SName is deliberately not wired up. gokrb5 v8.4.4 reads it only
-	// in KRB5BasicAuthenticator; the SPNEGO accept path runs VerifyAPREQ, which
-	// never looks at it, so exposing it would promise a restriction that does
-	// nothing. KeytabPrincipal is the control that actually pins the principal.
+	// service.SName is deliberately not wired up: gokrb5 reads it only in
+	// KRB5BasicAuthenticator, never on the SPNEGO accept path, so exposing it
+	// would promise a restriction that does nothing. KeytabPrincipal is the one.
 	if cfg.KeytabPrincipal != "" {
 		opts = append(opts, service.KeytabPrincipal(cfg.KeytabPrincipal))
 	}
-	// Not observable today: gokrb5 maps an explicitly-set zero to the same five
-	// minutes it uses for unset. The guard is against that changing — a version
-	// that read zero as "no skew tolerated" would reject every ticket on any
-	// host whose clock is not exact, which is all of them.
+	// Not observable today — gokrb5 maps an explicit zero to its own default —
+	// but a version reading zero as "no skew" would reject every ticket.
 	if cfg.MaxClockSkew > 0 {
 		opts = append(opts, service.MaxClockSkew(cfg.MaxClockSkew))
 	}
@@ -748,30 +432,20 @@ func serviceSettings(cfg Config) []func(*service.Settings) {
 	if cfg.SessionManager != nil {
 		opts = append(opts, service.SessionManager(newSessionManagerProbe(cfg.SessionManager)))
 	}
-	// Clipped because this slice is passed variadically to gokrb5 and closed
-	// over by the handler, so every concurrent request shares its backing
-	// array. gokrb5 v8.4.4 only ranges over it and appends onto a fresh slice
-	// of its own, but a version that appended to this one would be writing into
-	// that shared array from several goroutines at once. Removing the spare
-	// capacity turns that into a copy rather than a race, and costs nothing
-	// here: Clip only narrows the header.
+	// Clipped because every concurrent request shares this backing array. A
+	// gokrb5 that appended to it rather than to a fresh slice would be writing
+	// into it from several goroutines; Clip turns that into a copy.
 	return slices.Clip(opts)
 }
 
-// authenticate wraps a handler in SPNEGO acceptance. It is a variable so tests
-// can substitute a stub: reaching the authenticated branch for real needs a
-// live KDC, which would leave identity propagation, the accept-completed header
-// replay and downstream error handling permanently unexercised.
-//
-// New captures it once, so the request path reads a local rather than this
-// package-level variable. A test therefore has to substitute before
-// constructing its middleware, and cannot race a request already in flight.
+// authenticate wraps a handler in SPNEGO acceptance. A variable so tests can
+// substitute a stub — reaching the authenticated branch for real needs a live
+// KDC. New captures it once, so a test cannot race a request in flight.
 var authenticate = spnego.SPNEGOKRB5Authenticate
 
-// New creates a new SPNEGO authentication middleware.
-// It takes a Config struct and returns a Fiber handler or an error.
-// The middleware handles Kerberos authentication for incoming requests using the
-// SPNEGO protocol, verifying client credentials against the configured keytab.
+// New builds the SPNEGO middleware from a Config, returning a Fiber handler
+// that authenticates incoming requests against the configured keytab, or an
+// error if the configuration is invalid.
 func New(cfg Config) (fiber.Handler, error) {
 	// Validate configuration
 	if cfg.MaxClockSkew < 0 {
@@ -789,38 +463,22 @@ func New(cfg Config) (fiber.Handler, error) {
 		if keytabLookup, err = NewSystemKeytabLookupFunc(); err != nil {
 			return nil, err
 		}
-		// Nothing named the keytab explicitly, so confirm the resolved system
-		// keytab actually loads. Otherwise a misconfigured host starts clean
-		// and fails every request instead of failing at startup.
+		// Nothing named the keytab explicitly, so confirm the resolved one loads.
+		// Otherwise a misconfigured host starts clean and fails every request.
 		if _, err = keytabLookup(); err != nil {
 			return nil, err
 		}
 	}
 	opts := serviceSettings(cfg)
-	// Captured once. A session manager is the only reader of most of what
-	// requestForSPNEGO can put on the request — cookies, host, scheme, TLS,
-	// protocol and the context — so without one none of it is assembled.
+	// A session manager is the only reader of most of what requestForSPNEGO can
+	// put on the request, so without one none of it is assembled.
 	forSessionManager := cfg.SessionManager != nil
 	// Captured at construction; see the note on authenticate.
 	acceptSPNEGO := authenticate
 
-	// Internal failures are logged here rather than returned to the client, and
-	// throttled so a persistent fault cannot become a log flood.
-	//
-	// Two kinds are throttled here, each on its own: a keytab lookup that fails,
-	// and a SPNEGO handler that answered something other than an authentication
-	// outcome — which today means a session manager that could not persist a
-	// session. Sharing one throttle would let either suppress the other, so an
-	// operator chasing a broken session store could be looking at a keytab line
-	// instead. Keying on the cause is what to avoid: that would let a caller
-	// defeat the throttle by varying client-controlled text inside it.
-	//
-	// A third lives on sessionManagerProbe, and is separate for the same
-	// reason even though it reports on the same fault as the second. It fires
-	// only when the probe cannot record what it saw, which is a defect in this
-	// middleware's grip on gokrb5 rather than a fault in the caller's session
-	// store — different audience, different fix, so it must not be suppressed
-	// by the line about the store being down.
+	// Internal failures are logged rather than returned to the client, and
+	// throttled separately: sharing one throttle would let a keytab line
+	// suppress a session-store line, and vice versa. A third lives on the probe.
 	lookupFailures := &logThrottle{every: internalErrorLogEvery}
 	handlerFailures := &logThrottle{every: internalErrorLogEvery}
 	// Return the middleware handler
@@ -831,31 +489,24 @@ func New(cfg Config) (fiber.Handler, error) {
 		// Look up the keytab
 		kt, err := keytabLookup()
 		if err == nil && kt == nil {
-			// A lookup is caller-supplied and may return no keytab and no
-			// error. gokrb5 dereferences the keytab while decrypting a ticket,
-			// so letting nil through panics the process on the first request
-			// that carries a well-formed AP-REQ.
+			// A caller's lookup may return no keytab and no error. gokrb5
+			// dereferences it while decrypting, so nil would panic the process
+			// on the first request carrying a well-formed AP-REQ.
 			err = errNilKeytab
 		}
 		if err != nil {
-			// Built once here, unlike the handler failure below: this value is
-			// the returned error's cause as well as the log line, so a caller
-			// matching on the underlying error needs it either way.
+			// Built once: this is the returned error's cause as well as the log
+			// line, so a caller matching on it needs the value either way.
 			failure := fmt.Errorf("%w: %w", ErrLookupKeytabFailed, err)
-			// Quoted for the same reason the handler's body is: a
-			// KeytabLookupFunc is caller-supplied and documented as a hook for
-			// databases and remote services, so what it reports can carry an
-			// upstream's text — and a newline in that would start a line of its
-			// own under this package's prefix. Only the log line is quoted; the
-			// error itself goes to OnError and the ErrorHandler unchanged, so
-			// errors.Is and any message a caller reads there are untouched.
+			// Quoted because a lookup is caller-supplied and may carry an
+			// upstream's text. Only the log line is; OnError and the
+			// ErrorHandler get the error unchanged.
 			lookupFailures.do(func() {
 				flog.Errorf("spnego: %s: %s", ErrLookupKeytabFailed, quoteForLog([]byte(err.Error())))
 			})
 			if cfg.OnError != nil {
-				// Given the wrapped cause rather than the client-safe wrapper:
-				// the hook is internal diagnostics, and a caller that wanted the
-				// sanitised form would have nothing to inspect.
+				// The wrapped cause, not the client-safe wrapper: the hook is
+				// diagnostics, and the sanitised form has nothing to inspect.
 				cfg.OnError(ctx, failure)
 			}
 			return &clientSafeError{cause: failure}
@@ -867,41 +518,21 @@ func New(cfg Config) (fiber.Handler, error) {
 			identity      goidentity.Identity
 		)
 		recorder := &responseRecorder{}
-		// The inner handler records what SPNEGO decided and returns. It
-		// deliberately does not run the rest of the chain: gokrb5 calls it from
-		// inside its own ServeHTTP, and everything on that stack is covered by
-		// the recover below. Calling ctx.Next() here would put the
-		// application's handlers under that recover too, so a panic from one of
-		// them would be caught and reported as this middleware's fault instead
-		// of propagating with its own value and stack.
-		//
-		// gokrb5 v8.4.4 does nothing after inner.ServeHTTP returns on either
-		// path that reaches it — accept-completed and session-resume both
-		// return immediately — so deferring the chain to after ServeHTTP
-		// changes no ordering that gokrb5 depends on.
+		// Records what SPNEGO decided and returns, deliberately not running the
+		// rest of the chain: gokrb5's stack is under the recover below, which must
+		// not swallow an application panic. gokrb5 does nothing after this returns.
 		inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 			authenticated = true
 			identity = goidentity.FromHTTPRequestContext(r)
 		})
 
-		// gokrb5 indexes a client-supplied slice without checking it is
-		// non-empty: a base64-valid NegTokenInit whose MechTypes sequence is
-		// present but empty reaches SPNEGO.AcceptSecContext, which evaluates
-		// MechTypes[0] before Verify can reject the mechanisms
-		// (spnego/spnego.go:78 in v8.4.4). That panics, and the request needs
-		// no credentials to send, so an unauthenticated caller could take down
-		// every protected route.
+		// gokrb5 evaluates MechTypes[0] before Verify can reject the mechanisms
+		// (spnego/spnego.go:78), so an empty-but-present sequence panics — from
+		// a request needing no credentials to send.
 		//
-		// Recovered rather than pre-validated: parsing the token here to check
-		// one field would duplicate gokrb5's ASN.1 work on every authenticated
-		// request, and would only cover the one input already known about — the
-		// same unchecked-index pattern appears throughout that package. This
-		// catches the class.
-		//
-		// It surfaces as an internal failure rather than a rejection because
-		// that is what it is: a defect, in a dependency, that this middleware
-		// cannot answer for. Reporting 401 would tell a client its ticket was
-		// refused when nothing got far enough to judge it.
+		// Recovered rather than pre-validated: the same unchecked-index pattern
+		// recurs throughout that package. Reported as an internal failure, since
+		// nothing got far enough to judge the ticket.
 		if failure := serveSPNEGO(acceptSPNEGO(inner, kt, opts...), recorder, req); failure != nil {
 			handlerFailures.do(func() { flog.Errorf("spnego: %v", failure) })
 			if cfg.OnError != nil {
@@ -914,59 +545,31 @@ func New(cfg Config) (fiber.Handler, error) {
 			// handler; the client needs it to authenticate the server.
 			recorder.copyHeadersTo(ctx)
 			SetAuthenticatedIdentityToContext(ctx, identity)
-			// Before ctx.Next, so a hook counting authentications is not
-			// ordered behind however long the rest of the chain takes.
+			// Before ctx.Next, so a hook counting authentications is not ordered
+			// behind however long the rest of the chain takes.
 			if cfg.OnSuccess != nil {
 				cfg.OnSuccess(ctx, identity)
 			}
 			return ctx.Next()
 		}
-		// Reaching here means the request did not authenticate. Whether that is
-		// an authentication outcome or the handler failing is decided by two
-		// things, neither of them the status.
+		// The request did not authenticate. sessionFailed decides it where set;
+		// otherwise the header does, since gokrb5 sets one of four values on
+		// every outcome and none on its internal error.
 		//
-		// sessionFailed is the reliable one, and covers the only internal
-		// failure that occurs in practice: sessionManagerProbe saw the caller's
-		// session manager refuse to persist, which nothing written to the
-		// response can contradict.
+		// The status decides nothing: the recorder keeps the first one written,
+		// so a manager reporting its own trouble pins it at whatever it chose.
 		//
-		// The header covers the rest. gokrb5 v8.4.4 sets one of four
-		// WWW-Authenticate values on every outcome it produces, and
-		// spnegoInternalServerError — its only other responder, reached when it
-		// cannot marshal the credentials — sets none. Those four are compared
-		// exactly rather than by scheme: the manager held this same
-		// ResponseWriter a moment ago, so a looser test would let it pass its
-		// own failure off as an outcome. Exact comparison does not make that
-		// impossible, only deliberate.
-		//
-		// The status cannot be used for this at all. The recorder keeps the
-		// first status written, so a manager that reports its own trouble
-		// before failing pins it at whatever it chose — 200 from a bare Write,
-		// or any 4xx it liked — and gokrb5's own 500 is dropped. Both earlier
-		// attempts here tested the status, and both let the manager through
-		// with its message and a Set-Cookie for a session never stored.
-		//
-		// Neither body nor headers are replayed, unlike the challenge path
-		// below. Returning the error routes it through the application's
-		// ErrorHandler with the same sanitised body a keytab failure gets, and
-		// drops the cookie rather than advertising that session. Whatever the
-		// handler wrote goes to the log instead — where it belongs, and where
-		// it is the only description of what broke unless Config.Log is set.
+		// Nothing is replayed, unlike the challenge path: returning the error
+		// routes it through the ErrorHandler with a sanitised body and drops any
+		// cookie for a session never stored. What was written goes to the log.
 		if recorder.sessionFailed || !isSPNEGOOutcome(recorder.headers.Get(fiber.HeaderWWWAuthenticate)) {
-			// Built on demand and at most once. Nothing outside this package
-			// can read the detail off the returned error — clientSafeError
-			// shows the client a fixed string and exposes no Unwrap — so the
-			// only readers are the log line, which the throttle silences for
-			// all but one request per window, and OnError, which is usually
-			// nil. During a session-store outage this path runs on every
-			// request at a rate the caller sets.
+			// On demand and at most once: this path runs on every request during
+			// a session-store outage, while the throttle silences all but one
+			// per window and OnError is usually nil.
 			//
-			// The status reported is the one the handler wrote, zero included.
-			// The challenge path below substitutes 401 for a missing one, and
-			// borrowing that here would describe a handler that wrote nothing
-			// as having answered 401 — sending whoever reads the line to a
-			// responder that never ran. It is computed there, next to its only
-			// use, so it cannot be borrowed by accident.
+			// The status is the one the handler wrote, zero included — borrowing
+			// the 401 substituted below would describe a handler that wrote
+			// nothing as having answered.
 			describe := sync.OnceValue(func() error {
 				return fmt.Errorf("%w: status %d: %s", ErrSPNEGOHandlerFailed,
 					recorder.status, quoteForLog(recorder.body.Bytes()))
@@ -978,18 +581,18 @@ func New(cfg Config) (fiber.Handler, error) {
 			return &clientSafeError{cause: ErrSPNEGOHandlerFailed}
 		}
 
-		// Replay SPNEGO's own challenge. gokrb5 v8.4.4 always writes a status
-		// alongside the header; 401 is the fallback if one ever stops, since it
-		// is the only answer that leaves a negotiation open.
+		// Replay SPNEGO's own challenge. gokrb5 always writes a status alongside
+		// the header; 401 is the fallback if one ever stops, since it is the
+		// only answer that leaves a negotiation open.
 		status := recorder.status
 		if status == 0 {
 			status = fiber.StatusUnauthorized
 		}
 		recorder.copyHeadersTo(ctx)
 		ctx.Status(status)
-		// Only a refusal reaches the caller's handler. The opening challenge
-		// and the continuation token are legs of a handshake that can still
-		// succeed, and clients renegotiate only when they arrive untouched.
+		// Only a refusal reaches the caller's handler. The opening challenge and
+		// the continuation token are legs of a handshake that can still succeed,
+		// and clients renegotiate only when they arrive untouched.
 		if cfg.Unauthorized != nil && isRejection(recorder.headers) {
 			return cfg.Unauthorized(ctx)
 		}

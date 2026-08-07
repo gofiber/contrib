@@ -16,15 +16,9 @@ func SetAuthenticatedIdentityToContext(ctx FiberContext, identity goidentity.Ide
 	ctx.Locals(contextKeyOfIdentity, identity)
 }
 
-// GetAuthenticatedIdentityFromContext retrieves the authenticated identity from the Fiber context.
-// It returns the identity and a boolean indicating if it was found.
-// This function should be used by subsequent handlers to access the authenticated user's information.
-// Example:
-//
-//	user, ok := GetAuthenticatedIdentityFromContext(ctx)
-//	if ok {
-//	    fmt.Printf("Authenticated user: %s\n", user.UserName())
-//	}
+// GetAuthenticatedIdentityFromContext retrieves the authenticated identity from
+// the Fiber context, reporting whether one was found. Handlers downstream of the
+// middleware use it to reach the authenticated user.
 func GetAuthenticatedIdentityFromContext(ctx FiberContext) (goidentity.Identity, bool) {
 	id, ok := ctx.Locals(contextKeyOfIdentity).(goidentity.Identity)
 	return id, ok

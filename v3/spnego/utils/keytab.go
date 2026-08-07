@@ -12,11 +12,9 @@ import (
 // KeytabInfo represents information about a principal in a Kerberos keytab
 // It contains the principal name, realm, and associated encryption type pairs
 type KeytabInfo struct {
-	// PrincipalName is the fully qualified principal, realm included, exactly
-	// as gokrb5 renders it — "HTTP/service.example.com@EXAMPLE.COM", not the
-	// bare "HTTP/service.example.com". Realm below repeats that suffix on its
-	// own for callers that need the two apart, so appending it to this field
-	// prints the realm twice.
+	// PrincipalName is fully qualified, realm included, as gokrb5 renders it:
+	// "HTTP/service.example.com@EXAMPLE.COM". Realm repeats that suffix on its
+	// own, so appending it here prints the realm twice.
 	PrincipalName string
 	Realm         string            // The Kerberos realm (e.g., EXAMPLE.COM)
 	Pairs         []EncryptTypePair // List of encryption type pairs for this principal
@@ -25,9 +23,8 @@ type KeytabInfo struct {
 // EncryptTypePair represents an encryption type entry in a Kerberos keytab
 // It contains the version, encryption type, and creation timestamp
 type EncryptTypePair struct {
-	// Version is the key version number. gokrb5 parses both the legacy 8-bit
-	// and the 32-bit key version, and the 32-bit one wins where present, so
-	// this is wider than the uint8 accepted when building a mock keytab.
+	// Version is the key version number. gokrb5 prefers the 32-bit form over
+	// the legacy 8-bit one, so this is wider than NewMockKeytab accepts.
 	Version     uint32
 	EncryptType int32     // The encryption type (e.g., 18 for AES-256-CTS-HMAC-SHA1-96)
 	CreateTime  time.Time // The timestamp when this key was created
@@ -37,28 +34,8 @@ type EncryptTypePair struct {
 // Used to represent multiple principal entries from a keytab
 type MultiKeytabInfo []KeytabInfo
 
-// GetKeytabInfo extracts information from a Kerberos keytab and returns it in a structured format
-// It organizes keytab entries by principal name and sorts them alphabetically
-//
-// Parameters:
-//
-//	kt - A pointer to a keytab.Keytab instance (can be nil)
-//
-// Returns:
-//
-//	MultiKeytabInfo - A sorted slice of KeytabInfo structures containing principal information
-//
-// Example usage:
-//
-//	kt, _ := keytab.Load("/path/to/keytab")
-//	info := GetKeytabInfo(kt)
-//	for _, principal := range info {
-//	  // PrincipalName already ends in "@REALM"; appending Realm repeats it.
-//	  fmt.Printf("Principal: %s\n", principal.PrincipalName)
-//	  for _, pair := range principal.Pairs {
-//	    fmt.Printf("  EncryptType: %d, Version: %d, Created: %v\n", pair.EncryptType, pair.Version, pair.CreateTime)
-//	  }
-//	}
+// GetKeytabInfo groups a keytab's entries by principal and sorts them by name.
+// A nil keytab yields an empty slice rather than nil.
 func GetKeytabInfo(kt *keytab.Keytab) MultiKeytabInfo {
 	keytabMap := make(map[string]KeytabInfo)
 	if kt != nil {
@@ -80,9 +57,8 @@ func GetKeytabInfo(kt *keytab.Keytab) MultiKeytabInfo {
 			keytabMap[name] = item
 		}
 	}
-	// AppendSeq onto a made slice rather than slices.SortedFunc, which collects
-	// onto a nil slice and would return nil for an empty keytab. Callers
-	// marshalling the result expect [] rather than null.
+	// AppendSeq onto a made slice, not slices.SortedFunc, which collects onto a
+	// nil slice and would marshal an empty keytab as null rather than [].
 	mk := slices.AppendSeq(make(MultiKeytabInfo, 0, len(keytabMap)), maps.Values(keytabMap))
 	slices.SortFunc(mk, func(a, b KeytabInfo) int {
 		return strings.Compare(a.PrincipalName, b.PrincipalName)

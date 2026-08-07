@@ -27,238 +27,98 @@ const contextKeyOfIdentity contextKey = "middleware.spnego.Identity"
 // when the KRB5_KTNAME environment variable is not set.
 const DefaultSystemKeytabPath = "/etc/krb5.keytab"
 
-// KeytabLookupFunc is a function type that returns a keytab or an error
-// It's used to look up the keytab dynamically when needed
-// This design allows for extensibility, enabling keytab retrieval from various sources
-// such as databases, remote services, or other custom implementations beyond static files
-//
-// The middleware calls this function on every request it does not skip, which
-// includes wholly unauthenticated ones: the lookup runs before the ticket is
-// examined, so a client with no credentials at all still drives one call per
-// request. An implementation that contacts an external system should therefore
-// cache its result and refresh it out of band rather than doing the work
-// inline, and size any rate limit for unauthenticated traffic.
+// KeytabLookupFunc returns a keytab, so keys can come from a file, a secrets
+// manager or a database. It is called on every request the middleware handles,
+// unauthenticated ones included, so cache the result and refresh it out of band.
 type KeytabLookupFunc func() (*keytab.Keytab, error)
 
-// UnauthorizedHandler is invoked in place of SPNEGO's own response when a
-// presented Kerberos ticket is rejected. It is not called for the opening
-// challenge or for a continuation token; see Config.Unauthorized.
-//
-// The headers SPNEGO wrote are already on the response when this runs, so a
-// handler that only changes the status code or body leaves them in place.
-// Removing the WWW-Authenticate header will break negotiation with the client.
+// UnauthorizedHandler replaces SPNEGO's own response when a ticket is rejected.
+// It is not called for the opening challenge or a continuation token. SPNEGO's
+// headers are already set; removing WWW-Authenticate will break negotiation.
 type UnauthorizedHandler func(ctx fiber.Ctx) error
 
 // Config holds the configuration for the SPNEGO middleware
 // It includes the keytab lookup function and a logger
 type Config struct {
-	// Next, when it returns true, skips this middleware for that request and
-	// passes it straight down the chain. Useful for exempting health probes or
-	// CORS preflights from authentication.
+	// Next, when it returns true, skips this middleware for that request, for
+	// exempting health probes or CORS preflights from authentication.
 	Next func(ctx fiber.Ctx) bool
-	// KeytabLookup is a function that retrieves the keytab.
-	//
-	// Whatever error it returns is logged and passed to OnError, so it must not
-	// carry anything secret. This is not hypothetical for a keytab: gokrb5's
-	// length checks interpolate the whole buffer they were handed, which for a
-	// single-principal keytab is the entire key, so
-	//
-	//	func lookup() (*keytab.Keytab, error) { return keytab.Load(path) }
-	//
-	// writes that key to the log whenever a file ends earlier than its own
-	// headers say — which is exactly what a rotation caught mid-write looks
-	// like. Not every parse failure reaches those branches; a bad magic byte or
-	// version is reported without the contents.
-	//
-	// Only the parse cause has to go. Reading the file is where the diagnostics
-	// worth keeping are — a missing file, a permission change — and none of
-	// that carries the contents, so separate the two rather than flattening
-	// both into one message:
-	//
-	//	raw, err := os.ReadFile(path)
-	//	if err != nil {
-	//		return nil, fmt.Errorf("reading %s: %w", path, err)
-	//	}
-	//	kt := keytab.New()
-	//	if err := kt.Unmarshal(raw); err != nil {
-	//		return nil, fmt.Errorf("%s did not parse (%d bytes read)", path, len(raw))
-	//	}
-	//
-	// NewKeytabFileLookupFunc does this, which is the other reason to prefer
-	// it.
+	// KeytabLookup retrieves the keytab. Whatever error it returns is logged and
+	// passed to OnError, so it must not carry gokrb5's parse error — that
+	// interpolates the buffer, which is the key. See the README for the safe form.
 	KeytabLookup KeytabLookupFunc
-	// Log receives gokrb5's diagnostics, which carry no level of their own.
-	// gokrb5 writes a line for every request carrying a Negotiate token — one
-	// on success, one on a refusal, one on a token it cannot parse — so on a
-	// busy service this is a line per request, not a rare event. It is silent
-	// only for requests it declines to negotiate at all: no Authorization
-	// header, or one for a different scheme.
-	//
-	// One case escapes that rule. gokrb5 parses the client address before it
-	// looks at the token, and logs when it cannot, so a listener whose remote
-	// addresses are not host:port — a Unix socket, say — produces a line on
-	// every request including the opening challenge.
-	//
-	// Leaving this nil keeps all of that off the log.
+	// Log receives gokrb5's diagnostics, which carry no level of their own and
+	// run to a line per request carrying a Negotiate token. Leaving it nil keeps
+	// all of that off the log.
 	Log *log.Logger
 	// UseFiberLogger sends gokrb5's diagnostics to Fiber's default logger when
-	// Log is nil. It only takes effect when that logger is backed by a
-	// *log.Logger, and it bypasses Fiber's log level, so the caveat on Log
-	// applies here too.
-	//
-	// The logger is resolved once, when New runs, and gokrb5 keeps what it was
-	// given — so register yours before building the middleware. Fiber's
-	// out-of-the-box default is a *log.Logger writing to stderr, which means a
-	// log.SetLogger call afterwards does not redirect gokrb5: it goes on
-	// writing to stderr, past the level and the format of the logger you
-	// registered, and a later SetOutput does not reach it either. gokrb5 emits
-	// a line per authenticated request naming the client address and user, so
-	// this is not a quiet leak. Config.Log avoids the question entirely.
+	// Log is nil, if that logger is backed by a *log.Logger. Resolved once in
+	// New, so register yours first; it bypasses Fiber's log level.
 	UseFiberLogger bool
-	// Unauthorized customizes the response sent when a client's Kerberos
-	// ticket is rejected. It does not run for the opening challenge or for a
-	// continuation token, which are legs of a handshake that can still succeed
-	// and which clients act on only when they arrive untouched. When nil,
-	// SPNEGO's own response is returned unmodified.
+	// Unauthorized customizes the response sent when a ticket is rejected. It
+	// does not run for the opening challenge or a continuation token, which
+	// clients act on only when they arrive untouched.
+	//
+	// Optional. Default: nil (SPNEGO's own response is returned unmodified).
 	Unauthorized UnauthorizedHandler
-	// FallbackToSystemKeytab loads the host's system keytab when KeytabLookup
-	// is nil, instead of rejecting the configuration. See
-	// NewSystemKeytabLookupFunc for how the path is resolved.
+	// FallbackToSystemKeytab loads the host's system keytab when KeytabLookup is
+	// nil, instead of rejecting the configuration. See NewSystemKeytabLookupFunc.
 	FallbackToSystemKeytab bool
-	// KeytabPrincipal selects which principal's key decrypts an incoming
-	// ticket, out of a keytab that holds several. gokrb5 otherwise infers it
-	// from the ticket itself, which means a ticket for *any* principal in the
-	// keytab is accepted.
-	//
-	// That inference is the right behaviour for one service with one SPN, and
-	// the wrong one as soon as a keytab is merged from several: a client
-	// entitled to one of them gets into all of them. Setting this pins the key,
-	// so a ticket minted for a different principal fails to decrypt and is
-	// refused. It is the only control gokrb5's SPNEGO path offers here —
-	// service.SName exists but is read solely by gokrb5's Basic-auth
-	// authenticator, never by SPNEGO acceptance.
-	//
-	// The realm is not part of it: gokrb5 parses this with types.ParseSPNString,
-	// which silently drops anything after an "@". New rejects a value
-	// containing one rather than letting it look effective.
+	// KeytabPrincipal selects which principal's key decrypts an incoming ticket.
+	// gokrb5 otherwise infers it from the ticket, so a keytab merged from several
+	// services accepts a ticket for any of them. New rejects an "@REALM" suffix.
 	//
 	// Optional. Default: "" (inferred from the ticket).
 	KeytabPrincipal string
 	// MaxClockSkew is how far a ticket's issue time may sit from this host's
-	// clock. Kerberos is clock-sensitive, and the usual cause of a service
-	// rejecting every ticket is drift rather than misconfiguration.
-	//
-	// Must not be negative; New rejects that rather than silently ignoring it.
+	// clock; drift is the usual cause of a service rejecting every ticket. Must
+	// not be negative, which New rejects rather than silently ignoring.
 	//
 	// Optional. Default: 0, which leaves gokrb5's own default of 5 minutes.
 	MaxClockSkew time.Duration
-	// DisablePACDecoding turns off decoding of the Privilege Attribute
-	// Certificate that Active Directory embeds in a ticket.
-	//
-	// It is spelled negatively so the zero value preserves gokrb5's default,
-	// which is to decode. Decoding is what populates the group SIDs behind
-	// Identity.Authorized, so disabling it trades authorization data for a
-	// little less work per request — worth it only for a service that never
-	// inspects groups.
+	// DisablePACDecoding turns off decoding of the Privilege Attribute Certificate
+	// Active Directory embeds in a ticket. Spelled negatively so the zero value
+	// keeps gokrb5's default, which populates the SIDs behind Identity.Authorized.
 	//
 	// Optional. Default: false (PAC decoded when present).
 	DisablePACDecoding bool
-	// RequireHostAddress rejects a ticket that carries no host addresses,
-	// mapping to gokrb5's service.RequireHostAddr.
-	//
-	// Note that the address a ticket is checked against is the connection's
-	// peer, which behind a reverse proxy is the proxy rather than the client.
+	// RequireHostAddress rejects a ticket carrying no host addresses. Note the
+	// address checked is the connection's peer, which behind a reverse proxy is
+	// the proxy rather than the client.
 	//
 	// Optional. Default: false.
 	RequireHostAddress bool
-	// SessionManager lets gokrb5 establish a session after the first successful
-	// authentication and serve later requests from it, skipping full ticket
-	// validation. It is the single largest saving available on an authenticated
-	// hot path.
+	// SessionManager lets gokrb5 serve later requests from a session instead of
+	// revalidating the ticket. That makes the session a credential in its own
+	// right, so what is stored must be unguessable and bound to the client.
 	//
-	// Setting it changes the trust model: the session becomes a credential in
-	// its own right, so whatever the implementation stores must be
-	// unguessable, bound to the client, and expired deliberately. The
-	// middleware forwards the request's cookies to gokrb5 only when this is
-	// set, so a cookie-backed manager can find its session.
-	//
-	// The request it is handed carries the client's Authorization header,
-	// because that is what gokrb5 reads: a base64 Kerberos ticket. Do not log
-	// or serialise the whole header set from a manager.
-	//
-	// The ResponseWriter it is handed is this middleware's recorder. It buffers
-	// — the response has to be seen whole before an authentication outcome can
-	// be told from a failure — and implements Flush but nothing else optional,
-	// so probe with comma-ok or http.ResponseController rather than asserting.
-	//
-	// Headers the manager sets on a request that goes on to authenticate —
-	// Set-Cookie included — are replayed onto the Fiber response. Headers are
-	// all that is replayed: the body and status belong to the handler the
-	// request is being authenticated for, so anything the manager writes there
-	// is discarded. Report through headers, or through the manager's own log.
-	//
-	// The two failure paths are not symmetric. A New that cannot persist makes
-	// gokrb5 abandon the request from inside its handler, which surfaces as
-	// ErrSPNEGOHandlerFailed. A Get that fails is discarded by gokrb5, which
-	// falls through to full ticket validation — so a broken read path costs
-	// performance silently rather than failing requests, and is worth
-	// monitoring on the store's own side.
-	//
-	// Whatever the manager writes on a request that then fails is discarded,
-	// status included: a Set-Cookie written just before the failure would
-	// otherwise advertise a session that was never stored.
+	// The README documents what the request it is handed carries, which parts of
+	// its response are replayed, and why a failed New fails the request while a
+	// failed Get degrades silently to full validation.
 	//
 	// Optional. Default: nil (every request is validated in full).
 	SessionManager service.SessionMgr
-	// OnSuccess runs once per request that authenticated, after the identity is
-	// in the Fiber context and before the next handler. Intended for metrics
-	// and audit; it cannot change the outcome.
+	// OnSuccess runs once per authenticated request, after the identity is in
+	// the Fiber context and before the next handler. For metrics and audit; it
+	// cannot change the outcome.
 	//
 	// Optional. Default: nil.
 	OnSuccess func(ctx fiber.Ctx, identity goidentity.Identity)
 	// OnError runs when the middleware itself fails, just before the request is
-	// answered with 500. It is not called for authentication outcomes: a
-	// rejected ticket is Unauthorized's business, and a challenge is not a
-	// failure.
+	// answered with 500 — not for authentication outcomes, which are
+	// Unauthorized's business.
 	//
-	// There are two failures, distinguished by sentinel:
-	//
-	//   - ErrLookupKeytabFailed, when KeytabLookup returns an error or no
-	//     keytab. The error also carries the underlying cause, whatever the
-	//     lookup chose to put there — see KeytabLookup on why that must not be
-	//     gokrb5's parse error.
-	//   - ErrSPNEGOHandlerFailed, when gokrb5 fails inside its own handler
-	//     without reaching an authentication outcome, which in v8.4.4 means a
-	//     SessionManager that could not persist a session.
-	//
-	// The second carries the status and body the handler had written, which is
-	// worth knowing what to expect from: gokrb5 sends the manager's actual
-	// reason to its own logger and writes only "Internal Server Error" to the
-	// response. So unless the manager wrote something itself, that boilerplate
-	// is all the error carries, and seeing the reason means setting Log or
-	// UseFiberLogger.
-	//
-	// The body is quoted and capped, with a "(+N bytes)" suffix when it ran
-	// long, so it is a diagnostic rather than a transcript — a manager with
-	// more to say should say it to its own logger.
-	//
-	// Match on those rather than on text. The keytab cause names paths and OS
-	// errors, so treat what arrives here as internal diagnostics rather than
-	// something to echo to a client.
+	// Match on ErrLookupKeytabFailed or ErrSPNEGOHandlerFailed rather than on
+	// text, and treat what arrives as internal diagnostics: it names keytab
+	// paths, OS errors, and whatever a session manager wrote.
 	//
 	// Optional. Default: nil.
 	OnError func(ctx fiber.Ctx, err error)
 }
 
-// ConfigDefault records what an unset field does, for callers who would rather
-// start from it than from a zero Config. Every field is optional except
-// KeytabLookup, which has no usable default: it is required unless
-// FallbackToSystemKeytab is set.
-//
-// It is deliberately equal to the zero Config, and New applies these defaults
-// by treating a zero field as unset rather than by reading this variable. So
-// copying it is supported and mutating it is not — a package-level write would
-// change nothing and TestConfigDefault would start failing.
+// ConfigDefault records what an unset field does. It is deliberately equal to
+// the zero Config, and New reads the fields rather than this — so copying it is
+// supported and mutating it is not.
 var ConfigDefault = Config{
 	Next:                   nil,
 	KeytabLookup:           nil,
@@ -267,9 +127,8 @@ var ConfigDefault = Config{
 	Unauthorized:           nil,
 	FallbackToSystemKeytab: false,
 	KeytabPrincipal:        "",
-	// Zero rather than 5 minutes: gokrb5 substitutes its own default for a zero
-	// value, and naming a number here would silently pin it if gokrb5 ever
-	// changed.
+	// Zero rather than 5 minutes: gokrb5 substitutes its own default, and naming
+	// a number here would silently pin it if gokrb5 ever changed.
 	MaxClockSkew:       0,
 	DisablePACDecoding: false,
 	RequireHostAddress: false,
@@ -278,30 +137,18 @@ var ConfigDefault = Config{
 	OnError:            nil,
 }
 
-// fileStamp identifies a keytab file revision cheaply enough to check on every
-// request. Identity is recorded alongside size and modification time where the
-// platform exposes it, so on Unix, replacing a keytab by rename is detected
-// even when the staging tool preserved the timestamp of a same-sized file.
-// Elsewhere identity is a hint at best — see the fileRevisionID
-// implementations — and detection falls back to size and modification time.
-//
-// It is deliberately plain and comparable: the os.FileInfo it came from is not
-// retained, so a snapshot stays immutable and readable without locking.
-//
-// Detection is still not exact. An in-place rewrite that keeps the file the
-// same size and lands within one filesystem timestamp tick looks unchanged,
-// because the file's identity does not change either. Neither does a
-// permissions change, which alters only ctime.
+// fileStamp identifies a keytab revision cheaply enough to check per request.
+// Identity is recorded where the platform exposes it, so a rename is caught even
+// when size and mtime were preserved. An in-place rewrite of the same length may
+// not be — rotate by rename.
 type fileStamp struct {
 	size    int64
 	modTime int64
 	id      fileID
 }
 
-// fileID is an opaque, comparable file identity. What it holds is
-// platform-specific — see the fileRevisionID implementations — and it is the
-// zero value where the platform exposes nothing, in which case change detection
-// falls back to size and modification time.
+// fileID is an opaque, comparable file identity, platform-specific and zero
+// where the platform exposes nothing. See the fileRevisionID implementations.
 type fileID struct {
 	a uint64
 	b uint64
@@ -316,17 +163,15 @@ type keytabSnapshot struct {
 }
 
 // defaultKeytabStaleGrace bounds how long a keytab that no longer parses keeps
-// being served. Long enough to cover a file caught mid-rewrite, short enough
-// that a rotation to a permanently corrupt keytab surfaces quickly.
+// being served: long enough for a file caught mid-rewrite, short enough that a
+// rotation to a permanently corrupt keytab surfaces.
 const defaultKeytabStaleGrace = 30 * time.Second
 
-// errKeytabUnparsable marks a keytab that was read but could not be parsed, as
-// opposed to one that could not be read at all.
+// errKeytabUnparsable marks a keytab that was read but could not be parsed.
 var errKeytabUnparsable = errors.New("keytab did not parse")
 
-// keytabRetryEvery bounds how often a keytab revision already known to be
-// unparsable is re-read. Without it every request during an outage re-reads and
-// re-parses every keytab file, serialised behind the reload mutex.
+// keytabRetryEvery bounds how often a revision already known to be unparsable
+// is re-read, so an outage does not re-read every file on every request.
 const keytabRetryEvery = time.Second
 
 // degradedState records an episode in which the keytab on disk no longer
@@ -340,47 +185,28 @@ type degradedState struct {
 }
 
 // keytabFileCache holds the merged keytab for a fixed set of files, reloading
-// it only when one of those files changes on disk.
+// only when one changes on disk.
 //
-// Episode logging follows one rule: the line is queued with announce while mu
-// is held, next to the state change it describes, and emit writes whatever this
-// goroutine queued once mu is released. Queueing beside the mutation means a
-// transition cannot be marked as announced without its line being queued, and
-// writing after the unlock keeps the sink off the reload path that every
-// request queues on during a degraded episode.
-//
-// Each goroutine writes only its own lines, and nothing orders them against
-// each other. A goroutine preempted between releasing mu and writing can
-// therefore let a later transition's line reach the sink first — an all-clear
-// printed above the warning it clears. That window is a few instructions wide,
-// against another goroutine that has to acquire mu and read every keytab file
-// to overtake it.
-//
-// A shared flush lock was tried and removed. It made the ordering exact, but
-// every request on the reload path had to take it, so one goroutine inside a
-// slow sink stalled all of them — and a sink that re-entered the cache
-// deadlocked on it, since a sync.Mutex is not reentrant. A cosmetic
-// misordering of two rare lines is a better trade than a reproducible stall on
-// the authentication path.
+// Episode lines are queued by announce under mu and written by emit once it is
+// released, so ordering between goroutines is not exact. A shared flush lock
+// fixed that and was removed: it stalled every request behind one slow sink.
 type keytabFileCache struct {
 	files      []string
 	staleGrace time.Duration
 	retryEvery time.Duration
 	nowFn      func() time.Time
 
-	// snapshot is read without holding mu so the cache-hit path, which runs on
-	// every request the middleware handles, does not serialise them.
+	// Read without holding mu so the cache-hit path does not serialise requests.
 	snapshot atomic.Pointer[keytabSnapshot]
 	// degraded mirrors whether deg is populated. The hit path reads it rather
-	// than writing anything, so the common healthy case leaves this cache line
-	// clean for the concurrent snapshot readers sharing it.
+	// than writing, leaving this cache line clean for the snapshot readers.
 	degraded atomic.Bool
 
 	// mu guards reloads so the file I/O is done once, not once per waiter.
 	mu  sync.Mutex
 	deg degradedState
-	// queue holds the episode lines this locked section produced, oldest first.
-	// Guarded by mu; taken and cleared by emit.
+	// queue holds this locked section's episode lines, oldest first. Guarded by
+	// mu; taken and cleared by emit.
 	queue []func()
 }
 
@@ -441,28 +267,9 @@ func (c *keytabFileCache) readAll() (*keytab.Keytab, error) {
 		}
 		kt := keytab.New()
 		if err = kt.Unmarshal(raw); err != nil {
-			// gokrb5's own message is deliberately dropped. Its length checks
-			// interpolate the bytes they were given, and those bytes are a
-			// keytab: for a single-principal file the whole AES key fits in one
-			// error, which then travels to the log, to Config.OnError, and to
-			// whatever collects either. What the message would add is the
-			// offset it gave up at, which identifies the fault no better than
-			// the file name and errKeytabUnparsable already do.
-			//
-			// Five branches interpolate, all in keytab.go at v8.4.4. Two of them
-			// see the whole file: Unmarshal's own bounds check at :242, and
-			// readInt32 at :480, which Unmarshal calls with b to read each
-			// entry's length (:228 and :298). The other three — readInt8 at
-			// :449, readInt16 at :464, readBytes at :495 — are reached only
-			// from entry parsing, so they format one entry's bytes, which for a
-			// single-principal keytab is the same key either way.
-			//
-			// Re-check all five when upgrading gokrb5, and which buffer each is
-			// handed: verifying a subset, or assuming an entry slice is
-			// harmless, is how this leak would come back.
-			//
-			// The length is worth keeping: a rotation caught mid-write is a
-			// short read, and a permanently corrupt file usually is not.
+			// gokrb5's message is dropped, not quoted: five branches in its
+			// keytab.go (:242, :449, :464, :480, :495 at v8.4.4) interpolate the
+			// bytes they were handed, which is the key. Re-check all five on upgrade.
 			return nil, fmt.Errorf("%w: file %s load failed: %w (%d bytes read)",
 				ErrLoadKeytabFileFailed, keytabFile, errKeytabUnparsable, len(raw))
 		}
@@ -471,11 +278,9 @@ func (c *keytabFileCache) readAll() (*keytab.Keytab, error) {
 	return mergeKeytab, nil
 }
 
-// serveStale decides whether a keytab that no longer parses should be covered
-// for by the last one that did. Rewriting a keytab in place is not atomic, so a
-// read can catch a half-written file; that window is short. A keytab that stays
-// unparsable is a real fault, so the fallback expires after the grace window
-// and the error surfaces. Callers must hold mu.
+// serveStale decides whether a keytab that no longer parses is covered for by
+// the last one that did: rewriting in place is not atomic, so a read can catch
+// a half-written file, but a lasting fault must surface. Callers hold mu.
 func (c *keytabFileCache) serveStale(cause error, now time.Time) (*keytab.Keytab, error) {
 	snap := c.snapshot.Load()
 	if snap == nil {
@@ -483,19 +288,11 @@ func (c *keytabFileCache) serveStale(cause error, now time.Time) (*keytab.Keytab
 	}
 	if c.deg.since.IsZero() {
 		c.deg.since = now
-		// Once per episode rather than per request or per revision. An episode
-		// begins only when the files on disk actually change, so the rate is
-		// bounded by rotations, not by request volume.
+		// Once per episode, which begins only when the files change — so the
+		// rate is bounded by rotations, not by request volume.
 		grace := c.grace()
-		// Quoted because the cause names the keytab file, and a path is not
-		// this package's text: Unix allows a newline in one, so a path chosen
-		// badly — or taken from configuration someone else controls — would
-		// otherwise start a line of its own under this package's prefix.
-		//
-		// It used to matter far more. gokrb5's parser interpolates the whole
-		// file it was handed into its errors, which for a keytab is key
-		// material; readAll drops that message rather than quoting it, since
-		// bounding a secret is not the same as not logging it.
+		// Quoted because the cause names the keytab file, and Unix allows a
+		// newline in a path, which would otherwise forge a log line.
 		detail := quoteForLog([]byte(cause.Error()))
 		c.announce(func() {
 			flog.Warnf("spnego: %s; serving the last keytab that parsed for up to %s", detail, grace)
@@ -505,8 +302,8 @@ func (c *keytabFileCache) serveStale(cause error, now time.Time) (*keytab.Keytab
 	if now.Sub(c.deg.since) > c.grace() {
 		if !c.deg.expiryLogged {
 			c.deg.expiryLogged = true
-			// The transition from degraded to failing is the one an operator
-			// most needs to see, so it gets its own line at error level.
+			// Degraded to failing is the transition an operator most needs to
+			// see, so it gets its own line at error level.
 			grace := c.grace()
 			detail := quoteForLog([]byte(cause.Error()))
 			c.announce(func() {
@@ -519,18 +316,13 @@ func (c *keytabFileCache) serveStale(cause error, now time.Time) (*keytab.Keytab
 }
 
 // clearDegraded ends the current episode and logs the recovery, so an operator
-// alerted by the warning gets a matching all-clear. Callers must hold mu.
+// alerted by the warning gets a matching all-clear — at the same level, and
+// only for an episode that was announced. Callers hold mu.
 func (c *keytabFileCache) clearDegraded() {
 	if c.deg.cause == nil {
 		c.degraded.Store(false)
 		return
 	}
-	// Only announce a recovery for an episode that was announced. An episode
-	// that began before any keytab ever loaded never emitted the warning, so an
-	// all-clear would refer to nothing.
-	//
-	// At the same level as the warning it clears: an operator filtering below
-	// Warn would otherwise see every alert open and none of them close.
 	if !c.deg.since.IsZero() {
 		c.announce(func() { flog.Warnf("spnego: keytab loads cleanly again") })
 	}
@@ -538,20 +330,15 @@ func (c *keytabFileCache) clearDegraded() {
 	c.degraded.Store(false)
 }
 
-// endEpisodeIfCurrent closes a degraded episode that resolved without a reload,
-// which happens when a keytab is restored with its original size and mtime. The
-// caller's stat may predate a rotation another goroutine has already found
-// broken, so the files are re-stat'ed under the lock before anything is
-// cleared.
+// endEpisodeIfCurrent closes an episode that resolved without a reload, which
+// happens when a keytab is restored with its original size and mtime. The
+// caller's stat may predate a rotation, so the files are re-stat'ed under mu.
 func (c *keytabFileCache) endEpisodeIfCurrent(expected []fileStamp) {
 	c.mu.Lock()
 	defer c.emit()
 	if c.deg.cause == nil {
-		// Another goroutine closed the episode between the lock-free check and
-		// this lock. Skipping the stat below is the only effect: clearDegraded
-		// would find nothing to do either, since degraded and deg.cause always
-		// move together under this mutex. Purely an early-out, so its absence
-		// is not observable.
+		// Another goroutine closed the episode. Purely an early-out:
+		// clearDegraded would find nothing to do either.
 		return
 	}
 	if fresh, err := c.stat(); err == nil && slices.Equal(fresh, expected) {
@@ -559,17 +346,16 @@ func (c *keytabFileCache) endEpisodeIfCurrent(expected []fileStamp) {
 	}
 }
 
-// announce queues an episode line to be written once mu is released. Callers
-// must hold mu. Queueing rather than replacing means a locked section that
-// grows a second transition cannot silently drop the first one's line.
+// announce queues an episode line to be written once mu is released. Queueing
+// rather than replacing means a second transition cannot drop the first's line.
+// Callers must hold mu.
 func (c *keytabFileCache) announce(write func()) {
 	c.queue = append(c.queue, write)
 }
 
 // emit releases mu and writes whatever this locked section queued, oldest
-// first. It is called with mu held and returns with it released. Clearing the
-// queue rather than resharing it means a goroutine only ever writes its own
-// lines and nothing is retained afterwards. See the note on keytabFileCache.
+// first. Called with mu held, returns with it released. Clearing the queue
+// means a goroutine only ever writes its own lines.
 func (c *keytabFileCache) emit() {
 	writes := c.queue
 	c.queue = nil
@@ -579,17 +365,9 @@ func (c *keytabFileCache) emit() {
 	}
 }
 
-// load returns the merged keytab, re-reading the files only when their
-// revision differs from the cached one. The returned pointer is stable across
-// calls for as long as the files are unchanged, which lets a caller reuse
-// anything it derived from the keytab.
-//
-// Because change detection is inexact (see fileStamp), rotate a keytab by
-// writing a new file and renaming it over the old one. On Unix that changes the
-// file's identity, so it is picked up even when size and modification time are
-// preserved, whereas an in-place rewrite of identical length may not be. On
-// other platforms make sure the replacement differs in size or modification
-// time, since identity there cannot be relied on.
+// load returns the merged keytab, re-reading only when the files' revision
+// differs from the cached one. The pointer is stable while they are unchanged.
+// Detection is inexact (see fileStamp), so rotate by rename.
 func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 	stamps, err := c.stat()
 	if err != nil {
@@ -606,11 +384,9 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 
 	c.mu.Lock()
 	defer c.emit()
-	// Re-stat under the lock. The caller's stamps were taken before mu was
-	// acquired, and this goroutine may have waited behind another's readAll, so
-	// pairing those stamps with content read now could record one revision as
-	// holding another's bytes — which would both clobber a correct snapshot and,
-	// if the rotation were later rolled back in place, pin the wrong keytab.
+	// Re-stat under the lock: the caller's stamps predate it, so pairing them
+	// with content read now could record one revision as holding another's
+	// bytes, clobbering a correct snapshot.
 	stamps, err = c.stat()
 	if err != nil {
 		return nil, err
@@ -618,29 +394,15 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 	// Another goroutine may have reloaded while this one waited for the lock.
 	if snap := c.snapshot.Load(); snap != nil && slices.Equal(snap.stamps, stamps) {
 		// The revision on disk is the cached one again, so any episode is over.
-		// The fast path reaches the same conclusion through endEpisodeIfCurrent;
-		// here the stamps were just taken under the lock, so no re-stat is
-		// needed.
+		// No re-stat needed: these stamps were taken under the lock.
 		c.clearDegraded()
 		return snap.merged, nil
 	}
 
 	now := nowOr(c.nowFn)
-	// This exact revision already failed recently; do not re-read every file
-	// again on every request while the fault persists. This covers a file that
-	// cannot be read as well as one that cannot be parsed — both would
-	// otherwise put a full read of every keytab on every request, serialised
-	// behind this mutex.
-	//
-	// What it does not remove is the mutex itself. A degraded revision never
-	// matches the snapshot, so the lock-free fast path misses and every request
-	// stats twice and queues here for as long as the fault lasts. Publishing
-	// the failing revision alongside the snapshot would keep this path lock-free
-	// too, at the cost of a second copy of the degraded state to keep in step
-	// with this one. It is not worth it: what is being served through here is
-	// either a stale keytab on a 30-second clock or an error, so the episode is
-	// short by construction and the throughput of a failing service is not the
-	// thing to optimise for.
+	// This revision already failed recently, so do not re-read every file on
+	// every request while the fault lasts. The mutex still serialises them,
+	// which is not worth a second copy of this state to avoid.
 	if c.deg.cause != nil && slices.Equal(c.deg.stamps, stamps) && now.Sub(c.deg.lastAttempt) < c.retry() {
 		if errors.Is(c.deg.cause, errKeytabUnparsable) {
 			return c.serveStale(c.deg.cause, now)
@@ -650,11 +412,9 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 
 	merged, err := c.readAll()
 	if err != nil {
-		// Record the failing revision either way, so the retry throttle applies
-		// to unreadable files too. deg.since is deliberately left alone: an
-		// episode is bounded by its first failure, not by the latest revision,
-		// so a keytab being rewritten badly over and over cannot extend the
-		// grace window indefinitely and keep superseded keys alive.
+		// Recorded either way, so the retry throttle covers unreadable files
+		// too. deg.since is left alone: an episode is bounded by its first
+		// failure, so repeated bad writes cannot keep superseded keys alive.
 		c.deg.stamps, c.deg.cause, c.deg.lastAttempt = stamps, err, now
 		c.degraded.Store(true)
 		if errors.Is(err, errKeytabUnparsable) {
@@ -667,22 +427,13 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 	return merged, nil
 }
 
-// NewKeytabFileLookupFunc creates a new KeytabLookupFunc that loads keytab files
-// It accepts one or more keytab file paths and returns a function that loads them
-//
-// The merged keytab is cached and reused until one of the files changes, so
-// rotating a keytab on disk still takes effect without re-reading and
-// re-parsing every file on every request. A file counts as changed when its
-// size, modification time or identity differs; see fileStamp for what that
-// does and does not catch.
-//
-// At least one path is required, and none of them may be empty:
-// ErrConfigInvalidOfAtLeastOneKeytabFileRequired covers both.
+// NewKeytabFileLookupFunc returns a KeytabLookupFunc that loads and merges one
+// or more keytab files, caching the result until a file's size, modification
+// time or identity changes. At least one path is required, and none may be empty.
 func NewKeytabFileLookupFunc(keytabFiles ...string) (KeytabLookupFunc, error) {
-	// An empty path is rejected alongside no paths at all. It is what an unset
-	// environment variable expands to, and accepting it turns a configuration
-	// mistake into a 500 on every request rather than a refusal at startup —
-	// which is the whole point of returning an error from here.
+	// An empty path is what an unset environment variable expands to. Refusing
+	// it here turns a configuration mistake into a startup error rather than a
+	// 500 on every request.
 	for _, keytabFile := range keytabFiles {
 		if keytabFile == "" {
 			return nil, ErrConfigInvalidOfAtLeastOneKeytabFileRequired
@@ -694,24 +445,12 @@ func NewKeytabFileLookupFunc(keytabFiles ...string) (KeytabLookupFunc, error) {
 	return newKeytabFileCache(keytabFiles).load, nil
 }
 
-// NewSystemKeytabLookupFunc creates a KeytabLookupFunc that loads the host's
-// system keytab: the path in the KRB5_KTNAME environment variable when set,
-// otherwise DefaultSystemKeytabPath.
+// NewSystemKeytabLookupFunc loads the host's system keytab: KRB5_KTNAME when
+// set, otherwise DefaultSystemKeytabPath. MIT's optional "TYPE:residual" prefix
+// is accepted for FILE and WRFILE and rejected for the types that are not files.
 //
-// MIT Kerberos writes KRB5_KTNAME as an optional "TYPE:residual" pair. The
-// file-backed types, FILE and WRFILE, are accepted and stripped. The known
-// types that cannot be read as a file — KEYRING, MEMORY, DIR, ANY, SRVTAB —
-// are rejected with ErrUnsupportedKeytabResidualType rather than being treated
-// as a literal path that would fail on every request.
-//
-// A prefix matching no known type is taken as part of the filename, since a
-// relative path may legitimately contain a colon. A typo such as
-// "FIEL:/etc/krb5.keytab" therefore resolves as a path and fails when the file
-// cannot be found.
-//
-// Note that this is a keytab, not a credential cache: SPNEGO acceptance
-// requires the service's long-term keys, so a client credential cache
-// (KRB5CCNAME) cannot be used to accept incoming tickets.
+// This is a keytab, not a credential cache: accepting SPNEGO needs the
+// service's long-term keys, so KRB5CCNAME cannot serve this role.
 func NewSystemKeytabLookupFunc() (KeytabLookupFunc, error) {
 	keytabPath := os.Getenv("KRB5_KTNAME")
 	if keytabPath == "" {
@@ -731,16 +470,13 @@ func NewSystemKeytabLookupFunc() (KeytabLookupFunc, error) {
 // fileKeytabTypes are the MIT keytab residual types backed by a plain file.
 var fileKeytabTypes = []string{"FILE", "WRFILE"}
 
-// nonFileKeytabTypes are the MIT keytab residual types that exist but cannot be
-// read as a file. Anything outside both lists is a filename, not a type: a
-// relative path may legitimately contain a colon.
+// nonFileKeytabTypes are the MIT keytab residual types that cannot be read as a
+// file. Anything outside both lists is a filename, not a type.
 var nonFileKeytabTypes = []string{"KEYRING", "MEMORY", "DIR", "ANY", "SRVTAB"}
 
-// resolveKeytabResidual strips a supported "TYPE:" prefix from a keytab name
-// and rejects the known types that are not plain files. A name whose prefix
-// matches no known type is returned unchanged and treated as a path, so
-// absolute paths, Windows drive letters and relative names that happen to
-// contain a colon all still work.
+// resolveKeytabResidual strips a supported "TYPE:" prefix and rejects the known
+// types that are not plain files. An unrecognised prefix is treated as part of
+// the path, so absolute paths, drive letters and relative names all still work.
 func resolveKeytabResidual(name string) (string, error) {
 	prefix, residual, found := strings.Cut(name, ":")
 	if !found {
@@ -752,9 +488,8 @@ func resolveKeytabResidual(name string) (string, error) {
 	case slices.Contains(nonFileKeytabTypes, upper):
 		return "", fmt.Errorf("%w: %s", ErrUnsupportedKeytabResidualType, prefix)
 	default:
-		// Not a known type, so the colon belongs to the name: an absolute path,
-		// a Windows drive letter such as C:\, or a relative name that simply
-		// contains one.
+		// The colon belongs to the name: an absolute path, a Windows drive
+		// letter such as C:\, or a relative name that simply contains one.
 		return name, nil
 	}
 }

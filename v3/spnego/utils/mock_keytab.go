@@ -92,10 +92,8 @@ func newDefaultMockOptions() *mockOptions {
 }
 
 // fileOperator is the seam the tests substitute to drive the failure paths of
-// writing a keytab out. OpenFile yields an io.WriteCloser rather than an
-// *os.File because those are the only two operations the writer needs, and a
-// concrete *os.File cannot fail its Close independently of its Write — which
-// leaves the close-after-a-good-write branch untestable.
+// writing a keytab out. It yields an io.WriteCloser because a concrete *os.File
+// cannot fail its Close independently of its Write.
 type fileOperator interface {
 	OpenFile(filename string, flag int, perm os.FileMode) (io.WriteCloser, error)
 	Remove(filename string) error
@@ -106,8 +104,8 @@ type myFileOperator struct{}
 func (m myFileOperator) OpenFile(filename string, flag int, perm os.FileMode) (io.WriteCloser, error) {
 	file, err := os.OpenFile(filename, flag, perm) //nolint:gosec // path comes from the caller's own options
 	if err != nil {
-		// Returned explicitly rather than as the pair: a nil *os.File in a
-		// non-nil interface would not compare equal to nil at the call site.
+		// Returned explicitly: a nil *os.File in a non-nil interface would not
+		// compare equal to nil at the call site.
 		return nil, err //nolint:wrapcheck // the caller wraps this with its own context
 	}
 	return file, nil
@@ -119,34 +117,17 @@ func (m myFileOperator) Remove(filename string) error {
 
 var defaultFileOperator fileOperator = myFileOperator{}
 
-// NewMockKeytab creates a mock keytab for testing purposes
-// It allows customization through option functions and returns:
-//   - A keytab.Keytab instance populated with the specified entries
-//   - A cleanup function that removes any created files
-//   - An error if the keytab creation fails
-//
-// Example usage:
-//
-//	kt, cleanup, err := NewMockKeytab(
-//	  WithPrincipal("HTTP/service.example.com"),
-//	  WithRealm("EXAMPLE.COM"),
-//	  WithPassword("secret"),
-//	  WithFilename("test.keytab"),
-//	  WithPairs(EncryptTypePair{EncryptType: 18})
-//	)
-//	if err != nil {
-//	  // handle error; cleanup is nil on failure, so do not defer it above
-//	}
-//	defer cleanup()
+// NewMockKeytab builds a keytab for testing, optionally writing it to the file
+// named by WithFilename, and returns a cleanup function that removes it. The
+// cleanup is nil on error, so do not defer it before checking.
 func NewMockKeytab(opts ...MockOption) (*keytab.Keytab, func(), error) {
 	opt := newDefaultMockOptions()
 	opt.apply(opts...)
 	kt := keytab.New()
 	var err error
 	for _, pair := range opt.Pairs {
-		// gokrb5 only accepts an 8-bit key version when building a keytab, so a
-		// wider value cannot be represented here. Reject it rather than
-		// silently writing a truncated version.
+		// gokrb5 accepts only an 8-bit key version here, so reject a wider one
+		// rather than silently writing a truncated version.
 		if pair.Version > math.MaxUint8 {
 			return nil, nil, fmt.Errorf("%w: key version %d exceeds the maximum of %d", ErrInvalidKeyVersion, pair.Version, math.MaxUint8)
 		}
@@ -156,19 +137,9 @@ func NewMockKeytab(opts ...MockOption) (*keytab.Keytab, func(), error) {
 	}
 	var clean = func() {}
 	if len(opt.Filename) > 0 {
-		// Keytabs hold key material, so keep them readable only by the owner.
-		//
-		// Removed first, then created exclusively, rather than truncating what
-		// is there. OpenFile applies its permission argument only when it
-		// creates the file, so opening an existing path keeps whatever mode
-		// that path already had — and writing a fresh keytab into a file left
-		// at 0644 by something else would hand the key to every local account
-		// while looking like it had been protected.
-		//
-		// O_EXCL rather than a chmod after the fact: it leaves no window in
-		// which the key material is on disk under the wrong mode, and it fails
-		// loudly if something recreates the path in between instead of writing
-		// into whatever turned up.
+		// Removed then created exclusively, not truncated: OpenFile applies its
+		// permission argument only on create, so writing a keytab into a path left
+		// at 0644 would hand the key out. O_EXCL leaves no wrong-mode window.
 		if err = defaultFileOperator.Remove(opt.Filename); err != nil && !os.IsNotExist(err) {
 			return nil, nil, fmt.Errorf("error removing existing file: %w", err)
 		}
@@ -180,8 +151,8 @@ func NewMockKeytab(opts ...MockOption) (*keytab.Keytab, func(), error) {
 			_ = defaultFileOperator.Remove(opt.Filename)
 		}
 		if _, writeErr := kt.Write(file); writeErr != nil {
-			// Keep the write error in its own variable: reusing err would lose it
-			// whenever the subsequent Close succeeds.
+			// Its own variable: reusing err would lose the write error whenever
+			// the subsequent Close succeeds.
 			if closeErr := file.Close(); closeErr != nil {
 				clean()
 				return nil, nil, fmt.Errorf("error writing to file: %w (also failed to close file: %w)", writeErr, closeErr)

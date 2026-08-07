@@ -14,17 +14,15 @@ import (
 
 func main() {
 	app := fiber.New()
-	// create mock keytab file in a temporary directory, so key material never
-	// lands in the working directory
-	// you must use a real keytab file
+	// A temporary directory keeps key material out of the working directory.
+	// Use a real keytab file in production.
 	tempDir, err := os.MkdirTemp("", "spnego-example")
 	if err != nil {
 		panic(fmt.Errorf("create temp dir failed: %w", err))
 	}
-	// panic rather than log.Fatalf on the main goroutine: Fatalf calls os.Exit,
-	// which would skip this cleanup and leave key material behind. Failures on
-	// other goroutines report and return instead, since a panic there would
-	// crash the process without running main's defers either.
+	// panic rather than log.Fatalf here: Fatalf calls os.Exit, which would skip
+	// this cleanup. Other goroutines report and return instead, since a panic
+	// there would skip main's defers too.
 	defer func() { _ = os.RemoveAll(tempDir) }()
 	keytabPath := filepath.Join(tempDir, "temp-sso.keytab")
 	_, clean, err := utils.NewMockKeytab(
@@ -67,18 +65,16 @@ func main() {
 	log.Info("Server is running on sso.example.local:3000")
 	go func() {
 		<-time.After(time.Second * 1)
-		// -u : is not optional. curl activates its Negotiate code only when a
-		// credential option is present, and an empty user:password is the
-		// documented way to say "use the ticket cache" — without it curl never
-		// sends the Negotiate exchange, however well Kerberos is configured.
+		// -u : is not optional: curl activates its Negotiate code only when a
+		// credential option is present, and an empty user:password is how you
+		// say "use the ticket cache".
 		fmt.Println("use curl -kv --negotiate -u : http://sso.example.local:3000/protected/resource")
 		fmt.Println("Note: In /etc/hosts, sso.example.local must be bound to a LAN address; 127.0.0.1 won't work.")
 		fmt.Println("if response is 401, execute `klist` to check your Kerberos session")
 		<-time.After(time.Second * 2)
 		fmt.Println("close server")
 		if shutdownErr := app.Shutdown(); shutdownErr != nil {
-			// Not a panic: this goroutine's crash would bypass the cleanup
-			// registered in main.
+			// Not a panic: a crash here would bypass main's cleanup.
 			log.Errorf("shutdown server failed: %v", shutdownErr)
 		}
 	}()
