@@ -310,7 +310,9 @@ func (m *middleware) resolveFilters(cfg Config) bool {
 		// The unmatched label is a value, not a route, so it is recognised before any path
 		// fixup and kept as its own flag rather than a skipURIs key - the two namespaces
 		// must not collide. Deliberately not a "continue": an entry may mean both.
-		if strings.TrimRight(normalizePath(path), "*") == m.unmatchedLabel {
+		normalizedEntry := normalizePath(path)
+		if normalizedEntry == m.unmatchedLabel ||
+			strings.TrimRight(normalizedEntry, "*") == m.unmatchedLabel {
 			m.recordUnmatched = false
 		}
 
@@ -870,11 +872,11 @@ func requestBodySize(contentLength, bodyLimit int, preParsedForm bool, p payload
 		return 0, false
 	}
 
-	// The announced length serves only where the body cannot be measured and the
-	// server is known to have read it. Beyond the limit fasthttp refused the
-	// request unread, so no honest size exists.
-	if preParsedForm && contentLength > 0 {
-		if bodyLimit > 0 && contentLength > bodyLimit {
+	// The announced length is all a pre-parsed form has: Body() would re-marshal
+	// every spilled part just to take its length. Without one - a chunked upload -
+	// the size stays unknown rather than paying that, and so does one past the limit.
+	if preParsedForm {
+		if contentLength <= 0 || (bodyLimit > 0 && contentLength > bodyLimit) {
 			return 0, false
 		}
 		return float64(contentLength), true

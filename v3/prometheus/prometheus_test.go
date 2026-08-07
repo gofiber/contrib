@@ -1898,12 +1898,19 @@ func TestUnknownResponseSizeIsNotObserved(t *testing.T) {
 // fakePayload stands in for *fasthttp.Request and *fasthttp.Response so
 // the size helpers can be exercised on both sides without a live connection.
 type fakePayload struct {
-	stream bool
-	body   []byte
+	stream    bool
+	body      []byte
+	bodyCalls *int
 }
 
 func (p fakePayload) IsBodyStream() bool { return p.stream }
-func (p fakePayload) Body() []byte       { return p.body }
+
+func (p fakePayload) Body() []byte {
+	if p.bodyCalls != nil {
+		*p.bodyCalls++
+	}
+	return p.body
+}
 
 // TestRequestBodySize covers the received side, where Content-Length is what
 // fasthttp parsed off the wire and the buffer may not hold the body at all.
@@ -1929,6 +1936,11 @@ func TestRequestBodySize(t *testing.T) {
 		// Beyond the limit the body was never received in full, so there is no
 		// honest size to record - fabricating one would be worse than none.
 		{name: "form beyond the limit is undetermined", contentLength: 500000000, bodyLimit: 4096, preParsedForm: true, payload: fakePayload{}, wantKnown: false},
+		// A chunked upload announces nothing. Measuring the buffer would call
+		// Request.Body(), which re-marshals every spilled part - the very cost the
+		// announced-length branch exists to avoid.
+		{name: "chunked form is undetermined", contentLength: -1, bodyLimit: 4096, preParsedForm: true, payload: fakePayload{}, wantKnown: false},
+		{name: "form announcing zero is undetermined", contentLength: 0, preParsedForm: true, payload: fakePayload{}, wantKnown: false},
 		{name: "form without a limit takes the announced length", contentLength: 2048, preParsedForm: true, payload: fakePayload{}, want: 2048, wantKnown: true},
 		// A stream is never sized from the header, however modest the announcement:
 		// under StreamRequestBody a handler that returns without reading leaves the
@@ -4332,5 +4344,48 @@ func TestManyDynamicLabelsOverflowTheStackBuffer(t *testing.T) {
 		`tenant3="tenant3",tenant4="tenant4",tenant5="tenant5"}`
 	if !strings.Contains(metrics, want) {
 		t.Fatalf("expected every dynamic label to survive the heap fallback, got %q", metrics)
+	}
+}
+
+// TestPreParsedFormNeverReadsTheBody pins that no pre-parsed multipart path calls
+// Request.Body(). fasthttp keeps the parsed parts and spills the large ones to
+// temp files, so Body() re-marshals the whole upload just to take its length.
+func TestPreParsedFormNeverReadsTheBody(t *testing.T) {
+	for _, contentLength := range []int{-1, 0, 2048, 500000000} {
+		t.Run(fmt.Sprint(contentLength), func(t *testing.T) {
+			calls := 0
+			payload := fakePayload{bodyCalls: &calls}
+
+			requestBodySize(contentLength, 4096, true, payload)
+
+			if calls != 0 {
+				t.Fatalf("expected Body() never to be called for a pre-parsed form, got %d calls", calls)
+			}
+		})
+	}
+}
+
+// TestUnmatchedLabelEndingInStarIsSkippable covers a label that itself ends in
+// "*". Stripping the star off the entry before comparing left an identical
+// SkipURIs entry matching nothing, so the traffic stayed recorded.
+func TestUnmatchedLabelEndingInStarIsSkippable(t *testing.T) {
+	app := newAppWithMiddleware(Config{
+		TrackUnmatchedRequests: true,
+		UnmatchedRouteLabel:    "missing*",
+		SkipURIs:               []string{"missing*"},
+	}, "")
+	app.Get("/kept", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	get(t, app, "/nothing/here")
+	get(t, app, "/kept")
+
+	metrics := getMetrics(t, app, "")
+	if strings.Contains(metrics, `path="missing*"`) {
+		t.Fatalf("expected the entry to exclude the unmatched label, got %q", metrics)
+	}
+	if !strings.Contains(metrics, `path="/kept"`) {
+		t.Fatalf("expected the real route to survive, got %q", metrics)
 	}
 }
