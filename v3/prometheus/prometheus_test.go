@@ -983,6 +983,25 @@ func TestNextSkipsMetricsEndpoint(t *testing.T) {
 	}
 }
 
+func TestPanickingNextSkipsMetricsEndpoint(t *testing.T) {
+	app := newAppWithMiddleware(Config{
+		Next: func(_ fiber.Ctx) bool {
+			panic("bad request data")
+		},
+	}, "")
+	app.Get("/metrics", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusUnauthorized)
+	})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/metrics", nil), noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("expected a Next panic to leave the metrics endpoint gated, got status %d", resp.StatusCode)
+	}
+}
+
 func TestMetricsPathConfig(t *testing.T) {
 	app := newAppWithMiddleware(Config{MetricsPath: "internal/metrics"}, "")
 	app.Get("/hello", func(c fiber.Ctx) error {
@@ -4024,7 +4043,8 @@ func TestPanickingDynamicLabelIsReportedOnce(t *testing.T) {
 
 // TestPanickingNextIsContained covers a Config.Next that panics. It runs before the
 // handler chain, so nothing downstream can catch it and the panic would reach the
-// connection goroutine and take the process with it.
+// connection goroutine and take the process with it. The middleware stands aside
+// because that is also the safe default for its potentially sensitive endpoint.
 func TestPanickingNextIsContained(t *testing.T) {
 	logger := &recordingLogger{}
 
@@ -4044,16 +4064,10 @@ func TestPanickingNextIsContained(t *testing.T) {
 			t.Fatalf("unexpected request error: %v", err)
 		}
 		if resp.StatusCode != fiber.StatusOK {
-			t.Fatalf("expected the request to be served, got %d", resp.StatusCode)
+			t.Fatalf("expected the downstream handler to serve the request, got %d", resp.StatusCode)
 		}
 	}
 
-	// Undecidable means instrument: dropping the sample would hide the traffic
-	// on top of hiding the fault.
-	metrics := getMetrics(t, app, "")
-	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/hello",status_code="200"} 3`) {
-		t.Fatalf("expected the requests to be instrumented anyway, got %q", metrics)
-	}
 	if lines := logger.count(); lines != 1 {
 		t.Fatalf("expected the repeated panic to be reported once, got %d lines", lines)
 	}
@@ -4068,7 +4082,10 @@ func TestPanickingNextAndLabelAreReportedSeparately(t *testing.T) {
 	app := newAppWithMiddleware(Config{
 		MetricsErrorLog: logger,
 		Next: func(c fiber.Ctx) bool {
-			return c.Locals("skip").(bool)
+			if c.Path() == "/next" {
+				panic("next")
+			}
+			return false
 		},
 		DynamicLabels: map[string]func(fiber.Ctx) string{
 			"tenant": func(c fiber.Ctx) string { return c.Locals("tenant").(string) },
@@ -4078,9 +4095,8 @@ func TestPanickingNextAndLabelAreReportedSeparately(t *testing.T) {
 		return c.SendString("hi")
 	})
 
-	for range 3 {
-		get(t, app, "/hello")
-	}
+	get(t, app, "/next")
+	get(t, app, "/hello")
 
 	if lines := logger.count(); lines != 2 {
 		t.Fatalf("expected each fault to be reported once, got %d lines", lines)

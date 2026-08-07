@@ -63,7 +63,7 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | SkipStatusCodes | `[]int` | Response status codes excluded from metrics. Codes are three digits; anything else panics. | `nil` |
 | SkipStatusClasses | `[]string` | Status classes excluded from metrics, `"1xx"` through `"5xx"` or `"unknown"`. Anything else panics. | `nil` |
 | DynamicLabels | `map[string]func(fiber.Ctx) string` | Extra labels computed per request. Names follow the same rules as `Labels`. A panicking function drops the sample. | `nil` |
-| Next | `func(fiber.Ctx) bool` | Skips the middleware when it returns true, including for `MetricsPath`. A panicking function is read as false. | `nil` |
+| Next | `func(fiber.Ctx) bool` | Skips the middleware when it returns true, including for `MetricsPath`. A panicking function is read as true. | `nil` |
 
 ## Default Config
 

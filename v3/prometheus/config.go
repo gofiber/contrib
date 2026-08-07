@@ -180,7 +180,7 @@ type Config struct {
 	DynamicLabels map[string]func(fiber.Ctx) string
 
 	// Next skips the middleware when it returns true, including for MetricsPath, and
-	// the chain's error is then returned unchanged. A panic is read as false and
+	// the chain's error is then returned unchanged. A panic is read as true and
 	// reported once to MetricsErrorLog. Optional. Default: nil.
 	Next func(fiber.Ctx) bool
 }
