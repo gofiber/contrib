@@ -116,26 +116,10 @@ type Config struct {
 	OnError func(ctx fiber.Ctx, err error)
 }
 
-// ConfigDefault records what an unset field does. It is deliberately equal to
-// the zero Config, and New reads the fields rather than this — so copying it is
-// supported and mutating it is not.
-var ConfigDefault = Config{
-	Next:                   nil,
-	KeytabLookup:           nil,
-	Log:                    nil,
-	UseFiberLogger:         false,
-	Unauthorized:           nil,
-	FallbackToSystemKeytab: false,
-	KeytabPrincipal:        "",
-	// Zero rather than 5 minutes: gokrb5 substitutes its own default, and naming
-	// a number here would silently pin it if gokrb5 ever changed.
-	MaxClockSkew:       0,
-	DisablePACDecoding: false,
-	RequireHostAddress: false,
-	SessionManager:     nil,
-	OnSuccess:          nil,
-	OnError:            nil,
-}
+// ConfigDefault is the zero Config, for callers who would rather start from a
+// named value. New reads the fields rather than this, so copying it is
+// supported and mutating it is not. Each field documents its own default.
+var ConfigDefault = Config{}
 
 // fileStamp identifies a keytab revision cheaply enough to check per request.
 // Identity is recorded where the platform exposes it, so a rename is caught even
@@ -254,6 +238,25 @@ func (c *keytabFileCache) stat() ([]fileStamp, error) {
 	return stamps, nil
 }
 
+// statMatches reports whether every file still carries the recorded stamp,
+// without materialising a []fileStamp. Same number of os.Stat calls as stat —
+// it is the per-request slice the cache-hit path threw away that this avoids.
+func (c *keytabFileCache) statMatches(want []fileStamp) (bool, error) {
+	// No length guard: want always comes from a snapshot built by stat, which
+	// returns exactly one stamp per file, and c.files never changes.
+	for i, keytabFile := range c.files {
+		info, err := os.Stat(keytabFile)
+		if err != nil {
+			return false, fmt.Errorf("%w: file %s load failed: %w", ErrLoadKeytabFileFailed, keytabFile, err)
+		}
+		got := fileStamp{size: info.Size(), modTime: info.ModTime().UnixNano(), id: fileRevisionID(info)}
+		if got != want[i] {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 // readAll re-reads and merges every keytab file. A parse failure is wrapped
 // with errKeytabUnparsable so the caller can tell it apart from an I/O failure.
 func (c *keytabFileCache) readAll() (*keytab.Keytab, error) {
@@ -369,25 +372,29 @@ func (c *keytabFileCache) emit() {
 // differs from the cached one. The pointer is stable while they are unchanged.
 // Detection is inexact (see fileStamp), so rotate by rename.
 func (c *keytabFileCache) load() (*keytab.Keytab, error) {
-	stamps, err := c.stat()
-	if err != nil {
-		return nil, err
-	}
-	if snap := c.snapshot.Load(); snap != nil && slices.Equal(snap.stamps, stamps) {
-		// Rare, and deliberately off the common path: an episode that ended
-		// without a reload still has to be closed out.
-		if c.degraded.Load() {
-			c.endEpisodeIfCurrent(stamps)
+	// Compared in place rather than through stat: this runs on every request,
+	// and the slice stat builds is garbage the moment the comparison returns.
+	if snap := c.snapshot.Load(); snap != nil {
+		match, err := c.statMatches(snap.stamps)
+		if err != nil {
+			return nil, err
 		}
-		return snap.merged, nil
+		if match {
+			// Rare, and deliberately off the common path: an episode that ended
+			// without a reload still has to be closed out. snap.stamps is what
+			// the files were just found to carry, so no re-stat is needed here.
+			if c.degraded.Load() {
+				c.endEpisodeIfCurrent(snap.stamps)
+			}
+			return snap.merged, nil
+		}
 	}
-
 	c.mu.Lock()
 	defer c.emit()
-	// Re-stat under the lock: the caller's stamps predate it, so pairing them
-	// with content read now could record one revision as holding another's
-	// bytes, clobbering a correct snapshot.
-	stamps, err = c.stat()
+	// Stat under the lock, and only here: stamps taken before it could pair one
+	// revision with another's bytes, clobbering a correct snapshot. The hit path
+	// above compares in place, so this is the only place a []fileStamp is built.
+	stamps, err := c.stat()
 	if err != nil {
 		return nil, err
 	}
@@ -467,25 +474,18 @@ func NewSystemKeytabLookupFunc() (KeytabLookupFunc, error) {
 	return NewKeytabFileLookupFunc(resolved)
 }
 
-// fileKeytabTypes are the MIT keytab residual types backed by a plain file.
-var fileKeytabTypes = []string{"FILE", "WRFILE"}
-
-// nonFileKeytabTypes are the MIT keytab residual types that cannot be read as a
-// file. Anything outside both lists is a filename, not a type.
-var nonFileKeytabTypes = []string{"KEYRING", "MEMORY", "DIR", "ANY", "SRVTAB"}
-
 // resolveKeytabResidual strips a supported "TYPE:" prefix and rejects the known
-// types that are not plain files. An unrecognised prefix is treated as part of
-// the path, so absolute paths, drive letters and relative names all still work.
+// MIT types that are not plain files. An unrecognised prefix is treated as part
+// of the path, so absolute paths, drive letters and relative names still work.
 func resolveKeytabResidual(name string) (string, error) {
 	prefix, residual, found := strings.Cut(name, ":")
 	if !found {
 		return name, nil
 	}
-	switch upper := strings.ToUpper(prefix); {
-	case slices.Contains(fileKeytabTypes, upper):
+	switch strings.ToUpper(prefix) {
+	case "FILE", "WRFILE":
 		return residual, nil
-	case slices.Contains(nonFileKeytabTypes, upper):
+	case "KEYRING", "MEMORY", "DIR", "ANY", "SRVTAB":
 		return "", fmt.Errorf("%w: %s", ErrUnsupportedKeytabResidualType, prefix)
 	default:
 		// The colon belongs to the name: an absolute path, a Windows drive

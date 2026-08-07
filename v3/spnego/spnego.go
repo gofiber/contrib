@@ -42,43 +42,27 @@ const (
 	protocolHTTP10 = "HTTP/1.0"
 )
 
-// spnegoOutcomes is every WWW-Authenticate value gokrb5 sets, and so the set
-// that marks a response as an authentication outcome rather than a failure.
-var spnegoOutcomes = map[string]struct{}{
-	spnegoBareChallenge:  {},
-	spnegoContinueNeeded: {},
-	spnegoRejected:       {},
-	spnegoAccepted:       {},
-}
-
 // isSPNEGOOutcome reports whether a WWW-Authenticate value is one gokrb5 wrote.
 // Compared exactly, not by scheme: a session manager holds the same writer, so
 // a looser test would let it pass its own failure off as an outcome.
 func isSPNEGOOutcome(value string) bool {
-	_, ok := spnegoOutcomes[value]
-	return ok
+	switch value {
+	case spnegoBareChallenge, spnegoContinueNeeded, spnegoRejected, spnegoAccepted:
+		return true
+	default:
+		return false
+	}
 }
 
 // sessionManagerProbe wraps the caller's session manager so a New that refused
 // to persist is known from the error it returned, rather than inferred from a
 // response header the manager itself could have written. Get passes through.
 type sessionManagerProbe struct {
-	delegate service.SessionMgr
-	// Pointer because the probe is copied by value into gokrb5's settings, and
-	// a throttle copied with it would let every copy through its own first line.
-	signalLost *logThrottle
+	delegate   service.SessionMgr
+	signalLost logThrottle
 }
 
-// newSessionManagerProbe builds the probe with its throttle. Constructing the
-// struct directly leaves that nil, which panics on the path it reports on.
-func newSessionManagerProbe(delegate service.SessionMgr) sessionManagerProbe {
-	return sessionManagerProbe{
-		delegate:   delegate,
-		signalLost: &logThrottle{every: internalErrorLogEvery},
-	}
-}
-
-func (p sessionManagerProbe) New(w http.ResponseWriter, r *http.Request, k string, v []byte) error {
+func (p *sessionManagerProbe) New(w http.ResponseWriter, r *http.Request, k string, v []byte) error {
 	err := p.delegate.New(w, r, k, v)
 	if err != nil {
 		if reason := recordSessionFailure(w); reason != "" {
@@ -119,7 +103,7 @@ func recordSessionFailure(w http.ResponseWriter) string {
 
 const maxResponseWriterUnwraps = 8
 
-func (p sessionManagerProbe) Get(r *http.Request, k string) ([]byte, error) {
+func (p *sessionManagerProbe) Get(r *http.Request, k string) ([]byte, error) {
 	return p.delegate.Get(r, k) //nolint:wrapcheck // passed through to gokrb5 untouched
 }
 
@@ -184,25 +168,16 @@ func nowOr(fn func() time.Time) time.Time {
 // unauthenticated callers would otherwise control.
 const internalErrorLogEvery = 30 * time.Second
 
-// logThrottle runs at most one write per window. The write happens outside the
-// lock, so a slow sink cannot become latency on the request path.
+// logThrottle runs at most one write per internalErrorLogEvery. The write
+// happens outside the lock, so a slow sink cannot become latency on the
+// request path. The zero value is ready to use.
 type logThrottle struct {
-	every time.Duration
 	// nowFn is a test seam read without the mutex, which guards only last. Set
 	// it before the throttle is shared and leave it alone afterwards.
 	nowFn func() time.Time
 
 	mu   sync.Mutex
 	last time.Time
-}
-
-// window reports the throttle interval, defaulting rather than trusting a
-// non-positive value, which would let every event through.
-func (t *logThrottle) window() time.Duration {
-	if t.every <= 0 {
-		return internalErrorLogEvery
-	}
-	return t.every
 }
 
 // do runs write if the window has elapsed, and consumes the window when it
@@ -223,7 +198,7 @@ func (t *logThrottle) do(write func()) {
 func (t *logThrottle) claimWindow(now time.Time) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if now.Sub(t.last) < t.window() {
+	if now.Sub(t.last) < internalErrorLogEvery {
 		return false
 	}
 	t.last = now
@@ -248,6 +223,10 @@ type responseRecorder struct {
 	// Set by sessionManagerProbe: the one internal failure the middleware
 	// learns as a fact rather than reading back out of the response.
 	sessionFailed bool
+	// Set by the inner handler. Fields rather than locals the closure captures,
+	// which would force both to the heap on every request.
+	authenticated bool
+	identity      goidentity.Identity
 }
 
 func (r *responseRecorder) Header() http.Header {
@@ -348,12 +327,18 @@ func requestForSPNEGO(ctx fiber.Ctx, forSessionManager bool) *http.Request {
 			header.Set(fiber.HeaderCookie, cookies.String())
 		}
 	}
-	req := &http.Request{
+	// Request and URL allocated as one object: the URL stays per-request and
+	// writable, but costs no separate allocation on a path that never reads it.
+	var buf struct {
+		req http.Request
+		url url.URL
+	}
+	buf.req = http.Request{
 		// Not cloned: Fiber answers this from its own table of constants.
 		Method: ctx.Method(),
 		// Scheme at most, filled in below. gokrb5 never reads the URL, and the
 		// path is not faithfully reconstructible from here.
-		URL:    &url.URL{},
+		URL:    &buf.url,
 		Header: header,
 		// Not copied: net.Addr.String builds a new string every call.
 		RemoteAddr: fasthttpCtx.RemoteAddr().String(),
@@ -362,6 +347,7 @@ func requestForSPNEGO(ctx fiber.Ctx, forSessionManager bool) *http.Request {
 		// body to offer, so it is the empty one rather than nil.
 		Body: http.NoBody,
 	}
+	req := &buf.req
 	// Host, protocol, scheme, TLS and the context exist only for a session
 	// manager — gokrb5 reads none of them — and each costs a copy, a header walk
 	// or an allocation, so an ordinary request pays for none of it.
@@ -430,7 +416,7 @@ func serviceSettings(cfg Config) []func(*service.Settings) {
 		opts = append(opts, service.RequireHostAddr(true))
 	}
 	if cfg.SessionManager != nil {
-		opts = append(opts, service.SessionManager(newSessionManagerProbe(cfg.SessionManager)))
+		opts = append(opts, service.SessionManager(&sessionManagerProbe{delegate: cfg.SessionManager}))
 	}
 	// Clipped because every concurrent request shares this backing array. A
 	// gokrb5 that appended to it rather than to a fresh slice would be writing
@@ -479,8 +465,8 @@ func New(cfg Config) (fiber.Handler, error) {
 	// Internal failures are logged rather than returned to the client, and
 	// throttled separately: sharing one throttle would let a keytab line
 	// suppress a session-store line, and vice versa. A third lives on the probe.
-	lookupFailures := &logThrottle{every: internalErrorLogEvery}
-	handlerFailures := &logThrottle{every: internalErrorLogEvery}
+	lookupFailures := &logThrottle{}
+	handlerFailures := &logThrottle{}
 	// Return the middleware handler
 	return func(ctx fiber.Ctx) error {
 		if cfg.Next != nil && cfg.Next(ctx) {
@@ -513,17 +499,13 @@ func New(cfg Config) (fiber.Handler, error) {
 		}
 		req := requestForSPNEGO(ctx, forSessionManager)
 
-		var (
-			authenticated bool
-			identity      goidentity.Identity
-		)
 		recorder := &responseRecorder{}
 		// Records what SPNEGO decided and returns, deliberately not running the
 		// rest of the chain: gokrb5's stack is under the recover below, which must
 		// not swallow an application panic. gokrb5 does nothing after this returns.
 		inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-			authenticated = true
-			identity = goidentity.FromHTTPRequestContext(r)
+			recorder.authenticated = true
+			recorder.identity = goidentity.FromHTTPRequestContext(r)
 		})
 
 		// gokrb5 evaluates MechTypes[0] before Verify can reject the mechanisms
@@ -540,15 +522,15 @@ func New(cfg Config) (fiber.Handler, error) {
 			}
 			return &clientSafeError{cause: ErrSPNEGOHandlerFailed}
 		}
-		if authenticated {
+		if recorder.authenticated {
 			// SPNEGO wrote its accept-completed header before calling the inner
 			// handler; the client needs it to authenticate the server.
 			recorder.copyHeadersTo(ctx)
-			SetAuthenticatedIdentityToContext(ctx, identity)
+			SetAuthenticatedIdentityToContext(ctx, recorder.identity)
 			// Before ctx.Next, so a hook counting authentications is not ordered
 			// behind however long the rest of the chain takes.
 			if cfg.OnSuccess != nil {
-				cfg.OnSuccess(ctx, identity)
+				cfg.OnSuccess(ctx, recorder.identity)
 			}
 			return ctx.Next()
 		}

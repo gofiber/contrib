@@ -135,36 +135,40 @@ func NewMockKeytab(opts ...MockOption) (*keytab.Keytab, func(), error) {
 			return nil, nil, fmt.Errorf("error adding entry: %w", err)
 		}
 	}
-	var clean = func() {}
-	if len(opt.Filename) > 0 {
-		// Removed then created exclusively, not truncated: OpenFile applies its
-		// permission argument only on create, so writing a keytab into a path left
-		// at 0644 would hand the key out. O_EXCL leaves no wrong-mode window.
-		if err = defaultFileOperator.Remove(opt.Filename); err != nil && !os.IsNotExist(err) {
-			return nil, nil, fmt.Errorf("error removing existing file: %w", err)
-		}
-		file, err := defaultFileOperator.OpenFile(opt.Filename, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err != nil {
-			return nil, nil, fmt.Errorf("error opening file: %w", err)
-		}
-		clean = func() {
-			_ = defaultFileOperator.Remove(opt.Filename)
-		}
-		if _, writeErr := kt.Write(file); writeErr != nil {
-			// Its own variable: reusing err would lose the write error whenever
-			// the subsequent Close succeeds.
-			if closeErr := file.Close(); closeErr != nil {
-				clean()
-				return nil, nil, fmt.Errorf("error writing to file: %w (also failed to close file: %w)", writeErr, closeErr)
-			}
-			clean()
-			return nil, nil, fmt.Errorf("error writing to file: %w", writeErr)
-		}
-		if err = file.Close(); err != nil {
-			clean()
-			return nil, nil, fmt.Errorf("error closing file: %w", err)
-		}
-		return kt, clean, nil
+	if opt.Filename == "" {
+		return kt, func() {}, nil
+	}
+	// Removed then created exclusively, not truncated: OpenFile applies its
+	// permission argument only on create, so writing a keytab into a path left
+	// at 0644 would hand the key out. O_EXCL leaves no wrong-mode window.
+	if err = defaultFileOperator.Remove(opt.Filename); err != nil && !os.IsNotExist(err) {
+		return nil, nil, fmt.Errorf("error removing existing file: %w", err)
+	}
+	file, err := defaultFileOperator.OpenFile(opt.Filename, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return nil, nil, fmt.Errorf("error opening file: %w", err)
+	}
+	clean := func() { _ = defaultFileOperator.Remove(opt.Filename) }
+	if err = writeAndClose(kt, file); err != nil {
+		clean()
+		return nil, nil, err
 	}
 	return kt, clean, nil
+}
+
+// writeAndClose writes the keytab out and closes the file, reporting whichever
+// of the two failed. Close runs even when the write failed, and its error is
+// kept separately so a successful close cannot swallow the write's.
+func writeAndClose(kt *keytab.Keytab, file io.WriteCloser) error {
+	_, writeErr := kt.Write(file)
+	closeErr := file.Close()
+	switch {
+	case writeErr != nil && closeErr != nil:
+		return fmt.Errorf("error writing to file: %w (also failed to close file: %w)", writeErr, closeErr)
+	case writeErr != nil:
+		return fmt.Errorf("error writing to file: %w", writeErr)
+	case closeErr != nil:
+		return fmt.Errorf("error closing file: %w", closeErr)
+	}
+	return nil
 }

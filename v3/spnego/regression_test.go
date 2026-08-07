@@ -9,12 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -1357,7 +1359,7 @@ func TestServiceSettingsPassesOnlyWhatWasSet(t *testing.T) {
 		// known as a fact instead of being read back out of the response the
 		// manager itself was just holding. The caller's manager has to be
 		// reachable underneath, or nothing it stores would be stored.
-		probe, ok := settings.SessionManager().(sessionManagerProbe)
+		probe, ok := settings.SessionManager().(*sessionManagerProbe)
 		require.True(t, ok, "the session manager must be wrapped in the probe")
 		require.Same(t, manager, probe.delegate)
 		require.Same(t, logger, settings.Logger())
@@ -1981,7 +1983,7 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 // would notice.
 func TestLogThrottle(t *testing.T) {
 	now := time.Now()
-	throttle := &logThrottle{every: 30 * time.Second, nowFn: func() time.Time { return now }}
+	throttle := &logThrottle{nowFn: func() time.Time { return now }}
 	var runs int
 	fire := func() { throttle.do(func() { runs++ }) }
 
@@ -2011,7 +2013,6 @@ func TestLogThrottleZeroWindow(t *testing.T) {
 		throttle.do(func() { runs++ })
 	}
 	require.Equal(t, 1, runs)
-	require.Equal(t, internalErrorLogEvery, throttle.window())
 }
 
 // TestInternalErrorLogsOncePerFault checks the wiring: a repeating keytab
@@ -3404,7 +3405,7 @@ func (m *failingSessionManager) Get(*http.Request, string) ([]byte, error) {
 // validation, so recording it as a failure would turn a slow or broken session
 // cache into a 500 on every request — the exact opposite of degrading quietly.
 func TestSessionManagerProbeLeavesGetAlone(t *testing.T) {
-	probe := newSessionManagerProbe(&failingSessionManager{})
+	probe := &sessionManagerProbe{delegate: &failingSessionManager{}}
 	var recorder responseRecorder
 
 	_, err := probe.Get(httptest.NewRequest(http.MethodGet, "/", nil), "creds")
@@ -3419,7 +3420,7 @@ func TestSessionManagerProbeLeavesGetAlone(t *testing.T) {
 
 	// A New that succeeds records nothing.
 	var clean responseRecorder
-	ok := newSessionManagerProbe(&recordingSessionManager{})
+	ok := &sessionManagerProbe{delegate: &recordingSessionManager{}}
 	require.NoError(t, ok.New(&clean, httptest.NewRequest(http.MethodGet, "/", nil), "creds", nil))
 	require.False(t, clean.sessionFailed)
 }
@@ -3451,7 +3452,7 @@ func TestSessionManagerProbeSeesThroughAWrappedWriter(t *testing.T) {
 		inner:          wrappedWriter{ResponseWriter: httptest.NewRecorder(), inner: &recorder},
 	}
 
-	probe := newSessionManagerProbe(&failingSessionManager{})
+	probe := &sessionManagerProbe{delegate: &failingSessionManager{}}
 	err := probe.New(writer, httptest.NewRequest(http.MethodGet, "/", nil), "creds", nil)
 	require.ErrorIs(t, err, errSessionStoreDown)
 	require.True(t, recorder.sessionFailed, "the walk must reach the recorder through the wrappers")
@@ -3491,7 +3492,7 @@ func TestSessionManagerProbeSurvivesAForeignWriter(t *testing.T) {
 			flog.SetOutput(&logged)
 			t.Cleanup(func() { flog.SetOutput(os.Stderr) })
 
-			probe := newSessionManagerProbe(&failingSessionManager{})
+			probe := &sessionManagerProbe{delegate: &failingSessionManager{}}
 			done := make(chan error, 1)
 			go func() {
 				done <- probe.New(tc.writer, httptest.NewRequest(http.MethodGet, "/", nil), "creds", nil)
@@ -3582,7 +3583,7 @@ func TestSessionManagerProbeThrottlesItsDiagnostic(t *testing.T) {
 	// the pattern that becomes a race as soon as anyone drives the probe from
 	// a second goroutine, which other tests in this file do.
 	now := time.Now()
-	probe := newSessionManagerProbe(&failingSessionManager{})
+	probe := &sessionManagerProbe{delegate: &failingSessionManager{}}
 	probe.signalLost.nowFn = func() time.Time { return now }
 
 	for range 5 {
@@ -3612,7 +3613,7 @@ func TestSessionManagerProbeIsQuietWhenItFindsTheRecorder(t *testing.T) {
 	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
 
 	var recorder responseRecorder
-	probe := newSessionManagerProbe(&failingSessionManager{})
+	probe := &sessionManagerProbe{delegate: &failingSessionManager{}}
 	require.ErrorIs(t,
 		probe.New(&recorder, httptest.NewRequest(http.MethodGet, "/", nil), "creds", nil),
 		errSessionStoreDown)
@@ -3652,7 +3653,7 @@ func TestMergedKeytabIsSerialisable(t *testing.T) {
 // window's boundary is covered in TestKeytabStaleGraceExpires.
 func TestLogThrottleWindowBoundary(t *testing.T) {
 	now := time.Now()
-	throttle := &logThrottle{every: 30 * time.Second, nowFn: func() time.Time { return now }}
+	throttle := &logThrottle{nowFn: func() time.Time { return now }}
 	var runs int
 	fire := func() { throttle.do(func() { runs++ }) }
 
@@ -3884,4 +3885,37 @@ func TestDownstreamPanicIsNotCaught(t *testing.T) {
 	require.PanicsWithValue(t, "from the application", func() {
 		app.Handler()(fasthttpCtx)
 	}, "the panic must reach the caller unchanged, not become a 500")
+}
+
+// TestKeytabStatFailureSurfacesFromBothPaths covers the two places a failing
+// os.Stat can be reported from. The cache-hit path compares stamps in place via
+// statMatches, so a keytab that disappears after a successful load fails there;
+// a cache that never loaded has no snapshot to compare against and fails in the
+// slow path instead. Both must report the same sentinel, or revoking a keytab
+// would look like a different class of fault depending on cache state.
+func TestKeytabStatFailureSurfacesFromBothPaths(t *testing.T) {
+	t.Run("after a successful load", func(t *testing.T) {
+		dir := t.TempDir()
+		filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
+		cache := newKeytabFileCache([]string{filename})
+		good, err := cache.load()
+		require.NoError(t, err)
+		require.NotNil(t, good)
+
+		require.NoError(t, os.Remove(filename))
+
+		_, err = cache.load()
+		require.Error(t, err, "a deleted keytab must not be covered for by the cache")
+		require.ErrorIs(t, err, ErrLoadKeytabFileFailed)
+		require.ErrorIs(t, err, fs.ErrNotExist)
+	})
+
+	t.Run("with no snapshot to compare against", func(t *testing.T) {
+		cache := newKeytabFileCache([]string{filepath.Join(t.TempDir(), "absent.keytab")})
+
+		_, err := cache.load()
+		require.Error(t, err, "a keytab that never loaded must report the failure")
+		require.ErrorIs(t, err, ErrLoadKeytabFileFailed)
+		require.ErrorIs(t, err, fs.ErrNotExist)
+	})
 }
