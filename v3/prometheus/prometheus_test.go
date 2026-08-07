@@ -3815,6 +3815,14 @@ func TestConfigDefaultBucketsAreNotShared(t *testing.T) {
 	if resolved.RequestDurationBuckets[0] != want {
 		t.Fatalf("expected the defaults to survive, got %v", resolved.RequestDurationBuckets[0])
 	}
+
+	// The argument-less path starts from ConfigDefault so that a Next set there
+	// still gates the endpoint, which puts the edited slice back in reach: the
+	// bounds are no longer increasing, so a New that took them would panic.
+	if resolved := configDefault(); resolved.RequestDurationBuckets[0] != want {
+		t.Fatalf("expected the defaults to survive the argument-less call, got %v", resolved.RequestDurationBuckets[0])
+	}
+	New()
 }
 
 // TestRoutePatternTrailingSlashIsTrimmed pins the trimming that lets a SkipURIs
