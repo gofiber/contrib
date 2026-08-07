@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -30,6 +31,7 @@ func TestConfigDefaults(t *testing.T) {
 	requireEqual(t, defaultUITitle, cfg.UI.Title)
 	requireEqual(t, defaultUIDescription, cfg.UI.Description)
 	requireEqual(t, defaultUIFooter, cfg.UI.Footer)
+	requireEqual(t, "", cfg.UI.FaviconURL)
 	requireEqual(t, defaultGreenThreshold, cfg.UI.GreenThreshold)
 	requireEqual(t, defaultYellowThreshold, cfg.UI.YellowThreshold)
 }
@@ -47,6 +49,30 @@ func TestConfigZeroThresholdsUseDefaults(t *testing.T) {
 
 	requireEqual(t, defaultGreenThreshold, cfg.UI.GreenThreshold)
 	requireEqual(t, defaultYellowThreshold, cfg.UI.YellowThreshold)
+}
+
+func TestConfigFaviconURLs(t *testing.T) {
+	t.Parallel()
+
+	tests := []string{
+		"/assets/favicon.svg?v=1",
+		"http://127.0.0.1:8080/favicon.ico",
+		"https://cdn.example.com/favicon.png",
+		"HTTPS://cdn.example.com/favicon.svg",
+	}
+	for _, faviconURL := range tests {
+		faviconURL := faviconURL
+		t.Run(faviconURL, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizedTestConfig(t, Config{
+				ServiceID: "api",
+				UI: UIConfig{
+					FaviconURL: faviconURL,
+				},
+			})
+			requireEqual(t, faviconURL, cfg.UI.FaviconURL)
+		})
+	}
 }
 
 func TestConfigEndpointDefaults(t *testing.T) {
@@ -79,8 +105,9 @@ func TestConfigValidation(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		config Config
+		name    string
+		config  Config
+		wantErr error
 	}{
 		{name: "missing app", config: Config{ServiceID: "api"}},
 		{name: "missing service id", config: Config{}},
@@ -132,6 +159,36 @@ func TestConfigValidation(t *testing.T) {
 				UI: UIConfig{
 					GreenThreshold:  1,
 					YellowThreshold: 1.1,
+				},
+			},
+		},
+		{
+			name:    "favicon url scheme invalid",
+			wantErr: ErrInvalidFaviconURL,
+			config: Config{
+				ServiceID: "api",
+				UI: UIConfig{
+					FaviconURL: "javascript:alert(1)",
+				},
+			},
+		},
+		{
+			name:    "favicon url protocol relative",
+			wantErr: ErrInvalidFaviconURL,
+			config: Config{
+				ServiceID: "api",
+				UI: UIConfig{
+					FaviconURL: "//example.com/favicon.svg",
+				},
+			},
+		},
+		{
+			name:    "favicon url backslash authority",
+			wantErr: ErrInvalidFaviconURL,
+			config: Config{
+				ServiceID: "api",
+				UI: UIConfig{
+					FaviconURL: `/\example.com/favicon.svg`,
 				},
 			},
 		},
@@ -200,6 +257,9 @@ func TestConfigValidation(t *testing.T) {
 			}
 			_, err := tt.config.normalized()
 			requireError(t, err)
+			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
 		})
 	}
 }
@@ -231,6 +291,7 @@ func TestHandlerDashboardHTML(t *testing.T) {
 	requireEqual(t, fiber.StatusOK, resp.StatusCode)
 	requireEqual(t, fiber.MIMETextHTMLCharsetUTF8, resp.Header.Get(fiber.HeaderContentType))
 	requireContains(t, bodyText, "<title>Fiber Uptime</title>")
+	requireContains(t, html.UnescapeString(bodyText), `<link rel="icon" href="`+defaultUIFaviconURL+`">`)
 	requireContains(t, bodyText, `const apiPath = "/uptime/api/status";`)
 	requireContains(t, bodyText, `id="summary-services"`)
 	requireContains(t, bodyText, `id="summary-up"`)
@@ -249,6 +310,38 @@ func TestHandlerDashboardHTML(t *testing.T) {
 	requireNotContains(t, bodyText, `data-background=`)
 	requireNotContains(t, bodyText, `lang-toggle`)
 	requireNotContains(t, bodyText, `theme-toggle`)
+}
+
+func TestHandlerDashboardCustomFaviconURL(t *testing.T) {
+	t.Parallel()
+
+	const faviconURL = "/assets/favicon.svg?v=1"
+	up := newSnapshotUptimeWithConfig(newSnapshotStore(), Config{
+		ServiceID:      "api",
+		SampleInterval: time.Second,
+		UI: UIConfig{
+			FaviconURL: faviconURL,
+		},
+	})
+	app := newSnapshotApp(up)
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/uptime", nil))
+	requireNoError(t, err)
+	t.Cleanup(func() { requireNoError(t, resp.Body.Close()) })
+
+	body, err := io.ReadAll(resp.Body)
+	requireNoError(t, err)
+	requireContains(t, string(body), `<link rel="icon" href="/assets/favicon.svg?v=1">`)
+}
+
+func TestRenderDashboardHTMLSanitizesCustomFaviconURL(t *testing.T) {
+	t.Parallel()
+
+	body, err := renderDashboardHTML(Config{
+		UI: UIConfig{FaviconURL: "javascript:alert(1)"},
+	}, StatusResponse{}, "/uptime/api/status")
+	requireNoError(t, err)
+	requireContains(t, body, `<link rel="icon" href="#ZgotmplZ">`)
 }
 
 func TestHandlerHeadDashboard(t *testing.T) {
@@ -305,6 +398,25 @@ func TestHandlerStatusJSON(t *testing.T) {
 	requireLen(t, status.Services, 1)
 	requireEqual(t, "api", status.Services[0].ID)
 	requireEqual(t, "ok", status.Storage.Status)
+}
+
+func TestHandlerStatusJSONRedactsStorageError(t *testing.T) {
+	t.Parallel()
+
+	const sensitiveDetail = "postgres://app_user:secret@db-internal.prod.local/customerdb"
+	u := newSnapshotUptime(newSnapshotStore())
+	u.setLastError(errors.New(sensitiveDetail))
+	app := newSnapshotApp(u)
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/uptime/api/status", nil))
+	requireNoError(t, err)
+	t.Cleanup(func() { requireNoError(t, resp.Body.Close()) })
+
+	body, err := io.ReadAll(resp.Body)
+	requireNoError(t, err)
+	requireEqual(t, fiber.StatusOK, resp.StatusCode)
+	requireNotContains(t, string(body), sensitiveDetail)
+	requireContains(t, string(body), `"last_error":"`+storageErrorPublicLabel+`"`)
 }
 
 func TestHandlerStatusHead(t *testing.T) {
@@ -676,7 +788,7 @@ func TestBuildStatusDoesNotClearRuntimeError(t *testing.T) {
 	status, err := u.buildStatus(context.Background(), store.now)
 	requireNoError(t, err)
 	requireEqual(t, "degraded", status.Storage.Status)
-	requireContains(t, status.Storage.LastError, "write heartbeat failed")
+	requireEqual(t, storageErrorPublicLabel, status.Storage.LastError)
 
 	_, lastErr := u.lastError()
 	if !errors.Is(lastErr, runtimeErr) {
@@ -974,6 +1086,67 @@ func TestEndpointProbeSkipsHeartbeatOnUnexpectedStatus(t *testing.T) {
 	if len(store.today) != 0 {
 		t.Fatalf("endpoint failure wrote heartbeat rows: %+v", store.today)
 	}
+	requireEqual(t, 2, store.upsertServiceCalls)
+}
+
+func TestEndpointProbeFailureReportsServiceRefreshError(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	store := newSnapshotStore()
+	service := storage.Service{
+		ID:             "health",
+		Name:           "Health",
+		CreatedAt:      store.now.Add(-time.Hour),
+		SampleInterval: time.Second,
+	}
+	store.services = []storage.Service{service}
+	store.today = nil
+	cfg := normalizedTestConfig(t, Config{
+		Endpoints: []EndpointConfig{
+			{
+				ID:       "health",
+				URL:      server.URL,
+				Interval: time.Second,
+				Timeout:  time.Second,
+			},
+		},
+		DaysToShow:    1,
+		RetentionDays: 1,
+		Timezone:      time.UTC,
+	})
+
+	u := newSnapshotUptimeWithConfig(store, cfg)
+	u.httpClient = server.Client()
+	target := recordTarget{
+		service:  service,
+		instance: storage.Instance{ID: 7, ServiceID: "health"},
+		interval: service.SampleInterval,
+		probe:    newEndpointProbe(cfg.Endpoints[0]),
+	}
+	// Registration already happened, so only the post-probe refresh fails.
+	u.registeredTargets = map[string]struct{}{service.ID: {}}
+	upsertErr := errors.New("upsert service failed")
+	store.upsertServiceErr = upsertErr
+
+	err := u.recordTarget(context.Background(), target, store.now)
+	if !errors.Is(err, upsertErr) {
+		t.Fatalf("recordTarget error = %v, want %v", err, upsertErr)
+	}
+	requireEqual(t, 0, store.rollupCalls)
+
+	_, lastErr := u.lastError()
+	if !errors.Is(lastErr, upsertErr) {
+		t.Fatalf("last error = %v, want %v", lastErr, upsertErr)
+	}
+	status, statusErr := u.buildStatus(context.Background(), store.now)
+	requireNoError(t, statusErr)
+	requireEqual(t, "degraded", status.Storage.Status)
+	requireEqual(t, storageErrorPublicLabel, status.Storage.LastError)
 }
 
 func TestEndpointProbeFailureDoesNotClearStorageErrorWhenMaintenanceSkipped(t *testing.T) {
@@ -1031,7 +1204,7 @@ func TestEndpointProbeFailureDoesNotClearStorageErrorWhenMaintenanceSkipped(t *t
 	status, err := u.buildStatus(context.Background(), store.now)
 	requireNoError(t, err)
 	requireEqual(t, "degraded", status.Storage.Status)
-	requireContains(t, status.Storage.LastError, "write heartbeat failed")
+	requireEqual(t, storageErrorPublicLabel, status.Storage.LastError)
 }
 
 func TestCustomIDGenerator(t *testing.T) {
@@ -1164,6 +1337,7 @@ type snapshotStore struct {
 	today                  []storage.TodaySampleStatus
 	sampleSlots            map[string]map[int64]struct{}
 	writeHeartbeatErr      error
+	upsertServiceErr       error
 	initCalls              int
 	upsertServiceCalls     int
 	upsertInstanceCalls    int
@@ -1207,6 +1381,9 @@ func (s *snapshotStore) UpsertService(_ context.Context, service storage.Service
 	s.upsertServiceCalls++
 	if s.requireInitBeforeWrite && !s.initialized {
 		return errors.New("store used before init")
+	}
+	if s.upsertServiceErr != nil {
+		return s.upsertServiceErr
 	}
 	for i := range s.services {
 		if s.services[i].ID == service.ID {

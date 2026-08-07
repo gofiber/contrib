@@ -10,7 +10,7 @@ id: newrelic
 
 [New Relic](https://github.com/newrelic/go-agent) support for Fiber.
 
-Incoming request headers are forwarded to New Relic transactions by default. This enables distributed tracing header processing, but can also forward sensitive headers. Use `RequestHeaderFilter` to allowlist or redact headers as needed.
+Only the headers the New Relic agent itself consumes are forwarded to New Relic transactions by default: the distributed tracing headers (`traceparent`, `tracestate`, `newrelic`), the synthetic monitor headers (`X-NewRelic-Synthetics`, `X-NewRelic-Synthetics-Info`) and the queue timing headers (`X-Request-Start`, `X-Queue-Start`). Any other header, including W3C `baggage`, has to be opted into with `RequestHeaderFilter`. The default is exported as `DefaultRequestHeaderFilter`, so a custom filter can build on top of it instead of restating the allowlist.
 
 
 **Compatible with Fiber v3.**
@@ -31,6 +31,7 @@ go get -u github.com/gofiber/contrib/v3/newrelic
 ```go
 middleware.New(config middleware.Config) fiber.Handler
 middleware.FromContext(ctx any) *nr.Transaction     // nr "github.com/newrelic/go-agent/v3/newrelic"
+middleware.DefaultRequestHeaderFilter(key, value string) bool
 ```
 
 `FromContext` accepts a `fiber.Ctx`, `fiber.CustomCtx`, `*fasthttp.RequestCtx`, or a standard `context.Context` (e.g. the value returned by `c.Context()` when `PassLocalsToContext` is enabled). It returns an `*nr.Transaction` (a New Relic transaction from `github.com/newrelic/go-agent/v3/newrelic`).
@@ -46,7 +47,7 @@ middleware.FromContext(ctx any) *nr.Transaction     // nr "github.com/newrelic/g
 | Application            | `Application`    | Existing New Relic App                                      | `nil`                           |
 | ErrorStatusCodeHandler | `func(c fiber.Ctx, err error) int`    | If you want to change newrelic status code, you can use it. | `DefaultErrorStatusCodeHandler` |
 | Next                   | `func(c fiber.Ctx) bool`    | Next defines a function to skip this middleware when returned true.                                                           | `nil`                           |
-| RequestHeaderFilter    | `func(key, value string) bool`    | Return `true` to forward a request header to New Relic, `false` to skip it. | `nil` (forward all headers) |
+| RequestHeaderFilter    | `func(key, value string) bool`    | Return `true` to forward a request header to New Relic, `false` to skip it. | `DefaultRequestHeaderFilter` (distributed tracing, synthetics and queue timing headers only) |
 
 ## Usage
 
