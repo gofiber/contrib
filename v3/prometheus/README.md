@@ -463,5 +463,5 @@ nothing in your stack starts spans, and that work goes away.
 
 ## 📊 Result
 
-- Hit the default url at <http://localhost:3000>
-- Navigate to <http://localhost:3000/metrics>
+- Hit the default url at [http://localhost:3000](http://localhost:3000)
+- Navigate to [http://localhost:3000/metrics](http://localhost:3000/metrics)
