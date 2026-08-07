@@ -584,16 +584,17 @@ func (m *middleware) handle(ctx fiber.Ctx) error {
 }
 
 // skipRequested asks Config.Next whether to stand aside, reading a panic there as
-// "no". It runs before the handler chain, so an escaping panic would reach the
-// connection goroutine that neither fasthttp nor Fiber guards.
+// "yes". It runs before the handler chain, so an escaping panic would reach the
+// connection goroutine that neither fasthttp nor Fiber guards. Standing aside also
+// prevents a panic from accidentally exposing the metrics endpoint.
 func (m *middleware) skipRequested(ctx fiber.Ctx) (skip bool) {
 	defer func() {
 		if r := recover(); r != nil {
-			skip = false
+			skip = true
 			m.reportNextPanic.Do(func() {
 				if m.errorLog != nil {
 					m.errorLog.Println("prometheus middleware: Config.Next panicked; "+
-						"instrumenting the request anyway, reported only once:", r)
+						"skipping the middleware, reported only once:", r)
 				}
 			})
 		}
