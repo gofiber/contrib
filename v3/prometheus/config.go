@@ -191,8 +191,9 @@ var (
 	defaultResponseSizeBuckets    = []float64{256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152, 5242880}
 )
 
-// ConfigDefault holds the default middleware configuration. Copy it as a starting
-// point and treat it as read-only: the bucket slices are shared with every copy.
+// ConfigDefault holds the default middleware configuration. New uses it when no
+// Config is supplied. Copy it as a starting point and treat its bucket slices as
+// read-only because they are shared with every copy.
 var ConfigDefault = Config{
 	Namespace:           "http",
 	MetricsPath:         "/metrics",
@@ -219,9 +220,9 @@ func cloneBuckets(supplied, defaults []float64) []float64 {
 
 // configDefault fills in the defaults and copies the two things that outlive the
 // call: the bucket bounds, which client_golang aliases, and Labels, which New
-// writes "service" into. A missing config is the zero config.
+// writes "service" into.
 func configDefault(config ...Config) Config {
-	var cfg Config
+	cfg := ConfigDefault
 	if len(config) > 0 {
 		cfg = config[0]
 	}

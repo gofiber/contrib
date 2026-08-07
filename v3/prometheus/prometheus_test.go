@@ -2055,6 +2055,28 @@ func TestNewWithoutConfigUsesDefaults(t *testing.T) {
 	}
 }
 
+// TestNewWithoutConfigHonorsConfigDefault ensures package-level defaults such
+// as an access-control gate are not discarded by the argument-less call.
+func TestNewWithoutConfigHonorsConfigDefault(t *testing.T) {
+	original := ConfigDefault
+	ConfigDefault.Next = func(fiber.Ctx) bool { return true }
+	t.Cleanup(func() { ConfigDefault = original })
+
+	app := fiber.New()
+	app.Use(New())
+	app.Get("/metrics", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusForbidden)
+	})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/metrics", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("expected ConfigDefault.Next to pass the scrape downstream, got status %d", resp.StatusCode)
+	}
+}
+
 // nilRouteCtx reports a match without exposing a route, which DefaultCtx never
 // does but a Ctx supplied through fiber.NewWithCustomCtx may.
 type nilRouteCtx struct {
