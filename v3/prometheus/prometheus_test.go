@@ -321,6 +321,21 @@ func TestInFlightGaugeIsBalanced(t *testing.T) {
 	}
 }
 
+func TestInFlightMethodCardinalityIsBounded(t *testing.T) {
+	for i := range 1000 {
+		method := "ATTACK" + strconv.Itoa(i)
+		if got := inFlightMethod(method); got != "OTHER" {
+			t.Fatalf("expected arbitrary method %q to use OTHER, got %q", method, got)
+		}
+	}
+
+	for _, method := range fiber.DefaultMethods {
+		if got := inFlightMethod(method); got != method {
+			t.Fatalf("expected built-in method %q to be preserved, got %q", method, got)
+		}
+	}
+}
+
 func TestCustomHistogramBuckets(t *testing.T) {
 	cfg := Config{
 		RequestDurationBuckets: []float64{0.1, 0.2},

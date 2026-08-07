@@ -615,7 +615,7 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	method := ctx.Method()
 
 	if m.requestInFlight != nil {
-		inFlight := m.requestInFlight.WithLabelValues(method)
+		inFlight := m.requestInFlight.WithLabelValues(inFlightMethod(method))
 		inFlight.Inc()
 		defer inFlight.Dec()
 	}
@@ -752,6 +752,21 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	}
 
 	return nil
+}
+
+// inFlightMethod bounds the gauge's method label to Fiber's finite set of
+// built-in methods. Unlike the route metrics, this gauge is created before
+// routing, so retaining an arbitrary request method here would let remote
+// clients create an unbounded number of zero-valued time series.
+func inFlightMethod(method string) string {
+	switch method {
+	case fiber.MethodGet, fiber.MethodHead, fiber.MethodPost, fiber.MethodPut,
+		fiber.MethodDelete, fiber.MethodConnect, fiber.MethodOptions,
+		fiber.MethodTrace, fiber.MethodPatch, fiber.MethodQuery:
+		return method
+	default:
+		return "OTHER"
+	}
 }
 
 // exemplarFor returns the trace exemplar for this request, or nil when exemplars
