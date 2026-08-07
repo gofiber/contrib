@@ -50,9 +50,8 @@ type middleware struct {
 	errorLog          promhttp.Logger
 	reportNextPanic   sync.Once
 	reportLabelPanic  sync.Once
-	skipUnmatched     bool
 	exemplars         bool
-	trackUnmatched    bool
+	recordUnmatched   bool
 	records           bool
 	observes          bool
 }
@@ -189,7 +188,7 @@ func New(config ...Config) fiber.Handler {
 		dynamicLabels:     dynamic,
 		errorLog:          cfg.MetricsErrorLog,
 		exemplars:         !cfg.DisableExemplars,
-		trackUnmatched:    cfg.TrackUnmatchedRequests,
+		recordUnmatched:   cfg.TrackUnmatchedRequests,
 	}
 
 	skipAll := m.resolveFilters(cfg)
@@ -241,54 +240,37 @@ func New(config ...Config) fiber.Handler {
 		registerCollector(registry, collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}), cfg.MetricsErrorLog)
 	}
 
-	if enabled(MetricRequestsTotal) {
-		m.requestsTotal = promauto.With(registry).NewCounterVec(
-			prometheus.CounterOpts{
-				Name:        prometheus.BuildFQName(cfg.Namespace, cfg.Subsystem, string(MetricRequestsTotal)),
-				Help:        "Count all http requests by status code, method and path.",
-				ConstLabels: labels,
-			},
-			byStatusCode,
-		)
+	// One shape each, so the metric, its help and its buckets stay on one line and
+	// cannot be transposed between families.
+	newCounter := func(metric Metric, help string, labelNames []string) *prometheus.CounterVec {
+		if !enabled(metric) {
+			return nil
+		}
+		return promauto.With(registry).NewCounterVec(prometheus.CounterOpts{
+			Name:        prometheus.BuildFQName(cfg.Namespace, cfg.Subsystem, string(metric)),
+			Help:        help,
+			ConstLabels: labels,
+		}, labelNames)
 	}
 
-	if enabled(MetricRequestsStatusClassTotal) {
-		m.requestsByClass = promauto.With(registry).NewCounterVec(
-			prometheus.CounterOpts{
-				Name:        prometheus.BuildFQName(cfg.Namespace, cfg.Subsystem, string(MetricRequestsStatusClassTotal)),
-				Help:        "Count all http requests grouped by status class, method and path.",
-				ConstLabels: labels,
-			},
-			byStatusClass,
-		)
+	newHistogram := func(metric Metric, help string, buckets []float64) *prometheus.HistogramVec {
+		if !enabled(metric) {
+			return nil
+		}
+		return promauto.With(registry).NewHistogramVec(
+			histogramOpts(cfg, metric, help, labels, buckets), byStatusCode)
 	}
 
-	if enabled(MetricRequestDuration) {
-		m.requestDuration = promauto.With(registry).NewHistogramVec(
-			histogramOpts(cfg, MetricRequestDuration,
-				"Duration of all HTTP requests by status code, method and path.",
-				labels, cfg.RequestDurationBuckets),
-			byStatusCode,
-		)
-	}
-
-	if enabled(MetricRequestSize) {
-		m.requestSize = promauto.With(registry).NewHistogramVec(
-			histogramOpts(cfg, MetricRequestSize,
-				"Size of all HTTP requests by status code, method and path.",
-				labels, cfg.RequestSizeBuckets),
-			byStatusCode,
-		)
-	}
-
-	if enabled(MetricResponseSize) {
-		m.responseSize = promauto.With(registry).NewHistogramVec(
-			histogramOpts(cfg, MetricResponseSize,
-				"Size of all HTTP responses by status code, method and path.",
-				labels, cfg.ResponseSizeBuckets),
-			byStatusCode,
-		)
-	}
+	m.requestsTotal = newCounter(MetricRequestsTotal,
+		"Count all http requests by status code, method and path.", byStatusCode)
+	m.requestsByClass = newCounter(MetricRequestsStatusClassTotal,
+		"Count all http requests grouped by status class, method and path.", byStatusClass)
+	m.requestDuration = newHistogram(MetricRequestDuration,
+		"Duration of all HTTP requests by status code, method and path.", cfg.RequestDurationBuckets)
+	m.requestSize = newHistogram(MetricRequestSize,
+		"Size of all HTTP requests by status code, method and path.", cfg.RequestSizeBuckets)
+	m.responseSize = newHistogram(MetricResponseSize,
+		"Size of all HTTP responses by status code, method and path.", cfg.ResponseSizeBuckets)
 
 	if enabled(MetricRequestsInProgress) {
 		// Incremented before the router picks a handler, when the route pattern is still
@@ -329,7 +311,7 @@ func (m *middleware) resolveFilters(cfg Config) bool {
 		// fixup and kept as its own flag rather than a skipURIs key - the two namespaces
 		// must not collide. Deliberately not a "continue": an entry may mean both.
 		if strings.TrimRight(normalizePath(path), "*") == m.unmatchedLabel {
-			m.skipUnmatched = true
+			m.recordUnmatched = false
 		}
 
 		// Fiber's register prepends "/" to every pattern, so an entry without
@@ -659,11 +641,8 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		chainTime = time.Since(start)
 	}
 
-	routePath, matched, ok := m.routeLabel(ctx)
-
-	// SkipURIs holds route patterns, so it is consulted only for a matched request.
-	// Unmatched traffic carries a label instead and was filtered in routeLabel.
-	if !ok || (matched && m.skipped(routePath)) {
+	routePath, ok := m.pathLabel(ctx)
+	if !ok {
 		// Nothing will be recorded, so there is no status code to buy by taking over the
 		// error handler - and the two paths above that also stand aside return it too.
 		return chainErr
@@ -705,7 +684,16 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	// One buffer shared by every family: the metric vectors copy the values
 	// they are given, so element 0 can be swapped from the status code to the
 	// status class for the last counter.
-	values := make([]string, 3+len(m.dynamicLabels))
+	// Stack-backed for the label counts that fit. The slice provably does not
+	// escape - the metric vectors copy the values they are given - so the only
+	// reason it reached the heap was its length not being constant.
+	var stack [8]string
+	var values []string
+	if n := 3 + len(m.dynamicLabels); n <= len(stack) {
+		values = stack[:n]
+	} else {
+		values = make([]string, n)
+	}
 	values[0] = statusLabel(status)
 	values[1] = method
 	values[2] = routePath
@@ -721,44 +709,26 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	// installs a background context when none was set, costing an extra user value to
 	// clear on release. Skip it when every histogram family is disabled.
 	if m.observes {
-		var exemplarLabels prometheus.Labels
-		if m.exemplars {
-			spanCtx := trace.SpanContextFromContext(ctx.Context())
-			// Sampled, not merely valid: under head-based sampling every request has a
-			// valid trace ID, and one exemplar per bucket is overwritten on each
-			// observation, so unsampled traces would evict the links that lead somewhere.
-			if traceID := spanCtx.TraceID(); traceID.IsValid() && spanCtx.IsSampled() {
-				exemplarLabels = prometheus.Labels{"traceID": traceID.String()}
-			}
-		}
-
-		observe := func(observer prometheus.Observer, value float64) {
-			if exemplarLabels != nil {
-				if exemplarObserver, ok := observer.(prometheus.ExemplarObserver); ok {
-					exemplarObserver.ObserveWithExemplar(value, exemplarLabels)
-					return
-				}
-			}
-			observer.Observe(value)
-		}
+		exemplar := m.exemplarFor(ctx)
 
 		if m.requestDuration != nil {
-			observe(m.requestDuration.WithLabelValues(values...), elapsed)
+			observe(m.requestDuration.WithLabelValues(values...), elapsed, exemplar)
 		}
 
 		if m.requestSize != nil {
 			req := ctx.Request()
 			preParsedForm := bytes.HasPrefix(req.Header.ContentType(), multipartFormPrefix)
 
-			// Only the one path that falls back to the announced length consults
-			// the limit, so an ordinary request never pays for it.
+			// Read per request rather than cached: one handler may be mounted on two
+			// apps with different limits. Only the multipart path reaches it, so an
+			// ordinary request never pays for App.Config()'s by-value copy.
 			bodyLimit := 0
 			if preParsedForm {
-				bodyLimit = m.bodyLimitOf(ctx)
+				bodyLimit = ctx.App().Config().BodyLimit
 			}
 
 			if size, known := requestBodySize(req.Header.ContentLength(), bodyLimit, preParsedForm, req); known {
-				observe(m.requestSize.WithLabelValues(values...), size)
+				observe(m.requestSize.WithLabelValues(values...), size, exemplar)
 			}
 		}
 
@@ -767,9 +737,9 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 			// however much was written. bodyless covers what fasthttp decides
 			// for itself, which it does after this runs.
 			if bodyless(method, status) || resp.SkipBody {
-				observe(m.responseSize.WithLabelValues(values...), 0)
+				observe(m.responseSize.WithLabelValues(values...), 0, exemplar)
 			} else if size, known := responseBodySize(resp.Header.ContentLength(), resp); known {
-				observe(m.responseSize.WithLabelValues(values...), size)
+				observe(m.responseSize.WithLabelValues(values...), size, exemplar)
 			}
 		}
 	}
@@ -780,6 +750,35 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	}
 
 	return nil
+}
+
+// exemplarFor returns the trace exemplar for this request, or nil when exemplars
+// are off or the span is unsampled - one exemplar per bucket is overwritten on
+// each observation, so unsampled traces would evict the links that lead somewhere.
+func (m *middleware) exemplarFor(ctx fiber.Ctx) prometheus.Labels {
+	if !m.exemplars {
+		return nil
+	}
+
+	spanCtx := trace.SpanContextFromContext(ctx.Context())
+	if traceID := spanCtx.TraceID(); traceID.IsValid() && spanCtx.IsSampled() {
+		return prometheus.Labels{"traceID": traceID.String()}
+	}
+
+	return nil
+}
+
+// observe records value, attaching the exemplar when there is one and the
+// observer accepts them.
+func observe(observer prometheus.Observer, value float64, exemplar prometheus.Labels) {
+	if exemplar != nil {
+		if exemplarObserver, ok := observer.(prometheus.ExemplarObserver); ok {
+			exemplarObserver.ObserveWithExemplar(value, exemplar)
+			return
+		}
+	}
+
+	observer.Observe(value)
 }
 
 // resolveDynamicValues fills the dynamic part of the label buffer, reporting
@@ -895,13 +894,6 @@ func requestBodySize(contentLength, bodyLimit int, preParsedForm bool, p payload
 // multipartFormPrefix is the media type fasthttp parses before the chain runs.
 var multipartFormPrefix = []byte(fiber.MIMEMultipartForm)
 
-// bodyLimitOf returns the limit of the app currently serving the request. Read
-// every time rather than cached: one handler may be mounted on two apps, and the
-// laxer ceiling would permit exactly the inflation the limit prevents.
-func (m *middleware) bodyLimitOf(ctx fiber.Ctx) int {
-	return ctx.App().Config().BodyLimit
-}
-
 // responseBodySize reports the payload about to be sent and whether it could be
 // determined. The buffer is ground truth, since fasthttp recomputes Content-Length
 // from it; a body stream can only use the announced length.
@@ -951,10 +943,10 @@ func (m *middleware) skipped(routePath string) bool {
 	return false
 }
 
-// routeLabel returns the path label and whether the request should be recorded.
-// Matched requests are attributed to the route pattern, read after the chain runs;
-// unmatched ones need TrackUnmatchedRequests. See the README for the limitation.
-func (m *middleware) routeLabel(ctx fiber.Ctx) (path string, matched, ok bool) {
+// pathLabel returns the path label and whether the request should be recorded.
+// Owning both filters is what keeps the two namespaces apart: SkipURIs holds route
+// patterns and never reaches the unmatched label, which is a value.
+func (m *middleware) pathLabel(ctx fiber.Ctx) (string, bool) {
 	if ctx.Matched() {
 		// A registered route always carries a handler. DefaultCtx substitutes a synthetic
 		// Route holding the raw path, and a custom Ctx may return nil - taking either at
@@ -963,18 +955,12 @@ func (m *middleware) routeLabel(ctx fiber.Ctx) (path string, matched, ok bool) {
 			// Registration-time data, so no copy is needed - but a pattern built from
 			// external config can still hold raw bytes, and the resulting panic would
 			// land on the connection goroutine and take the process with it.
-			return validLabel(normalizePath(route.Path)), true, true
+			label := validLabel(normalizePath(route.Path))
+			return label, !m.skipped(label)
 		}
 	}
 
-	// Unmatched traffic is filtered here rather than through skipped(), which
-	// deals in route patterns: the label is a value, and a real route may be
-	// spelled the same without either filter reaching the other.
-	if !m.trackUnmatched || m.skipUnmatched {
-		return "", false, false
-	}
-
-	return m.unmatchedLabel, false, true
+	return m.unmatchedLabel, m.recordUnmatched
 }
 
 // statusClass maps a status code onto its "Nxx" class label.

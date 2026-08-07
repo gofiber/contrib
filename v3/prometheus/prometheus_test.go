@@ -33,6 +33,70 @@ import (
 
 var noTimeoutConfig = fiber.TestConfig{Timeout: 0}
 
+// get drives one GET through the app and discards the response.
+func get(t *testing.T, app *fiber.App, path string) {
+	t.Helper()
+
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
+		t.Fatalf("requesting %s: %v", path, err)
+	}
+}
+
+// expectNewPanic asserts that New rejects the config with a message naming want.
+func expectNewPanic(t *testing.T, cfg Config, want string) {
+	t.Helper()
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("expected New to panic with a message containing %q", want)
+		}
+		if msg := fmt.Sprint(r); !strings.Contains(msg, want) {
+			t.Fatalf("expected a panic containing %q, got %v", want, r)
+		}
+	}()
+
+	_ = New(cfg)
+}
+
+// requireEmptyRegistry asserts that nothing was registered.
+func requireEmptyRegistry(t *testing.T, registry *prometheus.Registry) {
+	t.Helper()
+
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("gathering from the registry: %v", err)
+	}
+	if len(families) != 0 {
+		t.Fatalf("expected an untouched registry, got %d families", len(families))
+	}
+}
+
+// getOpenMetrics scrapes with the OpenMetrics encoding negotiated.
+func getOpenMetrics(t *testing.T, app *fiber.App) string {
+	t.Helper()
+
+	req := httptest.NewRequest(fiber.MethodGet, "/metrics", nil)
+	req.Header.Set(fiber.HeaderAccept, openMetricsAccept)
+
+	resp, err := app.Test(req, noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("fetching OpenMetrics: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading the OpenMetrics body: %v", err)
+	}
+
+	return string(body)
+}
+
+const openMetricsAccept = "application/openmetrics-text; version=1.0.0; charset=utf-8"
+
 func getMetrics(t *testing.T, app *fiber.App, path string) string {
 	t.Helper()
 
@@ -76,9 +140,7 @@ func TestMiddlewareRecordsMetrics(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	payloadReq := httptest.NewRequest(fiber.MethodPost, "/payload", strings.NewReader("hello world"))
 	payloadReq.Header.Set("Content-Type", "text/plain")
@@ -146,9 +208,7 @@ func TestSkipURIs(t *testing.T) {
 	})
 
 	for _, path := range []string{"/skip", "/kept"} {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
-			t.Fatalf("requesting %s: %v", path, err)
-		}
+		get(t, app, path)
 	}
 
 	// getMetrics fails on a non-200, which matters here: every assertion below is a
@@ -190,9 +250,7 @@ func TestSkipStatusCodes(t *testing.T) {
 		t.Fatalf("expected status 401, got %d", resp.StatusCode)
 	}
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/allow", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/allow")
 
 	// Scrape through getMetrics and assert a positive, as in TestSkipURIs.
 	metrics := getMetrics(t, app, "")
@@ -254,9 +312,7 @@ func TestInFlightGaugeIsBalanced(t *testing.T) {
 	})
 
 	for _, path := range []string{"/deny", "/skip", "/ok", "/unmatched", "/deny", "/skip"} {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
-			t.Fatalf("unexpected request error for %s: %v", path, err)
-		}
+		get(t, app, path)
 	}
 
 	metrics := getMetrics(t, app, "")
@@ -362,9 +418,7 @@ func TestRoutesRefreshAfterInitialRequest(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/late", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error after registering route: %v", err)
-	}
+	get(t, app, "/late")
 
 	metrics = getMetrics(t, app, "")
 	if !strings.Contains(metrics, "http_requests_total{method=\"GET\",path=\"/late\",status_code=\"200\"}") {
@@ -386,9 +440,7 @@ func TestNextSkipsInstrumentation(t *testing.T) {
 	})
 
 	for _, path := range []string{"/healthz", "/kept"} {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
-			t.Fatalf("requesting %s: %v", path, err)
-		}
+		get(t, app, path)
 	}
 
 	// Scrape through getMetrics and assert a positive, as in TestSkipURIs.
@@ -408,9 +460,7 @@ func TestCustomMetricsPath(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	req := httptest.NewRequest(fiber.MethodGet, "/internal/metrics", nil)
 	resp, err := app.Test(req, noTimeoutConfig)
@@ -497,9 +547,7 @@ func TestCustomRegistry(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	metricsResp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/metrics", nil), noTimeoutConfig)
 	if err != nil {
@@ -557,12 +605,10 @@ func TestEnableOpenMetricsNegotiation(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	req := httptest.NewRequest(fiber.MethodGet, "/metrics", nil)
-	req.Header.Set("Accept", "application/openmetrics-text; version=1.0.0; charset=utf-8")
+	req.Header.Set("Accept", openMetricsAccept)
 
 	resp, err := app.Test(req, noTimeoutConfig)
 	if err != nil {
@@ -596,12 +642,10 @@ func TestEnableOpenMetricsTextCreatedSamples(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	req := httptest.NewRequest(fiber.MethodGet, "/metrics", nil)
-	req.Header.Set("Accept", "application/openmetrics-text; version=1.0.0; charset=utf-8")
+	req.Header.Set("Accept", openMetricsAccept)
 
 	resp, err := app.Test(req, noTimeoutConfig)
 	if err != nil {
@@ -627,9 +671,7 @@ func TestDisableCompression(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	req := httptest.NewRequest(fiber.MethodGet, "/metrics", nil)
 	req.Header.Set("Accept-Encoding", "gzip")
@@ -762,7 +804,7 @@ func TestSizeHistogramsIncludeTraceExemplars(t *testing.T) {
 	}
 
 	metricsReq := httptest.NewRequest(fiber.MethodGet, "/metrics", nil)
-	metricsReq.Header.Set("Accept", "application/openmetrics-text; version=1.0.0; charset=utf-8")
+	metricsReq.Header.Set("Accept", openMetricsAccept)
 	metricsResp, err := app.Test(metricsReq, noTimeoutConfig)
 	if err != nil {
 		t.Fatalf("fetching metrics: %v", err)
@@ -832,9 +874,7 @@ func TestParameterizedRoutesUseRoutePattern(t *testing.T) {
 	})
 
 	for _, path := range []string{"/user/42", "/user/1337", "/files/a/b.txt"} {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
-			t.Fatalf("unexpected request error for %s: %v", path, err)
-		}
+		get(t, app, path)
 	}
 
 	metrics := getMetrics(t, app, "")
@@ -919,9 +959,7 @@ func TestWrappedFiberErrorRespectsSkipStatusCodes(t *testing.T) {
 		return fmt.Errorf("looking up record: %w", fiber.ErrNotFound)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/missing", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/missing")
 
 	metrics := getMetrics(t, app, "")
 	if strings.Contains(metrics, "path=\"/missing\"") {
@@ -951,9 +989,7 @@ func TestMetricsPathConfig(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/metrics", nil), noTimeoutConfig)
 	if err != nil {
@@ -1072,9 +1108,7 @@ func TestDisabledMetricsRemovesFamilies(t *testing.T) {
 		return c.SendString("hi")
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	metrics := getMetrics(t, app, "")
 	for _, name := range []string{"http_request_size_bytes", "http_response_size_bytes"} {
@@ -1097,9 +1131,7 @@ func TestDisabledInProgressGauge(t *testing.T) {
 		return c.SendString("hi")
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	metrics := getMetrics(t, app, "")
 	if strings.Contains(metrics, "http_requests_in_progress") {
@@ -1150,9 +1182,7 @@ func TestSkipURIsPrefixWildcard(t *testing.T) {
 	}
 
 	for _, path := range []string{"/admin", "/admin/users", "/administration"} {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
-			t.Fatalf("unexpected request error for %s: %v", path, err)
-		}
+		get(t, app, path)
 	}
 
 	metrics := getMetrics(t, app, "")
@@ -1177,9 +1207,7 @@ func TestSkipURIsWildcardMatchesEverything(t *testing.T) {
 	})
 
 	for _, path := range []string{"/", "/deep/route"} {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
-			t.Fatalf("unexpected request error for %s: %v", path, err)
-		}
+		get(t, app, path)
 	}
 
 	metrics := getMetrics(t, app, "")
@@ -1201,9 +1229,7 @@ func TestSkipStatusClasses(t *testing.T) {
 	})
 
 	for _, path := range []string{"/ok", "/denied", "/gone"} {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
-			t.Fatalf("unexpected request error for %s: %v", path, err)
-		}
+		get(t, app, path)
 	}
 
 	metrics := getMetrics(t, app, "")
@@ -1265,9 +1291,7 @@ func TestDynamicLabelsPairNamesWithValues(t *testing.T) {
 		return c.SendString("hi")
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	metrics := getMetrics(t, app, "")
 	want := `http_requests_total{apex="one",method="GET",path="/hello",status_code="200",tenant="acme",zone="eu"}`
@@ -1357,9 +1381,7 @@ func newAppWithRegistry(t *testing.T, cfg Config) (*fiber.App, *prometheus.Regis
 		return c.SendString("hi")
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	return app, registry
 }
@@ -1420,9 +1442,7 @@ func TestShortCircuitRouteGuardKeepsRoutePattern(t *testing.T) {
 		return c.SendString("admin")
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/admin", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/admin")
 
 	metrics := getMetrics(t, app, "")
 	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/admin",status_code="401"}`) {
@@ -1441,9 +1461,7 @@ func TestSkipURIsAppliesToShortCircuitRouteGuard(t *testing.T) {
 		return c.SendString("admin")
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/admin", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/admin")
 
 	metrics := getMetrics(t, app, "")
 	if strings.Contains(metrics, "http_requests_total{") {
@@ -1463,9 +1481,7 @@ func TestFallThroughToTrailingMiddlewareUsesMountPath(t *testing.T) {
 		return c.SendString("trailing")
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/user/42", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/user/42")
 
 	metrics := getMetrics(t, app, "")
 	if !strings.Contains(metrics, `path="/"`) {
@@ -1484,9 +1500,7 @@ func TestRouteLevelMiddlewareKeepsRoutePattern(t *testing.T) {
 		return c.SendString("handled")
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/user/42", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/user/42")
 
 	metrics := getMetrics(t, app, "")
 	if !strings.Contains(metrics, `path="/user/:id"`) {
@@ -1514,9 +1528,7 @@ func TestWrappingRegistererWithMatchingGatherer(t *testing.T) {
 		return c.SendString("hi")
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	metrics := getMetrics(t, app, "")
 	if !strings.Contains(metrics, "app_http_requests_total") {
@@ -1592,9 +1604,7 @@ func TestSkipURIsMatchesWildcardRoutePattern(t *testing.T) {
 	})
 
 	for _, path := range []string{"/staticfoo", "/files/a.txt", "/keep"} {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
-			t.Fatalf("unexpected request error for %s: %v", path, err)
-		}
+		get(t, app, path)
 	}
 
 	metrics := getMetrics(t, app, "")
@@ -1653,9 +1663,7 @@ func TestSkipURIsIgnoresTrailingSlashAfterWildcard(t *testing.T) {
 	})
 
 	for _, path := range []string{"/admin/users", "/keep"} {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
-			t.Fatalf("unexpected request error for %s: %v", path, err)
-		}
+		get(t, app, path)
 	}
 
 	metrics := getMetrics(t, app, "")
@@ -1675,9 +1683,7 @@ func TestLabelsAreAttachedToEveryMetric(t *testing.T) {
 		return c.SendString("hi")
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	metrics := getMetrics(t, app, "")
 	for _, family := range []string{
@@ -1714,9 +1720,7 @@ func TestServiceOverridesLabelsCollision(t *testing.T) {
 		return c.SendString("hi")
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	metrics := getMetrics(t, app, "")
 	if !strings.Contains(metrics, `service="from-service"`) {
@@ -1733,9 +1737,7 @@ func TestNamespaceAndSubsystemPrefixMetricNames(t *testing.T) {
 		return c.SendString("hi")
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	metrics := getMetrics(t, app, "")
 	for _, name := range []string{
@@ -1765,9 +1767,7 @@ func TestGathererOnlyResolvesRegisterer(t *testing.T) {
 		return c.SendString("hi")
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	families, err := registry.Gather()
 	if err != nil {
@@ -1879,9 +1879,7 @@ func TestUnknownResponseSizeIsNotObserved(t *testing.T) {
 	})
 
 	for _, path := range []string{"/stream", "/sized"} {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
-			t.Fatalf("requesting %s: %v", path, err)
-		}
+		get(t, app, path)
 	}
 
 	metrics := getMetrics(t, app, "")
@@ -2006,9 +2004,7 @@ func TestSkipURIsWithoutLeadingSlash(t *testing.T) {
 	})
 
 	for _, path := range []string{"/hello", "/admin/users", "/kept"} {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
-			t.Fatalf("requesting %s: %v", path, err)
-		}
+		get(t, app, path)
 	}
 
 	metrics := getMetrics(t, app, "")
@@ -2032,9 +2028,7 @@ func TestNewWithoutConfigUsesDefaults(t *testing.T) {
 		return c.SendString("hi")
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	metrics := getMetrics(t, app, "")
 
@@ -2075,9 +2069,7 @@ func TestMatchedRequestWithoutRouteObeysTrackUnmatched(t *testing.T) {
 				return c.SendStatus(fiber.StatusOK)
 			})
 
-			if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-				t.Fatalf("unexpected request error: %v", err)
-			}
+			get(t, app, "/hello")
 
 			metrics := getMetrics(t, app, "")
 			recorded := strings.Contains(metrics, `path="/__unmatched__"`)
@@ -2115,17 +2107,7 @@ func TestConstantLabelCollisionPanics(t *testing.T) {
 func TestInvalidStatusClassPanics(t *testing.T) {
 	for _, class := range []string{"4x", "400", "6xx", "xx"} {
 		t.Run(class, func(t *testing.T) {
-			defer func() {
-				r := recover()
-				if r == nil {
-					t.Fatalf("expected a panic for the status class %q", class)
-				}
-				if msg := fmt.Sprint(r); !strings.Contains(msg, "status class") {
-					t.Fatalf("expected a status class panic, got %v", r)
-				}
-			}()
-
-			_ = New(Config{SkipStatusClasses: []string{class}})
+			expectNewPanic(t, Config{SkipStatusClasses: []string{class}}, "status class")
 		})
 	}
 }
@@ -2145,9 +2127,7 @@ func TestBlankSkipURIIsIgnored(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/")
 
 	metrics := getMetrics(t, app, "")
 	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/",status_code="200"}`) {
@@ -2162,9 +2142,7 @@ func TestExplicitRootSkipURI(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/")
 
 	metrics := getMetrics(t, app, "")
 	if strings.Contains(metrics, `path="/"`) {
@@ -2180,9 +2158,7 @@ func TestMetricsTimeoutServesScrape(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	metrics := getMetrics(t, app, "")
 	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/hello",status_code="200"}`) {
@@ -2349,9 +2325,7 @@ func TestBlankSkipStatusClassIsIgnored(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	metrics := getMetrics(t, app, "")
 	if !strings.Contains(metrics, `path="/hello"`) {
@@ -2371,9 +2345,7 @@ func TestSkipURIsTrimsWhitespace(t *testing.T) {
 	}
 
 	for _, path := range []string{"/health", "/ping"} {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
-			t.Fatalf("requesting %s: %v", path, err)
-		}
+		get(t, app, path)
 	}
 
 	metrics := getMetrics(t, app, "")
@@ -2398,9 +2370,7 @@ func TestUnknownStatusClassIsFilterable(t *testing.T) {
 				return c.Status(999).SendString("odd")
 			})
 
-			if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/odd", nil), noTimeoutConfig); err != nil {
-				t.Fatalf("unexpected request error: %v", err)
-			}
+			get(t, app, "/odd")
 
 			metrics := getMetrics(t, app, "")
 			recorded := strings.Contains(metrics, `status_class="unknown"`)
@@ -2414,17 +2384,7 @@ func TestUnknownStatusClassIsFilterable(t *testing.T) {
 // TestUnknownDisabledMetricPanics covers a mistyped family name, which would
 // otherwise disable nothing while the operator waits for a cardinality drop.
 func TestUnknownDisabledMetricPanics(t *testing.T) {
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected a panic for an unknown metric name")
-		}
-		if msg := fmt.Sprint(r); !strings.Contains(msg, "unknown metric") {
-			t.Fatalf("expected an unknown metric panic, got %v", r)
-		}
-	}()
-
-	_ = New(Config{DisabledMetrics: []Metric{"request_duration"}})
+	expectNewPanic(t, Config{DisabledMetrics: []Metric{"request_duration"}}, "unknown metric")
 }
 
 // TestInvalidSkipStatusCodePanics covers a code that is not three digits, which
@@ -2432,17 +2392,7 @@ func TestUnknownDisabledMetricPanics(t *testing.T) {
 func TestInvalidSkipStatusCodePanics(t *testing.T) {
 	for _, code := range []int{0, 99, 4040, -404} {
 		t.Run(strconv.Itoa(code), func(t *testing.T) {
-			defer func() {
-				r := recover()
-				if r == nil {
-					t.Fatalf("expected a panic for the status code %d", code)
-				}
-				if msg := fmt.Sprint(r); !strings.Contains(msg, "status code") {
-					t.Fatalf("expected a status code panic, got %v", r)
-				}
-			}()
-
-			_ = New(Config{SkipStatusCodes: []int{code}})
+			expectNewPanic(t, Config{SkipStatusCodes: []int{code}}, "status code")
 		})
 	}
 }
@@ -2497,9 +2447,7 @@ func TestRejectedConfigLeavesRegistryClean(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	metrics := getMetrics(t, app, "")
 	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/hello",status_code="200"}`) {
@@ -2583,9 +2531,7 @@ func TestBucketsAreCopiedFromConfig(t *testing.T) {
 	// Mutating the caller's slice must not reach the registered histogram.
 	buckets[0] = 1000
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	metrics := getMetrics(t, app, "")
 	if !strings.Contains(metrics, `http_request_duration_seconds_bucket{method="GET",path="/hello",status_code="200",le="1"}`) {
@@ -2605,9 +2551,7 @@ func TestUnmatchedRouteLabelIsTakenAsGiven(t *testing.T) {
 		UnmatchedRouteLabel:    "unmatched",
 	}, "")
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/nothing/here", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/nothing/here")
 
 	metrics := getMetrics(t, app, "")
 	if !strings.Contains(metrics, `path="unmatched"`) {
@@ -2665,12 +2609,10 @@ func TestDisableExemplarsSkipsContextRead(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/traced", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/traced")
 
 	metricsReq := httptest.NewRequest(fiber.MethodGet, "/metrics", nil)
-	metricsReq.Header.Set("Accept", "application/openmetrics-text; version=1.0.0; charset=utf-8")
+	metricsReq.Header.Set("Accept", openMetricsAccept)
 	metricsResp, err := app.Test(metricsReq, noTimeoutConfig)
 	if err != nil {
 		t.Fatalf("fetching metrics: %v", err)
@@ -2699,17 +2641,7 @@ func TestTypedNilRegistryPanics(t *testing.T) {
 		"gatherer":   {Gatherer: registry},
 	} {
 		t.Run(name, func(t *testing.T) {
-			defer func() {
-				r := recover()
-				if r == nil {
-					t.Fatal("expected a panic for a typed nil")
-				}
-				if msg := fmt.Sprint(r); !strings.Contains(msg, "typed nil") {
-					t.Fatalf("expected a typed nil panic, got %v", r)
-				}
-			}()
-
-			_ = New(cfg)
+			expectNewPanic(t, cfg, "typed nil")
 		})
 	}
 }
@@ -2727,17 +2659,7 @@ func TestInvalidBucketsPanicAtStartup(t *testing.T) {
 		"nan":                      {RequestDurationBuckets: []float64{1, nan, 3}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			defer func() {
-				r := recover()
-				if r == nil {
-					t.Fatal("expected the invalid buckets to be rejected by New")
-				}
-				if msg := fmt.Sprint(r); !strings.Contains(msg, "prometheus middleware:") {
-					t.Fatalf("expected the module's own panic, got %v", r)
-				}
-			}()
-
-			_ = New(cfg)
+			expectNewPanic(t, cfg, "prometheus middleware:")
 		})
 	}
 }
@@ -2763,17 +2685,7 @@ func TestReservedHistogramLabelPanics(t *testing.T) {
 		"dynamic":  {DynamicLabels: map[string]func(fiber.Ctx) string{"le": func(fiber.Ctx) string { return "x" }}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			defer func() {
-				r := recover()
-				if r == nil {
-					t.Fatal(`expected "le" to be rejected by New`)
-				}
-				if msg := fmt.Sprint(r); !strings.Contains(msg, "reserved label") {
-					t.Fatalf("expected a reserved label panic, got %v", r)
-				}
-			}()
-
-			_ = New(cfg)
+			expectNewPanic(t, cfg, "reserved label")
 		})
 	}
 }
@@ -2799,17 +2711,7 @@ func TestEmptyBucketsStayEmpty(t *testing.T) {
 // supplies that client_golang never sees at startup: it only reaches
 // WithLabelValues, on the first unmatched request.
 func TestInvalidUnmatchedRouteLabelPanics(t *testing.T) {
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected the invalid label to be rejected by New")
-		}
-		if msg := fmt.Sprint(r); !strings.Contains(msg, "UnmatchedRouteLabel") {
-			t.Fatalf("expected the panic to name the field, got %v", r)
-		}
-	}()
-
-	_ = New(Config{TrackUnmatchedRequests: true, UnmatchedRouteLabel: "bad-\xff\xfe"})
+	expectNewPanic(t, Config{TrackUnmatchedRequests: true, UnmatchedRouteLabel: "bad-\xff\xfe"}, "UnmatchedRouteLabel")
 }
 
 // TestPanickingDynamicLabelDropsSample pins that instrumentation cannot take the
@@ -2840,9 +2742,7 @@ func TestPanickingDynamicLabelDropsSample(t *testing.T) {
 		t.Fatalf("expected the response to be unaffected, got %d", resp.StatusCode)
 	}
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/set", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/set")
 
 	metrics := getMetrics(t, app, "")
 	if strings.Contains(metrics, `path="/tenanted"`) {
@@ -2885,9 +2785,7 @@ func TestSyntheticRouteIsNotARoutePattern(t *testing.T) {
 	})
 
 	for _, id := range []string{"42", "1337"} {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/user/"+id, nil), noTimeoutConfig); err != nil {
-			t.Fatalf("unexpected request error: %v", err)
-		}
+		get(t, app, "/user/"+id)
 	}
 
 	metrics := getMetrics(t, app, "")
@@ -3020,9 +2918,7 @@ func TestBodylessResponsesRecordNoPayload(t *testing.T) {
 	})
 
 	for _, path := range []string{"/100", "/204", "/304", "/ok"} {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
-			t.Fatalf("requesting %s: %v", path, err)
-		}
+		get(t, app, path)
 	}
 
 	metrics := getMetrics(t, app, "")
@@ -3052,9 +2948,7 @@ func TestStaleContentLengthDoesNotInflateSize(t *testing.T) {
 		return c.SendString("tiny")
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/stale", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/stale")
 
 	metrics := getMetrics(t, app, "")
 	if size := gaugeValue(t, metrics, `http_response_size_bytes_sum{method="GET",path="/stale",status_code="200"}`); size != 4 {
@@ -3076,26 +2970,10 @@ func TestInvalidConstantLabelValuePanicsBeforeRegistration(t *testing.T) {
 			cfg.Gatherer = registry
 
 			func() {
-				defer func() {
-					r := recover()
-					if r == nil {
-						t.Fatal("expected the invalid label value to be rejected")
-					}
-					if msg := fmt.Sprint(r); !strings.Contains(msg, "not valid UTF-8") {
-						t.Fatalf("expected a UTF-8 panic, got %v", r)
-					}
-				}()
-
-				_ = New(cfg)
+				expectNewPanic(t, cfg, "not valid UTF-8")
 			}()
 
-			families, err := registry.Gather()
-			if err != nil {
-				t.Fatalf("gathering after the rejected config: %v", err)
-			}
-			if len(families) != 0 {
-				t.Fatalf("expected the registry to be untouched, got %d families", len(families))
-			}
+			requireEmptyRegistry(t, registry)
 		})
 	}
 }
@@ -3171,13 +3049,7 @@ func TestInvalidNamesPanicBeforeRegistration(t *testing.T) {
 				_ = New(cfg)
 			}()
 
-			families, err := registry.Gather()
-			if err != nil {
-				t.Fatalf("gathering after the rejected config: %v", err)
-			}
-			if len(families) != 0 {
-				t.Fatalf("expected the registry to be untouched, got %d families", len(families))
-			}
+			requireEmptyRegistry(t, registry)
 		})
 	}
 }
@@ -3191,9 +3063,7 @@ func TestSkipAllExcludesTheInFlightGauge(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/a", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/a")
 
 	metrics := getMetrics(t, app, "")
 	if strings.Contains(metrics, "http_requests_in_progress") {
@@ -3212,9 +3082,7 @@ func TestBlankDisabledMetricIsIgnored(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	metrics := getMetrics(t, app, "")
 	for _, name := range []string{"http_requests_total", "http_request_duration_seconds", "http_requests_in_progress"} {
@@ -3238,22 +3106,10 @@ func TestReservedPrefixLabelNamePanics(t *testing.T) {
 			cfg.Gatherer = registry
 
 			func() {
-				defer func() {
-					r := recover()
-					if r == nil {
-						t.Fatal(`expected the "__" prefix to be rejected`)
-					}
-					if msg := fmt.Sprint(r); !strings.Contains(msg, "__") {
-						t.Fatalf("expected the panic to name the prefix, got %v", r)
-					}
-				}()
-
-				_ = New(cfg)
+				expectNewPanic(t, cfg, "__")
 			}()
 
-			if families, _ := registry.Gather(); len(families) != 0 {
-				t.Fatalf("expected the registry to be untouched, got %d families", len(families))
-			}
+			requireEmptyRegistry(t, registry)
 		})
 	}
 }
@@ -3271,9 +3127,7 @@ func TestDisabledMetricsTrimsWhitespace(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	metrics := getMetrics(t, app, "")
 	for _, name := range []string{"http_requests_total", "http_request_size_bytes"} {
@@ -3300,9 +3154,7 @@ func TestSkipURIMatchesSanitisedRoutePattern(t *testing.T) {
 	})
 
 	for _, path := range []string{"/caf%E9", "/kept"} {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
-			t.Fatalf("requesting %s: %v", path, err)
-		}
+		get(t, app, path)
 	}
 
 	metrics := getMetrics(t, app, "")
@@ -3333,18 +3185,10 @@ func TestSkipAllRegistersNoFamilies(t *testing.T) {
 			return c.SendStatus(fiber.StatusOK)
 		})
 
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/a", nil), noTimeoutConfig); err != nil {
-			t.Fatalf("unexpected request error: %v", err)
-		}
+		get(t, app, "/a")
 	}
 
-	families, err := registry.Gather()
-	if err != nil {
-		t.Fatalf("gathering: %v", err)
-	}
-	if len(families) != 0 {
-		t.Fatalf("expected no families to be registered, got %d", len(families))
-	}
+	requireEmptyRegistry(t, registry)
 }
 
 // TestLegacyNameValidationIsHonoured pins that the middleware applies
@@ -3376,9 +3220,7 @@ func TestLegacyNameValidationIsHonoured(t *testing.T) {
 				_ = New(cfg)
 			}()
 
-			if families, _ := registry.Gather(); len(families) != 0 {
-				t.Fatalf("expected the registry to be untouched, got %d families", len(families))
-			}
+			requireEmptyRegistry(t, registry)
 		})
 	}
 }
@@ -3460,17 +3302,7 @@ func TestMetricNamesValidatedWhenEverythingIsExcluded(t *testing.T) {
 	model.NameValidationScheme = model.LegacyValidation
 	t.Cleanup(func() { model.NameValidationScheme = previous })
 
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected the invalid namespace to be rejected")
-		}
-		if msg := fmt.Sprint(r); !strings.Contains(msg, "valid metric name") {
-			t.Fatalf("expected a metric name panic, got %v", r)
-		}
-	}()
-
-	_ = New(Config{Namespace: "my-app", SkipURIs: []string{"/*"}})
+	expectNewPanic(t, Config{Namespace: "my-app", SkipURIs: []string{"/*"}}, "valid metric name")
 }
 
 // TestInvalidNamespaceNamesTheSameMetricEveryTime pins the deterministic report.
@@ -3508,9 +3340,7 @@ func TestDoubledWildcardSkipsEverything(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/a", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/a")
 
 	metrics := getMetrics(t, app, "")
 	for _, name := range []string{"http_requests_total", "http_requests_in_progress"} {
@@ -3524,17 +3354,7 @@ func TestDoubledWildcardSkipsEverything(t *testing.T) {
 // caller set. ServiceName becomes the "service" label, so validating it only
 // after the merge would point at a key they never wrote.
 func TestInvalidServiceNamePanicsByName(t *testing.T) {
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected the invalid service name to be rejected")
-		}
-		if msg := fmt.Sprint(r); !strings.Contains(msg, "ServiceName") {
-			t.Fatalf("expected the panic to name ServiceName, got %v", r)
-		}
-	}()
-
-	_ = New(Config{ServiceName: "svc-\xff"})
+	expectNewPanic(t, Config{ServiceName: "svc-\xff"}, "ServiceName")
 }
 
 // TestMetricsPathIsTrimmed covers the trailing newline an environment variable
@@ -3560,9 +3380,7 @@ func TestDisabledDurationHistogram(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	metrics := getMetrics(t, app, "")
 	if strings.Contains(metrics, "http_request_duration_seconds") {
@@ -3591,9 +3409,7 @@ func TestDurationExcludesInstrumentationOverhead(t *testing.T) {
 		return c.SendString("ok")
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/fast", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/fast")
 
 	metrics := getMetrics(t, app, "")
 	series := `http_request_duration_seconds_sum{method="GET",path="/fast",slow="x",status_code="200"}`
@@ -3606,19 +3422,9 @@ func TestDurationExcludesInstrumentationOverhead(t *testing.T) {
 // where 1.1 was meant, which leaves a byte histogram bucketed in seconds - and an
 // infinity, which clears a naive test then degrades to the coarsest schema.
 func TestUnusableNativeHistogramFactorPanics(t *testing.T) {
-	for _, factor := range []float64{0.1, 1, math.NaN(), math.Inf(1), math.Inf(-1)} {
+	for _, factor := range []float64{-1, 0.1, 1, math.NaN(), math.Inf(1), math.Inf(-1)} {
 		t.Run(fmt.Sprint(factor), func(t *testing.T) {
-			defer func() {
-				r := recover()
-				if r == nil {
-					t.Fatalf("expected factor %v to be rejected", factor)
-				}
-				if msg := fmt.Sprint(r); !strings.Contains(msg, "NativeHistogramBucketFactor") {
-					t.Fatalf("expected the panic to name the field, got %v", r)
-				}
-			}()
-
-			_ = New(Config{NativeHistogramBucketFactor: factor})
+			expectNewPanic(t, Config{NativeHistogramBucketFactor: factor}, "NativeHistogramBucketFactor")
 		})
 	}
 }
@@ -3639,9 +3445,7 @@ func TestSkipURIsMatchesUnmatchedLabel(t *testing.T) {
 			})
 
 			for _, path := range []string{"/nothing/here", "/kept"} {
-				if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
-					t.Fatalf("requesting %s: %v", path, err)
-				}
+				get(t, app, path)
 			}
 
 			metrics := getMetrics(t, app, "")
@@ -3664,9 +3468,7 @@ func TestUnmatchedRouteLabelIsTrimmed(t *testing.T) {
 		UnmatchedRouteLabel:    "unmatched\n",
 	}, "")
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/nothing/here", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/nothing/here")
 
 	metrics := getMetrics(t, app, "")
 	if !strings.Contains(metrics, `path="unmatched"`) {
@@ -3747,12 +3549,10 @@ func TestUnsampledTraceProducesNoExemplar(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/traced", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/traced")
 
 	metricsReq := httptest.NewRequest(fiber.MethodGet, "/metrics", nil)
-	metricsReq.Header.Set("Accept", "application/openmetrics-text; version=1.0.0; charset=utf-8")
+	metricsReq.Header.Set("Accept", openMetricsAccept)
 	metricsResp, err := app.Test(metricsReq, noTimeoutConfig)
 	if err != nil {
 		t.Fatalf("fetching metrics: %v", err)
@@ -3788,9 +3588,7 @@ func TestSkipURIEntryFiltersBothMeanings(t *testing.T) {
 	})
 
 	for _, path := range []string{"/admin", "/kept", "/nothing/here"} {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
-			t.Fatalf("requesting %s: %v", path, err)
-		}
+		get(t, app, path)
 	}
 
 	metrics := getMetrics(t, app, "")
@@ -3803,19 +3601,6 @@ func TestSkipURIEntryFiltersBothMeanings(t *testing.T) {
 	if strings.Contains(metrics, `path="admin"`) {
 		t.Fatalf("expected unmatched traffic to be skipped, got %q", metrics)
 	}
-}
-
-// TestNegativeNativeHistogramFactorPanics covers the other side of zero: a
-// negative factor is neither 0 nor greater than 1, and client_golang treats it
-// exactly as it treats 0.1.
-func TestNegativeNativeHistogramFactorPanics(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("expected a negative factor to be rejected")
-		}
-	}()
-
-	_ = New(Config{NativeHistogramBucketFactor: -1})
 }
 
 // TestInflatedContentLengthIsNotRecorded covers the shape a client can send for
@@ -3874,9 +3659,7 @@ func TestZeroLengthStreamIsRecorded(t *testing.T) {
 		return c.SendStream(strings.NewReader(""), 0)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/empty-stream", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/empty-stream")
 
 	metrics := getMetrics(t, app, "")
 	series := `http_response_size_bytes_count{method="GET",path="/empty-stream",status_code="200"}`
@@ -3922,9 +3705,7 @@ func TestSkipURIsWildcardMatchesUnmatchedLabel(t *testing.T) {
 			})
 
 			for _, path := range []string{"/nothing/here", "/kept"} {
-				if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
-					t.Fatalf("requesting %s: %v", path, err)
-				}
+				get(t, app, path)
 			}
 
 			metrics := getMetrics(t, app, "")
@@ -3952,9 +3733,7 @@ func TestPrefixSkipDoesNotSwallowUnmatchedLabel(t *testing.T) {
 	})
 
 	for _, path := range []string{"/api/users", "/nothing/here"} {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
-			t.Fatalf("requesting %s: %v", path, err)
-		}
+		get(t, app, path)
 	}
 
 	metrics := getMetrics(t, app, "")
@@ -3975,9 +3754,7 @@ func TestServiceNameIsTrimmed(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/kept", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/kept")
 
 	metrics := getMetrics(t, app, "")
 	if !strings.Contains(metrics, `service="svc"`) {
@@ -4019,9 +3796,7 @@ func TestRoutePatternTrailingSlashIsTrimmed(t *testing.T) {
 	})
 
 	for _, path := range []string{"/trailing/", "/skipped/"} {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
-			t.Fatalf("requesting %s: %v", path, err)
-		}
+		get(t, app, path)
 	}
 
 	metrics := getMetrics(t, app, "")
@@ -4078,9 +3853,7 @@ func TestWildcardPrefixDoesNotSwallowUnmatchedLabel(t *testing.T) {
 	})
 
 	for _, path := range []string{"/api/users", "/kept", "/nothing/here"} {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
-			t.Fatalf("requesting %s: %v", path, err)
-		}
+		get(t, app, path)
 	}
 
 	metrics := getMetrics(t, app, "")
@@ -4108,9 +3881,7 @@ func TestExplicitEntryStillSkipsUnmatchedLabel(t *testing.T) {
 	})
 
 	for _, path := range []string{"/kept", "/nothing/here"} {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
-			t.Fatalf("requesting %s: %v", path, err)
-		}
+		get(t, app, path)
 	}
 
 	metrics := getMetrics(t, app, "")
@@ -4139,9 +3910,7 @@ func TestRealRouteAtUnmatchedLabelObeysPrefixRules(t *testing.T) {
 	})
 
 	for _, path := range []string{"/admin", "/admin/users", "/nothing/here"} {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
-			t.Fatalf("requesting %s: %v", path, err)
-		}
+		get(t, app, path)
 	}
 
 	metrics := getMetrics(t, app, "")
@@ -4168,32 +3937,12 @@ func TestUnmatchedLabelEntryIgnoresTrailingSlash(t *testing.T) {
 				SkipURIs:               []string{entry},
 			}, "")
 
-			if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/nothing/here", nil), noTimeoutConfig); err != nil {
-				t.Fatalf("unexpected request error: %v", err)
-			}
+			get(t, app, "/nothing/here")
 
 			if metrics := getMetrics(t, app, ""); strings.Contains(metrics, `path="/api"`) {
 				t.Fatalf("expected %q to filter unmatched traffic, got %q", entry, metrics)
 			}
 		})
-	}
-}
-
-// TestPrefixEntryDoesNotFilterUnmatchedLabel is the counterpart: a rule for the
-// routes below "/api" says nothing about a label spelled "/api".
-func TestPrefixEntryDoesNotFilterUnmatchedLabel(t *testing.T) {
-	app := newAppWithMiddleware(Config{
-		TrackUnmatchedRequests: true,
-		UnmatchedRouteLabel:    "/api",
-		SkipURIs:               []string{"/api/*"},
-	}, "")
-
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/nothing/here", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
-
-	if metrics := getMetrics(t, app, ""); !strings.Contains(metrics, `path="/api"`) {
-		t.Fatalf("expected unmatched traffic to be recorded, got %q", metrics)
 	}
 }
 
@@ -4206,9 +3955,7 @@ func TestNamespaceAndSubsystemAreTrimmed(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	metrics := getMetrics(t, app, "")
 	if !strings.Contains(metrics, "svc_api_requests_total") {
@@ -4231,9 +3978,7 @@ func TestPanickingDynamicLabelIsReported(t *testing.T) {
 		return c.SendString("ok")
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/tenanted", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/tenanted")
 
 	if logger.count() == 0 {
 		t.Fatal("expected the dropped sample to reach MetricsErrorLog")
@@ -4257,9 +4002,7 @@ func TestPanickingDynamicLabelIsReportedOnce(t *testing.T) {
 	})
 
 	for range 5 {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/tenanted", nil), noTimeoutConfig); err != nil {
-			t.Fatalf("unexpected request error: %v", err)
-		}
+		get(t, app, "/tenanted")
 	}
 
 	if lines := logger.count(); lines != 1 {
@@ -4324,9 +4067,7 @@ func TestPanickingNextAndLabelAreReportedSeparately(t *testing.T) {
 	})
 
 	for range 3 {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-			t.Fatalf("unexpected request error: %v", err)
-		}
+		get(t, app, "/hello")
 	}
 
 	if lines := logger.count(); lines != 2 {
@@ -4343,17 +4084,7 @@ func TestNegativeScrapeBoundsPanic(t *testing.T) {
 		"MetricsMaxRequestsInFlight": {MetricsMaxRequestsInFlight: -1},
 	} {
 		t.Run(field, func(t *testing.T) {
-			defer func() {
-				r := recover()
-				if r == nil {
-					t.Fatalf("expected a negative %s to be rejected", field)
-				}
-				if msg := fmt.Sprint(r); !strings.Contains(msg, field) {
-					t.Fatalf("expected the panic to name the field, got %v", r)
-				}
-			}()
-
-			_ = New(cfg)
+			expectNewPanic(t, cfg, field)
 		})
 	}
 }
@@ -4411,9 +4142,7 @@ func TestRuntimeCollectorFailureIsNotFatal(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	metrics := getMetrics(t, app, "")
 	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/hello",status_code="200"}`) {
@@ -4427,17 +4156,7 @@ func TestRuntimeCollectorFailureIsNotFatal(t *testing.T) {
 // TestInvalidErrorHandlingPanics covers a value outside promhttp's three: its
 // switch has no default, so the failure is served as if healthy.
 func TestInvalidErrorHandlingPanics(t *testing.T) {
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected an unknown error-handling mode to be rejected")
-		}
-		if msg := fmt.Sprint(r); !strings.Contains(msg, "MetricsErrorHandling") {
-			t.Fatalf("expected the panic to name the field, got %v", r)
-		}
-	}()
-
-	_ = New(Config{MetricsErrorHandling: promhttp.HandlerErrorHandling(9)})
+	expectNewPanic(t, Config{MetricsErrorHandling: promhttp.HandlerErrorHandling(9)}, "MetricsErrorHandling")
 }
 
 // TestDegenerateBucketsPanic covers bounds that leave a histogram with nothing
@@ -4475,9 +4194,7 @@ func TestExtendedGoCollectorIsTolerated(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/hello", nil), noTimeoutConfig); err != nil {
-		t.Fatalf("unexpected request error: %v", err)
-	}
+	get(t, app, "/hello")
 
 	metrics := getMetrics(t, app, "")
 	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/hello",status_code="200"}`) {
@@ -4582,9 +4299,7 @@ func TestSkipBodyResponseRecordsZero(t *testing.T) {
 	})
 
 	for _, path := range []string{"/suppressed", "/sent"} {
-		if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), noTimeoutConfig); err != nil {
-			t.Fatalf("unexpected request error for %s: %v", path, err)
-		}
+		get(t, app, path)
 	}
 
 	metrics := getMetrics(t, app, "")
@@ -4593,5 +4308,29 @@ func TestSkipBodyResponseRecordsZero(t *testing.T) {
 	}
 	if size := gaugeValue(t, metrics, `http_response_size_bytes_sum{method="GET",path="/sent",status_code="200"}`); size != 4096 {
 		t.Fatalf("expected the sent body to be recorded as 4096 bytes, got %v", size)
+	}
+}
+
+// TestManyDynamicLabelsOverflowTheStackBuffer covers a label count past the
+// fixed-size buffer instrument uses, which has to fall back to the heap.
+func TestManyDynamicLabelsOverflowTheStackBuffer(t *testing.T) {
+	dynamic := make(map[string]func(fiber.Ctx) string, 6)
+	for i := range 6 {
+		name := fmt.Sprintf("tenant%d", i)
+		dynamic[name] = func(fiber.Ctx) string { return name }
+	}
+
+	app := newAppWithMiddleware(Config{DynamicLabels: dynamic}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+	get(t, app, "/hello")
+
+	metrics := getMetrics(t, app, "")
+	want := `http_requests_total{method="GET",path="/hello",status_code="200",` +
+		`tenant0="tenant0",tenant1="tenant1",tenant2="tenant2",` +
+		`tenant3="tenant3",tenant4="tenant4",tenant5="tenant5"}`
+	if !strings.Contains(metrics, want) {
+		t.Fatalf("expected every dynamic label to survive the heap fallback, got %q", metrics)
 	}
 }
