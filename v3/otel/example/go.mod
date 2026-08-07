@@ -29,7 +29,7 @@ require (
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.73.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/contrib v1.44.0 // indirect
+	go.opentelemetry.io/contrib v1.45.0 // indirect
 	go.opentelemetry.io/otel/metric v1.45.0 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/net v0.57.0 // indirect
