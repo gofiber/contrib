@@ -64,6 +64,10 @@ type dynamicLabel struct {
 	fn   func(fiber.Ctx) string
 }
 
+// otherMethodLabel is the single method series every request the app is not
+// configured to route collapses onto - see inFlightMethod.
+const otherMethodLabel = "OTHER"
+
 // reservedLabels are the names Labels and DynamicLabels may not use: the four set
 // here, plus "le", which Prometheus keeps for histogram bucket bounds.
 var reservedLabels = map[string]struct{}{
@@ -615,7 +619,7 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	method := ctx.Method()
 
 	if m.requestInFlight != nil {
-		inFlight := m.requestInFlight.WithLabelValues(inFlightMethod(method))
+		inFlight := m.requestInFlight.WithLabelValues(inFlightMethod(ctx.App().Config().RequestMethods, method))
 		inFlight.Inc()
 		defer inFlight.Dec()
 	}
@@ -754,19 +758,18 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	return nil
 }
 
-// inFlightMethod bounds the gauge's method label to Fiber's finite set of
-// built-in methods. Unlike the route metrics, this gauge is created before
-// routing, so retaining an arbitrary request method here would let remote
-// clients create an unbounded number of zero-valued time series.
-func inFlightMethod(method string) string {
-	switch method {
-	case fiber.MethodGet, fiber.MethodHead, fiber.MethodPost, fiber.MethodPut,
-		fiber.MethodDelete, fiber.MethodConnect, fiber.MethodOptions,
-		fiber.MethodTrace, fiber.MethodPatch, fiber.MethodQuery:
+// inFlightMethod bounds the gauge's method label to the finite set of methods the
+// app is configured to route - Config.RequestMethods, which Fiber fills with its
+// built-ins when the caller leaves it unset, and which an app serving WebDAV or
+// another extension has already extended. Unlike the route metrics, this gauge is
+// created before routing, so retaining an arbitrary request method here would let
+// remote clients create an unbounded number of zero-valued time series; anything
+// the app cannot route - Fiber answers those with 501 - shares one series instead.
+func inFlightMethod(configured []string, method string) string {
+	if slices.Contains(configured, method) {
 		return method
-	default:
-		return "OTHER"
 	}
+	return otherMethodLabel
 }
 
 // exemplarFor returns the trace exemplar for this request, or nil when exemplars
