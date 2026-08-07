@@ -321,6 +321,50 @@ func TestInFlightGaugeIsBalanced(t *testing.T) {
 	}
 }
 
+func TestInFlightMethodCardinalityIsBounded(t *testing.T) {
+	for i := range 1000 {
+		method := "ATTACK" + strconv.Itoa(i)
+		if got := inFlightMethod(fiber.DefaultMethods, method); got != "OTHER" {
+			t.Fatalf("expected arbitrary method %q to use OTHER, got %q", method, got)
+		}
+	}
+
+	for _, method := range fiber.DefaultMethods {
+		if got := inFlightMethod(fiber.DefaultMethods, method); got != method {
+			t.Fatalf("expected built-in method %q to be preserved, got %q", method, got)
+		}
+	}
+}
+
+// TestInFlightMethodKeepsConfiguredMethods covers an app that extends Fiber's
+// method set: a method it routes has to keep its own series, so the gauge stays
+// joinable with the metric families that label the raw method.
+func TestInFlightMethodKeepsConfiguredMethods(t *testing.T) {
+	methods := append(slices.Clone(fiber.DefaultMethods), "PROPFIND")
+
+	if got := inFlightMethod(methods, "PROPFIND"); got != "PROPFIND" {
+		t.Fatalf("expected configured method PROPFIND to be preserved, got %q", got)
+	}
+	if got := inFlightMethod(methods, "PROPPATCH"); got != "OTHER" {
+		t.Fatalf("expected unconfigured method PROPPATCH to use OTHER, got %q", got)
+	}
+
+	app := fiber.New(fiber.Config{RequestMethods: methods})
+	app.Use(New(Config{}))
+	app.Add([]string{"PROPFIND"}, "/dav", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	if _, err := app.Test(httptest.NewRequest("PROPFIND", "/dav", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("requesting /dav: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, "http_requests_in_progress{method=\"PROPFIND\"}") {
+		t.Fatalf("expected an in-flight series for PROPFIND, got %q", metrics)
+	}
+}
+
 func TestCustomHistogramBuckets(t *testing.T) {
 	cfg := Config{
 		RequestDurationBuckets: []float64{0.1, 0.2},
