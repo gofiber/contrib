@@ -734,6 +734,144 @@ func TestPollingBatchedBinaryStopsAfterDisconnect(t *testing.T) {
 	}
 }
 
+// TestPollingEventRejectedBeforeConnect verifies that a Socket.IO EVENT
+// POSTed before the SIO CONNECT handshake is dropped and tears the
+// session down instead of invoking user handlers.
+func TestPollingEventRejectedBeforeConnect(t *testing.T) {
+	resetSIOGlobals(t)
+
+	fired := make(chan struct{}, 1)
+	disc := make(chan error, 1)
+	On("privilegedEvent", func(_ *EventPayload) {
+		select {
+		case fired <- struct{}{}:
+		default:
+		}
+	})
+	On(EventDisconnect, func(p *EventPayload) {
+		select {
+		case disc <- p.Error:
+		default:
+		}
+	})
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	_, st := pollPost(t, c, sid, []byte(`42["privilegedEvent",{"action":"admin"}]`))
+	require.Equal(t, http.StatusOK, st)
+
+	select {
+	case <-fired:
+		t.Fatal("event fired before connect")
+	case <-time.After(200 * time.Millisecond):
+	}
+	select {
+	case err := <-disc:
+		require.ErrorIs(t, err, ErrPollingBeforeConnect)
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected disconnect for pre-connect event")
+	}
+}
+
+// TestPollingBinaryRejectedBeforeConnect verifies that a binary polling
+// payload POSTed before the SIO CONNECT handshake is dropped and tears
+// the session down instead of surfacing as an EventMessage.
+func TestPollingBinaryRejectedBeforeConnect(t *testing.T) {
+	resetSIOGlobals(t)
+
+	msg := make(chan struct{}, 1)
+	disc := make(chan error, 1)
+	On(EventMessage, func(_ *EventPayload) {
+		select {
+		case msg <- struct{}{}:
+		default:
+		}
+	})
+	On(EventDisconnect, func(p *EventPayload) {
+		select {
+		case disc <- p.Error:
+		default:
+		}
+	})
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	_, st := pollPost(t, c, sid, []byte("baGVsbG8="))
+	require.Equal(t, http.StatusOK, st)
+
+	select {
+	case <-msg:
+		t.Fatal("binary message fired before connect")
+	case <-time.After(200 * time.Millisecond):
+	}
+	select {
+	case err := <-disc:
+		require.ErrorIs(t, err, ErrPollingBeforeConnect)
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected disconnect for pre-connect binary payload")
+	}
+}
+
+// TestPollingBatchedConnectAfterRejectIgnored verifies that a CONNECT
+// batched behind a pre-connect event in the same RS-separated POST body
+// is not processed: rejecting the first frame tears the session down, so
+// the parse loop stops and the user callback never runs for a client
+// that was already refused.
+func TestPollingBatchedConnectAfterRejectIgnored(t *testing.T) {
+	resetSIOGlobals(t)
+
+	fired := make(chan struct{}, 1)
+	connected := make(chan struct{}, 1)
+	callbackRan := make(chan struct{}, 1)
+	On("privilegedEvent", func(_ *EventPayload) {
+		select {
+		case fired <- struct{}{}:
+		default:
+		}
+	})
+	On(EventConnect, func(_ *EventPayload) {
+		select {
+		case connected <- struct{}{}:
+		default:
+		}
+	})
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {
+		select {
+		case callbackRan <- struct{}{}:
+		default:
+		}
+	})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+
+	body := append([]byte(`42["privilegedEvent",{"action":"admin"}]`), eioPacketSeparator)
+	body = append(body, []byte(`40`)...)
+	_, st := pollPost(t, c, sid, body)
+	require.Equal(t, http.StatusOK, st)
+
+	select {
+	case <-fired:
+		t.Fatal("event fired before connect")
+	case <-time.After(200 * time.Millisecond):
+	}
+	select {
+	case <-connected:
+		t.Fatal("batched CONNECT processed after pre-connect rejection")
+	default:
+	}
+	select {
+	case <-callbackRan:
+		t.Fatal("user callback ran for a rejected polling session")
+	default:
+	}
+}
+
 // TestPollingEmitWithAckRoundTrip verifies a server-initiated
 // EmitWithAck round-trips its callback id over polling: the event
 // frame is delivered on a GET, and the client's POST of the matching
