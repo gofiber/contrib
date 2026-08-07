@@ -254,8 +254,10 @@ the sample is dropped, the response is unaffected, and the drop is reported to
 a line per request would funnel every connection through the log sink. The
 middleware cannot do better than drop it, because these run after the handler
 chain has unwound, past any `recover` the application mounted. `Config.Next` is
-guarded the same way and treated as having returned false. Guard your type
-assertions rather than relying on either.
+guarded the same way, but treated as having returned true: the middleware stands
+aside, leaving the request — `MetricsPath` included — to the rest of the chain,
+rather than serving an endpoint the panicking filter may have meant to withhold.
+Guard your type assertions rather than relying on either.
 
 ### Filtering
 
