@@ -321,6 +321,50 @@ func TestInFlightGaugeIsBalanced(t *testing.T) {
 	}
 }
 
+func TestInFlightMethodCardinalityIsBounded(t *testing.T) {
+	for i := range 1000 {
+		method := "ATTACK" + strconv.Itoa(i)
+		if got := inFlightMethod(fiber.DefaultMethods, method); got != "OTHER" {
+			t.Fatalf("expected arbitrary method %q to use OTHER, got %q", method, got)
+		}
+	}
+
+	for _, method := range fiber.DefaultMethods {
+		if got := inFlightMethod(fiber.DefaultMethods, method); got != method {
+			t.Fatalf("expected built-in method %q to be preserved, got %q", method, got)
+		}
+	}
+}
+
+// TestInFlightMethodKeepsConfiguredMethods covers an app that extends Fiber's
+// method set: a method it routes has to keep its own series, so the gauge stays
+// joinable with the metric families that label the raw method.
+func TestInFlightMethodKeepsConfiguredMethods(t *testing.T) {
+	methods := append(slices.Clone(fiber.DefaultMethods), "PROPFIND")
+
+	if got := inFlightMethod(methods, "PROPFIND"); got != "PROPFIND" {
+		t.Fatalf("expected configured method PROPFIND to be preserved, got %q", got)
+	}
+	if got := inFlightMethod(methods, "PROPPATCH"); got != "OTHER" {
+		t.Fatalf("expected unconfigured method PROPPATCH to use OTHER, got %q", got)
+	}
+
+	app := fiber.New(fiber.Config{RequestMethods: methods})
+	app.Use(New(Config{}))
+	app.Add([]string{"PROPFIND"}, "/dav", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	if _, err := app.Test(httptest.NewRequest("PROPFIND", "/dav", nil), noTimeoutConfig); err != nil {
+		t.Fatalf("requesting /dav: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, "http_requests_in_progress{method=\"PROPFIND\"}") {
+		t.Fatalf("expected an in-flight series for PROPFIND, got %q", metrics)
+	}
+}
+
 func TestCustomHistogramBuckets(t *testing.T) {
 	cfg := Config{
 		RequestDurationBuckets: []float64{0.1, 0.2},
@@ -980,6 +1024,25 @@ func TestNextSkipsMetricsEndpoint(t *testing.T) {
 	}
 	if resp.StatusCode != fiber.StatusNotFound {
 		t.Fatalf("expected Next to gate the metrics endpoint, got status %d", resp.StatusCode)
+	}
+}
+
+func TestPanickingNextSkipsMetricsEndpoint(t *testing.T) {
+	app := newAppWithMiddleware(Config{
+		Next: func(_ fiber.Ctx) bool {
+			panic("bad request data")
+		},
+	}, "")
+	app.Get("/metrics", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusUnauthorized)
+	})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/metrics", nil), noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("expected a Next panic to leave the metrics endpoint gated, got status %d", resp.StatusCode)
 	}
 }
 
@@ -2052,6 +2115,28 @@ func TestNewWithoutConfigUsesDefaults(t *testing.T) {
 	}
 	if !strings.Contains(metrics, "go_goroutines") {
 		t.Fatalf("expected the Go collector to be registered by default, got %q", metrics)
+	}
+}
+
+// TestNewWithoutConfigHonorsConfigDefault ensures package-level defaults such
+// as an access-control gate are not discarded by the argument-less call.
+func TestNewWithoutConfigHonorsConfigDefault(t *testing.T) {
+	original := ConfigDefault
+	ConfigDefault.Next = func(fiber.Ctx) bool { return true }
+	t.Cleanup(func() { ConfigDefault = original })
+
+	app := fiber.New()
+	app.Use(New())
+	app.Get("/metrics", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusForbidden)
+	})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/metrics", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("expected ConfigDefault.Next to pass the scrape downstream, got status %d", resp.StatusCode)
 	}
 }
 
@@ -3793,6 +3878,14 @@ func TestConfigDefaultBucketsAreNotShared(t *testing.T) {
 	if resolved.RequestDurationBuckets[0] != want {
 		t.Fatalf("expected the defaults to survive, got %v", resolved.RequestDurationBuckets[0])
 	}
+
+	// The argument-less path starts from ConfigDefault so that a Next set there
+	// still gates the endpoint, which puts the edited slice back in reach: the
+	// bounds are no longer increasing, so a New that took them would panic.
+	if resolved := configDefault(); resolved.RequestDurationBuckets[0] != want {
+		t.Fatalf("expected the defaults to survive the argument-less call, got %v", resolved.RequestDurationBuckets[0])
+	}
+	New()
 }
 
 // TestRoutePatternTrailingSlashIsTrimmed pins the trimming that lets a SkipURIs
@@ -4024,7 +4117,8 @@ func TestPanickingDynamicLabelIsReportedOnce(t *testing.T) {
 
 // TestPanickingNextIsContained covers a Config.Next that panics. It runs before the
 // handler chain, so nothing downstream can catch it and the panic would reach the
-// connection goroutine and take the process with it.
+// connection goroutine and take the process with it. The middleware stands aside
+// because that is also the safe default for its potentially sensitive endpoint.
 func TestPanickingNextIsContained(t *testing.T) {
 	logger := &recordingLogger{}
 
@@ -4044,16 +4138,10 @@ func TestPanickingNextIsContained(t *testing.T) {
 			t.Fatalf("unexpected request error: %v", err)
 		}
 		if resp.StatusCode != fiber.StatusOK {
-			t.Fatalf("expected the request to be served, got %d", resp.StatusCode)
+			t.Fatalf("expected the downstream handler to serve the request, got %d", resp.StatusCode)
 		}
 	}
 
-	// Undecidable means instrument: dropping the sample would hide the traffic
-	// on top of hiding the fault.
-	metrics := getMetrics(t, app, "")
-	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/hello",status_code="200"} 3`) {
-		t.Fatalf("expected the requests to be instrumented anyway, got %q", metrics)
-	}
 	if lines := logger.count(); lines != 1 {
 		t.Fatalf("expected the repeated panic to be reported once, got %d lines", lines)
 	}
@@ -4068,7 +4156,10 @@ func TestPanickingNextAndLabelAreReportedSeparately(t *testing.T) {
 	app := newAppWithMiddleware(Config{
 		MetricsErrorLog: logger,
 		Next: func(c fiber.Ctx) bool {
-			return c.Locals("skip").(bool)
+			if c.Path() == "/next" {
+				panic("next")
+			}
+			return false
 		},
 		DynamicLabels: map[string]func(fiber.Ctx) string{
 			"tenant": func(c fiber.Ctx) string { return c.Locals("tenant").(string) },
@@ -4078,9 +4169,8 @@ func TestPanickingNextAndLabelAreReportedSeparately(t *testing.T) {
 		return c.SendString("hi")
 	})
 
-	for range 3 {
-		get(t, app, "/hello")
-	}
+	get(t, app, "/next")
+	get(t, app, "/hello")
 
 	if lines := logger.count(); lines != 2 {
 		t.Fatalf("expected each fault to be reported once, got %d lines", lines)

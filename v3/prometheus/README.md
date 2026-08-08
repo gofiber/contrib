@@ -63,7 +63,7 @@ prometheus.New(config ...prometheus.Config) fiber.Handler
 | SkipStatusCodes | `[]int` | Response status codes excluded from metrics. Codes are three digits; anything else panics. | `nil` |
 | SkipStatusClasses | `[]string` | Status classes excluded from metrics, `"1xx"` through `"5xx"` or `"unknown"`. Anything else panics. | `nil` |
 | DynamicLabels | `map[string]func(fiber.Ctx) string` | Extra labels computed per request. Names follow the same rules as `Labels`. A panicking function drops the sample. | `nil` |
-| Next | `func(fiber.Ctx) bool` | Skips the middleware when it returns true, including for `MetricsPath`. A panicking function is read as false. | `nil` |
+| Next | `func(fiber.Ctx) bool` | Skips the middleware when it returns true, including for `MetricsPath`. A panicking function is read as true. | `nil` |
 
 ## Default Config
 
@@ -254,8 +254,10 @@ the sample is dropped, the response is unaffected, and the drop is reported to
 a line per request would funnel every connection through the log sink. The
 middleware cannot do better than drop it, because these run after the handler
 chain has unwound, past any `recover` the application mounted. `Config.Next` is
-guarded the same way and treated as having returned false. Guard your type
-assertions rather than relying on either.
+guarded the same way, but treated as having returned true: the middleware stands
+aside, leaving the request — `MetricsPath` included — to the rest of the chain,
+rather than serving an endpoint the panicking filter may have meant to withhold.
+Guard your type assertions rather than relying on either.
 
 ### Filtering
 
@@ -463,5 +465,5 @@ nothing in your stack starts spans, and that work goes away.
 
 ## 📊 Result
 
-- Hit the default url at <http://localhost:3000>
-- Navigate to <http://localhost:3000/metrics>
+- Hit the default url at [http://localhost:3000](http://localhost:3000)
+- Navigate to [http://localhost:3000/metrics](http://localhost:3000/metrics)
