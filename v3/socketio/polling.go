@@ -511,6 +511,17 @@ func encodePollingFrames(frames [][]byte) []byte {
 // pipeline used by the WebSocket read loop, and responds with the
 // engine.io literal "ok" body.
 func ingestPolling(c fiber.Ctx, kws *Websocket) error {
+	// Serialise POSTs per session before the body is materialised, not
+	// after. Body() is not a free read of what fasthttp already holds: a
+	// Content-Encoding body is decompressed into a fresh buffer sized by
+	// the app's BodyLimit rather than PollingMaxBufferSize, and
+	// fiber.Config.Immutable copies even an identity body. Taking the gate
+	// first means overlapping POSTs for one session queue before paying
+	// for that buffer, so a hostile client cannot multiply it by firing
+	// requests in parallel while an earlier one sits in a callback.
+	kws.postGate.Lock()
+	defer kws.postGate.Unlock()
+
 	src := c.Body()
 	if PollingMaxBufferSize > 0 && len(src) > PollingMaxBufferSize {
 		// Tear the session down: matching the WebSocket SetReadLimit
@@ -531,12 +542,6 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 	// slices of body across goroutine boundaries.
 	body := make([]byte, len(src))
 	copy(body, src)
-
-	// Serialise POSTs per session so dispatched packets across
-	// overlapping POSTs preserve FIFO order. Held only for the parse
-	// loop; never across user-callback locks.
-	kws.postGate.Lock()
-	defer kws.postGate.Unlock()
 
 	// Any inbound HTTP body counts as proof of life for the heartbeat
 	// enforcer, mirroring the WebSocket read-loop behaviour at

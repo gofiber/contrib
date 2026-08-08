@@ -782,9 +782,10 @@ type Websocket struct {
 	// clients send POSTs sequentially, but a misbehaving or hostile
 	// client could fire two simultaneously; without serialisation the
 	// dispatch order across the two POSTs would race and break the
-	// per-session FIFO guarantee that user listeners rely on. Held only
-	// for the duration of ingestPolling's parse loop; never held across
-	// other locks.
+	// per-session FIFO guarantee that user listeners rely on. Held for
+	// the whole of ingestPolling - the body is materialised under it, so
+	// queued POSTs wait before allocating rather than after - but never
+	// held across other locks.
 	postGate sync.Mutex
 	// handshakeTimer is the time.AfterFunc scheduled by openPollingSession
 	// to enforce HandshakeTimeout on polling sessions. Stopped in
