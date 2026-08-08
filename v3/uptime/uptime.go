@@ -53,6 +53,7 @@ type runtime struct {
 	snapshotMu       sync.Mutex
 	snapshotCache    Snapshot
 	snapshotCachedAt time.Time
+	snapshotTTL      time.Duration
 	snapshotHasCache bool
 }
 

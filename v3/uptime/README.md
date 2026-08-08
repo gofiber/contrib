@@ -178,10 +178,20 @@ and expire on their own.
 
 ## Snapshots and custom UI
 
-The dashboard and JSON API share an in-memory snapshot for one sample interval,
-limiting backing-store work on public status routes. If a refresh fails, the
-last snapshot is served with degraded storage status. The same snapshot payload
-is available at `UI.Path + "/api/status"` for custom dashboards.
+The dashboard and JSON API share an in-memory snapshot, limiting backing-store
+work on public status routes. It is held for one `SampleInterval`, or for the
+shortest interval any service in it is tracked at when an endpoint is probed
+faster than that, so a snapshot is never served past the point where its own
+`current_status` would have changed.
+
+If a refresh fails, the last snapshot is served with `storage.status` set to
+`degraded` and the same fixed `last_error` label the live status uses; the
+backing store's own message goes to the log rather than the public payload. A
+failed refresh restarts the interval like a successful one, so an outage cannot
+turn every request into another attempt against the unavailable store.
+
+The same snapshot payload is available at `UI.Path + "/api/status"` for custom
+dashboards.
 
 ## Dashboard favicon
 

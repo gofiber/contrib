@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gofiber/contrib/v3/uptime/internal/storage"
+	fiberlog "github.com/gofiber/fiber/v3/log"
 )
 
 // Snapshot is the current uptime status payload used by the JSON API.
@@ -83,16 +84,10 @@ const (
 	storageErrorPublicLabel = "storage operation failed"
 )
 
-func (u *runtime) snapshot(ctx context.Context) (Snapshot, error) {
-	if u == nil {
-		return Snapshot{}, errors.New("uptime: nil runtime")
-	}
-	return u.buildStatus(ctx, time.Now())
-}
-
-// cachedSnapshot limits status requests to one store refresh per sample interval.
-// The previous value remains available when a refresh fails, preventing a
-// temporary store outage from taking down the public status endpoints.
+// cachedSnapshot limits status requests to one store refresh per cache
+// lifetime. The previous value remains available when a refresh fails,
+// preventing a temporary store outage from taking down the public status
+// endpoints.
 func (u *runtime) cachedSnapshot(ctx context.Context) (Snapshot, error) {
 	if u == nil {
 		return Snapshot{}, errors.New("uptime: nil runtime")
@@ -102,24 +97,52 @@ func (u *runtime) cachedSnapshot(ctx context.Context) (Snapshot, error) {
 	u.snapshotMu.Lock()
 	defer u.snapshotMu.Unlock()
 
-	if u.snapshotHasCache && now.Sub(u.snapshotCachedAt) < u.config.SampleInterval {
+	if u.snapshotHasCache && now.Sub(u.snapshotCachedAt) < u.snapshotTTL {
 		return cloneSnapshot(u.snapshotCache), nil
 	}
 
 	snapshot, err := u.buildStatus(ctx, now)
 	if err != nil {
-		if u.snapshotHasCache {
-			stale := cloneSnapshot(u.snapshotCache)
-			markSnapshotRefreshError(&stale, err, time.Now())
-			return stale, nil
+		if !u.snapshotHasCache {
+			return Snapshot{}, err
 		}
-		return Snapshot{}, err
+
+		// A failed attempt restarts the lifetime exactly like a successful one.
+		// Leaving snapshotCachedAt behind would send every later request back
+		// into buildStatus - each one holding snapshotMu across a call to the
+		// store that is already failing - and queue the public endpoints behind
+		// the outage this fallback exists to survive.
+		failedAt := time.Now()
+		fiberlog.Errorf("uptime: snapshot refresh failed, serving cached status: %v", err)
+		markSnapshotRefreshError(&u.snapshotCache, err, failedAt)
+		u.snapshotCachedAt = failedAt
+		return cloneSnapshot(u.snapshotCache), nil
 	}
 
 	u.snapshotCache = cloneSnapshot(snapshot)
 	u.snapshotCachedAt = now
+	u.snapshotTTL = snapshotLifetime(u.config.SampleInterval, snapshot)
 	u.snapshotHasCache = true
 	return cloneSnapshot(snapshot), nil
+}
+
+// snapshotLifetime reports how long a snapshot may be served. Endpoints carry
+// their own interval, which Config.SampleInterval neither bounds nor defaults
+// to, so the fastest service in the payload sets the pace: currentStatus turns
+// a service down two intervals after its last heartbeat, and caching past that
+// would keep reporting an endpoint up long after the snapshot itself stopped
+// agreeing.
+func snapshotLifetime(sampleInterval time.Duration, snapshot Snapshot) time.Duration {
+	lifetime := sampleInterval
+	for _, service := range snapshot.Services {
+		// Seconds are what the payload carries, and the normalized config floor
+		// is one second, so this only ever rounds an interval down.
+		interval := time.Duration(service.SampleIntervalSeconds) * time.Second
+		if interval > 0 && interval < lifetime {
+			lifetime = interval
+		}
+	}
+	return lifetime
 }
 
 func (u *runtime) buildStatus(ctx context.Context, now time.Time) (StatusResponse, error) {
@@ -215,12 +238,15 @@ func cloneSnapshot(in Snapshot) Snapshot {
 	return out
 }
 
+// markSnapshotRefreshError flags a served-stale snapshot as degraded. The store's
+// own message stays in the log: this payload is public, so it carries the same
+// fixed label storageStatus uses rather than whatever the backend reported.
 func markSnapshotRefreshError(snapshot *Snapshot, err error, at time.Time) {
 	if snapshot == nil || err == nil {
 		return
 	}
 	snapshot.Storage.Status = "degraded"
-	snapshot.Storage.LastError = err.Error()
+	snapshot.Storage.LastError = storageErrorPublicLabel
 	errorAt := at.UTC()
 	snapshot.Storage.LastErrorAt = &errorAt
 }

@@ -629,12 +629,12 @@ func TestSnapshotBuildsFreshStatus(t *testing.T) {
 	store := newSnapshotStore()
 	u := newSnapshotUptime(store)
 
-	first, err := u.snapshot(context.Background())
+	first, err := u.buildStatus(context.Background(), time.Now())
 	requireNoError(t, err)
 	requireLen(t, first.Services, 1)
 
 	store.services[0].Name = "Updated API"
-	second, err := u.snapshot(context.Background())
+	second, err := u.buildStatus(context.Background(), time.Now())
 	requireNoError(t, err)
 	requireLen(t, second.Services, 1)
 	requireEqual(t, "API", first.Services[0].Name)
@@ -645,6 +645,7 @@ func TestHandlerReusesSnapshotWithinSampleInterval(t *testing.T) {
 	t.Parallel()
 
 	store := newSnapshotStore()
+	store.services[0].SampleInterval = time.Minute
 	app := newSnapshotApp(newSnapshotUptimeWithConfig(store, Config{
 		ServiceID:      "api",
 		SampleInterval: time.Minute,
@@ -662,6 +663,45 @@ func TestHandlerReusesSnapshotWithinSampleInterval(t *testing.T) {
 	requireEqual(t, 1, store.listServicesCalls)
 }
 
+// TestCachedSnapshotExpiresWithFastestService pins that a service probed faster
+// than Config.SampleInterval sets the cache lifetime. Serving the global
+// interval would report it up long after currentStatus turned it down.
+func TestCachedSnapshotExpiresWithFastestService(t *testing.T) {
+	t.Parallel()
+
+	store := newSnapshotStore()
+	store.services = append(store.services, storage.Service{
+		ID:             "checkout",
+		Name:           "Checkout",
+		CreatedAt:      store.now.Add(-time.Hour),
+		LastSeenAt:     store.now,
+		SampleInterval: time.Second,
+	})
+	u := newSnapshotUptimeWithConfig(store, Config{
+		ServiceID:      "api",
+		SampleInterval: time.Hour,
+		DaysToShow:     1,
+		RetentionDays:  1,
+		Timezone:       time.UTC,
+	})
+
+	_, err := u.cachedSnapshot(context.Background())
+	requireNoError(t, err)
+	requireEqual(t, time.Second, u.snapshotTTL)
+
+	// Just inside the fastest interval the cache still answers; just outside it
+	// the store is consulted again, well before the configured hour is up.
+	u.snapshotCachedAt = time.Now().Add(-time.Millisecond)
+	_, err = u.cachedSnapshot(context.Background())
+	requireNoError(t, err)
+	requireEqual(t, 1, store.listServicesCalls)
+
+	u.snapshotCachedAt = time.Now().Add(-time.Second)
+	_, err = u.cachedSnapshot(context.Background())
+	requireNoError(t, err)
+	requireEqual(t, 2, store.listServicesCalls)
+}
+
 func TestCachedSnapshotServesStaleStatusAfterRefreshError(t *testing.T) {
 	t.Parallel()
 
@@ -670,13 +710,43 @@ func TestCachedSnapshotServesStaleStatusAfterRefreshError(t *testing.T) {
 	first, err := u.cachedSnapshot(context.Background())
 	requireNoError(t, err)
 
-	u.snapshotCachedAt = time.Now().Add(-u.config.SampleInterval)
+	u.snapshotCachedAt = time.Now().Add(-u.snapshotTTL)
 	store.fail = true
 	stale, err := u.cachedSnapshot(context.Background())
 	requireNoError(t, err)
 	requireEqual(t, first.GeneratedAt, stale.GeneratedAt)
 	requireEqual(t, "degraded", stale.Storage.Status)
-	requireContains(t, stale.Storage.LastError, "store failed")
+	// The backend's own message goes to the log, not to the public payload.
+	requireEqual(t, storageErrorPublicLabel, stale.Storage.LastError)
+}
+
+// TestCachedSnapshotThrottlesFailedRefreshes pins that a failed refresh restarts
+// the cache lifetime. Without it every request past the expiry would queue on
+// snapshotMu behind another synchronous call to the store that is already down.
+func TestCachedSnapshotThrottlesFailedRefreshes(t *testing.T) {
+	t.Parallel()
+
+	store := newSnapshotStore()
+	u := newSnapshotUptime(store)
+	_, err := u.cachedSnapshot(context.Background())
+	requireNoError(t, err)
+	requireEqual(t, 1, store.listServicesCalls)
+
+	u.snapshotCachedAt = time.Now().Add(-u.snapshotTTL)
+	store.fail = true
+	first, err := u.cachedSnapshot(context.Background())
+	requireNoError(t, err)
+	requireEqual(t, 2, store.listServicesCalls)
+
+	// The store stays broken, but the expiry has been pushed out, so the next
+	// requests are answered from the degraded copy without touching it.
+	for range 3 {
+		stale, err := u.cachedSnapshot(context.Background())
+		requireNoError(t, err)
+		requireEqual(t, "degraded", stale.Storage.Status)
+		requireEqual(t, first.GeneratedAt, stale.GeneratedAt)
+	}
+	requireEqual(t, 2, store.listServicesCalls)
 }
 
 func TestSnapshotReturnsStoreError(t *testing.T) {
@@ -686,7 +756,7 @@ func TestSnapshotReturnsStoreError(t *testing.T) {
 	u := newSnapshotUptime(store)
 	store.fail = true
 
-	_, err := u.snapshot(context.Background())
+	_, err := u.buildStatus(context.Background(), time.Now())
 	requireError(t, err)
 	requireContains(t, err.Error(), "store failed")
 }
