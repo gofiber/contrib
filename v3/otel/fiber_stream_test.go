@@ -2,18 +2,22 @@ package otel
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/static"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 func TestMiddleware_StaticAssetsDoNotHang(t *testing.T) {
@@ -135,6 +139,54 @@ func TestMiddleware_StreamedChunkedUploadIsNotRecycled(t *testing.T) {
 	require.False(t, streamNil, "request body stream was replaced or dropped")
 	require.Equal(t, uploadSize, bytesRead)
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+}
+
+// TestMiddleware_HeadStreamedResponseReportsNoBody covers responses whose headers
+// describe a body that is never written. A HEAD response keeps the Content-Length
+// a GET would have returned, so reading that header as bytes sent would report a
+// payload the client never received.
+func TestMiddleware_HeadStreamedResponseReportsNoBody(t *testing.T) {
+	t.Parallel()
+
+	const payloadSize = 2048
+
+	reader := metric.NewManualReader()
+
+	app := fiber.New()
+	app.Use(Middleware(WithMeterProvider(metric.NewMeterProvider(metric.WithReader(reader)))))
+	app.All("/stream", func(c fiber.Ctx) error {
+		return c.SendStream(bytes.NewReader(make([]byte, payloadSize)), payloadSize)
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodHead, "/stream", nil))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, strconv.Itoa(payloadSize), resp.Header.Get("Content-Length"))
+
+	body, readErr := io.ReadAll(resp.Body)
+	require.NoError(t, resp.Body.Close())
+	require.NoError(t, readErr)
+	require.Empty(t, body, "fasthttp must not write a body for HEAD")
+
+	metrics := metricdata.ResourceMetrics{}
+	require.NoError(t, reader.Collect(context.Background(), &metrics))
+
+	for _, scope := range metrics.ScopeMetrics {
+		for _, m := range scope.Metrics {
+			if m.Name != MetricNameHTTPServerResponseBodySize {
+				continue
+			}
+
+			histogram, ok := m.Data.(metricdata.Histogram[int64])
+			require.True(t, ok)
+			require.Len(t, histogram.DataPoints, 1)
+			require.Zero(t, histogram.DataPoints[0].Sum, "HEAD response reported a body it never sent")
+
+			return
+		}
+	}
+
+	t.Fatal("response body size metric not found")
 }
 
 func TestMiddleware_NotFoundPathDoesNotHang(t *testing.T) {

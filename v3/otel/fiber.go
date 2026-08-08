@@ -43,6 +43,23 @@ func bodyStreamSize(stream io.Reader) (int64, bool) {
 	return 0, false
 }
 
+// responseBodySuppressed reports whether fasthttp will send headers only, leaving
+// the body unwritten. Such a response still carries Content-Length describing the
+// body a GET would have returned, so that header must not be read as bytes sent.
+//
+// This mirrors fasthttp's own mustSkipBody rule. Response.SkipBody cannot be used
+// here because the server sets it only after the handler chain has returned.
+func responseBodySuppressed(c fiber.Ctx) bool {
+	if c.Method() == fiber.MethodHead {
+		return true
+	}
+
+	// 1xx, 204 and 304 responses must not include a message body.
+	status := c.Response().StatusCode()
+
+	return (status >= 100 && status < 200) || status == fiber.StatusNoContent || status == fiber.StatusNotModified
+}
+
 const (
 	tracerKey           = "gofiber-contrib-tracer-fiber"
 	instrumentationName = "github.com/gofiber/contrib/v3/otel"
@@ -220,7 +237,11 @@ func Middleware(opts ...Option) fiber.Handler {
 		responseSize := int64(0)
 		responseSizeKnown := false
 		isResponseBodyStream := response.IsBodyStream()
-		if isSSE {
+		if responseBodySuppressed(c) {
+			// No body reaches the client, whatever the headers advertise.
+			responseSize = 0
+			responseSizeKnown = true
+		} else if isSSE {
 			// skip size calculation for SSE streams
 		} else if isResponseBodyStream {
 			if contentLength := response.Header.ContentLength(); contentLength >= 0 {
