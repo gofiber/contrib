@@ -122,11 +122,8 @@ func TestNewSystemKeytabLookupFunc(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, fn)
 
-		// The resolved path is not exposed, so it is observed through a load:
-		// the failure names the file it tried. A host that really has a system
-		// keytab would load it instead, and is not a useful place to assert
-		// this, so the check is skipped there rather than made conditional on
-		// an outcome.
+		// The resolved path is not exposed, so it is observed through a load: the failure
+		// names the file it tried. Skipped on a host that really has a system keytab.
 		if _, statErr := os.Stat(DefaultSystemKeytabPath); statErr != nil {
 			_, loadErr := fn()
 			require.ErrorContains(t, loadErr, DefaultSystemKeytabPath,
@@ -135,10 +132,8 @@ func TestNewSystemKeytabLookupFunc(t *testing.T) {
 	})
 
 	t.Run("the default path is MIT Kerberos's standard location", func(t *testing.T) {
-		// Pinned as a literal because every other assertion here is written in
-		// terms of the constant and so holds whatever it says. This is exported
-		// API, and moving it silently relocates every host relying on the
-		// fallback.
+		// A literal, because every other assertion is written in terms of the constant.
+		// Exported API: moving it silently relocates every host relying on the fallback.
 		require.Equal(t, "/etc/krb5.keytab", DefaultSystemKeytabPath)
 	})
 

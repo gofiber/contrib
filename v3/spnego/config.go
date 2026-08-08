@@ -27,14 +27,12 @@ const contextKeyOfIdentity contextKey = "middleware.spnego.Identity"
 // when the KRB5_KTNAME environment variable is not set.
 const DefaultSystemKeytabPath = "/etc/krb5.keytab"
 
-// KeytabLookupFunc returns a keytab, so keys can come from a file, a secrets
-// manager or a database. It is called on every request the middleware handles,
-// unauthenticated ones included, so cache the result and refresh it out of band.
+// KeytabLookupFunc returns a keytab. Called on every request the middleware
+// handles, unauthenticated ones included, so cache and refresh out of band.
 type KeytabLookupFunc func() (*keytab.Keytab, error)
 
-// UnauthorizedHandler replaces SPNEGO's own response when a ticket is rejected.
-// It is not called for the opening challenge or a continuation token. SPNEGO's
-// headers are already set; removing WWW-Authenticate will break negotiation.
+// UnauthorizedHandler replaces SPNEGO's response when a ticket is rejected, but
+// not for the challenge legs. Removing WWW-Authenticate breaks negotiation.
 type UnauthorizedHandler func(ctx fiber.Ctx) error
 
 // Config holds the configuration for the SPNEGO middleware
@@ -116,50 +114,42 @@ type Config struct {
 	OnError func(ctx fiber.Ctx, err error)
 }
 
-// ConfigDefault is the zero Config, for callers who would rather start from a
-// named value. New reads the fields rather than this, so copying it is
-// supported and mutating it is not. Each field documents its own default.
+// ConfigDefault is the zero Config. New reads the fields rather than this, so
+// copying it is supported and mutating it is not.
 var ConfigDefault = Config{}
 
 // fileStamp identifies a keytab revision cheaply enough to check per request.
-// Identity is recorded where the platform exposes it, so a rename is caught even
-// when size and mtime were preserved. An in-place rewrite of the same length may
-// not be — rotate by rename.
+// An in-place rewrite at the same length and mtime may not be — rotate by rename.
 type fileStamp struct {
 	size    int64
 	modTime int64
 	id      fileID
 }
 
-// fileID is an opaque, comparable file identity, platform-specific and zero
-// where the platform exposes nothing. See the fileRevisionID implementations.
+// fileID is an opaque, comparable file identity; zero where unavailable.
 type fileID struct {
 	a uint64
 	b uint64
 }
 
-// keytabSnapshot is an immutable view of the merged keytab and the file
-// revisions it was built from, published as a unit so readers never see a
-// half-updated cache.
+// keytabSnapshot pairs the merged keytab with the revisions it was built from,
+// published as a unit so readers never see a half-updated cache.
 type keytabSnapshot struct {
 	stamps []fileStamp
 	merged *keytab.Keytab
 }
 
-// defaultKeytabStaleGrace bounds how long a keytab that no longer parses keeps
-// being served: long enough for a file caught mid-rewrite, short enough that a
-// rotation to a permanently corrupt keytab surfaces.
+// defaultKeytabStaleGrace bounds how long an unparsable keytab keeps being
+// served: long enough for a mid-rewrite read, short enough to surface a fault.
 const defaultKeytabStaleGrace = 30 * time.Second
 
 // errKeytabUnparsable marks a keytab that was read but could not be parsed.
 var errKeytabUnparsable = errors.New("keytab did not parse")
 
-// keytabRetryEvery bounds how often a revision already known to be unparsable
-// is re-read, so an outage does not re-read every file on every request.
+// keytabRetryEvery bounds how often a known-bad revision is re-read.
 const keytabRetryEvery = time.Second
 
-// degradedState records an episode in which the keytab on disk no longer
-// parses. All of it is guarded by keytabFileCache.mu.
+// degradedState records an episode of an unparsable keytab. Guarded by mu.
 type degradedState struct {
 	since        time.Time
 	stamps       []fileStamp
@@ -168,29 +158,24 @@ type degradedState struct {
 	expiryLogged bool
 }
 
-// keytabFileCache holds the merged keytab for a fixed set of files, reloading
-// only when one changes on disk.
-//
-// Episode lines are queued by announce under mu and written by emit once it is
-// released, so ordering between goroutines is not exact. A shared flush lock
-// fixed that and was removed: it stalled every request behind one slow sink.
+// keytabFileCache holds the merged keytab, reloading only when a file changes.
+// Episode lines are queued under mu and written after release, so not ordered.
 type keytabFileCache struct {
 	files      []string
 	staleGrace time.Duration
 	retryEvery time.Duration
 	nowFn      func() time.Time
 
-	// Read without holding mu so the cache-hit path does not serialise requests.
+	// Read without mu, so the cache-hit path does not serialise requests.
 	snapshot atomic.Pointer[keytabSnapshot]
-	// degraded mirrors whether deg is populated. The hit path reads it rather
-	// than writing, leaving this cache line clean for the snapshot readers.
+	// Mirrors deg.cause != nil. Read-only on the hit path, so the cache line
+	// stays clean for the concurrent snapshot readers.
 	degraded atomic.Bool
 
-	// mu guards reloads so the file I/O is done once, not once per waiter.
+	// Guards reloads, so the file I/O happens once, not once per waiter.
 	mu  sync.Mutex
 	deg degradedState
-	// queue holds this locked section's episode lines, oldest first. Guarded by
-	// mu; taken and cleared by emit.
+	// Episode lines from this locked section, oldest first; drained by emit.
 	queue []func()
 }
 
@@ -219,9 +204,8 @@ func (c *keytabFileCache) retry() time.Duration {
 	return c.retryEvery
 }
 
-// stat collects the current revision of every file. A file that cannot be
-// stat'ed is an error rather than a reason to serve the cache: that is how a
-// deleted or revoked keytab has to behave.
+// stat collects every file's current revision. A file that cannot be stat'ed is
+// an error, not a reason to serve the cache — that is how revocation works.
 func (c *keytabFileCache) stat() ([]fileStamp, error) {
 	stamps := make([]fileStamp, len(c.files))
 	for i, keytabFile := range c.files {
@@ -238,12 +222,10 @@ func (c *keytabFileCache) stat() ([]fileStamp, error) {
 	return stamps, nil
 }
 
-// statMatches reports whether every file still carries the recorded stamp,
-// without materialising a []fileStamp. Same number of os.Stat calls as stat —
-// it is the per-request slice the cache-hit path threw away that this avoids.
+// statMatches reports whether every file still carries the recorded stamp. Same
+// os.Stat count as stat, without the slice the hit path would throw away.
 func (c *keytabFileCache) statMatches(want []fileStamp) (bool, error) {
-	// No length guard: want always comes from a snapshot built by stat, which
-	// returns exactly one stamp per file, and c.files never changes.
+	// No length guard: want comes from a snapshot stat built, and c.files is fixed.
 	for i, keytabFile := range c.files {
 		info, err := os.Stat(keytabFile)
 		if err != nil {
@@ -260,8 +242,7 @@ func (c *keytabFileCache) statMatches(want []fileStamp) (bool, error) {
 // readAll re-reads and merges every keytab file. A parse failure is wrapped
 // with errKeytabUnparsable so the caller can tell it apart from an I/O failure.
 func (c *keytabFileCache) readAll() (*keytab.Keytab, error) {
-	// keytab.New rather than the zero value: it sets the format version that
-	// Marshal writes, so the merged keytab stays serialisable.
+	// keytab.New sets the format version Marshal writes; the zero value does not.
 	mergeKeytab := keytab.New()
 	for _, keytabFile := range c.files {
 		raw, err := os.ReadFile(keytabFile) //nolint:gosec // path comes from the caller's own configuration
@@ -270,9 +251,8 @@ func (c *keytabFileCache) readAll() (*keytab.Keytab, error) {
 		}
 		kt := keytab.New()
 		if err = kt.Unmarshal(raw); err != nil {
-			// gokrb5's message is dropped, not quoted: five branches in its
-			// keytab.go (:242, :449, :464, :480, :495 at v8.4.4) interpolate the
-			// bytes they were handed, which is the key. Re-check all five on upgrade.
+			// gokrb5's message is dropped, not quoted: five branches in its keytab.go
+			// (:242, :449, :464, :480, :495 at v8.4.4) interpolate the key bytes.
 			return nil, fmt.Errorf("%w: file %s load failed: %w (%d bytes read)",
 				ErrLoadKeytabFileFailed, keytabFile, errKeytabUnparsable, len(raw))
 		}
@@ -281,9 +261,8 @@ func (c *keytabFileCache) readAll() (*keytab.Keytab, error) {
 	return mergeKeytab, nil
 }
 
-// serveStale decides whether a keytab that no longer parses is covered for by
-// the last one that did: rewriting in place is not atomic, so a read can catch
-// a half-written file, but a lasting fault must surface. Callers hold mu.
+// serveStale covers an unparsable keytab with the last one that parsed, since a
+// read can catch a half-written file. A lasting fault still surfaces. Holds mu.
 func (c *keytabFileCache) serveStale(cause error, now time.Time) (*keytab.Keytab, error) {
 	snap := c.snapshot.Load()
 	if snap == nil {
@@ -291,11 +270,9 @@ func (c *keytabFileCache) serveStale(cause error, now time.Time) (*keytab.Keytab
 	}
 	if c.deg.since.IsZero() {
 		c.deg.since = now
-		// Once per episode, which begins only when the files change — so the
-		// rate is bounded by rotations, not by request volume.
+		// Once per episode, so the rate is bounded by rotations, not requests.
 		grace := c.grace()
-		// Quoted because the cause names the keytab file, and Unix allows a
-		// newline in a path, which would otherwise forge a log line.
+		// Quoted: the cause names a path, and Unix allows a newline in one.
 		detail := quoteForLog([]byte(cause.Error()))
 		c.announce(func() {
 			flog.Warnf("spnego: %s; serving the last keytab that parsed for up to %s", detail, grace)
@@ -305,8 +282,7 @@ func (c *keytabFileCache) serveStale(cause error, now time.Time) (*keytab.Keytab
 	if now.Sub(c.deg.since) > c.grace() {
 		if !c.deg.expiryLogged {
 			c.deg.expiryLogged = true
-			// Degraded to failing is the transition an operator most needs to
-			// see, so it gets its own line at error level.
+			// The transition an operator most needs, so it gets error level.
 			grace := c.grace()
 			detail := quoteForLog([]byte(cause.Error()))
 			c.announce(func() {
@@ -318,9 +294,8 @@ func (c *keytabFileCache) serveStale(cause error, now time.Time) (*keytab.Keytab
 	return snap.merged, nil
 }
 
-// clearDegraded ends the current episode and logs the recovery, so an operator
-// alerted by the warning gets a matching all-clear — at the same level, and
-// only for an episode that was announced. Callers hold mu.
+// clearDegraded ends the episode and logs an all-clear at the warning's level,
+// but only for an episode that announced one. Callers hold mu.
 func (c *keytabFileCache) clearDegraded() {
 	if c.deg.cause == nil {
 		c.degraded.Store(false)
@@ -333,15 +308,13 @@ func (c *keytabFileCache) clearDegraded() {
 	c.degraded.Store(false)
 }
 
-// endEpisodeIfCurrent closes an episode that resolved without a reload, which
-// happens when a keytab is restored with its original size and mtime. The
-// caller's stat may predate a rotation, so the files are re-stat'ed under mu.
+// endEpisodeIfCurrent closes an episode that resolved without a reload.
+// Re-stats under mu, since the caller's stat may predate a rotation.
 func (c *keytabFileCache) endEpisodeIfCurrent(expected []fileStamp) {
 	c.mu.Lock()
 	defer c.emit()
 	if c.deg.cause == nil {
-		// Another goroutine closed the episode. Purely an early-out:
-		// clearDegraded would find nothing to do either.
+		// Another goroutine closed it; clearDegraded would no-op anyway.
 		return
 	}
 	if fresh, err := c.stat(); err == nil && slices.Equal(fresh, expected) {
@@ -349,16 +322,14 @@ func (c *keytabFileCache) endEpisodeIfCurrent(expected []fileStamp) {
 	}
 }
 
-// announce queues an episode line to be written once mu is released. Queueing
-// rather than replacing means a second transition cannot drop the first's line.
-// Callers must hold mu.
+// announce queues an episode line for emit. Queueing rather than replacing
+// means a second transition cannot drop the first's line. Callers hold mu.
 func (c *keytabFileCache) announce(write func()) {
 	c.queue = append(c.queue, write)
 }
 
-// emit releases mu and writes whatever this locked section queued, oldest
-// first. Called with mu held, returns with it released. Clearing the queue
-// means a goroutine only ever writes its own lines.
+// emit releases mu and writes what this locked section queued, oldest first.
+// Called with mu held, returns with it released.
 func (c *keytabFileCache) emit() {
 	writes := c.queue
 	c.queue = nil
@@ -368,21 +339,19 @@ func (c *keytabFileCache) emit() {
 	}
 }
 
-// load returns the merged keytab, re-reading only when the files' revision
-// differs from the cached one. The pointer is stable while they are unchanged.
-// Detection is inexact (see fileStamp), so rotate by rename.
+// load returns the merged keytab, re-reading only when a file's revision
+// changed. Detection is inexact (see fileStamp), so rotate by rename.
 func (c *keytabFileCache) load() (*keytab.Keytab, error) {
-	// Compared in place rather than through stat: this runs on every request,
-	// and the slice stat builds is garbage the moment the comparison returns.
+	// Compared in place: this runs per request, and stat's slice is immediately
+	// garbage.
 	if snap := c.snapshot.Load(); snap != nil {
 		match, err := c.statMatches(snap.stamps)
 		if err != nil {
 			return nil, err
 		}
 		if match {
-			// Rare, and deliberately off the common path: an episode that ended
-			// without a reload still has to be closed out. snap.stamps is what
-			// the files were just found to carry, so no re-stat is needed here.
+			// Rare: an episode that ended without a reload still needs closing.
+			// snap.stamps is what the files were just found to carry.
 			if c.degraded.Load() {
 				c.endEpisodeIfCurrent(snap.stamps)
 			}
@@ -392,24 +361,21 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 	c.mu.Lock()
 	defer c.emit()
 	// Stat under the lock, and only here: stamps taken before it could pair one
-	// revision with another's bytes, clobbering a correct snapshot. The hit path
-	// above compares in place, so this is the only place a []fileStamp is built.
+	// revision with another's bytes, clobbering a correct snapshot.
 	stamps, err := c.stat()
 	if err != nil {
 		return nil, err
 	}
 	// Another goroutine may have reloaded while this one waited for the lock.
 	if snap := c.snapshot.Load(); snap != nil && slices.Equal(snap.stamps, stamps) {
-		// The revision on disk is the cached one again, so any episode is over.
-		// No re-stat needed: these stamps were taken under the lock.
+		// Back to the cached revision, so any episode is over.
 		c.clearDegraded()
 		return snap.merged, nil
 	}
 
 	now := nowOr(c.nowFn)
-	// This revision already failed recently, so do not re-read every file on
-	// every request while the fault lasts. The mutex still serialises them,
-	// which is not worth a second copy of this state to avoid.
+	// This revision failed recently; do not re-read every file per request while
+	// the fault lasts.
 	if c.deg.cause != nil && slices.Equal(c.deg.stamps, stamps) && now.Sub(c.deg.lastAttempt) < c.retry() {
 		if errors.Is(c.deg.cause, errKeytabUnparsable) {
 			return c.serveStale(c.deg.cause, now)
@@ -419,9 +385,8 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 
 	merged, err := c.readAll()
 	if err != nil {
-		// Recorded either way, so the retry throttle covers unreadable files
-		// too. deg.since is left alone: an episode is bounded by its first
-		// failure, so repeated bad writes cannot keep superseded keys alive.
+		// deg.since is left alone: an episode is bounded by its first failure, so
+		// repeated bad writes cannot keep superseded keys alive.
 		c.deg.stamps, c.deg.cause, c.deg.lastAttempt = stamps, err, now
 		c.degraded.Store(true)
 		if errors.Is(err, errKeytabUnparsable) {
@@ -434,13 +399,11 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 	return merged, nil
 }
 
-// NewKeytabFileLookupFunc returns a KeytabLookupFunc that loads and merges one
-// or more keytab files, caching the result until a file's size, modification
-// time or identity changes. At least one path is required, and none may be empty.
+// NewKeytabFileLookupFunc loads and merges keytab files, caching until one's
+// size, mtime or identity changes. At least one path, none empty.
 func NewKeytabFileLookupFunc(keytabFiles ...string) (KeytabLookupFunc, error) {
-	// An empty path is what an unset environment variable expands to. Refusing
-	// it here turns a configuration mistake into a startup error rather than a
-	// 500 on every request.
+	// An empty path is what an unset environment variable expands to; refusing
+	// it here fails at startup rather than on every request.
 	for _, keytabFile := range keytabFiles {
 		if keytabFile == "" {
 			return nil, ErrConfigInvalidOfAtLeastOneKeytabFileRequired
@@ -452,18 +415,13 @@ func NewKeytabFileLookupFunc(keytabFiles ...string) (KeytabLookupFunc, error) {
 	return newKeytabFileCache(keytabFiles).load, nil
 }
 
-// NewSystemKeytabLookupFunc loads the host's system keytab: KRB5_KTNAME when
-// set, otherwise DefaultSystemKeytabPath. MIT's optional "TYPE:residual" prefix
-// is accepted for FILE and WRFILE and rejected for the types that are not files.
-//
-// This is a keytab, not a credential cache: accepting SPNEGO needs the
-// service's long-term keys, so KRB5CCNAME cannot serve this role.
+// NewSystemKeytabLookupFunc loads KRB5_KTNAME, else DefaultSystemKeytabPath,
+// accepting MIT's "TYPE:" prefix for FILE and WRFILE. Not a credential cache.
 func NewSystemKeytabLookupFunc() (KeytabLookupFunc, error) {
 	keytabPath := os.Getenv("KRB5_KTNAME")
 	if keytabPath == "" {
 		keytabPath = DefaultSystemKeytabPath
 	}
-	// See resolveKeytabResidual for how the optional "TYPE:" prefix is handled.
 	resolved, err := resolveKeytabResidual(keytabPath)
 	if err != nil {
 		return nil, err
@@ -474,9 +432,8 @@ func NewSystemKeytabLookupFunc() (KeytabLookupFunc, error) {
 	return NewKeytabFileLookupFunc(resolved)
 }
 
-// resolveKeytabResidual strips a supported "TYPE:" prefix and rejects the known
-// MIT types that are not plain files. An unrecognised prefix is treated as part
-// of the path, so absolute paths, drive letters and relative names still work.
+// resolveKeytabResidual strips a supported "TYPE:" prefix and rejects the MIT
+// types that are not plain files. An unknown prefix is part of the path.
 func resolveKeytabResidual(name string) (string, error) {
 	prefix, residual, found := strings.Cut(name, ":")
 	if !found {
@@ -488,8 +445,7 @@ func resolveKeytabResidual(name string) (string, error) {
 	case "KEYRING", "MEMORY", "DIR", "ANY", "SRVTAB":
 		return "", fmt.Errorf("%w: %s", ErrUnsupportedKeytabResidualType, prefix)
 	default:
-		// The colon belongs to the name: an absolute path, a Windows drive
-		// letter such as C:\, or a relative name that simply contains one.
+		// The colon belongs to the name: a path, a drive letter such as C:\.
 		return name, nil
 	}
 }

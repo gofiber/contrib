@@ -14,15 +14,13 @@ import (
 
 func main() {
 	app := fiber.New()
-	// A temporary directory keeps key material out of the working directory.
-	// Use a real keytab file in production.
+	// A temp dir keeps key material out of the working directory. Use a real
+	// keytab in production.
 	tempDir, err := os.MkdirTemp("", "spnego-example")
 	if err != nil {
 		panic(fmt.Errorf("create temp dir failed: %w", err))
 	}
-	// panic rather than log.Fatalf here: Fatalf calls os.Exit, which would skip
-	// this cleanup. Other goroutines report and return instead, since a panic
-	// there would skip main's defers too.
+	// panic, not log.Fatalf: Fatalf calls os.Exit and would skip this cleanup.
 	defer func() { _ = os.RemoveAll(tempDir) }()
 	keytabPath := filepath.Join(tempDir, "temp-sso.keytab")
 	_, clean, err := utils.NewMockKeytab(
@@ -65,9 +63,8 @@ func main() {
 	log.Info("Server is running on sso.example.local:3000")
 	go func() {
 		<-time.After(time.Second * 1)
-		// -u : is not optional: curl activates its Negotiate code only when a
-		// credential option is present, and an empty user:password is how you
-		// say "use the ticket cache".
+		// -u : is not optional: curl enables Negotiate only with a credential
+		// option, and an empty user:password means "use the ticket cache".
 		fmt.Println("use curl -kv --negotiate -u : http://sso.example.local:3000/protected/resource")
 		fmt.Println("Note: In /etc/hosts, sso.example.local must be bound to a LAN address; 127.0.0.1 won't work.")
 		fmt.Println("if response is 401, execute `klist` to check your Kerberos session")

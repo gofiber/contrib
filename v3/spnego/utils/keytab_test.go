@@ -46,10 +46,8 @@ func TestGetKeytabInfo(t *testing.T) {
 	require.Equal(t, tm.Add(-time.Minute).Unix(), info[1].Pairs[0].CreateTime.Unix())
 }
 
-// TestPrincipalNameCarriesTheRealm states the relationship between the two
-// fields as a rule rather than leaving it implicit in the literals above. The
-// godoc example used to print "%s@%s" of both, which renders the realm twice;
-// the fields are only safe to document once this is what they mean.
+// TestPrincipalNameCarriesTheRealm states the relationship as a rule. The godoc
+// example used to print "%s@%s" of both fields, rendering the realm twice.
 func TestPrincipalNameCarriesTheRealm(t *testing.T) {
 	kt, _, err := NewMockKeytab(
 		WithRealm("EXAMPLE.LOCAL"),

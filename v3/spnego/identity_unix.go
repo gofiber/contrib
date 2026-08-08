@@ -7,9 +7,8 @@ import (
 	"syscall"
 )
 
-// fileRevisionID returns the device and inode the file lives at. Replacing a
-// keytab by rename changes the inode, so a rotation is detected even when the
-// replacement has the same size and modification time.
+// fileRevisionID returns the device and inode, so a rotation by rename is
+// detected even at the same size and mtime.
 func fileRevisionID(info fs.FileInfo) fileID {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {

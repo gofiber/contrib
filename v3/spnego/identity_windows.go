@@ -7,17 +7,14 @@ import (
 	"syscall"
 )
 
-// fileRevisionID returns the file's creation time, which os.Stat already
-// supplies at no extra syscall cost. A best-effort hint, not a true identity:
-// NTFS file tunneling restores it to a same-named replacement, and FAT and some
-// network redirectors report none — both fall back to size and mtime.
+// fileRevisionID returns the creation time os.Stat already supplies. A hint,
+// not an identity: NTFS tunneling and FAT both defeat it, falling back to mtime.
 func fileRevisionID(info fs.FileInfo) fileID {
 	data, ok := info.Sys().(*syscall.Win32FileAttributeData)
 	if !ok {
 		return fileID{}
 	}
-	// An unset creation time carries no information, and Filetime.Nanoseconds
-	// maps it to a fixed constant that would look like a real value.
+	// Filetime.Nanoseconds maps an unset time to a constant that looks real.
 	if data.CreationTime.LowDateTime == 0 && data.CreationTime.HighDateTime == 0 {
 		return fileID{}
 	}

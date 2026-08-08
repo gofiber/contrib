@@ -2,23 +2,18 @@ package spnego
 
 import "github.com/jcmturner/goidentity/v6"
 
-// FiberContext is the subset of the Fiber context used to carry the
-// authenticated identity. fiber.Ctx satisfies it, and accepting the interface
-// rather than the concrete type keeps the identity helpers testable.
+// FiberContext is the subset of fiber.Ctx used to carry the identity.
 type FiberContext interface {
 	Locals(key any, value ...any) any
 }
 
-// SetAuthenticatedIdentityToContext stores the authenticated identity in the Fiber context.
-// It takes a Fiber context and an identity, and sets it using the contextKeyOfIdentity key
-// for later retrieval by other handlers in the request chain.
+// SetAuthenticatedIdentityToContext stores the identity for later handlers.
 func SetAuthenticatedIdentityToContext(ctx FiberContext, identity goidentity.Identity) {
 	ctx.Locals(contextKeyOfIdentity, identity)
 }
 
-// GetAuthenticatedIdentityFromContext retrieves the authenticated identity from
-// the Fiber context, reporting whether one was found. Handlers downstream of the
-// middleware use it to reach the authenticated user.
+// GetAuthenticatedIdentityFromContext returns the authenticated identity and
+// whether one was found.
 func GetAuthenticatedIdentityFromContext(ctx FiberContext) (goidentity.Identity, bool) {
 	id, ok := ctx.Locals(contextKeyOfIdentity).(goidentity.Identity)
 	return id, ok

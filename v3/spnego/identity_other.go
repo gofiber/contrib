@@ -4,9 +4,8 @@ package spnego
 
 import "io/fs"
 
-// fileRevisionID reports no identity where fs.FileInfo exposes none, so change
-// detection falls back to size and modification time. os.SameFile is not used
-// instead: it re-opens the path, costing a syscall on every request.
+// fileRevisionID reports no identity here, so detection falls back to size and
+// mtime. os.SameFile would re-open the path, costing a syscall per request.
 func fileRevisionID(fs.FileInfo) fileID {
 	return fileID{}
 }

@@ -9,29 +9,24 @@ import (
 	"github.com/jcmturner/gokrb5/v8/keytab"
 )
 
-// KeytabInfo represents information about a principal in a Kerberos keytab
-// It contains the principal name, realm, and associated encryption type pairs
+// KeytabInfo describes one principal in a keytab.
 type KeytabInfo struct {
-	// PrincipalName is fully qualified, realm included, as gokrb5 renders it:
-	// "HTTP/service.example.com@EXAMPLE.COM". Realm repeats that suffix on its
-	// own, so appending it here prints the realm twice.
+	// Fully qualified, realm included: "HTTP/svc.example.com@EXAMPLE.COM".
+	// Realm repeats that suffix, so appending it prints the realm twice.
 	PrincipalName string
 	Realm         string            // The Kerberos realm (e.g., EXAMPLE.COM)
 	Pairs         []EncryptTypePair // List of encryption type pairs for this principal
 }
 
-// EncryptTypePair represents an encryption type entry in a Kerberos keytab
-// It contains the version, encryption type, and creation timestamp
+// EncryptTypePair is one encryption-type entry in a keytab.
 type EncryptTypePair struct {
-	// Version is the key version number. gokrb5 prefers the 32-bit form over
-	// the legacy 8-bit one, so this is wider than NewMockKeytab accepts.
+	// gokrb5 prefers the 32-bit form, so this is wider than NewMockKeytab takes.
 	Version     uint32
 	EncryptType int32     // The encryption type (e.g., 18 for AES-256-CTS-HMAC-SHA1-96)
 	CreateTime  time.Time // The timestamp when this key was created
 }
 
-// MultiKeytabInfo is a slice of KeytabInfo structures
-// Used to represent multiple principal entries from a keytab
+// MultiKeytabInfo is a set of principals from a keytab.
 type MultiKeytabInfo []KeytabInfo
 
 // GetKeytabInfo groups a keytab's entries by principal and sorts them by name.
@@ -57,8 +52,7 @@ func GetKeytabInfo(kt *keytab.Keytab) MultiKeytabInfo {
 			keytabMap[name] = item
 		}
 	}
-	// AppendSeq onto a made slice, not slices.SortedFunc, which collects onto a
-	// nil slice and would marshal an empty keytab as null rather than [].
+	// Not slices.SortedFunc: it collects onto nil, marshalling as null not [].
 	mk := slices.AppendSeq(make(MultiKeytabInfo, 0, len(keytabMap)), maps.Values(keytabMap))
 	slices.SortFunc(mk, func(a, b KeytabInfo) int {
 		return strings.Compare(a.PrincipalName, b.PrincipalName)

@@ -18,11 +18,8 @@ type mockFileOperator struct {
 }
 
 const (
-	// readOnlyFileOperator creates the file but hands back a handle that cannot
-	// be written to. Unlike flag 0x02, which closes the handle and so makes the
-	// write and the following close fail with the same error, this separates
-	// them: the write fails while the close succeeds, which is where a reused
-	// error variable would drop the write error entirely.
+	// readOnlyFileOperator creates the file but hands back an unwritable handle, so the
+	// write fails while the close succeeds — where a reused err would drop the write's.
 	readOnlyFileOperator = 0x04
 	// closeFailsFileOperator writes successfully and fails only on close, the
 	// one combination a real *os.File cannot produce.
@@ -144,16 +141,14 @@ func TestNewMockKeytab(t *testing.T) {
 		)
 		require.ErrorIs(t, err, os.ErrClosed)
 		require.NoFileExists(t, filename)
-		// Both the write and the close fail with the same error here, so only
-		// the wording tells the two apart: the write is what went wrong and the
-		// close is the aside. Reporting just the close would hide the cause.
+		// Both fail with the same error, so only the wording separates them: the write is
+		// the cause and the close an aside. Reporting only the close would hide it.
 		require.ErrorContains(t, err, "error writing to file")
 		require.ErrorContains(t, err, "also failed to close file")
 	})
 	t.Run("a real open failure is reported", func(t *testing.T) {
-		// Runs against the default file operator rather than a substitute, so
-		// the production open path's own error branch is exercised and not just
-		// the mock standing in for it.
+		// Runs against the default file operator, so the production open path's own error
+		// branch is exercised rather than the mock standing in for it.
 		filename := path.Join(t.TempDir(), "no-such-directory", "temp.keytab")
 		_, _, err := NewMockKeytab(
 			WithPrincipal("HTTP/sso.example.com"),
@@ -193,9 +188,8 @@ func TestNewMockKeytab(t *testing.T) {
 			"a half-written keytab must not be left on disk")
 	})
 	t.Run("a failed close is reported and the file removed", func(t *testing.T) {
-		// A close that fails after a good write can still have left a truncated
-		// keytab on disk, so returning success here would hand the caller a
-		// keytab that does not match the file.
+		// A close that fails after a good write can still leave a truncated keytab, so
+		// success here would hand back a keytab that does not match the file.
 		prevFileOperator := defaultFileOperator
 		defaultFileOperator = mockFileOperator{flag: closeFailsFileOperator}
 		t.Cleanup(func() {
@@ -326,9 +320,8 @@ func Test_mockOptions_apply(t *testing.T) {
 }
 
 func TestNewMockKeytabRejectsUnrepresentableVersion(t *testing.T) {
-	// gokrb5's AddEntry takes a uint8, so a wider version cannot be written.
-	// Truncating it silently would defeat the point of reporting the 32-bit
-	// key version in KeytabInfo.
+	// gokrb5's AddEntry takes a uint8. Truncating silently would defeat the point of
+	// reporting the 32-bit key version in KeytabInfo.
 	_, _, err := NewMockKeytab(
 		WithPrincipal("HTTP/sso.example.com"),
 		WithRealm("TEST.LOCAL"),
@@ -341,11 +334,8 @@ func TestNewMockKeytabRejectsUnrepresentableVersion(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidKeyVersion)
 }
 
-// TestNewMockKeytabResetsPermissionsOfAnExistingFile covers what os.OpenFile
-// does not do: its permission argument applies only when it creates the file,
-// so opening a path that already exists keeps whatever mode was there. Writing
-// a keytab into a file left at 0644 by something else would hand the key to
-// every local account while looking like it had been protected.
+// TestNewMockKeytabResetsPermissionsOfAnExistingFile covers what os.OpenFile does
+// not do: perm applies only on create, so an existing 0644 path leaks the key.
 func TestNewMockKeytabResetsPermissionsOfAnExistingFile(t *testing.T) {
 	filename := path.Join(t.TempDir(), "temp.keytab")
 	require.NoError(t, os.WriteFile(filename, []byte("previous occupant"), 0o644))
@@ -373,10 +363,8 @@ func TestNewMockKeytabResetsPermissionsOfAnExistingFile(t *testing.T) {
 // TestNewMockKeytabReportsAFailedRemove pins that a remove which fails for a
 // reason other than "not there" is reported as itself.
 //
-// Without the check the failure still surfaces, because the exclusive create
-// that follows hits the file that is still present — but it surfaces as "file
-// exists", which points at the wrong thing. The real cause is that the old
-// keytab could not be cleared, and that is what has to be said.
+// Without the check the exclusive create still fails, but as "file exists" — which
+// points at the wrong thing. The cause is that the old keytab could not be cleared.
 func TestNewMockKeytabReportsAFailedRemove(t *testing.T) {
 	prevFileOperator := defaultFileOperator
 	defaultFileOperator = mockFileOperator{flag: removeFailsFileOperator}
