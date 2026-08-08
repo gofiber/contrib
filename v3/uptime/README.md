@@ -178,10 +178,10 @@ and expire on their own.
 
 ## Snapshots and custom UI
 
-The dashboard and JSON API build a fresh `Snapshot` from the backing store on
-each request. Use Fiber's cache middleware around the uptime route if you want
-HTTP-level caching. The same snapshot payload is available at
-`UI.Path + "/api/status"` for custom dashboards.
+The dashboard and JSON API share an in-memory snapshot for one sample interval,
+limiting backing-store work on public status routes. If a refresh fails, the
+last snapshot is served with degraded storage status. The same snapshot payload
+is available at `UI.Path + "/api/status"` for custom dashboards.
 
 ## Config
 

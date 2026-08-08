@@ -89,6 +89,38 @@ func (u *runtime) snapshot(ctx context.Context) (Snapshot, error) {
 	return u.buildStatus(ctx, time.Now())
 }
 
+// cachedSnapshot limits status requests to one store refresh per sample interval.
+// The previous value remains available when a refresh fails, preventing a
+// temporary store outage from taking down the public status endpoints.
+func (u *runtime) cachedSnapshot(ctx context.Context) (Snapshot, error) {
+	if u == nil {
+		return Snapshot{}, errors.New("uptime: nil runtime")
+	}
+
+	now := time.Now()
+	u.snapshotMu.Lock()
+	defer u.snapshotMu.Unlock()
+
+	if u.snapshotHasCache && now.Sub(u.snapshotCachedAt) < u.config.SampleInterval {
+		return cloneSnapshot(u.snapshotCache), nil
+	}
+
+	snapshot, err := u.buildStatus(ctx, now)
+	if err != nil {
+		if u.snapshotHasCache {
+			stale := cloneSnapshot(u.snapshotCache)
+			markSnapshotRefreshError(&stale, err, time.Now())
+			return stale, nil
+		}
+		return Snapshot{}, err
+	}
+
+	u.snapshotCache = cloneSnapshot(snapshot)
+	u.snapshotCachedAt = now
+	u.snapshotHasCache = true
+	return cloneSnapshot(snapshot), nil
+}
+
 func (u *runtime) buildStatus(ctx context.Context, now time.Time) (StatusResponse, error) {
 	if err := u.ensureStoreReady(ctx); err != nil {
 		u.setLastError(err)
@@ -167,6 +199,29 @@ func serviceIDsFromServices(services []storage.Service) []string {
 		serviceIDs = append(serviceIDs, service.ID)
 	}
 	return serviceIDs
+}
+
+func cloneSnapshot(in Snapshot) Snapshot {
+	out := in
+	if in.Storage.LastErrorAt != nil {
+		lastErrorAt := *in.Storage.LastErrorAt
+		out.Storage.LastErrorAt = &lastErrorAt
+	}
+	out.Services = append([]ServiceStatus(nil), in.Services...)
+	for i := range out.Services {
+		out.Services[i].Daily = append([]DayStatus(nil), in.Services[i].Daily...)
+	}
+	return out
+}
+
+func markSnapshotRefreshError(snapshot *Snapshot, err error, at time.Time) {
+	if snapshot == nil || err == nil {
+		return
+	}
+	snapshot.Storage.Status = "degraded"
+	snapshot.Storage.LastError = err.Error()
+	errorAt := at.UTC()
+	snapshot.Storage.LastErrorAt = &errorAt
 }
 
 func (u *runtime) dayStatus(serviceID, day, today, createdDay string, createdAt, now time.Time, interval time.Duration, daily map[string]map[string]storage.DailyStatus, todayRows map[string]storage.TodaySampleStatus) DayStatus {

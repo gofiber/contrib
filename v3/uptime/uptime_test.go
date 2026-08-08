@@ -529,6 +529,44 @@ func TestSnapshotBuildsFreshStatus(t *testing.T) {
 	requireEqual(t, "Updated API", second.Services[0].Name)
 }
 
+func TestHandlerReusesSnapshotWithinSampleInterval(t *testing.T) {
+	t.Parallel()
+
+	store := newSnapshotStore()
+	app := newSnapshotApp(newSnapshotUptimeWithConfig(store, Config{
+		ServiceID:      "api",
+		SampleInterval: time.Minute,
+		DaysToShow:     1,
+		RetentionDays:  1,
+		Timezone:       time.UTC,
+	}))
+
+	for range 3 {
+		resp, err := app.Test(httptest.NewRequest(fiber.MethodHead, "/uptime/api/status", nil))
+		requireNoError(t, err)
+		requireNoError(t, resp.Body.Close())
+		requireEqual(t, fiber.StatusOK, resp.StatusCode)
+	}
+	requireEqual(t, 1, store.listServicesCalls)
+}
+
+func TestCachedSnapshotServesStaleStatusAfterRefreshError(t *testing.T) {
+	t.Parallel()
+
+	store := newSnapshotStore()
+	u := newSnapshotUptime(store)
+	first, err := u.cachedSnapshot(context.Background())
+	requireNoError(t, err)
+
+	u.snapshotCachedAt = time.Now().Add(-u.config.SampleInterval)
+	store.fail = true
+	stale, err := u.cachedSnapshot(context.Background())
+	requireNoError(t, err)
+	requireEqual(t, first.GeneratedAt, stale.GeneratedAt)
+	requireEqual(t, "degraded", stale.Storage.Status)
+	requireContains(t, stale.Storage.LastError, "store failed")
+}
+
 func TestSnapshotReturnsStoreError(t *testing.T) {
 	t.Parallel()
 
