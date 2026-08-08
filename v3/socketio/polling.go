@@ -523,6 +523,12 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 		return writePollingError(c, 3)
 	}
 
+	// Serialise POSTs per session before copying the request body. This
+	// prevents concurrent requests from allocating a full body copy while
+	// they wait for an earlier POST to finish.
+	kws.postGate.Lock()
+	defer kws.postGate.Unlock()
+
 	// Copy the body once into a fresh buffer. fasthttp recycles the
 	// request body buffer when the handler returns; without an owned
 	// copy, listener callbacks that stash EventPayload.Data into a
@@ -531,12 +537,6 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 	// slices of body across goroutine boundaries.
 	body := make([]byte, len(src))
 	copy(body, src)
-
-	// Serialise POSTs per session so dispatched packets across
-	// overlapping POSTs preserve FIFO order. Held only for the parse
-	// loop; never across user-callback locks.
-	kws.postGate.Lock()
-	defer kws.postGate.Unlock()
 
 	// Any inbound HTTP body counts as proof of life for the heartbeat
 	// enforcer, mirroring the WebSocket read-loop behaviour at
