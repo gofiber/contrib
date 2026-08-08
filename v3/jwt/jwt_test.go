@@ -250,6 +250,35 @@ func TestJwtFromHeader(t *testing.T) {
 	})
 }
 
+type customClaims struct {
+	Name string `json:"name"`
+	jwt.RegisteredClaims
+}
+
+func TestJwtNonPointerClaimsConfigDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{
+			JWTAlg: jwtware.HS256,
+			Key:    []byte(defaultSigningKey),
+		},
+		Claims: customClaims{},
+	}))
+
+	app.Get("/ok", func(c fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/ok", nil)
+	req.Header.Set("Authorization", "Bearer not-a-valid-token")
+
+	resp, err := app.Test(req)
+	assert.NoError(t, err)
+	assert.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
+}
+
 func TestJwtFromCookie(t *testing.T) {
 	t.Parallel()
 

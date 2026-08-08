@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	utilsstrings "github.com/gofiber/utils/v2/strings"
 	"github.com/rs/zerolog"
 )
 
@@ -92,6 +93,15 @@ type Config struct {
 	//
 	// Optional. Default: nil
 	SkipHeader func(header string, c fiber.Ctx) bool
+
+	// RedactHeader defines a function that returns true if a header value should be redacted.
+	// Every value of a redacted header is replaced with "[REDACTED]", so multi-value
+	// headers keep their original cardinality.
+	// Only relevant if `FieldReqHeaders` and/or `FieldResHeaders` are logged.
+	// Set this explicitly to customize which headers are redacted.
+	//
+	// Optional. Default: redacts common credential-bearing headers
+	RedactHeader func(header string, c fiber.Ctx) bool
 
 	// Wrap headers into a dictionary.
 	// If false: {"method":"POST", "header-key":"header value"}
@@ -223,6 +233,9 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 					if c.SkipHeader != nil && c.SkipHeader(header, fc) {
 						continue
 					}
+					if c.RedactHeader != nil && c.RedactHeader(header, fc) {
+						values = redactHeaderValues(values)
+					}
 
 					if len(values) == 1 {
 						dict.Str(header, values[0])
@@ -240,6 +253,9 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 
 					if c.SkipHeader != nil && c.SkipHeader(header, fc) {
 						continue
+					}
+					if c.RedactHeader != nil && c.RedactHeader(header, fc) {
+						values = redactHeaderValues(values)
 					}
 
 					if len(values) == 1 {
@@ -264,6 +280,9 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 					if c.SkipHeader != nil && c.SkipHeader(header, fc) {
 						continue
 					}
+					if c.RedactHeader != nil && c.RedactHeader(header, fc) {
+						values = redactHeaderValues(values)
+					}
 
 					if len(values) == 1 {
 						dict.Str(header, values[0])
@@ -282,6 +301,9 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 					if c.SkipHeader != nil && c.SkipHeader(header, fc) {
 						continue
 					}
+					if c.RedactHeader != nil && c.RedactHeader(header, fc) {
+						values = redactHeaderValues(values)
+					}
 
 					if len(values) == 1 {
 						zc = zc.Str(header, values[0])
@@ -299,13 +321,38 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 
 var logger = zerolog.New(os.Stderr).With().Timestamp().Logger()
 
+const redactedHeaderValue = "[REDACTED]"
+
+func redactSensitiveHeader(header string, _ fiber.Ctx) bool {
+	switch utilsstrings.ToLower(header) {
+	case "authorization", "proxy-authorization", "cookie", "set-cookie", "location",
+		"x-api-key", "x-auth-token", "x-csrf-token", "x-xsrf-token":
+		return true
+	default:
+		return false
+	}
+}
+
+// redactHeaderValues replaces every header value with the redaction marker while
+// preserving the number of values, so a multi-value header (e.g. `Set-Cookie`)
+// keeps being logged as an array instead of collapsing into a single string.
+func redactHeaderValues(values []string) []string {
+	redacted := make([]string, len(values))
+	for i := range redacted {
+		redacted[i] = redactedHeaderValue
+	}
+
+	return redacted
+}
+
 // ConfigDefault is the default config
 var ConfigDefault = Config{
-	Next:     nil,
-	Logger:   &logger,
-	Fields:   []string{FieldIP, FieldLatency, FieldStatus, FieldMethod, FieldURL, FieldError},
-	Messages: []string{"Server error", "Client error", "Success"},
-	Levels:   []zerolog.Level{zerolog.ErrorLevel, zerolog.WarnLevel, zerolog.InfoLevel},
+	Next:         nil,
+	Logger:       &logger,
+	Fields:       []string{FieldIP, FieldLatency, FieldStatus, FieldMethod, FieldURL, FieldError},
+	RedactHeader: redactSensitiveHeader,
+	Messages:     []string{"Server error", "Client error", "Success"},
+	Levels:       []zerolog.Level{zerolog.ErrorLevel, zerolog.WarnLevel, zerolog.InfoLevel},
 }
 
 // Helper function to set default values
@@ -329,6 +376,10 @@ func configDefault(config ...Config) Config {
 
 	if cfg.Fields == nil {
 		cfg.Fields = ConfigDefault.Fields
+	}
+
+	if cfg.RedactHeader == nil {
+		cfg.RedactHeader = ConfigDefault.RedactHeader
 	}
 
 	if cfg.Messages == nil {

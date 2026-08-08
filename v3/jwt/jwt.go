@@ -47,8 +47,19 @@ func New(config ...Config) fiber.Handler {
 		if _, ok := cfg.Claims.(jwt.MapClaims); ok {
 			token, err = jwt.Parse(auth, cfg.KeyFunc, cfg.ParserOptions...)
 		} else {
-			t := reflect.ValueOf(cfg.Claims).Type().Elem()
-			claims := reflect.New(t).Interface().(jwt.Claims)
+			claimsType := reflect.TypeOf(cfg.Claims)
+			if claimsType == nil {
+				return cfg.ErrorHandler(c, fiber.NewError(fiber.StatusInternalServerError, "claims type cannot be nil"))
+			}
+
+			if claimsType.Kind() == reflect.Ptr {
+				claimsType = claimsType.Elem()
+			}
+
+			claims, ok := reflect.New(claimsType).Interface().(jwt.Claims)
+			if !ok {
+				return cfg.ErrorHandler(c, fiber.NewError(fiber.StatusInternalServerError, "claims type does not implement jwt.Claims"))
+			}
 			token, err = jwt.ParseWithClaims(auth, claims, cfg.KeyFunc, cfg.ParserOptions...)
 		}
 		if err == nil && token.Valid {

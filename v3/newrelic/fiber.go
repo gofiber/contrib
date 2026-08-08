@@ -42,7 +42,7 @@ type Config struct {
 	// RequestHeaderFilter controls which inbound request headers are forwarded to
 	// New Relic via WebRequest.Header.
 	// Return true to include a header, false to exclude it.
-	// Optional. Default: include all headers.
+	// Optional. Default: DefaultRequestHeaderFilter
 	RequestHeaderFilter func(key, value string) bool
 }
 
@@ -53,7 +53,7 @@ var ConfigDefault = Config{
 	Enabled:                false,
 	ErrorStatusCodeHandler: DefaultErrorStatusCodeHandler,
 	Next:                   nil,
-	RequestHeaderFilter:    nil,
+	RequestHeaderFilter:    DefaultRequestHeaderFilter,
 }
 
 func New(cfg Config) fiber.Handler {
@@ -62,6 +62,9 @@ func New(cfg Config) fiber.Handler {
 
 	if cfg.ErrorStatusCodeHandler == nil {
 		cfg.ErrorStatusCodeHandler = ConfigDefault.ErrorStatusCodeHandler
+	}
+	if cfg.RequestHeaderFilter == nil {
+		cfg.RequestHeaderFilter = ConfigDefault.RequestHeaderFilter
 	}
 
 	if cfg.Application != nil {
@@ -161,6 +164,25 @@ func createWebRequest(c fiber.Ctx, host, method, scheme string, filter func(key,
 			Path:     string(c.Request().URI().Path()),
 			RawQuery: string(c.Request().URI().QueryString()),
 		},
+	}
+}
+
+// DefaultRequestHeaderFilter allows only the headers the New Relic agent itself
+// consumes from WebRequest.Header: distributed tracing headers, the synthetic
+// monitor headers and the queue timing headers. Everything else, including
+// W3C baggage, has to be opted into with a custom RequestHeaderFilter.
+func DefaultRequestHeaderFilter(key, _ string) bool {
+	switch {
+	case utils.EqualFold(key, "traceparent"),
+		utils.EqualFold(key, "tracestate"),
+		utils.EqualFold(key, "newrelic"),
+		utils.EqualFold(key, "x-newrelic-synthetics"),
+		utils.EqualFold(key, "x-newrelic-synthetics-info"),
+		utils.EqualFold(key, "x-request-start"),
+		utils.EqualFold(key, "x-queue-start"):
+		return true
+	default:
+		return false
 	}
 }
 

@@ -34,6 +34,7 @@ Repository for third party middlewares and service implementations, with depende
 * [loadshed](./v3/loadshed/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Test+loadshed%22"> <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test-loadshed.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" alt="loadshed workflow status" /> </a>
 * [new relic](./v3/newrelic/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Test+newrelic%22"> <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test-newrelic.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" alt="new relic workflow status" /> </a>
 * [monitor](./v3/monitor/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Test+Monitor%22"> <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test-monitor.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" alt="monitor workflow status" /> </a>
+* [prometheus](./v3/prometheus/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Test+Prometheus%22"> <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test-prometheus.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" alt="prometheus workflow status" /> </a>
 * [uptime](./v3/uptime/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Test+Uptime%22"> <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test-uptime.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" alt="uptime workflow status" /> </a>
 * [open policy agent](./v3/opa/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Test+opa%22"> <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test-opa.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" alt="OPA workflow status" /> </a>
 * [otel (opentelemetry)](./v3/otel/README.md) <a href="https://github.com/gofiber/contrib/actions?query=workflow%3A%22Test+otel%22"> <img src="https://img.shields.io/github/actions/workflow/status/gofiber/contrib/test-otel.yml?branch=main&label=%F0%9F%A7%AA%20&style=flat&color=75C46B" alt="otel workflow status" /> </a>
@@ -64,6 +65,16 @@ Fiber is an open-source project that runs on donations to pay the bills, e.g., o
   <a href="https://blacksmith.sh/?utm_source=gofiber&utm_medium=sponsor&utm_content=readme">
     <img width="280" height="96" alt="Blacksmith" src="https://raw.githubusercontent.com/gofiber/.github/main/assets/sponsors/blacksmith.png">
   </a>
+</p>
+<p align="center">
+  <sub><b>Tool Sponsors</b> - supporting Fiber with free IDE licenses and AI credits</sub>
+</p>
+<p align="center">
+  <a href="https://www.jetbrains.com/?from=gofiber" title="JetBrains - IDE licenses"><img width="36" height="36" alt="JetBrains" src="https://github.com/JetBrains.png?size=72"></a>
+  &nbsp;
+  <a href="https://openai.com/?utm_source=gofiber&utm_medium=sponsor&utm_content=readme" title="OpenAI - AI credits"><img width="36" height="36" alt="OpenAI" src="https://github.com/openai.png?size=72"></a>
+  &nbsp;
+  <a href="https://www.anthropic.com/?utm_source=gofiber&utm_medium=sponsor&utm_content=readme" title="Anthropic - AI credits"><img width="36" height="36" alt="Anthropic" src="https://github.com/anthropics.png?size=72"></a>
 </p>
 
 <!-- sponsors -->
