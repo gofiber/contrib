@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -55,6 +56,8 @@ type middleware struct {
 	records           bool
 	observes          bool
 }
+
+var registryProbeID atomic.Uint64
 
 // dynamicLabel binds a configured label name to the function producing its
 // value. The slice held by middleware is sorted by name so that the label order
@@ -547,9 +550,38 @@ func resolveRegistry(cfg Config) (prometheus.Registerer, prometheus.Gatherer) {
 		if differentSource(regGatherer, gatherer) {
 			panic("prometheus middleware: Registerer and Gatherer must reference the same metrics source")
 		}
+	} else if !sameRegistryThroughProbe(registerer, gatherer) {
+		panic("prometheus middleware: Registerer and Gatherer must reference the same metrics source")
 	}
 
 	return registerer, gatherer
+}
+
+// sameRegistryThroughProbe verifies an opaque Registerer (such as one returned
+// by WrapRegistererWithPrefix) by temporarily registering a uniquely named
+// collector and checking that the configured Gatherer can see it.
+func sameRegistryThroughProbe(registerer prometheus.Registerer, gatherer prometheus.Gatherer) bool {
+	id := registryProbeID.Add(1)
+	help := "Fiber Prometheus registry pairing probe " + strconv.FormatUint(id, 10)
+	probe := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "fiber_prometheus_registry_pairing_probe_" + strconv.FormatUint(id, 10),
+		Help: help,
+	})
+	if err := registerer.Register(probe); err != nil {
+		panic("prometheus middleware: could not verify Registerer and Gatherer pairing: " + err.Error())
+	}
+	defer registerer.Unregister(probe)
+
+	families, err := gatherer.Gather()
+	if err != nil {
+		panic("prometheus middleware: could not verify Registerer and Gatherer pairing: " + err.Error())
+	}
+	for _, family := range families {
+		if family.GetHelp() == help {
+			return true
+		}
+	}
+	return false
 }
 
 // differentSource reports whether two gatherers provably reference distinct

@@ -348,12 +348,12 @@ the same metrics source (for example, a `*prometheus.Registry`). Supplying only
 one that does not implement the other interface panics during initialization so
 metrics are not silently dropped.
 
-Supplying both is trusted, because that is how you pair a wrapper such as
-`prometheus.WrapRegistererWithPrefix` with the registry it wraps — and such a
-wrapper is not itself a `Gatherer`, so there is nothing to compare it against.
-Only a pair that is provably distinct, two different `*prometheus.Registry`
-values, is rejected. Pairing a wrapper with an unrelated registry is accepted
-and scrapes will return nothing.
+Supplying both also supports pairing a wrapper such as
+`prometheus.WrapRegistererWithPrefix` with the registry it wraps. Because such
+a wrapper is not itself a `Gatherer`, the middleware temporarily registers a
+probe collector and verifies that the configured Gatherer can see it. A
+mismatched pair panics during initialization rather than silently omitting the
+middleware's metrics from scrapes.
 
 ```go
 registry := prometheus.NewRegistry()

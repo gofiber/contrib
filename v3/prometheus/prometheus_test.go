@@ -1599,6 +1599,26 @@ func TestWrappingRegistererWithMatchingGatherer(t *testing.T) {
 	}
 }
 
+func TestWrappingRegistererWithMismatchedGathererPanics(t *testing.T) {
+	registered := prometheus.NewRegistry()
+	gathered := prometheus.NewRegistry()
+
+	defer func() {
+		if r := recover(); r != nil {
+			if message := fmt.Sprint(r); !strings.Contains(message, "must reference the same metrics source") {
+				t.Fatalf("expected panic about mismatched sources, got %q", message)
+			}
+			return
+		}
+		t.Fatal("expected panic when a wrapping Registerer and Gatherer differ")
+	}()
+
+	_ = New(Config{
+		Registerer: prometheus.WrapRegistererWithPrefix("app_", registered),
+		Gatherer:   gathered,
+	})
+}
+
 // TestEmptyBucketsWithoutNativeHistogramsKeepsDefaults pins the documented
 // caveat: client_golang substitutes its own defaults rather than leave a
 // histogram with no buckets, so an empty slice alone does not drop them.
