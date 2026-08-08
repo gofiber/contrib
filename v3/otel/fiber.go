@@ -169,7 +169,12 @@ func Middleware(opts ...Option) fiber.Handler {
 		// body is left out of the histogram rather than skewing it towards 0.
 		requestSize := int64(0)
 		requestSizeKnown := false
-		if request.IsBodyStream() {
+		switch {
+		case !c.HasBody():
+			// Nothing declared by Content-Length or Transfer-Encoding and nothing
+			// buffered, so the request carried no body.
+			requestSizeKnown = true
+		case request.IsBodyStream():
 			if contentLength := request.Header.ContentLength(); contentLength >= 0 {
 				requestSize = int64(contentLength)
 				requestSizeKnown = true
@@ -179,7 +184,7 @@ func Middleware(opts ...Option) fiber.Handler {
 			}
 			// A chunked request body has no declared length, and measuring it would
 			// mean draining the stream before the handler can read it. Left unknown.
-		} else {
+		default:
 			// use Content-Length to avoid re-marshaling the multipart body, including files, into memory.
 			if contentLength := request.Header.ContentLength(); contentLength > 0 {
 				requestSize = int64(contentLength)
