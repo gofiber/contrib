@@ -511,6 +511,17 @@ func encodePollingFrames(frames [][]byte) []byte {
 // pipeline used by the WebSocket read loop, and responds with the
 // engine.io literal "ok" body.
 func ingestPolling(c fiber.Ctx, kws *Websocket) error {
+	// Serialise POSTs per session before the body is materialised, not
+	// after. Body() is not a free read of what fasthttp already holds: a
+	// Content-Encoding body is decompressed into a fresh buffer sized by
+	// the app's BodyLimit rather than PollingMaxBufferSize, and
+	// fiber.Config.Immutable copies even an identity body. Taking the gate
+	// first means overlapping POSTs for one session queue before paying
+	// for that buffer, so a hostile client cannot multiply it by firing
+	// requests in parallel while an earlier one sits in a callback.
+	kws.postGate.Lock()
+	defer kws.postGate.Unlock()
+
 	src := c.Body()
 	if PollingMaxBufferSize > 0 && len(src) > PollingMaxBufferSize {
 		// Tear the session down: matching the WebSocket SetReadLimit
@@ -522,12 +533,6 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 		kws.disconnected(ErrPollingBodyTooLarge)
 		return writePollingError(c, 3)
 	}
-
-	// Serialise POSTs per session before copying the request body. This
-	// prevents concurrent requests from allocating a full body copy while
-	// they wait for an earlier POST to finish.
-	kws.postGate.Lock()
-	defer kws.postGate.Unlock()
 
 	// Copy the body once into a fresh buffer. fasthttp recycles the
 	// request body buffer when the handler returns; without an owned
