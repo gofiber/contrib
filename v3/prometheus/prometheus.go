@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -56,8 +55,6 @@ type middleware struct {
 	records           bool
 	observes          bool
 }
-
-var registryProbeID atomic.Uint64
 
 // dynamicLabel binds a configured label name to the function producing its
 // value. The slice held by middleware is sorted by name so that the label order
@@ -545,60 +542,105 @@ func resolveRegistry(cfg Config) (prometheus.Registerer, prometheus.Gatherer) {
 
 	// Both were supplied. Wrapping Registerers - WrapRegistererWith and friends - are
 	// not Gatherers, so requiring one would reject the very pairing the panic above
-	// recommends. Only provably distinct pairs are rejected.
-	if regGatherer, ok := registerer.(prometheus.Gatherer); ok {
-		if differentSource(regGatherer, gatherer) {
-			panic("prometheus middleware: Registerer and Gatherer must reference the same metrics source")
+	// recommends. Such a wrapper is unwrapped to the Registerer it hands
+	// registrations to, and that is what gets compared. Only provably distinct
+	// pairs are rejected.
+	source := reflect.ValueOf(registerer)
+	if _, ok := registerer.(prometheus.Gatherer); !ok {
+		unwrapped, ok := unwrapRegisterer(source)
+		if !ok {
+			return registerer, gatherer
 		}
-	} else if !sameRegistryThroughProbe(registerer, gatherer) {
+		source = unwrapped
+	}
+
+	if differentSource(source, reflect.ValueOf(gatherer)) {
 		panic("prometheus middleware: Registerer and Gatherer must reference the same metrics source")
 	}
 
 	return registerer, gatherer
 }
 
-// sameRegistryThroughProbe verifies an opaque Registerer (such as one returned
-// by WrapRegistererWithPrefix) by temporarily registering a uniquely named
-// collector and checking that the configured Gatherer can see it.
-func sameRegistryThroughProbe(registerer prometheus.Registerer, gatherer prometheus.Gatherer) bool {
-	id := registryProbeID.Add(1)
-	help := "Fiber Prometheus registry pairing probe " + strconv.FormatUint(id, 10)
-	probe := prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "fiber_prometheus_registry_pairing_probe_" + strconv.FormatUint(id, 10),
-		Help: help,
-	})
-	if err := registerer.Register(probe); err != nil {
-		panic("prometheus middleware: could not verify Registerer and Gatherer pairing: " + err.Error())
-	}
-	defer registerer.Unregister(probe)
+// clientGolangPackage scopes wrapper unwrapping to client_golang's own types. A
+// user-defined Registerer that happens to hold another one is not necessarily
+// delegating to it, so reading it as a chain could reject a valid pair.
+const clientGolangPackage = "github.com/prometheus/client_golang/prometheus"
 
-	families, err := gatherer.Gather()
-	if err != nil {
-		panic("prometheus middleware: could not verify Registerer and Gatherer pairing: " + err.Error())
-	}
-	for _, family := range families {
-		if family.GetHelp() == help {
-			return true
+// maxRegistererUnwraps bounds the walk below. Wrappers are immutable once
+// constructed, so a cycle cannot occur; the bound only keeps a hostile or
+// future implementation from spinning forever.
+const maxRegistererUnwraps = 32
+
+// unwrapRegisterer follows a chain of client_golang Registerer wrappers down to
+// the Registerer they ultimately register with. ok is false when nothing was
+// unwrapped, either because the value is not one of those wrappers or because
+// the chain does not end - in both cases the destination is unknowable and the
+// pair has to be accepted.
+//
+// The walk reads unexported fields, so the result stays a reflect.Value:
+// calling Interface on it would panic. Everything differentSource needs - the
+// dynamic type and the pointer - is readable without it.
+func unwrapRegisterer(v reflect.Value) (reflect.Value, bool) {
+	unwrapped := false
+
+	for range maxRegistererUnwraps {
+		field, ok := wrappedRegisterer(v)
+		if !ok {
+			return v, unwrapped
 		}
+
+		// Wrapping nil is client_golang's documented no-op Registerer. Nothing
+		// is registered anywhere, so there is no source to compare.
+		if field.IsNil() {
+			return reflect.Value{}, false
+		}
+
+		v = field.Elem()
+		unwrapped = true
 	}
-	return false
+
+	return reflect.Value{}, false
 }
 
-// differentSource reports whether two gatherers provably reference distinct
-// sources. Identity goes through reflection because comparing interface values
-// panics on an uncomparable dynamic type; undecidable cases are accepted.
-func differentSource(a, b prometheus.Gatherer) bool {
-	// Both interfaces are non-nil here, so neither Value can be invalid.
-	av, bv := reflect.ValueOf(a), reflect.ValueOf(b)
+// wrappedRegisterer returns the Registerer field a client_golang wrapper
+// delegates to, and whether v is such a wrapper at all.
+func wrappedRegisterer(v reflect.Value) (reflect.Value, bool) {
+	if v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return reflect.Value{}, false
+		}
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct || v.Type().PkgPath() != clientGolangPackage {
+		return reflect.Value{}, false
+	}
+
+	registererType := reflect.TypeFor[prometheus.Registerer]()
+	for i := range v.NumField() {
+		if v.Type().Field(i).Type == registererType {
+			return v.Field(i), true
+		}
+	}
+
+	return reflect.Value{}, false
+}
+
+// differentSource reports whether two values provably reference distinct
+// metrics sources. Identity goes through reflection because comparing interface
+// values panics on an uncomparable dynamic type, and because an unwrapped
+// Registerer comes from an unexported field; undecidable cases are accepted.
+func differentSource(a, b reflect.Value) bool {
+	// Both interfaces were non-nil, and unwrapping only ever returns the
+	// dynamic value of a non-nil field, so neither Value can be invalid.
 
 	// Mismatched dynamic types say nothing: a wrapper delegating to the registry it
 	// was handed is a different type, same source. Pointer identity is then the only
 	// safe comparison - equality on a struct holding an interface can panic.
-	if av.Type() != bv.Type() || av.Kind() != reflect.Pointer {
+	if a.Type() != b.Type() || a.Kind() != reflect.Pointer {
 		return false
 	}
 
-	return av.Pointer() != bv.Pointer()
+	return a.Pointer() != b.Pointer()
 }
 
 // handle serves the metrics endpoint or instruments the request, depending on

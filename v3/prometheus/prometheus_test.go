@@ -1619,6 +1619,76 @@ func TestWrappingRegistererWithMismatchedGathererPanics(t *testing.T) {
 	})
 }
 
+// TestNestedWrappingRegistererIsUnwrapped pins that the walk follows a chain of
+// wrappers, not just the outermost one.
+func TestNestedWrappingRegistererIsUnwrapped(t *testing.T) {
+	registered := prometheus.NewRegistry()
+	gathered := prometheus.NewRegistry()
+
+	matching := prometheus.WrapRegistererWith(
+		prometheus.Labels{"instance": "one"},
+		prometheus.WrapRegistererWithPrefix("app_", registered),
+	)
+	mismatched := prometheus.WrapRegistererWith(
+		prometheus.Labels{"instance": "one"},
+		prometheus.WrapRegistererWithPrefix("app_", gathered),
+	)
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("expected nested wrappers around the paired registry to be accepted, got %v", r)
+			}
+		}()
+
+		_ = New(Config{Registerer: matching, Gatherer: registered})
+	}()
+
+	defer func() {
+		if r := recover(); r != nil {
+			if message := fmt.Sprint(r); !strings.Contains(message, "must reference the same metrics source") {
+				t.Fatalf("expected panic about mismatched sources, got %q", message)
+			}
+			return
+		}
+		t.Fatal("expected panic when nested wrappers end at a different registry")
+	}()
+
+	_ = New(Config{Registerer: mismatched, Gatherer: registered})
+}
+
+// TestOpaqueRegistererIsAccepted pins the limit of the check: a Registerer that
+// is not one of client_golang's wrappers keeps its delegation target to itself,
+// so the pair is accepted rather than guessed at. Reading such a type as a
+// wrapper would reject valid pairings.
+func TestOpaqueRegistererIsAccepted(t *testing.T) {
+	registry := prometheus.NewRegistry()
+
+	cases := map[string]prometheus.Registerer{
+		"custom type":       delegatingRegisterer{Registerer: prometheus.NewRegistry()},
+		"wrapping nil":      prometheus.WrapRegistererWithPrefix("app_", nil),
+		"wrapping a custom": prometheus.WrapRegistererWithPrefix("app_", delegatingRegisterer{Registerer: prometheus.NewRegistry()}),
+	}
+
+	for name, registerer := range cases {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("expected an opaque Registerer to be accepted, got %v", r)
+				}
+			}()
+
+			_ = New(Config{Registerer: registerer, Gatherer: registry})
+		})
+	}
+}
+
+// delegatingRegisterer stands in for a Registerer outside client_golang that
+// holds another one without necessarily registering through it.
+type delegatingRegisterer struct {
+	prometheus.Registerer
+}
+
 // TestEmptyBucketsWithoutNativeHistogramsKeepsDefaults pins the documented
 // caveat: client_golang substitutes its own defaults rather than leave a
 // histogram with no buckets, so an empty slice alone does not drop them.
