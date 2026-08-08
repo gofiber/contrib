@@ -350,20 +350,23 @@ metrics are not silently dropped.
 
 Supplying both also supports pairing a wrapper such as
 `prometheus.WrapRegistererWithPrefix` with the registry it wraps. Such a wrapper
-is not itself a `Gatherer`, so it is unwrapped — through as many nested
-client_golang wrappers as it has — down to the `Registerer` it hands
-registrations to, and that is what the `Gatherer` is compared against. Pairing a
-wrapper with an unrelated registry panics during initialization rather than
-silently omitting the middleware's metrics from scrapes.
+is not itself a `Gatherer`, so it is unwrapped — through its nested
+client_golang wrappers — down to the `Registerer` it hands registrations to, and
+that is what the `Gatherer` is compared against. A wrapper the walk resolves to
+an unrelated registry panics during initialization rather than silently omitting
+the middleware's metrics from scrapes.
 
-The comparison is deliberately one of provable inequality, and two shapes stay
-undecidable and are therefore accepted. A `Registerer` that is neither a
-`Gatherer` nor a client_golang wrapper keeps its destination to itself — reading
-any type that merely holds another `Registerer` as a delegation chain would
-reject valid pairings. And a `Gatherer` that hides its source behind a wrapper,
-`prometheus.GathererFunc(other.Gather)` for instance, is opaque in the same way
-even when the `Registerer` is a plain registry. Neither is checked, so pairing
-either with an unrelated source still scrapes nothing.
+The comparison is deliberately one of provable inequality, so a pair the walk
+cannot resolve is accepted, and three shapes are undecidable. A `Registerer`
+that is neither a `Gatherer` nor a client_golang wrapper keeps its destination
+to itself — reading any type that merely holds another `Registerer` as a
+delegation chain would reject valid pairings. A `Gatherer` that hides its source
+behind a wrapper, `prometheus.GathererFunc(other.Gather)` for instance, is
+opaque in the same way even when the `Registerer` is a plain registry. And the
+walk itself is depth-bounded, so a chain of wrappers longer than the bound ends
+undecided rather than resolved — a bound no real configuration reaches, since
+wrappers are nested by hand. None of the three is checked, so pairing one with
+an unrelated source still scrapes nothing.
 
 ```go
 registry := prometheus.NewRegistry()

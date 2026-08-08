@@ -572,9 +572,9 @@ const clientGolangPackage = "github.com/prometheus/client_golang/prometheus"
 const maxRegistererUnwraps = 32
 
 // unwrapRegisterer follows a chain of client_golang Registerer wrappers down to
-// the Registerer they ultimately register with. ok is false when nothing was
-// unwrapped, either because the value is not one of those wrappers or because
-// the chain does not end - in both cases the destination is unknowable and the
+// the Registerer they ultimately register with. ok is false whenever that
+// destination cannot be established - the value is not one of those wrappers,
+// it wraps nil, or the chain runs past maxRegistererUnwraps - and every such
 // pair has to be accepted.
 //
 // The walk reads unexported fields, so the result stays a reflect.Value:
