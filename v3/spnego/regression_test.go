@@ -40,8 +40,7 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// TestUnauthorizedNotCalledOnContinueNeeded covers the "continue needed" leg:
-// a 401 that asks the client to retry, not a failure to hand to Unauthorized.
+// The continue-needed leg is a 401 asking the client to retry, not a failure.
 func TestUnauthorizedNotCalledOnContinueNeeded(t *testing.T) {
 	var unauthorizedCalled bool
 	ctx := serveProtected(t, Config{
@@ -51,8 +50,7 @@ func TestUnauthorizedNotCalledOnContinueNeeded(t *testing.T) {
 			return c.Status(fiber.StatusForbidden).SendString("denied")
 		},
 	}, func(ctx *fasthttp.RequestCtx) {
-		// An NTLMSSP token is a Negotiate header gokrb5 parses as neither SPNEGO nor
-		// raw KRB5 — the path that asks the client to renegotiate.
+		// An NTLMSSP token parses as neither SPNEGO nor raw KRB5, so it asks to renegotiate.
 		ctx.Request.Header.Set(fiber.HeaderAuthorization,
 			"Negotiate "+base64.StdEncoding.EncodeToString([]byte("NTLMSSP\x00\x01\x00\x00\x00")))
 	})
@@ -63,8 +61,7 @@ func TestUnauthorizedNotCalledOnContinueNeeded(t *testing.T) {
 		"the continuation token must reach the client untouched")
 }
 
-// TestUnauthorizedNotCalledOnOpeningChallenge covers the bootstrap leg. Clients
-// start SPNEGO only on an untouched 401, so rewriting it is a silent deny-all.
+// Clients start SPNEGO only on an untouched 401, so rewriting it is a deny-all.
 func TestUnauthorizedNotCalledOnOpeningChallenge(t *testing.T) {
 	ctx := serveProtected(t, Config{
 		KeytabLookup: testKeytabLookup(t),
@@ -80,8 +77,7 @@ func TestUnauthorizedNotCalledOnOpeningChallenge(t *testing.T) {
 		"SPNEGO's own body must reach the client, not just its headers")
 }
 
-// TestIsRejection pins which of gokrb5's three 401 shapes counts as a failure:
-// only the rejection, since the other two can still succeed.
+// Only the rejection counts as a failure; the other two 401s can still succeed.
 func TestIsRejection(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -104,8 +100,7 @@ func TestIsRejection(t *testing.T) {
 	}
 }
 
-// TestKeytabLookupErrorNotLeakedToClient keeps the keytab path and OS error out
-// of the body, which Fiber's default handler would echo verbatim.
+// Fiber's default handler would echo the keytab path and OS error to the client.
 func TestKeytabLookupErrorNotLeakedToClient(t *testing.T) {
 	secretPath := path.Join(t.TempDir(), "super-secret-location.keytab")
 	ctx := serveProtected(t, Config{
@@ -119,8 +114,7 @@ func TestKeytabLookupErrorNotLeakedToClient(t *testing.T) {
 	require.NotContains(t, string(ctx.Response.Body()), "permission denied")
 }
 
-// TestNilKeytabFromLookup covers a lookup reporting success with no keytab.
-// gokrb5 dereferences it unconditionally, so passing it through panics.
+// gokrb5 dereferences the keytab unconditionally, so a nil one panics.
 func TestNilKeytabFromLookup(t *testing.T) {
 	var ctx *fasthttp.RequestCtx
 	require.NotPanics(t, func() {
@@ -155,8 +149,7 @@ func TestNextSkipsMiddleware(t *testing.T) {
 	require.Equal(t, "ok", string(ctx.Response.Body()))
 }
 
-// TestResolveLoggerNilFiberLogger covers the nil interface Fiber returns when
-// its logger is not a *log.Logger — calling Logger on it panics in New.
+// Fiber returns a nil interface when its logger is not a *log.Logger; Logger panics.
 func TestResolveLoggerNilFiberLogger(t *testing.T) {
 	t.Run("nil fiber logger does not panic", func(t *testing.T) {
 		require.NotPanics(t, func() {
@@ -164,8 +157,7 @@ func TestResolveLoggerNilFiberLogger(t *testing.T) {
 		})
 	})
 
-	// "Off" discards, never nil: gokrb5 hands it to Ticket.GetPACType, which calls
-	// Printf unchecked on the PAC path that is on by default.
+	// "Off" discards, never nil: GetPACType calls Printf unchecked on the PAC path.
 	t.Run("gokrb5 logging is discarded unless asked for", func(t *testing.T) {
 		got := resolveLogger(Config{}, flog.DefaultLogger[*log.Logger]())
 		require.Same(t, discardLogger, got)
@@ -182,8 +174,7 @@ func TestResolveLoggerNilFiberLogger(t *testing.T) {
 	})
 }
 
-// TestKeytabCacheSurvivesTornRead: a keytab that fails to parse mid-rotation
-// must not take out authentication when a good one is already cached.
+// A keytab that fails to parse mid-rotation must not take out authentication.
 func TestKeytabCacheSurvivesTornRead(t *testing.T) {
 	dir := t.TempDir()
 	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
@@ -194,8 +185,7 @@ func TestKeytabCacheSurvivesTornRead(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, good)
 
-	// Simulate the window where the file has been truncated but not yet
-	// rewritten. Its stamp changes, so the cache tries to reload and fails.
+	// Truncated but not yet rewritten: the stamp changes, so the reload fails.
 	require.NoError(t, os.WriteFile(filename, []byte("12"), 0o600))
 
 	served, err := fn()
@@ -213,8 +203,7 @@ func TestKeytabCacheSurvivesTornRead(t *testing.T) {
 	require.NotSame(t, good, after)
 }
 
-// TestKeytabCacheReportsFirstLoadFailure checks that the fallback does not hide
-// a keytab that never loaded in the first place.
+// The fallback must not hide a keytab that never loaded in the first place.
 func TestKeytabCacheReportsFirstLoadFailure(t *testing.T) {
 	broken := path.Join(t.TempDir(), "broken.keytab")
 	require.NoError(t, os.WriteFile(broken, []byte("12"), 0o600))
@@ -225,8 +214,7 @@ func TestKeytabCacheReportsFirstLoadFailure(t *testing.T) {
 	require.ErrorIs(t, err, ErrLoadKeytabFileFailed)
 }
 
-// rejectedNegotiateHeader builds a well-formed NegTokenInit whose mech token
-// fails validation — the one path producing an outright rejection.
+// A well-formed NegTokenInit whose mech token fails — the one outright rejection.
 func rejectedNegotiateHeader(t *testing.T) string {
 	t.Helper()
 	token := gospnego.SPNEGOToken{
@@ -241,8 +229,7 @@ func rejectedNegotiateHeader(t *testing.T) string {
 	return "Negotiate " + base64.StdEncoding.EncodeToString(raw)
 }
 
-// TestUnauthorizedCalledOnRejection is the positive case for Config.Unauthorized:
-// a client presented a ticket and the service refused it.
+// The positive case: a client presented a ticket and the service refused it.
 func TestUnauthorizedCalledOnRejection(t *testing.T) {
 	var called bool
 	ctx := serveProtected(t, Config{
@@ -258,14 +245,12 @@ func TestUnauthorizedCalledOnRejection(t *testing.T) {
 	require.True(t, called, "Unauthorized must run when a ticket is rejected")
 	require.Equal(t, fiber.StatusForbidden, ctx.Response.StatusCode())
 	require.Equal(t, "denied", string(ctx.Response.Body()))
-	// The godoc promises a handler that only sets a status and body leaves
-	// SPNEGO's headers in place.
+	// A handler that only sets status and body leaves SPNEGO's headers in place.
 	require.Equal(t, spnegoRejected, string(ctx.Response.Header.Peek(fiber.HeaderWWWAuthenticate)),
 		"a custom handler must not lose the WWW-Authenticate header")
 }
 
-// TestRejectionWithoutHandlerPassesThrough checks the default: with no handler
-// configured, SPNEGO's own rejection reaches the client unchanged.
+// With no handler, SPNEGO's own rejection reaches the client unchanged.
 func TestRejectionWithoutHandlerPassesThrough(t *testing.T) {
 	ctx := serveProtected(t, Config{KeytabLookup: testKeytabLookup(t)},
 		func(ctx *fasthttp.RequestCtx) {
@@ -278,8 +263,7 @@ func TestRejectionWithoutHandlerPassesThrough(t *testing.T) {
 		"SPNEGO's own body must reach the client, not just its headers")
 }
 
-// TestLookupErrorRemainsInspectable checks that hiding the detail from the
-// client did not also hide it from the application's own error handler.
+// Hiding the detail from the client must not hide it from the ErrorHandler.
 func TestLookupErrorRemainsInspectable(t *testing.T) {
 	middleware, err := New(Config{
 		KeytabLookup: func() (*keytab.Keytab, error) {
@@ -308,11 +292,9 @@ func TestLookupErrorRemainsInspectable(t *testing.T) {
 		"the message shown to a client must not carry the cause")
 }
 
-// TestLookupErrorCannotChooseTheResponseStatus is why clientSafeError implements
-// Is and not Unwrap: Fiber resolves status via errors.As, which walks Unwrap.
+// Why clientSafeError implements Is and not Unwrap: Fiber resolves status by As.
 //
-// Adding the Unwrap method that Go style would otherwise expect is the whole
-// regression, and it is invisible without this test.
+// Adding the Unwrap Go style expects is the regression, invisible without this.
 func TestLookupErrorCannotChooseTheResponseStatus(t *testing.T) {
 	ctx := serveProtected(t, Config{
 		KeytabLookup: func() (*keytab.Keytab, error) {
@@ -329,8 +311,7 @@ func TestLookupErrorCannotChooseTheResponseStatus(t *testing.T) {
 		"the cause must not reach the client through the body either")
 }
 
-// TestKeytabStaleGraceExpires checks that a keytab which stays unparsable stops
-// being covered for. Serving it forever would keep a revoked key alive.
+// A keytab that stays unparsable must stop being covered, or a revoked key lives on.
 func TestKeytabStaleGraceExpires(t *testing.T) {
 	dir := t.TempDir()
 	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
@@ -339,8 +320,7 @@ func TestKeytabStaleGraceExpires(t *testing.T) {
 	cache := &keytabFileCache{
 		files:      []string{filename},
 		staleGrace: 30 * time.Second,
-		// A tiny retry window keeps the throttle out of the way; load() maps a
-		// non-positive value back to the 1s default, so 0 would not disable it.
+		// A tiny retry window; load maps a non-positive value back to the 1s default.
 		retryEvery: time.Nanosecond,
 		nowFn:      func() time.Time { return now },
 	}
@@ -355,8 +335,7 @@ func TestKeytabStaleGraceExpires(t *testing.T) {
 	require.NoError(t, err, "within the grace window the last good keytab is served")
 	require.Same(t, good, served)
 
-	// Exactly at the boundary the keytab is still covered for; one tick past it
-	// the fallback expires.
+	// At the boundary it is still covered; one tick past, the fallback expires.
 	now = now.Add(30 * time.Second)
 	_, err = cache.load()
 	require.NoError(t, err, "the grace window is inclusive of its own length")
@@ -366,8 +345,7 @@ func TestKeytabStaleGraceExpires(t *testing.T) {
 	require.ErrorIs(t, err, ErrLoadKeytabFileFailed, "the fallback must not outlive the grace window")
 }
 
-// TestKeytabStaleGraceResetsAfterRecovery covers an episode ending on the
-// cache-hit path, when a restore (cp -p) leaves size and mtime matching.
+// An episode ending on the cache-hit path, when a restore leaves size and mtime.
 func TestKeytabStaleGraceResetsAfterRecovery(t *testing.T) {
 	dir := t.TempDir()
 	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
@@ -407,8 +385,7 @@ func TestKeytabStaleGraceResetsAfterRecovery(t *testing.T) {
 	require.Same(t, good, served)
 }
 
-// TestKeytabRetryThrottle checks that a revision already known to be unparsable
-// is not re-read on every request while the fault persists.
+// A revision known to be unparsable is not re-read on every request.
 func TestKeytabRetryThrottle(t *testing.T) {
 	dir := t.TempDir()
 	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
@@ -447,8 +424,7 @@ func TestKeytabRetryThrottle(t *testing.T) {
 	require.NotEqual(t, firstAttempt, lastAttempt(), "should retry once the window elapses")
 }
 
-// TestNewKeytabFileCacheWiresDefaults pins what the production constructor
-// configures, which the hand-built caches above deliberately override.
+// What the production constructor wires, which the hand-built caches override.
 func TestNewKeytabFileCacheWiresDefaults(t *testing.T) {
 	filename := writeMockKeytab(t, t.TempDir(), "sso.keytab", "HTTP/sso.example.com")
 
@@ -458,16 +434,14 @@ func TestNewKeytabFileCacheWiresDefaults(t *testing.T) {
 	require.Positive(t, cache.grace(), "a zero grace would defeat the torn-read fallback")
 	require.Positive(t, cache.retry(), "a zero retry interval would re-read on every request")
 
-	// The constructor copies its input, so a caller mutating the slice
-	// afterwards cannot repoint the cache at a different keytab.
+	// The constructor copies its input, so mutating the slice cannot repoint the cache.
 	files := []string{filename}
 	cache = newKeytabFileCache(files)
 	files[0] = "/nonexistent"
 	_, err := cache.load()
 	require.NoError(t, err)
 
-	// A zero-value cache must still work: now falls back to the wall clock and
-	// grace to the default, so no nil call and no zero window.
+	// A zero-value cache still works: no nil clock call and no zero window.
 	zero := &keytabFileCache{files: []string{filename}}
 	require.NotPanics(t, func() {
 		_, loadErr := zero.load()
@@ -477,8 +451,7 @@ func TestNewKeytabFileCacheWiresDefaults(t *testing.T) {
 	require.Equal(t, keytabRetryEvery, zero.retry())
 }
 
-// TestKeytabEpisodeBoundedAcrossRevisions: each bad write is a new revision, and
-// restarting the grace window per revision would cover revoked keys forever.
+// Each bad write is a new revision; restarting the grace would cover revoked keys.
 func TestKeytabEpisodeBoundedAcrossRevisions(t *testing.T) {
 	dir := t.TempDir()
 	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
@@ -504,8 +477,7 @@ func TestKeytabEpisodeBoundedAcrossRevisions(t *testing.T) {
 	require.ErrorIs(t, lastErr, ErrLoadKeytabFileFailed)
 }
 
-// TestEndEpisodeIfCurrentRejectsStaleView: a request whose stat predates a
-// rotation must not cancel the episode another goroutine opened.
+// A stat predating a rotation must not cancel another goroutine's episode.
 func TestEndEpisodeIfCurrentRejectsStaleView(t *testing.T) {
 	dir := t.TempDir()
 	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
@@ -522,8 +494,7 @@ func TestEndEpisodeIfCurrentRejectsStaleView(t *testing.T) {
 	cache.degraded.Store(true)
 	cache.mu.Unlock()
 
-	// A caller holding the pre-rotation view must not clear that episode: the
-	// keytab on disk is still broken.
+	// The pre-rotation view must not clear it: the keytab on disk is still broken.
 	cache.endEpisodeIfCurrent(goodStamps)
 	require.True(t, cache.degraded.Load(), "a stale view must not end a live episode")
 
@@ -538,8 +509,7 @@ func TestEndEpisodeIfCurrentRejectsStaleView(t *testing.T) {
 	require.False(t, cache.degraded.Load(), "a current view must end the episode")
 }
 
-// TestKeytabRotationByRenameDetected covers the rotation the README recommends.
-// Size and mtime alone would call a same-sized, timestamp-preserved file unchanged.
+// The rotation the README recommends; size and mtime alone would miss it.
 func TestKeytabRotationByRenameDetected(t *testing.T) {
 	if !identityDetectsRename {
 		t.Skip("platform has no dependable file identity; detection falls back to size and mtime")
@@ -554,8 +524,7 @@ func TestKeytabRotationByRenameDetected(t *testing.T) {
 	before, err := cache.load()
 	require.NoError(t, err)
 
-	// A different principal of the same length, staged with the original's
-	// mtime, then renamed into place.
+	// A different principal of the same length, staged with the original's mtime.
 	staged := writeMockKeytab(t, dir, "staged.keytab", "HTTP/sso.example.org")
 	stagedInfo, err := os.Stat(staged)
 	require.NoError(t, err)
@@ -571,11 +540,9 @@ func TestKeytabRotationByRenameDetected(t *testing.T) {
 	require.Equal(t, "HTTP/sso.example.org@TEST.LOCAL", info2[0].PrincipalName)
 }
 
-// TestKeytabUnreadableIsNotCoveredFor separates unreadable from unparsable. Only
-// the latter is a mid-write read; an unreadable keytab must surface at once.
+// Only unparsable is a mid-write read; unreadable must surface at once.
 //
-// A directory in place of the file yields EISDIR portably; chmod is not usable
-// because the suite may run as root.
+// A directory yields EISDIR portably; chmod is not usable as the suite may be root.
 func TestKeytabUnreadableIsNotCoveredFor(t *testing.T) {
 	dir := t.TempDir()
 	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
@@ -602,13 +569,11 @@ func TestKeytabUnreadableIsNotCoveredFor(t *testing.T) {
 	require.True(t, cache.degraded.Load())
 }
 
-// TestRequestForSPNEGO checks the hand-built request. A field populated wrongly
-// is worse than one left nil, because nil fails loudly.
+// A field populated wrongly is worse than one left nil, because nil fails loudly.
 func TestRequestForSPNEGO(t *testing.T) {
 	var got *http.Request
 	app := fiber.New()
-	// Driven with a non-default verb: asserting GET against a hardcoded "GET" would
-	// hold however the method was derived.
+	// A non-default verb: asserting GET would hold however the method was derived.
 	app.All("/*", func(c fiber.Ctx) error {
 		got = requestForSPNEGO(c, false)
 		return nil
@@ -626,36 +591,30 @@ func TestRequestForSPNEGO(t *testing.T) {
 	require.NotNil(t, got)
 	require.Equal(t, fiber.MethodPatch, got.Method)
 	require.Equal(t, "Negotiate abc", got.Header.Get(fiber.HeaderAuthorization))
-	// Cookies are withheld unless a session manager needs them, so gokrb5 is not
-	// handed every cookie the site sets on requests that have no use for them.
+	// Cookies are withheld unless a manager needs them, so gokrb5 gets none of them.
 	require.Empty(t, got.Header.Get(fiber.HeaderCookie),
 		"cookies must not be forwarded without a session manager")
-	// Host sits behind the same gate: nothing reads it without a session
-	// manager, and asking Fiber for it walks the headers once TrustProxy is on.
+	// Host is behind the same gate: unread without a manager, and it walks the headers.
 	require.Empty(t, got.Host, "the host is only for a session manager")
 
-	// RemoteAddr is the one field gokrb5 reads — it constrains ticket verification to
-	// that address — so both the value and its parseability are pinned.
+	// RemoteAddr is the one field gokrb5 reads, constraining ticket verification.
 	require.Equal(t, "203.0.113.7:55123", got.RemoteAddr)
 	addr, err := types.GetHostAddress(got.RemoteAddr)
 	require.NoError(t, err, "gokrb5 must be able to parse the address it is handed")
 	require.Equal(t, net.IPv4(203, 0, 113, 7).To4(), net.IP(addr.Address))
 
-	// URL carries at most a scheme, and not even that without a session manager. It
-	// is never a reconstruction of the target.
+	// URL carries at most a scheme; it is never a reconstruction of the target.
 	require.NotNil(t, got.URL)
 	require.Empty(t, got.URL.Path)
 	require.Empty(t, got.URL.RawQuery)
-	// Scheme and TLS serve a session manager alone, so a request without one pays
-	// for neither: a tls.ConnectionState copy and a header walk per request.
+	// Scheme and TLS serve a manager alone — a state copy and a header walk per request.
 	require.Empty(t, got.URL.Scheme,
 		"the scheme is only for a session manager")
 	require.Nil(t, got.TLS,
 		"the TLS state is only for a session manager")
 }
 
-// TestRequestForSPNEGOHasANonNilBody pins net/http's server-request invariant: a
-// manager holding "defer r.Body.Close()" would otherwise panic the request.
+// net/http's invariant: a manager's "defer r.Body.Close()" would panic on nil.
 func TestRequestForSPNEGOHasANonNilBody(t *testing.T) {
 	build := func(t *testing.T, forSessionManager bool) *http.Request {
 		t.Helper()
@@ -673,8 +632,7 @@ func TestRequestForSPNEGOHasANonNilBody(t *testing.T) {
 		return got
 	}
 
-	// Both shapes: the field is set on the literal, so a future refactor that
-	// moves it behind the session-manager gate would leave the other nil.
+	// Both shapes: a refactor moving it behind the gate would leave the other nil.
 	for _, forSessionManager := range []bool{false, true} {
 		got := build(t, forSessionManager)
 		require.NotNil(t, got.Body, "net/http guarantees a server request has a body")
@@ -687,30 +645,25 @@ func TestRequestForSPNEGOHasANonNilBody(t *testing.T) {
 	}
 }
 
-// TestRequestForSPNEGOCopiesOutOfTheRequestBuffer pins that nothing handed to a
-// session manager points back into fasthttp's storage.
+// Nothing handed to a session manager may point back into fasthttp's storage.
 //
-// Fiber hands out views into fasthttp's pooled buffer, so a manager retaining
-// r.Host would read back another connection's bytes and record the wrong client.
+// A manager retaining r.Host would read another connection's bytes.
 //
-// Asserted on the strings' storage, not by serving a second request: whether a
-// reused buffer lands on the same bytes depends on fasthttp's pooling.
+// Asserted on storage, not by a second request: fasthttp's pooling is not reliable.
 func TestRequestForSPNEGOCopiesOutOfTheRequestBuffer(t *testing.T) {
 	raw := "POST /authenticate HTTP/1.1\r\n" +
 		"Host: sso.example.com:8443\r\n" +
 		"Authorization: Negotiate dGlja2V0\r\n" +
 		"X-Forwarded-Proto: https\r\n" +
 		"Cookie: spnego-session=opaque\r\n\r\n"
-	// Host carries a port on purpose — net/http documents it as "host or host:port",
-	// so it is Fiber's Host and not Hostname, which drops it.
+	// Host carries a port on purpose — Fiber's Host, not Hostname, which drops it.
 
 	ctx := &fasthttp.RequestCtx{}
 	require.NoError(t, ctx.Request.Read(bufio.NewReader(bytes.NewBufferString(raw))))
 	ctx.SetRemoteAddr(&net.TCPAddr{IP: net.IPv4(203, 0, 113, 7), Port: 55123})
 
 	var got *http.Request
-	// TrustProxy on: it is the only configuration where Scheme comes out of the
-	// request buffer at all, so the check below would otherwise hold anything.
+	// TrustProxy on is the only configuration where Scheme comes out of the buffer.
 	app := fiber.New(fiber.Config{
 		TrustProxy: true,
 		TrustProxyConfig: fiber.TrustProxyConfig{
@@ -730,8 +683,7 @@ func TestRequestForSPNEGOCopiesOutOfTheRequestBuffer(t *testing.T) {
 	require.Equal(t, "https", got.URL.Scheme,
 		"the proxy must be trusted, or Scheme is a constant and proves nothing")
 
-	// Every byte range Fiber could have handed out a view of. A copied string
-	// starts outside all of them; an aliasing one starts inside its own.
+	// Every range Fiber could have viewed. A copy starts outside all of them.
 	buffers := [][]byte{
 		ctx.Request.Header.Peek(fiber.HeaderAuthorization),
 		ctx.Request.Header.Peek(fiber.HeaderHost),
@@ -743,8 +695,7 @@ func TestRequestForSPNEGOCopiesOutOfTheRequestBuffer(t *testing.T) {
 		ctx.Request.Header.Header(),
 	}
 	for _, tc := range []struct{ field, value string }{
-		// Method is here despite not being cloned: Fiber answers from its own constants,
-		// and this is where it shows up if that stops being true.
+		// Method is not cloned — Fiber answers from constants, and this catches a change.
 		{field: "Method", value: got.Method},
 		{field: "Host", value: got.Host},
 		{field: "the Authorization value", value: got.Header.Get(fiber.HeaderAuthorization)},
@@ -755,8 +706,7 @@ func TestRequestForSPNEGOCopiesOutOfTheRequestBuffer(t *testing.T) {
 	} {
 		require.NotEmpty(t, tc.value, "%s must be set, or the check below is vacuous", tc.field)
 		for _, buffer := range buffers {
-			// Not require: every field is worth reporting, and stopping at the
-			// first would hide how many of them alias.
+			// Not require: stopping at the first would hide how many fields alias.
 			if sharesStorage(tc.value, buffer) {
 				t.Errorf("%s aliases the request buffer; a session manager that keeps it "+
 					"would read back the next request's bytes", tc.field)
@@ -765,11 +715,9 @@ func TestRequestForSPNEGOCopiesOutOfTheRequestBuffer(t *testing.T) {
 		}
 	}
 
-	// Without a manager nothing outlives the handler, so the copy is skipped — a
-	// Kerberos header runs to kilobytes. Asserted, since the gate is invisible.
+	// Without a manager the copy is skipped; asserted, since the gate is invisible.
 	//
-	// The one assertion pinning an optimisation rather than a safety property: if
-	// gokrb5 starts retaining the request, copy unconditionally and delete this.
+	// Pins an optimisation, not safety: if gokrb5 retains the request, delete this.
 	var bare *http.Request
 	bareCtx := &fasthttp.RequestCtx{}
 	require.NoError(t, bareCtx.Request.Read(bufio.NewReader(bytes.NewBufferString(raw))))
@@ -789,8 +737,7 @@ func TestRequestForSPNEGOCopiesOutOfTheRequestBuffer(t *testing.T) {
 	require.Empty(t, bare.Host, "the host is only for a session manager")
 }
 
-// sharesStorage reports whether s begins inside b, which is what a view of a
-// request buffer looks like. Fiber hands out whole values, never a middle.
+// sharesStorage reports whether s begins inside b — Fiber hands out whole values.
 func sharesStorage(s string, b []byte) bool {
 	if len(s) == 0 || len(b) == 0 {
 		return false
@@ -800,12 +747,10 @@ func sharesStorage(s string, b []byte) bool {
 	return start >= low && start < low+uintptr(len(b))
 }
 
-// carriedValueKey is the key both context tests store under. Unexported, as
-// context.WithValue requires: an anonymous struct{}{} collides silently.
+// Unexported, as context.WithValue requires: an anonymous struct{}{} collides.
 type carriedValueKey struct{}
 
-// TestRequestForSPNEGOCarriesFibersContext pins the context a manager gets.
-// Unset it is Background: no deadline, and nothing joined to the app's trace.
+// Unset, the context is Background: no deadline, nothing joined to the app's trace.
 func TestRequestForSPNEGOCarriesFibersContext(t *testing.T) {
 	build := func(t *testing.T, forSessionManager bool) *http.Request {
 		t.Helper()
@@ -827,17 +772,14 @@ func TestRequestForSPNEGOCarriesFibersContext(t *testing.T) {
 	require.Equal(t, "from the application", build(t, true).Context().Value(carriedValueKey{}),
 		"a session manager must reach its store under the application's context")
 
-	// Not carried without a manager: WithContext shallow-copies the whole request,
-	// and nothing on that path would read it.
+	// Not carried without a manager: WithContext copies the whole request for nothing.
 	require.Nil(t, build(t, false).Context().Value(carriedValueKey{}),
 		"the context is only for a session manager")
 }
 
-// TestRequestForSPNEGOReportsEverySchemeFaithfully covers the three arms: two
-// assign a constant to avoid allocating, the third copies out of the buffer.
+// Three arms: two assign a constant to avoid allocating, the third copies.
 //
-// What every arm has to hold is the same: the value is what Fiber reported, and
-// it does not point back into the buffer.
+// Every arm holds the same: Fiber's value, not pointing back into the buffer.
 func TestRequestForSPNEGOReportsEverySchemeFaithfully(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -846,8 +788,7 @@ func TestRequestForSPNEGOReportsEverySchemeFaithfully(t *testing.T) {
 	}{
 		{name: "http", forwarded: "http", wantScheme: "http"},
 		{name: "https", forwarded: "https", wantScheme: "https"},
-		// Neither constant, so it takes the copying arm. Fiber passes it through, and it
-		// is as much a view into the buffer as the other two.
+		// Neither constant, so it copies — as much a view into the buffer as the others.
 		{name: "something else entirely", forwarded: "wss", wantScheme: "wss"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -881,11 +822,9 @@ func TestRequestForSPNEGOReportsEverySchemeFaithfully(t *testing.T) {
 	}
 }
 
-// TestRequestForSPNEGOSkipsTheContextCopyWhenThereIsNothingToCarry pins the skip:
-// for an app that never calls SetContext, WithContext would allocate for nothing.
+// For an app that never calls SetContext, WithContext would allocate for nothing.
 //
-// Measured relatively rather than against a fixed count, so it does not have to
-// be revisited whenever an unrelated allocation moves.
+// Measured relatively, so an unrelated allocation moving does not break it.
 func TestRequestForSPNEGOSkipsTheContextCopyWhenThereIsNothingToCarry(t *testing.T) {
 	allocs := func(t *testing.T, setContext bool) float64 {
 		t.Helper()
@@ -911,17 +850,14 @@ func TestRequestForSPNEGOSkipsTheContextCopyWhenThereIsNothingToCarry(t *testing
 		"a context with nothing in it must not cost a copy of the request")
 }
 
-// TestRequestForSPNEGOStatesTheProtocol pins Proto against its numbers, so a
-// manager comparing ProtoAtLeast with Proto is not told two different things.
+// Proto pinned against its numbers, so ProtoAtLeast and Proto never disagree.
 //
-// It also pins the gate: a manager is the only reader, so a request without one
-// must not copy the protocol out of the buffer and parse it.
+// Also the gate: without a manager, nothing copies the protocol out and parses it.
 func TestRequestForSPNEGOStatesTheProtocol(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		raw  string
-		// protocol overrides what the request line said, for versions fasthttp
-		// will hold but not parse.
+		// protocol overrides the request line, for versions fasthttp holds but cannot parse.
 		protocol    string
 		wantProto   string
 		wantMajor   int
@@ -939,15 +875,13 @@ func TestRequestForSPNEGOStatesTheProtocol(t *testing.T) {
 			wantProto: "HTTP/1.0", wantMajor: 1, wantMinor: 0, wantAtLeast: false,
 		},
 		{
-			// Anything else takes the parsing arm. fasthttp records an unfamiliar version
-			// on the request line rather than rejecting it, so this is not hypothetical.
+			// Anything else parses. fasthttp records an unfamiliar version rather than rejecting.
 			name:      "an unfamiliar version is parsed rather than assumed",
 			raw:       "GET /authenticate HTTP/2.0\r\nHost: sso.example.com\r\n\r\n",
 			wantProto: "HTTP/2.0", wantMajor: 2, wantMinor: 0, wantAtLeast: true,
 		},
 		{
-			// A version net/http refuses leaves all three fields alone rather than pairing a
-			// string with numbers that contradict it. Set on the header: fasthttp rejects a
+			// A version net/http refuses leaves all three fields unset rather than contradicting.
 			name:      "a version that will not parse is left unstated",
 			protocol:  "HTTP/11.1",
 			wantProto: "", wantMajor: 0, wantMinor: 0, wantAtLeast: false,
@@ -982,8 +916,7 @@ func TestRequestForSPNEGOStatesTheProtocol(t *testing.T) {
 			require.Equal(t, tc.wantMinor, got.ProtoMinor)
 			require.Equal(t, tc.wantAtLeast, got.ProtoAtLeast(1, 1),
 				"the numbers must agree with the string")
-			// RequestURI stays empty along with the rest of the path: it cannot
-			// be reconstructed faithfully, so it is not claimed.
+			// RequestURI stays empty: the path cannot be reconstructed faithfully.
 			require.Empty(t, got.RequestURI)
 
 			bare := build(false)
@@ -994,8 +927,7 @@ func TestRequestForSPNEGOStatesTheProtocol(t *testing.T) {
 	}
 }
 
-// TestRequestForSPNEGOForwardsCookiesForSessionManager covers the other half: a
-// manager reads its session from the cookies, so withholding them misses every time.
+// A manager reads its session from the cookies, so withholding them misses every time.
 func TestRequestForSPNEGOForwardsCookiesForSessionManager(t *testing.T) {
 	var got *http.Request
 	app := fiber.New()
@@ -1017,11 +949,9 @@ func TestRequestForSPNEGOForwardsCookiesForSessionManager(t *testing.T) {
 	require.Equal(t, "abc123", cookie.Value)
 }
 
-// TestRequestForSPNEGOForwardsEveryCookie covers a client that sends more than
-// one Cookie line.
+// A client that sends more than one Cookie line.
 //
-// Parsed from a raw request, not built with Add: Add merges into one line, while
-// two real lines leave Peek returning only the first — which is the bug.
+// Raw, not Add: Add merges into one line, while two real lines expose the bug.
 func TestRequestForSPNEGOForwardsEveryCookie(t *testing.T) {
 	raw := "GET /authenticate HTTP/1.1\r\n" +
 		"Host: sso.example.com\r\n" +
@@ -1051,8 +981,7 @@ func TestRequestForSPNEGOForwardsEveryCookie(t *testing.T) {
 	require.Equal(t, "1", unrelated.Value)
 }
 
-// TestRequestForSPNEGODropsValuelessCookies covers a cookie sent with no "=".
-// Neither rendering is faithful, and neither is lookupable by name, so it is dropped.
+// A cookie with no "=" renders faithfully either way and is lookupable by neither.
 func TestRequestForSPNEGODropsValuelessCookies(t *testing.T) {
 	raw := "GET /authenticate HTTP/1.1\r\n" +
 		"Host: sso.example.com\r\n" +
@@ -1081,8 +1010,7 @@ func TestRequestForSPNEGODropsValuelessCookies(t *testing.T) {
 	require.Equal(t, "opaque", session.Value)
 }
 
-// TestRequestForSPNEGODropsLeadingEqualsCookies is the other half: fasthttp parses
-// "=sneaky" to the same empty key, so rendering it invents a cookie "sneaky".
+// fasthttp parses "=sneaky" to the same empty key, so rendering invents a cookie.
 func TestRequestForSPNEGODropsLeadingEqualsCookies(t *testing.T) {
 	raw := "GET /authenticate HTTP/1.1\r\n" +
 		"Host: sso.example.com\r\n" +
@@ -1108,11 +1036,9 @@ func TestRequestForSPNEGODropsLeadingEqualsCookies(t *testing.T) {
 	require.Equal(t, "opaque", session.Value)
 }
 
-// TestRequestForSPNEGOSkipsNamelessCookiesWithoutLeavingAGap covers the nameless
-// cookie arriving other than first, where the separator can go wrong on its own.
+// A nameless cookie other than first, where the separator can go wrong alone.
 //
-// The other two tests put it at the head, where no separator is written, so
-// neither notices "a=1; ; b=2" — a stray element every parser must handle.
+// At the head no separator is written, so neither test notices "a=1; ; b=2".
 func TestRequestForSPNEGOSkipsNamelessCookiesWithoutLeavingAGap(t *testing.T) {
 	raw := "GET /authenticate HTTP/1.1\r\n" +
 		"Host: sso.example.com\r\n" +
@@ -1132,8 +1058,7 @@ func TestRequestForSPNEGOSkipsNamelessCookiesWithoutLeavingAGap(t *testing.T) {
 	app.Handler()(ctx)
 
 	require.NotNil(t, got)
-	// Asserted on the header text, not parsed cookies: Go's parser drops an empty
-	// element silently, so the gap would survive unnoticed.
+	// Asserted on header text: Go's parser drops an empty element silently.
 	require.Equal(t, "first=one; last=two", got.Header.Get("Cookie"))
 
 	named := &http.Request{Header: got.Header}
@@ -1146,11 +1071,9 @@ func TestRequestForSPNEGOSkipsNamelessCookiesWithoutLeavingAGap(t *testing.T) {
 	require.Error(t, err, "a cookie the client never named must not be invented")
 }
 
-// TestRequestForSPNEGOCarriesSchemeAndTLS pins what a store reads to decide if its
-// cookie may be Secure. Unset, it would issue a credential without that attribute.
+// What a store reads to decide whether its session cookie may be Secure.
 //
-// The TLS case needs a real *tls.Conn: fasthttp derives the state from the
-// connection, so nothing less distinguishes it from a hardcoded nil.
+// The TLS case needs a real *tls.Conn, or nothing distinguishes it from nil.
 func TestRequestForSPNEGOCarriesSchemeAndTLS(t *testing.T) {
 	build := func(t *testing.T, ctx *fasthttp.RequestCtx) *http.Request {
 		t.Helper()
@@ -1177,8 +1100,7 @@ func TestRequestForSPNEGOCarriesSchemeAndTLS(t *testing.T) {
 	t.Run("tls", func(t *testing.T) {
 		client, server := net.Pipe()
 		t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
-		// Never handshaken, which is fine: what is under test is that the field is taken
-		// from the connection at all.
+		// Never handshaken: what matters is that the field comes from the connection.
 		ctx := &fasthttp.RequestCtx{}
 		ctx.Init2(tls.Server(server, &tls.Config{MinVersion: tls.VersionTLS12}), nil, true)
 
@@ -1187,15 +1109,13 @@ func TestRequestForSPNEGOCarriesSchemeAndTLS(t *testing.T) {
 	})
 }
 
-// TestServiceSettingsPassesOnlyWhatWasSet pins the translation into gokrb5's
-// options: a zero field must leave gokrb5's own default standing.
+// A zero field must leave gokrb5's own default standing.
 func TestServiceSettingsPassesOnlyWhatWasSet(t *testing.T) {
 	t.Run("an empty config sets nothing", func(t *testing.T) {
 		opts := serviceSettings(Config{})
 		settings := service.NewSettings(nil, opts...)
 
-		// Why the slice is clipped: it goes to gokrb5 variadically and is closed over by
-		// the handler, so a future append would race across concurrent requests.
+		// Why the slice is clipped: a future append would race across concurrent requests.
 		require.Equal(t, len(opts), cap(opts),
 			"a config that sets nothing must not hand gokrb5 room to append into")
 
@@ -1206,8 +1126,7 @@ func TestServiceSettingsPassesOnlyWhatWasSet(t *testing.T) {
 			"PAC decoding is what populates group SIDs; it must stay on by default")
 		require.False(t, settings.RequireHostAddr())
 		require.Nil(t, settings.SessionManager())
-		// The one thing an empty config sets. gokrb5 calls Printf unchecked on the PAC
-		// path, so "no logging" must mean a discarding logger, not none.
+		// The one thing an empty config sets: "no logging" means discarding, not none.
 		require.Same(t, discardLogger, settings.Logger())
 	})
 
@@ -1224,20 +1143,17 @@ func TestServiceSettingsPassesOnlyWhatWasSet(t *testing.T) {
 		})
 		settings := service.NewSettings(nil, opts...)
 
-		// SName is deliberately never set: gokrb5's SPNEGO path does not read
-		// it, so wiring it up would promise a restriction that does nothing.
+		// SName is never set: gokrb5's SPNEGO path does not read it.
 		require.Empty(t, settings.SName(),
 			"SName must stay unset — VerifyAPREQ ignores it")
-		// gokrb5 parses the override into a PrincipalName rather than keeping
-		// the string, so the assertion has to meet it there.
+		// gokrb5 parses the override into a PrincipalName, so the assertion meets it there.
 		require.NotNil(t, settings.KeytabPrincipal())
 		require.Equal(t, []string{"HTTP", "other.example.com"},
 			settings.KeytabPrincipal().NameString)
 		require.Equal(t, 90*time.Second, settings.MaxClockSkew())
 		require.False(t, settings.DecodePAC())
 		require.True(t, settings.RequireHostAddr())
-		// Wrapped, so a refused New is known as a fact rather than read back out of the
-		// response the manager was holding. The caller's manager stays reachable underneath.
+		// Wrapped, so a refused New is a fact rather than read back out of the response.
 		probe, ok := settings.SessionManager().(*sessionManagerProbe)
 		require.True(t, ok, "the session manager must be wrapped in the probe")
 		require.Same(t, manager, probe.delegate)
@@ -1245,16 +1161,14 @@ func TestServiceSettingsPassesOnlyWhatWasSet(t *testing.T) {
 	})
 }
 
-// recordingSessionManager is a gokrb5 service.SessionMgr that keeps what it was
-// handed, so a test can tell whether the middleware wired it up at all.
+// Keeps what it was handed, so a test can tell the middleware wired it up.
 type recordingSessionManager struct {
 	mu     sync.Mutex
 	stored []byte
 	gets   int
 }
 
-// New satisfies service.SessionMgr and no more; gokrb5 calls it only after a
-// ticket validates, which needs a KDC. Other tests drive the stub instead.
+// gokrb5 calls New only after a ticket validates, which needs a KDC.
 func (m *recordingSessionManager) New(_ http.ResponseWriter, _ *http.Request, _ string, v []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1269,16 +1183,14 @@ func (m *recordingSessionManager) Get(_ *http.Request, _ string) ([]byte, error)
 	return m.stored, nil
 }
 
-// getCalls reports how often gokrb5 consulted the session, which is what shows
-// the manager was wired through at all.
+// getCalls shows gokrb5 consulted the session, so the manager was wired through.
 func (m *recordingSessionManager) getCalls() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.gets
 }
 
-// TestOnSuccessSeesTheIdentity covers the success hook: it runs before the rest of
-// the chain, and is handed the same identity the handler will read.
+// The hook runs before the chain, with the same identity the handler will read.
 func TestOnSuccessSeesTheIdentity(t *testing.T) {
 	user := goidentity.NewUser("alice")
 	user.SetDomain("EXAMPLE.LOCAL")
@@ -1318,8 +1230,7 @@ func TestOnSuccessSeesTheIdentity(t *testing.T) {
 		"the hook must not wait on the rest of the chain")
 }
 
-// TestOnSuccessNotCalledWithoutAuthentication keeps the hook honest — a challenge,
-// a continuation and a rejection are all not-authenticated.
+// A challenge, a continuation and a rejection are all not-authenticated.
 func TestOnSuccessNotCalledWithoutAuthentication(t *testing.T) {
 	var hookRuns int
 	ctx := serveProtected(t, Config{
@@ -1331,8 +1242,7 @@ func TestOnSuccessNotCalledWithoutAuthentication(t *testing.T) {
 	require.Zero(t, hookRuns, "an opening challenge is not a successful authentication")
 }
 
-// TestOnErrorReceivesTheInternalCause: the hook gets the wrapped cause, since one
-// handed "Internal Server Error" would have nothing to report.
+// The hook gets the cause: "Internal Server Error" would have nothing to report.
 func TestOnErrorReceivesTheInternalCause(t *testing.T) {
 	secretPath := path.Join(t.TempDir(), "super-secret-location.keytab")
 	var (
@@ -1358,8 +1268,7 @@ func TestOnErrorReceivesTheInternalCause(t *testing.T) {
 		"handing the cause to the hook must not also hand it to the client")
 }
 
-// TestOnErrorNotCalledOnAuthenticationFailure separates the two kinds. A rejected
-// ticket is Unauthorized's business, not something to page on.
+// A rejected ticket is Unauthorized's business, not something to page on.
 func TestOnErrorNotCalledOnAuthenticationFailure(t *testing.T) {
 	var hookRuns int
 	ctx := serveProtected(t, Config{
@@ -1374,11 +1283,9 @@ func TestOnErrorNotCalledOnAuthenticationFailure(t *testing.T) {
 	require.Zero(t, hookRuns, "a refused ticket is not an internal failure")
 }
 
-// TestSessionManagerServesFromSessionWithoutATicket drives gokrb5's real session
-// path: it consults the manager before the header, so no ticket is needed.
+// gokrb5 consults the manager before the header, so no ticket is needed.
 //
-// It covers that service.SessionManager is passed through at all; this manager
-// ignores the request, so cookie forwarding is covered elsewhere.
+// Covers that service.SessionManager is passed through; cookies are covered elsewhere.
 func TestSessionManagerServesFromSessionWithoutATicket(t *testing.T) {
 	established := credentials.New("alice", "EXAMPLE.LOCAL")
 	established.SetAuthenticated(true)
@@ -1413,17 +1320,14 @@ func TestSessionManagerServesFromSessionWithoutATicket(t *testing.T) {
 	require.Positive(t, manager.getCalls(),
 		"gokrb5 must have consulted the session manager")
 
-	// The premise copyHeadersTo rests on, checked against live gokrb5: a resumed
-	// session carries no accept-completed token and the manager never held the writer.
+	// A resumed session carries no token, and the manager never held the writer.
 	require.Empty(t, ctx.Response.Header.Peek(fiber.HeaderWWWAuthenticate),
 		"a session served without an exchange has no token to prove one")
 }
 
-// TestSPNEGOInternalFailureIsReportedNotSwallowed covers the 5xx sessions make
-// reachable — replaying it would fail every request with nothing logged.
+// Replaying the 5xx would fail every request with nothing logged.
 //
-// The 500 comes from the stub because gokrb5 reaches newSession only after a
-// ticket validates. The stub writes exactly what spnegoInternalServerError does.
+// The stub writes exactly what spnegoInternalServerError does; gokrb5 needs a KDC.
 func TestSPNEGOInternalFailureIsReportedNotSwallowed(t *testing.T) {
 	var logged bytes.Buffer
 	flog.SetOutput(&logged)
@@ -1466,16 +1370,13 @@ func TestSPNEGOInternalFailureIsReportedNotSwallowed(t *testing.T) {
 		"and must reach the log, not just the client")
 }
 
-// TestSessionCookieIsReplayedOnSuccess pins the promise the godoc and README make.
 // A stored session whose Set-Cookie never leaves is one the client cannot present.
 //
-// Nothing else looks at Set-Cookie: moving copyHeadersTo after the write, or
-// switching Add to Set, would leave only this test to notice.
+// Only this test notices copyHeadersTo moving after the write, or Add becoming Set.
 func TestSessionCookieIsReplayedOnSuccess(t *testing.T) {
 	user := goidentity.NewUser("alice")
 	stubAuthenticate(t, func(w http.ResponseWriter, _ *http.Request) goidentity.Identity {
-		// The order gokrb5 uses: the session cookie is written before the
-		// accept-completed header, and both before the inner handler runs.
+		// gokrb5's order: session cookie, then accept header, then the inner handler.
 		http.SetCookie(w, &http.Cookie{Name: "spnego-session", Value: "opaque-session-id", Path: "/"})
 		w.Header().Set(fiber.HeaderWWWAuthenticate, "Negotiate accepted")
 		return &user
@@ -1494,8 +1395,7 @@ func TestSessionCookieIsReplayedOnSuccess(t *testing.T) {
 
 // TestEveryValueOfARepeatedHeaderIsReplayed pins Add over Set in copyHeadersTo.
 //
-// Set-Cookie alone would not: fasthttp's special-header path makes Set append.
-// Any other repeated header — two Vary lines — would lose all but the last.
+// Set-Cookie survives Set via fasthttp; two Vary lines would lose all but the last.
 func TestEveryValueOfARepeatedHeaderIsReplayed(t *testing.T) {
 	user := goidentity.NewUser("alice")
 	stubAuthenticate(t, func(w http.ResponseWriter, _ *http.Request) goidentity.Identity {
@@ -1520,11 +1420,9 @@ func TestEveryValueOfARepeatedHeaderIsReplayed(t *testing.T) {
 		"every value of a repeated header must survive the replay, not just the last")
 }
 
-// TestSPNEGOInternalFailureDoesNotLeakTheHandlerBody covers what the 5xx branch
-// withholds: a manager's DSN or driver error, captured by the recorder.
+// What the 5xx branch withholds: a manager's DSN or driver error.
 //
-// A Set-Cookie written before the failure is dropped for the same reason: it
-// would advertise a session that was never stored.
+// A Set-Cookie written before the failure would advertise a phantom session.
 func TestSPNEGOInternalFailureDoesNotLeakTheHandlerBody(t *testing.T) {
 	flog.SetOutput(io.Discard)
 	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
@@ -1570,11 +1468,9 @@ func TestSPNEGOInternalFailureDoesNotLeakTheHandlerBody(t *testing.T) {
 		"the application's ErrorHandler must see it, as it does a keytab failure")
 }
 
-// TestSPNEGOHandlerFailureCaughtWhenItWritesBeforeFailing covers the shape a
-// real session manager produces, and the one a 5xx-only test misses entirely.
+// The shape a real session manager produces, which a 5xx-only test misses.
 //
-// A manager writing a body first pins the recorder's status at 200, so gokrb5's
-// 500 is dropped. Testing "not an outcome" rather than "5xx" is what catches it.
+// A body write pins the status at 200, so testing "not an outcome" is what catches it.
 func TestSPNEGOHandlerFailureCaughtWhenItWritesBeforeFailing(t *testing.T) {
 	flog.SetOutput(io.Discard)
 	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
@@ -1603,15 +1499,13 @@ func TestSPNEGOHandlerFailureCaughtWhenItWritesBeforeFailing(t *testing.T) {
 	require.Equal(t, 1, hookRuns)
 }
 
-// TestInternalFailureKindsThrottleIndependently: one shared throttle would let
-// either suppress the other, hiding a broken session store behind a keytab line.
+// One shared throttle would hide a broken session store behind a keytab line.
 func TestInternalFailureKindsThrottleIndependently(t *testing.T) {
 	var logged bytes.Buffer
 	flog.SetOutput(&logged)
 	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
 
-	// Fails once, then succeeds, so one request takes the keytab path and the
-	// next reaches the SPNEGO handler.
+	// Fails once then succeeds, so one request takes each path.
 	lookup := testKeytabLookup(t)
 	var calls int
 	failing := func() (*keytab.Keytab, error) {
@@ -1640,16 +1534,14 @@ func TestInternalFailureKindsThrottleIndependently(t *testing.T) {
 		handler(ctx)
 	}
 
-	// Both land inside one throttle window, so a shared throttle would show
-	// only the first.
+	// Both land inside one window, so a shared throttle would show only the first.
 	require.Contains(t, logged.String(), "keytab boom",
 		"the keytab failure must be logged")
 	require.Contains(t, logged.String(), ErrSPNEGOHandlerFailed.Error(),
 		"the handler failure must not be suppressed by the keytab one")
 }
 
-// TestChallengeIsNotAnInternalFailure keeps the 5xx rule off the ordinary
-// outcomes, or every unauthenticated request would look like a service fault.
+// Without this, every unauthenticated request would look like a service fault.
 func TestChallengeIsNotAnInternalFailure(t *testing.T) {
 	var logged bytes.Buffer
 	flog.SetOutput(&logged)
@@ -1666,11 +1558,9 @@ func TestChallengeIsNotAnInternalFailure(t *testing.T) {
 	require.NotContains(t, logged.String(), "spnego:")
 }
 
-// TestAuthenticatedIdentityCarriesADGroups pins the README's claim: PAC decoding
-// puts the caller's group SIDs on the identity, so Authorized answers directly.
+// PAC decoding puts the group SIDs on the identity, so Authorized answers directly.
 //
-// The identity is the *credentials.Credentials gokrb5 stores, so this is the real
-// type. Minting a PAC needs a KDC, so the AD credentials are set as gokrb5 does.
+// The real *credentials.Credentials; a PAC needs a KDC, so AD creds are set directly.
 func TestAuthenticatedIdentityCarriesADGroups(t *testing.T) {
 	const admins = "S-1-5-21-1004336348-1177238915-682003330-512"
 
@@ -1712,8 +1602,7 @@ func TestAuthenticatedIdentityCarriesADGroups(t *testing.T) {
 	require.Contains(t, attrs, admins)
 }
 
-// TestCookieForwardingFollowsTheSessionManager covers the wiring, which asserting
-// on requestForSPNEGO cannot reach — that helper takes the decision as an argument.
+// The wiring, which requestForSPNEGO cannot show — it takes the decision as an argument.
 func TestCookieForwardingFollowsTheSessionManager(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -1751,26 +1640,21 @@ func TestCookieForwardingFollowsTheSessionManager(t *testing.T) {
 	}
 }
 
-// TestConfigDefault pins the godoc's promise. New treats a zero field as unset
-// rather than reading the variable, so the two diverging would mislead.
+// New treats a zero field as unset rather than reading the variable.
 //
-// Compared whole: naming fields individually is what let an earlier version check
-// four and miss the rest. DeepEqual treats two nil funcs as equal.
+// Compared whole: an earlier version checked four fields and missed the rest.
 func TestConfigDefault(t *testing.T) {
 	require.Equal(t, Config{}, ConfigDefault)
 
-	// Spelled out for the two whose default is load bearing: MaxClockSkew would
-	// override gokrb5's five minutes, DisablePACDecoding would strip the group SIDs.
+	// The two load-bearing defaults: gokrb5's five minutes, and the group SIDs.
 	require.Zero(t, ConfigDefault.MaxClockSkew)
 	require.False(t, ConfigDefault.DisablePACDecoding)
 }
 
-// TestNewRejectsInvalidConfig covers the two settings that cannot be validated
-// later. Both refuse every request if let through, so they fail at construction.
+// Two settings that cannot be validated later, so they fail at construction.
 func TestNewRejectsInvalidConfig(t *testing.T) {
 	t.Run("a negative clock skew", func(t *testing.T) {
-		// Silently dropped by the > 0 guard otherwise, leaving gokrb5's five
-		// minutes while the configuration says something tighter.
+		// Otherwise dropped by the > 0 guard, leaving five minutes against the config.
 		_, err := New(Config{
 			KeytabLookup: testKeytabLookup(t),
 			MaxClockSkew: -30 * time.Second,
@@ -1779,8 +1663,7 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 	})
 
 	t.Run("a keytab principal carrying a realm", func(t *testing.T) {
-		// types.ParseSPNString drops everything after the "@" and reports
-		// nothing, so this would pin a different principal than was written.
+		// ParseSPNString drops everything after the "@" and reports nothing.
 		_, err := New(Config{
 			KeytabLookup:    testKeytabLookup(t),
 			KeytabPrincipal: "HTTP/sso.example.com@EXAMPLE.LOCAL",
@@ -1798,8 +1681,7 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 	})
 }
 
-// TestLogThrottle pins all three properties: first passes, repeats do not, the
-// window reopens. The last needs a clock seam or a hoisted update goes unnoticed.
+// First passes, repeats do not, the window reopens — the last needs a clock seam.
 func TestLogThrottle(t *testing.T) {
 	now := time.Now()
 	throttle := &logThrottle{nowFn: func() time.Time { return now }}
@@ -1822,8 +1704,7 @@ func TestLogThrottle(t *testing.T) {
 	require.Equal(t, 2, runs, "and close again behind it")
 }
 
-// TestLogThrottleZeroWindow: a throttle built without a window still throttles.
-// Treating zero as "no interval" would let through the flood it exists to stop.
+// A throttle with no window still throttles; zero would let the flood through.
 func TestLogThrottleZeroWindow(t *testing.T) {
 	throttle := &logThrottle{}
 	var runs int
@@ -1833,8 +1714,7 @@ func TestLogThrottleZeroWindow(t *testing.T) {
 	require.Equal(t, 1, runs)
 }
 
-// TestInternalErrorLogsOncePerFault checks the wiring: a repeating keytab
-// failure reaches the log exactly once, not once per request.
+// A repeating keytab failure reaches the log once, not once per request.
 func TestInternalErrorLogsOncePerFault(t *testing.T) {
 	var logged bytes.Buffer
 	flog.SetOutput(&logged)
@@ -1864,8 +1744,7 @@ func TestInternalErrorLogsOncePerFault(t *testing.T) {
 		"a repeating fault must be logged once, not per request")
 }
 
-// TestKeytabEpisodeLogging pins the three operator-facing lines, once per episode
-// rather than per request. Without it, dropping the log calls leaves the suite green.
+// The three operator-facing lines, once per episode; otherwise dropping them is green.
 func TestKeytabEpisodeLogging(t *testing.T) {
 	var logged bytes.Buffer
 	flog.SetOutput(&logged)
@@ -1918,15 +1797,13 @@ func TestKeytabEpisodeLogging(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, strings.Count(logged.String(), "loads cleanly again"))
 
-	// The all-clear must carry the warning's level, or an operator filtering below
-	// Warn sees every alert open and none close.
+	// The all-clear carries the warning's level, or alerts open and never close.
 	require.Contains(t, logged.String(), "[Warn] spnego: keytab loads cleanly again")
 	require.Regexp(t, `\[Warn\] spnego: .+; serving the last keytab that parsed`, logged.String())
 	require.Regexp(t, `\[Error\] spnego: keytab still unusable`, logged.String())
 }
 
-// lockProbeWriter records whether the cache's reload mutex was free while the
-// log line was being written.
+// Records whether the cache's reload mutex was free while the line was written.
 type lockProbeWriter struct {
 	cache     *keytabFileCache
 	buf       *bytes.Buffer
@@ -1942,8 +1819,7 @@ func (w *lockProbeWriter) Write(p []byte) (int, error) {
 	return w.buf.Write(p)
 }
 
-// TestKeytabEpisodeLogWritesOffReloadLock pins what line counts cannot see: the
-// sink is written with mu released, so it cannot stall requests behind a reload.
+// What line counts cannot see: the sink is written with mu released.
 func TestKeytabEpisodeLogWritesOffReloadLock(t *testing.T) {
 	dir := t.TempDir()
 	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
@@ -1964,8 +1840,7 @@ func TestKeytabEpisodeLogWritesOffReloadLock(t *testing.T) {
 	require.False(t, probe.sawLocked, "the log write must happen with the reload lock released")
 }
 
-// TestKeytabCacheConcurrentReload drives the cache from many goroutines. Nothing
-// else runs it concurrently, so the -race build otherwise has nothing to compare.
+// Nothing else runs the cache concurrently, so -race has nothing else to compare.
 func TestKeytabCacheConcurrentReload(t *testing.T) {
 	var logged bytes.Buffer
 	var logMu sync.Mutex
@@ -1981,8 +1856,7 @@ func TestKeytabCacheConcurrentReload(t *testing.T) {
 	_, err = cache.load()
 	require.NoError(t, err)
 
-	// Enter a degraded episode deterministically, so the assertion below does
-	// not depend on how the flipping goroutine interleaves.
+	// Enter the episode deterministically, so the assertion does not depend on timing.
 	require.NoError(t, os.WriteFile(filename, []byte("12"), 0o600))
 	_, err = cache.load()
 	require.NoError(t, err)
@@ -1992,26 +1866,21 @@ func TestKeytabCacheConcurrentReload(t *testing.T) {
 	beforeConcurrent := logged.Len()
 	logMu.Unlock()
 
-	// Every restore shares this mtime. What opens the cache-hit recovery path is that
-	// restores are stamp-identical to each other, not to the original.
+	// Restores are stamp-identical to each other, which opens the cache-hit recovery.
 	restoreStamp, err := os.Stat(filename)
 	require.NoError(t, err)
 
-	// The flipper waits for readers to have loaded since its last write, and readers
-	// run until it is done. Neither bounding itself works at GOMAXPROCS=1.
+	// Each side bounds the other: neither bounding itself works at GOMAXPROCS=1.
 	const (
 		readerCount = 16
 		flips       = 100
-		// One token per reader can describe a load that stat'd before the write it counts
-		// against, so the token after those began later and saw the new revision.
+		// One token per reader may predate the write, so the next one saw the new revision.
 		loadsPerFlip = readerCount + 1
 	)
-	// Both sides block rather than poll: a non-blocking send lets a reader spin back
-	// into load, holding the only P at GOMAXPROCS=1 until preemption fires.
+	// Both block rather than poll: a spinning reader holds the only P at GOMAXPROCS=1.
 	progress := make(chan struct{})
 	flipsDone := make(chan struct{})
-	// Verdicts come back over a channel: require.* calls runtime.Goexit, which
-	// on a worker would let Wait proceed as though it had finished.
+	// Verdicts come over a channel: require.* calls Goexit, which would let Wait proceed.
 	bad := make(chan string, readerCount+1)
 	report := func(msg string) {
 		select {
@@ -2029,8 +1898,7 @@ func TestKeytabCacheConcurrentReload(t *testing.T) {
 			for range loadsPerFlip {
 				<-progress
 			}
-			// A failed write leaves the revision unchanged, which would surface downstream as
-			// "no episode lines" — a report about the cache, not about the write.
+			// A failed write would surface as "no episode lines" — the wrong thing to report.
 			if i%2 == 0 {
 				if writeErr := os.WriteFile(filename, []byte("12"), 0o600); writeErr != nil {
 					report(fmt.Sprintf("flip %d: write broken keytab: %v", i, writeErr))
@@ -2042,8 +1910,7 @@ func TestKeytabCacheConcurrentReload(t *testing.T) {
 				report(fmt.Sprintf("flip %d: write good keytab: %v", i, writeErr))
 				return
 			}
-			// Restoring the original mtime makes the stamps match the
-			// snapshot, so recovery goes through the cache-hit path.
+			// Restoring the original mtime makes recovery go through the cache-hit path.
 			if timeErr := os.Chtimes(filename, restoreStamp.ModTime(), restoreStamp.ModTime()); timeErr != nil {
 				report(fmt.Sprintf("flip %d: restore mtime: %v", i, timeErr))
 				return
@@ -2060,8 +1927,7 @@ func TestKeytabCacheConcurrentReload(t *testing.T) {
 				if (loadErr == nil) == (kt == nil) {
 					report(fmt.Sprintf("load returned keytab=%v err=%v", kt != nil, loadErr))
 				}
-				// Reporting a violation does not end the loop: the flipper is waiting on these
-				// sends, so dropping out would deadlock rather than fail.
+				// The flipper is waiting on these sends, so dropping out would deadlock.
 				select {
 				case progress <- struct{}{}:
 				case <-flipsDone:
@@ -2077,8 +1943,7 @@ func TestKeytabCacheConcurrentReload(t *testing.T) {
 		t.Error(msg)
 	}
 
-	// Measured before the convergence load below, which closes the open episode and
-	// writes its own all-clear — satisfying the assertion whatever happened above.
+	// Measured before the convergence load, which would satisfy this on its own.
 	logMu.Lock()
 	afterConcurrent := logged.Len()
 	logMu.Unlock()
@@ -2093,17 +1958,13 @@ func TestKeytabCacheConcurrentReload(t *testing.T) {
 	require.False(t, cache.degraded.Load(), "the episode must close once the keytab is good")
 }
 
-// waitUntilBlockedOnMutex blocks until a goroutine is inside Lock beneath the
-// named function. The caller holds that mutex, which makes the observation stable.
+// Blocks until a goroutine is in Lock beneath the named function; the caller holds it.
 //
-// The tests covering load's under-lock stat must know the loader is past its own
-// stat. A sleep only makes that likely; a goroutine in Lock has provably run.
+// A sleep only makes it likely; a goroutine parked in Lock has provably run.
 //
-// Frames are matched, not the goroutine's header state, which the runtime has
-// renamed across releases; frames below Lock are elided when parked.
+// Frames, not the header state the runtime has renamed; parked frames are elided.
 //
-// Seconds, not tens: the loader only has to be scheduled and run two syscalls. A
-// caller loops, so a generous wait would bury this under the package timeout.
+// Seconds, not tens: a caller loops, and a generous wait buries this under the timeout.
 func waitUntilBlockedOnMutex(t *testing.T, symbol string) {
 	t.Helper()
 	require.Eventually(t, func() bool {
@@ -2117,8 +1978,7 @@ func waitUntilBlockedOnMutex(t *testing.T, symbol string) {
 		"no goroutine blocked on a mutex in %s", symbol)
 }
 
-// goroutineDump grows the buffer until every stack fits: a truncated dump could
-// cut out the block being matched, turning a wait into a timeout.
+// Grows until every stack fits: a truncated dump could cut out the block matched.
 func goroutineDump() string {
 	for size := 1 << 16; ; size *= 2 {
 		buf := make([]byte, size)
@@ -2140,8 +2000,7 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 	return l.w.Write(p)
 }
 
-// TestNoAllClearWithoutWarning covers the guard suppressing a recovery line for an
-// episode that never announced one — a keytab already corrupt at startup.
+// Suppresses a recovery line for an episode that never announced one.
 func TestNoAllClearWithoutWarning(t *testing.T) {
 	var logged bytes.Buffer
 	flog.SetOutput(&logged)
@@ -2169,8 +2028,7 @@ func TestNoAllClearWithoutWarning(t *testing.T) {
 		"an all-clear must not be emitted for a warning that never fired")
 }
 
-// TestAnnounceQueuesInOrder pins the queue semantics directly. No locked section
-// announces twice today, so nothing else would notice it going back to overwriting.
+// No locked section announces twice today, so nothing else would notice a regression.
 func TestAnnounceQueuesInOrder(t *testing.T) {
 	cache := newKeytabFileCache(nil)
 
@@ -2189,8 +2047,7 @@ func TestAnnounceQueuesInOrder(t *testing.T) {
 	require.Len(t, written, 2)
 }
 
-// TestEmitDoesNotHoldReloadLock pins the lock discipline: a queued line is written
-// after mu is released, so a blocking sink cannot stall the reload path.
+// A queued line is written after mu is released, so a slow sink cannot stall reloads.
 func TestEmitDoesNotHoldReloadLock(t *testing.T) {
 	cache := newKeytabFileCache(nil)
 
@@ -2208,11 +2065,9 @@ func TestEmitDoesNotHoldReloadLock(t *testing.T) {
 	require.False(t, locked, "a queued line must be written with the reload lock released")
 }
 
-// stubAuthenticate replaces the SPNEGO acceptance step, so the authenticated branch
-// runs without a KDC. accept writes what gokrb5 would, or returns nil to decline.
+// Replaces SPNEGO acceptance, so the authenticated branch runs without a KDC.
 //
-// The identity is attached here, not by accept: gokrb5 attaches it to a request
-// derived from ours, so passing ours through would hide reading the wrong one.
+// gokrb5 attaches the identity to a derived request, so ours must not be passed through.
 func stubAuthenticate(t *testing.T, accept func(w http.ResponseWriter, r *http.Request) goidentity.Identity) {
 	t.Helper()
 	previous := authenticate
@@ -2228,14 +2083,12 @@ func stubAuthenticate(t *testing.T, accept func(w http.ResponseWriter, r *http.R
 	t.Cleanup(func() { authenticate = previous })
 }
 
-// TestAuthenticatedRequestPropagatesIdentityAndError covers the success branch:
-// identity reaches the handler, the accept header is replayed, errors propagate.
+// Identity reaches the handler, the accept header is replayed, errors propagate.
 func TestAuthenticatedRequestPropagatesIdentityAndError(t *testing.T) {
 	user := goidentity.NewUser("alice")
 	user.SetDomain("EXAMPLE.LOCAL")
 	stubAuthenticate(t, func(w http.ResponseWriter, _ *http.Request) goidentity.Identity {
-		// SPNEGO writes the accept-completed header before serving the inner
-		// handler, so the recorder holds it by the time the middleware replays.
+		// SPNEGO writes the accept header before the inner handler, so the recorder holds it.
 		w.Header().Set(fiber.HeaderWWWAuthenticate, "Negotiate accepted")
 		return &user
 	})
@@ -2273,8 +2126,7 @@ func TestAuthenticatedRequestPropagatesIdentityAndError(t *testing.T) {
 		"the downstream error must be returned, not swallowed")
 }
 
-// TestKeytabUnreadableNotCoveredWithinRetryWindow: a second request inside the
-// retry window still gets the error, or unreadability is masked for the grace.
+// A second request inside the retry window still errors, or unreadability is masked.
 func TestKeytabUnreadableNotCoveredWithinRetryWindow(t *testing.T) {
 	dir := t.TempDir()
 	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
@@ -2296,16 +2148,14 @@ func TestKeytabUnreadableNotCoveredWithinRetryWindow(t *testing.T) {
 	_, err = cache.load()
 	require.ErrorIs(t, err, ErrLoadKeytabFileFailed)
 
-	// Inside the retry window the recorded cause is reused — and must still be
-	// an error, not the stale keytab.
+	// Inside the window the recorded cause is reused, and must still be an error.
 	now = now.Add(100 * time.Millisecond)
 	kt, err := cache.load()
 	require.ErrorIs(t, err, ErrLoadKeytabFileFailed)
 	require.Nil(t, kt, "an unreadable keytab must never be served from cache")
 }
 
-// TestFallbackToSystemKeytabValidatesAtStartup covers the documented promise
-// that a misconfigured host fails during New rather than on every request.
+// A misconfigured host must fail during New rather than on every request.
 func TestFallbackToSystemKeytabValidatesAtStartup(t *testing.T) {
 	t.Run("missing keytab fails construction", func(t *testing.T) {
 		t.Setenv("KRB5_KTNAME", path.Join(t.TempDir(), "absent.keytab"))
@@ -2320,8 +2170,7 @@ func TestFallbackToSystemKeytabValidatesAtStartup(t *testing.T) {
 	})
 }
 
-// TestConfigLogReachesGokrb5 covers the plumbing from Config.Log into gokrb5's
-// service settings, which resolveLogger alone does not exercise.
+// The plumbing from Config.Log into gokrb5, which resolveLogger alone does not cover.
 func TestConfigLogReachesGokrb5(t *testing.T) {
 	var captured bytes.Buffer
 	serveProtected(t, Config{
@@ -2336,11 +2185,9 @@ func TestConfigLogReachesGokrb5(t *testing.T) {
 	require.Contains(t, captured.String(), "SPNEGO")
 }
 
-// TestReloadPairsStampsWithContent covers the under-lock re-stat: a stale stamp
-// paired with fresh bytes would describe a revision that was never read.
+// A stale stamp paired with fresh bytes would describe a revision never read.
 //
-// The window is reproduced by holding mu while a loader stats and blocks, then
-// rotating the file before releasing it.
+// The window: hold mu while a loader stats and blocks, then rotate before releasing.
 func TestReloadPairsStampsWithContent(t *testing.T) {
 	dir := t.TempDir()
 	source := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
@@ -2350,8 +2197,7 @@ func TestReloadPairsStampsWithContent(t *testing.T) {
 	rotatedBytes, err := os.ReadFile(rotated)
 	require.NoError(t, err)
 
-	// Repeated to run the assertions across many stat/read interleavings, not because
-	// a single iteration might miss the window — parking on mu is waited for.
+	// Repeated for many stat/read interleavings; parking on mu is waited for, not slept.
 	for range 30 {
 		filename := path.Join(t.TempDir(), "sso.keytab")
 		require.NoError(t, os.WriteFile(filename, original, 0o600))
@@ -2364,8 +2210,7 @@ func TestReloadPairsStampsWithContent(t *testing.T) {
 			_, _ = cache.load()
 		}()
 
-		// Parked on mu means the pre-lock stat has already recorded the
-		// pre-rotation revision, which is the state this test is about.
+		// Parked on mu means the pre-lock stat already recorded the pre-rotation revision.
 		waitUntilBlockedOnMutex(t, "(*keytabFileCache).load(")
 		require.NoError(t, os.WriteFile(filename, rotatedBytes, 0o600))
 		cache.mu.Unlock()
@@ -2385,11 +2230,9 @@ func TestReloadPairsStampsWithContent(t *testing.T) {
 	}
 }
 
-// TestReloadReportsStatFailureUnderLock: a keytab removed after the pre-lock stat
-// but before the lock must surface, not proceed with stale stamps.
+// A keytab removed after the pre-lock stat must surface, not proceed with stale stamps.
 //
-// Removing the file before calling load would fail at the pre-lock stat and
-// never reach this branch, so the window is reproduced by holding mu.
+// Removing before load would fail at the pre-lock stat and never reach this branch.
 func TestReloadReportsStatFailureUnderLock(t *testing.T) {
 	dir := t.TempDir()
 	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
@@ -2403,22 +2246,19 @@ func TestReloadReportsStatFailureUnderLock(t *testing.T) {
 		defer close(done)
 		_, loadErr = cache.load()
 	}()
-	// Waiting for the loader to park on mu is what makes this about the under-lock
-	// stat. A sleep would let the removal land first and the check could be dropped.
+	// A sleep would let the removal land first, and the under-lock check could be dropped.
 	waitUntilBlockedOnMutex(t, "(*keytabFileCache).load(")
 	require.NoError(t, os.Remove(filename))
 	cache.mu.Unlock()
 	<-done
 
 	require.ErrorIs(t, loadErr, ErrLoadKeytabFileFailed)
-	// A stat failure records no episode; falling through to readAll would set
-	// deg.cause and the flag. That is what tells the two apart.
+	// A stat failure records no episode; falling through to readAll would set the flag.
 	require.False(t, cache.degraded.Load(),
 		"a stat failure must surface, not fall through to a read")
 }
 
-// TestEndEpisodeIfCurrentOnAlreadyClearedEpisode covers a second goroutine
-// arriving after the first closed the episode: only one announces the recovery.
+// A second goroutine arriving after the episode closed must not announce again.
 func TestEndEpisodeIfCurrentOnAlreadyClearedEpisode(t *testing.T) {
 	var logged bytes.Buffer
 	flog.SetOutput(&logged)
@@ -2449,15 +2289,13 @@ func TestEndEpisodeIfCurrentOnAlreadyClearedEpisode(t *testing.T) {
 	require.False(t, cache.degraded.Load())
 	require.Equal(t, 1, strings.Count(logged.String(), "loads cleanly again"))
 
-	// A second arrival, still holding the stale view that the episode was open,
-	// must find nothing to do rather than announce again.
+	// Still holding the stale view, it must find nothing to do.
 	cache.endEpisodeIfCurrent(stamps)
 	require.Equal(t, 1, strings.Count(logged.String(), "loads cleanly again"),
 		"a closed episode must not be announced twice")
 }
 
-// TestRecorderStatusRules covers how the recorder turns SPNEGO's writes into a
-// response. gokrb5 always writes once, so these rules are for a future version.
+// gokrb5 always writes once, so these rules exist for a future version.
 func TestRecorderStatusRules(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -2466,8 +2304,7 @@ func TestRecorderStatusRules(t *testing.T) {
 		wantBody   string
 	}{
 		{
-			// The recorder keeps the first status, and the challenge header makes this an
-			// authentication outcome, replayed as written.
+			// The first status is kept, and the challenge header makes it an outcome.
 			name: "the first status written wins",
 			write: func(w http.ResponseWriter) {
 				w.Header().Set(fiber.HeaderWWWAuthenticate, spnegoRejected)
@@ -2479,16 +2316,14 @@ func TestRecorderStatusRules(t *testing.T) {
 			wantBody:   "denied",
 		},
 		{
-			// gokrb5 always writes something, so this is a handler that produced no response
-			// at all — no challenge to answer, nothing to pass through.
+			// A handler that produced no response at all: no challenge, nothing to pass through.
 			name:       "declining without writing anything is a handler failure",
 			write:      func(http.ResponseWriter) {},
 			wantStatus: fiber.StatusInternalServerError,
 			wantBody:   "Internal Server Error",
 		},
 		{
-			// A challenge with no status. 401 is the only default that keeps a negotiation
-			// going; anything else, 500 especially, ends a handshake mid-invitation.
+			// 401 is the only default that keeps a negotiation going; 500 would end it.
 			name: "a challenge with no status is answered 401",
 			write: func(w http.ResponseWriter) {
 				w.Header().Set(fiber.HeaderWWWAuthenticate, spnegoBareChallenge)
@@ -2497,8 +2332,7 @@ func TestRecorderStatusRules(t *testing.T) {
 			wantBody:   "",
 		},
 		{
-			// No challenge header, so whatever the status, the client cannot answer it — the
-			// shape a session manager produces when it writes before failing.
+			// No challenge header, so the client cannot answer whatever the status says.
 			name: "a body without a challenge header is a handler failure",
 			write: func(w http.ResponseWriter) {
 				_, _ = w.Write([]byte("body without a status"))
@@ -2507,8 +2341,7 @@ func TestRecorderStatusRules(t *testing.T) {
 			wantBody:   "Internal Server Error",
 		},
 		{
-			// The case both earlier status-based gates let through: a manager picking its own
-			// 4xx before failing. Only the absent challenge header distinguishes it.
+			// What both earlier status-based gates let through: a manager's own 4xx.
 			name: "a 4xx without a challenge header is a handler failure",
 			write: func(w http.ResponseWriter) {
 				http.Error(w, "session store rejected: dsn", http.StatusConflict)
@@ -2517,8 +2350,7 @@ func TestRecorderStatusRules(t *testing.T) {
 			wantBody:   "Internal Server Error",
 		},
 		{
-			// A challenge header makes it an outcome, and it is replayed as
-			// written even though the status is not 401.
+			// A challenge header makes it an outcome, replayed even though the status is not 401.
 			name: "a 4xx with a challenge header passes through",
 			write: func(w http.ResponseWriter) {
 				w.Header().Set(fiber.HeaderWWWAuthenticate, spnegoRejected)
@@ -2535,15 +2367,13 @@ func TestRecorderStatusRules(t *testing.T) {
 			})
 			ctx := serveProtected(t, Config{KeytabLookup: testKeytabLookup(t)})
 			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode())
-			// Asserted unconditionally: the bare-challenge row expects an empty body, which a
-			// "" meaning "do not check" could not express.
+			// Unconditional: the bare-challenge row expects an empty body, not "do not check".
 			require.Equal(t, tc.wantBody, string(ctx.Response.Body()))
 		})
 	}
 }
 
-// TestRecorderDefaultsToOKOnABareWrite asserts the recorder's rule directly. End to
-// end the missing header classifies it, so this is the only test that pins it.
+// End to end the missing header classifies it, so only this pins the default.
 func TestRecorderDefaultsToOKOnABareWrite(t *testing.T) {
 	var recorder responseRecorder
 
@@ -2556,21 +2386,18 @@ func TestRecorderDefaultsToOKOnABareWrite(t *testing.T) {
 		"a body with no explicit status is a 200, as net/http defines it")
 	require.Equal(t, "hello", recorder.body.String())
 
-	// The implicit status is set once, like an explicit one: a second Write
-	// appends to the body and leaves the status alone.
+	// The implicit status is set once: a second Write appends and leaves it alone.
 	_, err = recorder.Write([]byte(" again"))
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, recorder.status)
 	require.Equal(t, "hello again", recorder.body.String())
 
-	// And an explicit status arriving after the body does not overwrite it,
-	// which is what makes a manager's early Write mask gokrb5's later 500.
+	// A later explicit status does not overwrite it, which is how a Write masks the 500.
 	recorder.WriteHeader(http.StatusInternalServerError)
 	require.Equal(t, http.StatusOK, recorder.status)
 }
 
-// TestRecorderHeaderIsUsableBeforeAnyWrite pins the lazy map: gokrb5 calls
-// Header().Set before writing, so a nil map would panic on the first challenge.
+// gokrb5 calls Header().Set before writing, so a nil map panics on the first challenge.
 func TestRecorderHeaderIsUsableBeforeAnyWrite(t *testing.T) {
 	var recorder responseRecorder
 
@@ -2579,8 +2406,7 @@ func TestRecorderHeaderIsUsableBeforeAnyWrite(t *testing.T) {
 	require.Zero(t, recorder.status, "setting a header is not writing a response")
 }
 
-// TestRecorderFlushCommitsTheImplicitStatus pins Flush against the writer it stands
-// in for. Nothing is sent — the response must be read whole before classifying.
+// Flush against the writer it stands in for; nothing is sent before classifying.
 func TestRecorderFlushCommitsTheImplicitStatus(t *testing.T) {
 	var recorder responseRecorder
 
@@ -2588,8 +2414,7 @@ func TestRecorderFlushCommitsTheImplicitStatus(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.status)
 	require.Empty(t, recorder.body.String(), "flushing sends nothing; everything stays buffered")
 
-	// An explicit status already chosen is not overwritten, exactly as a second
-	// WriteHeader would not overwrite it.
+	// An explicit status is not overwritten, as a second WriteHeader would not be.
 	var chosen responseRecorder
 	chosen.WriteHeader(http.StatusConflict)
 	chosen.Flush()
@@ -2598,8 +2423,7 @@ func TestRecorderFlushCommitsTheImplicitStatus(t *testing.T) {
 
 // TestCopyHeadersToLeavesAnUnwrittenRecorderAlone pins the read as a read.
 //
-// A resumed session records nothing, so Header() would allocate the map just to
-// iterate nothing, per request. A nil map ranges zero times.
+// A resumed session records nothing, so Header() would allocate to iterate nothing.
 func TestCopyHeadersToLeavesAnUnwrittenRecorderAlone(t *testing.T) {
 	var recorder responseRecorder
 
@@ -2616,8 +2440,7 @@ func TestCopyHeadersToLeavesAnUnwrittenRecorderAlone(t *testing.T) {
 		"replaying an empty recorder must not allocate its header map")
 }
 
-// TestRequestForSPNEGOToleratesANilContext covers the guard on WithContext, which
-// panics. app.NewCtxFunc can supply a Ctx that yields nil, and Fiber has no recover.
+// WithContext panics on nil, and app.NewCtxFunc can supply a Ctx that yields one.
 func TestRequestForSPNEGOToleratesANilContext(t *testing.T) {
 	var got *http.Request
 	app := fiber.New()
@@ -2637,14 +2460,12 @@ func TestRequestForSPNEGOToleratesANilContext(t *testing.T) {
 	require.Equal(t, "sso.example.com", got.Host, "the rest of the request is still built")
 }
 
-// nilContextCtx is a fiber.Ctx whose Context returns nil, which only a
-// caller-supplied implementation could do.
+// A fiber.Ctx whose Context returns nil, which only a caller's own could do.
 type nilContextCtx struct{ fiber.Ctx }
 
 func (nilContextCtx) Context() context.Context { return nil }
 
-// TestRecorderSatisfiesFlusher pins why Flush exists: gokrb5 hands a manager this
-// recorder, and a single-value assertion would panic inside the middleware.
+// gokrb5 hands a manager this recorder, and a single-value assertion would panic.
 func TestRecorderSatisfiesFlusher(t *testing.T) {
 	var recorder responseRecorder
 	require.NotPanics(t, func() {
@@ -2652,8 +2473,7 @@ func TestRecorderSatisfiesFlusher(t *testing.T) {
 	})
 }
 
-// TestIsSPNEGOOutcome pins which values count as gokrb5's own. A manager holding
-// the raw writer can set whatever it likes, so a lookalike must not pass.
+// A manager holding the raw writer can set anything, so a lookalike must not pass.
 func TestIsSPNEGOOutcome(t *testing.T) {
 	for _, tc := range []struct {
 		value string
@@ -2666,19 +2486,16 @@ func TestIsSPNEGOOutcome(t *testing.T) {
 		{value: "", want: false},
 		{value: `Basic realm="session store"`, want: false},
 		{value: "Bearer", want: false},
-		// The scheme alone is not enough: this is the value a scheme-matching test admitted,
-		// and the shape a manager reaches for first.
+		// The value a scheme-matching test admitted, and what a manager reaches for first.
 		{value: "Negotiate", want: true},
 		{value: "Negotiate not-a-gokrb5-token", want: false},
 		// Prefixed by the scheme but a different scheme.
 		{value: "NegotiateNot", want: false},
 		{value: "Negotiated " + spnegoRejected, want: false},
-		// Carries a real token, but not on its own, so it is not what gokrb5
-		// would have written.
+		// Carries a real token, but not alone, so it is not what gokrb5 would have written.
 		{value: spnegoRejected + ", Basic", want: false},
 		{value: " " + spnegoRejected, want: false},
-		// Case-sensitive on purpose: gokrb5 writes exactly one spelling, so
-		// anything else did not come from it.
+		// Case-sensitive: gokrb5 writes one spelling, so anything else did not come from it.
 		{value: "negotiate oQcwBaADCgEC", want: false},
 	} {
 		t.Run(tc.value, func(t *testing.T) {
@@ -2687,11 +2504,9 @@ func TestIsSPNEGOOutcome(t *testing.T) {
 	}
 }
 
-// TestSessionManagerCannotForgeAnOutcomeHeader is the end-to-end consequence: a
-// forged header would be replayed wholesale, cookie for a phantom session included.
+// A forged header would be replayed wholesale, phantom session cookie included.
 //
-// The bare "Negotiate" row matters most: gokrb5 writes it too, so only knowing the
-// manager failed catches it. sessionManagerProbe is what does.
+// The bare "Negotiate" row matters most: only knowing the manager failed catches it.
 func TestSessionManagerCannotForgeAnOutcomeHeader(t *testing.T) {
 	for _, forged := range []string{
 		`Basic realm="session store"`,
@@ -2707,8 +2522,7 @@ func TestSessionManagerCannotForgeAnOutcomeHeader(t *testing.T) {
 					http.Error(w, "postgres://user:hunter2@db.internal/sessions is down", http.StatusConflict)
 				},
 			}
-			// The real gokrb5 session-manager plumbing, so the probe is reached
-			// the way it is in production rather than being called directly.
+			// The real gokrb5 plumbing, so the probe is reached as it is in production.
 			stubAuthenticate(t, func(w http.ResponseWriter, r *http.Request) goidentity.Identity {
 				settings := service.NewSettings(nil, serviceSettings(Config{SessionManager: manager})...)
 				if err := settings.SessionManager().New(w, r, "creds", []byte("marshalled")); err != nil {
@@ -2738,18 +2552,15 @@ func TestSessionManagerCannotForgeAnOutcomeHeader(t *testing.T) {
 	}
 }
 
-// TestSessionFailureCarriesWhatTheHandlerWroteNotWhy pins what an operator actually
-// gets, which is less than the store's reason and documented as such.
+// What an operator actually gets is less than the store's reason, as documented.
 //
-// gokrb5 sends the manager's error to its own logger and writes only boilerplate to
-// the response, so for a manager that writes nothing that is the whole of it.
+// gokrb5 logs the manager's error and writes only boilerplate to the response.
 func TestSessionFailureCarriesWhatTheHandlerWroteNotWhy(t *testing.T) {
 	manager := &failingSessionManager{}
 	stubAuthenticate(t, func(w http.ResponseWriter, r *http.Request) goidentity.Identity {
 		settings := service.NewSettings(nil, serviceSettings(Config{SessionManager: manager})...)
 		if err := settings.SessionManager().New(w, r, "creds", []byte("marshalled")); err != nil {
-			// What gokrb5's spnegoInternalServerError does: the reason goes to
-			// its logger, the response gets boilerplate.
+			// What spnegoInternalServerError does: reason to the logger, boilerplate to the body.
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		}
 		return nil
@@ -2769,15 +2580,13 @@ func TestSessionFailureCarriesWhatTheHandlerWroteNotWhy(t *testing.T) {
 		"the store's own reason never reaches the response, so it cannot be reported from there")
 }
 
-// TestSessionFailureCannotForgeALogLine: the handler's body is quoted into the
-// diagnostic, so a newline in client-supplied text cannot start a second line.
+// The body is quoted, so a newline in client-supplied text cannot start a line.
 func TestSessionFailureCannotForgeALogLine(t *testing.T) {
 	var logged bytes.Buffer
 	flog.SetOutput(&logged)
 	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
 
-	// The shape a manager reaches for when it reports what it could not find:
-	// its own text with the client's cookie in it.
+	// What a manager reaches for when reporting a miss: its text with the client's cookie.
 	forged := "no session for \nspnego: [Error] all clear, nothing to see here"
 	manager := &failingSessionManager{
 		onNew: func(w http.ResponseWriter) { http.Error(w, forged, http.StatusConflict) },
@@ -2806,8 +2615,7 @@ func TestSessionFailureCannotForgeALogLine(t *testing.T) {
 	}
 }
 
-// TestQuoteForLog pins both jobs: escaping, so untrusted bytes cannot start a line,
-// and truncation, so one write cannot carry a whole failed query.
+// Both jobs: escaping so bytes cannot start a line, truncation so one write is bounded.
 func TestQuoteForLog(t *testing.T) {
 	require.Equal(t, `""`, quoteForLog(nil))
 	require.Equal(t, `""`, quoteForLog([]byte("  \n\t ")),
@@ -2816,19 +2624,16 @@ func TestQuoteForLog(t *testing.T) {
 	require.Equal(t, `"session store unreachable"`,
 		quoteForLog([]byte("\n session store unreachable \n")))
 
-	// Exactly at the limit is not truncated; one byte past it is, and says by
-	// how much rather than trailing off.
+	// At the limit is not truncated; one byte past says by how much rather than trailing off.
 	atLimit := bytes.Repeat([]byte("x"), loggedBodyLimit)
 	require.Equal(t, strconv.Quote(string(atLimit)), quoteForLog(atLimit))
 
 	over := bytes.Repeat([]byte("x"), loggedBodyLimit+37)
 	require.Equal(t, strconv.Quote(string(atLimit))+" (+37 bytes)", quoteForLog(over))
 
-	// Truncation before quoting, so a body cannot pass the limit by inflating through
-	// escaping. The anchors keep TrimSpace off the escape-heavy middle.
+	// Truncation before quoting; the anchors keep TrimSpace off the escape-heavy middle.
 	//
-	// The bound is on the input: a byte escapes to four characters, so the rendered
-	// form runs to about four times the limit.
+	// The bound is on the input: a byte escapes to four, so the render is four times it.
 	inflating := append(append([]byte("a"), bytes.Repeat([]byte("\n"), loggedBodyLimit*4)...), 'b')
 	rendered := quoteForLog(inflating)
 	require.NotContains(t, rendered, "\n",
@@ -2837,28 +2642,24 @@ func TestQuoteForLog(t *testing.T) {
 	require.LessOrEqual(t, len(rendered), 4*loggedBodyLimit+len(` (+9999 bytes)`),
 		"the rendered line must stay within four characters per kept byte")
 
-	// A rune straddling the cut is dropped rather than left as loose bytes, which Quote
-	// renders as hex. 512 is not a multiple of 3, so this cut lands mid-rune.
+	// A straddling rune is dropped, not left as hex. 512 is not a multiple of 3.
 	wide := bytes.Repeat([]byte("世"), loggedBodyLimit)
 	rune3 := quoteForLog(wide)
 	require.NotContains(t, rune3, `\x`,
 		"the cut must fall on a rune boundary, not mid-character")
-	// And the count reports what was actually kept, not where the cut was
-	// aimed: backing up two bytes means two more are left over.
+	// The count reports what was kept, not where the cut was aimed.
 	require.Equal(t,
 		strconv.Quote(string(wide[:loggedBodyLimit-2]))+
 			fmt.Sprintf(" (+%d bytes)", len(wide)-(loggedBodyLimit-2)),
 		rune3)
 
-	// Binary that is not UTF-8 at all still gets through: the backup is capped
-	// at the length of one rune, so it cannot eat back through a keytab.
+	// Non-UTF-8 binary still gets through: the backup is capped at one rune's length.
 	binary := bytes.Repeat([]byte{0x80}, loggedBodyLimit*2)
 	require.Contains(t, quoteForLog(binary), `\x80`)
 	require.Contains(t, quoteForLog(binary), "bytes)")
 }
 
-// TestSessionFailureReportsTheStatusTheHandlerWrote: the 401 fallback belongs to
-// the challenge path, and borrowing it would name a responder that never ran.
+// The 401 fallback belongs to the challenge path; borrowing it names a phantom responder.
 func TestSessionFailureReportsTheStatusTheHandlerWrote(t *testing.T) {
 	flog.SetOutput(io.Discard)
 	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
@@ -2881,11 +2682,9 @@ func TestSessionFailureReportsTheStatusTheHandlerWrote(t *testing.T) {
 	require.NotContains(t, hookErr.Error(), "status 401")
 }
 
-// TestUnparsableKeytabDoesNotLeakKeyMaterial is the reason gokrb5's parse error
-// is dropped rather than quoted.
+// Why gokrb5's parse error is dropped rather than quoted.
 //
-// gokrb5's message interpolates the bytes it was handed, and for a single-principal
-// keytab that is the whole key — so quoting would bound the noise and ship the secret.
+// Its message interpolates the bytes it was handed, which is the whole key.
 func TestUnparsableKeytabDoesNotLeakKeyMaterial(t *testing.T) {
 	var logged bytes.Buffer
 	flog.SetOutput(&logged)
@@ -2905,16 +2704,14 @@ func TestUnparsableKeytabDoesNotLeakKeyMaterial(t *testing.T) {
 	good, err := os.ReadFile(file)
 	require.NoError(t, err)
 
-	// The needle is the entry's own key read out of the parsed keytab. The first version
-	// cut it from the file's tail — from bytes `torn` does not have, so it never matched.
+	// The needle is the parsed entry's key: the first version cut it from bytes torn lacks.
 	parsed, err := keytab.Load(file)
 	require.NoError(t, err)
 	require.NotEmpty(t, parsed.Entries)
 	key := parsed.Entries[0].Key.KeyValue
 	require.NotEmpty(t, key)
 
-	// Header kept so gokrb5 reaches the length check, the branch that interpolates the
-	// file. Everything before the cut is real, so a leak carries the real key.
+	// Header kept so gokrb5 reaches the interpolating length check with the real key.
 	torn := good[:len(good)-1]
 	require.NoError(t, os.WriteFile(file, torn, 0o600))
 	require.Contains(t, string(torn), string(key),
@@ -2927,8 +2724,7 @@ func TestUnparsableKeytabDoesNotLeakKeyMaterial(t *testing.T) {
 		retryEvery: time.Nanosecond,
 		nowFn:      func() time.Time { return now },
 	}
-	// Nothing has parsed, so there is no cached keytab and the error returns as-is —
-	// the shape a caller sees through OnError and its ErrorHandler.
+	// Nothing has parsed, so the error returns as-is — what OnError and ErrorHandler see.
 	_, parseErr := cache.load()
 	require.Error(t, parseErr)
 	require.NotContains(t, parseErr.Error(), string(key),
@@ -2938,8 +2734,7 @@ func TestUnparsableKeytabDoesNotLeakKeyMaterial(t *testing.T) {
 	require.Contains(t, parseErr.Error(), fmt.Sprintf("(%d bytes read)", len(torn)),
 		"the length is what is kept: a torn write is short, a corrupt file usually is not")
 
-	// And now with a cached keytab behind it, which is the path that announces
-	// a degraded episode — the same cause, going to the log this time.
+	// Now with a cached keytab behind it: the same cause, going to the log this time.
 	require.NoError(t, os.WriteFile(file, good, 0o600))
 	_, err = cache.load()
 	require.NoError(t, err)
@@ -2950,18 +2745,15 @@ func TestUnparsableKeytabDoesNotLeakKeyMaterial(t *testing.T) {
 	require.Contains(t, logged.String(), "serving the last keytab that parsed")
 	require.Contains(t, logged.String(), "keytab did not parse")
 
-	// The log needs a different needle: quoteForLog renders a key's bytes as \xNN, so
-	// searching for the raw bytes could never match however badly it leaked.
+	// quoteForLog renders key bytes as \xNN, so a raw-byte needle could never match.
 	//
-	// Both renderings are checked: Quote decodes runes, so a key spliced into a longer
-	// string does not always escape to the same characters as it does alone.
+	// Both renderings: Quote decodes runes, so a spliced key may escape differently.
 	quoted := strconv.Quote(string(key))
 	escaped := quoted[1 : len(quoted)-1]
 	require.Contains(t, quoteForLog([]byte("keytab did not parse: "+string(key))), escaped,
 		"the escaped key must be what a leak would look like, or the check below is empty")
 
-	// The cause must fit inside the cap, or a leak could be truncated away — a second
-	// keytab file or a longer temp directory would be enough to do it.
+	// The cause must fit the cap, or a leak could be truncated away rather than caught.
 	require.Less(t, len(parseErr.Error()), loggedBodyLimit,
 		"a cause past the cap would be truncated, so absence would prove nothing")
 
@@ -2971,12 +2763,10 @@ func TestUnparsableKeytabDoesNotLeakKeyMaterial(t *testing.T) {
 		"nor unescaped, if the quoting is ever removed")
 }
 
-// TestKeytabPathCannotForgeALogLine is what the episode quoting is for now gokrb5's
-// message is dropped: Unix allows a newline in a path, and paths come from config.
+// Unix allows a newline in a path, and paths come from configuration.
 func TestKeytabPathCannotForgeALogLine(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		// A newline is not a legal filename character there, so the vector this
-		// covers does not exist and the file cannot be created to test it.
+		// Not a legal filename character there, so the vector does not exist to test.
 		t.Skip("filenames cannot contain a newline on Windows")
 	}
 
@@ -3023,8 +2813,7 @@ func TestKeytabPathCannotForgeALogLine(t *testing.T) {
 		"the expiry line must not either")
 }
 
-// TestKeytabFileLookupRejectsAnEmptyPath covers the shape an unset environment
-// variable takes — accepting it defers a config mistake into a 500 per request.
+// The shape an unset environment variable takes; accepting it defers a 500 per request.
 func TestKeytabFileLookupRejectsAnEmptyPath(t *testing.T) {
 	for name, files := range map[string][]string{
 		"no files at all": {},
@@ -3041,8 +2830,7 @@ func TestKeytabFileLookupRejectsAnEmptyPath(t *testing.T) {
 	}
 }
 
-// TestKeytabFailureCannotForgeALogLine is the lookup path's half: a caller's hook
-// for databases and remote services can carry an upstream's text.
+// The lookup path's half: a caller's hook can carry an upstream's text.
 func TestKeytabFailureCannotForgeALogLine(t *testing.T) {
 	var logged bytes.Buffer
 	flog.SetOutput(&logged)
@@ -3061,21 +2849,18 @@ func TestKeytabFailureCannotForgeALogLine(t *testing.T) {
 	require.NotContains(t, logged.String(), "\nspnego: [Error] keytab loads cleanly again",
 		"the lookup's text must not start a line of its own")
 
-	// The error itself is untouched, so errors.Is and anything a caller reads
-	// off it still see what the lookup actually returned.
+	// The error itself is untouched, so errors.Is still sees what the lookup returned.
 	require.ErrorIs(t, hookErr, ErrLookupKeytabFailed)
 	require.ErrorIs(t, hookErr, forged)
 	require.Contains(t, hookErr.Error(), "vault: \nspnego:")
 }
 
-// failingSessionManager writes whatever onNew writes and then refuses, which is
-// how a session store that cannot be reached behaves.
+// Writes whatever onNew writes and then refuses, like an unreachable session store.
 type failingSessionManager struct {
 	onNew func(w http.ResponseWriter)
 }
 
-// errSessionStoreDown is the manager's own reason. gokrb5 sends it to its logger,
-// never the response, which is why the logged body is boilerplate.
+// gokrb5 sends the manager's reason to its logger, never the response.
 var errSessionStoreDown = errors.New("session store unreachable")
 
 func (m *failingSessionManager) New(w http.ResponseWriter, _ *http.Request, _ string, _ []byte) error {
@@ -3089,8 +2874,7 @@ func (m *failingSessionManager) Get(*http.Request, string) ([]byte, error) {
 	return nil, errSessionStoreDown
 }
 
-// TestSessionManagerProbeLeavesGetAlone pins the asymmetry: gokrb5 discards a failed
-// Get, so recording it would turn a slow cache into a 500 on every request.
+// gokrb5 discards a failed Get, so recording it would 500 every request.
 func TestSessionManagerProbeLeavesGetAlone(t *testing.T) {
 	probe := &sessionManagerProbe{delegate: &failingSessionManager{}}
 	var recorder responseRecorder
@@ -3099,8 +2883,7 @@ func TestSessionManagerProbeLeavesGetAlone(t *testing.T) {
 	require.ErrorIs(t, err, errSessionStoreDown)
 	require.False(t, recorder.sessionFailed, "a failed Get is not a failed request")
 
-	// New is the other half: its error is the signal, and it is passed back to
-	// gokrb5 unchanged so gokrb5 still takes its own failure path.
+	// New's error is the signal, passed back unchanged so gokrb5 takes its own path.
 	err = probe.New(&recorder, httptest.NewRequest(http.MethodGet, "/", nil), "creds", nil)
 	require.ErrorIs(t, err, errSessionStoreDown)
 	require.True(t, recorder.sessionFailed)
@@ -3112,8 +2895,7 @@ func TestSessionManagerProbeLeavesGetAlone(t *testing.T) {
 	require.False(t, clean.sessionFailed)
 }
 
-// wrappedWriter hides another writer, the shape a future gokrb5 would take. Unwrap
-// is the convention net/http follows in http.ResponseController.
+// Hides another writer; Unwrap is net/http's own convention in ResponseController.
 type wrappedWriter struct {
 	http.ResponseWriter
 	inner http.ResponseWriter
@@ -3121,14 +2903,12 @@ type wrappedWriter struct {
 
 func (w wrappedWriter) Unwrap() http.ResponseWriter { return w.inner }
 
-// selfWrappingWriter unwraps to itself, which is what a cycle looks like from
-// inside the walk.
+// Unwraps to itself, which is what a cycle looks like from inside the walk.
 type selfWrappingWriter struct{ http.ResponseWriter }
 
 func (w *selfWrappingWriter) Unwrap() http.ResponseWriter { return w }
 
-// TestSessionManagerProbeSeesThroughAWrappedWriter covers gokrb5 no longer passing
-// the writer straight through: the recorder is still found, so the signal survives.
+// If gokrb5 wraps the writer, the recorder is still found and the signal survives.
 func TestSessionManagerProbeSeesThroughAWrappedWriter(t *testing.T) {
 	var recorder responseRecorder
 	writer := wrappedWriter{
@@ -3142,11 +2922,9 @@ func TestSessionManagerProbeSeesThroughAWrappedWriter(t *testing.T) {
 	require.True(t, recorder.sessionFailed, "the walk must reach the recorder through the wrappers")
 }
 
-// TestSessionManagerProbeSurvivesAForeignWriter covers both ways the walk ends
-// without a recorder: a writer that never unwraps, and one whose Unwrap cycles.
+// Both ways the walk ends: a writer that never unwraps, and one that cycles.
 func TestSessionManagerProbeSurvivesAForeignWriter(t *testing.T) {
-	// Reported apart because they point elsewhere: a swapped writer is a dependency
-	// change; an exhausted walk is a deeper chain or a loop, and must name both.
+	// Reported apart: a swapped writer is a dependency change, an exhausted walk is not.
 	for name, tc := range map[string]struct {
 		writer     http.ResponseWriter
 		wantReason string
@@ -3181,8 +2959,7 @@ func TestSessionManagerProbeSurvivesAForeignWriter(t *testing.T) {
 				t.Fatal("the unwrap walk did not terminate")
 			}
 
-			// Losing the signal is the hole the probe exists to close, so it
-			// must not be silent.
+			// Losing the signal is the hole the probe closes, so it must not be silent.
 			require.Contains(t, logged.String(), "session failure could not be recorded",
 				"a lost signal must be reported, not swallowed")
 			require.Contains(t, logged.String(), tc.wantReason,
@@ -3191,8 +2968,7 @@ func TestSessionManagerProbeSurvivesAForeignWriter(t *testing.T) {
 	}
 }
 
-// nestedWriter wraps inner in depth layers, so a test can put the recorder at a
-// chosen distance from the writer the probe is handed.
+// Wraps inner in depth layers, to put the recorder at a chosen distance.
 func nestedWriter(depth int, inner http.ResponseWriter) http.ResponseWriter {
 	w := inner
 	for range depth {
@@ -3201,8 +2977,7 @@ func nestedWriter(depth int, inner http.ResponseWriter) http.ResponseWriter {
 	return w
 }
 
-// TestSessionManagerProbeUnwrapsExactlyAsManyTimesAsItSays pins the bound against
-// its name: stopping a hop early loses the signal the constant promises to cover.
+// The bound against its name: stopping a hop early loses the promised signal.
 func TestSessionManagerProbeUnwrapsExactlyAsManyTimesAsItSays(t *testing.T) {
 	var atTheLimit responseRecorder
 	require.Empty(t, recordSessionFailure(nestedWriter(maxResponseWriterUnwraps, &atTheLimit)),
@@ -3216,11 +2991,9 @@ func TestSessionManagerProbeUnwrapsExactlyAsManyTimesAsItSays(t *testing.T) {
 	require.False(t, pastTheLimit.sessionFailed)
 }
 
-// TestWiredSessionManagerProbeCanReportALostSignal pins the probe as production
-// builds it, not as the tests construct it.
+// The probe as production builds it, not as the tests construct it.
 //
-// The throttle is touched only when the recorder is not found, which no test through
-// gokrb5 reaches — so a nil one would panic only on the day the signal is lost.
+// The throttle is reached only when the recorder is not found, which gokrb5 never does.
 func TestWiredSessionManagerProbeCanReportALostSignal(t *testing.T) {
 	flog.SetOutput(io.Discard)
 	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
@@ -3230,23 +3003,20 @@ func TestWiredSessionManagerProbeCanReportALostSignal(t *testing.T) {
 	})...)
 
 	require.NotPanics(t, func() {
-		// A writer that is not the recorder, which is the only way to reach the
-		// reporting path at all.
+		// A writer that is not the recorder, the only way to reach the reporting path.
 		err := settings.SessionManager().New(
 			httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "creds", nil)
 		require.ErrorIs(t, err, errSessionStoreDown)
 	})
 }
 
-// TestSessionManagerProbeThrottlesItsDiagnostic covers the rate: the line fires per
-// request reaching a failing store, which is the flood throttling exists to stop.
+// The line fires per request reaching a failing store — the flood throttling stops.
 func TestSessionManagerProbeThrottlesItsDiagnostic(t *testing.T) {
 	var logged bytes.Buffer
 	flog.SetOutput(&logged)
 	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
 
-	// The clock is installed before use and stepped through a variable: nowFn is read
-	// without the mutex, so reassigning it mid-use races once a second goroutine drives it.
+	// nowFn is read without the mutex, so reassigning it mid-use races another goroutine.
 	now := time.Now()
 	probe := &sessionManagerProbe{delegate: &failingSessionManager{}}
 	probe.signalLost.nowFn = func() time.Time { return now }
@@ -3259,8 +3029,7 @@ func TestSessionManagerProbeThrottlesItsDiagnostic(t *testing.T) {
 	require.Equal(t, 1, strings.Count(logged.String(), "session failure could not be recorded"),
 		"a repeating fault must not turn into one log line per request")
 
-	// The window is claimed, not suppressed for good: winding past it lets the next
-	// line through, so a lasting fault reappears.
+	// The window is claimed, not suppressed: a lasting fault reappears after it.
 	now = now.Add(2 * internalErrorLogEvery)
 	require.ErrorIs(t,
 		probe.New(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "creds", nil),
@@ -3268,8 +3037,7 @@ func TestSessionManagerProbeThrottlesItsDiagnostic(t *testing.T) {
 	require.Equal(t, 2, strings.Count(logged.String(), "session failure could not be recorded"))
 }
 
-// TestSessionManagerProbeIsQuietWhenItFindsTheRecorder is the other half: emitting
-// on the ordinary path would train readers to ignore the line.
+// Emitting on the ordinary path would train readers to ignore the line.
 func TestSessionManagerProbeIsQuietWhenItFindsTheRecorder(t *testing.T) {
 	var logged bytes.Buffer
 	flog.SetOutput(&logged)
@@ -3286,8 +3054,7 @@ func TestSessionManagerProbeIsQuietWhenItFindsTheRecorder(t *testing.T) {
 		"the ordinary failure is reported through OnError and the throttled log, not from here")
 }
 
-// TestMergedKeytabIsSerialisable pins why readAll uses keytab.New: the zero value
-// marshals with a version byte gokrb5's own loader rejects.
+// Why readAll uses keytab.New: the zero value marshals a version gokrb5 rejects.
 func TestMergedKeytabIsSerialisable(t *testing.T) {
 	dir := t.TempDir()
 	first := writeMockKeytab(t, dir, "one.keytab", "HTTP/one.example.com")
@@ -3310,8 +3077,7 @@ func TestMergedKeytabIsSerialisable(t *testing.T) {
 	require.Len(t, utils.GetKeytabInfo(reloaded), 2)
 }
 
-// TestLogThrottleWindowBoundary pins the inclusive/exclusive edge, which stepping
-// well past the window leaves unspecified.
+// The inclusive/exclusive edge, which stepping well past the window leaves open.
 func TestLogThrottleWindowBoundary(t *testing.T) {
 	now := time.Now()
 	throttle := &logThrottle{nowFn: func() time.Time { return now }}
@@ -3330,8 +3096,7 @@ func TestLogThrottleWindowBoundary(t *testing.T) {
 	require.Equal(t, 2, runs, "at exactly the window it reopens")
 }
 
-// TestUnderLockMatchClosesEpisode covers load's under-lock snapshot match: a loader
-// finding the cached revision back on disk must close the episode, or every hit stats.
+// A loader finding the cached revision back on disk must close the episode.
 func TestUnderLockMatchClosesEpisode(t *testing.T) {
 	var logged bytes.Buffer
 	flog.SetOutput(&logged)
@@ -3354,16 +3119,14 @@ func TestUnderLockMatchClosesEpisode(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, cache.degraded.Load())
 
-	// A loader stats the broken revision, then blocks while the keytab is
-	// restored byte-for-byte — same size, mtime and inode-preserving rewrite.
+	// Stats the broken revision, then blocks while the keytab is restored byte-for-byte.
 	cache.mu.Lock()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		_, _ = cache.load()
 	}()
-	// Waited for, not slept on: a loader that had not yet stat'd would close the episode
-	// through the lock-free path, satisfying both assertions without the branch running.
+	// Waited for: a loader that had not stat'd would close it through the lock-free path.
 	waitUntilBlockedOnMutex(t, "(*keytabFileCache).load(")
 	require.NoError(t, os.WriteFile(filename, original, 0o600))
 	require.NoError(t, os.Chtimes(filename, info.ModTime(), info.ModTime()))
@@ -3375,8 +3138,7 @@ func TestUnderLockMatchClosesEpisode(t *testing.T) {
 	require.Contains(t, logged.String(), "loads cleanly again")
 }
 
-// TestFileStampTracksSizeAndModTime pins each half of the change signal — every
-// other rotation moves both at once, so either could be dropped unnoticed.
+// Each half of the change signal — every other rotation moves both at once.
 func TestFileStampTracksSizeAndModTime(t *testing.T) {
 	t.Run("a same-size rewrite is caught by modification time", func(t *testing.T) {
 		dir := t.TempDir()
@@ -3416,8 +3178,7 @@ func TestFileStampTracksSizeAndModTime(t *testing.T) {
 		info, err := os.Stat(target)
 		require.NoError(t, err)
 
-		// A two-entry keytab is longer; restore the original mtime so only the
-		// size differs.
+		// A two-entry keytab is longer; restore the mtime so only the size differs.
 		twoEntry := writeMockKeytab(t, dir, "two.keytab", "HTTP/a-much-longer-principal.example.com")
 		twoBytes, err := os.ReadFile(twoEntry)
 		require.NoError(t, err)
@@ -3440,8 +3201,7 @@ func testKeytabLookup(t *testing.T) KeytabLookupFunc {
 	return lookup
 }
 
-// serveProtected builds a middleware from cfg, puts it in front of one route,
-// and drives a single GET through it, returning the response context.
+// Builds the middleware, fronts one route, drives a GET, returns the response context.
 func serveProtected(t *testing.T, cfg Config, decorate ...func(*fasthttp.RequestCtx)) *fasthttp.RequestCtx {
 	t.Helper()
 	middleware, err := New(cfg)
@@ -3462,17 +3222,14 @@ func serveProtected(t *testing.T, cfg Config, decorate ...func(*fasthttp.Request
 	return ctx
 }
 
-// TestMalformedTokenCannotPanicTheRequest covers a defect in gokrb5 v8.4.4 that
-// an unauthenticated caller can reach.
+// A defect in gokrb5 v8.4.4 that an unauthenticated caller can reach.
 //
-// AcceptSecContext evaluates MechTypes[0] before Verify rejects the mechanisms
-// (spnego/spnego.go:78), so an empty sequence indexes an empty slice, uncredentialed.
+// MechTypes[0] is evaluated before Verify (spnego/spnego.go:78), indexing an empty slice.
 func TestMalformedTokenCannotPanicTheRequest(t *testing.T) {
 	flog.SetOutput(io.Discard)
 	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
 
-	// A NegTokenInit with an empty MechTypes SEQUENCE, wrapped with the SPNEGO OID.
-	// Built by hand, because no honest client emits one.
+	// An empty MechTypes SEQUENCE with the SPNEGO OID; no honest client emits one.
 	type negTokenInit struct {
 		MechTypes []asn1.ObjectIdentifier `asn1:"explicit,tag:0"`
 	}
@@ -3502,13 +3259,11 @@ func TestMalformedTokenCannotPanicTheRequest(t *testing.T) {
 		"and must not tell the caller what broke")
 	require.ErrorIs(t, hookErr, ErrSPNEGOHandlerFailed)
 	require.Contains(t, hookErr.Error(), "gokrb5 panicked")
-	// Quoted like every other text this package did not write: a panic value is
-	// arbitrary, and this one is reached from a client-supplied token.
+	// Quoted like all foreign text: a panic value reached from a client-supplied token.
 	require.Contains(t, hookErr.Error(), `"runtime error: index out of range`)
 }
 
-// TestDownstreamPanicIsNotCaught pins what the recover must not do: the chain runs
-// after gokrb5 returns, so an application's panic keeps its own value and stack.
+// The chain runs after gokrb5 returns, so an application panic keeps its own stack.
 func TestDownstreamPanicIsNotCaught(t *testing.T) {
 	user := goidentity.NewUser("alice")
 	stubAuthenticate(t, func(w http.ResponseWriter, _ *http.Request) goidentity.Identity {
@@ -3535,8 +3290,7 @@ func TestDownstreamPanicIsNotCaught(t *testing.T) {
 	}, "the panic must reach the caller unchanged, not become a 500")
 }
 
-// TestKeytabStatFailureSurfacesFromBothPaths covers the two places a failing os.Stat
-// is reported from — the in-place compare and the slow path — with one sentinel.
+// The two places a failing os.Stat is reported from, with one sentinel.
 func TestKeytabStatFailureSurfacesFromBothPaths(t *testing.T) {
 	t.Run("after a successful load", func(t *testing.T) {
 		dir := t.TempDir()

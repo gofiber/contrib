@@ -46,8 +46,7 @@ func TestGetKeytabInfo(t *testing.T) {
 	require.Equal(t, tm.Add(-time.Minute).Unix(), info[1].Pairs[0].CreateTime.Unix())
 }
 
-// TestPrincipalNameCarriesTheRealm states the relationship as a rule. The godoc
-// example used to print "%s@%s" of both fields, rendering the realm twice.
+// The godoc example used to print "%s@%s" of both fields, rendering the realm twice.
 func TestPrincipalNameCarriesTheRealm(t *testing.T) {
 	kt, _, err := NewMockKeytab(
 		WithRealm("EXAMPLE.LOCAL"),
@@ -64,8 +63,7 @@ func TestPrincipalNameCarriesTheRealm(t *testing.T) {
 }
 
 func TestGetKeytabInfoEmpty(t *testing.T) {
-	// A nil keytab is documented as accepted. The result must stay non-nil so
-	// that marshalling it yields [] rather than null.
+	// A nil keytab is accepted, and the result stays non-nil so it marshals as [].
 	info := GetKeytabInfo(nil)
 	require.NotNil(t, info)
 	require.Empty(t, info)

@@ -2,6 +2,5 @@
 
 package spnego
 
-// identityDetectsRename reports whether fileRevisionID distinguishes a replaced file
-// from its replacement. Unix identity is the inode, which a rename always changes.
+// Whether fileRevisionID spots a rename. Unix identity is the inode, which always moves.
 const identityDetectsRename = true

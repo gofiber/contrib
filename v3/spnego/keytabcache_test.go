@@ -40,8 +40,7 @@ func TestKeytabFileLookupCaching(t *testing.T) {
 		second, err := fn()
 		require.NoError(t, err)
 
-		// A stable pointer means an unchanged keytab was not re-read and
-		// re-parsed, and lets a caller reuse anything derived from it.
+		// A stable pointer means the keytab was not re-read, and derived values stay valid.
 		require.Same(t, first, second)
 	})
 
@@ -55,8 +54,7 @@ func TestKeytabFileLookupCaching(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, utils.GetKeytabInfo(before), 1)
 
-		// Rotate the keytab in place with a different principal. The mock helper
-		// truncates, so the stamp changes even if the size happens to match.
+		// Rotate in place with a different principal; the helper truncates, so the stamp moves.
 		replacement := writeMockKeytab(t, dir, "rotated.keytab", "HTTP/rotated.example.com")
 		contents, err := os.ReadFile(replacement)
 		require.NoError(t, err)
@@ -122,8 +120,7 @@ func TestNewSystemKeytabLookupFunc(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, fn)
 
-		// The resolved path is not exposed, so it is observed through a load: the failure
-		// names the file it tried. Skipped on a host that really has a system keytab.
+		// The path is not exposed, so it is observed through a load naming the file it tried.
 		if _, statErr := os.Stat(DefaultSystemKeytabPath); statErr != nil {
 			_, loadErr := fn()
 			require.ErrorContains(t, loadErr, DefaultSystemKeytabPath,
@@ -132,8 +129,7 @@ func TestNewSystemKeytabLookupFunc(t *testing.T) {
 	})
 
 	t.Run("the default path is MIT Kerberos's standard location", func(t *testing.T) {
-		// A literal, because every other assertion is written in terms of the constant.
-		// Exported API: moving it silently relocates every host relying on the fallback.
+		// A literal: exported API, and moving it silently relocates every host using it.
 		require.Equal(t, "/etc/krb5.keytab", DefaultSystemKeytabPath)
 	})
 
@@ -163,8 +159,7 @@ func TestNewSystemKeytabLookupFunc(t *testing.T) {
 	})
 
 	t.Run("treats a path as a path, not a residual type", func(t *testing.T) {
-		// resolveKeytabResidual never touches the filesystem, so these are just
-		// names; nothing here needs to exist.
+		// resolveKeytabResidual never touches the filesystem, so nothing here need exist.
 		for _, name := range []string{
 			path.Join(t.TempDir(), "system.keytab"), // POSIX absolute path
 			`C:\krb5.keytab`,                        // Windows drive letter

@@ -11,16 +11,14 @@ import (
 
 func TestGetAndSetAuthenticatedIdentityFromContextForFiberV3(t *testing.T) {
 	app := fiberV3.New()
-	// The domain is set explicitly: NewUser stores its whole argument as the username,
-	// so asserting on Domain() would compare "" to "" and hold regardless.
+	// NewUser stores its whole argument as the username, so Domain() would hold regardless.
 	id := goidentity.NewUser("test")
 	id.SetDomain("TEST.LOCAL")
 	app.Use("/identity", func(ctx fiberV3.Ctx) error {
 		SetAuthenticatedIdentityToContext(ctx, &id)
 		return ctx.Next()
 	})
-	// app.Test serves on its own goroutine, and require calls runtime.Goexit, which is
-	// invalid there. The handlers record; the assertions run below.
+	// app.Test serves on its own goroutine, where require's Goexit is invalid.
 	var (
 		plainFound bool
 		withID     goidentity.Identity

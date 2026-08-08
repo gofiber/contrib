@@ -36,8 +36,7 @@ func TestNewSpnegoKrb5AuthenticateMiddleware(t *testing.T) {
 		ctx.Request.SetRequestURI("/authenticate")
 		handler(ctx)
 		require.Equal(t, http.StatusInternalServerError, ctx.Response.StatusCode())
-		// The detail goes to the log, not to an unauthenticated client: the
-		// real lookup error names the keytab's path.
+		// The detail goes to the log: the real lookup error names the keytab's path.
 		require.NotContains(t, string(ctx.Response.Body()), "mock keytab lookup error")
 	})
 	t.Run("test for keytab lookup function is set", func(t *testing.T) {
