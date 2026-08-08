@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -243,13 +244,13 @@ func configDefault(config ...Config) Config {
 	// Trimmed and cloned: this becomes a const label on every family, so a trailing
 	// newline would leave the metrics matching no dashboard, and TrimSpace returns a
 	// view that would pin whatever blob the value was sliced out of.
-	cfg.ServiceName = strings.Clone(strings.TrimSpace(cfg.ServiceName))
+	cfg.ServiceName = strings.Clone(utils.TrimSpace(cfg.ServiceName))
 
 	// Trimmed like the others: these prefix every metric name, and under the
 	// default UTF-8 validation scheme a stray newline is accepted rather than
 	// rejected, so it silently renames all six families instead of failing.
-	cfg.Namespace = strings.TrimSpace(cfg.Namespace)
-	cfg.Subsystem = strings.TrimSpace(cfg.Subsystem)
+	cfg.Namespace = utils.TrimSpace(cfg.Namespace)
+	cfg.Subsystem = utils.TrimSpace(cfg.Subsystem)
 
 	if cfg.Namespace == "" {
 		cfg.Namespace = ConfigDefault.Namespace
@@ -258,7 +259,7 @@ func configDefault(config ...Config) Config {
 	// Trimmed like the list-valued options, so that a value carrying the
 	// trailing newline an environment variable or mounted secret picks up does
 	// not silently make the scrape endpoint unreachable.
-	cfg.MetricsPath = strings.TrimSpace(cfg.MetricsPath)
+	cfg.MetricsPath = utils.TrimSpace(cfg.MetricsPath)
 	if cfg.MetricsPath == "" {
 		cfg.MetricsPath = ConfigDefault.MetricsPath
 	} else {
@@ -274,7 +275,7 @@ func configDefault(config ...Config) Config {
 	// Trimmed for the same reason as MetricsPath: a value carrying a trailing
 	// newline would become part of every unmatched series' label, valid UTF-8
 	// and matched by no dashboard, recording rule or SkipURIs entry.
-	cfg.UnmatchedRouteLabel = strings.TrimSpace(cfg.UnmatchedRouteLabel)
+	cfg.UnmatchedRouteLabel = utils.TrimSpace(cfg.UnmatchedRouteLabel)
 	if cfg.UnmatchedRouteLabel == "" {
 		cfg.UnmatchedRouteLabel = ConfigDefault.UnmatchedRouteLabel
 	} else {
