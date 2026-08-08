@@ -148,6 +148,8 @@ func Middleware(opts ...Option) fiber.Handler {
 		copy(responseMetricAttrs, requestMetricsAttrs)
 
 		request := c.Request()
+		// Sizes default to 0 and are only reported once known: an unmeasurable
+		// body is left out of the histogram rather than skewing it towards 0.
 		requestSize := int64(0)
 		requestSizeKnown := false
 		if request.IsBodyStream() {
@@ -158,6 +160,8 @@ func Middleware(opts ...Option) fiber.Handler {
 				requestSize = streamSize
 				requestSizeKnown = true
 			}
+			// A chunked request body has no declared length, and measuring it would
+			// mean draining the stream before the handler can read it. Left unknown.
 		} else {
 			// use Content-Length to avoid re-marshaling the multipart body, including files, into memory.
 			if contentLength := request.Header.ContentLength(); contentLength > 0 {
@@ -226,6 +230,14 @@ func Middleware(opts ...Option) fiber.Handler {
 				responseSize = streamSize
 				responseSizeKnown = true
 			}
+			// A chunked response declares no length, and its real size is only known
+			// once fasthttp has streamed the body, which happens after this
+			// middleware returns. Counting it would mean substituting the stream, and
+			// SetBodyStream closes the reader it replaces: for pooled static file
+			// readers and SendStreamWriter pipes that truncates the response and can
+			// panic when the reader is reused (#1734). The size is left unknown so
+			// the metric and span attribute are omitted instead of reporting a
+			// misleading 0.
 		} else {
 			responseSize = int64(len(response.Body()))
 			responseSizeKnown = true
