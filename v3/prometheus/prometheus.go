@@ -171,7 +171,7 @@ func New(config ...Config) fiber.Handler {
 	for _, entry := range cfg.DisabledMetrics {
 		// Trimmed and blank-skipped as the skip lists are, so that splitting an
 		// environment variable on "," works whether it is unset or padded.
-		metric := Metric(strings.TrimSpace(string(entry)))
+		metric := utils.TrimSpace(entry)
 		if metric == "" {
 			continue
 		}
@@ -306,7 +306,7 @@ func (m *middleware) resolveFilters(cfg Config) bool {
 	skipAll := false
 
 	for _, path := range cfg.SkipURIs {
-		path = strings.TrimSpace(path)
+		path = utils.TrimSpace(path)
 		if path == "" {
 			continue
 		}
@@ -316,7 +316,7 @@ func (m *middleware) resolveFilters(cfg Config) bool {
 		// must not collide. Deliberately not a "continue": an entry may mean both.
 		normalizedEntry := normalizePath(path)
 		if normalizedEntry == m.unmatchedLabel ||
-			strings.TrimRight(normalizedEntry, "*") == m.unmatchedLabel {
+			utils.TrimRight(normalizedEntry, '*') == m.unmatchedLabel {
 			m.recordUnmatched = false
 		}
 
@@ -338,7 +338,7 @@ func (m *middleware) resolveFilters(cfg Config) bool {
 		// Trailing stars are stripped as a group, so that the "/**" an operator
 		// reaches for out of glob habit means what "/*" means rather than
 		// quietly excluding almost nothing.
-		prefix := strings.TrimRight(normalized, "*")
+		prefix := utils.TrimRight(normalized, '*')
 		if prefix == normalized {
 			continue
 		}
@@ -370,7 +370,7 @@ func (m *middleware) resolveFilters(cfg Config) bool {
 	}
 
 	for _, class := range cfg.SkipStatusClasses {
-		normalized := strings.ToLower(strings.TrimSpace(class))
+		normalized := strings.ToLower(utils.TrimSpace(class))
 		if normalized == "" {
 			continue
 		}
