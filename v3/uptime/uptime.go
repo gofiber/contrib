@@ -49,6 +49,12 @@ type runtime struct {
 	maintenanceMu      sync.Mutex
 	lastMaintenance    time.Time
 	lastMaintenanceDay string
+
+	snapshotMu       sync.Mutex
+	snapshotCache    Snapshot
+	snapshotCachedAt time.Time
+	snapshotTTL      time.Duration
+	snapshotHasCache bool
 }
 
 type recordTarget struct {
@@ -374,7 +380,7 @@ func (u *runtime) serveStatusJSON(c fiber.Ctx) error {
 	c.Set(headerXContentTypeOptions, "nosniff")
 	c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSONCharsetUTF8)
 
-	status, err := u.snapshot(c.Context())
+	status, err := u.cachedSnapshot(c.Context())
 	if err != nil {
 		fiberlog.Errorf("uptime: status unavailable: %v", err)
 		return fiber.NewError(fiber.StatusInternalServerError, "uptime status unavailable")
@@ -387,7 +393,7 @@ func (u *runtime) serveDashboard(c fiber.Ctx, apiPath string) error {
 	c.Set(headerXContentTypeOptions, "nosniff")
 	c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
 
-	status, err := u.snapshot(c.Context())
+	status, err := u.cachedSnapshot(c.Context())
 	if err != nil {
 		fiberlog.Errorf("uptime: dashboard unavailable: %v", err)
 		return fiber.NewError(fiber.StatusInternalServerError, "uptime dashboard unavailable")
