@@ -2,6 +2,7 @@ package socketio
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -1033,6 +1034,63 @@ func TestPollingMaxBufferSizeTearsDown(t *testing.T) {
 	// Subsequent GET sees the session gone.
 	_, status := pollGet(t, c, sid)
 	require.Equal(t, http.StatusBadRequest, status)
+}
+
+// TestPollingMaxBufferSizeCountsDecodedBody pins that the limit is applied to
+// what Body() returns, not to what arrived on the wire. A Content-Encoding body
+// is decompressed into a buffer bounded by the app's BodyLimit, so a small
+// compressed POST can expand past PollingMaxBufferSize - which is why
+// ingestPolling takes postGate before materialising it.
+func TestPollingMaxBufferSizeCountsDecodedBody(t *testing.T) {
+	resetSIOGlobals(t)
+
+	prev := PollingMaxBufferSize
+	PollingMaxBufferSize = 64
+	t.Cleanup(func() { PollingMaxBufferSize = prev })
+
+	disconnectErr := make(chan error, 1)
+	On(EventDisconnect, func(p *EventPayload) {
+		select {
+		case disconnectErr <- p.Error:
+		default:
+		}
+	})
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+
+	plain := append([]byte(`42["big","`), bytes.Repeat([]byte{'x'}, 4096)...)
+	plain = append(plain, []byte(`"]`)...)
+
+	var compressed bytes.Buffer
+	zw := gzip.NewWriter(&compressed)
+	_, err := zw.Write(plain)
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+	require.Less(t, compressed.Len(), PollingMaxBufferSize,
+		"the compressed body must fit under the limit for this test to mean anything")
+
+	url := "http://test/?EIO=4&transport=polling&sid=" + sid
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(compressed.Bytes()))
+	require.NoError(t, err)
+	req.Header.Set(fiber.HeaderContentEncoding, "gzip")
+	resp, err := c.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	require.Contains(t, string(respBody), `"code":3`)
+
+	select {
+	case err := <-disconnectErr:
+		require.ErrorIs(t, err, ErrPollingBodyTooLarge)
+	case <-time.After(2 * time.Second):
+		t.Fatal("oversize decompressed POST did not tear session down")
+	}
 }
 
 // TestPollingErrorBodyAllCodes covers the pollingErrorBody mapping for
