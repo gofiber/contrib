@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
 )
 
 func TestMiddleware_StaticAssetsDoNotHang(t *testing.T) {
@@ -300,6 +301,12 @@ func TestMiddleware_StreamedRequestIgnoresDeclaredLength(t *testing.T) {
 	metrics := metricdata.ResourceMetrics{}
 	require.NoError(t, reader.Collect(context.Background(), &metrics))
 
+	// Count observations belonging to this route rather than inspecting sums: the
+	// point is that no size is reported at all, and a recorded zero would be just
+	// as wrong as the declared megabyte. Scoping by route keeps unrelated
+	// observations, such as the error-path replay fasthttp runs once the
+	// connection drops, from being mistaken for this request.
+	observations := uint64(0)
 	for _, scope := range metrics.ScopeMetrics {
 		for _, m := range scope.Metrics {
 			if m.Name != MetricNameHTTPServerRequestBodySize {
@@ -309,11 +316,15 @@ func TestMiddleware_StreamedRequestIgnoresDeclaredLength(t *testing.T) {
 			histogram, ok := m.Data.(metricdata.Histogram[int64])
 			require.True(t, ok)
 			for _, point := range histogram.DataPoints {
-				require.Zero(t, point.Sum,
-					"recorded a declared body size the client never sent")
+				if route, found := point.Attributes.Value(semconv.HTTPRouteKey); found && route.AsString() == "/upload" {
+					observations += point.Count
+				}
 			}
 		}
 	}
+
+	require.Zero(t, observations,
+		"streamed request reported a body size; the declared length is not a measurement")
 }
 
 func TestMiddleware_NotFoundPathDoesNotHang(t *testing.T) {
