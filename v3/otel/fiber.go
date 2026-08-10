@@ -47,10 +47,12 @@ func bodyStreamSize(stream io.Reader) (int64, bool) {
 // the body unwritten. Such a response still carries Content-Length describing the
 // body a GET would have returned, so that header must not be read as bytes sent.
 //
-// This mirrors fasthttp's own mustSkipBody rule. Response.SkipBody cannot be used
-// here because the server sets it only after the handler chain has returned.
+// This mirrors fasthttp's own mustSkipBody rule. Reading Response.SkipBody alone
+// is not enough: the server sets it for HEAD only after the handler chain has
+// returned, so it still reads false here. A handler may however have set it
+// itself, which no method or status check would reveal, so both are consulted.
 func responseBodySuppressed(c fiber.Ctx) bool {
-	if c.Method() == fiber.MethodHead {
+	if c.Method() == fiber.MethodHead || c.Response().SkipBody {
 		return true
 	}
 

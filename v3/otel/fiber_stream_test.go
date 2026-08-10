@@ -189,6 +189,62 @@ func TestMiddleware_HeadStreamedResponseReportsNoBody(t *testing.T) {
 	t.Fatal("response body size metric not found")
 }
 
+// TestMiddleware_SkipBodyResponseReportsNoBody covers a handler that suppresses
+// its own body by setting Response.SkipBody. Neither the method nor the status
+// says the body is skipped, so only the flag itself distinguishes the declared
+// Content-Length from the bytes actually written.
+func TestMiddleware_SkipBodyResponseReportsNoBody(t *testing.T) {
+	t.Parallel()
+
+	const payloadSize = 2048
+
+	reader := metric.NewManualReader()
+
+	app := fiber.New()
+	app.Use(Middleware(WithMeterProvider(metric.NewMeterProvider(metric.WithReader(reader)))))
+	app.Get("/stream", func(c fiber.Ctx) error {
+		if err := c.SendStream(bytes.NewReader(make([]byte, payloadSize)), payloadSize); err != nil {
+			return err
+		}
+		c.Response().SkipBody = true
+
+		return nil
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/stream", nil))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, strconv.Itoa(payloadSize), resp.Header.Get("Content-Length"))
+
+	// The handler leaves the declared Content-Length in place, so the client is
+	// told to expect a body that never arrives and its read ends short. That is
+	// the handler's doing, not the middleware's; what matters here is that no
+	// bytes reached the wire.
+	body, _ := io.ReadAll(resp.Body)
+	require.NoError(t, resp.Body.Close())
+	require.Empty(t, body, "fasthttp must not write a body when SkipBody is set")
+
+	metrics := metricdata.ResourceMetrics{}
+	require.NoError(t, reader.Collect(context.Background(), &metrics))
+
+	for _, scope := range metrics.ScopeMetrics {
+		for _, m := range scope.Metrics {
+			if m.Name != MetricNameHTTPServerResponseBodySize {
+				continue
+			}
+
+			histogram, ok := m.Data.(metricdata.Histogram[int64])
+			require.True(t, ok)
+			require.Len(t, histogram.DataPoints, 1)
+			require.Zero(t, histogram.DataPoints[0].Sum, "skipped response reported a body it never sent")
+
+			return
+		}
+	}
+
+	t.Fatal("response body size metric not found")
+}
+
 func TestMiddleware_NotFoundPathDoesNotHang(t *testing.T) {
 	t.Parallel()
 
