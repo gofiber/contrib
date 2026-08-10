@@ -177,15 +177,21 @@ func Middleware(opts ...Option) fiber.Handler {
 			// buffered, so the request carried no body.
 			requestSizeKnown = true
 		case request.IsBodyStream():
-			if contentLength := request.Header.ContentLength(); contentLength >= 0 {
-				requestSize = int64(contentLength)
-				requestSizeKnown = true
-			} else if streamSize, ok := bodyStreamSize(request.BodyStream()); ok {
+			if streamSize, ok := bodyStreamSize(request.BodyStream()); ok {
 				requestSize = streamSize
 				requestSizeKnown = true
 			}
-			// A chunked request body has no declared length, and measuring it would
-			// mean draining the stream before the handler can read it. Left unknown.
+			// Content-Length is deliberately not read here. Under StreamRequestBody
+			// fasthttp pre-reads only min(Content-Length, BodyLimit, 8KiB) before
+			// running the handler, and readBodyWithStreaming swallows ErrBodyTooLarge
+			// so an over-limit request still reaches the chain with the client's
+			// declared length intact. The remainder arrives only if the handler
+			// drains the stream, which it need not do. Recording the header would
+			// let a client inflate the histogram by declaring a large body and
+			// sending 8KiB of it.
+			//
+			// A chunked request body has no declared length either, and measuring it
+			// would mean draining the stream before the handler can read it.
 		default:
 			// use Content-Length to avoid re-marshaling the multipart body, including files, into memory.
 			if contentLength := request.Header.ContentLength(); contentLength > 0 {

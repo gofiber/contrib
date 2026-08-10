@@ -1,6 +1,7 @@
 package otel
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"io"
@@ -10,8 +11,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/static"
@@ -243,6 +246,74 @@ func TestMiddleware_SkipBodyResponseReportsNoBody(t *testing.T) {
 	}
 
 	t.Fatal("response body size metric not found")
+}
+
+// TestMiddleware_StreamedRequestIgnoresDeclaredLength covers a client that
+// declares a large body and sends only the part fasthttp pre-reads. Under
+// StreamRequestBody the over-limit request still reaches the handler carrying the
+// declared Content-Length, so reading that header would let any client choose the
+// value recorded in the request-size histogram.
+func TestMiddleware_StreamedRequestIgnoresDeclaredLength(t *testing.T) {
+	t.Parallel()
+
+	const (
+		declaredSize = 1 << 20
+		bodyLimit    = 32 * 1024
+		actuallySent = 8 * 1024
+	)
+
+	reader := metric.NewManualReader()
+
+	app := fiber.New(fiber.Config{StreamRequestBody: true, BodyLimit: bodyLimit})
+	app.Use(Middleware(WithMeterProvider(metric.NewMeterProvider(metric.WithReader(reader)))))
+	app.Post("/upload", func(c fiber.Ctx) error {
+		// Reject without draining, as a handler guarding against oversized
+		// uploads would.
+		return c.SendStatus(http.StatusRequestEntityTooLarge)
+	})
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	served := make(chan error, 1)
+	go func() {
+		served <- app.Listener(listener, fiber.ListenConfig{DisableStartupMessage: true})
+	}()
+	t.Cleanup(func() {
+		require.NoError(t, app.Shutdown())
+		<-served
+	})
+
+	conn, err := net.Dial("tcp", listener.Addr().String())
+	require.NoError(t, err)
+
+	_, err = conn.Write([]byte("POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: " +
+		strconv.Itoa(declaredSize) + "\r\n\r\n" + strings.Repeat("x", actuallySent)))
+	require.NoError(t, err)
+
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	statusLine, err := bufio.NewReader(conn).ReadString('\n')
+	require.NoError(t, err)
+	require.Contains(t, statusLine, "413")
+	require.NoError(t, conn.Close())
+
+	metrics := metricdata.ResourceMetrics{}
+	require.NoError(t, reader.Collect(context.Background(), &metrics))
+
+	for _, scope := range metrics.ScopeMetrics {
+		for _, m := range scope.Metrics {
+			if m.Name != MetricNameHTTPServerRequestBodySize {
+				continue
+			}
+
+			histogram, ok := m.Data.(metricdata.Histogram[int64])
+			require.True(t, ok)
+			for _, point := range histogram.DataPoints {
+				require.Zero(t, point.Sum,
+					"recorded a declared body size the client never sent")
+			}
+		}
+	}
 }
 
 func TestMiddleware_NotFoundPathDoesNotHang(t *testing.T) {
