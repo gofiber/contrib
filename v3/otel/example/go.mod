@@ -6,7 +6,7 @@ replace github.com/gofiber/contrib/v3/otel => ../
 
 require (
 	github.com/gofiber/contrib/v3/otel v1.0.0
-	github.com/gofiber/fiber/v3 v3.4.0
+	github.com/gofiber/fiber/v3 v3.5.0
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.45.0
 	go.opentelemetry.io/otel/sdk v1.45.0
