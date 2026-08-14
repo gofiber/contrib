@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/v3/prometheus
 go 1.25.0
 
 require (
-	github.com/gofiber/fiber/v3 v3.4.0
+	github.com/gofiber/fiber/v3 v3.5.0
 	github.com/gofiber/utils/v2 v2.4.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.2
