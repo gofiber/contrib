@@ -777,9 +777,8 @@ func TestRequestForSPNEGOCarriesFibersContext(t *testing.T) {
 		"the context is only for a session manager")
 }
 
-// Three arms: two assign a constant to avoid allocating, the third copies.
-//
-// Every arm holds the same: Fiber's value, not pointing back into the buffer.
+// Whatever scheme Fiber reports is what the request states, and it never points
+// back into the request buffer.
 func TestRequestForSPNEGOReportsEverySchemeFaithfully(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -788,8 +787,9 @@ func TestRequestForSPNEGOReportsEverySchemeFaithfully(t *testing.T) {
 	}{
 		{name: "http", forwarded: "http", wantScheme: "http"},
 		{name: "https", forwarded: "https", wantScheme: "https"},
-		// Neither constant, so it copies — as much a view into the buffer as the others.
-		{name: "something else entirely", forwarded: "wss", wantScheme: "wss"},
+		// Since Fiber v3.5.0 a forwarded scheme other than http or https is
+		// dropped rather than passed on, so the request keeps the plain one.
+		{name: "something else entirely", forwarded: "wss", wantScheme: "http"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw := "GET /authenticate HTTP/1.1\r\n" +
@@ -820,6 +820,43 @@ func TestRequestForSPNEGOReportsEverySchemeFaithfully(t *testing.T) {
 				"the scheme must not alias the request buffer, whichever arm it took")
 		})
 	}
+}
+
+// bufferBackedScheme reports a scheme straight out of the request buffer, the
+// shape Fiber produced before it narrowed the forwarded scheme to two values.
+type bufferBackedScheme struct {
+	fiber.Ctx
+}
+
+func (c bufferBackedScheme) Scheme() string {
+	b := c.RequestCtx().Request.Header.Peek(fiber.HeaderXForwardedProto)
+	return unsafe.String(unsafe.SliceData(b), len(b))
+}
+
+// No header reaches the copying arm any more, since Fiber v3.5.0 answers with
+// one of its own two constants. A custom Ctx still can, and the copy is what
+// keeps such a scheme alive once fasthttp reuses the buffer.
+func TestRequestForSPNEGOCopiesASchemeItDoesNotRecognize(t *testing.T) {
+	raw := "GET /authenticate HTTP/1.1\r\n" +
+		"Host: sso.example.com\r\n" +
+		"X-Forwarded-Proto: wss\r\n\r\n"
+
+	ctx := &fasthttp.RequestCtx{}
+	require.NoError(t, ctx.Request.Read(bufio.NewReader(bytes.NewBufferString(raw))))
+
+	var got *http.Request
+	app := fiber.New()
+	app.All("/*", func(c fiber.Ctx) error {
+		got = requestForSPNEGO(bufferBackedScheme{Ctx: c}, true)
+		return nil
+	})
+	app.Handler()(ctx)
+
+	require.NotNil(t, got)
+	require.Equal(t, "wss", got.URL.Scheme)
+	require.False(t,
+		sharesStorage(got.URL.Scheme, ctx.Request.Header.Peek(fiber.HeaderXForwardedProto)),
+		"the copying arm must not hand back a view into the request buffer")
 }
 
 // For an app that never calls SetContext, WithContext would allocate for nothing.
