@@ -74,6 +74,7 @@ jobs:
         working-directory: ./v3/spnego
         run: |
           packages=$(go list ./... | grep -v '/example$')
+          # shellcheck disable=SC2086 # one argument per package is the point
           go test -count=1 -covermode=atomic -coverprofile=cover.out ${packages}
           total=$(go tool cover -func=cover.out | awk '/^total:/ {print $3}' | tr -d '%')
           echo "total statement coverage: ${total}%"
