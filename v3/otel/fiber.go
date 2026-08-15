@@ -1,6 +1,7 @@
 package otel
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -21,23 +22,25 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
+// bodyStreamSize returns the number of bytes stream will yield before EOF, and
+// whether that count is exact. It never reads from stream. Sizes are only
+// reported for reader types documenting an unread-remainder length; any other
+// reader, including a nil one, is reported as unknown.
 func bodyStreamSize(stream io.Reader) (int64, bool) {
-	if stream == nil {
-		return 0, false
-	}
-
-	if limitedReader, ok := stream.(*io.LimitedReader); ok && limitedReader.N >= 0 {
-		return limitedReader.N, true
-	}
-
-	type lenReader interface {
-		Len() int
-	}
-
-	if sizedReader, ok := stream.(lenReader); ok {
-		if remaining := sizedReader.Len(); remaining >= 0 {
-			return int64(remaining), true
+	// Matching a general Len() int interface would also catch readers whose Len
+	// means something else: *bufio.Reader returns the buffered prefix, sizing a
+	// wrapped body at whatever was prefetched rather than at what it holds.
+	switch reader := stream.(type) {
+	case *io.LimitedReader:
+		if reader.N >= 0 {
+			return reader.N, true
 		}
+	case *bytes.Reader:
+		return int64(reader.Len()), true
+	case *bytes.Buffer:
+		return int64(reader.Len()), true
+	case *strings.Reader:
+		return int64(reader.Len()), true
 	}
 
 	return 0, false

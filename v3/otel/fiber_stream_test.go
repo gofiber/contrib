@@ -145,6 +145,45 @@ func TestMiddleware_StreamedChunkedUploadIsNotRecycled(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
 }
 
+// TestBodyStreamSize pins down which readers may be measured without being read.
+func TestBodyStreamSize(t *testing.T) {
+	t.Parallel()
+
+	payload := make([]byte, 2048)
+
+	// Peek fills 64 of the 2048 bytes, so Len understates the body by 1984.
+	buffered := bufio.NewReaderSize(bytes.NewReader(payload), 64)
+	_, err := buffered.Peek(64)
+	require.NoError(t, err)
+	require.Equal(t, 64, buffered.Buffered())
+
+	tests := []struct {
+		name   string
+		stream io.Reader
+		size   int64
+		known  bool
+	}{
+		{name: "nil", stream: nil},
+		{name: "bytes.Reader", stream: bytes.NewReader(payload), size: 2048, known: true},
+		{name: "bytes.Buffer", stream: bytes.NewBuffer(payload), size: 2048, known: true},
+		{name: "strings.Reader", stream: strings.NewReader(string(payload)), size: 2048, known: true},
+		{name: "io.LimitedReader", stream: &io.LimitedReader{R: bytes.NewReader(payload), N: 512}, size: 512, known: true},
+		{name: "io.LimitedReader with negative N", stream: &io.LimitedReader{R: bytes.NewReader(payload), N: -1}},
+		{name: "bufio.Reader", stream: buffered},
+		{name: "opaque reader", stream: io.NopCloser(bytes.NewReader(payload))},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			size, known := bodyStreamSize(tt.stream)
+			require.Equal(t, tt.known, known)
+			require.Equal(t, tt.size, size)
+		})
+	}
+}
+
 // TestMiddleware_HeadStreamedResponseReportsNoBody covers responses whose headers
 // describe a body that is never written. A HEAD response keeps the Content-Length
 // a GET would have returned, so reading that header as bytes sent would report a
