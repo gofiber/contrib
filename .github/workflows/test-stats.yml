@@ -1,0 +1,50 @@
+name: "Test Stats"
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+    paths:
+      - 'v3/stats/**/*.go'
+      - 'v3/stats/dashboard.gohtml'
+      - 'v3/stats/go.mod'
+      - 'v3/stats/go.sum'
+
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  Tests:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
+    env:
+      GOWORK: off
+    strategy:
+      matrix:
+        go-version:
+          - 1.25.x
+          - 1.26.x
+    steps:
+      - name: Fetch Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '${{ matrix.go-version }}'
+          check-latest: true
+          cache-dependency-path: v3/stats/go.sum
+      - name: Run Test
+        uses: gofiber/.github/.github/actions/gotestsum@main
+        with:
+          working-directory: ./v3/stats
+          packages: ./...
+          rerun-fails: '2'
+          args: -race -count=1
