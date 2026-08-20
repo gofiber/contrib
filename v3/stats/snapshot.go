@@ -95,6 +95,9 @@ type cacheEntry struct {
 	cachedAt time.Time
 }
 
+// currentSnapshot publishes immutable cache entries and uses a double-checked
+// lock so concurrent cache misses perform at most one collection. The lock also
+// serializes collector baselines and the destructive histogram window reset.
 func (m *middleware) currentSnapshot(now time.Time) snapshot {
 	if entry := m.cache.Load(); cacheFresh(entry, now, m.refresh) {
 		return entry.snapshot
@@ -117,6 +120,9 @@ func cacheFresh(entry *cacheEntry, now time.Time, ttl time.Duration) bool {
 		return false
 	}
 	age := now.Sub(entry.cachedAt)
+	// A negative age means this caller captured now before a concurrent caller
+	// published a newer entry. Treating it as fresh prevents duplicate collection
+	// and keeps window baselines from moving backwards.
 	return age < ttl
 }
 

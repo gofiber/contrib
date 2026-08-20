@@ -18,6 +18,10 @@ const (
 	headerAllow               = "Allow"
 )
 
+// middleware keeps the business-request path limited to time reads and
+// atomics. collectMu protects the mutable collector baselines and histogram
+// reset only while a fresh dashboard snapshot is being built; business
+// requests never acquire it.
 type middleware struct {
 	next    func(fiber.Ctx) bool
 	path    string
@@ -74,6 +78,9 @@ func newMiddleware(config ...Config) (*middleware, error) {
 
 func (m *middleware) handler() fiber.Handler {
 	return func(c fiber.Ctx) error {
+		// Skip decisions and the dashboard route must run before instrumentation:
+		// neither skipped requests nor the dashboard's own polling belongs in the
+		// service counters.
 		if m.next != nil && m.next(c) {
 			return c.Next()
 		}
@@ -84,6 +91,8 @@ func (m *middleware) handler() fiber.Handler {
 		started := time.Now()
 		sequence := m.requests.Add(1)
 		m.inFlight.Add(1)
+		// Keep in-flight balanced when downstream panics without recovering or
+		// changing the application's Fiber error handling policy here.
 		defer m.inFlight.Add(^uint64(0))
 
 		err := c.Next()
@@ -108,6 +117,9 @@ func matchStatsRoute(path, statsPath string) bool {
 	return path == statsPath || (statsPath != "/" && path == statsPath+"/")
 }
 
+// middlewareRelativePath removes Fiber's middleware mount prefix so the same
+// configured Path works for both app.Use(New()) and relative mounts such as
+// app.Use("/internal", New()).
 func middlewareRelativePath(c fiber.Ctx) string {
 	path := c.Path()
 	if !c.IsMiddleware() {
@@ -156,6 +168,9 @@ func setDashboardHeaders(c fiber.Ctx) {
 	c.Set(headerXContentTypeOptions, "nosniff")
 }
 
+// resolveStatus observes the response status when downstream set one. An
+// untouched 200 is translated from a returned Fiber error, or to 500 for a
+// generic error, before the application's own error handler runs.
 func resolveStatus(c fiber.Ctx, err error) int {
 	status := c.Response().StatusCode()
 	if status != fiber.StatusOK {

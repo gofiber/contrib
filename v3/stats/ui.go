@@ -20,6 +20,9 @@ var defaultStatsFaviconURL = "data:image/svg+xml;base64," + base64.StdEncoding.E
 //go:embed dashboard.gohtml
 var dashboardHTML string
 
+// dashboardTemplate is parsed once per package and executed once per middleware
+// instance. Dashboard requests serve the pre-rendered string and never perform
+// template work on the request path.
 var dashboardTemplate = template.Must(template.New("stats").Parse(dashboardHTML))
 
 type dashboardPage struct {

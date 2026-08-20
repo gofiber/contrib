@@ -33,6 +33,9 @@ const (
 	runtimeMetricCount
 )
 
+// runtimeMetricNames shares the index constants above with runtimeSamples.
+// Keep their order aligned when adding a metric; runtime/metrics reports an
+// unknown name as KindBad, which the scalar helpers degrade to zero.
 var runtimeMetricNames = [...]string{
 	"/memory/classes/heap/objects:bytes",
 	"/memory/classes/heap/free:bytes",
@@ -48,6 +51,9 @@ var runtimeMetricNames = [...]string{
 	"/cpu/classes/total:cpu-seconds",
 }
 
+// collector owns all cross-snapshot baselines. It is mutable and must only be
+// called while middleware.collectMu is held; requests update the source HTTP
+// counters independently through atomics.
 type collector struct {
 	proc      *process.Process
 	numCPU    int
@@ -96,6 +102,9 @@ func newCollector(now time.Time, enableGCPauseMetrics bool) collector {
 	return current
 }
 
+// collect returns partial data with stable error identifiers. Raw operating
+// system errors are not copied into snapshots, preventing disclosure of
+// filesystem paths, device names, or platform-specific details.
 func (c *collector) collect(m *middleware, now time.Time) snapshot {
 	errors := make([]string, 0)
 	processValues, processErrors := c.collectProcess(now)
@@ -158,6 +167,10 @@ func (c *collector) collectProcess(now time.Time) (processStats, []string) {
 	return stats, errors
 }
 
+// collectRuntime uses runtime/metrics for the default heap and GC counters.
+// Exact pause totals remain an explicit opt-in because ReadMemStats takes a
+// stop-the-world snapshot; the first enabled window only establishes a pause
+// baseline and therefore remains null.
 func (c *collector) collectRuntime() runtimeStats {
 	runtimemetrics.Read(c.runtimeSamples[:])
 	values := runtimeMetricValues{
@@ -206,6 +219,8 @@ type runtimeMetricValues struct {
 }
 
 func runtimeStatsFromMetricValues(values runtimeMetricValues) runtimeStats {
+	// These sums mirror runtime.MemStats: in-use spans contain objects plus
+	// unused slots, while idle spans are free or already released to the OS.
 	heapInuse := values.heapObjectsBytes + values.heapUnusedBytes
 	heapIdle := values.heapFreeBytes + values.heapReleasedBytes
 	stats := runtimeStats{
@@ -309,6 +324,9 @@ func (c *collector) collectSystem(now time.Time) (systemStats, []string) {
 	} else {
 		errors = append(errors, "system.disk")
 	}
+	// gopsutil's Windows load implementation starts its own sampling goroutine.
+	// Stats has no background collectors, so load averages are unsupported there
+	// rather than silently changing the middleware lifecycle.
 	if runtime.GOOS != "windows" {
 		if average, err := load.Avg(); err == nil && average != nil {
 			stats.Load1 = valuePointer(average.Load1)
@@ -339,6 +357,9 @@ func (c *collector) collectSystem(now time.Time) (systemStats, []string) {
 	return stats, errors
 }
 
+// filesystemTypeForPath selects the most specific containing mount. Only the
+// filesystem type leaves the collector; mountpoints and devices are never
+// copied into the snapshot.
 func filesystemTypeForPath(path string, partitions []disk.PartitionStat) string {
 	bestLength := -1
 	filesystemType := ""
@@ -362,6 +383,9 @@ func filesystemTypeForPath(path string, partitions []disk.PartitionStat) string 
 	return filesystemType
 }
 
+// collectHTTP advances every window baseline together. It is called only for a
+// real cache refresh, so cache hits neither reset latency buckets nor shorten
+// rate windows.
 func (c *collector) collectHTTP(m *middleware, now time.Time) httpStats {
 	status := httpStatusStats{
 		Status1xx: m.status1.Load(),

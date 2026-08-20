@@ -5,6 +5,9 @@ import (
 	"time"
 )
 
+// latencyBoundsNS are inclusive upper bounds. The last bucket is also the
+// reported saturation value for observations above 60 seconds; keeping
+// percentiles bucket-only avoids a separately reset maximum crossing windows.
 var latencyBoundsNS = [...]uint64{
 	uint64(time.Millisecond),
 	5 * uint64(time.Millisecond),
@@ -24,6 +27,8 @@ var latencyBoundsNS = [...]uint64{
 
 const latencyHistogramShards = 32
 
+// latencyHistogram shards counters by the monotonic request sequence to reduce
+// cache-line contention without storing route, method, or other cardinality.
 type latencyHistogram struct {
 	buckets [latencyHistogramShards][len(latencyBoundsNS) + 1]atomic.Uint64
 }
@@ -44,6 +49,9 @@ func (h *latencyHistogram) observeSharded(ns, shard uint64) {
 	h.buckets[shard&(latencyHistogramShards-1)][bucket].Add(1)
 }
 
+// snapshotAndReset advances the latency window only when a fresh snapshot is
+// collected. Atomic swaps avoid blocking request observation; a request racing
+// the reset may land in either adjacent window, but its count is not lost.
 func (h *latencyHistogram) snapshotAndReset() latencyWindow {
 	var window latencyWindow
 	for shard := range h.buckets {
@@ -56,6 +64,9 @@ func (h *latencyHistogram) snapshotAndReset() latencyWindow {
 	return window
 }
 
+// percentile returns the containing bucket's upper bound rather than an
+// interpolated duration. Values in the overflow bucket saturate at the final
+// configured bound.
 func (w latencyWindow) percentile(percent uint64) (uint64, bool) {
 	if w.count == 0 || percent == 0 {
 		return 0, false
