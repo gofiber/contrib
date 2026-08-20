@@ -75,6 +75,10 @@ func TestJSONUsesFinalSnapshotShape(t *testing.T) {
 	mustNil(t, current.HTTP.Latency.P50NS)
 	mustNil(t, current.Process.CPUPercent)
 	mustNil(t, current.System.NetworkReceiveBPS)
+	mustFalse(t, current.Runtime.GCPauseMetricsEnabled)
+	mustNil(t, current.Runtime.GCPauseLastNS)
+	mustNil(t, current.Runtime.GCPauseWindowNS)
+	mustNil(t, current.Runtime.GCPauseTotalNS)
 	for _, field := range []string{
 		`"heap_sys_bytes"`,
 		`"heap_inuse_bytes"`,
@@ -83,6 +87,7 @@ func TestJSONUsesFinalSnapshotShape(t *testing.T) {
 		`"next_gc_bytes"`,
 		`"gc_pause_window_ns"`,
 		`"gc_pause_total_ns"`,
+		`"gc_pause_metrics_enabled"`,
 		`"gc_cpu_fraction"`,
 		`"gomaxprocs"`,
 		`"memory_available_bytes"`,

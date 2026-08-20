@@ -80,6 +80,9 @@ func TestDashboardInteractions(t *testing.T) {
 	mustContain(t, pageHTML, `No requests in this window`)
 	mustContain(t, pageHTML, `Unsupported on this platform`)
 	mustContain(t, pageHTML, `collectionErrors.includes("system.load")`)
+	mustContain(t, pageHTML, `runtime.gc_pause_metrics_enabled === true`)
+	mustContain(t, pageHTML, `: "Disabled"`)
+	mustContain(t, pageHTML, `"GC " + optional(currentRuntime.gc_count`)
 
 	for _, id := range []string{
 		`id="heap-details-button"`,

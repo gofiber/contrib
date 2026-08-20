@@ -71,7 +71,7 @@ func TestNewerCacheWinsWhenCallerTimestampIsOlder(t *testing.T) {
 }
 
 func TestFirstAndSecondSnapshotWindowMetrics(t *testing.T) {
-	m, err := newMiddleware()
+	m, err := newMiddleware(Config{EnableGCPauseMetrics: true})
 	mustNoError(t, err)
 	now := time.Now()
 	m.requests.Add(10)

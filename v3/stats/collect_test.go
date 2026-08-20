@@ -44,7 +44,7 @@ func TestNetworkRates(t *testing.T) {
 }
 
 func TestMissingProcessUsesStableErrors(t *testing.T) {
-	collector := newCollector(time.Now())
+	collector := newCollector(time.Now(), false)
 	collector.proc = nil
 	_, errors := collector.collectProcess(time.Now())
 	mustEqual(t, []string{"process.cpu", "process.memory", "process.threads", "process.descriptors"}, errors)
@@ -58,7 +58,7 @@ func TestWindowsLoadIsUnsupportedWithoutPartial(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows-specific behavior")
 	}
-	collector := newCollector(time.Now())
+	collector := newCollector(time.Now(), false)
 	stats, errors := collector.collectSystem(time.Now())
 	mustNil(t, stats.Load1)
 	mustNil(t, stats.Load5)
@@ -68,52 +68,77 @@ func TestWindowsLoadIsUnsupportedWithoutPartial(t *testing.T) {
 	}
 }
 
-func TestRuntimeStatsFromMemStats(t *testing.T) {
-	memory := runtime.MemStats{
-		HeapAlloc:     1,
-		HeapSys:       2,
-		HeapInuse:     3,
-		HeapIdle:      4,
-		HeapReleased:  5,
-		HeapObjects:   6,
-		NextGC:        7,
-		Mallocs:       8,
-		Frees:         9,
-		NumGC:         1,
-		PauseTotalNs:  120,
-		GCCPUFraction: 0.25,
-	}
-	memory.PauseNs[0] = 11
+func TestRuntimeStatsFromMetricValues(t *testing.T) {
+	stats := runtimeStatsFromMetricValues(runtimeMetricValues{
+		heapObjectsBytes:  1,
+		heapUnusedBytes:   2,
+		heapFreeBytes:     4,
+		heapReleasedBytes: 5,
+		heapObjects:       6,
+		heapGoalBytes:     7,
+		heapAllocs:        8,
+		heapFrees:         9,
+		heapTinyAllocs:    10,
+		gcCycles:          11,
+		gcCPUSeconds:      2,
+		totalCPUSeconds:   8,
+	})
 
-	first := runtimeStatsFromMemStats(memory, false, 0)
+	first := stats
 	mustEqual(t, uint64(1), first.HeapAllocBytes)
-	mustEqual(t, uint64(2), first.HeapSysBytes)
+	mustEqual(t, uint64(12), first.HeapSysBytes)
 	mustEqual(t, uint64(3), first.HeapInuseBytes)
-	mustEqual(t, uint64(4), first.HeapIdleBytes)
+	mustEqual(t, uint64(9), first.HeapIdleBytes)
 	mustEqual(t, uint64(5), first.HeapReleasedBytes)
 	mustEqual(t, uint64(6), first.HeapObjects)
 	mustEqual(t, uint64(7), first.NextGCBytes)
-	mustEqual(t, uint64(8), first.Mallocs)
-	mustEqual(t, uint64(9), first.Frees)
-	mustEqual(t, uint32(1), first.GCCount)
-	mustEqual(t, uint64(11), first.GCPauseLastNS)
-	mustEqual(t, uint64(120), first.GCPauseTotalNS)
+	mustEqual(t, uint64(18), first.Mallocs)
+	mustEqual(t, uint64(19), first.Frees)
+	mustEqual(t, uint64(11), first.GCCount)
 	mustEqual(t, 0.25, first.GCCPUFraction)
-	mustTrue(t, first.GOMAXPROCS > 0)
+	mustNil(t, first.GCPauseLastNS)
+	mustNil(t, first.GCPauseTotalNS)
+	mustNil(t, first.GCPauseWindowNS)
+}
+
+func TestApplyGCPauseMetrics(t *testing.T) {
+	memory := runtime.MemStats{NumGC: 1, PauseTotalNs: 120}
+	memory.PauseNs[0] = 11
+	var first runtimeStats
+	applyGCPauseMetrics(&first, memory, false, 0)
+	mustNotNil(t, first.GCPauseLastNS)
+	mustNotNil(t, first.GCPauseTotalNS)
+	mustEqual(t, uint64(11), *first.GCPauseLastNS)
+	mustEqual(t, uint64(120), *first.GCPauseTotalNS)
 	mustNil(t, first.GCPauseWindowNS)
 
 	memory.PauseTotalNs = 155
-	second := runtimeStatsFromMemStats(memory, true, first.GCPauseTotalNS)
+	var second runtimeStats
+	applyGCPauseMetrics(&second, memory, true, *first.GCPauseTotalNS)
 	mustNotNil(t, second.GCPauseWindowNS)
 	mustEqual(t, uint64(35), *second.GCPauseWindowNS)
 
 	memory.PauseTotalNs = 10
-	reset := runtimeStatsFromMemStats(memory, true, second.GCPauseTotalNS)
+	var reset runtimeStats
+	applyGCPauseMetrics(&reset, memory, true, *second.GCPauseTotalNS)
 	mustNil(t, reset.GCPauseWindowNS)
 }
 
+func TestGCPauseCollectionIsOptIn(t *testing.T) {
+	disabled := newCollector(time.Now(), false)
+	disabledStats := disabled.collectRuntime()
+	mustFalse(t, disabledStats.GCPauseMetricsEnabled)
+	mustNil(t, disabledStats.GCPauseLastNS)
+
+	enabled := newCollector(time.Now(), true)
+	enabledStats := enabled.collectRuntime()
+	mustTrue(t, enabledStats.GCPauseMetricsEnabled)
+	mustNotNil(t, enabledStats.GCPauseLastNS)
+	mustNotNil(t, enabledStats.GCPauseTotalNS)
+}
+
 func TestSystemSnapshotDoesNotExposeFilesystemIdentity(t *testing.T) {
-	collector := newCollector(time.Now())
+	collector := newCollector(time.Now(), false)
 	stats, _ := collector.collectSystem(time.Now())
 	encoded, err := json.Marshal(stats)
 	mustNoError(t, err)

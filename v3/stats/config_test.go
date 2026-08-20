@@ -13,6 +13,13 @@ func TestConfigDefaults(t *testing.T) {
 	mustEqual(t, defaultDescription, cfg.Description)
 	mustEqual(t, defaultFooter, cfg.Footer)
 	mustEqual(t, defaultRefresh, cfg.Refresh)
+	mustFalse(t, cfg.EnableGCPauseMetrics)
+}
+
+func TestGCPauseMetricsAreExplicitlyEnabled(t *testing.T) {
+	cfg, err := configDefault(Config{EnableGCPauseMetrics: true}).normalized()
+	mustNoError(t, err)
+	mustTrue(t, cfg.EnableGCPauseMetrics)
 }
 
 func TestConfigNormalization(t *testing.T) {

@@ -89,6 +89,15 @@ app.Use(stats.New(stats.Config{
 | `Footer` | `string` | See `ConfigDefault` | Text displayed at the bottom of the page. |
 | `FaviconURL` | `string` | Built-in SVG | Root-relative path or absolute HTTP(S) URL. |
 | `Refresh` | `time.Duration` | `2s` | Browser polling interval and server snapshot cache TTL; values below `1s` are clamped. |
+| `EnableGCPauseMetrics` | `bool` | `false` | Enables exact last/window/total GC pause metrics. This calls `runtime.ReadMemStats`, which briefly stops the Go runtime. |
+
+Default runtime metrics use `runtime/metrics` and avoid the explicit
+stop-the-world snapshot performed by `runtime.ReadMemStats`. Applications that
+need exact GC pause totals and the GC Pause trend can opt in:
+
+```go
+app.Use(stats.New(stats.Config{EnableGCPauseMetrics: true}))
+```
 
 The middleware can also be mounted below a prefix:
 
@@ -128,12 +137,14 @@ such as `system.disk`; raw operating-system errors and paths are not returned.
 | Group | Metrics |
 | --- | --- |
 | Process | CPU, RSS, threads, file descriptors/handles, runtime since stats initialization |
-| Go runtime | Goroutines, heap allocation/system/in-use/idle/released memory, heap objects, Next GC, mallocs/frees, GOMAXPROCS, GC count, last/window/total GC pause, GC CPU fraction |
+| Go runtime | Goroutines, heap allocation/system/in-use/idle/released memory, heap objects, Next GC, mallocs/frees, GOMAXPROCS, GC count, optional last/window/total GC pause, GC CPU fraction |
 | System | CPU, used/available/total memory, application-filesystem usage/type/free space, 1/5/15-minute load averages, aggregate network rates |
 | HTTP | Requests, in-flight requests, 1xx–5xx status classes, RPS, 4xx/5xx rates, P50/P95/P99 latency |
 
-CPU, network, request-rate, status-rate, latency, and window GC pause values
-need two collection windows. Their first snapshot is `null`. Windows does not
+CPU, network, request-rate, status-rate, and latency values need two collection
+windows. Their first snapshot is `null`. Exact GC pause metrics are `null` unless
+`EnableGCPauseMetrics` is true; when enabled, the first window pause is also
+`null` while its baseline is established. Windows does not
 expose Load 1/5/15 because the underlying gopsutil implementation starts a
 background sampler; these are unsupported metrics and do not make the snapshot
 partial.
@@ -145,7 +156,8 @@ visible browser history and remembers the choice in local storage; reloading
 the page resets the sampled values.
 
 The eight trend panels cover CPU, memory, network, goroutines, requests per
-second, HTTP latency, HTTP error rates, and GC pauses.
+second, HTTP latency, HTTP error rates, and GC pauses. The GC pause panel starts
+receiving samples only when `EnableGCPauseMetrics` is enabled.
 
 Idle HTTP windows keep the charts visually continuous without changing the
 JSON contract: error-rate lines render at zero, while latency lines retain the
@@ -178,5 +190,6 @@ paths, or device names.
 - Each `New` call owns independent counters, histogram, cache, and sampling baselines.
 - Middleware instances are safe for concurrent use after construction.
 - The business-request hot path uses time reads and atomic operations; system and runtime collection is not performed there.
+- Default heap and GC counters use `runtime/metrics` and do not call `runtime.ReadMemStats`. Exact GC pause metrics are an explicit opt-in because `runtime.ReadMemStats` briefly stops the Go runtime for a consistent snapshot.
 - The embedded dashboard has no external JavaScript, CSS, font, or chart dependency. It initially follows the browser color scheme and provides a persisted Light/Dark toggle.
 - Linux, macOS, and Windows are supported with graceful degradation when a metric is unavailable. The dashboard labels unsupported Windows load averages as `N/A`.

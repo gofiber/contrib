@@ -45,6 +45,11 @@ type Config struct {
 
 	// Refresh controls browser polling and server snapshot cache TTL.
 	Refresh time.Duration
+
+	// EnableGCPauseMetrics enables exact GC pause metrics collected with
+	// runtime.ReadMemStats. It is disabled by default because ReadMemStats
+	// briefly stops the Go runtime while taking a consistent snapshot.
+	EnableGCPauseMetrics bool
 }
 
 // ConfigDefault is the default configuration.

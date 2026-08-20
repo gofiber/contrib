@@ -1102,11 +1102,12 @@
 
     function renderGCDetails() {
       const runtime = currentRuntime;
+      const pauseEnabled = runtime.gc_pause_metrics_enabled === true;
       renderDetailRows("gc-modal-list", [
         ["GC Count", optional(runtime.gc_count, integer.format)],
-        ["Last GC Pause", optional(runtime.gc_pause_last_ns, formatDurationNS)],
-        ["Window GC Pause", optional(runtime.gc_pause_window_ns, formatDurationNS)],
-        ["Total GC Pause", optional(runtime.gc_pause_total_ns, formatDurationNS)],
+        ["Last GC Pause", pauseEnabled ? optional(runtime.gc_pause_last_ns, formatDurationNS) : "Disabled"],
+        ["Window GC Pause", pauseEnabled ? optional(runtime.gc_pause_window_ns, formatDurationNS) : "Disabled"],
+        ["Total GC Pause", pauseEnabled ? optional(runtime.gc_pause_total_ns, formatDurationNS) : "Disabled"],
         ["GC CPU Fraction", finite(runtime.gc_cpu_fraction) ? (runtime.gc_cpu_fraction * 100).toFixed(3) + "%" : dash]
       ]);
     }
@@ -1192,7 +1193,8 @@
       setText("rt-goroutines", optional(currentRuntime.goroutines, decimal.format));
       setText("heap-details-button", optional(currentRuntime.heap_alloc_bytes, formatBytes));
       setText("rt-heap-objects", optional(currentRuntime.heap_objects, compact.format));
-      setText("gc-details-button", optional(currentRuntime.gc_pause_last_ns, formatDurationNS));
+      setText("gc-details-button", finite(currentRuntime.gc_pause_last_ns) ?
+        formatDurationNS(currentRuntime.gc_pause_last_ns) : "GC " + optional(currentRuntime.gc_count, integer.format));
       setText("rt-uptime", optional(process.uptime_seconds, formatUptime));
       setText("os-cpu", percent(currentSystem.cpu_percent));
       setText("os-memory", percent(currentSystem.memory_used_percent));

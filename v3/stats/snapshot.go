@@ -25,22 +25,23 @@ type processStats struct {
 }
 
 type runtimeStats struct {
-	Goroutines        int     `json:"goroutines"`
-	HeapAllocBytes    uint64  `json:"heap_alloc_bytes"`
-	HeapSysBytes      uint64  `json:"heap_sys_bytes"`
-	HeapInuseBytes    uint64  `json:"heap_inuse_bytes"`
-	HeapIdleBytes     uint64  `json:"heap_idle_bytes"`
-	HeapReleasedBytes uint64  `json:"heap_released_bytes"`
-	HeapObjects       uint64  `json:"heap_objects"`
-	NextGCBytes       uint64  `json:"next_gc_bytes"`
-	Mallocs           uint64  `json:"mallocs"`
-	Frees             uint64  `json:"frees"`
-	GCCount           uint32  `json:"gc_count"`
-	GCPauseLastNS     uint64  `json:"gc_pause_last_ns"`
-	GCPauseWindowNS   *uint64 `json:"gc_pause_window_ns"`
-	GCPauseTotalNS    uint64  `json:"gc_pause_total_ns"`
-	GCCPUFraction     float64 `json:"gc_cpu_fraction"`
-	GOMAXPROCS        int     `json:"gomaxprocs"`
+	Goroutines            int     `json:"goroutines"`
+	HeapAllocBytes        uint64  `json:"heap_alloc_bytes"`
+	HeapSysBytes          uint64  `json:"heap_sys_bytes"`
+	HeapInuseBytes        uint64  `json:"heap_inuse_bytes"`
+	HeapIdleBytes         uint64  `json:"heap_idle_bytes"`
+	HeapReleasedBytes     uint64  `json:"heap_released_bytes"`
+	HeapObjects           uint64  `json:"heap_objects"`
+	NextGCBytes           uint64  `json:"next_gc_bytes"`
+	Mallocs               uint64  `json:"mallocs"`
+	Frees                 uint64  `json:"frees"`
+	GCCount               uint64  `json:"gc_count"`
+	GCPauseMetricsEnabled bool    `json:"gc_pause_metrics_enabled"`
+	GCPauseLastNS         *uint64 `json:"gc_pause_last_ns"`
+	GCPauseWindowNS       *uint64 `json:"gc_pause_window_ns"`
+	GCPauseTotalNS        *uint64 `json:"gc_pause_total_ns"`
+	GCCPUFraction         float64 `json:"gc_cpu_fraction"`
+	GOMAXPROCS            int     `json:"gomaxprocs"`
 }
 
 type systemStats struct {

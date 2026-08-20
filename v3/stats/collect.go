@@ -1,9 +1,11 @@
 package stats
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
+	runtimemetrics "runtime/metrics"
 	"strings"
 	"time"
 
@@ -14,6 +16,37 @@ import (
 	gopsnet "github.com/shirou/gopsutil/v4/net"
 	"github.com/shirou/gopsutil/v4/process"
 )
+
+const (
+	runtimeMetricHeapObjectsBytes = iota
+	runtimeMetricHeapFreeBytes
+	runtimeMetricHeapReleasedBytes
+	runtimeMetricHeapUnusedBytes
+	runtimeMetricHeapObjects
+	runtimeMetricHeapGoalBytes
+	runtimeMetricHeapAllocs
+	runtimeMetricHeapFrees
+	runtimeMetricHeapTinyAllocs
+	runtimeMetricGCCycles
+	runtimeMetricGCCPUSeconds
+	runtimeMetricTotalCPUSeconds
+	runtimeMetricCount
+)
+
+var runtimeMetricNames = [...]string{
+	"/memory/classes/heap/objects:bytes",
+	"/memory/classes/heap/free:bytes",
+	"/memory/classes/heap/released:bytes",
+	"/memory/classes/heap/unused:bytes",
+	"/gc/heap/objects:objects",
+	"/gc/heap/goal:bytes",
+	"/gc/heap/allocs:objects",
+	"/gc/heap/frees:objects",
+	"/gc/heap/tiny/allocs:objects",
+	"/gc/cycles/total:gc-cycles",
+	"/cpu/classes/gc/total:cpu-seconds",
+	"/cpu/classes/total:cpu-seconds",
+}
 
 type collector struct {
 	proc      *process.Process
@@ -29,7 +62,9 @@ type collector struct {
 	networkReceived uint64
 	networkSent     uint64
 	networkAt       time.Time
-	runtimeSeen     bool
+	runtimeSamples  [runtimeMetricCount]runtimemetrics.Sample
+	gcPauseEnabled  bool
+	gcPauseSeen     bool
 	gcPauseTotal    uint64
 
 	httpSeen      bool
@@ -40,7 +75,7 @@ type collector struct {
 	lastStatus5xx uint64
 }
 
-func newCollector(now time.Time) collector {
+func newCollector(now time.Time, enableGCPauseMetrics bool) collector {
 	proc, err := process.NewProcess(int32(os.Getpid()))
 	if err != nil {
 		proc = nil
@@ -49,7 +84,16 @@ func newCollector(now time.Time) collector {
 	if numCPU < 1 {
 		numCPU = 1
 	}
-	return collector{proc: proc, numCPU: numCPU, startedAt: now}
+	current := collector{
+		proc:           proc,
+		numCPU:         numCPU,
+		startedAt:      now,
+		gcPauseEnabled: enableGCPauseMetrics,
+	}
+	for index, name := range runtimeMetricNames {
+		current.runtimeSamples[index].Name = name
+	}
+	return current
 }
 
 func (c *collector) collect(m *middleware, now time.Time) snapshot {
@@ -115,36 +159,99 @@ func (c *collector) collectProcess(now time.Time) (processStats, []string) {
 }
 
 func (c *collector) collectRuntime() runtimeStats {
+	runtimemetrics.Read(c.runtimeSamples[:])
+	values := runtimeMetricValues{
+		heapObjectsBytes:  runtimeMetricUint64(c.runtimeSamples[:], runtimeMetricHeapObjectsBytes),
+		heapFreeBytes:     runtimeMetricUint64(c.runtimeSamples[:], runtimeMetricHeapFreeBytes),
+		heapReleasedBytes: runtimeMetricUint64(c.runtimeSamples[:], runtimeMetricHeapReleasedBytes),
+		heapUnusedBytes:   runtimeMetricUint64(c.runtimeSamples[:], runtimeMetricHeapUnusedBytes),
+		heapObjects:       runtimeMetricUint64(c.runtimeSamples[:], runtimeMetricHeapObjects),
+		heapGoalBytes:     runtimeMetricUint64(c.runtimeSamples[:], runtimeMetricHeapGoalBytes),
+		heapAllocs:        runtimeMetricUint64(c.runtimeSamples[:], runtimeMetricHeapAllocs),
+		heapFrees:         runtimeMetricUint64(c.runtimeSamples[:], runtimeMetricHeapFrees),
+		heapTinyAllocs:    runtimeMetricUint64(c.runtimeSamples[:], runtimeMetricHeapTinyAllocs),
+		gcCycles:          runtimeMetricUint64(c.runtimeSamples[:], runtimeMetricGCCycles),
+		gcCPUSeconds:      runtimeMetricFloat64(c.runtimeSamples[:], runtimeMetricGCCPUSeconds),
+		totalCPUSeconds:   runtimeMetricFloat64(c.runtimeSamples[:], runtimeMetricTotalCPUSeconds),
+	}
+	stats := runtimeStatsFromMetricValues(values)
+	stats.Goroutines = runtime.NumGoroutine()
+	stats.GOMAXPROCS = runtime.GOMAXPROCS(0)
+	stats.GCPauseMetricsEnabled = c.gcPauseEnabled
+	if !c.gcPauseEnabled {
+		return stats
+	}
+
 	var memory runtime.MemStats
 	runtime.ReadMemStats(&memory)
-	stats := runtimeStatsFromMemStats(memory, c.runtimeSeen, c.gcPauseTotal)
-	c.runtimeSeen = true
+	applyGCPauseMetrics(&stats, memory, c.gcPauseSeen, c.gcPauseTotal)
+	c.gcPauseSeen = true
 	c.gcPauseTotal = memory.PauseTotalNs
 	return stats
 }
 
-func runtimeStatsFromMemStats(memory runtime.MemStats, pauseSeen bool, previousPauseTotal uint64) runtimeStats {
+type runtimeMetricValues struct {
+	heapObjectsBytes  uint64
+	heapFreeBytes     uint64
+	heapReleasedBytes uint64
+	heapUnusedBytes   uint64
+	heapObjects       uint64
+	heapGoalBytes     uint64
+	heapAllocs        uint64
+	heapFrees         uint64
+	heapTinyAllocs    uint64
+	gcCycles          uint64
+	gcCPUSeconds      float64
+	totalCPUSeconds   float64
+}
+
+func runtimeStatsFromMetricValues(values runtimeMetricValues) runtimeStats {
+	heapInuse := values.heapObjectsBytes + values.heapUnusedBytes
+	heapIdle := values.heapFreeBytes + values.heapReleasedBytes
 	stats := runtimeStats{
-		Goroutines:        runtime.NumGoroutine(),
-		HeapAllocBytes:    memory.HeapAlloc,
-		HeapSysBytes:      memory.HeapSys,
-		HeapInuseBytes:    memory.HeapInuse,
-		HeapIdleBytes:     memory.HeapIdle,
-		HeapReleasedBytes: memory.HeapReleased,
-		HeapObjects:       memory.HeapObjects,
-		NextGCBytes:       memory.NextGC,
-		Mallocs:           memory.Mallocs,
-		Frees:             memory.Frees,
-		GCCount:           memory.NumGC,
-		GCPauseLastNS:     lastGCPauseNS(memory),
-		GCPauseTotalNS:    memory.PauseTotalNs,
-		GCCPUFraction:     memory.GCCPUFraction,
-		GOMAXPROCS:        runtime.GOMAXPROCS(0),
+		HeapAllocBytes:    values.heapObjectsBytes,
+		HeapSysBytes:      heapInuse + heapIdle,
+		HeapInuseBytes:    heapInuse,
+		HeapIdleBytes:     heapIdle,
+		HeapReleasedBytes: values.heapReleasedBytes,
+		HeapObjects:       values.heapObjects,
+		NextGCBytes:       values.heapGoalBytes,
+		Mallocs:           values.heapAllocs + values.heapTinyAllocs,
+		Frees:             values.heapFrees + values.heapTinyAllocs,
+		GCCount:           values.gcCycles,
 	}
+	if values.totalCPUSeconds > 0 && !math.IsNaN(values.gcCPUSeconds) && !math.IsNaN(values.totalCPUSeconds) {
+		fraction := values.gcCPUSeconds / values.totalCPUSeconds
+		if fraction < 0 {
+			fraction = 0
+		} else if fraction > 1 {
+			fraction = 1
+		}
+		stats.GCCPUFraction = fraction
+	}
+	return stats
+}
+
+func applyGCPauseMetrics(stats *runtimeStats, memory runtime.MemStats, pauseSeen bool, previousPauseTotal uint64) {
+	stats.GCPauseLastNS = valuePointer(lastGCPauseNS(memory))
+	stats.GCPauseTotalNS = valuePointer(memory.PauseTotalNs)
 	if pauseSeen && memory.PauseTotalNs >= previousPauseTotal {
 		stats.GCPauseWindowNS = valuePointer(memory.PauseTotalNs - previousPauseTotal)
 	}
-	return stats
+}
+
+func runtimeMetricUint64(samples []runtimemetrics.Sample, index int) uint64 {
+	if samples[index].Value.Kind() != runtimemetrics.KindUint64 {
+		return 0
+	}
+	return samples[index].Value.Uint64()
+}
+
+func runtimeMetricFloat64(samples []runtimemetrics.Sample, index int) float64 {
+	if samples[index].Value.Kind() != runtimemetrics.KindFloat64 {
+		return 0
+	}
+	return samples[index].Value.Float64()
 }
 
 func lastGCPauseNS(memory runtime.MemStats) uint64 {

@@ -65,7 +65,7 @@ func newMiddleware(config ...Config) (*middleware, error) {
 		path:      cfg.Path,
 		refresh:   cfg.Refresh,
 		index:     index,
-		collector: newCollector(now),
+		collector: newCollector(now, cfg.EnableGCPauseMetrics),
 		now:       time.Now,
 	}
 	m.collectFn = m.collectSnapshot
