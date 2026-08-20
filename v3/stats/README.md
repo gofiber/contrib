@@ -16,6 +16,10 @@ background collection loop, or replace Prometheus, OpenTelemetry, or an APM.
 
 **Compatible with Fiber v3.**
 
+## Preview
+
+![Stats dashboard preview](https://raw.githubusercontent.com/gofurry/images/refs/heads/main/github/stats/dark.png)
+
 ## Install
 
 ```sh
