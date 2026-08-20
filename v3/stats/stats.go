@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -33,24 +34,12 @@ type middleware struct {
 	status4  atomic.Uint64
 	status5  atomic.Uint64
 	latency  latencyHistogram
-}
 
-type initialSnapshot struct {
-	CollectedAt time.Time        `json:"collected_at"`
-	HTTP        initialHTTPStats `json:"http"`
-}
-
-type initialHTTPStats struct {
-	Requests uint64             `json:"requests"`
-	InFlight uint64             `json:"in_flight"`
-	Status   initialStatusStats `json:"status"`
-}
-
-type initialStatusStats struct {
-	Status2xx uint64 `json:"2xx"`
-	Status3xx uint64 `json:"3xx"`
-	Status4xx uint64 `json:"4xx"`
-	Status5xx uint64 `json:"5xx"`
+	collectMu sync.Mutex
+	cache     atomic.Pointer[cacheEntry]
+	collector collector
+	collectFn func(time.Time) snapshot
+	now       func() time.Time
 }
 
 // New creates a Fiber handler that records aggregate request statistics and
@@ -68,12 +57,17 @@ func newMiddleware(config ...Config) (*middleware, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &middleware{
-		next:    cfg.Next,
-		path:    cfg.Path,
-		refresh: cfg.Refresh,
-		index:   initialDashboard,
-	}, nil
+	now := time.Now()
+	m := &middleware{
+		next:      cfg.Next,
+		path:      cfg.Path,
+		refresh:   cfg.Refresh,
+		index:     initialDashboard,
+		collector: newCollector(now),
+		now:       time.Now,
+	}
+	m.collectFn = m.collectSnapshot
+	return m, nil
 }
 
 func (m *middleware) handler() fiber.Handler {
@@ -151,28 +145,13 @@ func (m *middleware) serveHTML(c fiber.Ctx) error {
 func (m *middleware) serveJSON(c fiber.Ctx) error {
 	setDashboardHeaders(c)
 	c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSONCharsetUTF8)
-	return c.Status(fiber.StatusOK).JSON(&initialSnapshot{
-		CollectedAt: time.Now().UTC(),
-		HTTP:        m.currentHTTP(),
-	})
+	snapshot := m.currentSnapshot(m.now())
+	return c.Status(fiber.StatusOK).JSON(&snapshot)
 }
 
 func setDashboardHeaders(c fiber.Ctx) {
 	c.Set(headerCacheControl, "no-store")
 	c.Set(headerXContentTypeOptions, "nosniff")
-}
-
-func (m *middleware) currentHTTP() initialHTTPStats {
-	return initialHTTPStats{
-		Requests: m.requests.Load(),
-		InFlight: m.inFlight.Load(),
-		Status: initialStatusStats{
-			Status2xx: m.status2.Load(),
-			Status3xx: m.status3.Load(),
-			Status4xx: m.status4.Load(),
-			Status5xx: m.status5.Load(),
-		},
-	}
 }
 
 func resolveStatus(c fiber.Ctx, err error) int {

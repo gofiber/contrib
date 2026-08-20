@@ -1,12 +1,14 @@
 package stats
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	recovermw "github.com/gofiber/fiber/v3/middleware/recover"
@@ -51,6 +53,27 @@ func TestStatsRoutesAndNegotiation(t *testing.T) {
 		})
 	}
 	require.Zero(t, m.requests.Load(), "dashboard requests must not be counted")
+}
+
+func TestJSONUsesFinalSnapshotShape(t *testing.T) {
+	m, err := newMiddleware()
+	require.NoError(t, err)
+	app := fiber.New()
+	app.Use(m.handler())
+
+	req := httptest.NewRequest(fiber.MethodGet, "/stats", nil)
+	req.Header.Set(fiber.HeaderAccept, fiber.MIMEApplicationJSON)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+	var current snapshot
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&current))
+	require.False(t, current.CollectedAt.IsZero())
+	require.NotNil(t, current.Collection.Errors)
+	require.Nil(t, current.HTTP.RPS)
+	require.Nil(t, current.HTTP.Latency.P50NS)
+	require.Nil(t, current.Process.CPUPercent)
+	require.Nil(t, current.System.NetworkReceiveBPS)
 }
 
 func TestStatsMethodHandling(t *testing.T) {
@@ -178,4 +201,30 @@ func TestConcurrentBusinessRequests(t *testing.T) {
 	require.Equal(t, uint64(requests), m.status2.Load())
 	require.Zero(t, m.inFlight.Load())
 	require.Equal(t, uint64(requests), m.latency.snapshotAndReset().count)
+}
+
+func TestBusinessHotPathDoesNotUseCollectionMutex(t *testing.T) {
+	m, err := newMiddleware()
+	require.NoError(t, err)
+	app := fiber.New()
+	app.Use(m.handler())
+	app.Get("/", func(c fiber.Ctx) error { return c.SendString("ok") })
+
+	m.collectMu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		resp, requestErr := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
+		if requestErr == nil {
+			requestErr = resp.Body.Close()
+		}
+		done <- requestErr
+	}()
+	select {
+	case requestErr := <-done:
+		m.collectMu.Unlock()
+		require.NoError(t, requestErr)
+	case <-time.After(500 * time.Millisecond):
+		m.collectMu.Unlock()
+		t.Fatal("business request blocked on collection mutex")
+	}
 }
