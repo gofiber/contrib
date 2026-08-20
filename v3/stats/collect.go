@@ -27,6 +27,8 @@ type collector struct {
 	networkReceived uint64
 	networkSent     uint64
 	networkAt       time.Time
+	runtimeSeen     bool
+	gcPauseTotal    uint64
 
 	httpSeen      bool
 	httpAt        time.Time
@@ -62,7 +64,7 @@ func (c *collector) collect(m *middleware, now time.Time) snapshot {
 			Errors:  errors,
 		},
 		Process: processValues,
-		Runtime: collectRuntime(),
+		Runtime: c.collectRuntime(),
 		System:  systemValues,
 		HTTP:    c.collectHTTP(m, now),
 	}
@@ -110,16 +112,37 @@ func (c *collector) collectProcess(now time.Time) (processStats, []string) {
 	return stats, errors
 }
 
-func collectRuntime() runtimeStats {
+func (c *collector) collectRuntime() runtimeStats {
 	var memory runtime.MemStats
 	runtime.ReadMemStats(&memory)
-	return runtimeStats{
-		Goroutines:     runtime.NumGoroutine(),
-		HeapAllocBytes: memory.HeapAlloc,
-		HeapObjects:    memory.HeapObjects,
-		GCCount:        memory.NumGC,
-		GCPauseLastNS:  lastGCPauseNS(memory),
+	stats := runtimeStatsFromMemStats(memory, c.runtimeSeen, c.gcPauseTotal)
+	c.runtimeSeen = true
+	c.gcPauseTotal = memory.PauseTotalNs
+	return stats
+}
+
+func runtimeStatsFromMemStats(memory runtime.MemStats, pauseSeen bool, previousPauseTotal uint64) runtimeStats {
+	stats := runtimeStats{
+		Goroutines:        runtime.NumGoroutine(),
+		HeapAllocBytes:    memory.HeapAlloc,
+		HeapSysBytes:      memory.HeapSys,
+		HeapInuseBytes:    memory.HeapInuse,
+		HeapIdleBytes:     memory.HeapIdle,
+		HeapReleasedBytes: memory.HeapReleased,
+		HeapObjects:       memory.HeapObjects,
+		NextGCBytes:       memory.NextGC,
+		Mallocs:           memory.Mallocs,
+		Frees:             memory.Frees,
+		GCCount:           memory.NumGC,
+		GCPauseLastNS:     lastGCPauseNS(memory),
+		GCPauseTotalNS:    memory.PauseTotalNs,
+		GCCPUFraction:     memory.GCCPUFraction,
+		GOMAXPROCS:        runtime.GOMAXPROCS(0),
 	}
+	if pauseSeen && memory.PauseTotalNs >= previousPauseTotal {
+		stats.GCPauseWindowNS = valuePointer(memory.PauseTotalNs - previousPauseTotal)
+	}
+	return stats
 }
 
 func lastGCPauseNS(memory runtime.MemStats) uint64 {
@@ -150,6 +173,7 @@ func (c *collector) collectSystem(now time.Time) (systemStats, []string) {
 		stats.MemoryUsedPercent = valuePointer(memory.UsedPercent)
 		stats.MemoryUsedBytes = valuePointer(memory.Used)
 		stats.MemoryTotalBytes = valuePointer(memory.Total)
+		stats.MemoryAvailableBytes = valuePointer(memory.Available)
 	} else {
 		errors = append(errors, "system.memory")
 	}
@@ -158,6 +182,10 @@ func (c *collector) collectSystem(now time.Time) (systemStats, []string) {
 			stats.DiskUsedPercent = valuePointer(usage.UsedPercent)
 			stats.DiskUsedBytes = valuePointer(usage.Used)
 			stats.DiskTotalBytes = valuePointer(usage.Total)
+			stats.DiskFreeBytes = valuePointer(usage.Free)
+			if usage.Fstype != "" {
+				stats.DiskFSType = valuePointer(usage.Fstype)
+			}
 		} else {
 			errors = append(errors, "system.disk")
 		}
@@ -167,6 +195,8 @@ func (c *collector) collectSystem(now time.Time) (systemStats, []string) {
 	if runtime.GOOS != "windows" {
 		if average, err := load.Avg(); err == nil && average != nil {
 			stats.Load1 = valuePointer(average.Load1)
+			stats.Load5 = valuePointer(average.Load5)
+			stats.Load15 = valuePointer(average.Load15)
 		} else {
 			errors = append(errors, "system.load")
 		}
@@ -194,13 +224,13 @@ func (c *collector) collectSystem(now time.Time) (systemStats, []string) {
 
 func (c *collector) collectHTTP(m *middleware, now time.Time) httpStats {
 	status := httpStatusStats{
+		Status1xx: m.status1.Load(),
 		Status2xx: m.status2.Load(),
 		Status3xx: m.status3.Load(),
 		Status4xx: m.status4.Load(),
 		Status5xx: m.status5.Load(),
 	}
-	status1xx := m.status1.Load()
-	completed := status1xx + status.Status2xx + status.Status3xx + status.Status4xx + status.Status5xx
+	completed := status.Status1xx + status.Status2xx + status.Status3xx + status.Status4xx + status.Status5xx
 	requests := m.requests.Load()
 	window := m.latency.snapshotAndReset()
 

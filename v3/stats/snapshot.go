@@ -25,24 +25,40 @@ type processStats struct {
 }
 
 type runtimeStats struct {
-	Goroutines     int    `json:"goroutines"`
-	HeapAllocBytes uint64 `json:"heap_alloc_bytes"`
-	HeapObjects    uint64 `json:"heap_objects"`
-	GCCount        uint32 `json:"gc_count"`
-	GCPauseLastNS  uint64 `json:"gc_pause_last_ns"`
+	Goroutines        int     `json:"goroutines"`
+	HeapAllocBytes    uint64  `json:"heap_alloc_bytes"`
+	HeapSysBytes      uint64  `json:"heap_sys_bytes"`
+	HeapInuseBytes    uint64  `json:"heap_inuse_bytes"`
+	HeapIdleBytes     uint64  `json:"heap_idle_bytes"`
+	HeapReleasedBytes uint64  `json:"heap_released_bytes"`
+	HeapObjects       uint64  `json:"heap_objects"`
+	NextGCBytes       uint64  `json:"next_gc_bytes"`
+	Mallocs           uint64  `json:"mallocs"`
+	Frees             uint64  `json:"frees"`
+	GCCount           uint32  `json:"gc_count"`
+	GCPauseLastNS     uint64  `json:"gc_pause_last_ns"`
+	GCPauseWindowNS   *uint64 `json:"gc_pause_window_ns"`
+	GCPauseTotalNS    uint64  `json:"gc_pause_total_ns"`
+	GCCPUFraction     float64 `json:"gc_cpu_fraction"`
+	GOMAXPROCS        int     `json:"gomaxprocs"`
 }
 
 type systemStats struct {
-	CPUPercent        *float64 `json:"cpu_percent"`
-	MemoryUsedPercent *float64 `json:"memory_used_percent"`
-	MemoryUsedBytes   *uint64  `json:"memory_used_bytes"`
-	MemoryTotalBytes  *uint64  `json:"memory_total_bytes"`
-	DiskUsedPercent   *float64 `json:"disk_used_percent"`
-	DiskUsedBytes     *uint64  `json:"disk_used_bytes"`
-	DiskTotalBytes    *uint64  `json:"disk_total_bytes"`
-	Load1             *float64 `json:"load1"`
-	NetworkReceiveBPS *float64 `json:"network_receive_bps"`
-	NetworkSendBPS    *float64 `json:"network_send_bps"`
+	CPUPercent           *float64 `json:"cpu_percent"`
+	MemoryUsedPercent    *float64 `json:"memory_used_percent"`
+	MemoryUsedBytes      *uint64  `json:"memory_used_bytes"`
+	MemoryTotalBytes     *uint64  `json:"memory_total_bytes"`
+	MemoryAvailableBytes *uint64  `json:"memory_available_bytes"`
+	DiskUsedPercent      *float64 `json:"disk_used_percent"`
+	DiskUsedBytes        *uint64  `json:"disk_used_bytes"`
+	DiskTotalBytes       *uint64  `json:"disk_total_bytes"`
+	DiskFreeBytes        *uint64  `json:"disk_free_bytes"`
+	DiskFSType           *string  `json:"disk_fstype"`
+	Load1                *float64 `json:"load1"`
+	Load5                *float64 `json:"load5"`
+	Load15               *float64 `json:"load15"`
+	NetworkReceiveBPS    *float64 `json:"network_receive_bps"`
+	NetworkSendBPS       *float64 `json:"network_send_bps"`
 }
 
 type httpStats struct {
@@ -55,6 +71,7 @@ type httpStats struct {
 }
 
 type httpStatusStats struct {
+	Status1xx uint64 `json:"1xx"`
 	Status2xx uint64 `json:"2xx"`
 	Status3xx uint64 `json:"3xx"`
 	Status4xx uint64 `json:"4xx"`

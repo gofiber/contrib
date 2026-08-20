@@ -54,6 +54,7 @@ func TestFirstAndSecondSnapshotWindowMetrics(t *testing.T) {
 	mustNoError(t, err)
 	now := time.Now()
 	m.requests.Add(10)
+	m.status1.Add(2)
 	m.status2.Add(10)
 	m.latency.observeSharded(uint64(time.Millisecond), 0)
 
@@ -62,6 +63,8 @@ func TestFirstAndSecondSnapshotWindowMetrics(t *testing.T) {
 	mustNil(t, first.HTTP.Rates.Status4xx)
 	mustNil(t, first.HTTP.Rates.Status5xx)
 	mustNil(t, first.HTTP.Latency.P50NS)
+	mustEqual(t, uint64(2), first.HTTP.Status.Status1xx)
+	mustNil(t, first.Runtime.GCPauseWindowNS)
 	mustNil(t, first.Process.CPUPercent)
 	mustNil(t, first.System.CPUPercent)
 	mustNil(t, first.System.NetworkReceiveBPS)
@@ -76,6 +79,7 @@ func TestFirstAndSecondSnapshotWindowMetrics(t *testing.T) {
 	mustNotNil(t, second.HTTP.Rates.Status4xx)
 	mustInDelta(t, 0.25, *second.HTTP.Rates.Status4xx, 0.001)
 	mustNotNil(t, second.HTTP.Latency.P50NS)
+	mustNotNil(t, second.Runtime.GCPauseWindowNS)
 }
 
 func TestCacheHitDoesNotResetHistogram(t *testing.T) {

@@ -66,13 +66,34 @@ func TestJSONUsesFinalSnapshotShape(t *testing.T) {
 	mustNoError(t, err)
 	defer func() { mustNoError(t, resp.Body.Close()) }()
 	var current snapshot
-	mustNoError(t, json.NewDecoder(resp.Body).Decode(&current))
+	body, err := io.ReadAll(resp.Body)
+	mustNoError(t, err)
+	mustNoError(t, json.Unmarshal(body, &current))
 	mustFalse(t, current.CollectedAt.IsZero())
 	mustNotNil(t, current.Collection.Errors)
 	mustNil(t, current.HTTP.RPS)
 	mustNil(t, current.HTTP.Latency.P50NS)
 	mustNil(t, current.Process.CPUPercent)
 	mustNil(t, current.System.NetworkReceiveBPS)
+	for _, field := range []string{
+		`"heap_sys_bytes"`,
+		`"heap_inuse_bytes"`,
+		`"heap_idle_bytes"`,
+		`"heap_released_bytes"`,
+		`"next_gc_bytes"`,
+		`"gc_pause_window_ns"`,
+		`"gc_pause_total_ns"`,
+		`"gc_cpu_fraction"`,
+		`"gomaxprocs"`,
+		`"memory_available_bytes"`,
+		`"load5"`,
+		`"load15"`,
+		`"disk_free_bytes"`,
+		`"disk_fstype"`,
+		`"1xx"`,
+	} {
+		mustContain(t, string(body), field)
+	}
 }
 
 func TestStatsMethodHandling(t *testing.T) {
