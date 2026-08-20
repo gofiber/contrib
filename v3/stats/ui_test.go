@@ -35,8 +35,9 @@ func TestDashboardContract(t *testing.T) {
 	mustNoError(t, err)
 	mustContain(t, html.UnescapeString(pageHTML), "data:image/svg+xml;base64,")
 	mustEqual(t, 4, strings.Count(pageHTML, `class="metric-card"`))
-	mustEqual(t, 6, strings.Count(pageHTML, "<canvas "))
-	mustContain(t, pageHTML, `const MAX_SAMPLES = 60;`)
+	mustEqual(t, 8, strings.Count(pageHTML, "<canvas "))
+	mustContain(t, pageHTML, `const MAX_SAMPLES = 90;`)
+	mustContain(t, pageHTML, `let currentSampleWindow = 60;`)
 	mustContain(t, pageHTML, `Accept: "application/json"`)
 	mustContain(t, pageHTML, `@media (prefers-color-scheme: dark)`)
 	mustContain(t, pageHTML, `@media (max-width: 980px)`)
@@ -48,11 +49,58 @@ func TestDashboardContract(t *testing.T) {
 	mustContain(t, pageHTML, `border: 3px solid var(--border)`)
 	mustContain(t, pageHTML, `class="page-scroll-dock"`)
 	mustNotContain(t, pageHTML, "lang-toggle")
-	mustNotContain(t, pageHTML, "theme-toggle")
-	mustNotContain(t, pageHTML, "sample-option")
+	mustNotContain(t, pageHTML, `data-active="en"`)
 	mustNotContain(t, pageHTML, "container-card")
 	mustNotContain(t, strings.ToLower(pageHTML), "chart.js")
 	mustNotContain(t, strings.ToLower(pageHTML), "cdn")
+}
+
+func TestDashboardInteractions(t *testing.T) {
+	pageHTML, err := renderDashboard(ConfigDefault)
+	mustNoError(t, err)
+
+	for _, sample := range []string{`data-samples="30"`, `data-samples="60"`, `data-samples="90"`} {
+		mustContain(t, pageHTML, sample)
+	}
+	mustEqual(t, 3, strings.Count(pageHTML, `class="sample-option"`))
+	mustContain(t, pageHTML, `storageSet("stats.samples"`)
+	mustContain(t, pageHTML, `visibleSamples(values)`)
+
+	mustContain(t, pageHTML, `id="theme-toggle"`)
+	mustContain(t, pageHTML, `prefers-color-scheme: dark`)
+	mustContain(t, pageHTML, `storageSet("stats.theme"`)
+	mustContain(t, pageHTML, `currentTheme === "dark" ? "light" : "dark"`)
+
+	for _, id := range []string{
+		`id="heap-details-button"`,
+		`id="gc-details-button"`,
+		`id="disk-details-button"`,
+		`id="http-status-button"`,
+		`id="heap-modal"`,
+		`id="gc-modal"`,
+		`id="disk-modal"`,
+		`id="http-status-modal"`,
+	} {
+		mustContain(t, pageHTML, id)
+	}
+	for _, label := range []string{
+		"Heap In-use",
+		"Heap Released",
+		"GOMAXPROCS",
+		"Window GC Pause",
+		"GC CPU Fraction",
+		"Application filesystem",
+		"Usage ",
+		"4xx Rate",
+		"5xx Rate",
+	} {
+		mustContain(t, pageHTML, label)
+	}
+	mustContain(t, pageHTML, `event.key === "Escape"`)
+	mustContain(t, pageHTML, `event.target === modal`)
+	mustContain(t, pageHTML, `byId(binding.trigger).focus()`)
+	mustContain(t, pageHTML, `id="http-error-chart"`)
+	mustContain(t, pageHTML, `id="gc-pause-chart"`)
 }
 
 func TestRenderDashboardSanitizesUnvalidatedFavicon(t *testing.T) {

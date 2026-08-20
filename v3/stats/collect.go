@@ -2,7 +2,9 @@ package stats
 
 import (
 	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -183,8 +185,16 @@ func (c *collector) collectSystem(now time.Time) (systemStats, []string) {
 			stats.DiskUsedBytes = valuePointer(usage.Used)
 			stats.DiskTotalBytes = valuePointer(usage.Total)
 			stats.DiskFreeBytes = valuePointer(usage.Free)
-			if usage.Fstype != "" {
-				stats.DiskFSType = valuePointer(usage.Fstype)
+			filesystemType := usage.Fstype
+			if filesystemType == "" {
+				// Some platforms return usable partitions together with non-fatal
+				// warnings (for example, an unavailable removable drive on Windows).
+				// Keep the safe filesystem metadata and ignore those warnings here.
+				partitions, _ := disk.Partitions(false)
+				filesystemType = filesystemTypeForPath(workingDirectory, partitions)
+			}
+			if filesystemType != "" {
+				stats.DiskFSType = valuePointer(filesystemType)
 			}
 		} else {
 			errors = append(errors, "system.disk")
@@ -220,6 +230,29 @@ func (c *collector) collectSystem(now time.Time) (systemStats, []string) {
 		errors = append(errors, "system.network")
 	}
 	return stats, errors
+}
+
+func filesystemTypeForPath(path string, partitions []disk.PartitionStat) string {
+	bestLength := -1
+	filesystemType := ""
+	for _, partition := range partitions {
+		if partition.Mountpoint == "" || partition.Fstype == "" {
+			continue
+		}
+		mountpoint := filepath.Clean(partition.Mountpoint)
+		if volume := filepath.VolumeName(partition.Mountpoint); volume != "" && partition.Mountpoint == volume {
+			mountpoint = volume + string(os.PathSeparator)
+		}
+		relative, err := filepath.Rel(mountpoint, path)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+			continue
+		}
+		if len(mountpoint) > bestLength {
+			bestLength = len(mountpoint)
+			filesystemType = partition.Fstype
+		}
+	}
+	return filesystemType
 }
 
 func (c *collector) collectHTTP(m *middleware, now time.Time) httpStats {

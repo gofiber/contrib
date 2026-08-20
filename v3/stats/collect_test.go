@@ -3,12 +3,14 @@ package stats
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/shirou/gopsutil/v4/cpu"
+	"github.com/shirou/gopsutil/v4/disk"
 )
 
 func TestProcessCPUPercent(t *testing.T) {
@@ -120,6 +122,20 @@ func TestSystemSnapshotDoesNotExposeFilesystemIdentity(t *testing.T) {
 	mustNotContain(t, value, `"device"`)
 	if workingDirectory, err := os.Getwd(); err == nil {
 		mustNotContain(t, value, workingDirectory)
+	}
+}
+
+func TestFilesystemTypeForPathUsesMostSpecificMount(t *testing.T) {
+	base := t.TempDir()
+	applicationPath := filepath.Join(base, "service", "data")
+	partitions := []disk.PartitionStat{
+		{Mountpoint: filepath.Dir(base), Fstype: "parentfs"},
+		{Mountpoint: base, Fstype: "applicationfs"},
+	}
+	mustEqual(t, "applicationfs", filesystemTypeForPath(applicationPath, partitions))
+	mustEqual(t, "", filesystemTypeForPath(applicationPath, nil))
+	if volume := filepath.VolumeName(applicationPath); volume != "" {
+		mustEqual(t, "volumefs", filesystemTypeForPath(applicationPath, []disk.PartitionStat{{Mountpoint: volume, Fstype: "volumefs"}}))
 	}
 }
 

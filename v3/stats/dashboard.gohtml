@@ -7,7 +7,8 @@
   <link rel="icon" href="{{ .FaviconURL }}">
   <title>{{ .Title }}</title>
   <style>
-    :root {
+    :root,
+    :root[data-theme="light"] {
       color-scheme: light;
       --bg: #f3f6fa;
       --panel: #fbfcfe;
@@ -31,7 +32,31 @@
       --dock-text: rgba(67, 32, 12, 0.84);
     }
     @media (prefers-color-scheme: dark) {
-      :root {
+      :root:not([data-theme]) {
+        color-scheme: dark;
+        --bg: #0d1117;
+        --panel: #151b23;
+        --panel-soft: #10161d;
+        --text: #f3f4f6;
+        --muted: #9ca3af;
+        --border: #30363d;
+        --accent: #67e8f9;
+        --accent-soft: rgba(103, 232, 249, 0.12);
+        --good: #4ade80;
+        --warn: #facc15;
+        --bad: #fb7185;
+        --shadow: none;
+        --divider-line: #3b82f6;
+        --divider-glow: #38bdf8;
+        --dock-fill: rgba(122, 228, 255, 0.88);
+        --dock-track: rgba(255, 255, 255, 0.08);
+        --dock-face-start: rgba(13, 22, 30, 0.78);
+        --dock-face-end: rgba(17, 28, 36, 0.64);
+        --dock-ring: rgba(132, 226, 255, 0.16);
+        --dock-text: rgba(235, 248, 255, 0.88);
+      }
+    }
+    :root[data-theme="dark"] {
       color-scheme: dark;
       --bg: #0d1117;
       --panel: #151b23;
@@ -53,7 +78,6 @@
       --dock-face-end: rgba(17, 28, 36, 0.64);
       --dock-ring: rgba(132, 226, 255, 0.16);
       --dock-text: rgba(235, 248, 255, 0.88);
-      }
     }
     * { box-sizing: border-box; }
     html, body {
@@ -174,14 +198,6 @@
     .control-dot[data-active="dark"] {
       background: #67e8f9;
       box-shadow: 0 0 0 4px color-mix(in srgb, #67e8f9 22%, transparent);
-    }
-    .control-dot[data-active="en"] {
-      background: #9b8ae3;
-      box-shadow: 0 0 0 4px rgba(155, 138, 227, 0.22);
-    }
-    .control-dot[data-active="zh-CN"] {
-      background: #d96f72;
-      box-shadow: 0 0 0 4px rgba(217, 111, 114, 0.2);
     }
     .visually-hidden {
       position: absolute;
@@ -481,6 +497,9 @@
     .legend-dot[data-series="heap"] {
       background: var(--good);
     }
+    .legend-dot[data-series="bad"] {
+      background: var(--bad);
+    }
     canvas {
       display: block;
       width: 100%;
@@ -507,16 +526,6 @@
     }
     .chart-tooltip strong { display: block; margin-bottom: 4px; color: var(--accent); }
     .chart-tooltip span { display: block; color: var(--muted); }
-    .metric-value-chip { display: inline-grid; place-items: center; }
-    .sample-window {
-      min-width: 46px;
-      justify-content: center;
-      color: var(--bg);
-      background: var(--accent);
-      font-size: 0.78rem;
-      font-weight: 800;
-      line-height: 24px;
-    }
     footer {
       margin-top: 20px;
       color: var(--muted);
@@ -785,7 +794,9 @@
       <div class="header-main"><h1>{{ .Title }}</h1></div>
       <div class="header-side">
         <div class="status-box" aria-live="polite">
-          <span class="status-controls" aria-hidden="true"><span class="control-dot" data-active="en"></span><span id="scheme-marker" class="control-dot" data-active="light"></span></span>
+          <span class="status-controls" aria-label="Display preferences">
+            <button type="button" id="theme-toggle" class="control-dot" data-active="light" title="Theme"><span class="visually-hidden">Toggle theme</span></button>
+          </span>
           <div class="status-line"><span class="status-state"><span id="live-dot" data-status="error"></span><span id="live-text">ERROR</span></span></div>
           <span id="updated-at">-</span><span id="response-time">-</span>
         </div>
@@ -809,9 +820,9 @@
         <div class="metric-card__head"><h2>Runtime</h2><div class="metric-pager" hidden><button type="button" class="metric-pager__prev" aria-label="Previous metric page">&lt;</button><span class="metric-pager__status">1 / 1</span><button type="button" class="metric-pager__next" aria-label="Next metric page">&gt;</button></div></div>
         <dl>
           <div class="row"><dt>Goroutines</dt><dd id="rt-goroutines">-</dd></div>
-          <div class="row"><dt>Heap</dt><dd><span id="rt-heap" class="metric-action metric-value-chip">-</span></dd></div>
+          <div class="row"><dt>Heap</dt><dd><button type="button" id="heap-details-button" class="metric-action" aria-haspopup="dialog" aria-controls="heap-modal">-</button></dd></div>
           <div class="row"><dt>Heap Objects</dt><dd id="rt-heap-objects">-</dd></div>
-          <div class="row"><dt>GC</dt><dd><span id="rt-gc" class="metric-action metric-value-chip">-</span></dd></div>
+          <div class="row"><dt>GC</dt><dd><button type="button" id="gc-details-button" class="metric-action" aria-haspopup="dialog" aria-controls="gc-modal">-</button></dd></div>
           <div class="row"><dt>Uptime</dt><dd id="rt-uptime">-</dd></div>
         </dl>
       </section>
@@ -821,8 +832,11 @@
           <div class="row"><dt>CPU</dt><dd id="os-cpu">-</dd></div>
           <div class="row"><dt>Memory</dt><dd id="os-memory">-</dd></div>
           <div class="row"><dt>Total RAM</dt><dd id="os-total">-</dd></div>
-          <div class="row"><dt>Disk</dt><dd><span id="os-disk" class="metric-action metric-value-chip">-</span></dd></div>
+          <div class="row"><dt>Disk</dt><dd><button type="button" id="disk-details-button" class="metric-action" aria-haspopup="dialog" aria-controls="disk-modal">-</button></dd></div>
           <div class="row"><dt>1m load</dt><dd id="os-load">-</dd></div>
+          <div class="row"><dt>Available RAM</dt><dd id="os-available">-</dd></div>
+          <div class="row"><dt>5m load</dt><dd id="os-load-5">-</dd></div>
+          <div class="row"><dt>15m load</dt><dd id="os-load-15">-</dd></div>
           <div class="row"><dt>RX rate</dt><dd id="os-network-rx-rate">-</dd></div>
           <div class="row"><dt>TX rate</dt><dd id="os-network-tx-rate">-</dd></div>
         </dl>
@@ -837,13 +851,20 @@
           <div class="row"><dt>Requests</dt><dd id="http-requests">-</dd></div>
           <div class="row"><dt>P50 latency</dt><dd id="http-latency-p50">-</dd></div>
           <div class="row"><dt>P99 latency</dt><dd id="http-latency-p99">-</dd></div>
-          <div class="row"><dt>Status codes</dt><dd><span id="http-status-button" class="metric-action metric-value-chip">-</span></dd></div>
+          <div class="row"><dt>Status codes</dt><dd><button type="button" id="http-status-button" class="metric-action" aria-haspopup="dialog" aria-controls="http-status-modal">-</button></dd></div>
         </dl>
       </section>
     </div>
 
     <div class="chart-section">
-      <div class="section-title"><h2>Trends</h2><span class="sample-toggle sample-window" aria-label="60 chart samples">60</span></div>
+      <div class="section-title">
+        <h2>Trends</h2>
+        <div class="sample-toggle" role="group" aria-label="Chart sample window">
+          <button type="button" class="sample-option" data-samples="30" aria-pressed="false">30</button>
+          <button type="button" class="sample-option" data-samples="60" aria-pressed="true">60</button>
+          <button type="button" class="sample-option" data-samples="90" aria-pressed="false">90</button>
+        </div>
+      </div>
       <div class="chart-grid">
         <article class="chart-card"><div class="chart-head"><span>CPU</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="pid"></span>Process</span><span class="legend-item"><span class="legend-dot" data-series="os"></span>System</span></span></div><canvas id="cpu-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
         <article class="chart-card"><div class="chart-head"><span>Memory</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="rss"></span>RSS</span><span class="legend-item"><span class="legend-dot" data-series="heap"></span>Heap</span></span></div><canvas id="memory-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
@@ -851,21 +872,81 @@
         <article class="chart-card"><div class="chart-head"><span>Goroutines</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="main"></span>Count</span></span></div><canvas id="goroutine-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
         <article class="chart-card"><div class="chart-head"><span>Requests / second</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="main"></span>RPS</span></span></div><canvas id="request-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
         <article class="chart-card"><div class="chart-head"><span>HTTP latency</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="recent"></span>P50</span><span class="legend-item"><span class="legend-dot" data-series="max"></span>P95</span><span class="legend-item"><span class="legend-dot" data-series="last"></span>P99</span></span></div><canvas id="latency-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>HTTP Error Rate</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="max"></span>4xx</span><span class="legend-item"><span class="legend-dot" data-series="bad"></span>5xx</span></span></div><canvas id="http-error-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>GC Pause</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="window"></span>Window</span><span class="legend-item"><span class="legend-dot" data-series="last"></span>Last</span></span></div><canvas id="gc-pause-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
       </div>
     </div>
     <footer>{{ .Footer }}</footer>
   </main>
   <button id="page-scroll-dock" class="page-scroll-dock" type="button" title="Scroll up" aria-label="Scroll progress 0%" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="page-scroll-dock-value" class="page-scroll-dock__core">0%</span></button>
+  <div id="disk-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="disk-modal-title" hidden>
+    <div class="modal__panel">
+      <div class="modal__head">
+        <h2 id="disk-modal-title">Disk Details</h2>
+        <button type="button" id="disk-modal-close" class="modal__close" aria-label="Close">x</button>
+      </div>
+      <div id="disk-modal-list" class="disk-list"></div>
+    </div>
+  </div>
+  <div id="heap-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="heap-modal-title" hidden>
+    <div class="modal__panel">
+      <div class="modal__head">
+        <h2 id="heap-modal-title">Heap Details</h2>
+        <button type="button" id="heap-modal-close" class="modal__close" aria-label="Close">x</button>
+      </div>
+      <dl id="heap-modal-list" class="detail-list"></dl>
+    </div>
+  </div>
+  <div id="gc-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="gc-modal-title" hidden>
+    <div class="modal__panel">
+      <div class="modal__head">
+        <h2 id="gc-modal-title">GC Details</h2>
+        <button type="button" id="gc-modal-close" class="modal__close" aria-label="Close">x</button>
+      </div>
+      <dl id="gc-modal-list" class="detail-list"></dl>
+    </div>
+  </div>
+  <div id="http-status-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="http-status-modal-title" hidden>
+    <div class="modal__panel">
+      <div class="modal__head">
+        <h2 id="http-status-modal-title">HTTP Status Codes</h2>
+        <button type="button" id="http-status-modal-close" class="modal__close" aria-label="Close">x</button>
+      </div>
+      <dl id="http-status-modal-list" class="detail-list"></dl>
+    </div>
+  </div>
   <script>
 (() => {
     "use strict";
     const REFRESH_MS = {{ .RefreshMS }};
-    const MAX_SAMPLES = 60;
+    const MAX_SAMPLES = 90;
+    const SAMPLE_WINDOWS = [30, 60, 90];
     const dash = "\u2014";
     const history = {
-      labels: [], processCPU: [], systemCPU: [], rss: [], heap: [], networkRX: [], networkTX: [],
-      goroutines: [], rps: [], p50: [], p95: [], p99: []
+      labels: [],
+      processCPU: [],
+      systemCPU: [],
+      rss: [],
+      heap: [],
+      networkRX: [],
+      networkTX: [],
+      goroutines: [],
+      rps: [],
+      p50: [],
+      p95: [],
+      p99: [],
+      error4xx: [],
+      error5xx: [],
+      gcWindow: [],
+      gcLast: []
     };
+    let currentSampleWindow = 60;
+    let currentTheme = "";
+    let themeOverridden = false;
+    let currentRuntime = {};
+    let currentSystem = {};
+    let currentHTTPStatus = {};
+    let currentHTTPRates = {};
     let lastCollectedAt = "";
     let hasUsableSnapshot = false;
     let resizeFrame = 0;
@@ -873,20 +954,43 @@
     const byId = (id) => document.getElementById(id);
     const finite = (value) => typeof value === "number" && Number.isFinite(value);
     const optional = (value, formatter) => finite(value) ? formatter(value) : dash;
-    const setText = (id, value) => { const node = byId(id); if (node) node.textContent = value; };
+    const setText = (id, value) => {
+      const node = byId(id);
+      if (node) node.textContent = value;
+    };
     const cssColor = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
     const compact = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
     const decimal = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
+    const integer = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
+    const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
+
+    function storageGet(key) {
+      try {
+        return localStorage.getItem(key) || "";
+      } catch (_) {
+        return "";
+      }
+    }
+
+    function storageSet(key, value) {
+      try {
+        localStorage.setItem(key, value);
+      } catch (_) {}
+    }
 
     function formatBytes(value) {
       if (!finite(value)) return dash;
       const units = ["B", "KiB", "MiB", "GiB", "TiB"];
       let current = Math.max(0, value);
       let unit = 0;
-      while (current >= 1024 && unit < units.length - 1) { current /= 1024; unit += 1; }
+      while (current >= 1024 && unit < units.length - 1) {
+        current /= 1024;
+        unit += 1;
+      }
       const digits = current >= 100 || unit === 0 ? 0 : 1;
       return current.toFixed(digits) + " " + units[unit];
     }
+
     function formatDurationNS(value) {
       if (!finite(value)) return dash;
       if (value < 1000) return Math.round(value) + " ns";
@@ -894,6 +998,7 @@
       if (value < 1e9) return (value / 1e6).toFixed(value < 1e7 ? 1 : 0) + " ms";
       return (value / 1e9).toFixed(1) + " s";
     }
+
     function formatUptime(value) {
       if (!finite(value)) return dash;
       const seconds = Math.max(0, Math.floor(value));
@@ -905,35 +1010,177 @@
       if (minutes > 0) return minutes + "m " + (seconds % 60) + "s";
       return seconds + "s";
     }
+
     const percent = (value) => optional(value, (number) => number.toFixed(1) + "%");
     const ratio = (value) => optional(value, (number) => (number * 100).toFixed(number < .001 ? 3 : 2) + "%");
 
+    function applyTheme(theme, persist) {
+      currentTheme = theme === "dark" ? "dark" : "light";
+      document.documentElement.dataset.theme = currentTheme;
+      const toggle = byId("theme-toggle");
+      if (toggle) {
+        toggle.dataset.active = currentTheme;
+        toggle.title = "Switch to " + (currentTheme === "dark" ? "light" : "dark") + " theme";
+      }
+      if (persist) storageSet("stats.theme", currentTheme);
+      drawCharts();
+    }
+
+    function toggleTheme() {
+      themeOverridden = true;
+      applyTheme(currentTheme === "dark" ? "light" : "dark", true);
+    }
+
+    function applySampleWindow(value, persist) {
+      const parsed = Number(value);
+      currentSampleWindow = SAMPLE_WINDOWS.includes(parsed) ? parsed : 60;
+      document.querySelectorAll(".sample-option").forEach((button) => {
+        button.setAttribute("aria-pressed", button.dataset.samples === String(currentSampleWindow) ? "true" : "false");
+      });
+      if (persist) storageSet("stats.samples", String(currentSampleWindow));
+      drawCharts();
+    }
+
+    function visibleSamples(values) {
+      return values.slice(Math.max(0, values.length - currentSampleWindow));
+    }
+
+    function appendDetailRows(list, rows) {
+      rows.forEach(([label, value]) => {
+        const row = document.createElement("div");
+        row.className = "row";
+        const term = document.createElement("dt");
+        term.textContent = label;
+        const detail = document.createElement("dd");
+        detail.textContent = value;
+        row.append(term, detail);
+        list.append(row);
+      });
+    }
+
+    function renderDetailRows(id, rows) {
+      const list = byId(id);
+      if (!list) return;
+      list.replaceChildren();
+      appendDetailRows(list, rows);
+    }
+
+    function renderHeapDetails() {
+      const runtime = currentRuntime;
+      renderDetailRows("heap-modal-list", [
+        ["Heap Alloc", optional(runtime.heap_alloc_bytes, formatBytes)],
+        ["Heap Sys", optional(runtime.heap_sys_bytes, formatBytes)],
+        ["Heap In-use", optional(runtime.heap_inuse_bytes, formatBytes)],
+        ["Heap Idle", optional(runtime.heap_idle_bytes, formatBytes)],
+        ["Heap Released", optional(runtime.heap_released_bytes, formatBytes)],
+        ["Heap Objects", optional(runtime.heap_objects, integer.format)],
+        ["Next GC", optional(runtime.next_gc_bytes, formatBytes)],
+        ["Mallocs", optional(runtime.mallocs, integer.format)],
+        ["Frees", optional(runtime.frees, integer.format)],
+        ["GOMAXPROCS", optional(runtime.gomaxprocs, integer.format)]
+      ]);
+    }
+
+    function renderGCDetails() {
+      const runtime = currentRuntime;
+      renderDetailRows("gc-modal-list", [
+        ["GC Count", optional(runtime.gc_count, integer.format)],
+        ["Last GC Pause", optional(runtime.gc_pause_last_ns, formatDurationNS)],
+        ["Window GC Pause", optional(runtime.gc_pause_window_ns, formatDurationNS)],
+        ["Total GC Pause", optional(runtime.gc_pause_total_ns, formatDurationNS)],
+        ["GC CPU Fraction", finite(runtime.gc_cpu_fraction) ? (runtime.gc_cpu_fraction * 100).toFixed(3) + "%" : dash]
+      ]);
+    }
+
+    function renderDiskDetails() {
+      const container = byId("disk-modal-list");
+      if (!container) return;
+      container.replaceChildren();
+      const system = currentSystem;
+      const item = document.createElement("article");
+      item.className = "disk-item";
+
+      const head = document.createElement("div");
+      head.className = "disk-item__head";
+      const name = document.createElement("span");
+      name.className = "disk-item__path";
+      name.textContent = "Application filesystem";
+      const usage = document.createElement("span");
+      usage.className = "disk-item__usage";
+      usage.textContent = "Usage " + percent(system.disk_used_percent);
+      head.append(name, usage);
+
+      const meta = document.createElement("div");
+      meta.className = "disk-item__meta";
+      meta.textContent = "Type: " + (typeof system.disk_fstype === "string" && system.disk_fstype ? system.disk_fstype : dash);
+
+      const meter = document.createElement("div");
+      meter.className = "disk-meter";
+      const bar = document.createElement("div");
+      bar.className = "disk-meter__bar";
+      const used = finite(system.disk_used_percent) ? Math.min(100, Math.max(0, system.disk_used_percent)) : 0;
+      bar.style.setProperty("--disk-used", used + "%");
+      meter.append(bar);
+
+      const details = document.createElement("dl");
+      appendDetailRows(details, [
+        ["Total", optional(system.disk_total_bytes, formatBytes)],
+        ["Used", optional(system.disk_used_bytes, formatBytes)],
+        ["Free", optional(system.disk_free_bytes, formatBytes)]
+      ]);
+      item.append(head, meta, meter, details);
+      container.append(item);
+    }
+
+    function statusCodesTotal(status) {
+      return (status["1xx"] || 0) + (status["2xx"] || 0) + (status["3xx"] || 0) + (status["4xx"] || 0) + (status["5xx"] || 0);
+    }
+
+    function renderHTTPStatusDetails() {
+      const status = currentHTTPStatus;
+      const rates = currentHTTPRates;
+      renderDetailRows("http-status-modal-list", [
+        ["1xx", integer.format(status["1xx"] || 0)],
+        ["2xx", integer.format(status["2xx"] || 0)],
+        ["3xx", integer.format(status["3xx"] || 0)],
+        ["4xx", integer.format(status["4xx"] || 0)],
+        ["5xx", integer.format(status["5xx"] || 0)],
+        ["Total", integer.format(statusCodesTotal(status))],
+        ["4xx Rate", ratio(rates["4xx"])],
+        ["5xx Rate", ratio(rates["5xx"])]
+      ]);
+    }
+
     function renderMetrics(snapshot) {
       const process = snapshot.process || {};
-      const runtime = snapshot.runtime || {};
-      const system = snapshot.system || {};
+      currentRuntime = snapshot.runtime || {};
+      currentSystem = snapshot.system || {};
       const http = snapshot.http || {};
-      const status = http.status || {};
-      const rates = http.rates || {};
+      currentHTTPStatus = http.status || {};
+      currentHTTPRates = http.rates || {};
       const latency = http.latency || {};
-      const errorRate = finite(rates["4xx"]) && finite(rates["5xx"]) ? rates["4xx"] + rates["5xx"] : null;
+      const errorRate = finite(currentHTTPRates["4xx"]) && finite(currentHTTPRates["5xx"]) ?
+        currentHTTPRates["4xx"] + currentHTTPRates["5xx"] : null;
 
       setText("pid-cpu", percent(process.cpu_percent));
       setText("pid-rss", optional(process.rss_bytes, formatBytes));
       setText("pid-threads", optional(process.threads, decimal.format));
       setText("pid-fds", optional(process.open_descriptors, decimal.format));
-      setText("rt-goroutines", optional(runtime.goroutines, decimal.format));
-      setText("rt-heap", optional(runtime.heap_alloc_bytes, formatBytes));
-      setText("rt-heap-objects", optional(runtime.heap_objects, compact.format));
-      setText("rt-gc", optional(runtime.gc_count, decimal.format));
+      setText("rt-goroutines", optional(currentRuntime.goroutines, decimal.format));
+      setText("heap-details-button", optional(currentRuntime.heap_alloc_bytes, formatBytes));
+      setText("rt-heap-objects", optional(currentRuntime.heap_objects, compact.format));
+      setText("gc-details-button", optional(currentRuntime.gc_pause_last_ns, formatDurationNS));
       setText("rt-uptime", optional(process.uptime_seconds, formatUptime));
-      setText("os-cpu", percent(system.cpu_percent));
-      setText("os-memory", percent(system.memory_used_percent));
-      setText("os-total", optional(system.memory_total_bytes, formatBytes));
-      setText("os-disk", finite(system.disk_used_percent) ? system.disk_used_percent.toFixed(1) + "%" : dash);
-      setText("os-load", optional(system.load1, (value) => value.toFixed(2)));
-      setText("os-network-rx-rate", optional(system.network_receive_bps, (value) => formatBytes(value) + "/s"));
-      setText("os-network-tx-rate", optional(system.network_send_bps, (value) => formatBytes(value) + "/s"));
+      setText("os-cpu", percent(currentSystem.cpu_percent));
+      setText("os-memory", percent(currentSystem.memory_used_percent));
+      setText("os-total", optional(currentSystem.memory_total_bytes, formatBytes));
+      setText("disk-details-button", percent(currentSystem.disk_used_percent));
+      setText("os-load", optional(currentSystem.load1, (value) => value.toFixed(2)));
+      setText("os-available", optional(currentSystem.memory_available_bytes, formatBytes));
+      setText("os-load-5", optional(currentSystem.load5, (value) => value.toFixed(2)));
+      setText("os-load-15", optional(currentSystem.load15, (value) => value.toFixed(2)));
+      setText("os-network-rx-rate", optional(currentSystem.network_receive_bps, (value) => formatBytes(value) + "/s"));
+      setText("os-network-tx-rate", optional(currentSystem.network_send_bps, (value) => formatBytes(value) + "/s"));
       setText("http-rps", optional(http.rps, (value) => value.toFixed(2) + " req/s"));
       setText("http-latency-p95", optional(latency.p95_ns, formatDurationNS));
       setText("http-error-rate", optional(errorRate, ratio));
@@ -941,9 +1188,14 @@
       setText("http-requests", optional(http.requests, decimal.format));
       setText("http-latency-p50", optional(latency.p50_ns, formatDurationNS));
       setText("http-latency-p99", optional(latency.p99_ns, formatDurationNS));
-      setText("http-status-button", (status["4xx"] || status["5xx"]) ?
-        "ERR " + decimal.format((status["4xx"] || 0) + (status["5xx"] || 0)) :
-        "2xx " + decimal.format(status["2xx"] || 0));
+      setText("http-status-button", (currentHTTPStatus["4xx"] || currentHTTPStatus["5xx"]) ?
+        "ERR " + integer.format((currentHTTPStatus["4xx"] || 0) + (currentHTTPStatus["5xx"] || 0)) :
+        "2xx " + integer.format(currentHTTPStatus["2xx"] || 0));
+
+      renderHeapDetails();
+      renderGCDetails();
+      renderDiskDetails();
+      renderHTTPStatusDetails();
     }
 
     function updateState(state, responseMS, collectedAt) {
@@ -964,6 +1216,7 @@
       const runtime = snapshot.runtime || {};
       const system = snapshot.system || {};
       const http = snapshot.http || {};
+      const rates = http.rates || {};
       const latency = http.latency || {};
       history.labels.push(new Date(snapshot.collected_at).toLocaleTimeString());
       history.processCPU.push(finite(process.cpu_percent) ? process.cpu_percent : null);
@@ -977,7 +1230,13 @@
       history.p50.push(finite(latency.p50_ns) ? latency.p50_ns : null);
       history.p95.push(finite(latency.p95_ns) ? latency.p95_ns : null);
       history.p99.push(finite(latency.p99_ns) ? latency.p99_ns : null);
-      Object.values(history).forEach((values) => { while (values.length > MAX_SAMPLES) values.shift(); });
+      history.error4xx.push(finite(rates["4xx"]) ? rates["4xx"] * 100 : null);
+      history.error5xx.push(finite(rates["5xx"]) ? rates["5xx"] * 100 : null);
+      history.gcWindow.push(finite(runtime.gc_pause_window_ns) ? runtime.gc_pause_window_ns : null);
+      history.gcLast.push(finite(runtime.gc_pause_last_ns) ? runtime.gc_pause_last_ns : null);
+      Object.values(history).forEach((values) => {
+        while (values.length > MAX_SAMPLES) values.shift();
+      });
       return true;
     }
 
@@ -988,11 +1247,16 @@
       if (Math.abs(number) >= 10) return number.toFixed(0);
       return number.toFixed(1);
     }
+
     function formatAxis(value, unit) {
       const label = formatShort(value);
       return unit ? label + " " + unit : label;
     }
-    function durationAxisNS(value) { return formatDurationNS(value).replace(" ", ""); }
+
+    function durationAxisNS(value) {
+      return formatDurationNS(value).replace(" ", "");
+    }
+
     function drawGrid(context, width, height, padding, min, max, options) {
       const lines = 5;
       const plotHeight = height - padding.top - padding.bottom;
@@ -1017,6 +1281,7 @@
       }
       context.textBaseline = "alphabetic";
     }
+
     function drawSeries(context, data, config) {
       const plotWidth = config.width - config.padding.left - config.padding.right;
       const plotHeight = config.height - config.padding.top - config.padding.bottom;
@@ -1028,13 +1293,22 @@
       let drawing = false;
       context.beginPath();
       data.forEach((value, index) => {
-        if (!finite(value)) { drawing = false; return; }
+        if (!finite(value)) {
+          drawing = false;
+          return;
+        }
         const x = config.padding.left + (data.length === 1 ? plotWidth : index / (data.length - 1) * plotWidth);
         const y = config.padding.top + (1 - (value - config.min) / (config.max - config.min || 1)) * plotHeight;
-        if (!drawing) { context.moveTo(x, y); drawing = true; } else { context.lineTo(x, y); }
+        if (!drawing) {
+          context.moveTo(x, y);
+          drawing = true;
+        } else {
+          context.lineTo(x, y);
+        }
       });
       context.stroke();
     }
+
     function drawLineChart(canvas, seriesList, options) {
       if (!canvas) return;
       const context = canvas.getContext("2d");
@@ -1048,14 +1322,19 @@
       context.setTransform(dpr, 0, 0, dpr, 0, 0);
       context.clearRect(0, 0, width, height);
       const values = [];
-      seriesList.forEach((series) => series.data.forEach((value) => { if (finite(value)) values.push(value); }));
+      seriesList.forEach((series) => series.data.forEach((value) => {
+        if (finite(value)) values.push(value);
+      }));
       const min = finite(options.minValue) ? options.minValue : 0;
       const floorMax = finite(options.minMax) ? options.minMax : 0;
       const max = Math.max(floorMax, values.length ? Math.max(...values) : 1, 1);
       drawGrid(context, width, height, padding, min, max, options);
-      seriesList.forEach((series) => drawSeries(context, series.data, {width, height, padding, min, max, color: series.color}));
+      seriesList.forEach((series) => drawSeries(context, series.data, {
+        width, height, padding, min, max, color: series.color
+      }));
       canvas._chartMeta = {
         series: seriesList,
+        labels: visibleSamples(history.labels),
         count: Math.max(0, ...seriesList.map((series) => series.data.length)),
         pad: padding,
         plotWidth: width - padding.left - padding.right,
@@ -1069,27 +1348,35 @@
       const warn = cssColor("--warn");
       const bad = cssColor("--bad");
       drawLineChart(byId("cpu-chart"), [
-        { name: "Process", data: history.processCPU, color: accent },
-        { name: "System", data: history.systemCPU, color: warn }
+        { name: "Process", data: visibleSamples(history.processCPU), color: accent },
+        { name: "System", data: visibleSamples(history.systemCPU), color: warn }
       ], { minValue: 0, minMax: 100, unit: "%" });
       drawLineChart(byId("memory-chart"), [
-        { name: "RSS", data: history.rss.map((value) => finite(value) ? value / 1024 / 1024 : null), color: accent },
-        { name: "Heap", data: history.heap.map((value) => finite(value) ? value / 1024 / 1024 : null), color: good }
+        { name: "RSS", data: visibleSamples(history.rss).map((value) => finite(value) ? value / 1024 / 1024 : null), color: accent },
+        { name: "Heap", data: visibleSamples(history.heap).map((value) => finite(value) ? value / 1024 / 1024 : null), color: good }
       ], { minValue: 0, unit: "MiB" });
       drawLineChart(byId("network-chart"), [
-        { name: "RX/s", data: history.networkRX, color: accent },
-        { name: "TX/s", data: history.networkTX, color: warn }
+        { name: "RX/s", data: visibleSamples(history.networkRX), color: accent },
+        { name: "TX/s", data: visibleSamples(history.networkTX), color: warn }
       ], { minValue: 0, formatValue: (value) => formatBytes(value) + "/s", leftPadding: 70 });
       drawLineChart(byId("goroutine-chart"), [
-        { name: "Count", data: history.goroutines, color: accent }
+        { name: "Count", data: visibleSamples(history.goroutines), color: accent }
       ], { minValue: 0, unit: "g" });
       drawLineChart(byId("request-chart"), [
-        { name: "RPS", data: history.rps, color: accent }
+        { name: "RPS", data: visibleSamples(history.rps), color: accent }
       ], { minValue: 0, unit: "req/s" });
       drawLineChart(byId("latency-chart"), [
-        { name: "P50", data: history.p50, color: accent },
-        { name: "P95", data: history.p95, color: warn },
-        { name: "P99", data: history.p99, color: bad }
+        { name: "P50", data: visibleSamples(history.p50), color: accent },
+        { name: "P95", data: visibleSamples(history.p95), color: warn },
+        { name: "P99", data: visibleSamples(history.p99), color: bad }
+      ], { minValue: 0, formatValue: durationAxisNS, leftPadding: 70 });
+      drawLineChart(byId("http-error-chart"), [
+        { name: "4xx", data: visibleSamples(history.error4xx), color: warn },
+        { name: "5xx", data: visibleSamples(history.error5xx), color: bad }
+      ], { minValue: 0, unit: "%" });
+      drawLineChart(byId("gc-pause-chart"), [
+        { name: "Window", data: visibleSamples(history.gcWindow), color: accent },
+        { name: "Last", data: visibleSamples(history.gcLast), color: warn }
       ], { minValue: 0, formatValue: durationAxisNS, leftPadding: 70 });
     }
 
@@ -1097,18 +1384,36 @@
       const tooltip = canvas.parentElement.querySelector(".chart-tooltip");
       canvas.addEventListener("mousemove", (event) => {
         const meta = canvas._chartMeta;
-        if (!meta || meta.count < 1) { tooltip.hidden = true; return; }
+        if (!meta || meta.count < 1) {
+          tooltip.hidden = true;
+          return;
+        }
         const rect = canvas.getBoundingClientRect();
         const relative = Math.min(1, Math.max(0, (event.clientX - rect.left - meta.pad.left) / meta.plotWidth));
         const index = Math.round(relative * (meta.count - 1));
-        const rows = meta.series.map((entry) => finite(entry.data[index]) ? entry.name + ": " + meta.formatter(entry.data[index]) : null).filter(Boolean);
-        if (rows.length === 0) { tooltip.hidden = true; return; }
-        tooltip.innerHTML = "<strong>" + (history.labels[index] || "Sample") + "</strong>" + rows.map((row) => "<span>" + row + "</span>").join("");
+        const rows = meta.series
+          .map((entry) => finite(entry.data[index]) ? [entry.name, meta.formatter(entry.data[index])] : null)
+          .filter(Boolean);
+        if (rows.length === 0) {
+          tooltip.hidden = true;
+          return;
+        }
+        tooltip.replaceChildren();
+        const title = document.createElement("strong");
+        title.textContent = meta.labels[index] || "Sample";
+        tooltip.append(title);
+        rows.forEach(([name, value]) => {
+          const row = document.createElement("span");
+          row.textContent = name + ": " + value;
+          tooltip.append(row);
+        });
         tooltip.hidden = false;
         tooltip.style.left = Math.min(event.clientX - rect.left + 12, rect.width - tooltip.offsetWidth - 4) + "px";
         tooltip.style.top = Math.max(38, event.clientY - rect.top - tooltip.offsetHeight - 8) + "px";
       });
-      canvas.addEventListener("mouseleave", () => { tooltip.hidden = true; });
+      canvas.addEventListener("mouseleave", () => {
+        tooltip.hidden = true;
+      });
     }
 
     function setupPagers() {
@@ -1125,20 +1430,71 @@
         const status = pager.querySelector(".metric-pager__status");
         let page = 0;
         function renderPage() {
-          rows.forEach((row, index) => { row.hidden = index < page * metricsPerPage || index >= (page + 1) * metricsPerPage; });
+          rows.forEach((row, index) => {
+            row.hidden = index < page * metricsPerPage || index >= (page + 1) * metricsPerPage;
+          });
           status.textContent = (page + 1) + " / " + totalPages;
         }
-        previous.addEventListener("click", () => { page = (page + totalPages - 1) % totalPages; renderPage(); });
-        next.addEventListener("click", () => { page = (page + 1) % totalPages; renderPage(); });
+        previous.addEventListener("click", () => {
+          page = (page + totalPages - 1) % totalPages;
+          renderPage();
+        });
+        next.addEventListener("click", () => {
+          page = (page + 1) % totalPages;
+          renderPage();
+        });
         pager.hidden = false;
         renderPage();
+      });
+    }
+
+    const modalBindings = [
+      { modal: "heap-modal", trigger: "heap-details-button", close: "heap-modal-close" },
+      { modal: "gc-modal", trigger: "gc-details-button", close: "gc-modal-close" },
+      { modal: "disk-modal", trigger: "disk-details-button", close: "disk-modal-close" },
+      { modal: "http-status-modal", trigger: "http-status-button", close: "http-status-modal-close" }
+    ];
+
+    function openModal(binding) {
+      const modal = byId(binding.modal);
+      if (!modal) return;
+      modal.hidden = false;
+      byId(binding.close).focus();
+    }
+
+    function closeModal(binding) {
+      const modal = byId(binding.modal);
+      if (!modal || modal.hidden) return;
+      modal.hidden = true;
+      byId(binding.trigger).focus();
+    }
+
+    function closeVisibleModal() {
+      const binding = modalBindings.find((entry) => !byId(entry.modal).hidden);
+      if (binding) closeModal(binding);
+    }
+
+    function setupModals() {
+      modalBindings.forEach((binding) => {
+        const modal = byId(binding.modal);
+        byId(binding.trigger).addEventListener("click", () => openModal(binding));
+        byId(binding.close).addEventListener("click", () => closeModal(binding));
+        modal.addEventListener("click", (event) => {
+          if (event.target === modal) closeModal(binding);
+        });
+      });
+      window.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") closeVisibleModal();
       });
     }
 
     async function poll() {
       const started = performance.now();
       try {
-        const response = await fetch(window.location.pathname, { headers: { Accept: "application/json" }, cache: "no-store" });
+        const response = await fetch(window.location.pathname, {
+          headers: { Accept: "application/json" },
+          cache: "no-store"
+        });
         if (!response.ok) throw new Error("stats request failed");
         const snapshot = await response.json();
         const responseMS = performance.now() - started;
@@ -1168,6 +1524,7 @@
       dock.classList.toggle("page-scroll-dock--visible", window.innerWidth >= 768 && maxScroll > 320 && top > 72);
       value.textContent = rounded + "%";
     }
+
     function scrollUpQuarter() {
       const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
       const top = window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0;
@@ -1176,21 +1533,35 @@
 
     document.querySelectorAll("canvas").forEach(setupChartHover);
     setupPagers();
-    drawCharts();
-    const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
-    const schemeMarker = byId("scheme-marker");
-    function applyColorScheme() {
-      if (schemeMarker) schemeMarker.dataset.active = colorScheme.matches ? "dark" : "light";
-      drawCharts();
+    setupModals();
+    document.querySelectorAll(".sample-option").forEach((button) => {
+      button.addEventListener("click", () => applySampleWindow(button.dataset.samples, true));
+    });
+    byId("theme-toggle").addEventListener("click", toggleTheme);
+    byId("page-scroll-dock").addEventListener("click", scrollUpQuarter);
+
+    const savedSamples = storageGet("stats.samples");
+    applySampleWindow(savedSamples || "60", false);
+    const savedTheme = storageGet("stats.theme");
+    themeOverridden = savedTheme === "light" || savedTheme === "dark";
+    applyTheme(themeOverridden ? savedTheme : (colorScheme.matches ? "dark" : "light"), false);
+    const handleColorScheme = () => {
+      if (!themeOverridden) applyTheme(colorScheme.matches ? "dark" : "light", false);
+    };
+    if (colorScheme.addEventListener) {
+      colorScheme.addEventListener("change", handleColorScheme);
+    } else if (colorScheme.addListener) {
+      colorScheme.addListener(handleColorScheme);
     }
-    if (colorScheme.addEventListener) colorScheme.addEventListener("change", applyColorScheme);
-    applyColorScheme();
+
     window.addEventListener("scroll", updateScrollDock, { passive: true });
     window.addEventListener("resize", () => {
       window.cancelAnimationFrame(resizeFrame);
-      resizeFrame = window.requestAnimationFrame(() => { drawCharts(); updateScrollDock(); });
+      resizeFrame = window.requestAnimationFrame(() => {
+        drawCharts();
+        updateScrollDock();
+      });
     }, { passive: true });
-    byId("page-scroll-dock").addEventListener("click", scrollUpQuarter);
     updateScrollDock();
     poll();
   })();

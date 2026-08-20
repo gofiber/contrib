@@ -128,18 +128,29 @@ such as `system.disk`; raw operating-system errors and paths are not returned.
 | Group | Metrics |
 | --- | --- |
 | Process | CPU, RSS, threads, file descriptors/handles, runtime since stats initialization |
-| Go runtime | Goroutines, heap allocation, heap objects, GC count, last GC pause |
-| System | CPU, memory, current-filesystem usage, load average, aggregate network rates |
-| HTTP | Requests, in-flight requests, status classes, RPS, 4xx/5xx rates, P50/P95/P99 latency |
+| Go runtime | Goroutines, heap allocation/system/in-use/idle/released memory, heap objects, Next GC, mallocs/frees, GOMAXPROCS, GC count, last/window/total GC pause, GC CPU fraction |
+| System | CPU, used/available/total memory, application-filesystem usage/type/free space, 1/5/15-minute load averages, aggregate network rates |
+| HTTP | Requests, in-flight requests, 1xx–5xx status classes, RPS, 4xx/5xx rates, P50/P95/P99 latency |
 
-CPU, network, request-rate, status-rate, and latency values need two collection
-windows. Their first snapshot is `null`. Windows does not expose Load 1 because
-the underlying gopsutil implementation starts a background sampler; this is an
-unsupported metric and does not make the snapshot partial.
+CPU, network, request-rate, status-rate, latency, and window GC pause values
+need two collection windows. Their first snapshot is `null`. Windows does not
+expose Load 1/5/15 because the underlying gopsutil implementation starts a
+background sampler; these are unsupported metrics and do not make the snapshot
+partial.
 
 Snapshots are collected only when JSON is requested and are shared within the
-configured refresh TTL. The dashboard keeps at most 60 trend samples in browser
-memory; reloading the page resets that history.
+configured refresh TTL. The dashboard keeps at most 90 trend samples in browser
+memory and displays 60 by default. The 30/60/90 selector changes only the
+visible browser history and remembers the choice in local storage; reloading
+the page resets the sampled values.
+
+The eight trend panels cover CPU, memory, network, goroutines, requests per
+second, HTTP latency, HTTP error rates, and GC pauses.
+
+Heap, GC, application-filesystem, and HTTP status-code buttons open detailed
+views without triggering extra collection. Disk details intentionally identify
+the target only as the application filesystem and never expose its path,
+mountpoint, or device name.
 
 ## Security
 
@@ -163,5 +174,5 @@ paths, or device names.
 - Each `New` call owns independent counters, histogram, cache, and sampling baselines.
 - Middleware instances are safe for concurrent use after construction.
 - The business-request hot path uses time reads and atomic operations; system and runtime collection is not performed there.
-- The embedded dashboard has no external JavaScript, CSS, font, or chart dependency and automatically follows the browser color scheme.
+- The embedded dashboard has no external JavaScript, CSS, font, or chart dependency. It initially follows the browser color scheme and provides a persisted Light/Dark toggle.
 - Linux, macOS, and Windows are supported with graceful degradation when a metric is unavailable.
