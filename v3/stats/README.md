@@ -147,6 +147,10 @@ the page resets the sampled values.
 The eight trend panels cover CPU, memory, network, goroutines, requests per
 second, HTTP latency, HTTP error rates, and GC pauses.
 
+Idle HTTP windows keep the charts visually continuous without changing the
+JSON contract: error-rate lines render at zero, while latency lines retain the
+last observed percentile and identify the idle window in the hover tooltip.
+
 Heap, GC, application-filesystem, and HTTP status-code buttons open detailed
 views without triggering extra collection. Disk details intentionally identify
 the target only as the application filesystem and never expose its path,
@@ -175,4 +179,4 @@ paths, or device names.
 - Middleware instances are safe for concurrent use after construction.
 - The business-request hot path uses time reads and atomic operations; system and runtime collection is not performed there.
 - The embedded dashboard has no external JavaScript, CSS, font, or chart dependency. It initially follows the browser color scheme and provides a persisted Light/Dark toggle.
-- Linux, macOS, and Windows are supported with graceful degradation when a metric is unavailable.
+- Linux, macOS, and Windows are supported with graceful degradation when a metric is unavailable. The dashboard labels unsupported Windows load averages as `N/A`.

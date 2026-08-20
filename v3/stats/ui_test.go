@@ -70,6 +70,16 @@ func TestDashboardInteractions(t *testing.T) {
 	mustContain(t, pageHTML, `prefers-color-scheme: dark`)
 	mustContain(t, pageHTML, `storageSet("stats.theme"`)
 	mustContain(t, pageHTML, `currentTheme === "dark" ? "light" : "dark"`)
+	mustContain(t, pageHTML, `.control-dot:hover`)
+	mustContain(t, pageHTML, `transition: none`)
+	mustContain(t, pageHTML, `data-series="bad"></span>P99`)
+	mustContain(t, pageHTML, `fillForward(history.p95)`)
+	mustContain(t, pageHTML, `dash: [6, 4]`)
+	mustContain(t, pageHTML, `fillZero(error4xx)`)
+	mustContain(t, pageHTML, `rawData: error4xx`)
+	mustContain(t, pageHTML, `No requests in this window`)
+	mustContain(t, pageHTML, `Unsupported on this platform`)
+	mustContain(t, pageHTML, `collectionErrors.includes("system.load")`)
 
 	for _, id := range []string{
 		`id="heap-details-button"`,

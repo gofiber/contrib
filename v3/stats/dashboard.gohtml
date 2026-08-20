@@ -190,6 +190,10 @@
       border-radius: 50%;
       background: var(--muted);
       box-shadow: 0 0 0 4px color-mix(in srgb, var(--muted) 16%, transparent);
+      transition: none;
+    }
+    .control-dot:hover {
+      transform: none;
     }
     .control-dot[data-active="light"] {
       background: #facc15;
@@ -871,7 +875,7 @@
         <article class="chart-card"><div class="chart-head"><span>Network</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="pid"></span>RX/s</span><span class="legend-item"><span class="legend-dot" data-series="os"></span>TX/s</span></span></div><canvas id="network-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
         <article class="chart-card"><div class="chart-head"><span>Goroutines</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="main"></span>Count</span></span></div><canvas id="goroutine-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
         <article class="chart-card"><div class="chart-head"><span>Requests / second</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="main"></span>RPS</span></span></div><canvas id="request-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
-        <article class="chart-card"><div class="chart-head"><span>HTTP latency</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="recent"></span>P50</span><span class="legend-item"><span class="legend-dot" data-series="max"></span>P95</span><span class="legend-item"><span class="legend-dot" data-series="last"></span>P99</span></span></div><canvas id="latency-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>HTTP latency</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="recent"></span>P50</span><span class="legend-item"><span class="legend-dot" data-series="max"></span>P95</span><span class="legend-item"><span class="legend-dot" data-series="bad"></span>P99</span></span></div><canvas id="latency-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
         <article class="chart-card"><div class="chart-head"><span>HTTP Error Rate</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="max"></span>4xx</span><span class="legend-item"><span class="legend-dot" data-series="bad"></span>5xx</span></span></div><canvas id="http-error-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
         <article class="chart-card"><div class="chart-head"><span>GC Pause</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="window"></span>Window</span><span class="legend-item"><span class="legend-dot" data-series="last"></span>Last</span></span></div><canvas id="gc-pause-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
       </div>
@@ -1045,6 +1049,21 @@
       return values.slice(Math.max(0, values.length - currentSampleWindow));
     }
 
+    function fillForward(values) {
+      let previous = null;
+      return values.map((value) => {
+        if (finite(value)) {
+          previous = value;
+          return value;
+        }
+        return finite(previous) ? previous : null;
+      });
+    }
+
+    function fillZero(values) {
+      return values.map((value) => finite(value) ? value : 0);
+    }
+
     function appendDetailRows(list, rows) {
       rows.forEach(([label, value]) => {
         const row = document.createElement("div");
@@ -1161,6 +1180,10 @@
       const latency = http.latency || {};
       const errorRate = finite(currentHTTPRates["4xx"]) && finite(currentHTTPRates["5xx"]) ?
         currentHTTPRates["4xx"] + currentHTTPRates["5xx"] : null;
+      const collectionErrors = snapshot.collection && Array.isArray(snapshot.collection.errors) ?
+        snapshot.collection.errors : [];
+      const loadUnsupported = !finite(currentSystem.load1) && !finite(currentSystem.load5) &&
+        !finite(currentSystem.load15) && !collectionErrors.includes("system.load");
 
       setText("pid-cpu", percent(process.cpu_percent));
       setText("pid-rss", optional(process.rss_bytes, formatBytes));
@@ -1175,10 +1198,10 @@
       setText("os-memory", percent(currentSystem.memory_used_percent));
       setText("os-total", optional(currentSystem.memory_total_bytes, formatBytes));
       setText("disk-details-button", percent(currentSystem.disk_used_percent));
-      setText("os-load", optional(currentSystem.load1, (value) => value.toFixed(2)));
+      setLoadText("os-load", currentSystem.load1, loadUnsupported);
       setText("os-available", optional(currentSystem.memory_available_bytes, formatBytes));
-      setText("os-load-5", optional(currentSystem.load5, (value) => value.toFixed(2)));
-      setText("os-load-15", optional(currentSystem.load15, (value) => value.toFixed(2)));
+      setLoadText("os-load-5", currentSystem.load5, loadUnsupported);
+      setLoadText("os-load-15", currentSystem.load15, loadUnsupported);
       setText("os-network-rx-rate", optional(currentSystem.network_receive_bps, (value) => formatBytes(value) + "/s"));
       setText("os-network-tx-rate", optional(currentSystem.network_send_bps, (value) => formatBytes(value) + "/s"));
       setText("http-rps", optional(http.rps, (value) => value.toFixed(2) + " req/s"));
@@ -1196,6 +1219,17 @@
       renderGCDetails();
       renderDiskDetails();
       renderHTTPStatusDetails();
+    }
+
+    function setLoadText(id, value, unsupported) {
+      const element = byId(id);
+      if (!element) return;
+      element.textContent = unsupported ? "N/A" : optional(value, (number) => number.toFixed(2));
+      if (unsupported) {
+        element.title = "Unsupported on this platform";
+      } else {
+        element.removeAttribute("title");
+      }
     }
 
     function updateState(state, responseMS, collectedAt) {
@@ -1290,6 +1324,7 @@
       context.strokeStyle = config.color;
       context.lineJoin = "round";
       context.lineCap = "round";
+      context.setLineDash(Array.isArray(config.dash) ? config.dash : []);
       let drawing = false;
       context.beginPath();
       data.forEach((value, index) => {
@@ -1307,6 +1342,7 @@
         }
       });
       context.stroke();
+      context.setLineDash([]);
     }
 
     function drawLineChart(canvas, seriesList, options) {
@@ -1330,7 +1366,7 @@
       const max = Math.max(floorMax, values.length ? Math.max(...values) : 1, 1);
       drawGrid(context, width, height, padding, min, max, options);
       seriesList.forEach((series) => drawSeries(context, series.data, {
-        width, height, padding, min, max, color: series.color
+        width, height, padding, min, max, color: series.color, dash: series.dash
       }));
       canvas._chartMeta = {
         series: seriesList,
@@ -1338,6 +1374,7 @@
         count: Math.max(0, ...seriesList.map((series) => series.data.length)),
         pad: padding,
         plotWidth: width - padding.left - padding.right,
+        idleWhenMissing: Boolean(options.idleWhenMissing),
         formatter: options.formatValue || ((value) => formatAxis(value, options.unit))
       };
     }
@@ -1365,15 +1402,20 @@
       drawLineChart(byId("request-chart"), [
         { name: "RPS", data: visibleSamples(history.rps), color: accent }
       ], { minValue: 0, unit: "req/s" });
+      const p50 = visibleSamples(history.p50);
+      const p95 = visibleSamples(history.p95);
+      const p99 = visibleSamples(history.p99);
       drawLineChart(byId("latency-chart"), [
-        { name: "P50", data: visibleSamples(history.p50), color: accent },
-        { name: "P95", data: visibleSamples(history.p95), color: warn },
-        { name: "P99", data: visibleSamples(history.p99), color: bad }
-      ], { minValue: 0, formatValue: durationAxisNS, leftPadding: 70 });
+        { name: "P50", data: visibleSamples(fillForward(history.p50)), rawData: p50, color: accent },
+        { name: "P95", data: visibleSamples(fillForward(history.p95)), rawData: p95, color: warn, dash: [6, 4] },
+        { name: "P99", data: visibleSamples(fillForward(history.p99)), rawData: p99, color: bad }
+      ], { minValue: 0, formatValue: durationAxisNS, leftPadding: 70, idleWhenMissing: true });
+      const error4xx = visibleSamples(history.error4xx);
+      const error5xx = visibleSamples(history.error5xx);
       drawLineChart(byId("http-error-chart"), [
-        { name: "4xx", data: visibleSamples(history.error4xx), color: warn },
-        { name: "5xx", data: visibleSamples(history.error5xx), color: bad }
-      ], { minValue: 0, unit: "%" });
+        { name: "4xx", data: fillZero(error4xx), rawData: error4xx, color: warn },
+        { name: "5xx", data: fillZero(error5xx), rawData: error5xx, color: bad }
+      ], { minValue: 0, unit: "%", idleWhenMissing: true });
       drawLineChart(byId("gc-pause-chart"), [
         { name: "Window", data: visibleSamples(history.gcWindow), color: accent },
         { name: "Last", data: visibleSamples(history.gcLast), color: warn }
@@ -1392,9 +1434,13 @@
         const relative = Math.min(1, Math.max(0, (event.clientX - rect.left - meta.pad.left) / meta.plotWidth));
         const index = Math.round(relative * (meta.count - 1));
         const rows = meta.series
-          .map((entry) => finite(entry.data[index]) ? [entry.name, meta.formatter(entry.data[index])] : null)
+          .map((entry) => {
+            const values = Array.isArray(entry.rawData) ? entry.rawData : entry.data;
+            return finite(values[index]) ? [entry.name, meta.formatter(values[index])] : null;
+          })
           .filter(Boolean);
-        if (rows.length === 0) {
+        const idle = meta.idleWhenMissing && rows.length === 0;
+        if (!idle && rows.length === 0) {
           tooltip.hidden = true;
           return;
         }
@@ -1402,11 +1448,17 @@
         const title = document.createElement("strong");
         title.textContent = meta.labels[index] || "Sample";
         tooltip.append(title);
-        rows.forEach(([name, value]) => {
+        if (idle) {
           const row = document.createElement("span");
-          row.textContent = name + ": " + value;
+          row.textContent = "No requests in this window";
           tooltip.append(row);
-        });
+        } else {
+          rows.forEach(([name, value]) => {
+            const row = document.createElement("span");
+            row.textContent = name + ": " + value;
+            tooltip.append(row);
+          });
+        }
         tooltip.hidden = false;
         tooltip.style.left = Math.min(event.clientX - rect.left + 12, rect.width - tooltip.offsetWidth - 4) + "px";
         tooltip.style.top = Math.max(38, event.clientY - rect.top - tooltip.offsetHeight - 8) + "px";
