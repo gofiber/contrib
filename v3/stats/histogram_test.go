@@ -19,9 +19,19 @@ func TestLatencyHistogramPercentilesAndReset(t *testing.T) {
 	mustEqual(t, uint64(10*time.Millisecond), p50)
 	p95, ok := window.percentile(95)
 	mustTrue(t, ok)
-	mustEqual(t, uint64(6*time.Second), p95)
+	mustEqual(t, uint64(10*time.Second), p95)
 	_, ok = histogram.snapshotAndReset().percentile(50)
 	mustFalse(t, ok)
+}
+
+func TestLatencyHistogramOverflowSaturates(t *testing.T) {
+	var histogram latencyHistogram
+	histogram.observeSharded(uint64(2*time.Minute), 0)
+
+	window := histogram.snapshotAndReset()
+	p99, ok := window.percentile(99)
+	mustTrue(t, ok)
+	mustEqual(t, latencyBoundsNS[len(latencyBoundsNS)-1], p99)
 }
 
 func TestLatencyHistogramConcurrentObserve(t *testing.T) {

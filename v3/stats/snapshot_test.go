@@ -49,6 +49,27 @@ func TestConcurrentCacheMissCollectsOnce(t *testing.T) {
 	mustEqual(t, int64(1), calls.Load())
 }
 
+func TestNewerCacheWinsWhenCallerTimestampIsOlder(t *testing.T) {
+	m, err := newMiddleware()
+	mustNoError(t, err)
+	var calls atomic.Int64
+	m.collectFn = func(now time.Time) snapshot {
+		calls.Add(1)
+		return snapshot{CollectedAt: now}
+	}
+
+	newer := time.Unix(101, 0)
+	m.cache.Store(&cacheEntry{
+		snapshot: snapshot{CollectedAt: newer},
+		cachedAt: newer,
+	})
+
+	current := m.currentSnapshot(time.Unix(100, 0))
+	mustEqual(t, newer, current.CollectedAt)
+	mustZero(t, calls.Load())
+	mustEqual(t, newer, m.cache.Load().cachedAt)
+}
+
 func TestFirstAndSecondSnapshotWindowMetrics(t *testing.T) {
 	m, err := newMiddleware()
 	mustNoError(t, err)

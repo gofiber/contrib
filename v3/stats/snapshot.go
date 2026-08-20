@@ -116,7 +116,7 @@ func cacheFresh(entry *cacheEntry, now time.Time, ttl time.Duration) bool {
 		return false
 	}
 	age := now.Sub(entry.cachedAt)
-	return age >= 0 && age < ttl
+	return age < ttl
 }
 
 func (m *middleware) collectSnapshot(now time.Time) snapshot {

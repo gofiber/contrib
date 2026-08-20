@@ -17,18 +17,19 @@ var latencyBoundsNS = [...]uint64{
 	uint64(time.Second),
 	2500 * uint64(time.Millisecond),
 	5 * uint64(time.Second),
+	10 * uint64(time.Second),
+	30 * uint64(time.Second),
+	60 * uint64(time.Second),
 }
 
 const latencyHistogramShards = 32
 
 type latencyHistogram struct {
 	buckets [latencyHistogramShards][len(latencyBoundsNS) + 1]atomic.Uint64
-	maxNS   atomic.Uint64
 }
 
 type latencyWindow struct {
 	buckets [len(latencyBoundsNS) + 1]uint64
-	maxNS   uint64
 	count   uint64
 }
 
@@ -41,7 +42,6 @@ func (h *latencyHistogram) observeSharded(ns, shard uint64) {
 		}
 	}
 	h.buckets[shard&(latencyHistogramShards-1)][bucket].Add(1)
-	updateMaxUint64(&h.maxNS, ns)
 }
 
 func (h *latencyHistogram) snapshotAndReset() latencyWindow {
@@ -53,7 +53,6 @@ func (h *latencyHistogram) snapshotAndReset() latencyWindow {
 			window.count += count
 		}
 	}
-	window.maxNS = h.maxNS.Swap(0)
 	return window
 }
 
@@ -72,16 +71,7 @@ func (w latencyWindow) percentile(percent uint64) (uint64, bool) {
 		if index < len(latencyBoundsNS) {
 			return latencyBoundsNS[index], true
 		}
-		return w.maxNS, true
+		return latencyBoundsNS[len(latencyBoundsNS)-1], true
 	}
-	return w.maxNS, true
-}
-
-func updateMaxUint64(target *atomic.Uint64, value uint64) {
-	for {
-		current := target.Load()
-		if value <= current || target.CompareAndSwap(current, value) {
-			return
-		}
-	}
+	return latencyBoundsNS[len(latencyBoundsNS)-1], true
 }
