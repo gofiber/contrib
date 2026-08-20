@@ -168,6 +168,24 @@ views without triggering extra collection. Disk details intentionally identify
 the target only as the application filesystem and never expose its path,
 mountpoint, or device name.
 
+## Performance
+
+Run all hot-path, parallel, cache, runtime, and cold-collection benchmarks with:
+
+```sh
+go test -run='^$' -bench=. -benchmem
+```
+
+To measure only the cost of the default runtime collector against the exact GC
+pause opt-in on the current Go version and host, run:
+
+```sh
+go test -run='^$' -bench='^BenchmarkRuntimeCollection' -benchmem
+```
+
+The cold-collection benchmarks include platform-specific gopsutil calls and are
+therefore expected to vary between operating systems and machines.
+
 ## Security
 
 > This middleware exposes operational information and should be treated as a protected administrative endpoint.
