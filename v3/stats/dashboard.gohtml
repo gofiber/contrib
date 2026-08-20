@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="{{ .Description }}">
+  <link rel="icon" href="{{ .FaviconURL }}">
+  <title>{{ .Title }}</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --page: #f4f7fb;
+      --surface: rgba(255, 255, 255, .94);
+      --surface-strong: #ffffff;
+      --text: #142033;
+      --muted: #66758b;
+      --line: #dbe3ed;
+      --accent: #0ea5b7;
+      --accent-soft: rgba(14, 165, 183, .12);
+      --good: #16a36a;
+      --warn: #d58a18;
+      --bad: #dc4c64;
+      --shadow: 0 14px 40px rgba(45, 64, 89, .09);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --page: #09111d;
+        --surface: rgba(16, 27, 43, .94);
+        --surface-strong: #101b2b;
+        --text: #edf5ff;
+        --muted: #92a3b9;
+        --line: #27384e;
+        --accent: #55d5df;
+        --accent-soft: rgba(85, 213, 223, .12);
+        --good: #54d79a;
+        --warn: #f1b853;
+        --bad: #ff758c;
+        --shadow: 0 18px 46px rgba(0, 0, 0, .24);
+      }
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    html { min-width: 320px; background: var(--page); }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      overflow-x: hidden;
+      background: var(--page);
+      color: var(--text);
+      font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    button { font: inherit; }
+    main { width: min(1600px, calc(100% - 40px)); margin: 0 auto; padding: 34px 0 26px; }
+    .header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) max-content;
+      gap: 24px;
+      align-items: center;
+    }
+    .eyebrow {
+      margin: 0 0 5px;
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+    }
+    h1 { margin: 0; font-size: clamp(28px, 4vw, 46px); line-height: 1.05; letter-spacing: -.045em; }
+    .status-box {
+      min-width: 220px;
+      display: grid;
+      grid-template-columns: auto auto;
+      gap: 4px 18px;
+      padding: 13px 16px;
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .status-state { display: inline-flex; align-items: center; gap: 8px; color: var(--text); font-weight: 800; letter-spacing: .08em; }
+    .status-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 4px color-mix(in srgb, var(--good) 18%, transparent); }
+    .status-state[data-state="partial"] .status-dot { background: var(--warn); box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 18%, transparent); }
+    .status-state[data-state="stale"] .status-dot,
+    .status-state[data-state="error"] .status-dot { background: var(--bad); box-shadow: 0 0 0 4px color-mix(in srgb, var(--bad) 18%, transparent); }
+    .status-label { text-align: right; }
+    .header-divider { height: 1px; margin: 23px 0 17px; background: linear-gradient(90deg, var(--accent), var(--line) 32%, transparent); }
+    .description-card {
+      padding: 15px 18px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface);
+      color: var(--muted);
+    }
+    .description-card p { margin: 0; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 16px;
+    }
+    .metric-card, .chart-card {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+    .metric-card { min-height: 285px; padding: 16px; }
+    .metric-card__head { min-height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+    .metric-card h2, .section-title h2 { margin: 0; font-size: 15px; letter-spacing: .01em; }
+    .metric-card dl { margin: 0; }
+    .row { display: grid; grid-template-columns: minmax(92px, .8fr) minmax(0, 1.4fr); gap: 9px; align-items: center; min-height: 38px; border-top: 1px solid var(--line); }
+    .row:first-child { border-top-color: transparent; }
+    dt { color: var(--muted); }
+    dd { min-width: 0; margin: 0; overflow-wrap: anywhere; text-align: right; font-variant-numeric: tabular-nums; font-weight: 700; }
+    .metric-pager { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
+    .metric-pager button {
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface-strong);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .metric-pager button:disabled { cursor: default; opacity: .35; }
+    .chart-section { margin-top: 22px; }
+    .section-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .section-title span { color: var(--muted); font-size: 12px; }
+    .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .chart-card { position: relative; padding: 15px; }
+    .chart-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-height: 28px; font-weight: 750; }
+    .legend { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px 12px; color: var(--muted); font-size: 11px; font-weight: 500; }
+    .legend-item { display: inline-flex; align-items: center; gap: 5px; }
+    .legend-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--series-color, var(--accent)); }
+    canvas { display: block; width: 100%; height: 205px; margin-top: 6px; cursor: crosshair; }
+    .chart-tooltip {
+      position: absolute;
+      z-index: 3;
+      max-width: min(240px, calc(100% - 24px));
+      pointer-events: none;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--surface-strong);
+      box-shadow: var(--shadow);
+      color: var(--text);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .chart-tooltip strong { display: block; margin-bottom: 3px; }
+    .chart-tooltip span { display: block; color: var(--muted); }
+    footer { margin-top: 22px; color: var(--muted); text-align: center; font-size: 12px; }
+    @media (max-width: 1100px) {
+      .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .metric-card { min-height: 244px; }
+    }
+    @media (max-width: 640px) {
+      main { width: min(100% - 24px, 1600px); padding-top: 22px; }
+      .header { grid-template-columns: 1fr; gap: 15px; }
+      .status-box { min-width: 0; width: 100%; }
+      .cards, .chart-grid { grid-template-columns: 1fr; }
+      .metric-card { min-height: 225px; }
+      .row { grid-template-columns: minmax(84px, .7fr) minmax(0, 1.3fr); }
+      canvas { height: 185px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header class="header">
+      <div>
+        <p class="eyebrow">Operational dashboard</p>
+        <h1>{{ .Title }}</h1>
+      </div>
+      <div class="status-box" aria-live="polite">
+        <span id="status-state" class="status-state" data-state="error"><span class="status-dot"></span><span id="status-text">ERROR</span></span>
+        <span id="updated-at" class="status-label">Not updated</span>
+        <span>Response time</span>
+        <span id="response-time" class="status-label">—</span>
+      </div>
+    </header>
+    <div class="header-divider" aria-hidden="true"></div>
+    <aside class="description-card" aria-label="Page description"><p>{{ .Description }}</p></aside>
+
+    <div class="cards">
+      <section class="metric-card" data-card="process">
+        <div class="metric-card__head"><h2>Process</h2><div class="metric-pager" hidden><button type="button" data-prev aria-label="Previous metric page">&lt;</button><span data-page>1 / 1</span><button type="button" data-next aria-label="Next metric page">&gt;</button></div></div>
+        <dl>
+          <div class="row"><dt>CPU</dt><dd id="process-cpu">—</dd></div>
+          <div class="row"><dt>RSS</dt><dd id="process-rss">—</dd></div>
+          <div class="row"><dt>Threads</dt><dd id="process-threads">—</dd></div>
+          <div class="row"><dt>{{ .DescriptorLabel }}</dt><dd id="process-descriptors">—</dd></div>
+          <div class="row"><dt>Uptime</dt><dd id="process-uptime">—</dd></div>
+        </dl>
+      </section>
+      <section class="metric-card" data-card="runtime">
+        <div class="metric-card__head"><h2>Runtime</h2><div class="metric-pager" hidden><button type="button" data-prev aria-label="Previous metric page">&lt;</button><span data-page>1 / 1</span><button type="button" data-next aria-label="Next metric page">&gt;</button></div></div>
+        <dl>
+          <div class="row"><dt>Goroutines</dt><dd id="runtime-goroutines">—</dd></div>
+          <div class="row"><dt>Heap Alloc</dt><dd id="runtime-heap">—</dd></div>
+          <div class="row"><dt>Heap Objects</dt><dd id="runtime-objects">—</dd></div>
+          <div class="row"><dt>GC Count</dt><dd id="runtime-gc-count">—</dd></div>
+          <div class="row"><dt>Last GC Pause</dt><dd id="runtime-gc-pause">—</dd></div>
+        </dl>
+      </section>
+      <section class="metric-card" data-card="system">
+        <div class="metric-card__head"><h2>System</h2><div class="metric-pager" hidden><button type="button" data-prev aria-label="Previous metric page">&lt;</button><span data-page>1 / 1</span><button type="button" data-next aria-label="Next metric page">&gt;</button></div></div>
+        <dl>
+          <div class="row"><dt>CPU</dt><dd id="system-cpu">—</dd></div>
+          <div class="row"><dt>Memory</dt><dd id="system-memory">—</dd></div>
+          <div class="row"><dt>Disk</dt><dd id="system-disk">—</dd></div>
+          <div class="row"><dt>Load 1</dt><dd id="system-load">—</dd></div>
+          <div class="row"><dt>Network RX</dt><dd id="system-network-rx">—</dd></div>
+          <div class="row"><dt>Network TX</dt><dd id="system-network-tx">—</dd></div>
+        </dl>
+      </section>
+      <section class="metric-card" data-card="http">
+        <div class="metric-card__head"><h2>HTTP</h2><div class="metric-pager" hidden><button type="button" data-prev aria-label="Previous metric page">&lt;</button><span data-page>1 / 1</span><button type="button" data-next aria-label="Next metric page">&gt;</button></div></div>
+        <dl>
+          <div class="row"><dt>Requests</dt><dd id="http-requests">—</dd></div>
+          <div class="row"><dt>In-flight</dt><dd id="http-in-flight">—</dd></div>
+          <div class="row"><dt>RPS</dt><dd id="http-rps">—</dd></div>
+          <div class="row"><dt>Status</dt><dd id="http-status">—</dd></div>
+          <div class="row"><dt>Rates</dt><dd id="http-rates">—</dd></div>
+          <div class="row"><dt>Latency</dt><dd id="http-latency">—</dd></div>
+        </dl>
+      </section>
+    </div>
+
+    <section class="chart-section" aria-labelledby="trends-title">
+      <div class="section-title"><h2 id="trends-title">Trends</h2><span>Last 60 samples · browser memory only</span></div>
+      <div class="chart-grid">
+        <article class="chart-card"><div class="chart-head"><span>CPU</span><span class="legend"><span class="legend-item"><i class="legend-dot" style="--series-color:var(--accent)"></i>Process</span><span class="legend-item"><i class="legend-dot" style="--series-color:var(--warn)"></i>System</span></span></div><canvas id="cpu-chart"></canvas><div class="chart-tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>Memory</span><span class="legend"><span class="legend-item"><i class="legend-dot" style="--series-color:var(--accent)"></i>RSS</span><span class="legend-item"><i class="legend-dot" style="--series-color:var(--good)"></i>Heap Alloc</span></span></div><canvas id="memory-chart"></canvas><div class="chart-tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>Network</span><span class="legend"><span class="legend-item"><i class="legend-dot" style="--series-color:var(--accent)"></i>RX/s</span><span class="legend-item"><i class="legend-dot" style="--series-color:var(--warn)"></i>TX/s</span></span></div><canvas id="network-chart"></canvas><div class="chart-tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>Goroutines</span><span class="legend"><span class="legend-item"><i class="legend-dot" style="--series-color:var(--accent)"></i>Count</span></span></div><canvas id="goroutine-chart"></canvas><div class="chart-tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>Requests / second</span><span class="legend"><span class="legend-item"><i class="legend-dot" style="--series-color:var(--accent)"></i>RPS</span></span></div><canvas id="request-chart"></canvas><div class="chart-tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>HTTP Latency</span><span class="legend"><span class="legend-item"><i class="legend-dot" style="--series-color:var(--accent)"></i>P50</span><span class="legend-item"><i class="legend-dot" style="--series-color:var(--warn)"></i>P95</span><span class="legend-item"><i class="legend-dot" style="--series-color:var(--bad)"></i>P99</span></span></div><canvas id="latency-chart"></canvas><div class="chart-tooltip" hidden></div></article>
+      </div>
+    </section>
+    <footer>{{ .Footer }}</footer>
+  </main>
+
+  <script>
+  (() => {
+    "use strict";
+    const REFRESH_MS = {{ .RefreshMS }};
+    const MAX_SAMPLES = 60;
+    const dash = "\u2014";
+    const history = {
+      labels: [], processCPU: [], systemCPU: [], rss: [], heap: [], networkRX: [], networkTX: [],
+      goroutines: [], rps: [], p50: [], p95: [], p99: []
+    };
+    let lastCollectedAt = "";
+    let hasUsableSnapshot = false;
+    let resizeFrame = 0;
+
+    const byId = (id) => document.getElementById(id);
+    const finite = (value) => typeof value === "number" && Number.isFinite(value);
+    const optional = (value, formatter) => finite(value) ? formatter(value) : dash;
+    const setText = (id, value) => { const node = byId(id); if (node) node.textContent = value; };
+    const cssColor = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    const compact = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
+    const decimal = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
+
+    function formatBytes(value) {
+      if (!finite(value)) return dash;
+      const units = ["B", "KB", "MB", "GB", "TB"];
+      let current = Math.max(0, value);
+      let unit = 0;
+      while (current >= 1024 && unit < units.length - 1) { current /= 1024; unit += 1; }
+      const digits = current >= 100 || unit === 0 ? 0 : 1;
+      return current.toFixed(digits) + " " + units[unit];
+    }
+    function formatDurationNS(value) {
+      if (!finite(value)) return dash;
+      if (value < 1000) return Math.round(value) + " ns";
+      if (value < 1e6) return (value / 1e3).toFixed(value < 1e4 ? 1 : 0) + " \u00b5s";
+      if (value < 1e9) return (value / 1e6).toFixed(value < 1e7 ? 1 : 0) + " ms";
+      return (value / 1e9).toFixed(1) + " s";
+    }
+    function formatUptime(value) {
+      if (!finite(value)) return dash;
+      const seconds = Math.max(0, Math.floor(value));
+      const days = Math.floor(seconds / 86400);
+      const hours = Math.floor((seconds % 86400) / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      if (days > 0) return days + "d " + hours + "h";
+      if (hours > 0) return hours + "h " + minutes + "m";
+      if (minutes > 0) return minutes + "m " + (seconds % 60) + "s";
+      return seconds + "s";
+    }
+    const percent = (value) => optional(value, (number) => number.toFixed(1) + "%");
+    const ratio = (value) => optional(value, (number) => (number * 100).toFixed(number < .001 ? 3 : 2) + "%");
+
+    function renderMetrics(snapshot) {
+      const process = snapshot.process || {};
+      const runtime = snapshot.runtime || {};
+      const system = snapshot.system || {};
+      const http = snapshot.http || {};
+      const status = http.status || {};
+      const rates = http.rates || {};
+      const latency = http.latency || {};
+
+      setText("process-cpu", percent(process.cpu_percent));
+      setText("process-rss", optional(process.rss_bytes, formatBytes));
+      setText("process-threads", optional(process.threads, decimal.format));
+      setText("process-descriptors", optional(process.open_descriptors, decimal.format));
+      setText("process-uptime", optional(process.uptime_seconds, formatUptime));
+      setText("runtime-goroutines", optional(runtime.goroutines, decimal.format));
+      setText("runtime-heap", optional(runtime.heap_alloc_bytes, formatBytes));
+      setText("runtime-objects", optional(runtime.heap_objects, compact.format));
+      setText("runtime-gc-count", optional(runtime.gc_count, compact.format));
+      setText("runtime-gc-pause", optional(runtime.gc_pause_last_ns, formatDurationNS));
+      setText("system-cpu", percent(system.cpu_percent));
+      setText("system-memory", finite(system.memory_used_percent) && finite(system.memory_used_bytes) && finite(system.memory_total_bytes) ?
+        system.memory_used_percent.toFixed(1) + "% \u00b7 " + formatBytes(system.memory_used_bytes) + " / " + formatBytes(system.memory_total_bytes) : dash);
+      setText("system-disk", finite(system.disk_used_percent) && finite(system.disk_used_bytes) && finite(system.disk_total_bytes) ?
+        system.disk_used_percent.toFixed(1) + "% \u00b7 " + formatBytes(system.disk_used_bytes) + " / " + formatBytes(system.disk_total_bytes) : dash);
+      setText("system-load", optional(system.load1, (value) => value.toFixed(2)));
+      setText("system-network-rx", optional(system.network_receive_bps, (value) => formatBytes(value) + "/s"));
+      setText("system-network-tx", optional(system.network_send_bps, (value) => formatBytes(value) + "/s"));
+      setText("http-requests", optional(http.requests, compact.format));
+      setText("http-in-flight", optional(http.in_flight, decimal.format));
+      setText("http-rps", optional(http.rps, (value) => value.toFixed(1)));
+      setText("http-status", ["2xx " + compact.format(status["2xx"] || 0), "3xx " + compact.format(status["3xx"] || 0), "4xx " + compact.format(status["4xx"] || 0), "5xx " + compact.format(status["5xx"] || 0)].join(" \u00b7 "));
+      setText("http-rates", finite(rates["4xx"]) && finite(rates["5xx"]) ? "4xx " + ratio(rates["4xx"]) + " \u00b7 5xx " + ratio(rates["5xx"]) : dash);
+      setText("http-latency", finite(latency.p50_ns) && finite(latency.p95_ns) && finite(latency.p99_ns) ?
+        "P50 " + formatDurationNS(latency.p50_ns) + " \u00b7 P95 " + formatDurationNS(latency.p95_ns) + " \u00b7 P99 " + formatDurationNS(latency.p99_ns) : dash);
+    }
+
+    function updateState(state, responseMS, collectedAt) {
+      const stateNode = byId("status-state");
+      stateNode.dataset.state = state;
+      setText("status-text", state.toUpperCase());
+      setText("response-time", finite(responseMS) ? responseMS.toFixed(0) + " ms" : dash);
+      if (collectedAt) {
+        const date = new Date(collectedAt);
+        setText("updated-at", Number.isNaN(date.getTime()) ? "Updated" : date.toLocaleTimeString());
+      }
+    }
+
+    function appendSample(snapshot) {
+      if (!snapshot.collected_at || snapshot.collected_at === lastCollectedAt) return false;
+      lastCollectedAt = snapshot.collected_at;
+      const process = snapshot.process || {};
+      const runtime = snapshot.runtime || {};
+      const system = snapshot.system || {};
+      const http = snapshot.http || {};
+      const latency = http.latency || {};
+      history.labels.push(new Date(snapshot.collected_at).toLocaleTimeString());
+      history.processCPU.push(finite(process.cpu_percent) ? process.cpu_percent : null);
+      history.systemCPU.push(finite(system.cpu_percent) ? system.cpu_percent : null);
+      history.rss.push(finite(process.rss_bytes) ? process.rss_bytes : null);
+      history.heap.push(finite(runtime.heap_alloc_bytes) ? runtime.heap_alloc_bytes : null);
+      history.networkRX.push(finite(system.network_receive_bps) ? system.network_receive_bps : null);
+      history.networkTX.push(finite(system.network_send_bps) ? system.network_send_bps : null);
+      history.goroutines.push(finite(runtime.goroutines) ? runtime.goroutines : null);
+      history.rps.push(finite(http.rps) ? http.rps : null);
+      history.p50.push(finite(latency.p50_ns) ? latency.p50_ns : null);
+      history.p95.push(finite(latency.p95_ns) ? latency.p95_ns : null);
+      history.p99.push(finite(latency.p99_ns) ? latency.p99_ns : null);
+      Object.values(history).forEach((values) => { while (values.length > MAX_SAMPLES) values.shift(); });
+      return true;
+    }
+
+    function drawLineChart(canvas, series, formatter) {
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const width = Math.max(260, rect.width);
+      const height = Math.max(150, rect.height);
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      canvas.width = Math.round(width * dpr);
+      canvas.height = Math.round(height * dpr);
+      const context = canvas.getContext("2d");
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      context.clearRect(0, 0, width, height);
+      const pad = { left: 10, right: 10, top: 12, bottom: 18 };
+      const plotWidth = width - pad.left - pad.right;
+      const plotHeight = height - pad.top - pad.bottom;
+      const values = series.flatMap((entry) => entry.data.filter(finite));
+      context.font = "11px ui-sans-serif, system-ui, sans-serif";
+      if (values.length === 0) {
+        context.fillStyle = cssColor("--muted");
+        context.textAlign = "center";
+        context.fillText("Waiting for samples", width / 2, height / 2);
+        canvas._chartMeta = null;
+        return;
+      }
+      let min = Math.min(...values);
+      let max = Math.max(...values);
+      if (min === max) { min = Math.max(0, min - 1); max += 1; }
+      const range = max - min || 1;
+      context.strokeStyle = cssColor("--line");
+      context.lineWidth = 1;
+      for (let line = 0; line <= 3; line += 1) {
+        const y = pad.top + plotHeight * line / 3;
+        context.beginPath(); context.moveTo(pad.left, y); context.lineTo(width - pad.right, y); context.stroke();
+      }
+      const count = Math.max(1, ...series.map((entry) => entry.data.length));
+      series.forEach((entry) => {
+        context.strokeStyle = entry.color;
+        context.lineWidth = 2;
+        context.lineJoin = "round";
+        context.lineCap = "round";
+        let drawing = false;
+        context.beginPath();
+        entry.data.forEach((value, index) => {
+          if (!finite(value)) { drawing = false; return; }
+          const x = pad.left + (count <= 1 ? plotWidth / 2 : plotWidth * index / (count - 1));
+          const y = pad.top + plotHeight - (value - min) / range * plotHeight;
+          if (!drawing) { context.moveTo(x, y); drawing = true; } else { context.lineTo(x, y); }
+        });
+        context.stroke();
+        const points = entry.data.map((value, index) => ({ value, index })).filter((point) => finite(point.value));
+        if (points.length === 1) {
+          const point = points[0];
+          const x = pad.left + (count <= 1 ? plotWidth / 2 : plotWidth * point.index / (count - 1));
+          const y = pad.top + plotHeight - (point.value - min) / range * plotHeight;
+          context.fillStyle = entry.color;
+          context.beginPath(); context.arc(x, y, 2.5, 0, Math.PI * 2); context.fill();
+        }
+      });
+      context.fillStyle = cssColor("--muted");
+      context.textAlign = "left";
+      context.fillText(formatter(max), pad.left, height - 3);
+      context.textAlign = "right";
+      context.fillText(formatter(min), width - pad.right, height - 3);
+      canvas._chartMeta = { series, count, pad, plotWidth, formatter };
+    }
+
+    function drawCharts() {
+      drawLineChart(byId("cpu-chart"), [
+        { name: "Process", data: history.processCPU, color: cssColor("--accent") },
+        { name: "System", data: history.systemCPU, color: cssColor("--warn") }
+      ], (value) => value.toFixed(1) + "%");
+      drawLineChart(byId("memory-chart"), [
+        { name: "RSS", data: history.rss, color: cssColor("--accent") },
+        { name: "Heap Alloc", data: history.heap, color: cssColor("--good") }
+      ], formatBytes);
+      drawLineChart(byId("network-chart"), [
+        { name: "RX/s", data: history.networkRX, color: cssColor("--accent") },
+        { name: "TX/s", data: history.networkTX, color: cssColor("--warn") }
+      ], (value) => formatBytes(value) + "/s");
+      drawLineChart(byId("goroutine-chart"), [
+        { name: "Count", data: history.goroutines, color: cssColor("--accent") }
+      ], (value) => decimal.format(value));
+      drawLineChart(byId("request-chart"), [
+        { name: "RPS", data: history.rps, color: cssColor("--accent") }
+      ], (value) => value.toFixed(1));
+      drawLineChart(byId("latency-chart"), [
+        { name: "P50", data: history.p50, color: cssColor("--accent") },
+        { name: "P95", data: history.p95, color: cssColor("--warn") },
+        { name: "P99", data: history.p99, color: cssColor("--bad") }
+      ], formatDurationNS);
+    }
+
+    function setupChartHover(canvas) {
+      const tooltip = canvas.parentElement.querySelector(".chart-tooltip");
+      canvas.addEventListener("mousemove", (event) => {
+        const meta = canvas._chartMeta;
+        if (!meta || meta.count < 1) { tooltip.hidden = true; return; }
+        const rect = canvas.getBoundingClientRect();
+        const relative = Math.min(1, Math.max(0, (event.clientX - rect.left - meta.pad.left) / meta.plotWidth));
+        const index = Math.round(relative * (meta.count - 1));
+        const rows = meta.series.map((entry) => finite(entry.data[index]) ? entry.name + ": " + meta.formatter(entry.data[index]) : null).filter(Boolean);
+        if (rows.length === 0) { tooltip.hidden = true; return; }
+        tooltip.innerHTML = "<strong>" + (history.labels[index] || "Sample") + "</strong>" + rows.map((row) => "<span>" + row + "</span>").join("");
+        tooltip.hidden = false;
+        tooltip.style.left = Math.min(event.clientX - rect.left + 12, rect.width - tooltip.offsetWidth - 4) + "px";
+        tooltip.style.top = Math.max(38, event.clientY - rect.top - tooltip.offsetHeight - 8) + "px";
+      });
+      canvas.addEventListener("mouseleave", () => { tooltip.hidden = true; });
+    }
+
+    function metricsPerPage() {
+      if (window.innerWidth > 1100) return 6;
+      if (window.innerWidth > 640) return 4;
+      return 3;
+    }
+    function renderPager(card) {
+      const rows = Array.from(card.querySelectorAll(".row"));
+      const perPage = metricsPerPage();
+      const pages = Math.ceil(rows.length / perPage);
+      card._metricPage = Math.min(card._metricPage || 0, Math.max(0, pages - 1));
+      rows.forEach((row, index) => { row.hidden = pages > 1 && Math.floor(index / perPage) !== card._metricPage; });
+      const pager = card.querySelector(".metric-pager");
+      pager.hidden = pages <= 1;
+      card.querySelector("[data-page]").textContent = (card._metricPage + 1) + " / " + pages;
+      card.querySelector("[data-prev]").disabled = card._metricPage === 0;
+      card.querySelector("[data-next]").disabled = card._metricPage >= pages - 1;
+    }
+    function setupPagers() {
+      document.querySelectorAll(".metric-card").forEach((card) => {
+        if (!card.dataset.pagerReady) {
+          card.dataset.pagerReady = "true";
+          card._metricPage = 0;
+          card.querySelector("[data-prev]").addEventListener("click", () => { card._metricPage -= 1; renderPager(card); });
+          card.querySelector("[data-next]").addEventListener("click", () => { card._metricPage += 1; renderPager(card); });
+        }
+        renderPager(card);
+      });
+    }
+
+    async function poll() {
+      const started = performance.now();
+      try {
+        const response = await fetch(window.location.pathname, { headers: { Accept: "application/json" }, cache: "no-store" });
+        if (!response.ok) throw new Error("stats request failed");
+        const snapshot = await response.json();
+        const responseMS = performance.now() - started;
+        renderMetrics(snapshot);
+        if (appendSample(snapshot)) drawCharts();
+        hasUsableSnapshot = true;
+        const partial = snapshot.collection && snapshot.collection.partial;
+        updateState(partial ? "partial" : "live", responseMS, snapshot.collected_at);
+      } catch (_) {
+        updateState(hasUsableSnapshot ? "stale" : "error", performance.now() - started, lastCollectedAt);
+      } finally {
+        window.setTimeout(poll, REFRESH_MS);
+      }
+    }
+
+    document.querySelectorAll("canvas").forEach(setupChartHover);
+    setupPagers();
+    drawCharts();
+    window.addEventListener("resize", () => {
+      window.cancelAnimationFrame(resizeFrame);
+      resizeFrame = window.requestAnimationFrame(() => { setupPagers(); drawCharts(); });
+    }, { passive: true });
+    const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
+    if (colorScheme.addEventListener) colorScheme.addEventListener("change", drawCharts);
+    poll();
+  })();
+  </script>
+</body>
+</html>

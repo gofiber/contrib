@@ -18,8 +18,6 @@ const (
 	headerAllow               = "Allow"
 )
 
-const initialDashboard = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Fiber Stats</title></head><body><main><h1>Fiber Stats</h1></main></body></html>`
-
 type middleware struct {
 	next    func(fiber.Ctx) bool
 	path    string
@@ -58,11 +56,15 @@ func newMiddleware(config ...Config) (*middleware, error) {
 		return nil, err
 	}
 	now := time.Now()
+	index, err := renderDashboard(cfg)
+	if err != nil {
+		return nil, err
+	}
 	m := &middleware{
 		next:      cfg.Next,
 		path:      cfg.Path,
 		refresh:   cfg.Refresh,
-		index:     initialDashboard,
+		index:     index,
 		collector: newCollector(now),
 		now:       time.Now,
 	}
