@@ -12,12 +12,11 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	recovermw "github.com/gofiber/fiber/v3/middleware/recover"
-	"github.com/stretchr/testify/require"
 )
 
 func TestStatsRoutesAndNegotiation(t *testing.T) {
 	m, err := newMiddleware()
-	require.NoError(t, err)
+	mustNoError(t, err)
 	app := fiber.New()
 	app.Use(m.handler())
 	app.Get("/", func(c fiber.Ctx) error { return c.SendString("ok") })
@@ -41,63 +40,63 @@ func TestStatsRoutesAndNegotiation(t *testing.T) {
 				req.Header.Set(fiber.HeaderAccept, test.accept)
 			}
 			resp, requestErr := app.Test(req)
-			require.NoError(t, requestErr)
-			t.Cleanup(func() { require.NoError(t, resp.Body.Close()) })
+			mustNoError(t, requestErr)
+			t.Cleanup(func() { mustNoError(t, resp.Body.Close()) })
 			body, readErr := io.ReadAll(resp.Body)
-			require.NoError(t, readErr)
-			require.Equal(t, fiber.StatusOK, resp.StatusCode)
-			require.Contains(t, resp.Header.Get(fiber.HeaderContentType), test.contentType)
-			require.Equal(t, "no-store", resp.Header.Get(headerCacheControl))
-			require.Equal(t, "nosniff", resp.Header.Get(headerXContentTypeOptions))
-			require.Contains(t, string(body), test.contains)
+			mustNoError(t, readErr)
+			mustEqual(t, fiber.StatusOK, resp.StatusCode)
+			mustContain(t, resp.Header.Get(fiber.HeaderContentType), test.contentType)
+			mustEqual(t, "no-store", resp.Header.Get(headerCacheControl))
+			mustEqual(t, "nosniff", resp.Header.Get(headerXContentTypeOptions))
+			mustContain(t, string(body), test.contains)
 		})
 	}
-	require.Zero(t, m.requests.Load(), "dashboard requests must not be counted")
+	mustZero(t, m.requests.Load(), "dashboard requests must not be counted")
 }
 
 func TestJSONUsesFinalSnapshotShape(t *testing.T) {
 	m, err := newMiddleware()
-	require.NoError(t, err)
+	mustNoError(t, err)
 	app := fiber.New()
 	app.Use(m.handler())
 
 	req := httptest.NewRequest(fiber.MethodGet, "/stats", nil)
 	req.Header.Set(fiber.HeaderAccept, fiber.MIMEApplicationJSON)
 	resp, err := app.Test(req)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, resp.Body.Close()) }()
+	mustNoError(t, err)
+	defer func() { mustNoError(t, resp.Body.Close()) }()
 	var current snapshot
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&current))
-	require.False(t, current.CollectedAt.IsZero())
-	require.NotNil(t, current.Collection.Errors)
-	require.Nil(t, current.HTTP.RPS)
-	require.Nil(t, current.HTTP.Latency.P50NS)
-	require.Nil(t, current.Process.CPUPercent)
-	require.Nil(t, current.System.NetworkReceiveBPS)
+	mustNoError(t, json.NewDecoder(resp.Body).Decode(&current))
+	mustFalse(t, current.CollectedAt.IsZero())
+	mustNotNil(t, current.Collection.Errors)
+	mustNil(t, current.HTTP.RPS)
+	mustNil(t, current.HTTP.Latency.P50NS)
+	mustNil(t, current.Process.CPUPercent)
+	mustNil(t, current.System.NetworkReceiveBPS)
 }
 
 func TestStatsMethodHandling(t *testing.T) {
 	m, err := newMiddleware()
-	require.NoError(t, err)
+	mustNoError(t, err)
 	app := fiber.New()
 	app.Use(m.handler())
 
 	headResp, err := app.Test(httptest.NewRequest(fiber.MethodHead, "/stats", nil))
-	require.NoError(t, err)
-	require.NoError(t, headResp.Body.Close())
-	require.Equal(t, fiber.StatusOK, headResp.StatusCode)
+	mustNoError(t, err)
+	mustNoError(t, headResp.Body.Close())
+	mustEqual(t, fiber.StatusOK, headResp.StatusCode)
 
 	postResp, err := app.Test(httptest.NewRequest(fiber.MethodPost, "/stats", nil))
-	require.NoError(t, err)
-	require.NoError(t, postResp.Body.Close())
-	require.Equal(t, fiber.StatusMethodNotAllowed, postResp.StatusCode)
-	require.Equal(t, "GET, HEAD", postResp.Header.Get(headerAllow))
-	require.Zero(t, m.requests.Load())
+	mustNoError(t, err)
+	mustNoError(t, postResp.Body.Close())
+	mustEqual(t, fiber.StatusMethodNotAllowed, postResp.StatusCode)
+	mustEqual(t, "GET, HEAD", postResp.Header.Get(headerAllow))
+	mustZero(t, m.requests.Load())
 }
 
 func TestNextBypassesServingAndCounting(t *testing.T) {
 	m, err := newMiddleware(Config{Next: func(c fiber.Ctx) bool { return c.Get("X-Skip") == "yes" }})
-	require.NoError(t, err)
+	mustNoError(t, err)
 	app := fiber.New()
 	app.Use(m.handler())
 	app.Use(func(c fiber.Ctx) error { return c.SendString("downstream") })
@@ -105,17 +104,17 @@ func TestNextBypassesServingAndCounting(t *testing.T) {
 	req := httptest.NewRequest(fiber.MethodGet, "/stats", nil)
 	req.Header.Set("X-Skip", "yes")
 	resp, err := app.Test(req)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, resp.Body.Close()) }()
+	mustNoError(t, err)
+	defer func() { mustNoError(t, resp.Body.Close()) }()
 	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	require.Equal(t, "downstream", string(body))
-	require.Zero(t, m.requests.Load())
+	mustNoError(t, err)
+	mustEqual(t, "downstream", string(body))
+	mustZero(t, m.requests.Load())
 }
 
 func TestBusinessRequestInstrumentation(t *testing.T) {
 	m, err := newMiddleware()
-	require.NoError(t, err)
+	mustNoError(t, err)
 	app := fiber.New()
 	app.Use(m.handler())
 	app.Get("/ok", func(c fiber.Ctx) error { return c.SendStatus(fiber.StatusNoContent) })
@@ -125,52 +124,52 @@ func TestBusinessRequestInstrumentation(t *testing.T) {
 
 	for _, path := range []string{"/ok", "/redirect", "/fiber-error", "/generic-error"} {
 		resp, requestErr := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil))
-		require.NoError(t, requestErr)
-		require.NoError(t, resp.Body.Close())
+		mustNoError(t, requestErr)
+		mustNoError(t, resp.Body.Close())
 	}
-	require.Equal(t, uint64(4), m.requests.Load())
-	require.Zero(t, m.inFlight.Load())
-	require.Equal(t, uint64(1), m.status2.Load())
-	require.Equal(t, uint64(1), m.status3.Load())
-	require.Equal(t, uint64(1), m.status4.Load())
-	require.Equal(t, uint64(1), m.status5.Load())
-	require.Equal(t, uint64(4), m.latency.snapshotAndReset().count)
+	mustEqual(t, uint64(4), m.requests.Load())
+	mustZero(t, m.inFlight.Load())
+	mustEqual(t, uint64(1), m.status2.Load())
+	mustEqual(t, uint64(1), m.status3.Load())
+	mustEqual(t, uint64(1), m.status4.Load())
+	mustEqual(t, uint64(1), m.status5.Load())
+	mustEqual(t, uint64(4), m.latency.snapshotAndReset().count)
 }
 
 func TestRelativeMiddlewareMount(t *testing.T) {
 	m, err := newMiddleware(Config{Path: "/stats"})
-	require.NoError(t, err)
+	mustNoError(t, err)
 	app := fiber.New()
 	app.Use("/internal", m.handler())
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/internal/stats", nil))
-	require.NoError(t, err)
-	defer func() { require.NoError(t, resp.Body.Close()) }()
+	mustNoError(t, err)
+	defer func() { mustNoError(t, resp.Body.Close()) }()
 	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	require.True(t, strings.Contains(string(body), "Fiber Stats"))
+	mustNoError(t, err)
+	mustTrue(t, strings.Contains(string(body), "Fiber Stats"))
 }
 
 func TestRecoveredPanicDoesNotLeakInFlight(t *testing.T) {
 	m, err := newMiddleware()
-	require.NoError(t, err)
+	mustNoError(t, err)
 	app := fiber.New()
 	app.Use(m.handler(), recovermw.New())
 	app.Get("/panic", func(fiber.Ctx) error { panic("boom") })
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/panic", nil))
-	require.NoError(t, err)
-	require.NoError(t, resp.Body.Close())
-	require.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
-	require.Zero(t, m.inFlight.Load())
-	require.Equal(t, uint64(1), m.requests.Load())
-	require.Equal(t, uint64(1), m.status5.Load())
-	require.Equal(t, uint64(1), m.latency.snapshotAndReset().count)
+	mustNoError(t, err)
+	mustNoError(t, resp.Body.Close())
+	mustEqual(t, fiber.StatusInternalServerError, resp.StatusCode)
+	mustZero(t, m.inFlight.Load())
+	mustEqual(t, uint64(1), m.requests.Load())
+	mustEqual(t, uint64(1), m.status5.Load())
+	mustEqual(t, uint64(1), m.latency.snapshotAndReset().count)
 }
 
 func TestConcurrentBusinessRequests(t *testing.T) {
 	m, err := newMiddleware()
-	require.NoError(t, err)
+	mustNoError(t, err)
 	app := fiber.New()
 	app.Use(m.handler())
 	app.Get("/", func(c fiber.Ctx) error { return c.SendString("ok") })
@@ -195,17 +194,17 @@ func TestConcurrentBusinessRequests(t *testing.T) {
 	group.Wait()
 	close(errorsCh)
 	for requestErr := range errorsCh {
-		require.NoError(t, requestErr)
+		mustNoError(t, requestErr)
 	}
-	require.Equal(t, uint64(requests), m.requests.Load())
-	require.Equal(t, uint64(requests), m.status2.Load())
-	require.Zero(t, m.inFlight.Load())
-	require.Equal(t, uint64(requests), m.latency.snapshotAndReset().count)
+	mustEqual(t, uint64(requests), m.requests.Load())
+	mustEqual(t, uint64(requests), m.status2.Load())
+	mustZero(t, m.inFlight.Load())
+	mustEqual(t, uint64(requests), m.latency.snapshotAndReset().count)
 }
 
 func TestBusinessHotPathDoesNotUseCollectionMutex(t *testing.T) {
 	m, err := newMiddleware()
-	require.NoError(t, err)
+	mustNoError(t, err)
 	app := fiber.New()
 	app.Use(m.handler())
 	app.Get("/", func(c fiber.Ctx) error { return c.SendString("ok") })
@@ -222,7 +221,7 @@ func TestBusinessHotPathDoesNotUseCollectionMutex(t *testing.T) {
 	select {
 	case requestErr := <-done:
 		m.collectMu.Unlock()
-		require.NoError(t, requestErr)
+		mustNoError(t, requestErr)
 	case <-time.After(500 * time.Millisecond):
 		m.collectMu.Unlock()
 		t.Fatal("business request blocked on collection mutex")

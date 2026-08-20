@@ -4,8 +4,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/require"
 )
 
 func TestLatencyHistogramPercentilesAndReset(t *testing.T) {
@@ -17,13 +15,13 @@ func TestLatencyHistogramPercentilesAndReset(t *testing.T) {
 
 	window := histogram.snapshotAndReset()
 	p50, ok := window.percentile(50)
-	require.True(t, ok)
-	require.Equal(t, uint64(10*time.Millisecond), p50)
+	mustTrue(t, ok)
+	mustEqual(t, uint64(10*time.Millisecond), p50)
 	p95, ok := window.percentile(95)
-	require.True(t, ok)
-	require.Equal(t, uint64(6*time.Second), p95)
+	mustTrue(t, ok)
+	mustEqual(t, uint64(6*time.Second), p95)
 	_, ok = histogram.snapshotAndReset().percentile(50)
-	require.False(t, ok)
+	mustFalse(t, ok)
 }
 
 func TestLatencyHistogramConcurrentObserve(t *testing.T) {
@@ -41,5 +39,5 @@ func TestLatencyHistogramConcurrentObserve(t *testing.T) {
 		}(worker)
 	}
 	group.Wait()
-	require.Equal(t, uint64(workers*observations), histogram.snapshotAndReset().count)
+	mustEqual(t, uint64(workers*observations), histogram.snapshotAndReset().count)
 }

@@ -9,245 +9,855 @@
   <style>
     :root {
       color-scheme: light;
-      --page: #f4f7fb;
-      --surface: rgba(255, 255, 255, .94);
-      --surface-strong: #ffffff;
-      --text: #142033;
-      --muted: #66758b;
-      --line: #dbe3ed;
-      --accent: #0ea5b7;
-      --accent-soft: rgba(14, 165, 183, .12);
-      --good: #16a36a;
-      --warn: #d58a18;
-      --bad: #dc4c64;
-      --shadow: 0 14px 40px rgba(45, 64, 89, .09);
+      --bg: #f3f6fa;
+      --panel: #fbfcfe;
+      --panel-soft: #eef3f8;
+      --text: #0f172a;
+      --muted: #52657f;
+      --border: #cfd8e6;
+      --accent: #0f8aa3;
+      --accent-soft: rgba(15, 138, 163, 0.1);
+      --good: #24935f;
+      --warn: #bf7b16;
+      --bad: #c94a4a;
+      --shadow: 0 10px 26px rgba(40, 54, 74, 0.07);
+      --divider-line: #c46a1b;
+      --divider-glow: #f28c28;
+      --dock-fill: rgba(249, 115, 22, 0.9);
+      --dock-track: rgba(148, 79, 24, 0.12);
+      --dock-face-start: rgba(255, 247, 237, 0.78);
+      --dock-face-end: rgba(255, 237, 213, 0.64);
+      --dock-ring: rgba(154, 52, 18, 0.16);
+      --dock-text: rgba(67, 32, 12, 0.84);
     }
     @media (prefers-color-scheme: dark) {
       :root {
-        color-scheme: dark;
-        --page: #09111d;
-        --surface: rgba(16, 27, 43, .94);
-        --surface-strong: #101b2b;
-        --text: #edf5ff;
-        --muted: #92a3b9;
-        --line: #27384e;
-        --accent: #55d5df;
-        --accent-soft: rgba(85, 213, 223, .12);
-        --good: #54d79a;
-        --warn: #f1b853;
-        --bad: #ff758c;
-        --shadow: 0 18px 46px rgba(0, 0, 0, .24);
+      color-scheme: dark;
+      --bg: #0d1117;
+      --panel: #151b23;
+      --panel-soft: #10161d;
+      --text: #f3f4f6;
+      --muted: #9ca3af;
+      --border: #30363d;
+      --accent: #67e8f9;
+      --accent-soft: rgba(103, 232, 249, 0.12);
+      --good: #4ade80;
+      --warn: #facc15;
+      --bad: #fb7185;
+      --shadow: none;
+      --divider-line: #3b82f6;
+      --divider-glow: #38bdf8;
+      --dock-fill: rgba(122, 228, 255, 0.88);
+      --dock-track: rgba(255, 255, 255, 0.08);
+      --dock-face-start: rgba(13, 22, 30, 0.78);
+      --dock-face-end: rgba(17, 28, 36, 0.64);
+      --dock-ring: rgba(132, 226, 255, 0.16);
+      --dock-text: rgba(235, 248, 255, 0.88);
       }
     }
     * { box-sizing: border-box; }
-    [hidden] { display: none !important; }
-    html { min-width: 320px; background: var(--page); }
+    html, body {
+      scrollbar-width: none;
+    }
+    html::-webkit-scrollbar, body::-webkit-scrollbar {
+      display: none;
+      width: 0;
+      height: 0;
+    }
     body {
       margin: 0;
       min-height: 100vh;
-      overflow-x: hidden;
-      background: var(--page);
+      position: relative;
+      background: var(--bg);
       color: var(--text);
-      font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.45;
     }
-    button { font: inherit; }
-    main { width: min(1600px, calc(100% - 40px)); margin: 0 auto; padding: 34px 0 26px; }
+    main {
+      position: relative;
+      z-index: 1;
+      width: min(1360px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 20px 0 22px;
+    }
     .header {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) max-content;
-      gap: 24px;
+      display: flex;
       align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding-bottom: 0;
     }
-    .eyebrow {
-      margin: 0 0 5px;
-      color: var(--accent);
-      font-size: 11px;
-      font-weight: 800;
-      letter-spacing: .18em;
-      text-transform: uppercase;
-    }
-    h1 { margin: 0; font-size: clamp(28px, 4vw, 46px); line-height: 1.05; letter-spacing: -.045em; }
-    .status-box {
-      min-width: 220px;
-      display: grid;
-      grid-template-columns: auto auto;
-      gap: 4px 18px;
-      padding: 13px 16px;
-      border: 1px solid var(--line);
-      border-radius: 15px;
-      background: var(--surface);
-      box-shadow: var(--shadow);
-      color: var(--muted);
-      font-size: 12px;
-    }
-    .status-state { display: inline-flex; align-items: center; gap: 8px; color: var(--text); font-weight: 800; letter-spacing: .08em; }
-    .status-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 4px color-mix(in srgb, var(--good) 18%, transparent); }
-    .status-state[data-state="partial"] .status-dot { background: var(--warn); box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 18%, transparent); }
-    .status-state[data-state="stale"] .status-dot,
-    .status-state[data-state="error"] .status-dot { background: var(--bad); box-shadow: 0 0 0 4px color-mix(in srgb, var(--bad) 18%, transparent); }
-    .status-label { text-align: right; }
-    .header-divider { height: 1px; margin: 23px 0 17px; background: linear-gradient(90deg, var(--accent), var(--line) 32%, transparent); }
-    .description-card {
-      padding: 15px 18px;
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      background: var(--surface);
-      color: var(--muted);
-    }
-    .description-card p { margin: 0; }
-    .cards {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 14px;
-      margin-top: 16px;
-    }
-    .metric-card, .chart-card {
+    .header-main {
       min-width: 0;
-      border: 1px solid var(--line);
-      border-radius: 16px;
-      background: var(--surface);
-      box-shadow: var(--shadow);
     }
-    .metric-card { min-height: 285px; padding: 16px; }
-    .metric-card__head { min-height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
-    .metric-card h2, .section-title h2 { margin: 0; font-size: 15px; letter-spacing: .01em; }
-    .metric-card dl { margin: 0; }
-    .row { display: grid; grid-template-columns: minmax(92px, .8fr) minmax(0, 1.4fr); gap: 9px; align-items: center; min-height: 38px; border-top: 1px solid var(--line); }
-    .row:first-child { border-top-color: transparent; }
-    dt { color: var(--muted); }
-    dd { min-width: 0; margin: 0; overflow-wrap: anywhere; text-align: right; font-variant-numeric: tabular-nums; font-weight: 700; }
-    .metric-pager { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
-    .metric-pager button {
-      width: 26px;
-      height: 26px;
-      padding: 0;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--surface-strong);
+    h1 {
+      margin: 0;
+      overflow-wrap: anywhere;
+      font-size: clamp(1.7rem, 3.2vw, 2.7rem);
+      line-height: 1.05;
+      letter-spacing: 0;
+      font-weight: 780;
+    }
+    .meta {
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+    .header-side {
+      display: grid;
+      justify-items: end;
+      gap: 12px;
+    }
+    button {
+      border: 1px solid var(--border);
+      background: var(--panel);
       color: var(--text);
       cursor: pointer;
+      font: inherit;
+      transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease, transform 140ms ease;
     }
-    .metric-pager button:disabled { cursor: default; opacity: .35; }
-    .chart-section { margin-top: 22px; }
-    .section-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-    .section-title span { color: var(--muted); font-size: 12px; }
-    .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-    .chart-card { position: relative; padding: 15px; }
-    .chart-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-height: 28px; font-weight: 750; }
-    .legend { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px 12px; color: var(--muted); font-size: 11px; font-weight: 500; }
-    .legend-item { display: inline-flex; align-items: center; gap: 5px; }
-    .legend-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--series-color, var(--accent)); }
-    canvas { display: block; width: 100%; height: 205px; margin-top: 6px; cursor: crosshair; }
+    button:hover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
+    }
+    .status-box {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) max-content;
+      grid-template-areas:
+        "controls state"
+        "updated response";
+      align-items: center;
+      justify-content: stretch;
+      gap: 7px 18px;
+      color: var(--muted);
+      text-align: right;
+      font-size: 0.92rem;
+      font-variant-numeric: tabular-nums;
+      min-width: 250px;
+      width: 250px;
+    }
+    .status-controls {
+      display: inline-flex;
+      align-items: center;
+      gap: 13px;
+      grid-area: controls;
+      justify-self: start;
+      padding-left: 4px;
+    }
+    .status-line {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 7px;
+      grid-area: state;
+      color: var(--text);
+      font-weight: 800;
+      justify-self: end;
+    }
+    .status-state {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .control-dot {
+      width: 10px;
+      height: 10px;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      background: var(--muted);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--muted) 16%, transparent);
+    }
+    .control-dot[data-active="light"] {
+      background: #facc15;
+      box-shadow: 0 0 0 4px color-mix(in srgb, #facc15 22%, transparent);
+    }
+    .control-dot[data-active="dark"] {
+      background: #67e8f9;
+      box-shadow: 0 0 0 4px color-mix(in srgb, #67e8f9 22%, transparent);
+    }
+    .control-dot[data-active="en"] {
+      background: #9b8ae3;
+      box-shadow: 0 0 0 4px rgba(155, 138, 227, 0.22);
+    }
+    .control-dot[data-active="zh-CN"] {
+      background: #d96f72;
+      box-shadow: 0 0 0 4px rgba(217, 111, 114, 0.2);
+    }
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    #live-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--good);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--good) 18%, transparent);
+    }
+    #live-dot[data-status="stale"] {
+      background: var(--warn);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 18%, transparent);
+    }
+    #live-dot[data-status="partial"] {
+      background: var(--warn);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 18%, transparent);
+    }
+    #live-dot[data-status="error"] {
+      background: var(--bad);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--bad) 18%, transparent);
+    }
+    #updated-at {
+      grid-area: updated;
+      justify-self: start;
+      padding-left: 4px;
+      white-space: nowrap;
+    }
+    #response-time {
+      grid-area: response;
+      justify-self: end;
+      white-space: nowrap;
+    }
+    .header-divider {
+      position: relative;
+      height: 38px;
+      overflow: hidden;
+      margin: 4px 0;
+    }
+    .header-divider:before {
+      content: "";
+      position: absolute;
+      left: 6%;
+      right: 6%;
+      top: 50%;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--divider-line), transparent 78%), transparent);
+    }
+    .header-divider:after {
+      content: "";
+      top: 50%;
+      position: absolute;
+      left: 6%;
+      width: 18%;
+      height: 2px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--divider-glow), transparent 24%), transparent);
+      box-shadow: 0 0 22px color-mix(in srgb, var(--divider-glow), transparent 64%);
+      animation: moveGlow 3.2s ease-in-out infinite;
+    }
+    @keyframes moveGlow {
+      0% {
+        transform: translateX(-30%);
+        opacity: 0;
+      }
+      18%, 82% {
+        opacity: 1;
+      }
+      100% {
+        transform: translateX(470%);
+        opacity: 0;
+      }
+    }
+    .cards, .chart-grid {
+      display: grid;
+      gap: 14px;
+    }
+    .cards {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin-top: 20px;
+    }
+    .description-card {
+      margin-top: 4px;
+      padding: 12px 14px 12px 16px;
+      border-left: 3px solid var(--accent);
+      border-radius: 0 8px 8px 0;
+      background: color-mix(in srgb, var(--panel), transparent 36%);
+      color: var(--muted);
+      font-size: 0.93rem;
+      box-shadow: inset 0 1px 0 color-mix(in srgb, var(--border), transparent 65%);
+    }
+    .description-card p {
+      margin: 0;
+      max-width: 78ch;
+    }
+    .chart-section {
+      margin-top: 22px;
+    }
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 12px;
+    }
+    .sample-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      padding: 3px;
+      border: 2px solid var(--border);
+      border-radius: 999px;
+      background: var(--panel-soft);
+    }
+    .sample-toggle button {
+      min-width: 36px;
+      height: 24px;
+      padding: 0 9px;
+      border: 0;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-weight: 800;
+      line-height: 1;
+      box-shadow: none;
+    }
+    .sample-toggle button:hover {
+      transform: none;
+      color: var(--text);
+    }
+    .sample-toggle button[aria-pressed="true"] {
+      background: var(--accent);
+      color: var(--bg);
+    }
+    .chart-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    section, .chart-card {
+      min-width: 0;
+      background: var(--panel);
+      border: 3px solid var(--border);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+    section {
+      padding: 15px;
+    }
+    .chart-card {
+      padding: 14px 14px 16px;
+    }
+    h2 {
+      margin: 0 0 14px;
+      color: var(--accent);
+      font-size: 0.82rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .section-title h2 {
+      margin: 0;
+    }
+    .metric-card__head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .metric-card__head h2 {
+      margin: 0;
+    }
+    .metric-pager {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 72px;
+      justify-content: flex-end;
+      color: var(--muted);
+      font-size: 0.74rem;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .metric-pager[hidden] {
+      display: none;
+    }
+    .metric-pager button {
+      display: grid;
+      place-items: center;
+      width: 18px;
+      height: 18px;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      background: color-mix(in srgb, var(--panel-soft), transparent 16%);
+      color: var(--muted);
+      font-size: 0.8rem;
+      font-weight: 900;
+      line-height: 1;
+    }
+    .metric-pager button:hover {
+      color: var(--text);
+      background: var(--accent-soft);
+      transform: none;
+    }
+    .metric-action {
+      min-width: 80px;
+      height: 26px;
+      padding: 0 10px;
+      border-radius: 999px;
+      background: var(--panel-soft);
+      color: var(--text);
+      font-size: 0.78rem;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .metric-action:hover {
+      background: var(--accent-soft);
+      transform: none;
+    }
+    dl {
+      display: grid;
+      gap: 11px;
+      margin: 0;
+    }
+    .row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 14px;
+      min-height: 27px;
+    }
+    .row[hidden] {
+      display: none;
+    }
+    dt {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    dd {
+      margin: 0;
+      overflow-wrap: anywhere;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      font-weight: 800;
+    }
+    .chart-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 9px;
+      font-size: 0.92rem;
+      font-weight: 800;
+    }
+    .chart-legend {
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-align: right;
+    }
+    .legend-list {
+      display: inline-flex;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 6px 12px;
+    }
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      white-space: nowrap;
+    }
+    .legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+    .legend-dot[data-series="pid"], .legend-dot[data-series="rss"], .legend-dot[data-series="main"], .legend-dot[data-series="recent"], .legend-dot[data-series="window"] {
+      background: var(--accent);
+    }
+    .legend-dot[data-series="os"], .legend-dot[data-series="max"], .legend-dot[data-series="nextgc"], .legend-dot[data-series="last"] {
+      background: var(--warn);
+    }
+    .legend-dot[data-series="heap"] {
+      background: var(--good);
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 190px;
+      border-radius: 6px;
+      background: var(--panel-soft);
+    }
+
+    .chart-card { position: relative; }
     .chart-tooltip {
       position: absolute;
       z-index: 3;
-      max-width: min(240px, calc(100% - 24px));
-      pointer-events: none;
-      padding: 8px 10px;
-      border: 1px solid var(--line);
-      border-radius: 9px;
-      background: var(--surface-strong);
-      box-shadow: var(--shadow);
+      max-width: min(250px, calc(100% - 28px));
+      padding: 9px 11px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--panel), transparent 4%);
+      box-shadow: 0 14px 34px rgba(45, 59, 78, 0.16);
       color: var(--text);
-      font-size: 11px;
+      font-size: 0.78rem;
+      white-space: nowrap;
+      pointer-events: none;
+      backdrop-filter: blur(10px);
+    }
+    .chart-tooltip strong { display: block; margin-bottom: 4px; color: var(--accent); }
+    .chart-tooltip span { display: block; color: var(--muted); }
+    .metric-value-chip { display: inline-grid; place-items: center; }
+    .sample-window {
+      min-width: 46px;
+      justify-content: center;
+      color: var(--bg);
+      background: var(--accent);
+      font-size: 0.78rem;
+      font-weight: 800;
+      line-height: 24px;
+    }
+    footer {
+      margin-top: 20px;
+      color: var(--muted);
+      font-size: 0.82rem;
+      text-align: center;
+    }
+    .modal {
+      position: fixed;
+      inset: 0;
+      z-index: 120;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      background: color-mix(in srgb, var(--bg), transparent 18%);
+      backdrop-filter: blur(8px);
+    }
+    .modal[hidden] {
+      display: none;
+    }
+    .modal__panel {
+      width: min(760px, 100%);
+      max-height: min(80vh, 680px);
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: 0 18px 42px rgba(0, 0, 0, 0.22);
+    }
+    .modal__head {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 15px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    .modal__head h2 {
+      margin: 0;
+    }
+    .modal__close {
+      display: grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      background: var(--panel-soft);
+      color: var(--muted);
+      font-size: 0.86rem;
+      font-weight: 900;
+      line-height: 1;
+    }
+    .modal__close:hover {
+      color: var(--text);
+      background: var(--accent-soft);
+      transform: none;
+    }
+    .disk-list {
+      display: grid;
+      gap: 10px;
+      padding: 14px;
+    }
+    .detail-list {
+      display: grid;
+      gap: 9px;
+      padding: 14px;
+      margin: 0;
+    }
+    .detail-list .row {
+      min-height: 0;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--panel-soft), transparent 28%);
+    }
+    .detail-list dt {
+      font-size: 0.86rem;
+    }
+    .detail-list dd {
+      font-size: 0.92rem;
+    }
+    .disk-item {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--panel-soft), transparent 28%);
+    }
+    .disk-item__head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      min-width: 0;
+      font-weight: 800;
+    }
+    .disk-item__path {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .disk-item__usage {
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
       white-space: nowrap;
     }
-    .chart-tooltip strong { display: block; margin-bottom: 3px; }
-    .chart-tooltip span { display: block; color: var(--muted); }
-    footer { margin-top: 22px; color: var(--muted); text-align: center; font-size: 12px; }
-    @media (max-width: 1100px) {
-      .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .metric-card { min-height: 244px; }
+    .disk-item__meta {
+      color: var(--muted);
+      font-size: 0.78rem;
+      overflow-wrap: anywhere;
     }
-    @media (max-width: 640px) {
-      main { width: min(100% - 24px, 1600px); padding-top: 22px; }
-      .header { grid-template-columns: 1fr; gap: 15px; }
-      .status-box { min-width: 0; width: 100%; }
-      .cards, .chart-grid { grid-template-columns: 1fr; }
-      .metric-card { min-height: 225px; }
-      .row { grid-template-columns: minmax(84px, .7fr) minmax(0, 1.3fr); }
-      canvas { height: 185px; }
+    .disk-meter {
+      height: 7px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: var(--panel);
+    }
+    .disk-meter__bar {
+      width: var(--disk-used, 0%);
+      height: 100%;
+      border-radius: inherit;
+      background: var(--accent);
+    }
+    .disk-item dl {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .disk-item .row {
+      display: grid;
+      gap: 2px;
+      min-height: 0;
+    }
+    .disk-item dt {
+      font-size: 0.76rem;
+    }
+    .disk-item dd {
+      text-align: left;
+      font-size: 0.9rem;
+    }
+    .page-scroll-dock {
+      --scroll-progress: 0%;
+      position: fixed;
+      right: 22px;
+      bottom: 22px;
+      z-index: 85;
+      display: grid;
+      place-items: center;
+      width: 46px;
+      height: 46px;
+      border: 0;
+      border-radius: 999px;
+      padding: 0;
+      background:
+        conic-gradient(from 220deg, var(--dock-fill) var(--scroll-progress), var(--dock-track) 0),
+        radial-gradient(circle at 32% 28%, rgba(255, 255, 255, 0.14), transparent 48%);
+      color: var(--dock-text);
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(4px);
+      box-shadow:
+        0 12px 32px rgba(8, 14, 20, 0.2),
+        inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+      transition: opacity 180ms ease, box-shadow 180ms ease, filter 180ms ease, transform 180ms ease;
+    }
+    .page-scroll-dock--visible {
+      opacity: 0.78;
+      pointer-events: auto;
+      transform: translateY(0);
+    }
+    .page-scroll-dock:before {
+      content: '';
+      position: absolute;
+      inset: 4px;
+      border-radius: inherit;
+      background: linear-gradient(180deg, var(--dock-face-start), var(--dock-face-end));
+    }
+    .page-scroll-dock:after {
+      content: '';
+      position: absolute;
+      inset: 11px;
+      border-radius: inherit;
+      border: 1px solid var(--dock-ring);
+      opacity: 0.7;
+    }
+    .page-scroll-dock:hover {
+      opacity: 0.93;
+      box-shadow:
+        0 14px 34px rgba(8, 14, 20, 0.24),
+        inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+      filter: saturate(1.06);
+    }
+    .page-scroll-dock__core {
+      position: relative;
+      z-index: 1;
+      font-size: 0.64rem;
+      font-weight: 650;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0;
+    }
+    @media (max-width: 980px) {
+      .cards {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .chart-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+    @media (max-width: 760px) {
+      main {
+        width: min(100% - 24px, 1360px);
+        padding-top: 22px;
+      }
+      .header {
+        align-items: stretch;
+        flex-direction: column;
+      }
+      .header-main {
+        text-align: center;
+      }
+      .header-side, .status-box {
+        text-align: left;
+        min-width: 0;
+        width: 100%;
+      }
+      .status-box {
+        grid-template-columns: minmax(0, 1fr) max-content;
+        justify-content: stretch;
+      }
+      .status-line {
+        justify-self: end;
+      }
+    }
+    @media (max-width: 560px) {
+      .cards {
+        grid-template-columns: 1fr;
+      }
+      .disk-item dl {
+        grid-template-columns: 1fr;
+      }
+      .section-title {
+        gap: 10px;
+      }
+      .sample-toggle button {
+        min-width: 32px;
+        padding: 0 7px;
+      }
+      .page-scroll-dock {
+        display: none;
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .header-divider:after {
+        animation: none;
+      }
     }
   </style>
 </head>
 <body>
   <main>
     <header class="header">
-      <div>
-        <p class="eyebrow">Operational dashboard</p>
-        <h1>{{ .Title }}</h1>
-      </div>
-      <div class="status-box" aria-live="polite">
-        <span id="status-state" class="status-state" data-state="error"><span class="status-dot"></span><span id="status-text">ERROR</span></span>
-        <span id="updated-at" class="status-label">Not updated</span>
-        <span>Response time</span>
-        <span id="response-time" class="status-label">—</span>
+      <div class="header-main"><h1>{{ .Title }}</h1></div>
+      <div class="header-side">
+        <div class="status-box" aria-live="polite">
+          <span class="status-controls" aria-hidden="true"><span class="control-dot" data-active="en"></span><span id="scheme-marker" class="control-dot" data-active="light"></span></span>
+          <div class="status-line"><span class="status-state"><span id="live-dot" data-status="error"></span><span id="live-text">ERROR</span></span></div>
+          <span id="updated-at">-</span><span id="response-time">-</span>
+        </div>
       </div>
     </header>
     <div class="header-divider" aria-hidden="true"></div>
     <aside class="description-card" aria-label="Page description"><p>{{ .Description }}</p></aside>
 
     <div class="cards">
-      <section class="metric-card" data-card="process">
-        <div class="metric-card__head"><h2>Process</h2><div class="metric-pager" hidden><button type="button" data-prev aria-label="Previous metric page">&lt;</button><span data-page>1 / 1</span><button type="button" data-next aria-label="Next metric page">&gt;</button></div></div>
+      <section class="metric-card">
+        <div class="metric-card__head"><h2>Process</h2><div class="metric-pager" hidden><button type="button" class="metric-pager__prev" aria-label="Previous metric page">&lt;</button><span class="metric-pager__status">1 / 1</span><button type="button" class="metric-pager__next" aria-label="Next metric page">&gt;</button></div></div>
         <dl>
-          <div class="row"><dt>CPU</dt><dd id="process-cpu">—</dd></div>
-          <div class="row"><dt>RSS</dt><dd id="process-rss">—</dd></div>
-          <div class="row"><dt>Threads</dt><dd id="process-threads">—</dd></div>
-          <div class="row"><dt>{{ .DescriptorLabel }}</dt><dd id="process-descriptors">—</dd></div>
-          <div class="row"><dt>Uptime</dt><dd id="process-uptime">—</dd></div>
+          <div class="row"><dt>CPU</dt><dd id="pid-cpu">-</dd></div>
+          <div class="row"><dt>RSS</dt><dd id="pid-rss">-</dd></div>
+          <div class="row"><dt>Threads</dt><dd id="pid-threads">-</dd></div>
+          <div class="row"><dt>PID</dt><dd>{{ .PID }}</dd></div>
+          <div class="row"><dt>{{ .DescriptorLabel }}</dt><dd id="pid-fds">-</dd></div>
         </dl>
       </section>
-      <section class="metric-card" data-card="runtime">
-        <div class="metric-card__head"><h2>Runtime</h2><div class="metric-pager" hidden><button type="button" data-prev aria-label="Previous metric page">&lt;</button><span data-page>1 / 1</span><button type="button" data-next aria-label="Next metric page">&gt;</button></div></div>
+      <section class="metric-card">
+        <div class="metric-card__head"><h2>Runtime</h2><div class="metric-pager" hidden><button type="button" class="metric-pager__prev" aria-label="Previous metric page">&lt;</button><span class="metric-pager__status">1 / 1</span><button type="button" class="metric-pager__next" aria-label="Next metric page">&gt;</button></div></div>
         <dl>
-          <div class="row"><dt>Goroutines</dt><dd id="runtime-goroutines">—</dd></div>
-          <div class="row"><dt>Heap Alloc</dt><dd id="runtime-heap">—</dd></div>
-          <div class="row"><dt>Heap Objects</dt><dd id="runtime-objects">—</dd></div>
-          <div class="row"><dt>GC Count</dt><dd id="runtime-gc-count">—</dd></div>
-          <div class="row"><dt>Last GC Pause</dt><dd id="runtime-gc-pause">—</dd></div>
+          <div class="row"><dt>Goroutines</dt><dd id="rt-goroutines">-</dd></div>
+          <div class="row"><dt>Heap</dt><dd><span id="rt-heap" class="metric-action metric-value-chip">-</span></dd></div>
+          <div class="row"><dt>Heap Objects</dt><dd id="rt-heap-objects">-</dd></div>
+          <div class="row"><dt>GC</dt><dd><span id="rt-gc" class="metric-action metric-value-chip">-</span></dd></div>
+          <div class="row"><dt>Uptime</dt><dd id="rt-uptime">-</dd></div>
         </dl>
       </section>
-      <section class="metric-card" data-card="system">
-        <div class="metric-card__head"><h2>System</h2><div class="metric-pager" hidden><button type="button" data-prev aria-label="Previous metric page">&lt;</button><span data-page>1 / 1</span><button type="button" data-next aria-label="Next metric page">&gt;</button></div></div>
+      <section class="metric-card">
+        <div class="metric-card__head"><h2>System</h2><div class="metric-pager" hidden><button type="button" class="metric-pager__prev" aria-label="Previous metric page">&lt;</button><span class="metric-pager__status">1 / 1</span><button type="button" class="metric-pager__next" aria-label="Next metric page">&gt;</button></div></div>
         <dl>
-          <div class="row"><dt>CPU</dt><dd id="system-cpu">—</dd></div>
-          <div class="row"><dt>Memory</dt><dd id="system-memory">—</dd></div>
-          <div class="row"><dt>Disk</dt><dd id="system-disk">—</dd></div>
-          <div class="row"><dt>Load 1</dt><dd id="system-load">—</dd></div>
-          <div class="row"><dt>Network RX</dt><dd id="system-network-rx">—</dd></div>
-          <div class="row"><dt>Network TX</dt><dd id="system-network-tx">—</dd></div>
+          <div class="row"><dt>CPU</dt><dd id="os-cpu">-</dd></div>
+          <div class="row"><dt>Memory</dt><dd id="os-memory">-</dd></div>
+          <div class="row"><dt>Total RAM</dt><dd id="os-total">-</dd></div>
+          <div class="row"><dt>Disk</dt><dd><span id="os-disk" class="metric-action metric-value-chip">-</span></dd></div>
+          <div class="row"><dt>1m load</dt><dd id="os-load">-</dd></div>
+          <div class="row"><dt>RX rate</dt><dd id="os-network-rx-rate">-</dd></div>
+          <div class="row"><dt>TX rate</dt><dd id="os-network-tx-rate">-</dd></div>
         </dl>
       </section>
-      <section class="metric-card" data-card="http">
-        <div class="metric-card__head"><h2>HTTP</h2><div class="metric-pager" hidden><button type="button" data-prev aria-label="Previous metric page">&lt;</button><span data-page>1 / 1</span><button type="button" data-next aria-label="Next metric page">&gt;</button></div></div>
+      <section class="metric-card">
+        <div class="metric-card__head"><h2>HTTP</h2><div class="metric-pager" hidden><button type="button" class="metric-pager__prev" aria-label="Previous metric page">&lt;</button><span class="metric-pager__status">1 / 1</span><button type="button" class="metric-pager__next" aria-label="Next metric page">&gt;</button></div></div>
         <dl>
-          <div class="row"><dt>Requests</dt><dd id="http-requests">—</dd></div>
-          <div class="row"><dt>In-flight</dt><dd id="http-in-flight">—</dd></div>
-          <div class="row"><dt>RPS</dt><dd id="http-rps">—</dd></div>
-          <div class="row"><dt>Status</dt><dd id="http-status">—</dd></div>
-          <div class="row"><dt>Rates</dt><dd id="http-rates">—</dd></div>
-          <div class="row"><dt>Latency</dt><dd id="http-latency">—</dd></div>
+          <div class="row"><dt>RPS</dt><dd id="http-rps">-</dd></div>
+          <div class="row"><dt>P95 latency</dt><dd id="http-latency-p95">-</dd></div>
+          <div class="row"><dt>Error rate</dt><dd id="http-error-rate">-</dd></div>
+          <div class="row"><dt>In-flight</dt><dd id="http-in-flight">-</dd></div>
+          <div class="row"><dt>Requests</dt><dd id="http-requests">-</dd></div>
+          <div class="row"><dt>P50 latency</dt><dd id="http-latency-p50">-</dd></div>
+          <div class="row"><dt>P99 latency</dt><dd id="http-latency-p99">-</dd></div>
+          <div class="row"><dt>Status codes</dt><dd><span id="http-status-button" class="metric-action metric-value-chip">-</span></dd></div>
         </dl>
       </section>
     </div>
 
-    <section class="chart-section" aria-labelledby="trends-title">
-      <div class="section-title"><h2 id="trends-title">Trends</h2><span>Last 60 samples · browser memory only</span></div>
+    <div class="chart-section">
+      <div class="section-title"><h2>Trends</h2><span class="sample-toggle sample-window" aria-label="60 chart samples">60</span></div>
       <div class="chart-grid">
-        <article class="chart-card"><div class="chart-head"><span>CPU</span><span class="legend"><span class="legend-item"><i class="legend-dot" style="--series-color:var(--accent)"></i>Process</span><span class="legend-item"><i class="legend-dot" style="--series-color:var(--warn)"></i>System</span></span></div><canvas id="cpu-chart"></canvas><div class="chart-tooltip" hidden></div></article>
-        <article class="chart-card"><div class="chart-head"><span>Memory</span><span class="legend"><span class="legend-item"><i class="legend-dot" style="--series-color:var(--accent)"></i>RSS</span><span class="legend-item"><i class="legend-dot" style="--series-color:var(--good)"></i>Heap Alloc</span></span></div><canvas id="memory-chart"></canvas><div class="chart-tooltip" hidden></div></article>
-        <article class="chart-card"><div class="chart-head"><span>Network</span><span class="legend"><span class="legend-item"><i class="legend-dot" style="--series-color:var(--accent)"></i>RX/s</span><span class="legend-item"><i class="legend-dot" style="--series-color:var(--warn)"></i>TX/s</span></span></div><canvas id="network-chart"></canvas><div class="chart-tooltip" hidden></div></article>
-        <article class="chart-card"><div class="chart-head"><span>Goroutines</span><span class="legend"><span class="legend-item"><i class="legend-dot" style="--series-color:var(--accent)"></i>Count</span></span></div><canvas id="goroutine-chart"></canvas><div class="chart-tooltip" hidden></div></article>
-        <article class="chart-card"><div class="chart-head"><span>Requests / second</span><span class="legend"><span class="legend-item"><i class="legend-dot" style="--series-color:var(--accent)"></i>RPS</span></span></div><canvas id="request-chart"></canvas><div class="chart-tooltip" hidden></div></article>
-        <article class="chart-card"><div class="chart-head"><span>HTTP Latency</span><span class="legend"><span class="legend-item"><i class="legend-dot" style="--series-color:var(--accent)"></i>P50</span><span class="legend-item"><i class="legend-dot" style="--series-color:var(--warn)"></i>P95</span><span class="legend-item"><i class="legend-dot" style="--series-color:var(--bad)"></i>P99</span></span></div><canvas id="latency-chart"></canvas><div class="chart-tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>CPU</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="pid"></span>Process</span><span class="legend-item"><span class="legend-dot" data-series="os"></span>System</span></span></div><canvas id="cpu-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>Memory</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="rss"></span>RSS</span><span class="legend-item"><span class="legend-dot" data-series="heap"></span>Heap</span></span></div><canvas id="memory-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>Network</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="pid"></span>RX/s</span><span class="legend-item"><span class="legend-dot" data-series="os"></span>TX/s</span></span></div><canvas id="network-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>Goroutines</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="main"></span>Count</span></span></div><canvas id="goroutine-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>Requests / second</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="main"></span>RPS</span></span></div><canvas id="request-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>HTTP latency</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="recent"></span>P50</span><span class="legend-item"><span class="legend-dot" data-series="max"></span>P95</span><span class="legend-item"><span class="legend-dot" data-series="last"></span>P99</span></span></div><canvas id="latency-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
       </div>
-    </section>
+    </div>
     <footer>{{ .Footer }}</footer>
   </main>
-
+  <button id="page-scroll-dock" class="page-scroll-dock" type="button" title="Scroll up" aria-label="Scroll progress 0%" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="page-scroll-dock-value" class="page-scroll-dock__core">0%</span></button>
   <script>
-  (() => {
+(() => {
     "use strict";
     const REFRESH_MS = {{ .RefreshMS }};
     const MAX_SAMPLES = 60;
@@ -270,7 +880,7 @@
 
     function formatBytes(value) {
       if (!finite(value)) return dash;
-      const units = ["B", "KB", "MB", "GB", "TB"];
+      const units = ["B", "KiB", "MiB", "GiB", "TiB"];
       let current = Math.max(0, value);
       let unit = 0;
       while (current >= 1024 && unit < units.length - 1) { current /= 1024; unit += 1; }
@@ -306,42 +916,44 @@
       const status = http.status || {};
       const rates = http.rates || {};
       const latency = http.latency || {};
+      const errorRate = finite(rates["4xx"]) && finite(rates["5xx"]) ? rates["4xx"] + rates["5xx"] : null;
 
-      setText("process-cpu", percent(process.cpu_percent));
-      setText("process-rss", optional(process.rss_bytes, formatBytes));
-      setText("process-threads", optional(process.threads, decimal.format));
-      setText("process-descriptors", optional(process.open_descriptors, decimal.format));
-      setText("process-uptime", optional(process.uptime_seconds, formatUptime));
-      setText("runtime-goroutines", optional(runtime.goroutines, decimal.format));
-      setText("runtime-heap", optional(runtime.heap_alloc_bytes, formatBytes));
-      setText("runtime-objects", optional(runtime.heap_objects, compact.format));
-      setText("runtime-gc-count", optional(runtime.gc_count, compact.format));
-      setText("runtime-gc-pause", optional(runtime.gc_pause_last_ns, formatDurationNS));
-      setText("system-cpu", percent(system.cpu_percent));
-      setText("system-memory", finite(system.memory_used_percent) && finite(system.memory_used_bytes) && finite(system.memory_total_bytes) ?
-        system.memory_used_percent.toFixed(1) + "% \u00b7 " + formatBytes(system.memory_used_bytes) + " / " + formatBytes(system.memory_total_bytes) : dash);
-      setText("system-disk", finite(system.disk_used_percent) && finite(system.disk_used_bytes) && finite(system.disk_total_bytes) ?
-        system.disk_used_percent.toFixed(1) + "% \u00b7 " + formatBytes(system.disk_used_bytes) + " / " + formatBytes(system.disk_total_bytes) : dash);
-      setText("system-load", optional(system.load1, (value) => value.toFixed(2)));
-      setText("system-network-rx", optional(system.network_receive_bps, (value) => formatBytes(value) + "/s"));
-      setText("system-network-tx", optional(system.network_send_bps, (value) => formatBytes(value) + "/s"));
-      setText("http-requests", optional(http.requests, compact.format));
+      setText("pid-cpu", percent(process.cpu_percent));
+      setText("pid-rss", optional(process.rss_bytes, formatBytes));
+      setText("pid-threads", optional(process.threads, decimal.format));
+      setText("pid-fds", optional(process.open_descriptors, decimal.format));
+      setText("rt-goroutines", optional(runtime.goroutines, decimal.format));
+      setText("rt-heap", optional(runtime.heap_alloc_bytes, formatBytes));
+      setText("rt-heap-objects", optional(runtime.heap_objects, compact.format));
+      setText("rt-gc", optional(runtime.gc_count, decimal.format));
+      setText("rt-uptime", optional(process.uptime_seconds, formatUptime));
+      setText("os-cpu", percent(system.cpu_percent));
+      setText("os-memory", percent(system.memory_used_percent));
+      setText("os-total", optional(system.memory_total_bytes, formatBytes));
+      setText("os-disk", finite(system.disk_used_percent) ? system.disk_used_percent.toFixed(1) + "%" : dash);
+      setText("os-load", optional(system.load1, (value) => value.toFixed(2)));
+      setText("os-network-rx-rate", optional(system.network_receive_bps, (value) => formatBytes(value) + "/s"));
+      setText("os-network-tx-rate", optional(system.network_send_bps, (value) => formatBytes(value) + "/s"));
+      setText("http-rps", optional(http.rps, (value) => value.toFixed(2) + " req/s"));
+      setText("http-latency-p95", optional(latency.p95_ns, formatDurationNS));
+      setText("http-error-rate", optional(errorRate, ratio));
       setText("http-in-flight", optional(http.in_flight, decimal.format));
-      setText("http-rps", optional(http.rps, (value) => value.toFixed(1)));
-      setText("http-status", ["2xx " + compact.format(status["2xx"] || 0), "3xx " + compact.format(status["3xx"] || 0), "4xx " + compact.format(status["4xx"] || 0), "5xx " + compact.format(status["5xx"] || 0)].join(" \u00b7 "));
-      setText("http-rates", finite(rates["4xx"]) && finite(rates["5xx"]) ? "4xx " + ratio(rates["4xx"]) + " \u00b7 5xx " + ratio(rates["5xx"]) : dash);
-      setText("http-latency", finite(latency.p50_ns) && finite(latency.p95_ns) && finite(latency.p99_ns) ?
-        "P50 " + formatDurationNS(latency.p50_ns) + " \u00b7 P95 " + formatDurationNS(latency.p95_ns) + " \u00b7 P99 " + formatDurationNS(latency.p99_ns) : dash);
+      setText("http-requests", optional(http.requests, decimal.format));
+      setText("http-latency-p50", optional(latency.p50_ns, formatDurationNS));
+      setText("http-latency-p99", optional(latency.p99_ns, formatDurationNS));
+      setText("http-status-button", (status["4xx"] || status["5xx"]) ?
+        "ERR " + decimal.format((status["4xx"] || 0) + (status["5xx"] || 0)) :
+        "2xx " + decimal.format(status["2xx"] || 0));
     }
 
     function updateState(state, responseMS, collectedAt) {
-      const stateNode = byId("status-state");
-      stateNode.dataset.state = state;
-      setText("status-text", state.toUpperCase());
-      setText("response-time", finite(responseMS) ? responseMS.toFixed(0) + " ms" : dash);
+      const dot = byId("live-dot");
+      if (dot) dot.dataset.status = state;
+      setText("live-text", state.toUpperCase());
+      setText("response-time", finite(responseMS) ? responseMS.toFixed(1) + " ms" : dash);
       if (collectedAt) {
         const date = new Date(collectedAt);
-        setText("updated-at", Number.isNaN(date.getTime()) ? "Updated" : date.toLocaleTimeString());
+        setText("updated-at", Number.isNaN(date.getTime()) ? "Updated" : date.toLocaleString());
       }
     }
 
@@ -369,95 +981,116 @@
       return true;
     }
 
-    function drawLineChart(canvas, series, formatter) {
+    function formatShort(value) {
+      const number = Number(value || 0);
+      if (Math.abs(number) >= 1000000) return (number / 1000000).toFixed(1) + "M";
+      if (Math.abs(number) >= 1000) return (number / 1000).toFixed(1) + "k";
+      if (Math.abs(number) >= 10) return number.toFixed(0);
+      return number.toFixed(1);
+    }
+    function formatAxis(value, unit) {
+      const label = formatShort(value);
+      return unit ? label + " " + unit : label;
+    }
+    function durationAxisNS(value) { return formatDurationNS(value).replace(" ", ""); }
+    function drawGrid(context, width, height, padding, min, max, options) {
+      const lines = 5;
+      const plotHeight = height - padding.top - padding.bottom;
+      context.strokeStyle = cssColor("--border");
+      context.lineWidth = 1;
+      context.globalAlpha = .55;
+      for (let line = 0; line <= lines; line += 1) {
+        const y = padding.top + plotHeight / lines * line;
+        context.beginPath();
+        context.moveTo(padding.left, y);
+        context.lineTo(width - padding.right, y);
+        context.stroke();
+      }
+      context.globalAlpha = 1;
+      context.fillStyle = cssColor("--muted");
+      context.font = "11px system-ui, sans-serif";
+      context.textBaseline = "middle";
+      for (let line = 0; line <= lines; line += 1) {
+        const value = max - (max - min) / lines * line;
+        const y = padding.top + plotHeight / lines * line;
+        context.fillText(options.formatValue ? options.formatValue(value) : formatAxis(value, options.unit), 4, y);
+      }
+      context.textBaseline = "alphabetic";
+    }
+    function drawSeries(context, data, config) {
+      const plotWidth = config.width - config.padding.left - config.padding.right;
+      const plotHeight = config.height - config.padding.top - config.padding.bottom;
+      if (!data.length) return;
+      context.lineWidth = 2;
+      context.strokeStyle = config.color;
+      context.lineJoin = "round";
+      context.lineCap = "round";
+      let drawing = false;
+      context.beginPath();
+      data.forEach((value, index) => {
+        if (!finite(value)) { drawing = false; return; }
+        const x = config.padding.left + (data.length === 1 ? plotWidth : index / (data.length - 1) * plotWidth);
+        const y = config.padding.top + (1 - (value - config.min) / (config.max - config.min || 1)) * plotHeight;
+        if (!drawing) { context.moveTo(x, y); drawing = true; } else { context.lineTo(x, y); }
+      });
+      context.stroke();
+    }
+    function drawLineChart(canvas, seriesList, options) {
       if (!canvas) return;
-      const rect = canvas.getBoundingClientRect();
-      const width = Math.max(260, rect.width);
-      const height = Math.max(150, rect.height);
-      const dpr = Math.max(1, window.devicePixelRatio || 1);
-      canvas.width = Math.round(width * dpr);
-      canvas.height = Math.round(height * dpr);
       const context = canvas.getContext("2d");
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      const width = Math.max(rect.width, 1);
+      const height = Math.max(rect.height, 1);
+      const padding = { top: 12, right: 10, bottom: 18, left: options.leftPadding || 58 };
+      canvas.width = Math.floor(width * dpr);
+      canvas.height = Math.floor(height * dpr);
       context.setTransform(dpr, 0, 0, dpr, 0, 0);
       context.clearRect(0, 0, width, height);
-      const pad = { left: 10, right: 10, top: 12, bottom: 18 };
-      const plotWidth = width - pad.left - pad.right;
-      const plotHeight = height - pad.top - pad.bottom;
-      const values = series.flatMap((entry) => entry.data.filter(finite));
-      context.font = "11px ui-sans-serif, system-ui, sans-serif";
-      if (values.length === 0) {
-        context.fillStyle = cssColor("--muted");
-        context.textAlign = "center";
-        context.fillText("Waiting for samples", width / 2, height / 2);
-        canvas._chartMeta = null;
-        return;
-      }
-      let min = Math.min(...values);
-      let max = Math.max(...values);
-      if (min === max) { min = Math.max(0, min - 1); max += 1; }
-      const range = max - min || 1;
-      context.strokeStyle = cssColor("--line");
-      context.lineWidth = 1;
-      for (let line = 0; line <= 3; line += 1) {
-        const y = pad.top + plotHeight * line / 3;
-        context.beginPath(); context.moveTo(pad.left, y); context.lineTo(width - pad.right, y); context.stroke();
-      }
-      const count = Math.max(1, ...series.map((entry) => entry.data.length));
-      series.forEach((entry) => {
-        context.strokeStyle = entry.color;
-        context.lineWidth = 2;
-        context.lineJoin = "round";
-        context.lineCap = "round";
-        let drawing = false;
-        context.beginPath();
-        entry.data.forEach((value, index) => {
-          if (!finite(value)) { drawing = false; return; }
-          const x = pad.left + (count <= 1 ? plotWidth / 2 : plotWidth * index / (count - 1));
-          const y = pad.top + plotHeight - (value - min) / range * plotHeight;
-          if (!drawing) { context.moveTo(x, y); drawing = true; } else { context.lineTo(x, y); }
-        });
-        context.stroke();
-        const points = entry.data.map((value, index) => ({ value, index })).filter((point) => finite(point.value));
-        if (points.length === 1) {
-          const point = points[0];
-          const x = pad.left + (count <= 1 ? plotWidth / 2 : plotWidth * point.index / (count - 1));
-          const y = pad.top + plotHeight - (point.value - min) / range * plotHeight;
-          context.fillStyle = entry.color;
-          context.beginPath(); context.arc(x, y, 2.5, 0, Math.PI * 2); context.fill();
-        }
-      });
-      context.fillStyle = cssColor("--muted");
-      context.textAlign = "left";
-      context.fillText(formatter(max), pad.left, height - 3);
-      context.textAlign = "right";
-      context.fillText(formatter(min), width - pad.right, height - 3);
-      canvas._chartMeta = { series, count, pad, plotWidth, formatter };
+      const values = [];
+      seriesList.forEach((series) => series.data.forEach((value) => { if (finite(value)) values.push(value); }));
+      const min = finite(options.minValue) ? options.minValue : 0;
+      const floorMax = finite(options.minMax) ? options.minMax : 0;
+      const max = Math.max(floorMax, values.length ? Math.max(...values) : 1, 1);
+      drawGrid(context, width, height, padding, min, max, options);
+      seriesList.forEach((series) => drawSeries(context, series.data, {width, height, padding, min, max, color: series.color}));
+      canvas._chartMeta = {
+        series: seriesList,
+        count: Math.max(0, ...seriesList.map((series) => series.data.length)),
+        pad: padding,
+        plotWidth: width - padding.left - padding.right,
+        formatter: options.formatValue || ((value) => formatAxis(value, options.unit))
+      };
     }
 
     function drawCharts() {
+      const accent = cssColor("--accent");
+      const good = cssColor("--good");
+      const warn = cssColor("--warn");
+      const bad = cssColor("--bad");
       drawLineChart(byId("cpu-chart"), [
-        { name: "Process", data: history.processCPU, color: cssColor("--accent") },
-        { name: "System", data: history.systemCPU, color: cssColor("--warn") }
-      ], (value) => value.toFixed(1) + "%");
+        { name: "Process", data: history.processCPU, color: accent },
+        { name: "System", data: history.systemCPU, color: warn }
+      ], { minValue: 0, minMax: 100, unit: "%" });
       drawLineChart(byId("memory-chart"), [
-        { name: "RSS", data: history.rss, color: cssColor("--accent") },
-        { name: "Heap Alloc", data: history.heap, color: cssColor("--good") }
-      ], formatBytes);
+        { name: "RSS", data: history.rss.map((value) => finite(value) ? value / 1024 / 1024 : null), color: accent },
+        { name: "Heap", data: history.heap.map((value) => finite(value) ? value / 1024 / 1024 : null), color: good }
+      ], { minValue: 0, unit: "MiB" });
       drawLineChart(byId("network-chart"), [
-        { name: "RX/s", data: history.networkRX, color: cssColor("--accent") },
-        { name: "TX/s", data: history.networkTX, color: cssColor("--warn") }
-      ], (value) => formatBytes(value) + "/s");
+        { name: "RX/s", data: history.networkRX, color: accent },
+        { name: "TX/s", data: history.networkTX, color: warn }
+      ], { minValue: 0, formatValue: (value) => formatBytes(value) + "/s", leftPadding: 70 });
       drawLineChart(byId("goroutine-chart"), [
-        { name: "Count", data: history.goroutines, color: cssColor("--accent") }
-      ], (value) => decimal.format(value));
+        { name: "Count", data: history.goroutines, color: accent }
+      ], { minValue: 0, unit: "g" });
       drawLineChart(byId("request-chart"), [
-        { name: "RPS", data: history.rps, color: cssColor("--accent") }
-      ], (value) => value.toFixed(1));
+        { name: "RPS", data: history.rps, color: accent }
+      ], { minValue: 0, unit: "req/s" });
       drawLineChart(byId("latency-chart"), [
-        { name: "P50", data: history.p50, color: cssColor("--accent") },
-        { name: "P95", data: history.p95, color: cssColor("--warn") },
-        { name: "P99", data: history.p99, color: cssColor("--bad") }
-      ], formatDurationNS);
+        { name: "P50", data: history.p50, color: accent },
+        { name: "P95", data: history.p95, color: warn },
+        { name: "P99", data: history.p99, color: bad }
+      ], { minValue: 0, formatValue: durationAxisNS, leftPadding: 70 });
     }
 
     function setupChartHover(canvas) {
@@ -478,32 +1111,27 @@
       canvas.addEventListener("mouseleave", () => { tooltip.hidden = true; });
     }
 
-    function metricsPerPage() {
-      if (window.innerWidth > 1100) return 6;
-      if (window.innerWidth > 640) return 4;
-      return 3;
-    }
-    function renderPager(card) {
-      const rows = Array.from(card.querySelectorAll(".row"));
-      const perPage = metricsPerPage();
-      const pages = Math.ceil(rows.length / perPage);
-      card._metricPage = Math.min(card._metricPage || 0, Math.max(0, pages - 1));
-      rows.forEach((row, index) => { row.hidden = pages > 1 && Math.floor(index / perPage) !== card._metricPage; });
-      const pager = card.querySelector(".metric-pager");
-      pager.hidden = pages <= 1;
-      card.querySelector("[data-page]").textContent = (card._metricPage + 1) + " / " + pages;
-      card.querySelector("[data-prev]").disabled = card._metricPage === 0;
-      card.querySelector("[data-next]").disabled = card._metricPage >= pages - 1;
-    }
     function setupPagers() {
+      const metricsPerPage = 5;
       document.querySelectorAll(".metric-card").forEach((card) => {
-        if (!card.dataset.pagerReady) {
-          card.dataset.pagerReady = "true";
-          card._metricPage = 0;
-          card.querySelector("[data-prev]").addEventListener("click", () => { card._metricPage -= 1; renderPager(card); });
-          card.querySelector("[data-next]").addEventListener("click", () => { card._metricPage += 1; renderPager(card); });
+        if (card.dataset.pagerReady) return;
+        card.dataset.pagerReady = "true";
+        const rows = Array.from(card.querySelectorAll("dl > .row"));
+        const pager = card.querySelector(".metric-pager");
+        if (!pager || rows.length <= metricsPerPage) return;
+        const totalPages = Math.ceil(rows.length / metricsPerPage);
+        const previous = pager.querySelector(".metric-pager__prev");
+        const next = pager.querySelector(".metric-pager__next");
+        const status = pager.querySelector(".metric-pager__status");
+        let page = 0;
+        function renderPage() {
+          rows.forEach((row, index) => { row.hidden = index < page * metricsPerPage || index >= (page + 1) * metricsPerPage; });
+          status.textContent = (page + 1) + " / " + totalPages;
         }
-        renderPager(card);
+        previous.addEventListener("click", () => { page = (page + totalPages - 1) % totalPages; renderPage(); });
+        next.addEventListener("click", () => { page = (page + 1) % totalPages; renderPage(); });
+        pager.hidden = false;
+        renderPage();
       });
     }
 
@@ -526,15 +1154,44 @@
       }
     }
 
+    function updateScrollDock() {
+      const dock = byId("page-scroll-dock");
+      const value = byId("page-scroll-dock-value");
+      if (!dock || !value) return;
+      const documentElement = document.documentElement;
+      const maxScroll = Math.max(0, documentElement.scrollHeight - window.innerHeight);
+      const top = window.scrollY || documentElement.scrollTop || document.body.scrollTop || 0;
+      const rounded = Math.round(maxScroll ? Math.min(100, Math.max(0, top / maxScroll * 100)) : 0);
+      dock.style.setProperty("--scroll-progress", rounded + "%");
+      dock.setAttribute("aria-valuenow", String(rounded));
+      dock.setAttribute("aria-label", "Scroll progress " + rounded + "%");
+      dock.classList.toggle("page-scroll-dock--visible", window.innerWidth >= 768 && maxScroll > 320 && top > 72);
+      value.textContent = rounded + "%";
+    }
+    function scrollUpQuarter() {
+      const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+      const top = window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0;
+      window.scrollTo({ top: Math.max(0, top - maxScroll * .25), behavior: "smooth" });
+    }
+
     document.querySelectorAll("canvas").forEach(setupChartHover);
     setupPagers();
     drawCharts();
+    const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
+    const schemeMarker = byId("scheme-marker");
+    function applyColorScheme() {
+      if (schemeMarker) schemeMarker.dataset.active = colorScheme.matches ? "dark" : "light";
+      drawCharts();
+    }
+    if (colorScheme.addEventListener) colorScheme.addEventListener("change", applyColorScheme);
+    applyColorScheme();
+    window.addEventListener("scroll", updateScrollDock, { passive: true });
     window.addEventListener("resize", () => {
       window.cancelAnimationFrame(resizeFrame);
-      resizeFrame = window.requestAnimationFrame(() => { setupPagers(); drawCharts(); });
+      resizeFrame = window.requestAnimationFrame(() => { drawCharts(); updateScrollDock(); });
     }, { passive: true });
-    const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
-    if (colorScheme.addEventListener) colorScheme.addEventListener("change", drawCharts);
+    byId("page-scroll-dock").addEventListener("click", scrollUpQuarter);
+    updateScrollDock();
     poll();
   })();
   </script>

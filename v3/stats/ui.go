@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"html/template"
+	"os"
 	"runtime"
 	"time"
 )
@@ -28,6 +29,7 @@ type dashboardPage struct {
 	FaviconURL      any
 	RefreshMS       int64
 	DescriptorLabel string
+	PID             int
 }
 
 func renderDashboard(config Config) (string, error) {
@@ -46,6 +48,7 @@ func renderDashboard(config Config) (string, error) {
 		FaviconURL:      faviconURL,
 		RefreshMS:       max(config.Refresh.Milliseconds(), int64(time.Second/time.Millisecond)),
 		DescriptorLabel: descriptorLabel,
+		PID:             os.Getpid(),
 	}
 	var output bytes.Buffer
 	if err := dashboardTemplate.Execute(&output, page); err != nil {
