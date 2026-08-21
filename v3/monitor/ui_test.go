@@ -30,6 +30,14 @@ func TestRenderDashboard(t *testing.T) {
 	mustContain(t, pageHTML, "<dt>"+descriptorLabel+"</dt>")
 }
 
+func TestDashboardCapsBrowserRefreshWithoutChangingSnapshotTTL(t *testing.T) {
+	largeRefresh := time.Duration(1<<63 - 1)
+	m, err := newMiddleware(Config{Refresh: largeRefresh})
+	mustNoError(t, err)
+	mustEqual(t, largeRefresh, m.refresh)
+	mustRegexp(t, `const REFRESH_MS =\s+2147483647\s*;`, m.index)
+}
+
 func TestDashboardContract(t *testing.T) {
 	pageHTML, err := renderDashboard(ConfigDefault)
 	mustNoError(t, err)
