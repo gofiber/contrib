@@ -116,6 +116,14 @@ func TestDashboardInteractions(t *testing.T) {
 	mustContain(t, pageHTML, `id="gc-pause-chart"`)
 }
 
+func TestDashboardPollingPreservesQueryString(t *testing.T) {
+	pageHTML, err := renderDashboard(ConfigDefault)
+	mustNoError(t, err)
+	mustContain(t, pageHTML, `fetch(window.location.pathname + window.location.search, {`)
+	mustNotContain(t, pageHTML, `fetch(window.location.pathname, {`)
+	mustNotContain(t, pageHTML, `window.location.hash`)
+}
+
 func TestRenderDashboardSanitizesUnvalidatedFavicon(t *testing.T) {
 	pageHTML, err := renderDashboard(Config{FaviconURL: "javascript:alert(1)", Refresh: time.Second})
 	mustNoError(t, err)

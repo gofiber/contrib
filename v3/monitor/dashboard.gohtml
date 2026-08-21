@@ -1542,7 +1542,7 @@
     async function poll() {
       const started = performance.now();
       try {
-        const response = await fetch(window.location.pathname, {
+        const response = await fetch(window.location.pathname + window.location.search, {
           headers: { Accept: "application/json" },
           cache: "no-store"
         });
