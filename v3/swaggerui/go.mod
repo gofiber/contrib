@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/v3/swaggerui
 go 1.25.0
 
 require (
-	github.com/go-openapi/runtime/server-middleware v0.33.0
+	github.com/go-openapi/runtime/server-middleware v0.33.1
 	github.com/gofiber/fiber/v3 v3.5.0
 	github.com/stretchr/testify v1.12.1
 	gopkg.in/yaml.v3 v3.0.1
