@@ -5,8 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"sync"
-	"sync/atomic"
+	"strings"
 	"time"
 
 	"github.com/gofiber/contrib/v3/otel/internal"
@@ -16,12 +15,52 @@ import (
 	otelcontrib "go.opentelemetry.io/contrib"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
+
+func bodyStreamSize(stream io.Reader) (int64, bool) {
+	if stream == nil {
+		return 0, false
+	}
+
+	if limitedReader, ok := stream.(*io.LimitedReader); ok && limitedReader.N >= 0 {
+		return limitedReader.N, true
+	}
+
+	type lenReader interface {
+		Len() int
+	}
+
+	if sizedReader, ok := stream.(lenReader); ok {
+		if remaining := sizedReader.Len(); remaining >= 0 {
+			return int64(remaining), true
+		}
+	}
+
+	return 0, false
+}
+
+// responseBodySuppressed reports whether fasthttp will send headers only, leaving
+// the body unwritten. Such a response still carries Content-Length describing the
+// body a GET would have returned, so that header must not be read as bytes sent.
+//
+// This mirrors fasthttp's own mustSkipBody rule. Reading Response.SkipBody alone
+// is not enough: the server sets it for HEAD only after the handler chain has
+// returned, so it still reads false here. A handler may however have set it
+// itself, which no method or status check would reveal, so both are consulted.
+func responseBodySuppressed(c fiber.Ctx) bool {
+	if c.Method() == fiber.MethodHead || c.Response().SkipBody {
+		return true
+	}
+
+	// 1xx, 204 and 304 responses must not include a message body.
+	status := c.Response().StatusCode()
+
+	return (status >= 100 && status < 200) || status == fiber.StatusNoContent || status == fiber.StatusNotModified
+}
 
 const (
 	tracerKey           = "gofiber-contrib-tracer-fiber"
@@ -50,51 +89,6 @@ const (
 	// New duration metrics use UnitSeconds.
 	UnitMilliseconds = "ms"
 )
-
-type bodyStreamSizeReader struct {
-	reader io.Reader
-	onEOF  func(read int64)
-	read   int64
-	eof    sync.Once
-}
-
-func (b *bodyStreamSizeReader) Read(p []byte) (n int, err error) {
-	n, err = b.reader.Read(p)
-	if n > 0 {
-		atomic.AddInt64(&b.read, int64(n))
-	}
-	if err == io.EOF && b.onEOF != nil {
-		read := atomic.LoadInt64(&b.read)
-		b.eof.Do(func() {
-			b.onEOF(read)
-		})
-	}
-
-	return n, err
-}
-
-func (b *bodyStreamSizeReader) Close() error {
-	closer, ok := b.reader.(io.Closer)
-	if !ok {
-		return nil
-	}
-
-	return closer.Close()
-}
-
-func detachedMetricContext(ctx context.Context) context.Context {
-	detached := context.Background()
-
-	if spanContext := oteltrace.SpanContextFromContext(ctx); spanContext.IsValid() {
-		detached = oteltrace.ContextWithSpanContext(detached, spanContext)
-	}
-
-	if bg := baggage.FromContext(ctx); bg.Len() > 0 {
-		detached = baggage.ContextWithBaggage(detached, bg)
-	}
-
-	return detached
-}
 
 // Middleware returns fiber handler which will trace incoming requests.
 func Middleware(opts ...Option) fiber.Handler {
@@ -173,22 +167,39 @@ func Middleware(opts ...Option) fiber.Handler {
 		copy(responseMetricAttrs, requestMetricsAttrs)
 
 		request := c.Request()
-		isRequestBodyStream := request.IsBodyStream()
+		// Sizes default to 0 and are only reported once known: an unmeasurable
+		// body is left out of the histogram rather than skewing it towards 0.
 		requestSize := int64(0)
-		var requestBodyStreamSizeReader *bodyStreamSizeReader
-		if isRequestBodyStream && !cfg.withoutMetrics {
-			requestBodyStream := request.BodyStream()
-			if requestBodyStream != nil {
-				requestBodyStreamSizeReader = &bodyStreamSizeReader{reader: requestBodyStream}
-				request.SetBodyStream(requestBodyStreamSizeReader, -1)
+		requestSizeKnown := false
+		switch {
+		case !c.HasBody():
+			// Nothing declared by Content-Length or Transfer-Encoding and nothing
+			// buffered, so the request carried no body.
+			requestSizeKnown = true
+		case request.IsBodyStream():
+			if streamSize, ok := bodyStreamSize(request.BodyStream()); ok {
+				requestSize = streamSize
+				requestSizeKnown = true
 			}
-		} else {
+			// Content-Length is deliberately not read here. Under StreamRequestBody
+			// fasthttp pre-reads only min(Content-Length, BodyLimit, 8KiB) before
+			// running the handler, and readBodyWithStreaming swallows ErrBodyTooLarge
+			// so an over-limit request still reaches the chain with the client's
+			// declared length intact. The remainder arrives only if the handler
+			// drains the stream, which it need not do. Recording the header would
+			// let a client inflate the histogram by declaring a large body and
+			// sending 8KiB of it.
+			//
+			// A chunked request body has no declared length either, and measuring it
+			// would mean draining the stream before the handler can read it.
+		default:
 			// use Content-Length to avoid re-marshaling the multipart body, including files, into memory.
 			if contentLength := request.Header.ContentLength(); contentLength > 0 {
 				requestSize = int64(contentLength)
-			} else if !isRequestBodyStream {
+			} else {
 				requestSize = int64(len(request.Body()))
 			}
+			requestSizeKnown = true
 		}
 
 		reqHeader := make(http.Header)
@@ -234,41 +245,48 @@ func Middleware(opts ...Option) fiber.Handler {
 		}
 
 		response := c.Response()
-		isSSE := c.GetRespHeader("Content-Type") == "text/event-stream"
+		contentType, _, _ := strings.Cut(c.GetRespHeader("Content-Type"), ";")
+		isSSE := utils.EqualFold(strings.TrimSpace(contentType), "text/event-stream")
 		responseSize := int64(0)
+		responseSizeKnown := false
 		isResponseBodyStream := response.IsBodyStream()
-		if !isResponseBodyStream && !isSSE {
-			responseSize = int64(len(response.Body()))
-		}
-
-		if isResponseBodyStream && !isSSE && !cfg.withoutMetrics {
-			responseBodyStream := response.BodyStream()
-			if responseBodyStream != nil {
-				responseMetricAttrsWithResponse := append(responseMetricAttrs, responseAttrs...)
-				responseMetricsCtx := detachedMetricContext(savedCtx)
-				responseBodyStreamReader := &bodyStreamSizeReader{
-					reader: responseBodyStream,
-					onEOF: func(read int64) {
-						httpServerResponseSize.Record(responseMetricsCtx, read, metric.WithAttributes(responseMetricAttrsWithResponse...))
-					},
-				}
-				response.SetBodyStream(responseBodyStreamReader, -1)
-			} else {
-				isResponseBodyStream = false
+		if responseBodySuppressed(c) {
+			// No body reaches the client, whatever the headers advertise.
+			responseSize = 0
+			responseSizeKnown = true
+		} else if isSSE {
+			// skip size calculation for SSE streams
+		} else if isResponseBodyStream {
+			if contentLength := response.Header.ContentLength(); contentLength >= 0 {
+				responseSize = int64(contentLength)
+				responseSizeKnown = true
+			} else if streamSize, ok := bodyStreamSize(response.BodyStream()); ok {
+				responseSize = streamSize
+				responseSizeKnown = true
 			}
+			// A chunked response declares no length, and its real size is only known
+			// once fasthttp has streamed the body, which happens after this
+			// middleware returns. Counting it would mean substituting the stream, and
+			// SetBodyStream closes the reader it replaces: for pooled static file
+			// readers and SendStreamWriter pipes that truncates the response and can
+			// panic when the reader is reused (#1734). The size is left unknown so
+			// the metric and span attribute are omitted instead of reporting a
+			// misleading 0.
+		} else {
+			responseSize = int64(len(response.Body()))
+			responseSizeKnown = true
 		}
 
 		defer func() {
 			responseMetricAttrs = append(responseMetricAttrs, responseAttrs...)
-			if requestBodyStreamSizeReader != nil {
-				requestSize = atomic.LoadInt64(&requestBodyStreamSizeReader.read)
-			}
 
 			if !cfg.withoutMetrics {
 				httpServerActiveRequests.Add(savedCtx, -1, metric.WithAttributes(requestMetricsAttrs...))
 				httpServerDuration.Record(savedCtx, time.Since(start).Seconds(), metric.WithAttributes(responseMetricAttrs...))
-				httpServerRequestSize.Record(savedCtx, requestSize, metric.WithAttributes(responseMetricAttrs...))
-				if !isResponseBodyStream {
+				if requestSizeKnown {
+					httpServerRequestSize.Record(savedCtx, requestSize, metric.WithAttributes(responseMetricAttrs...))
+				}
+				if responseSizeKnown {
 					httpServerResponseSize.Record(savedCtx, responseSize, metric.WithAttributes(responseMetricAttrs...))
 				}
 			}
@@ -277,7 +295,7 @@ func Middleware(opts ...Option) fiber.Handler {
 			cancel()
 		}()
 
-		if !isResponseBodyStream {
+		if responseSizeKnown {
 			span.SetAttributes(append(responseAttrs, semconv.HTTPResponseBodySizeKey.Int64(responseSize))...)
 		} else {
 			span.SetAttributes(responseAttrs...)
