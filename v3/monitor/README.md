@@ -97,7 +97,7 @@ When the application uses Fiber's recover middleware, place it after monitor so
 recovered panics are observed as `5xx` responses:
 
 ```go
-app.Use(monitor.New(config), recover.New())
+app.Use(monitor.New(), recover.New())
 ```
 
 For instrumented requests that return an error, monitor invokes the
@@ -168,6 +168,17 @@ The snapshot contains these groups:
 Unsupported, failed, and not-yet-available window metrics are encoded as
 `null`, not as a synthetic zero. Collection failures expose stable identifiers
 such as `system.disk`; raw operating-system errors and paths are not returned.
+
+### Migration notes
+
+Existing `monitor.New(config...)` usage remains source compatible.
+
+The JSON snapshot has been redesigned from the legacy `pid` / `os` payload
+to the new `process` / `runtime` / `system` / `http` structure.
+
+Route-mounted monitor instances still serve the dashboard and JSON snapshot,
+but application HTTP metrics require the app-wide `Next` setup shown above.
+Monitor endpoint requests are no longer counted as application traffic.
 
 ## Metrics
 
