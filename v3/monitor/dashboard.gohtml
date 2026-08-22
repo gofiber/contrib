@@ -1,0 +1,1621 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="{{ .Description }}">
+  <link rel="icon" href="{{ .FaviconURL }}">
+  <title>{{ .Title }}</title>
+  <style>
+    :root,
+    :root[data-theme="light"] {
+      color-scheme: light;
+      --bg: #f3f6fa;
+      --panel: #fbfcfe;
+      --panel-soft: #eef3f8;
+      --text: #0f172a;
+      --muted: #52657f;
+      --border: #cfd8e6;
+      --accent: #0f8aa3;
+      --accent-soft: rgba(15, 138, 163, 0.1);
+      --good: #24935f;
+      --warn: #bf7b16;
+      --bad: #c94a4a;
+      --shadow: 0 10px 26px rgba(40, 54, 74, 0.07);
+      --divider-line: #c46a1b;
+      --divider-glow: #f28c28;
+      --dock-fill: rgba(249, 115, 22, 0.9);
+      --dock-track: rgba(148, 79, 24, 0.12);
+      --dock-face-start: rgba(255, 247, 237, 0.78);
+      --dock-face-end: rgba(255, 237, 213, 0.64);
+      --dock-ring: rgba(154, 52, 18, 0.16);
+      --dock-text: rgba(67, 32, 12, 0.84);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme]) {
+        color-scheme: dark;
+        --bg: #0d1117;
+        --panel: #151b23;
+        --panel-soft: #10161d;
+        --text: #f3f4f6;
+        --muted: #9ca3af;
+        --border: #30363d;
+        --accent: #67e8f9;
+        --accent-soft: rgba(103, 232, 249, 0.12);
+        --good: #4ade80;
+        --warn: #facc15;
+        --bad: #fb7185;
+        --shadow: none;
+        --divider-line: #3b82f6;
+        --divider-glow: #38bdf8;
+        --dock-fill: rgba(122, 228, 255, 0.88);
+        --dock-track: rgba(255, 255, 255, 0.08);
+        --dock-face-start: rgba(13, 22, 30, 0.78);
+        --dock-face-end: rgba(17, 28, 36, 0.64);
+        --dock-ring: rgba(132, 226, 255, 0.16);
+        --dock-text: rgba(235, 248, 255, 0.88);
+      }
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #0d1117;
+      --panel: #151b23;
+      --panel-soft: #10161d;
+      --text: #f3f4f6;
+      --muted: #9ca3af;
+      --border: #30363d;
+      --accent: #67e8f9;
+      --accent-soft: rgba(103, 232, 249, 0.12);
+      --good: #4ade80;
+      --warn: #facc15;
+      --bad: #fb7185;
+      --shadow: none;
+      --divider-line: #3b82f6;
+      --divider-glow: #38bdf8;
+      --dock-fill: rgba(122, 228, 255, 0.88);
+      --dock-track: rgba(255, 255, 255, 0.08);
+      --dock-face-start: rgba(13, 22, 30, 0.78);
+      --dock-face-end: rgba(17, 28, 36, 0.64);
+      --dock-ring: rgba(132, 226, 255, 0.16);
+      --dock-text: rgba(235, 248, 255, 0.88);
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      scrollbar-width: none;
+    }
+    html::-webkit-scrollbar, body::-webkit-scrollbar {
+      display: none;
+      width: 0;
+      height: 0;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      position: relative;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.45;
+    }
+    main {
+      position: relative;
+      z-index: 1;
+      width: min(1360px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 20px 0 22px;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding-bottom: 0;
+    }
+    .header-main {
+      min-width: 0;
+    }
+    h1 {
+      margin: 0;
+      overflow-wrap: anywhere;
+      font-size: clamp(1.7rem, 3.2vw, 2.7rem);
+      line-height: 1.05;
+      letter-spacing: 0;
+      font-weight: 780;
+    }
+    .meta {
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+    .header-side {
+      display: grid;
+      justify-items: end;
+      gap: 12px;
+    }
+    button {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--text);
+      cursor: pointer;
+      font: inherit;
+      transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+    }
+    button:hover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
+    }
+    .status-box {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) max-content;
+      grid-template-areas:
+        "controls state"
+        "updated response";
+      align-items: center;
+      justify-content: stretch;
+      gap: 7px 18px;
+      color: var(--muted);
+      text-align: right;
+      font-size: 0.92rem;
+      font-variant-numeric: tabular-nums;
+      min-width: 250px;
+      width: 250px;
+    }
+    .status-controls {
+      display: inline-flex;
+      align-items: center;
+      gap: 13px;
+      grid-area: controls;
+      justify-self: start;
+      padding-left: 4px;
+    }
+    .status-line {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 7px;
+      grid-area: state;
+      color: var(--text);
+      font-weight: 800;
+      justify-self: end;
+    }
+    .status-state {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .control-dot {
+      width: 10px;
+      height: 10px;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      background: var(--muted);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--muted) 16%, transparent);
+      transition: none;
+    }
+    .control-dot[data-active="light"] {
+      background: #facc15;
+      box-shadow: 0 0 0 4px color-mix(in srgb, #facc15 22%, transparent);
+    }
+    .control-dot[data-active="dark"] {
+      background: #67e8f9;
+      box-shadow: 0 0 0 4px color-mix(in srgb, #67e8f9 22%, transparent);
+    }
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    #live-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--good);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--good) 18%, transparent);
+    }
+    #live-dot[data-status="stale"] {
+      background: var(--warn);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 18%, transparent);
+    }
+    #live-dot[data-status="partial"] {
+      background: var(--warn);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 18%, transparent);
+    }
+    #live-dot[data-status="error"] {
+      background: var(--bad);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--bad) 18%, transparent);
+    }
+    #updated-at {
+      grid-area: updated;
+      justify-self: start;
+      padding-left: 4px;
+      white-space: nowrap;
+    }
+    #response-time {
+      grid-area: response;
+      justify-self: end;
+      white-space: nowrap;
+    }
+    .header-divider {
+      position: relative;
+      height: 38px;
+      overflow: hidden;
+      margin: 4px 0;
+    }
+    .header-divider:before {
+      content: "";
+      position: absolute;
+      left: 6%;
+      right: 6%;
+      top: 50%;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--divider-line), transparent 78%), transparent);
+    }
+    .header-divider:after {
+      content: "";
+      top: 50%;
+      position: absolute;
+      left: 6%;
+      width: 18%;
+      height: 2px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--divider-glow), transparent 24%), transparent);
+      box-shadow: 0 0 22px color-mix(in srgb, var(--divider-glow), transparent 64%);
+      animation: moveGlow 3.2s ease-in-out infinite;
+    }
+    @keyframes moveGlow {
+      0% {
+        transform: translateX(-30%);
+        opacity: 0;
+      }
+      18%, 82% {
+        opacity: 1;
+      }
+      100% {
+        transform: translateX(470%);
+        opacity: 0;
+      }
+    }
+    .cards, .chart-grid {
+      display: grid;
+      gap: 14px;
+    }
+    .cards {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin-top: 20px;
+    }
+    .description-card {
+      margin-top: 4px;
+      padding: 12px 14px 12px 16px;
+      border-left: 3px solid var(--accent);
+      border-radius: 0 8px 8px 0;
+      background: color-mix(in srgb, var(--panel), transparent 36%);
+      color: var(--muted);
+      font-size: 0.93rem;
+      box-shadow: inset 0 1px 0 color-mix(in srgb, var(--border), transparent 65%);
+    }
+    .description-card p {
+      margin: 0;
+      max-width: 78ch;
+    }
+    .chart-section {
+      margin-top: 22px;
+    }
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 12px;
+    }
+    .sample-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      padding: 3px;
+      border: 2px solid var(--border);
+      border-radius: 999px;
+      background: var(--panel-soft);
+    }
+    .sample-toggle button {
+      min-width: 36px;
+      height: 24px;
+      padding: 0 9px;
+      border: 0;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-weight: 800;
+      line-height: 1;
+      box-shadow: none;
+    }
+    .sample-toggle button:hover {
+      transform: none;
+      color: var(--text);
+    }
+    .sample-toggle button[aria-pressed="true"] {
+      background: var(--accent);
+      color: var(--bg);
+    }
+    .chart-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    section, .chart-card {
+      min-width: 0;
+      background: var(--panel);
+      border: 3px solid var(--border);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+    section {
+      padding: 15px;
+    }
+    .chart-card {
+      padding: 14px 14px 16px;
+    }
+    h2 {
+      margin: 0 0 14px;
+      color: var(--accent);
+      font-size: 0.82rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .section-title h2 {
+      margin: 0;
+    }
+    .metric-card__head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .metric-card__head h2 {
+      margin: 0;
+    }
+    .metric-pager {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 72px;
+      justify-content: flex-end;
+      color: var(--muted);
+      font-size: 0.74rem;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .metric-pager[hidden] {
+      display: none;
+    }
+    .metric-pager button {
+      display: grid;
+      place-items: center;
+      width: 18px;
+      height: 18px;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      background: color-mix(in srgb, var(--panel-soft), transparent 16%);
+      color: var(--muted);
+      font-size: 0.8rem;
+      font-weight: 900;
+      line-height: 1;
+    }
+    .metric-pager button:hover {
+      color: var(--text);
+      background: var(--accent-soft);
+      transform: none;
+    }
+    .metric-action {
+      min-width: 80px;
+      height: 26px;
+      padding: 0 10px;
+      border-radius: 999px;
+      background: var(--panel-soft);
+      color: var(--text);
+      font-size: 0.78rem;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .metric-action:hover {
+      background: var(--accent-soft);
+      transform: none;
+    }
+    dl {
+      display: grid;
+      gap: 11px;
+      margin: 0;
+    }
+    .row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 14px;
+      min-height: 27px;
+    }
+    .row[hidden] {
+      display: none;
+    }
+    dt {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    dd {
+      margin: 0;
+      overflow-wrap: anywhere;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      font-weight: 800;
+    }
+    .chart-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 9px;
+      font-size: 0.92rem;
+      font-weight: 800;
+    }
+    .chart-legend {
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-align: right;
+    }
+    .legend-list {
+      display: inline-flex;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 6px 12px;
+    }
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      white-space: nowrap;
+    }
+    .legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+    .legend-dot[data-series="pid"], .legend-dot[data-series="rss"], .legend-dot[data-series="main"], .legend-dot[data-series="recent"], .legend-dot[data-series="window"] {
+      background: var(--accent);
+    }
+    .legend-dot[data-series="os"], .legend-dot[data-series="max"], .legend-dot[data-series="nextgc"], .legend-dot[data-series="last"] {
+      background: var(--warn);
+    }
+    .legend-dot[data-series="heap"] {
+      background: var(--good);
+    }
+    .legend-dot[data-series="bad"] {
+      background: var(--bad);
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 190px;
+      border-radius: 6px;
+      background: var(--panel-soft);
+    }
+
+    .chart-card { position: relative; }
+    .chart-tooltip {
+      position: absolute;
+      z-index: 3;
+      max-width: min(250px, calc(100% - 28px));
+      padding: 9px 11px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--panel), transparent 4%);
+      box-shadow: 0 14px 34px rgba(45, 59, 78, 0.16);
+      color: var(--text);
+      font-size: 0.78rem;
+      white-space: nowrap;
+      pointer-events: none;
+      backdrop-filter: blur(10px);
+    }
+    .chart-tooltip strong { display: block; margin-bottom: 4px; color: var(--accent); }
+    .chart-tooltip span { display: block; color: var(--muted); }
+    footer {
+      margin-top: 20px;
+      color: var(--muted);
+      font-size: 0.82rem;
+      text-align: center;
+    }
+    .modal {
+      position: fixed;
+      inset: 0;
+      z-index: 120;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      background: color-mix(in srgb, var(--bg), transparent 18%);
+      backdrop-filter: blur(8px);
+    }
+    .modal[hidden] {
+      display: none;
+    }
+    .modal__panel {
+      width: min(760px, 100%);
+      max-height: min(80vh, 680px);
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: 0 18px 42px rgba(0, 0, 0, 0.22);
+    }
+    .modal__head {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 15px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    .modal__head h2 {
+      margin: 0;
+    }
+    .modal__close {
+      display: grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      background: var(--panel-soft);
+      color: var(--muted);
+      font-size: 0.86rem;
+      font-weight: 900;
+      line-height: 1;
+    }
+    .modal__close:hover {
+      color: var(--text);
+      background: var(--accent-soft);
+      transform: none;
+    }
+    .disk-list {
+      display: grid;
+      gap: 10px;
+      padding: 14px;
+    }
+    .detail-list {
+      display: grid;
+      gap: 9px;
+      padding: 14px;
+      margin: 0;
+    }
+    .detail-list .row {
+      min-height: 0;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--panel-soft), transparent 28%);
+    }
+    .detail-list dt {
+      font-size: 0.86rem;
+    }
+    .detail-list dd {
+      font-size: 0.92rem;
+    }
+    .disk-item {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--panel-soft), transparent 28%);
+    }
+    .disk-item__head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      min-width: 0;
+      font-weight: 800;
+    }
+    .disk-item__path {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .disk-item__usage {
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .disk-item__meta {
+      color: var(--muted);
+      font-size: 0.78rem;
+      overflow-wrap: anywhere;
+    }
+    .disk-meter {
+      height: 7px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: var(--panel);
+    }
+    .disk-meter__bar {
+      width: var(--disk-used, 0%);
+      height: 100%;
+      border-radius: inherit;
+      background: var(--accent);
+    }
+    .disk-item dl {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .disk-item .row {
+      display: grid;
+      gap: 2px;
+      min-height: 0;
+    }
+    .disk-item dt {
+      font-size: 0.76rem;
+    }
+    .disk-item dd {
+      text-align: left;
+      font-size: 0.9rem;
+    }
+    .page-scroll-dock {
+      --scroll-progress: 0%;
+      position: fixed;
+      right: 22px;
+      bottom: 22px;
+      z-index: 85;
+      display: grid;
+      place-items: center;
+      width: 46px;
+      height: 46px;
+      border: 0;
+      border-radius: 999px;
+      padding: 0;
+      background:
+        conic-gradient(from 220deg, var(--dock-fill) var(--scroll-progress), var(--dock-track) 0),
+        radial-gradient(circle at 32% 28%, rgba(255, 255, 255, 0.14), transparent 48%);
+      color: var(--dock-text);
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(4px);
+      box-shadow:
+        0 12px 32px rgba(8, 14, 20, 0.2),
+        inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+      transition: opacity 180ms ease, box-shadow 180ms ease, filter 180ms ease, transform 180ms ease;
+    }
+    .page-scroll-dock--visible {
+      opacity: 0.78;
+      pointer-events: auto;
+      transform: translateY(0);
+    }
+    .page-scroll-dock:before {
+      content: '';
+      position: absolute;
+      inset: 4px;
+      border-radius: inherit;
+      background: linear-gradient(180deg, var(--dock-face-start), var(--dock-face-end));
+    }
+    .page-scroll-dock:after {
+      content: '';
+      position: absolute;
+      inset: 11px;
+      border-radius: inherit;
+      border: 1px solid var(--dock-ring);
+      opacity: 0.7;
+    }
+    .page-scroll-dock:hover {
+      opacity: 0.93;
+      box-shadow:
+        0 14px 34px rgba(8, 14, 20, 0.24),
+        inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+      filter: saturate(1.06);
+    }
+    .page-scroll-dock__core {
+      position: relative;
+      z-index: 1;
+      font-size: 0.64rem;
+      font-weight: 650;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0;
+    }
+    @media (max-width: 980px) {
+      .cards {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .chart-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+    @media (max-width: 760px) {
+      main {
+        width: min(100% - 24px, 1360px);
+        padding-top: 22px;
+      }
+      .header {
+        align-items: stretch;
+        flex-direction: column;
+      }
+      .header-main {
+        text-align: center;
+      }
+      .header-side, .status-box {
+        text-align: left;
+        min-width: 0;
+        width: 100%;
+      }
+      .status-box {
+        grid-template-columns: minmax(0, 1fr) max-content;
+        justify-content: stretch;
+      }
+      .status-line {
+        justify-self: end;
+      }
+    }
+    @media (max-width: 560px) {
+      .cards {
+        grid-template-columns: 1fr;
+      }
+      .disk-item dl {
+        grid-template-columns: 1fr;
+      }
+      .section-title {
+        gap: 10px;
+      }
+      .sample-toggle button {
+        min-width: 32px;
+        padding: 0 7px;
+      }
+      .page-scroll-dock {
+        display: none;
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .header-divider:after {
+        animation: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header class="header">
+      <div class="header-main"><h1>{{ .Title }}</h1></div>
+      <div class="header-side">
+        <div class="status-box" aria-live="polite">
+          <span class="status-controls" aria-label="Display preferences">
+            <button type="button" id="theme-toggle" class="control-dot" data-active="light" title="Theme"><span class="visually-hidden">Toggle theme</span></button>
+          </span>
+          <div class="status-line"><span class="status-state"><span id="live-dot" data-status="error"></span><span id="live-text">ERROR</span></span></div>
+          <span id="updated-at">-</span><span id="response-time">-</span>
+        </div>
+      </div>
+    </header>
+    <div class="header-divider" aria-hidden="true"></div>
+    <aside class="description-card" aria-label="Page description"><p>{{ .Description }}</p></aside>
+
+    <div class="cards">
+      <section class="metric-card">
+        <div class="metric-card__head"><h2>Process</h2><div class="metric-pager" hidden><button type="button" class="metric-pager__prev" aria-label="Previous metric page">&lt;</button><span class="metric-pager__status">1 / 1</span><button type="button" class="metric-pager__next" aria-label="Next metric page">&gt;</button></div></div>
+        <dl>
+          <div class="row"><dt>CPU</dt><dd id="pid-cpu">-</dd></div>
+          <div class="row"><dt>RSS</dt><dd id="pid-rss">-</dd></div>
+          <div class="row"><dt>Threads</dt><dd id="pid-threads">-</dd></div>
+          <div class="row"><dt>PID</dt><dd>{{ .PID }}</dd></div>
+          <div class="row"><dt>{{ .DescriptorLabel }}</dt><dd id="pid-fds">-</dd></div>
+        </dl>
+      </section>
+      <section class="metric-card">
+        <div class="metric-card__head"><h2>Runtime</h2><div class="metric-pager" hidden><button type="button" class="metric-pager__prev" aria-label="Previous metric page">&lt;</button><span class="metric-pager__status">1 / 1</span><button type="button" class="metric-pager__next" aria-label="Next metric page">&gt;</button></div></div>
+        <dl>
+          <div class="row"><dt>Goroutines</dt><dd id="rt-goroutines">-</dd></div>
+          <div class="row"><dt>Heap</dt><dd><button type="button" id="heap-details-button" class="metric-action" aria-haspopup="dialog" aria-controls="heap-modal">-</button></dd></div>
+          <div class="row"><dt>Heap Objects</dt><dd id="rt-heap-objects">-</dd></div>
+          <div class="row"><dt>GC</dt><dd><button type="button" id="gc-details-button" class="metric-action" aria-haspopup="dialog" aria-controls="gc-modal">-</button></dd></div>
+          <div class="row"><dt>Uptime</dt><dd id="rt-uptime">-</dd></div>
+        </dl>
+      </section>
+      <section class="metric-card">
+        <div class="metric-card__head"><h2>System</h2><div class="metric-pager" hidden><button type="button" class="metric-pager__prev" aria-label="Previous metric page">&lt;</button><span class="metric-pager__status">1 / 1</span><button type="button" class="metric-pager__next" aria-label="Next metric page">&gt;</button></div></div>
+        <dl>
+          <div class="row"><dt>CPU</dt><dd id="os-cpu">-</dd></div>
+          <div class="row"><dt>Memory</dt><dd id="os-memory">-</dd></div>
+          <div class="row"><dt>Total RAM</dt><dd id="os-total">-</dd></div>
+          <div class="row"><dt>Disk</dt><dd><button type="button" id="disk-details-button" class="metric-action" aria-haspopup="dialog" aria-controls="disk-modal">-</button></dd></div>
+          <div class="row"><dt>1m load</dt><dd id="os-load">-</dd></div>
+          <div class="row"><dt>Available RAM</dt><dd id="os-available">-</dd></div>
+          <div class="row"><dt>5m load</dt><dd id="os-load-5">-</dd></div>
+          <div class="row"><dt>15m load</dt><dd id="os-load-15">-</dd></div>
+          <div class="row"><dt>RX rate</dt><dd id="os-network-rx-rate">-</dd></div>
+          <div class="row"><dt>TX rate</dt><dd id="os-network-tx-rate">-</dd></div>
+        </dl>
+      </section>
+      <section class="metric-card">
+        <div class="metric-card__head"><h2>HTTP</h2><div class="metric-pager" hidden><button type="button" class="metric-pager__prev" aria-label="Previous metric page">&lt;</button><span class="metric-pager__status">1 / 1</span><button type="button" class="metric-pager__next" aria-label="Next metric page">&gt;</button></div></div>
+        <dl>
+          <div class="row"><dt>RPS</dt><dd id="http-rps">-</dd></div>
+          <div class="row"><dt>P95 latency</dt><dd id="http-latency-p95">-</dd></div>
+          <div class="row"><dt>Error rate</dt><dd id="http-error-rate">-</dd></div>
+          <div class="row"><dt>In-flight</dt><dd id="http-in-flight">-</dd></div>
+          <div class="row"><dt>Requests</dt><dd id="http-requests">-</dd></div>
+          <div class="row"><dt>P50 latency</dt><dd id="http-latency-p50">-</dd></div>
+          <div class="row"><dt>P99 latency</dt><dd id="http-latency-p99">-</dd></div>
+          <div class="row"><dt>Status codes</dt><dd><button type="button" id="http-status-button" class="metric-action" aria-haspopup="dialog" aria-controls="http-status-modal">-</button></dd></div>
+        </dl>
+      </section>
+    </div>
+
+    <div class="chart-section">
+      <div class="section-title">
+        <h2>Trends</h2>
+        <div class="sample-toggle" role="group" aria-label="Chart sample window">
+          <button type="button" class="sample-option" data-samples="30" aria-pressed="false">30</button>
+          <button type="button" class="sample-option" data-samples="60" aria-pressed="true">60</button>
+          <button type="button" class="sample-option" data-samples="90" aria-pressed="false">90</button>
+        </div>
+      </div>
+      <div class="chart-grid">
+        <article class="chart-card"><div class="chart-head"><span>CPU</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="pid"></span>Process</span><span class="legend-item"><span class="legend-dot" data-series="os"></span>System</span></span></div><canvas id="cpu-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>Memory</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="rss"></span>RSS</span><span class="legend-item"><span class="legend-dot" data-series="heap"></span>Heap</span></span></div><canvas id="memory-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>Network</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="pid"></span>RX/s</span><span class="legend-item"><span class="legend-dot" data-series="os"></span>TX/s</span></span></div><canvas id="network-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>Goroutines</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="main"></span>Count</span></span></div><canvas id="goroutine-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>Requests / second</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="main"></span>RPS</span></span></div><canvas id="request-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>HTTP latency</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="recent"></span>P50</span><span class="legend-item"><span class="legend-dot" data-series="max"></span>P95</span><span class="legend-item"><span class="legend-dot" data-series="bad"></span>P99</span></span></div><canvas id="latency-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>HTTP Error Rate</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="max"></span>4xx</span><span class="legend-item"><span class="legend-dot" data-series="bad"></span>5xx</span></span></div><canvas id="http-error-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>GC Pause</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="window"></span>Window</span><span class="legend-item"><span class="legend-dot" data-series="last"></span>Last</span></span></div><canvas id="gc-pause-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+      </div>
+    </div>
+    <footer>{{ .Footer }}</footer>
+  </main>
+  <button id="page-scroll-dock" class="page-scroll-dock" type="button" title="Scroll up" aria-label="Scroll progress 0%" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="page-scroll-dock-value" class="page-scroll-dock__core">0%</span></button>
+  <div id="disk-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="disk-modal-title" hidden>
+    <div class="modal__panel">
+      <div class="modal__head">
+        <h2 id="disk-modal-title">Disk Details</h2>
+        <button type="button" id="disk-modal-close" class="modal__close" aria-label="Close">x</button>
+      </div>
+      <div id="disk-modal-list" class="disk-list"></div>
+    </div>
+  </div>
+  <div id="heap-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="heap-modal-title" hidden>
+    <div class="modal__panel">
+      <div class="modal__head">
+        <h2 id="heap-modal-title">Heap Details</h2>
+        <button type="button" id="heap-modal-close" class="modal__close" aria-label="Close">x</button>
+      </div>
+      <dl id="heap-modal-list" class="detail-list"></dl>
+    </div>
+  </div>
+  <div id="gc-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="gc-modal-title" hidden>
+    <div class="modal__panel">
+      <div class="modal__head">
+        <h2 id="gc-modal-title">GC Details</h2>
+        <button type="button" id="gc-modal-close" class="modal__close" aria-label="Close">x</button>
+      </div>
+      <dl id="gc-modal-list" class="detail-list"></dl>
+    </div>
+  </div>
+  <div id="http-status-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="http-status-modal-title" hidden>
+    <div class="modal__panel">
+      <div class="modal__head">
+        <h2 id="http-status-modal-title">HTTP Status Codes</h2>
+        <button type="button" id="http-status-modal-close" class="modal__close" aria-label="Close">x</button>
+      </div>
+      <dl id="http-status-modal-list" class="detail-list"></dl>
+    </div>
+  </div>
+  <script>
+(() => {
+    "use strict";
+    const REFRESH_MS = {{ .RefreshMS }};
+    const MAX_SAMPLES = 90;
+    const SAMPLE_WINDOWS = [30, 60, 90];
+    const dash = "\u2014";
+    const history = {
+      labels: [],
+      processCPU: [],
+      systemCPU: [],
+      rss: [],
+      heap: [],
+      networkRX: [],
+      networkTX: [],
+      goroutines: [],
+      rps: [],
+      p50: [],
+      p95: [],
+      p99: [],
+      error4xx: [],
+      error5xx: [],
+      gcWindow: [],
+      gcLast: []
+    };
+    let currentSampleWindow = 60;
+    let currentTheme = "";
+    let themeOverridden = false;
+    let currentRuntime = {};
+    let currentSystem = {};
+    let currentHTTPStatus = {};
+    let currentHTTPRates = {};
+    let lastCollectedAt = "";
+    let hasUsableSnapshot = false;
+    let resizeFrame = 0;
+
+    const byId = (id) => document.getElementById(id);
+    const finite = (value) => typeof value === "number" && Number.isFinite(value);
+    const optional = (value, formatter) => finite(value) ? formatter(value) : dash;
+    const setText = (id, value) => {
+      const node = byId(id);
+      if (node) node.textContent = value;
+    };
+    const cssColor = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    const compact = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
+    const decimal = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
+    const integer = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
+    const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
+
+    function storageGet(key) {
+      try {
+        return localStorage.getItem(key) || "";
+      } catch (_) {
+        return "";
+      }
+    }
+
+    function storageSet(key, value) {
+      try {
+        localStorage.setItem(key, value);
+      } catch (_) {}
+    }
+
+    function formatBytes(value) {
+      if (!finite(value)) return dash;
+      const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+      let current = Math.max(0, value);
+      let unit = 0;
+      while (current >= 1024 && unit < units.length - 1) {
+        current /= 1024;
+        unit += 1;
+      }
+      const digits = current >= 100 || unit === 0 ? 0 : 1;
+      return current.toFixed(digits) + " " + units[unit];
+    }
+
+    function formatDurationNS(value) {
+      if (!finite(value)) return dash;
+      if (value < 1000) return Math.round(value) + " ns";
+      if (value < 1e6) return (value / 1e3).toFixed(value < 1e4 ? 1 : 0) + " \u00b5s";
+      if (value < 1e9) return (value / 1e6).toFixed(value < 1e7 ? 1 : 0) + " ms";
+      return (value / 1e9).toFixed(1) + " s";
+    }
+
+    function formatUptime(value) {
+      if (!finite(value)) return dash;
+      const seconds = Math.max(0, Math.floor(value));
+      const days = Math.floor(seconds / 86400);
+      const hours = Math.floor((seconds % 86400) / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      if (days > 0) return days + "d " + hours + "h";
+      if (hours > 0) return hours + "h " + minutes + "m";
+      if (minutes > 0) return minutes + "m " + (seconds % 60) + "s";
+      return seconds + "s";
+    }
+
+    const percent = (value) => optional(value, (number) => number.toFixed(1) + "%");
+    const ratio = (value) => optional(value, (number) => (number * 100).toFixed(number < .001 ? 3 : 2) + "%");
+
+    function applyTheme(theme, persist) {
+      currentTheme = theme === "dark" ? "dark" : "light";
+      document.documentElement.dataset.theme = currentTheme;
+      const toggle = byId("theme-toggle");
+      if (toggle) {
+        toggle.dataset.active = currentTheme;
+        toggle.title = "Switch to " + (currentTheme === "dark" ? "light" : "dark") + " theme";
+      }
+      if (persist) storageSet("monitor.theme", currentTheme);
+      drawCharts();
+    }
+
+    function toggleTheme() {
+      themeOverridden = true;
+      applyTheme(currentTheme === "dark" ? "light" : "dark", true);
+    }
+
+    function applySampleWindow(value, persist) {
+      const parsed = Number(value);
+      currentSampleWindow = SAMPLE_WINDOWS.includes(parsed) ? parsed : 60;
+      document.querySelectorAll(".sample-option").forEach((button) => {
+        button.setAttribute("aria-pressed", button.dataset.samples === String(currentSampleWindow) ? "true" : "false");
+      });
+      if (persist) storageSet("monitor.samples", String(currentSampleWindow));
+      drawCharts();
+    }
+
+    function visibleSamples(values) {
+      return values.slice(Math.max(0, values.length - currentSampleWindow));
+    }
+
+    function fillForward(values) {
+      let previous = null;
+      return values.map((value) => {
+        if (finite(value)) {
+          previous = value;
+          return value;
+        }
+        return finite(previous) ? previous : null;
+      });
+    }
+
+    function fillZero(values) {
+      return values.map((value) => finite(value) ? value : 0);
+    }
+
+    function appendDetailRows(list, rows) {
+      rows.forEach(([label, value]) => {
+        const row = document.createElement("div");
+        row.className = "row";
+        const term = document.createElement("dt");
+        term.textContent = label;
+        const detail = document.createElement("dd");
+        detail.textContent = value;
+        row.append(term, detail);
+        list.append(row);
+      });
+    }
+
+    function renderDetailRows(id, rows) {
+      const list = byId(id);
+      if (!list) return;
+      list.replaceChildren();
+      appendDetailRows(list, rows);
+    }
+
+    function renderHeapDetails() {
+      const runtime = currentRuntime;
+      renderDetailRows("heap-modal-list", [
+        ["Heap Alloc", optional(runtime.heap_alloc_bytes, formatBytes)],
+        ["Heap Sys", optional(runtime.heap_sys_bytes, formatBytes)],
+        ["Heap In-use", optional(runtime.heap_inuse_bytes, formatBytes)],
+        ["Heap Idle", optional(runtime.heap_idle_bytes, formatBytes)],
+        ["Heap Released", optional(runtime.heap_released_bytes, formatBytes)],
+        ["Heap Objects", optional(runtime.heap_objects, integer.format)],
+        ["Next GC", optional(runtime.next_gc_bytes, formatBytes)],
+        ["Mallocs", optional(runtime.mallocs, integer.format)],
+        ["Frees", optional(runtime.frees, integer.format)],
+        ["GOMAXPROCS", optional(runtime.gomaxprocs, integer.format)]
+      ]);
+    }
+
+    function renderGCDetails() {
+      const runtime = currentRuntime;
+      const pauseEnabled = runtime.gc_pause_metrics_enabled === true;
+      renderDetailRows("gc-modal-list", [
+        ["GC Count", optional(runtime.gc_count, integer.format)],
+        ["Last GC Pause", pauseEnabled ? optional(runtime.gc_pause_last_ns, formatDurationNS) : "Disabled"],
+        ["Window GC Pause", pauseEnabled ? optional(runtime.gc_pause_window_ns, formatDurationNS) : "Disabled"],
+        ["Total GC Pause", pauseEnabled ? optional(runtime.gc_pause_total_ns, formatDurationNS) : "Disabled"],
+        ["GC CPU Fraction", finite(runtime.gc_cpu_fraction) ? (runtime.gc_cpu_fraction * 100).toFixed(3) + "%" : dash]
+      ]);
+    }
+
+    function renderDiskDetails() {
+      const container = byId("disk-modal-list");
+      if (!container) return;
+      container.replaceChildren();
+      const system = currentSystem;
+      const item = document.createElement("article");
+      item.className = "disk-item";
+
+      const head = document.createElement("div");
+      head.className = "disk-item__head";
+      const name = document.createElement("span");
+      name.className = "disk-item__path";
+      name.textContent = "Application filesystem";
+      const usage = document.createElement("span");
+      usage.className = "disk-item__usage";
+      usage.textContent = "Usage " + percent(system.disk_used_percent);
+      head.append(name, usage);
+
+      const meta = document.createElement("div");
+      meta.className = "disk-item__meta";
+      meta.textContent = "Type: " + (typeof system.disk_fstype === "string" && system.disk_fstype ? system.disk_fstype : dash);
+
+      const meter = document.createElement("div");
+      meter.className = "disk-meter";
+      const bar = document.createElement("div");
+      bar.className = "disk-meter__bar";
+      const used = finite(system.disk_used_percent) ? Math.min(100, Math.max(0, system.disk_used_percent)) : 0;
+      bar.style.setProperty("--disk-used", used + "%");
+      meter.append(bar);
+
+      const details = document.createElement("dl");
+      appendDetailRows(details, [
+        ["Total", optional(system.disk_total_bytes, formatBytes)],
+        ["Used", optional(system.disk_used_bytes, formatBytes)],
+        ["Free", optional(system.disk_free_bytes, formatBytes)]
+      ]);
+      item.append(head, meta, meter, details);
+      container.append(item);
+    }
+
+    function statusCodesTotal(status) {
+      return (status["1xx"] || 0) + (status["2xx"] || 0) + (status["3xx"] || 0) + (status["4xx"] || 0) + (status["5xx"] || 0);
+    }
+
+    function renderHTTPStatusDetails() {
+      const status = currentHTTPStatus;
+      const rates = currentHTTPRates;
+      renderDetailRows("http-status-modal-list", [
+        ["1xx", integer.format(status["1xx"] || 0)],
+        ["2xx", integer.format(status["2xx"] || 0)],
+        ["3xx", integer.format(status["3xx"] || 0)],
+        ["4xx", integer.format(status["4xx"] || 0)],
+        ["5xx", integer.format(status["5xx"] || 0)],
+        ["Total", integer.format(statusCodesTotal(status))],
+        ["4xx Rate", ratio(rates["4xx"])],
+        ["5xx Rate", ratio(rates["5xx"])]
+      ]);
+    }
+
+    function renderMetrics(snapshot) {
+      const process = snapshot.process || {};
+      currentRuntime = snapshot.runtime || {};
+      currentSystem = snapshot.system || {};
+      const http = snapshot.http || {};
+      currentHTTPStatus = http.status || {};
+      currentHTTPRates = http.rates || {};
+      const latency = http.latency || {};
+      const errorRate = finite(currentHTTPRates["4xx"]) && finite(currentHTTPRates["5xx"]) ?
+        currentHTTPRates["4xx"] + currentHTTPRates["5xx"] : null;
+      const collectionErrors = snapshot.collection && Array.isArray(snapshot.collection.errors) ?
+        snapshot.collection.errors : [];
+      const loadUnsupported = !finite(currentSystem.load1) && !finite(currentSystem.load5) &&
+        !finite(currentSystem.load15) && !collectionErrors.includes("system.load");
+
+      setText("pid-cpu", percent(process.cpu_percent));
+      setText("pid-rss", optional(process.rss_bytes, formatBytes));
+      setText("pid-threads", optional(process.threads, decimal.format));
+      setText("pid-fds", optional(process.open_descriptors, decimal.format));
+      setText("rt-goroutines", optional(currentRuntime.goroutines, decimal.format));
+      setText("heap-details-button", optional(currentRuntime.heap_alloc_bytes, formatBytes));
+      setText("rt-heap-objects", optional(currentRuntime.heap_objects, compact.format));
+      setText("gc-details-button", finite(currentRuntime.gc_pause_last_ns) ?
+        formatDurationNS(currentRuntime.gc_pause_last_ns) : "GC " + optional(currentRuntime.gc_count, integer.format));
+      setText("rt-uptime", optional(process.uptime_seconds, formatUptime));
+      setText("os-cpu", percent(currentSystem.cpu_percent));
+      setText("os-memory", percent(currentSystem.memory_used_percent));
+      setText("os-total", optional(currentSystem.memory_total_bytes, formatBytes));
+      setText("disk-details-button", percent(currentSystem.disk_used_percent));
+      setLoadText("os-load", currentSystem.load1, loadUnsupported);
+      setText("os-available", optional(currentSystem.memory_available_bytes, formatBytes));
+      setLoadText("os-load-5", currentSystem.load5, loadUnsupported);
+      setLoadText("os-load-15", currentSystem.load15, loadUnsupported);
+      setText("os-network-rx-rate", optional(currentSystem.network_receive_bps, (value) => formatBytes(value) + "/s"));
+      setText("os-network-tx-rate", optional(currentSystem.network_send_bps, (value) => formatBytes(value) + "/s"));
+      setText("http-rps", optional(http.rps, (value) => value.toFixed(2) + " req/s"));
+      setText("http-latency-p95", optional(latency.p95_ns, formatDurationNS));
+      setText("http-error-rate", optional(errorRate, ratio));
+      setText("http-in-flight", optional(http.in_flight, decimal.format));
+      setText("http-requests", optional(http.requests, decimal.format));
+      setText("http-latency-p50", optional(latency.p50_ns, formatDurationNS));
+      setText("http-latency-p99", optional(latency.p99_ns, formatDurationNS));
+      setText("http-status-button", (currentHTTPStatus["4xx"] || currentHTTPStatus["5xx"]) ?
+        "ERR " + integer.format((currentHTTPStatus["4xx"] || 0) + (currentHTTPStatus["5xx"] || 0)) :
+        "2xx " + integer.format(currentHTTPStatus["2xx"] || 0));
+
+      renderHeapDetails();
+      renderGCDetails();
+      renderDiskDetails();
+      renderHTTPStatusDetails();
+    }
+
+    function setLoadText(id, value, unsupported) {
+      const element = byId(id);
+      if (!element) return;
+      element.textContent = unsupported ? "N/A" : optional(value, (number) => number.toFixed(2));
+      if (unsupported) {
+        element.title = "Unsupported on this platform";
+      } else {
+        element.removeAttribute("title");
+      }
+    }
+
+    function updateState(state, responseMS, collectedAt) {
+      const dot = byId("live-dot");
+      if (dot) dot.dataset.status = state;
+      setText("live-text", state.toUpperCase());
+      setText("response-time", finite(responseMS) ? responseMS.toFixed(1) + " ms" : dash);
+      if (collectedAt) {
+        const date = new Date(collectedAt);
+        setText("updated-at", Number.isNaN(date.getTime()) ? "Updated" : date.toLocaleString());
+      }
+    }
+
+    function appendSample(snapshot) {
+      if (!snapshot.collected_at || snapshot.collected_at === lastCollectedAt) return false;
+      lastCollectedAt = snapshot.collected_at;
+      const process = snapshot.process || {};
+      const runtime = snapshot.runtime || {};
+      const system = snapshot.system || {};
+      const http = snapshot.http || {};
+      const rates = http.rates || {};
+      const latency = http.latency || {};
+      history.labels.push(new Date(snapshot.collected_at).toLocaleTimeString());
+      history.processCPU.push(finite(process.cpu_percent) ? process.cpu_percent : null);
+      history.systemCPU.push(finite(system.cpu_percent) ? system.cpu_percent : null);
+      history.rss.push(finite(process.rss_bytes) ? process.rss_bytes : null);
+      history.heap.push(finite(runtime.heap_alloc_bytes) ? runtime.heap_alloc_bytes : null);
+      history.networkRX.push(finite(system.network_receive_bps) ? system.network_receive_bps : null);
+      history.networkTX.push(finite(system.network_send_bps) ? system.network_send_bps : null);
+      history.goroutines.push(finite(runtime.goroutines) ? runtime.goroutines : null);
+      history.rps.push(finite(http.rps) ? http.rps : null);
+      history.p50.push(finite(latency.p50_ns) ? latency.p50_ns : null);
+      history.p95.push(finite(latency.p95_ns) ? latency.p95_ns : null);
+      history.p99.push(finite(latency.p99_ns) ? latency.p99_ns : null);
+      history.error4xx.push(finite(rates["4xx"]) ? rates["4xx"] * 100 : null);
+      history.error5xx.push(finite(rates["5xx"]) ? rates["5xx"] * 100 : null);
+      history.gcWindow.push(finite(runtime.gc_pause_window_ns) ? runtime.gc_pause_window_ns : null);
+      history.gcLast.push(finite(runtime.gc_pause_last_ns) ? runtime.gc_pause_last_ns : null);
+      Object.values(history).forEach((values) => {
+        while (values.length > MAX_SAMPLES) values.shift();
+      });
+      return true;
+    }
+
+    function formatShort(value) {
+      const number = Number(value || 0);
+      if (Math.abs(number) >= 1000000) return (number / 1000000).toFixed(1) + "M";
+      if (Math.abs(number) >= 1000) return (number / 1000).toFixed(1) + "k";
+      if (Math.abs(number) >= 10) return number.toFixed(0);
+      return number.toFixed(1);
+    }
+
+    function formatAxis(value, unit) {
+      const label = formatShort(value);
+      return unit ? label + " " + unit : label;
+    }
+
+    function durationAxisNS(value) {
+      return formatDurationNS(value).replace(" ", "");
+    }
+
+    function drawGrid(context, width, height, padding, min, max, options) {
+      const lines = 5;
+      const plotHeight = height - padding.top - padding.bottom;
+      context.strokeStyle = cssColor("--border");
+      context.lineWidth = 1;
+      context.globalAlpha = .55;
+      for (let line = 0; line <= lines; line += 1) {
+        const y = padding.top + plotHeight / lines * line;
+        context.beginPath();
+        context.moveTo(padding.left, y);
+        context.lineTo(width - padding.right, y);
+        context.stroke();
+      }
+      context.globalAlpha = 1;
+      context.fillStyle = cssColor("--muted");
+      context.font = "11px system-ui, sans-serif";
+      context.textBaseline = "middle";
+      for (let line = 0; line <= lines; line += 1) {
+        const value = max - (max - min) / lines * line;
+        const y = padding.top + plotHeight / lines * line;
+        context.fillText(options.formatValue ? options.formatValue(value) : formatAxis(value, options.unit), 4, y);
+      }
+      context.textBaseline = "alphabetic";
+    }
+
+    function drawSeries(context, data, config) {
+      const plotWidth = config.width - config.padding.left - config.padding.right;
+      const plotHeight = config.height - config.padding.top - config.padding.bottom;
+      if (!data.length) return;
+      context.lineWidth = 2;
+      context.strokeStyle = config.color;
+      context.lineJoin = "round";
+      context.lineCap = "round";
+      context.setLineDash(Array.isArray(config.dash) ? config.dash : []);
+      let drawing = false;
+      context.beginPath();
+      data.forEach((value, index) => {
+        if (!finite(value)) {
+          drawing = false;
+          return;
+        }
+        const x = config.padding.left + (data.length === 1 ? plotWidth : index / (data.length - 1) * plotWidth);
+        const y = config.padding.top + (1 - (value - config.min) / (config.max - config.min || 1)) * plotHeight;
+        if (!drawing) {
+          context.moveTo(x, y);
+          drawing = true;
+        } else {
+          context.lineTo(x, y);
+        }
+      });
+      context.stroke();
+      context.setLineDash([]);
+    }
+
+    function drawLineChart(canvas, seriesList, options) {
+      if (!canvas) return;
+      const context = canvas.getContext("2d");
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      const width = Math.max(rect.width, 1);
+      const height = Math.max(rect.height, 1);
+      const padding = { top: 12, right: 10, bottom: 18, left: options.leftPadding || 58 };
+      canvas.width = Math.floor(width * dpr);
+      canvas.height = Math.floor(height * dpr);
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      context.clearRect(0, 0, width, height);
+      const values = [];
+      seriesList.forEach((series) => series.data.forEach((value) => {
+        if (finite(value)) values.push(value);
+      }));
+      const min = finite(options.minValue) ? options.minValue : 0;
+      const floorMax = finite(options.minMax) ? options.minMax : 0;
+      const max = Math.max(floorMax, values.length ? Math.max(...values) : 1, 1);
+      drawGrid(context, width, height, padding, min, max, options);
+      seriesList.forEach((series) => drawSeries(context, series.data, {
+        width, height, padding, min, max, color: series.color, dash: series.dash
+      }));
+      canvas._chartMeta = {
+        series: seriesList,
+        labels: visibleSamples(history.labels),
+        count: Math.max(0, ...seriesList.map((series) => series.data.length)),
+        pad: padding,
+        plotWidth: width - padding.left - padding.right,
+        idleWhenMissing: Boolean(options.idleWhenMissing),
+        formatter: options.formatValue || ((value) => formatAxis(value, options.unit))
+      };
+    }
+
+    function drawCharts() {
+      const accent = cssColor("--accent");
+      const good = cssColor("--good");
+      const warn = cssColor("--warn");
+      const bad = cssColor("--bad");
+      drawLineChart(byId("cpu-chart"), [
+        { name: "Process", data: visibleSamples(history.processCPU), color: accent },
+        { name: "System", data: visibleSamples(history.systemCPU), color: warn }
+      ], { minValue: 0, minMax: 100, unit: "%" });
+      drawLineChart(byId("memory-chart"), [
+        { name: "RSS", data: visibleSamples(history.rss).map((value) => finite(value) ? value / 1024 / 1024 : null), color: accent },
+        { name: "Heap", data: visibleSamples(history.heap).map((value) => finite(value) ? value / 1024 / 1024 : null), color: good }
+      ], { minValue: 0, unit: "MiB" });
+      drawLineChart(byId("network-chart"), [
+        { name: "RX/s", data: visibleSamples(history.networkRX), color: accent },
+        { name: "TX/s", data: visibleSamples(history.networkTX), color: warn }
+      ], { minValue: 0, formatValue: (value) => formatBytes(value) + "/s", leftPadding: 70 });
+      drawLineChart(byId("goroutine-chart"), [
+        { name: "Count", data: visibleSamples(history.goroutines), color: accent }
+      ], { minValue: 0, unit: "g" });
+      drawLineChart(byId("request-chart"), [
+        { name: "RPS", data: visibleSamples(history.rps), color: accent }
+      ], { minValue: 0, unit: "req/s" });
+      const p50 = visibleSamples(history.p50);
+      const p95 = visibleSamples(history.p95);
+      const p99 = visibleSamples(history.p99);
+      drawLineChart(byId("latency-chart"), [
+        { name: "P50", data: visibleSamples(fillForward(history.p50)), rawData: p50, color: accent },
+        { name: "P95", data: visibleSamples(fillForward(history.p95)), rawData: p95, color: warn, dash: [6, 4] },
+        { name: "P99", data: visibleSamples(fillForward(history.p99)), rawData: p99, color: bad }
+      ], { minValue: 0, formatValue: durationAxisNS, leftPadding: 70, idleWhenMissing: true });
+      const error4xx = visibleSamples(history.error4xx);
+      const error5xx = visibleSamples(history.error5xx);
+      drawLineChart(byId("http-error-chart"), [
+        { name: "4xx", data: fillZero(error4xx), rawData: error4xx, color: warn },
+        { name: "5xx", data: fillZero(error5xx), rawData: error5xx, color: bad }
+      ], { minValue: 0, unit: "%", idleWhenMissing: true });
+      drawLineChart(byId("gc-pause-chart"), [
+        { name: "Window", data: visibleSamples(history.gcWindow), color: accent },
+        { name: "Last", data: visibleSamples(history.gcLast), color: warn }
+      ], { minValue: 0, formatValue: durationAxisNS, leftPadding: 70 });
+    }
+
+    function setupChartHover(canvas) {
+      const tooltip = canvas.parentElement.querySelector(".chart-tooltip");
+      canvas.addEventListener("mousemove", (event) => {
+        const meta = canvas._chartMeta;
+        if (!meta || meta.count < 1) {
+          tooltip.hidden = true;
+          return;
+        }
+        const rect = canvas.getBoundingClientRect();
+        const relative = Math.min(1, Math.max(0, (event.clientX - rect.left - meta.pad.left) / meta.plotWidth));
+        const index = Math.round(relative * (meta.count - 1));
+        const rows = meta.series
+          .map((entry) => {
+            const values = Array.isArray(entry.rawData) ? entry.rawData : entry.data;
+            return finite(values[index]) ? [entry.name, meta.formatter(values[index])] : null;
+          })
+          .filter(Boolean);
+        const idle = meta.idleWhenMissing && rows.length === 0;
+        if (!idle && rows.length === 0) {
+          tooltip.hidden = true;
+          return;
+        }
+        tooltip.replaceChildren();
+        const title = document.createElement("strong");
+        title.textContent = meta.labels[index] || "Sample";
+        tooltip.append(title);
+        if (idle) {
+          const row = document.createElement("span");
+          row.textContent = "No requests in this window";
+          tooltip.append(row);
+        } else {
+          rows.forEach(([name, value]) => {
+            const row = document.createElement("span");
+            row.textContent = name + ": " + value;
+            tooltip.append(row);
+          });
+        }
+        tooltip.hidden = false;
+        tooltip.style.left = Math.min(event.clientX - rect.left + 12, rect.width - tooltip.offsetWidth - 4) + "px";
+        tooltip.style.top = Math.max(38, event.clientY - rect.top - tooltip.offsetHeight - 8) + "px";
+      });
+      canvas.addEventListener("mouseleave", () => {
+        tooltip.hidden = true;
+      });
+    }
+
+    function setupPagers() {
+      const metricsPerPage = 5;
+      document.querySelectorAll(".metric-card").forEach((card) => {
+        if (card.dataset.pagerReady) return;
+        card.dataset.pagerReady = "true";
+        const rows = Array.from(card.querySelectorAll("dl > .row"));
+        const pager = card.querySelector(".metric-pager");
+        if (!pager || rows.length <= metricsPerPage) return;
+        const totalPages = Math.ceil(rows.length / metricsPerPage);
+        const previous = pager.querySelector(".metric-pager__prev");
+        const next = pager.querySelector(".metric-pager__next");
+        const status = pager.querySelector(".metric-pager__status");
+        let page = 0;
+        function renderPage() {
+          rows.forEach((row, index) => {
+            row.hidden = index < page * metricsPerPage || index >= (page + 1) * metricsPerPage;
+          });
+          status.textContent = (page + 1) + " / " + totalPages;
+        }
+        previous.addEventListener("click", () => {
+          page = (page + totalPages - 1) % totalPages;
+          renderPage();
+        });
+        next.addEventListener("click", () => {
+          page = (page + 1) % totalPages;
+          renderPage();
+        });
+        pager.hidden = false;
+        renderPage();
+      });
+    }
+
+    const modalBindings = [
+      { modal: "heap-modal", trigger: "heap-details-button", close: "heap-modal-close" },
+      { modal: "gc-modal", trigger: "gc-details-button", close: "gc-modal-close" },
+      { modal: "disk-modal", trigger: "disk-details-button", close: "disk-modal-close" },
+      { modal: "http-status-modal", trigger: "http-status-button", close: "http-status-modal-close" }
+    ];
+
+    function openModal(binding) {
+      const modal = byId(binding.modal);
+      if (!modal) return;
+      modal.hidden = false;
+      byId(binding.close).focus();
+    }
+
+    function closeModal(binding) {
+      const modal = byId(binding.modal);
+      if (!modal || modal.hidden) return;
+      modal.hidden = true;
+      byId(binding.trigger).focus();
+    }
+
+    function closeVisibleModal() {
+      const binding = modalBindings.find((entry) => !byId(entry.modal).hidden);
+      if (binding) closeModal(binding);
+    }
+
+    function setupModals() {
+      modalBindings.forEach((binding) => {
+        const modal = byId(binding.modal);
+        byId(binding.trigger).addEventListener("click", () => openModal(binding));
+        byId(binding.close).addEventListener("click", () => closeModal(binding));
+        modal.addEventListener("click", (event) => {
+          if (event.target === modal) closeModal(binding);
+        });
+      });
+      window.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") closeVisibleModal();
+      });
+    }
+
+    async function poll() {
+      const started = performance.now();
+      try {
+        const response = await fetch(window.location.pathname + window.location.search, {
+          headers: { Accept: "application/json" },
+          cache: "no-store"
+        });
+        if (!response.ok) throw new Error("monitor request failed");
+        const snapshot = await response.json();
+        const responseMS = performance.now() - started;
+        renderMetrics(snapshot);
+        if (appendSample(snapshot)) drawCharts();
+        hasUsableSnapshot = true;
+        const partial = snapshot.collection && snapshot.collection.partial;
+        updateState(partial ? "partial" : "live", responseMS, snapshot.collected_at);
+      } catch (_) {
+        updateState(hasUsableSnapshot ? "stale" : "error", performance.now() - started, lastCollectedAt);
+      } finally {
+        window.setTimeout(poll, REFRESH_MS);
+      }
+    }
+
+    function updateScrollDock() {
+      const dock = byId("page-scroll-dock");
+      const value = byId("page-scroll-dock-value");
+      if (!dock || !value) return;
+      const documentElement = document.documentElement;
+      const maxScroll = Math.max(0, documentElement.scrollHeight - window.innerHeight);
+      const top = window.scrollY || documentElement.scrollTop || document.body.scrollTop || 0;
+      const rounded = Math.round(maxScroll ? Math.min(100, Math.max(0, top / maxScroll * 100)) : 0);
+      dock.style.setProperty("--scroll-progress", rounded + "%");
+      dock.setAttribute("aria-valuenow", String(rounded));
+      dock.setAttribute("aria-label", "Scroll progress " + rounded + "%");
+      dock.classList.toggle("page-scroll-dock--visible", window.innerWidth >= 768 && maxScroll > 320 && top > 72);
+      value.textContent = rounded + "%";
+    }
+
+    function scrollUpQuarter() {
+      const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+      const top = window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0;
+      window.scrollTo({ top: Math.max(0, top - maxScroll * .25), behavior: "smooth" });
+    }
+
+    document.querySelectorAll("canvas").forEach(setupChartHover);
+    setupPagers();
+    setupModals();
+    document.querySelectorAll(".sample-option").forEach((button) => {
+      button.addEventListener("click", () => applySampleWindow(button.dataset.samples, true));
+    });
+    byId("theme-toggle").addEventListener("click", toggleTheme);
+    byId("page-scroll-dock").addEventListener("click", scrollUpQuarter);
+
+    const savedSamples = storageGet("monitor.samples");
+    applySampleWindow(savedSamples || "60", false);
+    const savedTheme = storageGet("monitor.theme");
+    themeOverridden = savedTheme === "light" || savedTheme === "dark";
+    applyTheme(themeOverridden ? savedTheme : (colorScheme.matches ? "dark" : "light"), false);
+    const handleColorScheme = () => {
+      if (!themeOverridden) applyTheme(colorScheme.matches ? "dark" : "light", false);
+    };
+    if (colorScheme.addEventListener) {
+      colorScheme.addEventListener("change", handleColorScheme);
+    } else if (colorScheme.addListener) {
+      colorScheme.addListener(handleColorScheme);
+    }
+
+    window.addEventListener("scroll", updateScrollDock, { passive: true });
+    window.addEventListener("resize", () => {
+      window.cancelAnimationFrame(resizeFrame);
+      resizeFrame = window.requestAnimationFrame(() => {
+        drawCharts();
+        updateScrollDock();
+      });
+    }, { passive: true });
+    updateScrollDock();
+    poll();
+  })();
+  </script>
+</body>
+</html>
