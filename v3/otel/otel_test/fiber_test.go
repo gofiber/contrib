@@ -396,6 +396,8 @@ func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, 
 	require.Len(t, hist.DataPoints, 1)
 	dp := hist.DataPoints[0]
 	assert.Equal(t, attribute.NewSet(responseAttrs...), dp.Attributes, "attributes")
+	// Buckets advised by the semantic conventions, in seconds.
+	assert.Equal(t, []float64{0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10}, dp.Bounds, "bounds")
 	assert.Equal(t, uint64(1), dp.Count, "count")
 	assert.Less(t, dp.Sum, 0.01) // test shouldn't take longer than 10 milliseconds (0.01 seconds)
 
