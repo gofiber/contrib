@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/v3/swaggerui
 go 1.25.0
 
 require (
-	github.com/go-openapi/runtime/server-middleware v0.33.0
+	github.com/go-openapi/runtime/server-middleware v0.33.1
 	github.com/gofiber/fiber/v3 v3.5.0
 	github.com/stretchr/testify v1.12.1
 	gopkg.in/yaml.v3 v3.0.1
@@ -12,7 +12,7 @@ require (
 require (
 	github.com/andybalholm/brotli v1.2.2 // indirect
 	github.com/gofiber/schema v1.8.4 // indirect
-	github.com/gofiber/utils/v2 v2.4.1 // indirect
+	github.com/gofiber/utils/v2 v2.4.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.19.2 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
