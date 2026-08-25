@@ -22,11 +22,8 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
-// bodyStreamSize reports how many bytes stream will yield before EOF, without
-// reading it. Only readers documenting an exact unread remainder are sized.
+// bodyStreamSize reports stream's exact remaining length, without reading it.
 func bodyStreamSize(stream io.Reader) (int64, bool) {
-	// Not a generic Len() interface: *bufio.Reader's Len is only the prefetched
-	// prefix, not the body behind it.
 	switch reader := stream.(type) {
 	case *io.LimitedReader:
 		if reader.N >= 0 {
@@ -44,8 +41,7 @@ func bodyStreamSize(stream io.Reader) (int64, bool) {
 }
 
 // responseBodySuppressed reports whether fasthttp will send headers only, so
-// Content-Length must not be counted as bytes sent. Mirrors fasthttp's
-// mustSkipBody, plus SkipBody for handlers that set it themselves.
+// Content-Length must not be counted as bytes sent. Mirrors its mustSkipBody.
 func responseBodySuppressed(c fiber.Ctx) bool {
 	if c.Method() == fiber.MethodHead || c.Response().SkipBody {
 		return true
@@ -177,16 +173,14 @@ func Middleware(opts ...Option) fiber.Handler {
 		requestSizeKnown := false
 		switch {
 		case !c.HasBody():
-			// No declared or buffered body.
 			requestSizeKnown = true
 		case request.IsBodyStream():
 			if streamSize, ok := bodyStreamSize(request.BodyStream()); ok {
 				requestSize = streamSize
 				requestSizeKnown = true
 			}
-			// Content-Length is not used: fasthttp pre-reads only part of a streamed
-			// body, so an over-declared length would inflate the histogram. Chunked
-			// bodies declare no length at all.
+			// Content-Length is unusable here: fasthttp pre-reads only part of a
+			// streamed body, so an over-declared length would inflate the histogram.
 		default:
 			// use Content-Length to avoid re-marshaling the multipart body, including files, into memory.
 			if contentLength := request.Header.ContentLength(); contentLength > 0 {
@@ -246,7 +240,6 @@ func Middleware(opts ...Option) fiber.Handler {
 		responseSizeKnown := false
 		isResponseBodyStream := response.IsBodyStream()
 		if responseBodySuppressed(c) {
-			// No body reaches the client, whatever the headers advertise.
 			responseSize = 0
 			responseSizeKnown = true
 		} else if isSSE {
@@ -260,8 +253,8 @@ func Middleware(opts ...Option) fiber.Handler {
 				responseSizeKnown = true
 			}
 			// A chunked size is only known after fasthttp streams the body. Measuring
-			// it would mean replacing the stream, and SetBodyStream closes the reader
-			// it replaces, truncating pooled and piped bodies (#1734).
+			// would mean replacing the stream, and SetBodyStream closes and truncates
+			// the original reader it replaces (#1734).
 		} else {
 			responseSize = int64(len(response.Body()))
 			responseSizeKnown = true
