@@ -59,14 +59,9 @@ func TestMiddleware_StaticAssetsDoNotHang(t *testing.T) {
 	}
 }
 
-// TestMiddleware_StreamedChunkedUploadIsNotRecycled guards the request side of the
-// same stream lifecycle. With StreamRequestBody a chunked upload arrives as a
-// *fasthttp.requestStream, and replacing it to measure its size hands it to
-// closeBodyStream, which returns it to fasthttp's pool with its reader cleared.
-// Downstream handlers then read an already recycled stream and panic.
-//
-// A real listener is needed because chunked framing has to survive an actual
-// connection; app.Test cannot express a body of unknown length.
+// TestMiddleware_StreamedChunkedUploadIsNotRecycled guards the request side:
+// replacing a chunked upload's stream recycles it, so handlers read a cleared
+// reader and panic. A real listener is needed for chunked framing.
 func TestMiddleware_StreamedChunkedUploadIsNotRecycled(t *testing.T) {
 	t.Parallel()
 
@@ -111,8 +106,7 @@ func TestMiddleware_StreamedChunkedUploadIsNotRecycled(t *testing.T) {
 		return c.SendStatus(http.StatusNoContent)
 	})
 
-	// The socket is listening from here on, so requests queue in the accept
-	// backlog until the server goroutine picks them up.
+	// Listening from here on, so requests queue in the accept backlog.
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 
@@ -125,8 +119,7 @@ func TestMiddleware_StreamedChunkedUploadIsNotRecycled(t *testing.T) {
 		<-served
 	})
 
-	// A body of unknown length makes net/http use chunked transfer encoding, so
-	// the request carries no Content-Length for the middleware to read.
+	// Unknown length makes net/http use chunked encoding, so no Content-Length.
 	request, err := http.NewRequest(http.MethodPost, "http://"+listener.Addr().String()+"/upload", io.NopCloser(bytes.NewReader(make([]byte, uploadSize))))
 	require.NoError(t, err)
 	request.ContentLength = -1
@@ -184,10 +177,8 @@ func TestBodyStreamSize(t *testing.T) {
 	}
 }
 
-// TestMiddleware_HeadStreamedResponseReportsNoBody covers responses whose headers
-// describe a body that is never written. A HEAD response keeps the Content-Length
-// a GET would have returned, so reading that header as bytes sent would report a
-// payload the client never received.
+// TestMiddleware_HeadStreamedResponseReportsNoBody: a HEAD response keeps the
+// Content-Length a GET would return, but sends no bytes.
 func TestMiddleware_HeadStreamedResponseReportsNoBody(t *testing.T) {
 	t.Parallel()
 
@@ -232,10 +223,8 @@ func TestMiddleware_HeadStreamedResponseReportsNoBody(t *testing.T) {
 	t.Fatal("response body size metric not found")
 }
 
-// TestMiddleware_SkipBodyResponseReportsNoBody covers a handler that suppresses
-// its own body by setting Response.SkipBody. Neither the method nor the status
-// says the body is skipped, so only the flag itself distinguishes the declared
-// Content-Length from the bytes actually written.
+// TestMiddleware_SkipBodyResponseReportsNoBody: a handler sets SkipBody itself,
+// which neither the method nor the status reveals.
 func TestMiddleware_SkipBodyResponseReportsNoBody(t *testing.T) {
 	t.Parallel()
 
@@ -259,10 +248,8 @@ func TestMiddleware_SkipBodyResponseReportsNoBody(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Equal(t, strconv.Itoa(payloadSize), resp.Header.Get("Content-Length"))
 
-	// The handler leaves the declared Content-Length in place, so the client is
-	// told to expect a body that never arrives and its read ends short. That is
-	// the handler's doing, not the middleware's; what matters here is that no
-	// bytes reached the wire.
+	// The handler leaves Content-Length in place, so the client's read ends short.
+	// What matters here is that no bytes reached the wire.
 	body, _ := io.ReadAll(resp.Body)
 	require.NoError(t, resp.Body.Close())
 	require.Empty(t, body, "fasthttp must not write a body when SkipBody is set")
@@ -288,11 +275,8 @@ func TestMiddleware_SkipBodyResponseReportsNoBody(t *testing.T) {
 	t.Fatal("response body size metric not found")
 }
 
-// TestMiddleware_StreamedRequestIgnoresDeclaredLength covers a client that
-// declares a large body and sends only the part fasthttp pre-reads. Under
-// StreamRequestBody the over-limit request still reaches the handler carrying the
-// declared Content-Length, so reading that header would let any client choose the
-// value recorded in the request-size histogram.
+// TestMiddleware_StreamedRequestIgnoresDeclaredLength: a client declares a large
+// body and sends only the pre-read part, so its Content-Length must not be used.
 func TestMiddleware_StreamedRequestIgnoresDeclaredLength(t *testing.T) {
 	t.Parallel()
 
@@ -307,8 +291,7 @@ func TestMiddleware_StreamedRequestIgnoresDeclaredLength(t *testing.T) {
 	app := fiber.New(fiber.Config{StreamRequestBody: true, BodyLimit: bodyLimit})
 	app.Use(Middleware(WithMeterProvider(metric.NewMeterProvider(metric.WithReader(reader)))))
 	app.Post("/upload", func(c fiber.Ctx) error {
-		// Reject without draining, as a handler guarding against oversized
-		// uploads would.
+		// Reject without draining, as an upload guard would.
 		return c.SendStatus(http.StatusRequestEntityTooLarge)
 	})
 
@@ -340,11 +323,8 @@ func TestMiddleware_StreamedRequestIgnoresDeclaredLength(t *testing.T) {
 	metrics := metricdata.ResourceMetrics{}
 	require.NoError(t, reader.Collect(context.Background(), &metrics))
 
-	// Count observations belonging to this route rather than inspecting sums: the
-	// point is that no size is reported at all, and a recorded zero would be just
-	// as wrong as the declared megabyte. Scoping by route keeps unrelated
-	// observations, such as the error-path replay fasthttp runs once the
-	// connection drops, from being mistaken for this request.
+	// Count observations, not sums: a recorded zero is as wrong as the declared
+	// megabyte. Scoping by route excludes fasthttp's error-path replay.
 	observations := uint64(0)
 	for _, scope := range metrics.ScopeMetrics {
 		for _, m := range scope.Metrics {

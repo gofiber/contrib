@@ -22,14 +22,11 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
-// bodyStreamSize returns the number of bytes stream will yield before EOF, and
-// whether that count is exact. It never reads from stream. Sizes are only
-// reported for reader types documenting an unread-remainder length; any other
-// reader, including a nil one, is reported as unknown.
+// bodyStreamSize reports how many bytes stream will yield before EOF, without
+// reading it. Only readers documenting an exact unread remainder are sized.
 func bodyStreamSize(stream io.Reader) (int64, bool) {
-	// Matching a general Len() int interface would also catch readers whose Len
-	// means something else: *bufio.Reader returns the buffered prefix, sizing a
-	// wrapped body at whatever was prefetched rather than at what it holds.
+	// Not a generic Len() interface: *bufio.Reader's Len is only the prefetched
+	// prefix, not the body behind it.
 	switch reader := stream.(type) {
 	case *io.LimitedReader:
 		if reader.N >= 0 {
@@ -46,14 +43,9 @@ func bodyStreamSize(stream io.Reader) (int64, bool) {
 	return 0, false
 }
 
-// responseBodySuppressed reports whether fasthttp will send headers only, leaving
-// the body unwritten. Such a response still carries Content-Length describing the
-// body a GET would have returned, so that header must not be read as bytes sent.
-//
-// This mirrors fasthttp's own mustSkipBody rule. Reading Response.SkipBody alone
-// is not enough: the server sets it for HEAD only after the handler chain has
-// returned, so it still reads false here. A handler may however have set it
-// itself, which no method or status check would reveal, so both are consulted.
+// responseBodySuppressed reports whether fasthttp will send headers only, so
+// Content-Length must not be counted as bytes sent. Mirrors fasthttp's
+// mustSkipBody, plus SkipBody for handlers that set it themselves.
 func responseBodySuppressed(c fiber.Ctx) bool {
 	if c.Method() == fiber.MethodHead || c.Response().SkipBody {
 		return true
@@ -130,7 +122,12 @@ func Middleware(opts ...Option) fiber.Handler {
 		)
 
 		var err error
-		httpServerDuration, err = meter.Float64Histogram(MetricNameHTTPServerRequestDuration, metric.WithUnit(UnitSeconds), metric.WithDescription("Duration of HTTP server requests."))
+		httpServerDuration, err = meter.Float64Histogram(
+			MetricNameHTTPServerRequestDuration,
+			metric.WithUnit(UnitSeconds),
+			metric.WithDescription("Duration of HTTP server requests."),
+			metric.WithExplicitBucketBoundaries(httpServerRequestDurationBoundaries...),
+		)
 		if err != nil {
 			otel.Handle(err)
 		}
@@ -175,31 +172,21 @@ func Middleware(opts ...Option) fiber.Handler {
 		copy(responseMetricAttrs, requestMetricsAttrs)
 
 		request := c.Request()
-		// Sizes default to 0 and are only reported once known: an unmeasurable
-		// body is left out of the histogram rather than skewing it towards 0.
+		// Unmeasurable bodies are omitted rather than recorded as 0.
 		requestSize := int64(0)
 		requestSizeKnown := false
 		switch {
 		case !c.HasBody():
-			// Nothing declared by Content-Length or Transfer-Encoding and nothing
-			// buffered, so the request carried no body.
+			// No declared or buffered body.
 			requestSizeKnown = true
 		case request.IsBodyStream():
 			if streamSize, ok := bodyStreamSize(request.BodyStream()); ok {
 				requestSize = streamSize
 				requestSizeKnown = true
 			}
-			// Content-Length is deliberately not read here. Under StreamRequestBody
-			// fasthttp pre-reads only min(Content-Length, BodyLimit, 8KiB) before
-			// running the handler, and readBodyWithStreaming swallows ErrBodyTooLarge
-			// so an over-limit request still reaches the chain with the client's
-			// declared length intact. The remainder arrives only if the handler
-			// drains the stream, which it need not do. Recording the header would
-			// let a client inflate the histogram by declaring a large body and
-			// sending 8KiB of it.
-			//
-			// A chunked request body has no declared length either, and measuring it
-			// would mean draining the stream before the handler can read it.
+			// Content-Length is not used: fasthttp pre-reads only part of a streamed
+			// body, so an over-declared length would inflate the histogram. Chunked
+			// bodies declare no length at all.
 		default:
 			// use Content-Length to avoid re-marshaling the multipart body, including files, into memory.
 			if contentLength := request.Header.ContentLength(); contentLength > 0 {
@@ -272,14 +259,9 @@ func Middleware(opts ...Option) fiber.Handler {
 				responseSize = streamSize
 				responseSizeKnown = true
 			}
-			// A chunked response declares no length, and its real size is only known
-			// once fasthttp has streamed the body, which happens after this
-			// middleware returns. Counting it would mean substituting the stream, and
-			// SetBodyStream closes the reader it replaces: for pooled static file
-			// readers and SendStreamWriter pipes that truncates the response and can
-			// panic when the reader is reused (#1734). The size is left unknown so
-			// the metric and span attribute are omitted instead of reporting a
-			// misleading 0.
+			// A chunked size is only known after fasthttp streams the body. Measuring
+			// it would mean replacing the stream, and SetBodyStream closes the reader
+			// it replaces, truncating pooled and piped bodies (#1734).
 		} else {
 			responseSize = int64(len(response.Body()))
 			responseSizeKnown = true
