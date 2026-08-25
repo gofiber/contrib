@@ -97,7 +97,14 @@ When the application uses Fiber's recover middleware, place it after monitor so
 recovered panics are observed as `5xx` responses:
 
 ```go
-app.Use(monitor.New(), recover.New())
+app.Use(
+    monitor.New(monitor.Config{
+        Next: func(c fiber.Ctx) bool {
+            return c.Path() != "/metrics"
+        },
+    }),
+    recover.New(),
+)
 ```
 
 For instrumented requests that return an error, monitor invokes the

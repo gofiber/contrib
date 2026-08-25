@@ -141,7 +141,6 @@
     }
     button:hover {
       border-color: var(--accent);
-      transform: translateY(-1px);
     }
     .status-box {
       display: grid;
@@ -688,6 +687,7 @@
         conic-gradient(from 220deg, var(--dock-fill) var(--scroll-progress), var(--dock-track) 0),
         radial-gradient(circle at 32% 28%, rgba(255, 255, 255, 0.14), transparent 48%);
       color: var(--dock-text);
+      visibility: hidden;
       opacity: 0;
       pointer-events: none;
       transform: translateY(4px);
@@ -697,6 +697,7 @@
       transition: opacity 180ms ease, box-shadow 180ms ease, filter 180ms ease, transform 180ms ease;
     }
     .page-scroll-dock--visible {
+      visibility: visible;
       opacity: 0.78;
       pointer-events: auto;
       transform: translateY(0);
