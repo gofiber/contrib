@@ -93,6 +93,11 @@ const (
 	UnitMilliseconds = "ms"
 )
 
+// httpServerRequestDurationBoundaries is the ExplicitBucketBoundaries advisory
+// parameter recommended by the semantic conventions for the
+// http.server.request.duration metric, expressed in seconds.
+var httpServerRequestDurationBoundaries = []float64{0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10}
+
 // Middleware returns fiber handler which will trace incoming requests.
 func Middleware(opts ...Option) fiber.Handler {
 	cfg := config{
