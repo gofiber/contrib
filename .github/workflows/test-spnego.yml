@@ -1,0 +1,84 @@
+name: "Test spnego"
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+    paths:
+      - 'v3/spnego/**/*.go'
+      - 'v3/spnego/go.mod'
+      - 'v3/spnego/go.sum'
+      # So a change to this workflow — the cross-platform vet matrix below in
+      # particular — is exercised by the PR that makes it.
+      - '.github/workflows/test-spnego.yml'
+
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  Tests:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
+    env:
+      GOWORK: off
+    strategy:
+      matrix:
+        go-version:
+          - 1.25.x
+          - 1.26.x
+    steps:
+      - name: Fetch Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '${{ matrix.go-version }}'
+          cache-dependency-path: v3/spnego/go.sum
+      # This module carries build-tagged sources for file identity, and the test
+      # job runs on Linux only. windows/amd64 covers the Windows variant and
+      # js/wasm the !unix && !windows fallback; darwin is unix, but its
+      # syscall.Stat_t field types differ from Linux's, so it needs its own
+      # target even though it compiles the same file.
+      - name: Vet other platforms
+        working-directory: ./v3/spnego
+        run: |
+          for target in windows/amd64 darwin/arm64 js/wasm; do
+            GOOS="${target%/*}" GOARCH="${target#*/}" go vet ./...
+          done
+      - name: Run Test
+        uses: gofiber/.github/.github/actions/gotestsum@main
+        with:
+          working-directory: ./v3/spnego
+          packages: ./...
+          rerun-fails: '2'
+          args: -race -count=1
+      # This middleware decides who is authenticated, so a silent drop in test
+      # coverage is worth failing on rather than noticing at review time. The
+      # floor sits well below the current figure so ordinary changes do not trip
+      # it; raise it deliberately, do not lower it to make a change fit.
+      #
+      # ./example is excluded rather than left to score 0%. It is a runnable
+      # demo with no tests by design, and Go 1.26 folds such packages into the
+      # total where 1.25 omitted them — measuring it would make the same tree
+      # report two different numbers per matrix entry, and would sink the total
+      # further every time the demo grew.
+      - name: Check coverage
+        working-directory: ./v3/spnego
+        run: |
+          packages=$(go list ./... | grep -v '/example$')
+          # shellcheck disable=SC2086 # one argument per package is the point
+          go test -count=1 -covermode=atomic -coverprofile=cover.out ${packages}
+          total=$(go tool cover -func=cover.out | awk '/^total:/ {print $3}' | tr -d '%')
+          echo "total statement coverage: ${total}%"
+          if ! awk -v t="${total}" 'BEGIN { exit !(t + 0 >= 85) }'; then
+            echo "::error::coverage ${total}% is below the 85% floor"
+            exit 1
+          fi

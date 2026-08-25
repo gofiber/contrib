@@ -34,6 +34,10 @@ updates:
           - "🤖 Dependencies"
       schedule:
           interval: "daily"
+      cooldown:
+          exclude:
+              - "github.com/gofiber/*"
+              - "github.com/valyala/fasthttp*"
       groups:
           fiber-modules:
               patterns:
@@ -129,6 +133,10 @@ updates:
           - "🤖 Dependencies"
       schedule:
           interval: "daily"
+      cooldown:
+          exclude:
+              - "github.com/gofiber/*"
+              - "github.com/valyala/fasthttp*"
       groups:
           fiber-modules:
               patterns:
@@ -225,6 +233,10 @@ updates:
           - "🤖 Dependencies"
       schedule:
           interval: "daily"
+      cooldown:
+          exclude:
+              - "github.com/gofiber/*"
+              - "github.com/valyala/fasthttp*"
       groups:
           fiber-modules:
               patterns:
