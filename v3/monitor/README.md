@@ -60,6 +60,7 @@ import (
     "github.com/gofiber/contrib/v3/monitor"
     "github.com/gofiber/fiber/v3"
     "github.com/gofiber/fiber/v3/log"
+    "github.com/gofiber/fiber/v3/middleware/recover"
 )
 
 func main() {
