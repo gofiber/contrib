@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLegacyConfigFieldsCompileButDoNotAffectDashboard(t *testing.T) {
@@ -18,15 +20,15 @@ func TestLegacyConfigFieldsCompileButDoNotAffectDashboard(t *testing.T) {
 	}))
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/metrics", nil))
-	mustNoError(t, err)
-	defer func() { mustNoError(t, resp.Body.Close()) }()
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, resp.Body.Close()) }()
 	body, err := io.ReadAll(resp.Body)
-	mustNoError(t, err)
+	require.NoError(t, err)
 	page := string(body)
-	mustContain(t, page, "Compatibility Monitor")
-	mustNotContain(t, page, "legacy-head-marker")
-	mustNotContain(t, page, "legacy-font-marker")
-	mustNotContain(t, page, "legacy-chart-marker")
+	assert.Contains(t, page, "Compatibility Monitor")
+	assert.NotContains(t, page, "legacy-head-marker")
+	assert.NotContains(t, page, "legacy-font-marker")
+	assert.NotContains(t, page, "legacy-chart-marker")
 }
 
 func TestLegacyRouteMountWithAPIOnly(t *testing.T) {
@@ -41,12 +43,12 @@ func TestLegacyRouteMountWithAPIOnly(t *testing.T) {
 	req := httptest.NewRequest(fiber.MethodGet, "/metrics", nil)
 	req.Header.Set(fiber.HeaderAccept, fiber.MIMETextHTML)
 	resp, err := app.Test(req)
-	mustNoError(t, err)
-	defer func() { mustNoError(t, resp.Body.Close()) }()
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, resp.Body.Close()) }()
 	body, err := io.ReadAll(resp.Body)
-	mustNoError(t, err)
-	mustContain(t, resp.Header.Get(fiber.HeaderContentType), fiber.MIMEApplicationJSON)
-	mustContain(t, string(body), `"collection"`)
+	require.NoError(t, err)
+	assert.Contains(t, resp.Header.Get(fiber.HeaderContentType), fiber.MIMEApplicationJSON)
+	assert.Contains(t, string(body), `"collection"`)
 }
 
 func TestConfigDefaultAPIOnlyRemainsSupported(t *testing.T) {
@@ -57,7 +59,7 @@ func TestConfigDefaultAPIOnlyRemainsSupported(t *testing.T) {
 	app := fiber.New()
 	app.Get("/metrics", New(Config{Title: "Custom title"}))
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/metrics", nil))
-	mustNoError(t, err)
-	defer func() { mustNoError(t, resp.Body.Close()) }()
-	mustContain(t, resp.Header.Get(fiber.HeaderContentType), fiber.MIMEApplicationJSON)
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, resp.Body.Close()) }()
+	assert.Contains(t, resp.Header.Get(fiber.HeaderContentType), fiber.MIMEApplicationJSON)
 }

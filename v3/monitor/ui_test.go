@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRenderDashboard(t *testing.T) {
@@ -16,81 +19,81 @@ func TestRenderDashboard(t *testing.T) {
 		FaviconURL:  "/assets/favicon.svg",
 		Refresh:     3 * time.Second,
 	})
-	mustNoError(t, err)
-	mustContain(t, pageHTML, `Monitor &lt;script&gt;alert(&#34;x&#34;)&lt;/script&gt;`)
-	mustNotContain(t, pageHTML, `<script>alert("x")</script>`)
-	mustContain(t, pageHTML, `Description &lt;img src=x&gt;`)
-	mustContain(t, pageHTML, `Footer &amp; details`)
-	mustContain(t, pageHTML, `href="/assets/favicon.svg"`)
-	mustRegexp(t, `const REFRESH_MS =\s+3000\s*;`, pageHTML)
+	require.NoError(t, err)
+	assert.Contains(t, pageHTML, `Monitor &lt;script&gt;alert(&#34;x&#34;)&lt;/script&gt;`)
+	assert.NotContains(t, pageHTML, `<script>alert("x")</script>`)
+	assert.Contains(t, pageHTML, `Description &lt;img src=x&gt;`)
+	assert.Contains(t, pageHTML, `Footer &amp; details`)
+	assert.Contains(t, pageHTML, `href="/assets/favicon.svg"`)
+	assert.Regexp(t, `const REFRESH_MS =\s+3000\s*;`, pageHTML)
 	descriptorLabel := "FDs"
 	if runtime.GOOS == "windows" {
 		descriptorLabel = "Handles"
 	}
-	mustContain(t, pageHTML, "<dt>"+descriptorLabel+"</dt>")
+	assert.Contains(t, pageHTML, "<dt>"+descriptorLabel+"</dt>")
 }
 
 func TestDashboardCapsBrowserRefreshWithoutChangingSnapshotTTL(t *testing.T) {
 	largeRefresh := time.Duration(1<<63 - 1)
 	m, err := newMiddleware(Config{Refresh: largeRefresh})
-	mustNoError(t, err)
-	mustEqual(t, largeRefresh, m.refresh)
-	mustRegexp(t, `const REFRESH_MS =\s+2147483647\s*;`, m.index)
+	require.NoError(t, err)
+	assert.Equal(t, largeRefresh, m.refresh)
+	assert.Regexp(t, `const REFRESH_MS =\s+2147483647\s*;`, m.index)
 }
 
 func TestDashboardContract(t *testing.T) {
 	pageHTML, err := renderDashboard(ConfigDefault)
-	mustNoError(t, err)
-	mustContain(t, html.UnescapeString(pageHTML), "data:image/svg+xml;base64,")
-	mustEqual(t, 4, strings.Count(pageHTML, `class="metric-card"`))
-	mustEqual(t, 8, strings.Count(pageHTML, "<canvas "))
-	mustContain(t, pageHTML, `const MAX_SAMPLES = 90;`)
-	mustContain(t, pageHTML, `let currentSampleWindow = 60;`)
-	mustContain(t, pageHTML, `Accept: "application/json"`)
-	mustContain(t, pageHTML, `@media (prefers-color-scheme: dark)`)
-	mustContain(t, pageHTML, `@media (max-width: 980px)`)
-	mustContain(t, pageHTML, `@media (max-width: 560px)`)
-	mustContain(t, pageHTML, `grid-template-columns: repeat(4, minmax(0, 1fr))`)
-	mustContain(t, pageHTML, `grid-template-columns: repeat(2, minmax(0, 1fr))`)
-	mustContain(t, pageHTML, `class="metric-pager"`)
-	mustContain(t, pageHTML, `width: min(1360px, calc(100% - 32px))`)
-	mustContain(t, pageHTML, `border: 3px solid var(--border)`)
-	mustContain(t, pageHTML, `class="page-scroll-dock"`)
-	mustNotContain(t, pageHTML, "lang-toggle")
-	mustNotContain(t, pageHTML, `data-active="en"`)
-	mustNotContain(t, pageHTML, "container-card")
-	mustNotContain(t, strings.ToLower(pageHTML), "chart.js")
-	mustNotContain(t, strings.ToLower(pageHTML), "cdn")
+	require.NoError(t, err)
+	assert.Contains(t, html.UnescapeString(pageHTML), "data:image/svg+xml;base64,")
+	assert.Equal(t, 4, strings.Count(pageHTML, `class="metric-card"`))
+	assert.Equal(t, 8, strings.Count(pageHTML, "<canvas "))
+	assert.Contains(t, pageHTML, `const MAX_SAMPLES = 90;`)
+	assert.Contains(t, pageHTML, `let currentSampleWindow = 60;`)
+	assert.Contains(t, pageHTML, `Accept: "application/json"`)
+	assert.Contains(t, pageHTML, `@media (prefers-color-scheme: dark)`)
+	assert.Contains(t, pageHTML, `@media (max-width: 980px)`)
+	assert.Contains(t, pageHTML, `@media (max-width: 560px)`)
+	assert.Contains(t, pageHTML, `grid-template-columns: repeat(4, minmax(0, 1fr))`)
+	assert.Contains(t, pageHTML, `grid-template-columns: repeat(2, minmax(0, 1fr))`)
+	assert.Contains(t, pageHTML, `class="metric-pager"`)
+	assert.Contains(t, pageHTML, `width: min(1360px, calc(100% - 32px))`)
+	assert.Contains(t, pageHTML, `border: 3px solid var(--border)`)
+	assert.Contains(t, pageHTML, `class="page-scroll-dock"`)
+	assert.NotContains(t, pageHTML, "lang-toggle")
+	assert.NotContains(t, pageHTML, `data-active="en"`)
+	assert.NotContains(t, pageHTML, "container-card")
+	assert.NotContains(t, strings.ToLower(pageHTML), "chart.js")
+	assert.NotContains(t, strings.ToLower(pageHTML), "cdn")
 }
 
 func TestDashboardInteractions(t *testing.T) {
 	pageHTML, err := renderDashboard(ConfigDefault)
-	mustNoError(t, err)
+	require.NoError(t, err)
 
 	for _, sample := range []string{`data-samples="30"`, `data-samples="60"`, `data-samples="90"`} {
-		mustContain(t, pageHTML, sample)
+		assert.Contains(t, pageHTML, sample)
 	}
-	mustEqual(t, 3, strings.Count(pageHTML, `class="sample-option"`))
-	mustContain(t, pageHTML, `storageSet("monitor.samples"`)
-	mustContain(t, pageHTML, `visibleSamples(values)`)
+	assert.Equal(t, 3, strings.Count(pageHTML, `class="sample-option"`))
+	assert.Contains(t, pageHTML, `storageSet("monitor.samples"`)
+	assert.Contains(t, pageHTML, `visibleSamples(values)`)
 
-	mustContain(t, pageHTML, `id="theme-toggle"`)
-	mustContain(t, pageHTML, `prefers-color-scheme: dark`)
-	mustContain(t, pageHTML, `storageSet("monitor.theme"`)
-	mustContain(t, pageHTML, `currentTheme === "dark" ? "light" : "dark"`)
-	mustNotContain(t, pageHTML, `.control-dot:hover`)
-	mustContain(t, pageHTML, `transition: none`)
-	mustContain(t, pageHTML, `data-series="bad"></span>P99`)
-	mustContain(t, pageHTML, `fillForward(history.p95)`)
-	mustContain(t, pageHTML, `dash: [6, 4]`)
-	mustContain(t, pageHTML, `fillZero(error4xx)`)
-	mustContain(t, pageHTML, `rawData: error4xx`)
-	mustContain(t, pageHTML, `No requests in this window`)
-	mustContain(t, pageHTML, `Unsupported on this platform`)
-	mustContain(t, pageHTML, `collectionErrors.includes("system.load")`)
-	mustContain(t, pageHTML, `runtime.gc_pause_metrics_enabled === true`)
-	mustContain(t, pageHTML, `: "Disabled"`)
-	mustContain(t, pageHTML, `"GC " + optional(currentRuntime.gc_count`)
+	assert.Contains(t, pageHTML, `id="theme-toggle"`)
+	assert.Contains(t, pageHTML, `prefers-color-scheme: dark`)
+	assert.Contains(t, pageHTML, `storageSet("monitor.theme"`)
+	assert.Contains(t, pageHTML, `currentTheme === "dark" ? "light" : "dark"`)
+	assert.NotContains(t, pageHTML, `.control-dot:hover`)
+	assert.Contains(t, pageHTML, `transition: none`)
+	assert.Contains(t, pageHTML, `data-series="bad"></span>P99`)
+	assert.Contains(t, pageHTML, `fillForward(history.p95)`)
+	assert.Contains(t, pageHTML, `dash: [6, 4]`)
+	assert.Contains(t, pageHTML, `fillZero(error4xx)`)
+	assert.Contains(t, pageHTML, `rawData: error4xx`)
+	assert.Contains(t, pageHTML, `No requests in this window`)
+	assert.Contains(t, pageHTML, `Unsupported on this platform`)
+	assert.Contains(t, pageHTML, `collectionErrors.includes("system.load")`)
+	assert.Contains(t, pageHTML, `runtime.gc_pause_metrics_enabled === true`)
+	assert.Contains(t, pageHTML, `: "Disabled"`)
+	assert.Contains(t, pageHTML, `"GC " + optional(currentRuntime.gc_count`)
 
 	for _, id := range []string{
 		`id="heap-details-button"`,
@@ -102,7 +105,7 @@ func TestDashboardInteractions(t *testing.T) {
 		`id="disk-modal"`,
 		`id="http-status-modal"`,
 	} {
-		mustContain(t, pageHTML, id)
+		assert.Contains(t, pageHTML, id)
 	}
 	for _, label := range []string{
 		"Heap In-use",
@@ -115,25 +118,25 @@ func TestDashboardInteractions(t *testing.T) {
 		"4xx Rate",
 		"5xx Rate",
 	} {
-		mustContain(t, pageHTML, label)
+		assert.Contains(t, pageHTML, label)
 	}
-	mustContain(t, pageHTML, `event.key === "Escape"`)
-	mustContain(t, pageHTML, `event.target === modal`)
-	mustContain(t, pageHTML, `byId(binding.trigger).focus()`)
-	mustContain(t, pageHTML, `id="http-error-chart"`)
-	mustContain(t, pageHTML, `id="gc-pause-chart"`)
+	assert.Contains(t, pageHTML, `event.key === "Escape"`)
+	assert.Contains(t, pageHTML, `event.target === modal`)
+	assert.Contains(t, pageHTML, `byId(binding.trigger).focus()`)
+	assert.Contains(t, pageHTML, `id="http-error-chart"`)
+	assert.Contains(t, pageHTML, `id="gc-pause-chart"`)
 }
 
 func TestDashboardPollingPreservesQueryString(t *testing.T) {
 	pageHTML, err := renderDashboard(ConfigDefault)
-	mustNoError(t, err)
-	mustContain(t, pageHTML, `fetch(window.location.pathname + window.location.search, {`)
-	mustNotContain(t, pageHTML, `fetch(window.location.pathname, {`)
-	mustNotContain(t, pageHTML, `window.location.hash`)
+	require.NoError(t, err)
+	assert.Contains(t, pageHTML, `fetch(window.location.pathname + window.location.search, {`)
+	assert.NotContains(t, pageHTML, `fetch(window.location.pathname, {`)
+	assert.NotContains(t, pageHTML, `window.location.hash`)
 }
 
 func TestRenderDashboardSanitizesUnvalidatedFavicon(t *testing.T) {
 	pageHTML, err := renderDashboard(Config{FaviconURL: "javascript:alert(1)", Refresh: time.Second})
-	mustNoError(t, err)
-	mustContain(t, pageHTML, `<link rel="icon" href="#ZgotmplZ">`)
+	require.NoError(t, err)
+	assert.Contains(t, pageHTML, `<link rel="icon" href="#ZgotmplZ">`)
 }

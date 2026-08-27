@@ -3,19 +3,22 @@ package monitor
 import (
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestConfigDefaults(t *testing.T) {
 	cfg, err := configDefault().normalized()
-	mustNoError(t, err)
-	mustEqual(t, defaultTitle, cfg.Title)
-	mustEqual(t, defaultDescription, cfg.Description)
-	mustEqual(t, defaultFooter, cfg.Footer)
-	mustEqual(t, defaultRefresh, cfg.Refresh)
-	mustFalse(t, cfg.APIOnly)
-	mustFalse(t, cfg.EnableGCPauseMetrics)
-	mustEqual(t, legacyDefaultFontURL, cfg.FontURL)
-	mustEqual(t, legacyDefaultChartJSURL, cfg.ChartJSURL)
+	require.NoError(t, err)
+	assert.Equal(t, defaultTitle, cfg.Title)
+	assert.Equal(t, defaultDescription, cfg.Description)
+	assert.Equal(t, defaultFooter, cfg.Footer)
+	assert.Equal(t, defaultRefresh, cfg.Refresh)
+	assert.False(t, cfg.APIOnly)
+	assert.False(t, cfg.EnableGCPauseMetrics)
+	assert.Equal(t, legacyDefaultFontURL, cfg.FontURL)
+	assert.Equal(t, legacyDefaultChartJSURL, cfg.ChartJSURL)
 }
 
 func TestConfigOverrides(t *testing.T) {
@@ -31,17 +34,17 @@ func TestConfigOverrides(t *testing.T) {
 		FontURL:              "legacy font",
 		ChartJSURL:           "legacy chart",
 	}).normalized()
-	mustNoError(t, err)
-	mustEqual(t, "Service Monitor", cfg.Title)
-	mustEqual(t, "Description", cfg.Description)
-	mustEqual(t, "Footer", cfg.Footer)
-	mustEqual(t, "/favicon.svg", cfg.FaviconURL)
-	mustEqual(t, 5*time.Second, cfg.Refresh)
-	mustTrue(t, cfg.APIOnly)
-	mustTrue(t, cfg.EnableGCPauseMetrics)
-	mustEqual(t, "legacy head", cfg.CustomHead)
-	mustEqual(t, "legacy font", cfg.FontURL)
-	mustEqual(t, "legacy chart", cfg.ChartJSURL)
+	require.NoError(t, err)
+	assert.Equal(t, "Service Monitor", cfg.Title)
+	assert.Equal(t, "Description", cfg.Description)
+	assert.Equal(t, "Footer", cfg.Footer)
+	assert.Equal(t, "/favicon.svg", cfg.FaviconURL)
+	assert.Equal(t, 5*time.Second, cfg.Refresh)
+	assert.True(t, cfg.APIOnly)
+	assert.True(t, cfg.EnableGCPauseMetrics)
+	assert.Equal(t, "legacy head", cfg.CustomHead)
+	assert.Equal(t, "legacy font", cfg.FontURL)
+	assert.Equal(t, "legacy chart", cfg.ChartJSURL)
 }
 
 func TestRefreshNormalization(t *testing.T) {
@@ -58,8 +61,8 @@ func TestRefreshNormalization(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			cfg, err := (Config{Refresh: test.input}).normalized()
-			mustNoError(t, err)
-			mustEqual(t, test.expected, cfg.Refresh)
+			require.NoError(t, err)
+			assert.Equal(t, test.expected, cfg.Refresh)
 		})
 	}
 }
@@ -68,19 +71,19 @@ func TestFaviconURLValidation(t *testing.T) {
 	valid := []string{"", "/assets/favicon.svg", "http://example.com/favicon.ico", "HTTPS://example.com/favicon.svg"}
 	for _, value := range valid {
 		actual, err := normalizeFaviconURL(value)
-		mustNoError(t, err, value)
-		mustEqual(t, value, actual)
+		require.NoError(t, err, value)
+		assert.Equal(t, value, actual)
 	}
 
 	invalid := []string{"//example.com/favicon.svg", "/\\example", "javascript:alert(1)", "data:image/svg+xml,x", "file:///tmp/icon", "ftp://example.com/icon", "https://user@example.com/icon"}
 	for _, value := range invalid {
 		_, err := normalizeFaviconURL(value)
-		mustErrorIs(t, err, ErrInvalidFaviconURL, value)
+		assert.ErrorIs(t, err, ErrInvalidFaviconURL, value)
 	}
 }
 
 func TestNewPanicsForInvalidConfig(t *testing.T) {
-	mustPanicsWithError(t, "fiber: monitor middleware error -> "+ErrInvalidFaviconURL.Error(), func() {
+	assert.PanicsWithError(t, "fiber: monitor middleware error -> "+ErrInvalidFaviconURL.Error(), func() {
 		New(Config{FaviconURL: "javascript:alert(1)"})
 	})
 }

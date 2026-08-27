@@ -4,6 +4,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestLatencyHistogramPercentilesAndReset(t *testing.T) {
@@ -15,13 +17,13 @@ func TestLatencyHistogramPercentilesAndReset(t *testing.T) {
 
 	window := histogram.snapshotAndReset()
 	p50, ok := window.percentile(50)
-	mustTrue(t, ok)
-	mustEqual(t, uint64(10*time.Millisecond), p50)
+	assert.True(t, ok)
+	assert.Equal(t, uint64(10*time.Millisecond), p50)
 	p95, ok := window.percentile(95)
-	mustTrue(t, ok)
-	mustEqual(t, uint64(10*time.Second), p95)
+	assert.True(t, ok)
+	assert.Equal(t, uint64(10*time.Second), p95)
 	_, ok = histogram.snapshotAndReset().percentile(50)
-	mustFalse(t, ok)
+	assert.False(t, ok)
 }
 
 func TestLatencyHistogramOverflowSaturates(t *testing.T) {
@@ -30,8 +32,8 @@ func TestLatencyHistogramOverflowSaturates(t *testing.T) {
 
 	window := histogram.snapshotAndReset()
 	p99, ok := window.percentile(99)
-	mustTrue(t, ok)
-	mustEqual(t, latencyBoundsNS[len(latencyBoundsNS)-1], p99)
+	assert.True(t, ok)
+	assert.Equal(t, latencyBoundsNS[len(latencyBoundsNS)-1], p99)
 }
 
 func TestLatencyHistogramConcurrentObserve(t *testing.T) {
@@ -49,5 +51,5 @@ func TestLatencyHistogramConcurrentObserve(t *testing.T) {
 		}(worker)
 	}
 	group.Wait()
-	mustEqual(t, uint64(workers*observations), histogram.snapshotAndReset().count)
+	assert.Equal(t, uint64(workers*observations), histogram.snapshotAndReset().count)
 }
