@@ -252,7 +252,9 @@ func runtimeStatsFromMetricValues(values runtimeMetricValues) runtimeStats {
 }
 
 func applyGCPauseMetrics(stats *runtimeStats, memory runtime.MemStats, pauseSeen bool, previousPauseTotal uint64) {
-	stats.GCPauseLastNS = valuePointer(lastGCPauseNS(memory))
+	if memory.NumGC > 0 {
+		stats.GCPauseLastNS = valuePointer(lastGCPauseNS(memory))
+	}
 	stats.GCPauseTotalNS = valuePointer(memory.PauseTotalNs)
 	if pauseSeen && memory.PauseTotalNs >= previousPauseTotal {
 		stats.GCPauseWindowNS = valuePointer(memory.PauseTotalNs - previousPauseTotal)

@@ -126,6 +126,28 @@ func TestApplyGCPauseMetrics(t *testing.T) {
 	assert.Nil(t, reset.GCPauseWindowNS)
 }
 
+func TestApplyGCPauseMetricsWithoutGC(t *testing.T) {
+	memory := runtime.MemStats{}
+
+	var first runtimeStats
+	applyGCPauseMetrics(&first, memory, false, 0)
+	assert.Nil(t, first.GCPauseLastNS)
+	require.NotNil(t, first.GCPauseTotalNS)
+	assert.Zero(t, *first.GCPauseTotalNS)
+	assert.Nil(t, first.GCPauseWindowNS)
+	encoded, err := json.Marshal(first)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"gc_pause_last_ns":null`)
+
+	var next runtimeStats
+	applyGCPauseMetrics(&next, memory, true, 0)
+	assert.Nil(t, next.GCPauseLastNS)
+	require.NotNil(t, next.GCPauseTotalNS)
+	assert.Zero(t, *next.GCPauseTotalNS)
+	require.NotNil(t, next.GCPauseWindowNS)
+	assert.Zero(t, *next.GCPauseWindowNS)
+}
+
 func TestGCPauseCollectionIsOptIn(t *testing.T) {
 	disabled := newCollector(time.Now(), false)
 	disabledStats := disabled.collectRuntime()
@@ -135,7 +157,6 @@ func TestGCPauseCollectionIsOptIn(t *testing.T) {
 	enabled := newCollector(time.Now(), true)
 	enabledStats := enabled.collectRuntime()
 	assert.True(t, enabledStats.GCPauseMetricsEnabled)
-	assert.NotNil(t, enabledStats.GCPauseLastNS)
 	assert.NotNil(t, enabledStats.GCPauseTotalNS)
 }
 
