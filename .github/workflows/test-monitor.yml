@@ -8,6 +8,7 @@ on:
   pull_request:
     paths:
       - 'v3/monitor/**/*.go'
+      - 'v3/monitor/dashboard.gohtml'
       - 'v3/monitor/go.mod'
       - 'v3/monitor/go.sum'
 

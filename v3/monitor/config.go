@@ -1,132 +1,171 @@
 package monitor
 
 import (
+	"errors"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
 )
 
-// Config defines the config for middleware.
+const (
+	defaultTitle       = "Fiber Monitor"
+	defaultDescription = "Live process, runtime, system, and HTTP metrics for this Fiber service."
+	defaultFooter      = "Powered by github.com/gofiber/contrib/v3/monitor."
+	defaultRefresh     = 3 * time.Second
+	minimumRefresh     = time.Second
+
+	legacyDefaultFontURL    = `https://fonts.googleapis.com/css2?family=Roboto:wght@400;900&display=swap`
+	legacyDefaultChartJSURL = `https://cdn.jsdelivr.net/npm/chart.js@2.9/dist/Chart.bundle.min.js`
+)
+
+// ErrInvalidFaviconURL is returned when Config.FaviconURL is not supported.
+var ErrInvalidFaviconURL = errors.New("monitor: favicon url must be a root-relative path or an absolute http(s) url")
+
+// Config defines the configuration for the monitor middleware.
 type Config struct {
-	// Metrics page title
-	//
-	// Optional. Default: "Fiber Monitor"
-	Title string
-
-	// Refresh period
-	//
-	// Optional. Default: 3 seconds
-	Refresh time.Duration
-
-	// Whether the service should expose only the monitoring API.
-	//
-	// Optional. Default: false
-	APIOnly bool
-
-	// Next defines a function to skip this middleware when returned true.
-	//
-	// Optional. Default: nil
+	// Next passes matching requests to the rest of the Fiber stack. Requests
+	// passed through this way are included in the HTTP metrics.
 	Next func(c fiber.Ctx) bool
 
-	// Custom HTML Code to Head Section(Before End)
+	// Title is shown in the page title and dashboard heading.
+	Title string
+
+	// Description is shown below the dashboard heading.
+	Description string
+
+	// Footer is shown at the bottom of the dashboard.
+	Footer string
+
+	// FaviconURL overrides the built-in favicon.
+	// It must be a root-relative path or an absolute HTTP(S) URL.
+	FaviconURL string
+
+	// Refresh controls browser polling and server snapshot cache TTL.
+	Refresh time.Duration
+
+	// APIOnly makes the monitor endpoint return JSON regardless of Accept.
+	APIOnly bool
+
+	// EnableGCPauseMetrics enables exact GC pause metrics collected with
+	// runtime.ReadMemStats. It is disabled by default because ReadMemStats
+	// briefly stops the Go runtime while taking a consistent snapshot.
+	EnableGCPauseMetrics bool
+
+	// CustomHead is retained for source compatibility and has no effect.
 	//
-	// Optional. Default: empty
+	// Deprecated: the embedded dashboard does not accept custom HTML.
 	CustomHead string
 
-	// FontURL to specify font resource path or URL. You can also use a relative path.
+	// FontURL is retained for source compatibility and has no effect.
 	//
-	// Optional. Default: https://fonts.googleapis.com/css2?family=Roboto:wght@400;900&display=swap
+	// Deprecated: the embedded dashboard does not load external fonts.
 	FontURL string
 
-	// ChartJSURL to specify ChartJS library path or URL. You can also use a relative path.
+	// ChartJSURL is retained for source compatibility and has no effect.
 	//
-	// Optional. Default: https://cdn.jsdelivr.net/npm/chart.js@2.9/dist/Chart.bundle.min.js
+	// Deprecated: the embedded dashboard uses dependency-free Canvas charts.
 	ChartJSURL string
-
-	index string
 }
 
+// ConfigDefault is the default configuration.
 var ConfigDefault = Config{
-	Title:      defaultTitle,
-	Refresh:    defaultRefresh,
-	FontURL:    defaultFontURL,
-	ChartJSURL: defaultChartJSURL,
-	CustomHead: defaultCustomHead,
-	APIOnly:    false,
-	Next:       nil,
-	index: newIndex(viewBag{
-		defaultTitle,
-		defaultRefresh,
-		defaultFontURL,
-		defaultChartJSURL,
-		defaultCustomHead,
-	}),
+	Title:       defaultTitle,
+	Description: defaultDescription,
+	Footer:      defaultFooter,
+	Refresh:     defaultRefresh,
+	FontURL:     legacyDefaultFontURL,
+	ChartJSURL:  legacyDefaultChartJSURL,
 }
 
 func configDefault(config ...Config) Config {
-	// Users can change ConfigDefault.Title/Refresh which then
-	// become incompatible with ConfigDefault.index
-	if ConfigDefault.Title != defaultTitle ||
-		ConfigDefault.Refresh != defaultRefresh ||
-		ConfigDefault.FontURL != defaultFontURL ||
-		ConfigDefault.ChartJSURL != defaultChartJSURL ||
-		ConfigDefault.CustomHead != defaultCustomHead {
-		if ConfigDefault.Refresh < minRefresh {
-			ConfigDefault.Refresh = minRefresh
-		}
-		// update default index with new default title/refresh
-		ConfigDefault.index = newIndex(viewBag{
-			ConfigDefault.Title,
-			ConfigDefault.Refresh,
-			ConfigDefault.FontURL,
-			ConfigDefault.ChartJSURL,
-			ConfigDefault.CustomHead,
-		})
+	base := ConfigDefault
+	if len(config) == 0 {
+		return base
 	}
 
-	// Return default config if nothing provided
-	if len(config) < 1 {
-		return ConfigDefault
-	}
-
-	// Override default config
 	cfg := config[0]
-
-	// Set default values
-	if cfg.Title == "" {
-		cfg.Title = ConfigDefault.Title
+	if cfg.Next == nil {
+		cfg.Next = base.Next
 	}
-
-	if cfg.Refresh == 0 {
-		cfg.Refresh = ConfigDefault.Refresh
+	if cfg.Title == "" {
+		cfg.Title = base.Title
+	}
+	if cfg.Description == "" {
+		cfg.Description = base.Description
+	}
+	if cfg.Footer == "" {
+		cfg.Footer = base.Footer
+	}
+	if cfg.FaviconURL == "" {
+		cfg.FaviconURL = base.FaviconURL
+	}
+	if cfg.Refresh <= 0 {
+		cfg.Refresh = base.Refresh
+	}
+	if !cfg.APIOnly {
+		cfg.APIOnly = base.APIOnly
+	}
+	if !cfg.EnableGCPauseMetrics {
+		cfg.EnableGCPauseMetrics = base.EnableGCPauseMetrics
+	}
+	if cfg.CustomHead == "" {
+		cfg.CustomHead = base.CustomHead
 	}
 	if cfg.FontURL == "" {
-		cfg.FontURL = defaultFontURL
+		cfg.FontURL = base.FontURL
 	}
-
 	if cfg.ChartJSURL == "" {
-		cfg.ChartJSURL = defaultChartJSURL
+		cfg.ChartJSURL = base.ChartJSURL
 	}
-	if cfg.Refresh < minRefresh {
-		cfg.Refresh = minRefresh
-	}
-
-	if cfg.Next == nil {
-		cfg.Next = ConfigDefault.Next
-	}
-
-	if !cfg.APIOnly {
-		cfg.APIOnly = ConfigDefault.APIOnly
-	}
-
-	// update cfg.index with custom title/refresh
-	cfg.index = newIndex(viewBag{
-		title:      cfg.Title,
-		refresh:    cfg.Refresh,
-		fontURL:    cfg.FontURL,
-		chartJSURL: cfg.ChartJSURL,
-		customHead: cfg.CustomHead,
-	})
-
 	return cfg
+}
+
+func (c Config) normalized() (Config, error) {
+	if c.Title == "" {
+		c.Title = defaultTitle
+	}
+	if c.Description == "" {
+		c.Description = defaultDescription
+	}
+	if c.Footer == "" {
+		c.Footer = defaultFooter
+	}
+	if c.Refresh <= 0 {
+		c.Refresh = defaultRefresh
+	}
+	if c.Refresh < minimumRefresh {
+		c.Refresh = minimumRefresh
+	}
+
+	faviconURL, err := normalizeFaviconURL(c.FaviconURL)
+	if err != nil {
+		return Config{}, err
+	}
+	c.FaviconURL = faviconURL
+	return c, nil
+}
+
+func normalizeFaviconURL(rawURL string) (string, error) {
+	rawURL = utils.TrimSpace(rawURL)
+	if rawURL == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", ErrInvalidFaviconURL
+	}
+	if strings.HasPrefix(rawURL, "/") &&
+		!strings.HasPrefix(rawURL, "//") &&
+		!strings.HasPrefix(rawURL, "/\\") &&
+		parsed.Scheme == "" && parsed.Host == "" {
+		return rawURL, nil
+	}
+	if (utils.EqualFold(parsed.Scheme, "http") || utils.EqualFold(parsed.Scheme, "https")) &&
+		parsed.Host != "" && parsed.User == nil {
+		return rawURL, nil
+	}
+	return "", ErrInvalidFaviconURL
 }

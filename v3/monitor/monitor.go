@@ -1,195 +1,168 @@
+// Package monitor provides real-time operational metrics for Fiber services.
 package monitor
 
 import (
-	"os"
-	"runtime"
-	"strconv"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
-	"github.com/shirou/gopsutil/v4/cpu"
-	"github.com/shirou/gopsutil/v4/load"
-	"github.com/shirou/gopsutil/v4/mem"
-	"github.com/shirou/gopsutil/v4/net"
-	"github.com/shirou/gopsutil/v4/process"
 )
 
-type stats struct {
-	PID statsPID `json:"pid"`
-	OS  statsOS  `json:"os"`
-}
-
-type statsPID struct {
-	CPU        float64 `json:"cpu"`
-	RAM        uint64  `json:"ram"`
-	Conns      int     `json:"conns"`
-	Goroutines int     `json:"goroutines"`
-	// Requests is encoded as a string to preserve precision in JavaScript,
-	// which cannot exactly represent uint64 values above 2^53-1.
-	Requests string  `json:"requests"`
-	Uptime   float64 `json:"uptime"`
-}
-
-type statsOS struct {
-	CPU      float64 `json:"cpu"`
-	RAM      uint64  `json:"ram"`
-	TotalRAM uint64  `json:"total_ram"`
-	LoadAvg  float64 `json:"load_avg"`
-	Conns    int     `json:"conns"`
-}
-
-var (
-	monitPIDCPU        atomic.Value
-	monitPIDRAM        atomic.Value
-	monitPIDConns      atomic.Value
-	monitPIDGoroutines atomic.Value
-
-	monitOSCPU      atomic.Value
-	monitOSRAM      atomic.Value
-	monitOSTotalRAM atomic.Value
-	monitOSLoadAvg  atomic.Value
-	monitOSConns    atomic.Value
-
-	monitTotalRequests atomic.Uint64
+const (
+	headerCacheControl        = "Cache-Control"
+	headerXContentTypeOptions = "X-Content-Type-Options"
+	headerAllow               = "Allow"
 )
 
-var (
-	once             sync.Once
-	processStartTime time.Time
-)
+// middleware keeps the business-request path limited to time reads and
+// atomics. collectMu protects the mutable collector baselines and histogram
+// reset only while a fresh dashboard snapshot is being built; business
+// requests never acquire it.
+type middleware struct {
+	next    func(fiber.Ctx) bool
+	apiOnly bool
+	refresh time.Duration
+	index   string
 
-// New creates a new middleware handler
+	requests atomic.Uint64
+	inFlight atomic.Uint64
+	status1  atomic.Uint64
+	status2  atomic.Uint64
+	status3  atomic.Uint64
+	status4  atomic.Uint64
+	status5  atomic.Uint64
+	latency  latencyHistogram
+
+	collectMu sync.Mutex
+	cache     atomic.Pointer[cacheEntry]
+	collector collector
+	collectFn func(time.Time) snapshot
+	now       func() time.Time
+}
+
+// New creates a Fiber handler that serves the dashboard and JSON snapshot on
+// whichever route it is mounted. When Config.Next returns true, the request is
+// passed downstream and included in the aggregate HTTP metrics instead.
 func New(config ...Config) fiber.Handler {
-	// Set default config
-	cfg := configDefault(config...)
+	m, err := newMiddleware(config...)
+	if err != nil {
+		panic(fmt.Errorf("fiber: monitor middleware error -> %w", err))
+	}
+	return m.handler()
+}
 
-	// Start routine to update statistics
-	once.Do(func() {
-		// Initialize atomic.Values with typed zero defaults so that Load() before
-		// the first updateStatistics completes does not panic with
-		// "sync/atomic: Load of uninitialized Value".
-		monitPIDCPU.Store(float64(0))
-		monitPIDRAM.Store(uint64(0))
-		monitPIDConns.Store(int(0))
-		monitPIDGoroutines.Store(int(0))
-		monitOSCPU.Store(float64(0))
-		monitOSRAM.Store(uint64(0))
-		monitOSTotalRAM.Store(uint64(0))
-		monitOSLoadAvg.Store(float64(0))
-		monitOSConns.Store(int(0))
-		// p may be nil on permission/platform errors; updateStatistics handles nil gracefully.
-		p, _ := process.NewProcess(int32(os.Getpid()))
+func newMiddleware(config ...Config) (*middleware, error) {
+	cfg, err := configDefault(config...).normalized()
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	index, err := renderDashboard(cfg)
+	if err != nil {
+		return nil, err
+	}
+	m := &middleware{
+		next:      cfg.Next,
+		apiOnly:   cfg.APIOnly,
+		refresh:   cfg.Refresh,
+		index:     index,
+		collector: newCollector(now, cfg.EnableGCPauseMetrics),
+		now:       time.Now,
+	}
+	m.collectFn = m.collectSnapshot
+	return m, nil
+}
 
-		// Use the actual process start time from gopsutil when available;
-		// fall back to middleware init time if the process handle is unavailable.
-		processStartTime = time.Now()
-		if p != nil {
-			if createMs, err := p.CreateTime(); err == nil {
-				processStartTime = time.UnixMilli(createMs)
-			}
-		}
-
-		numcpu := runtime.NumCPU()
-		updateStatistics(p, numcpu)
-
-		go func() {
-			for {
-				time.Sleep(cfg.Refresh)
-
-				updateStatistics(p, numcpu)
-			}
-		}()
-	})
-
-	// Return new handler
+func (m *middleware) handler() fiber.Handler {
 	return func(c fiber.Ctx) error {
-		// Increment the absolute request counter before the Next check so that,
-		// when the middleware is mounted app-wide with a Next filter (see README),
-		// every request passing through is counted, not only monitor endpoint hits.
-		monitTotalRequests.Add(1)
-
-		// Don't execute middleware if Next returns true
-		if cfg.Next != nil && cfg.Next(c) {
-			return c.Next()
+		// This preserves monitor's route-agnostic mounting contract. A false
+		// Next result identifies the monitor endpoint; a true result passes the
+		// request through and records it as application traffic.
+		if m.next != nil && m.next(c) {
+			return m.instrument(c)
 		}
-
-		if c.Method() != fiber.MethodGet {
-			return fiber.ErrMethodNotAllowed
-		}
-		if c.Get(fiber.HeaderAccept) == fiber.MIMEApplicationJSON || cfg.APIOnly {
-			snapshot := stats{}
-			if v, ok := monitPIDCPU.Load().(float64); ok {
-				snapshot.PID.CPU = v
-			}
-			if v, ok := monitPIDRAM.Load().(uint64); ok {
-				snapshot.PID.RAM = v
-			}
-			if v, ok := monitPIDConns.Load().(int); ok {
-				snapshot.PID.Conns = v
-			}
-			if v, ok := monitPIDGoroutines.Load().(int); ok {
-				snapshot.PID.Goroutines = v
-			}
-			snapshot.PID.Requests = strconv.FormatUint(monitTotalRequests.Load(), 10)
-			snapshot.PID.Uptime = time.Since(processStartTime).Seconds()
-
-			if v, ok := monitOSCPU.Load().(float64); ok {
-				snapshot.OS.CPU = v
-			}
-			if v, ok := monitOSRAM.Load().(uint64); ok {
-				snapshot.OS.RAM = v
-			}
-			if v, ok := monitOSTotalRAM.Load().(uint64); ok {
-				snapshot.OS.TotalRAM = v
-			}
-			if v, ok := monitOSLoadAvg.Load().(float64); ok {
-				snapshot.OS.LoadAvg = v
-			}
-			if v, ok := monitOSConns.Load().(int); ok {
-				snapshot.OS.Conns = v
-			}
-			return c.Status(fiber.StatusOK).JSON(&snapshot)
-		}
-		c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
-		return c.Status(fiber.StatusOK).SendString(cfg.index)
+		return m.serveMonitor(c)
 	}
 }
 
-func updateStatistics(p *process.Process, numcpu int) {
-	// Process-dependent metrics — skipped when p is nil (e.g. NewProcess failed).
-	if p != nil {
-		if pidCPU, err := p.Percent(0); err == nil {
-			monitPIDCPU.Store(pidCPU / float64(numcpu))
+// instrument records the response that Fiber ultimately sends. Fiber normally
+// runs the application ErrorHandler only after the whole handler chain returns,
+// so invoking it here is necessary to observe custom client-visible statuses.
+func (m *middleware) instrument(c fiber.Ctx) error {
+	started := time.Now()
+	sequence := m.requests.Add(1)
+	m.inFlight.Add(1)
+	// Keep in-flight balanced when downstream panics. Panic recovery remains the
+	// application's responsibility and should be mounted after monitor.
+	defer m.inFlight.Add(^uint64(0))
+
+	err := c.Next()
+	if err != nil {
+		if handlerErr := c.App().ErrorHandler(c, err); handlerErr != nil {
+			_ = c.SendStatus(fiber.StatusInternalServerError) //nolint:errcheck // mirrors Fiber's fallback
 		}
-
-		if pidRAM, err := p.MemoryInfo(); err == nil && pidRAM != nil {
-			monitPIDRAM.Store(pidRAM.RSS)
-		}
-
-		if pidConns, err := net.ConnectionsPid("tcp", p.Pid); err == nil {
-			monitPIDConns.Store(len(pidConns))
-		}
 	}
 
-	// Process-independent metrics — always updated.
-	if osCPU, err := cpu.Percent(0, false); err == nil && len(osCPU) > 0 {
-		monitOSCPU.Store(osCPU[0])
+	// Fiber's timeout middleware parks its response separately because the timed
+	// out handler can still own the live response buffer. Read that response when
+	// present so a client-visible 408 is not classified as a 200.
+	response := c.Response()
+	if timedOut := c.RequestCtx().LastTimeoutErrorResponse(); timedOut != nil {
+		response = timedOut
 	}
+	m.recordStatus(response.StatusCode())
 
-	if osRAM, err := mem.VirtualMemory(); err == nil && osRAM != nil {
-		monitOSRAM.Store(osRAM.Used)
-		monitOSTotalRAM.Store(osRAM.Total)
+	elapsed := time.Since(started)
+	if elapsed < 0 {
+		elapsed = 0
 	}
+	m.latency.observeSharded(uint64(elapsed.Nanoseconds()), sequence)
+	return nil
+}
 
-	if loadAvg, err := load.Avg(); err == nil && loadAvg != nil {
-		monitOSLoadAvg.Store(loadAvg.Load1)
+func (m *middleware) serveMonitor(c fiber.Ctx) error {
+	method := c.Method()
+	if method != fiber.MethodGet && method != fiber.MethodHead {
+		c.Set(headerAllow, "GET, HEAD")
+		return fiber.ErrMethodNotAllowed
 	}
+	if m.apiOnly || c.Accepts(fiber.MIMETextHTML, fiber.MIMEApplicationJSON) == fiber.MIMEApplicationJSON {
+		return m.serveJSON(c)
+	}
+	return m.serveHTML(c)
+}
 
-	monitPIDGoroutines.Store(runtime.NumGoroutine())
+func (m *middleware) serveHTML(c fiber.Ctx) error {
+	setDashboardHeaders(c)
+	c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
+	return c.Status(fiber.StatusOK).SendString(m.index)
+}
 
-	if osConns, err := net.Connections("tcp"); err == nil {
-		monitOSConns.Store(len(osConns))
+func (m *middleware) serveJSON(c fiber.Ctx) error {
+	setDashboardHeaders(c)
+	c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSONCharsetUTF8)
+	current := m.currentSnapshot(m.now())
+	return c.Status(fiber.StatusOK).JSON(&current)
+}
+
+func setDashboardHeaders(c fiber.Ctx) {
+	c.Set(headerCacheControl, "no-store")
+	c.Set(headerXContentTypeOptions, "nosniff")
+}
+
+func (m *middleware) recordStatus(status int) {
+	switch status / 100 {
+	case 1:
+		m.status1.Add(1)
+	case 2:
+		m.status2.Add(1)
+	case 3:
+		m.status3.Add(1)
+	case 4:
+		m.status4.Add(1)
+	case 5:
+		m.status5.Add(1)
 	}
 }

@@ -1,304 +1,302 @@
 package monitor
 
 import (
-	"bytes"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"io"
 	"net/http/httptest"
-	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	recovermw "github.com/gofiber/fiber/v3/middleware/recover"
+	"github.com/gofiber/fiber/v3/middleware/timeout"
 	"github.com/stretchr/testify/assert"
-
-	"github.com/valyala/fasthttp"
+	"github.com/stretchr/testify/require"
 )
 
-func Test_Monitor_405(t *testing.T) {
-	t.Parallel()
-
+func TestMonitorRouteAndNegotiation(t *testing.T) {
+	m, err := newMiddleware()
+	require.NoError(t, err)
 	app := fiber.New()
+	app.Get("/metrics", m.handler())
 
-	app.Use("/", New())
-
-	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, "/", nil))
-	assert.Equal(t, nil, err)
-	assert.Equal(t, 405, resp.StatusCode)
-}
-
-func Test_Monitor_Html(t *testing.T) {
-	t.Parallel()
-
-	app := fiber.New()
-
-	// defaults
-	app.Get("/", New())
-	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
-
-	assert.Equal(t, nil, err)
-	assert.Equal(t, 200, resp.StatusCode)
-	assert.Equal(t, fiber.MIMETextHTMLCharsetUTF8,
-		resp.Header.Get(fiber.HeaderContentType))
-	buf, err := io.ReadAll(resp.Body)
-	assert.Equal(t, nil, err)
-	assert.Equal(t, true, bytes.Contains(buf, []byte("<title>"+defaultTitle+"</title>")))
-	timeoutLine := fmt.Sprintf("setTimeout(fetchJSON, %d)",
-		defaultRefresh.Milliseconds()-timeoutDiff)
-	assert.Equal(t, true, bytes.Contains(buf, []byte(timeoutLine)))
-
-	// custom config
-	conf := Config{Title: "New " + defaultTitle, Refresh: defaultRefresh + time.Second}
-	app.Get("/custom", New(conf))
-	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/custom", nil))
-
-	assert.Equal(t, nil, err)
-	assert.Equal(t, 200, resp.StatusCode)
-	assert.Equal(t, fiber.MIMETextHTMLCharsetUTF8,
-		resp.Header.Get(fiber.HeaderContentType))
-	buf, err = io.ReadAll(resp.Body)
-	assert.Equal(t, nil, err)
-	assert.Equal(t, true, bytes.Contains(buf, []byte("<title>"+conf.Title+"</title>")))
-	timeoutLine = fmt.Sprintf("setTimeout(fetchJSON, %d)",
-		conf.Refresh.Milliseconds()-timeoutDiff)
-	assert.Equal(t, true, bytes.Contains(buf, []byte(timeoutLine)))
-}
-
-func Test_Monitor_Html_CustomCodes(t *testing.T) {
-	t.Parallel()
-
-	app := fiber.New()
-
-	// defaults
-	app.Get("/", New())
-	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
-
-	assert.Equal(t, nil, err)
-	assert.Equal(t, 200, resp.StatusCode)
-	assert.Equal(t, fiber.MIMETextHTMLCharsetUTF8,
-		resp.Header.Get(fiber.HeaderContentType))
-	buf, err := io.ReadAll(resp.Body)
-	assert.Equal(t, nil, err)
-	assert.Equal(t, true, bytes.Contains(buf, []byte("<title>"+defaultTitle+"</title>")))
-	timeoutLine := fmt.Sprintf("setTimeout(fetchJSON, %d)",
-		defaultRefresh.Milliseconds()-timeoutDiff)
-	assert.Equal(t, true, bytes.Contains(buf, []byte(timeoutLine)))
-
-	// custom config
-	conf := Config{
-		Title:      "New " + defaultTitle,
-		Refresh:    defaultRefresh + time.Second,
-		ChartJSURL: "https://cdnjs.com/libraries/Chart.js",
-		FontURL:    "/public/my-font.css",
-		CustomHead: `<style>body{background:#fff}</style>`,
+	tests := []struct {
+		name        string
+		path        string
+		accept      string
+		contentType string
+		contains    string
+	}{
+		{name: "default html", path: "/metrics", contentType: fiber.MIMETextHTML, contains: "Fiber Monitor"},
+		{name: "trailing slash", path: "/metrics/", accept: "*/*", contentType: fiber.MIMETextHTML, contains: "Fiber Monitor"},
+		{name: "html preferred", path: "/metrics", accept: "text/html,application/json", contentType: fiber.MIMETextHTML, contains: "Fiber Monitor"},
+		{name: "json", path: "/metrics", accept: fiber.MIMEApplicationJSON, contentType: fiber.MIMEApplicationJSON, contains: `"http"`},
 	}
-	app.Get("/custom", New(conf))
-	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/custom", nil))
-
-	assert.Equal(t, nil, err)
-	assert.Equal(t, 200, resp.StatusCode)
-	assert.Equal(t, fiber.MIMETextHTMLCharsetUTF8,
-		resp.Header.Get(fiber.HeaderContentType))
-	buf, err = io.ReadAll(resp.Body)
-	assert.Equal(t, nil, err)
-	assert.Equal(t, true, bytes.Contains(buf, []byte("<title>"+conf.Title+"</title>")))
-	assert.Equal(t, true, bytes.Contains(buf, []byte("https://cdnjs.com/libraries/Chart.js")))
-	assert.Equal(t, true, bytes.Contains(buf, []byte("/public/my-font.css")))
-	assert.Equal(t, true, bytes.Contains(buf, []byte(conf.CustomHead)))
-
-	timeoutLine = fmt.Sprintf("setTimeout(fetchJSON, %d)",
-		conf.Refresh.Milliseconds()-timeoutDiff)
-	assert.Equal(t, true, bytes.Contains(buf, []byte(timeoutLine)))
-}
-
-// go test -run Test_Monitor_JSON -race
-func Test_Monitor_JSON(t *testing.T) {
-	t.Parallel()
-
-	app := fiber.New()
-
-	app.Get("/", New())
-
-	req := httptest.NewRequest(fiber.MethodGet, "/", nil)
-	req.Header.Set(fiber.HeaderAccept, fiber.MIMEApplicationJSON)
-	resp, err := app.Test(req)
-	assert.Equal(t, nil, err)
-	t.Cleanup(func() {
-		assert.NoError(t, resp.Body.Close())
-	})
-	assert.Equal(t, 200, resp.StatusCode)
-	assert.Equal(t, fiber.MIMEApplicationJSONCharsetUTF8, resp.Header.Get(fiber.HeaderContentType))
-
-	var result struct {
-		PID struct {
-			CPU        float64 `json:"cpu"`
-			RAM        uint64  `json:"ram"`
-			Conns      int     `json:"conns"`
-			Goroutines int     `json:"goroutines"`
-			Requests   string  `json:"requests"`
-			Uptime     float64 `json:"uptime"`
-		} `json:"pid"`
-		OS struct {
-			CPU      float64 `json:"cpu"`
-			RAM      uint64  `json:"ram"`
-			TotalRAM uint64  `json:"total_ram"`
-			LoadAvg  float64 `json:"load_avg"`
-			Conns    int     `json:"conns"`
-		} `json:"os"`
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(fiber.MethodGet, test.path, nil)
+			if test.accept != "" {
+				req.Header.Set(fiber.HeaderAccept, test.accept)
+			}
+			resp, requestErr := app.Test(req)
+			require.NoError(t, requestErr)
+			defer func() { assert.NoError(t, resp.Body.Close()) }()
+			body, readErr := io.ReadAll(resp.Body)
+			require.NoError(t, readErr)
+			assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+			assert.Contains(t, resp.Header.Get(fiber.HeaderContentType), test.contentType)
+			assert.Equal(t, "no-store", resp.Header.Get(headerCacheControl))
+			assert.Equal(t, "nosniff", resp.Header.Get(headerXContentTypeOptions))
+			assert.Contains(t, string(body), test.contains)
+		})
 	}
-	err = json.NewDecoder(resp.Body).Decode(&result)
-	assert.Equal(t, nil, err)
-
-	// Validate new field types and expected value ranges.
-	_, parseErr := strconv.ParseUint(result.PID.Requests, 10, 64)
-	assert.NoError(t, parseErr, "pid.requests must be a string containing a non-negative integer")
-	assert.GreaterOrEqual(t, result.PID.Uptime, float64(0), "pid.uptime must be >= 0")
-	assert.Greater(t, result.PID.Goroutines, 0, "pid.goroutines must be > 0")
+	assert.Zero(t, m.requests.Load(), "monitor endpoint requests must not be counted")
 }
 
-// go test -v -run=^$ -bench=Benchmark_Monitor -benchmem -count=4
-func Benchmark_Monitor(b *testing.B) {
+func TestJSONUsesFinalSnapshotShape(t *testing.T) {
+	m, err := newMiddleware()
+	require.NoError(t, err)
 	app := fiber.New()
+	app.Get("/metrics", m.handler())
 
-	app.Get("/", New())
-
-	h := app.Handler()
-
-	fctx := &fasthttp.RequestCtx{}
-	fctx.Request.Header.SetMethod(fiber.MethodGet)
-	fctx.Request.SetRequestURI("/")
-	fctx.Request.Header.Set(fiber.HeaderAccept, fiber.MIMEApplicationJSON)
-
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			h(fctx)
-		}
-	})
-
-	assert.Equal(b, 200, fctx.Response.Header.StatusCode())
-	assert.Equal(b,
-		fiber.MIMEApplicationJSONCharsetUTF8,
-		string(fctx.Response.Header.Peek(fiber.HeaderContentType)))
-}
-
-// go test -run Test_Monitor_Next
-func Test_Monitor_Next(t *testing.T) {
-	t.Parallel()
-
-	app := fiber.New()
-
-	app.Use("/", New(Config{
-		Next: func(_ fiber.Ctx) bool {
-			return true
-		},
-	}))
-
-	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, "/", nil))
-	assert.Equal(t, nil, err)
-	assert.Equal(t, 404, resp.StatusCode)
-}
-
-// go test -run Test_Monitor_APIOnly -race
-func Test_Monitor_APIOnly(t *testing.T) {
-	app := fiber.New()
-
-	app.Get("/", New(Config{
-		APIOnly: true,
-	}))
-
-	req := httptest.NewRequest(fiber.MethodGet, "/", nil)
-	req.Header.Set(fiber.HeaderAccept, fiber.MIMEApplicationJSON)
-	resp, err := app.Test(req)
-	assert.Equal(t, nil, err)
-	assert.Equal(t, 200, resp.StatusCode)
-	assert.Equal(t, fiber.MIMEApplicationJSONCharsetUTF8, resp.Header.Get(fiber.HeaderContentType))
-
-	b, err := io.ReadAll(resp.Body)
-	assert.Equal(t, nil, err)
-	assert.Equal(t, true, bytes.Contains(b, []byte("pid")))
-	assert.Equal(t, true, bytes.Contains(b, []byte("os")))
-}
-
-// go test -run Test_Monitor_Requests -race
-func Test_Monitor_Requests(t *testing.T) {
-	t.Parallel()
-
-	app := fiber.New()
-
-	app.Get("/metrics", New(Config{
-		APIOnly: true,
-	}))
-
-	const nRequests = 5
-
-	// Make several requests
-	for i := 0; i < nRequests; i++ {
-		req := httptest.NewRequest(fiber.MethodGet, "/metrics", nil)
-		req.Header.Set(fiber.HeaderAccept, fiber.MIMEApplicationJSON)
-		resp, err := app.Test(req)
-		assert.Equal(t, nil, err)
-		assert.Equal(t, 200, resp.StatusCode)
-		assert.NoError(t, resp.Body.Close())
-	}
-
-	// Decode the final response and verify the counter reflects actual traffic.
 	req := httptest.NewRequest(fiber.MethodGet, "/metrics", nil)
 	req.Header.Set(fiber.HeaderAccept, fiber.MIMEApplicationJSON)
 	resp, err := app.Test(req)
-	assert.Equal(t, nil, err)
-	assert.Equal(t, 200, resp.StatusCode)
-	t.Cleanup(func() {
-		assert.NoError(t, resp.Body.Close())
-	})
-
-	var result struct {
-		PID struct {
-			Requests string `json:"requests"`
-		} `json:"pid"`
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, resp.Body.Close()) }()
+	var current snapshot
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(body, &current))
+	assert.False(t, current.CollectedAt.IsZero())
+	assert.NotNil(t, current.Collection.Errors)
+	assert.Nil(t, current.HTTP.RPS)
+	assert.Nil(t, current.HTTP.Latency.P50NS)
+	assert.Nil(t, current.Process.CPUPercent)
+	assert.Nil(t, current.System.NetworkReceiveBPS)
+	assert.False(t, current.Runtime.GCPauseMetricsEnabled)
+	assert.Nil(t, current.Runtime.GCPauseLastNS)
+	assert.Nil(t, current.Runtime.GCPauseWindowNS)
+	assert.Nil(t, current.Runtime.GCPauseTotalNS)
+	for _, field := range []string{
+		`"collected_at"`,
+		`"collection"`,
+		`"process"`,
+		`"runtime"`,
+		`"system"`,
+		`"http"`,
+		`"heap_sys_bytes"`,
+		`"gc_pause_window_ns"`,
+		`"memory_available_bytes"`,
+		`"disk_fstype"`,
+		`"1xx"`,
+	} {
+		assert.Contains(t, string(body), field)
 	}
-	err = json.NewDecoder(resp.Body).Decode(&result)
-	assert.Equal(t, nil, err)
-
-	count, err := strconv.ParseUint(result.PID.Requests, 10, 64)
-	assert.Equal(t, nil, err)
-	// The counter is a global atomic shared across all parallel tests; assert >= the
-	// minimum number of requests we know we made (nRequests + this final request).
-	assert.GreaterOrEqual(t, count, uint64(nRequests+1))
 }
 
-// go test -run Test_Monitor_Requests_NextFiltered -race
-func Test_Monitor_Requests_NextFiltered(t *testing.T) {
-	t.Parallel()
-
+func TestMonitorMethodHandling(t *testing.T) {
+	m, err := newMiddleware()
+	require.NoError(t, err)
 	app := fiber.New()
+	app.Use("/metrics", m.handler())
 
-	// Mounted app-wide as a traffic collector: Next skips everything except
-	// /metrics, but skipped requests must still be counted.
-	app.Use(New(Config{
-		APIOnly: true,
-		Next: func(c fiber.Ctx) bool {
-			return c.Path() != "/metrics"
-		},
-	}))
-	app.Get("/other", func(c fiber.Ctx) error {
-		return c.SendString("ok")
-	})
+	headResp, err := app.Test(httptest.NewRequest(fiber.MethodHead, "/metrics", nil))
+	require.NoError(t, err)
+	assert.NoError(t, headResp.Body.Close())
+	assert.Equal(t, fiber.StatusOK, headResp.StatusCode)
 
-	before := monitTotalRequests.Load()
+	postResp, err := app.Test(httptest.NewRequest(fiber.MethodPost, "/metrics", nil))
+	require.NoError(t, err)
+	assert.NoError(t, postResp.Body.Close())
+	assert.Equal(t, fiber.StatusMethodNotAllowed, postResp.StatusCode)
+	assert.Equal(t, "GET, HEAD", postResp.Header.Get(headerAllow))
+	assert.Zero(t, m.requests.Load())
+}
 
-	const nRequests = 3
-	for i := 0; i < nRequests; i++ {
-		resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/other", nil))
-		assert.Equal(t, nil, err)
-		assert.Equal(t, 200, resp.StatusCode)
+func TestAPIOnlyAlwaysReturnsJSON(t *testing.T) {
+	m, err := newMiddleware(Config{APIOnly: true})
+	require.NoError(t, err)
+	app := fiber.New()
+	app.Get("/metrics", m.handler())
+
+	req := httptest.NewRequest(fiber.MethodGet, "/metrics", nil)
+	req.Header.Set(fiber.HeaderAccept, fiber.MIMETextHTML)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, resp.Body.Close()) }()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+	assert.Contains(t, resp.Header.Get(fiber.HeaderContentType), fiber.MIMEApplicationJSON)
+	assert.Contains(t, string(body), `"process"`)
+}
+
+func TestNextPassesThroughAndRecordsBusinessRequests(t *testing.T) {
+	m, err := newMiddleware(Config{Next: func(c fiber.Ctx) bool { return c.Path() != "/metrics" }})
+	require.NoError(t, err)
+	app := fiber.New()
+	app.Use(m.handler())
+	app.Get("/ok", func(c fiber.Ctx) error { return c.SendStatus(fiber.StatusNoContent) })
+
+	business, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/ok", nil))
+	require.NoError(t, err)
+	assert.NoError(t, business.Body.Close())
+	assert.Equal(t, fiber.StatusNoContent, business.StatusCode)
+
+	dashboard, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/metrics", nil))
+	require.NoError(t, err)
+	assert.NoError(t, dashboard.Body.Close())
+	assert.Equal(t, fiber.StatusOK, dashboard.StatusCode)
+
+	assert.Equal(t, uint64(1), m.requests.Load())
+	assert.Equal(t, uint64(1), m.status2.Load())
+	assert.Equal(t, uint64(1), m.latency.snapshotAndReset().count)
+}
+
+func TestBusinessRequestStatusClassification(t *testing.T) {
+	m := mustInstrumentingMiddleware(t)
+	app := fiber.New()
+	app.Use(m.handler())
+	app.Get("/ok", func(c fiber.Ctx) error { return c.SendStatus(fiber.StatusNoContent) })
+	app.Get("/redirect", func(c fiber.Ctx) error { return c.SendStatus(fiber.StatusFound) })
+	app.Get("/fiber-error", func(fiber.Ctx) error { return fiber.ErrNotFound })
+	app.Get("/generic-error", func(fiber.Ctx) error { return errors.New("boom") })
+
+	for _, path := range []string{"/ok", "/redirect", "/fiber-error", "/generic-error"} {
+		resp, requestErr := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil))
+		require.NoError(t, requestErr)
 		assert.NoError(t, resp.Body.Close())
 	}
+	assert.Equal(t, uint64(4), m.requests.Load())
+	assert.Zero(t, m.inFlight.Load())
+	assert.Equal(t, uint64(1), m.status2.Load())
+	assert.Equal(t, uint64(1), m.status3.Load())
+	assert.Equal(t, uint64(1), m.status4.Load())
+	assert.Equal(t, uint64(1), m.status5.Load())
+	assert.Equal(t, uint64(4), m.latency.snapshotAndReset().count)
+}
 
-	// The counter is global and shared with parallel tests; it only grows, so
-	// assert that at least the requests made here were counted.
-	assert.GreaterOrEqual(t, monitTotalRequests.Load(), before+nRequests)
+func TestCustomErrorHandlerStatusIsRecorded(t *testing.T) {
+	m := mustInstrumentingMiddleware(t)
+	app := fiber.New(fiber.Config{ErrorHandler: func(c fiber.Ctx, _ error) error {
+		return c.Status(fiber.StatusUnprocessableEntity).SendString("custom response")
+	}})
+	app.Use(m.handler())
+	app.Get("/error", func(fiber.Ctx) error { return errors.New("boom") })
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/error", nil))
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, resp.Body.Close()) }()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, fiber.StatusUnprocessableEntity, resp.StatusCode)
+	assert.Equal(t, "custom response", string(body))
+	assert.Equal(t, uint64(1), m.status4.Load())
+	assert.Zero(t, m.status5.Load())
+}
+
+func TestFiberTimeoutIsRecordedAsTimeout(t *testing.T) {
+	m := mustInstrumentingMiddleware(t)
+	app := fiber.New()
+	app.Use(m.handler())
+	app.Get("/slow", timeout.New(func(c fiber.Ctx) error {
+		select {
+		case <-c.Context().Done():
+			return c.Context().Err()
+		case <-time.After(2 * time.Second):
+			return c.SendString("too late")
+		}
+	}, timeout.Config{Timeout: 20 * time.Millisecond}))
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/slow", nil))
+	require.NoError(t, err)
+	assert.NoError(t, resp.Body.Close())
+	assert.Equal(t, fiber.StatusRequestTimeout, resp.StatusCode)
+	assert.Equal(t, uint64(1), m.status4.Load())
+	assert.Zero(t, m.status2.Load())
+}
+
+func TestRecoveredPanicDoesNotLeakInFlight(t *testing.T) {
+	m := mustInstrumentingMiddleware(t)
+	app := fiber.New()
+	app.Use(m.handler(), recovermw.New())
+	app.Get("/panic", func(fiber.Ctx) error { panic("boom") })
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/panic", nil))
+	require.NoError(t, err)
+	assert.NoError(t, resp.Body.Close())
+	assert.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
+	assert.Zero(t, m.inFlight.Load())
+	assert.Equal(t, uint64(1), m.requests.Load())
+	assert.Equal(t, uint64(1), m.status5.Load())
+	assert.Equal(t, uint64(1), m.latency.snapshotAndReset().count)
+}
+
+func TestConcurrentBusinessRequests(t *testing.T) {
+	m := mustInstrumentingMiddleware(t)
+	app := fiber.New()
+	app.Use(m.handler())
+	app.Get("/", func(c fiber.Ctx) error { return c.SendString("ok") })
+
+	const requests = 100
+	var group sync.WaitGroup
+	errorsCh := make(chan error, requests*2)
+	for range requests {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			resp, requestErr := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
+			if requestErr != nil {
+				errorsCh <- requestErr
+				return
+			}
+			if closeErr := resp.Body.Close(); closeErr != nil {
+				errorsCh <- closeErr
+			}
+		}()
+	}
+	group.Wait()
+	close(errorsCh)
+	for requestErr := range errorsCh {
+		assert.NoError(t, requestErr)
+	}
+	assert.Equal(t, uint64(requests), m.requests.Load())
+	assert.Equal(t, uint64(requests), m.status2.Load())
+	assert.Zero(t, m.inFlight.Load())
+	assert.Equal(t, uint64(requests), m.latency.snapshotAndReset().count)
+}
+
+func TestBusinessHotPathDoesNotUseCollectionMutex(t *testing.T) {
+	m := mustInstrumentingMiddleware(t)
+	app := fiber.New()
+	app.Use(m.handler())
+	app.Get("/", func(c fiber.Ctx) error { return c.SendString("ok") })
+
+	m.collectMu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		resp, requestErr := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
+		if requestErr == nil {
+			requestErr = resp.Body.Close()
+		}
+		done <- requestErr
+	}()
+	select {
+	case requestErr := <-done:
+		m.collectMu.Unlock()
+		assert.NoError(t, requestErr)
+	case <-time.After(500 * time.Millisecond):
+		m.collectMu.Unlock()
+		t.Fatal("business request blocked on collection mutex")
+	}
+}
+
+func mustInstrumentingMiddleware(t testing.TB) *middleware {
+	t.Helper()
+	m, err := newMiddleware(Config{Next: func(fiber.Ctx) bool { return true }})
+	require.NoError(t, err)
+	return m
 }
