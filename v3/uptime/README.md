@@ -156,13 +156,14 @@ never expired. A service that has never recorded a successful heartbeat also
 keeps its (small) service hash without a TTL. Use `RemoveService` to clear
 either.
 
-## Removing a service
+### Removing a service
 
-The dashboard lists every service found under `StorageKeyPrefix`, not just the
-ones in the current config. Services are never dropped automatically while
-their retention window keeps being refreshed, so renaming `ServiceID` or an
-endpoint `ID`, or removing an endpoint, leaves the old identifier behind as a
-row that reports down forever. Delete it explicitly:
+When using the built-in Redis `Store` path, the dashboard lists every service
+found under `StorageKeyPrefix`, not just the ones in the current config.
+Services are never dropped automatically while their retention window keeps
+being refreshed, so renaming `ServiceID` or an endpoint `ID`, or removing an
+endpoint, leaves the old identifier behind as a row that reports down forever.
+Delete it explicitly:
 
 ```go
 err := uptime.RemoveService(context.Background(), store, "fiber:uptime", "old-endpoint-id")
@@ -181,7 +182,9 @@ expose their own removal operation.
 
 ## Custom storage
 
-Provide an implementation of
+For most users, the built-in Redis `Store` path remains the simplest and
+default integration. `Storage` is the advanced extension point for applications
+that need a custom persistence backend. Provide an implementation of
 `github.com/gofiber/contrib/v3/uptime/storage.Store` through `Storage`:
 
 ```go

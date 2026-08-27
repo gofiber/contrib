@@ -1,4 +1,8 @@
 // Package storage defines the persistence contract for Fiber Uptime backends.
+//
+// All day strings are local calendar dates formatted as YYYY-MM-DD in the
+// timezone configured for Uptime. This representation sorts chronologically
+// when compared lexicographically.
 package storage
 
 import (
@@ -46,9 +50,8 @@ type Service struct {
 	// Name and Description are refreshable display metadata.
 	Name        string
 	Description string
-	// CreatedAt is initialized when the service is first observed and must not
-	// replace an existing non-zero value. A later non-zero value may fill an
-	// initially zero value.
+	// CreatedAt is when the service was first observed. It remains stable across
+	// later upserts.
 	CreatedAt time.Time
 	// LastSeenAt must advance monotonically and never move backwards.
 	LastSeenAt time.Time
@@ -64,8 +67,8 @@ type Instance struct {
 	ServiceID string
 	Hostname  string
 	PID       int
-	// StartedAt is initialized once and must not replace an existing non-zero
-	// value.
+	// StartedAt is when this process instance started. It remains stable across
+	// later upserts.
 	StartedAt time.Time
 	// LastSeenAt must advance monotonically and never move backwards.
 	LastSeenAt time.Time
@@ -73,9 +76,10 @@ type Instance struct {
 
 // Heartbeat records that one service was up during a day slot.
 //
-// Writes are idempotent by (ServiceID, Day, Slot): repeated writes, including
-// writes from different instances, count as exactly one service-level up slot.
-// SeenAt refreshes the referenced service and instance last-seen timestamps
+// Slot is the zero-based sample interval within Day. The tuple (ServiceID, Day,
+// Slot) is the deduplication identity: repeated writes, including writes from
+// different instances, count as exactly one service-level up slot. SeenAt
+// refreshes the referenced service and instance last-seen timestamps
 // monotonically.
 type Heartbeat struct {
 	ServiceID  string
@@ -109,8 +113,9 @@ type RollupOptions struct {
 	// BeforeDay is an exclusive upper bound. Days less than BeforeDay are
 	// eligible for rollup. An empty value performs no rollup.
 	BeforeDay string
-	// ExpectedSlots computes the expected slot count for a service day. A nil
-	// callback means zero expected slots.
+	// ExpectedSlots computes the expected slot count for a service day. A backend
+	// may call it while RollupDaily is executing, but must not retain or invoke it
+	// after RollupDaily returns. A nil callback means zero expected slots.
 	ExpectedSlots ExpectedSlotsFunc
 }
 
@@ -122,7 +127,7 @@ type CleanupOptions struct {
 	SamplesBeforeDay string
 }
 
-// QueryDailyOptions selects finalized daily rows.
+// QueryDailyOptions selects persisted daily status rows.
 type QueryDailyOptions struct {
 	// ServiceIDs selects services. Nil means all services; a non-nil empty slice
 	// means no services.
