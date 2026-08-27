@@ -15,6 +15,9 @@ import (
 // Store does not define resource initialization or shutdown. A store must be
 // ready for use before it is passed to uptime.New, and its caller owns its
 // lifecycle.
+//
+// Implementations may optionally provide Name() string to customize the
+// storage driver name exposed by uptime status responses.
 type Store interface {
 	// UpsertService creates or refreshes a logical service according to the
 	// timestamp and metadata semantics documented by Service.
@@ -123,8 +126,13 @@ type RollupOptions struct {
 // Boundary days themselves are retained, and samples required by an
 // unfinalized daily row must not be removed.
 type CleanupOptions struct {
-	DailyBeforeDay   string
-	SamplesBeforeDay string
+    // DailyBeforeDay is an exclusive upper bound for daily status cleanup.
+    // Empty disables daily status cleanup.
+    DailyBeforeDay string
+
+    // SamplesBeforeDay is an exclusive upper bound for raw sample cleanup.
+    // Empty disables raw sample cleanup.
+    SamplesBeforeDay string
 }
 
 // QueryDailyOptions selects persisted daily status rows.
@@ -139,8 +147,10 @@ type QueryDailyOptions struct {
 
 // QueryTodaySamplesOptions selects raw service-level summaries for one day.
 type QueryTodaySamplesOptions struct {
-	// ServiceIDs selects services. Nil means all services; a non-nil empty slice
-	// means no services.
-	ServiceIDs []string
-	Day        string
+    // ServiceIDs selects services. Nil means all services; a non-nil empty
+    // slice means no services.
+    ServiceIDs []string
+
+    // Day is the local calendar day to query. Empty returns no rows.
+    Day string
 }

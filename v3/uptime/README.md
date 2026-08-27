@@ -182,8 +182,8 @@ expose their own removal operation.
 
 ## Custom storage
 
-For most users, the built-in Redis `Store` path remains the simplest and
-default integration. `Storage` is the advanced extension point for applications
+For most users, the built-in Redis `Store` path remains the simplest
+integration. `Storage` is the advanced extension point for applications
 that need a custom persistence backend. Provide an implementation of
 `github.com/gofiber/contrib/v3/uptime/storage.Store` through `Storage`:
 

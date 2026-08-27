@@ -122,12 +122,13 @@ func newRedisStoreConfig(cfg Config) storage.RedisConfig {
 	}
 }
 
-// RemoveService deletes all stored uptime state for serviceID, including its
-// history. Services are never removed automatically while their retention
+// RemoveService deletes all Redis-backed uptime state for serviceID,
+// including its history. Services are never removed automatically while their retention
 // window is refreshed, so call this after retiring or renaming a service or an
 // endpoint ID. Otherwise the old ID keeps its dashboard row and reports down.
 //
-// keyPrefix must match Config.StorageKeyPrefix; empty uses the default.
+// keyPrefix must match Config.StorageKeyPrefix used with Config.Store;
+// empty uses the default.
 func RemoveService(ctx context.Context, store *fiberredis.Storage, keyPrefix, serviceID string) error {
 	if store == nil {
 		return ErrMissingStore
