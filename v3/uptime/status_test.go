@@ -88,21 +88,21 @@ func TestExpectedSlotsSoFarSinceExcludesInProgressSlot(t *testing.T) {
 	}
 }
 
-func TestExpectedSlotsForDayCountsWholeDay(t *testing.T) {
+func TestExpectedSlotsForServiceDayCountsWholeDay(t *testing.T) {
 	t.Parallel()
 
-	requireEqual(t, 24, expectedSlotsForDay("2026-06-26", time.Hour, time.UTC))
-	requireEqual(t, 1440, expectedSlotsForDay("2026-06-26", time.Minute, time.UTC))
-	requireEqual(t, 0, expectedSlotsForDay("not-a-day", time.Minute, time.UTC))
+	requireEqual(t, 24, expectedSlotsForServiceDay("2026-06-26", time.Time{}, time.Hour, time.UTC))
+	requireEqual(t, 1440, expectedSlotsForServiceDay("2026-06-26", time.Time{}, time.Minute, time.UTC))
+	requireEqual(t, 0, expectedSlotsForServiceDay("not-a-day", time.Time{}, time.Minute, time.UTC))
 }
 
-func TestExpectedSlotsForDayHandlesDSTTransitions(t *testing.T) {
+func TestExpectedSlotsForServiceDayHandlesDSTTransitions(t *testing.T) {
 	t.Parallel()
 
 	loc, err := time.LoadLocation("America/New_York")
 	requireNoError(t, err)
 
-	requireEqual(t, 23, expectedSlotsForDay("2026-03-08", time.Hour, loc))
-	requireEqual(t, 25, expectedSlotsForDay("2026-11-01", time.Hour, loc))
-	requireEqual(t, 24, expectedSlotsForDay("2026-06-26", time.Hour, loc))
+	requireEqual(t, 23, expectedSlotsForServiceDay("2026-03-08", time.Time{}, time.Hour, loc))
+	requireEqual(t, 25, expectedSlotsForServiceDay("2026-11-01", time.Time{}, time.Hour, loc))
+	requireEqual(t, 24, expectedSlotsForServiceDay("2026-06-26", time.Time{}, time.Hour, loc))
 }

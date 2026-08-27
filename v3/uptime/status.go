@@ -421,15 +421,6 @@ func expectedSlotsSoFarSince(now, createdAt time.Time, interval time.Duration, l
 	return expectedSlotsForWindow(dayOf(now, loc), createdAt, currentSlotStart(now, interval, loc), interval, loc, false)
 }
 
-func expectedSlotsForDay(day string, interval time.Duration, loc *time.Location) int {
-	start, err := parseDay(day, loc)
-	if err != nil || interval <= 0 {
-		return 0
-	}
-	end := start.AddDate(0, 0, 1)
-	return ceilDuration(end.Sub(start), interval)
-}
-
 func expectedSlotsForServiceDay(day string, createdAt time.Time, interval time.Duration, loc *time.Location) int {
 	return expectedSlotsForWindow(day, createdAt, time.Time{}, interval, loc, false)
 }
