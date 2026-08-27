@@ -176,6 +176,29 @@ while the service is still being recorded takes it off the dashboard for good,
 but in-flight heartbeats will recreate partial keys; those carry the TTL above
 and expire on their own.
 
+`RemoveService` applies to the built-in Redis path. Custom storage backends may
+expose their own removal operation.
+
+## Custom storage
+
+Provide an implementation of
+`github.com/gofiber/contrib/v3/uptime/storage.Store` through `Storage`:
+
+```go
+app.Use(uptime.New(uptime.Config{
+	App:       app,
+	Storage:   myStore,
+	ServiceID: "api",
+}))
+```
+
+Custom stores must be ready before calling `uptime.New` and safe for concurrent
+use. The caller owns their lifecycle and should close underlying resources
+after the Fiber application has shut down; uptime does not close custom stores.
+`Store` and `Storage` are mutually exclusive, and `StorageKeyPrefix` applies
+only to the built-in Redis `Store` path. Redis remains the built-in storage
+integration.
+
 ## Snapshots and custom UI
 
 The dashboard and JSON API share an in-memory snapshot, limiting backing-store
@@ -232,8 +255,9 @@ remote host, so a same-origin URL is preferred for private deployments.
 | NodeID | `int64` | Optional node value used for generated instance IDs. | `0` |
 | InstanceID | `int64` | Explicit process instance ID. | Generated |
 | IDGenerator | `uptime.IDGenerator` | Custom instance ID generator. | `nil` |
-| Store | `*fiberredis.Storage` | Fiber Redis storage instance from `github.com/gofiber/storage/redis/v3`. | Required |
-| StorageKeyPrefix | `string` | Prefix for all uptime Redis keys. | `"fiber:uptime"` |
+| Store | `*fiberredis.Storage` | Fiber Redis storage instance from `github.com/gofiber/storage/redis/v3`. | Required unless `Storage` is set. |
+| Storage | `storage.Store` | Custom uptime storage backend. | Required unless `Store` is set. |
+| StorageKeyPrefix | `string` | Prefix for uptime Redis keys. Applies only when `Store` is used. | `"fiber:uptime"` |
 | UI | `uptime.UIConfig` | Dashboard copy, favicon, and thresholds. `FaviconURL` accepts a root-relative path or absolute HTTP(S) URL. Threshold values are configurable in `(0, 1]`; zero uses the defaults. | Embedded favicon, light English UI, green at `99.9%`, yellow at `99%` |
 
 ### EndpointConfig

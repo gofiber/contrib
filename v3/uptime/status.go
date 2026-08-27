@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 
 	"github.com/gofiber/contrib/v3/uptime/internal/storage"
@@ -156,6 +157,10 @@ func (u *runtime) buildStatus(ctx context.Context, now time.Time) (StatusRespons
 		u.setLastError(err)
 		return StatusResponse{}, err
 	}
+	services = append([]storage.Service(nil), services...)
+	sort.Slice(services, func(i, j int) bool {
+		return services[i].ID < services[j].ID
+	})
 
 	days := dayRange(now, u.config.DaysToShow, u.config.Timezone)
 	fromDay := days[0]

@@ -92,12 +92,24 @@ func newRuntime(config ...Config) (*runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	if cfg.Store == nil {
+	store, err := configuredStore(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return newWithStore(cfg, store, time.Now())
+}
+
+func configuredStore(cfg Config) (storage.Store, error) {
+	switch {
+	case cfg.Store != nil && cfg.Storage != nil:
+		return nil, ErrConflictingStorage
+	case cfg.Storage != nil:
+		return storage.NewExternalStore(cfg.Storage), nil
+	case cfg.Store != nil:
+		return storage.NewRedisStore(newRedisStoreConfig(cfg)), nil
+	default:
 		return nil, ErrMissingStore
 	}
-
-	store := storage.NewRedisStore(newRedisStoreConfig(cfg))
-	return newWithStore(cfg, store, time.Now())
 }
 
 func newRedisStoreConfig(cfg Config) storage.RedisConfig {
@@ -580,26 +592,13 @@ func (u *runtime) runMaintenance(ctx context.Context, now time.Time, force bool)
 		return err
 	}
 
-	expected := func(day string) int {
-		return expectedSlotsForDay(day, u.config.SampleInterval, u.config.Timezone)
-	}
-	services, err := u.serviceRollupMetadata(ctx)
-	if err != nil {
-		u.setLastError(err)
-		fiberlog.Errorf("uptime: list services for maintenance: %v", err)
-		return err
-	}
-	expectedForService := func(serviceID, day string) int {
-		service, ok := services[serviceID]
-		if !ok {
-			return expected(day)
-		}
-		return expectedSlotsForServiceDay(day, service.createdAt, service.interval, u.config.Timezone)
+	expectedSlots := func(service storage.Service, day string) int {
+		interval := u.serviceSampleInterval(service)
+		return expectedSlotsForServiceDay(day, service.CreatedAt, interval, u.config.Timezone)
 	}
 	if err := u.store.RollupDaily(ctx, storage.RollupOptions{
-		BeforeDay:                  today,
-		ExpectedSlotsForDay:        expected,
-		ExpectedSlotsForServiceDay: expectedForService,
+		BeforeDay:     today,
+		ExpectedSlots: expectedSlots,
 	}); err != nil {
 		u.setLastError(err)
 		fiberlog.Errorf("uptime: rollup daily: %v", err)
@@ -620,26 +619,6 @@ func (u *runtime) runMaintenance(ctx context.Context, now time.Time, force bool)
 	u.lastMaintenance = now
 	u.lastMaintenanceDay = today
 	return nil
-}
-
-type serviceRollupMetadata struct {
-	createdAt time.Time
-	interval  time.Duration
-}
-
-func (u *runtime) serviceRollupMetadata(ctx context.Context) (map[string]serviceRollupMetadata, error) {
-	services, err := u.store.ListServices(ctx)
-	if err != nil {
-		return nil, err
-	}
-	metadata := make(map[string]serviceRollupMetadata, len(services))
-	for _, service := range services {
-		metadata[service.ID] = serviceRollupMetadata{
-			createdAt: service.CreatedAt,
-			interval:  u.serviceSampleInterval(service),
-		}
-	}
-	return metadata, nil
 }
 
 func (u *runtime) setLastError(err error) {

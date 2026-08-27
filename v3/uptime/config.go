@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	uptimestorage "github.com/gofiber/contrib/v3/uptime/storage"
 	"github.com/gofiber/fiber/v3"
 	fiberredis "github.com/gofiber/storage/redis/v3"
 	"github.com/gofiber/utils/v2"
@@ -30,8 +31,10 @@ const (
 var (
 	// ErrMissingServiceID is returned when neither Config.ServiceID nor Config.Endpoints is set.
 	ErrMissingServiceID = errors.New("uptime: service id or endpoint is required")
-	// ErrMissingStore is returned when Config.Store is not set.
-	ErrMissingStore = errors.New("uptime: redis storage is required")
+	// ErrMissingStore is returned when neither Config.Store nor Config.Storage is set.
+	ErrMissingStore = errors.New("uptime: storage is required")
+	// ErrConflictingStorage is returned when Config.Store and Config.Storage are both set.
+	ErrConflictingStorage = errors.New("uptime: Store and Storage are mutually exclusive")
 	// ErrMissingApp is returned when Config.App is not set.
 	ErrMissingApp = errors.New("uptime: fiber app is required")
 	// ErrInvalidFaviconURL is returned when UIConfig.FaviconURL is not a supported URL.
@@ -76,8 +79,16 @@ type Config struct {
 
 	// Store is the Fiber Redis storage instance used for uptime state.
 	// The caller owns the storage lifecycle and should close it when the app stops.
+	// Store and Storage are mutually exclusive.
 	Store *fiberredis.Storage
-	// StorageKeyPrefix namespaces all uptime keys inside the selected Redis database.
+	// Storage is an optional custom uptime storage backend.
+	//
+	// Storage must be ready for use when New is called and safe for concurrent use.
+	// The caller owns its lifecycle and should close underlying resources after
+	// the Fiber app has shut down. Store and Storage are mutually exclusive.
+	Storage uptimestorage.Store
+	// StorageKeyPrefix namespaces Redis keys when Store is used. Custom storage
+	// backends own their namespacing and configuration.
 	StorageKeyPrefix string
 	// UI configures the built-in dashboard.
 	UI UIConfig

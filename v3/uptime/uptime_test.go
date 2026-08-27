@@ -15,6 +15,7 @@ import (
 
 	"github.com/gofiber/contrib/v3/uptime/internal/storage"
 	"github.com/gofiber/fiber/v3"
+	fiberredis "github.com/gofiber/storage/redis/v3"
 )
 
 func TestConfigDefaults(t *testing.T) {
@@ -623,6 +624,45 @@ func TestNewPanicsWithoutStore(t *testing.T) {
 	_ = New(Config{App: fiber.New(), ServiceID: "api"})
 }
 
+func TestConfiguredStoreSelection(t *testing.T) {
+	t.Parallel()
+
+	redisStorage := new(fiberredis.Storage)
+
+	selected, err := configuredStore(Config{Store: redisStorage})
+	requireNoError(t, err)
+	if _, ok := selected.(*storage.RedisStore); !ok {
+		t.Fatalf("store = %T, want *storage.RedisStore", selected)
+	}
+
+	custom := newSnapshotStore()
+	selected, err = configuredStore(Config{Storage: custom})
+	requireNoError(t, err)
+	requireNoError(t, selected.Init(context.Background()))
+	requireNoError(t, selected.Close())
+	requireEqual(t, 0, custom.initCalls)
+	requireEqual(t, 0, custom.closeCalls)
+
+	_, err = configuredStore(Config{Store: redisStorage, Storage: custom})
+	if !errors.Is(err, ErrConflictingStorage) {
+		t.Fatalf("error = %v, want %v", err, ErrConflictingStorage)
+	}
+	_, err = newRuntime(Config{
+		App:       fiber.New(),
+		Store:     redisStorage,
+		Storage:   custom,
+		ServiceID: "api",
+	})
+	if !errors.Is(err, ErrConflictingStorage) {
+		t.Fatalf("newRuntime error = %v, want %v", err, ErrConflictingStorage)
+	}
+
+	_, err = configuredStore(Config{})
+	if !errors.Is(err, ErrMissingStore) {
+		t.Fatalf("error = %v, want %v", err, ErrMissingStore)
+	}
+}
+
 func TestSnapshotBuildsFreshStatus(t *testing.T) {
 	t.Parallel()
 
@@ -777,6 +817,23 @@ func TestBuildStatusPassesKnownServiceIDsToQueries(t *testing.T) {
 	requireEqual(t, "api", store.queryTodayOptions.ServiceIDs[0])
 }
 
+func TestBuildStatusSortsServicesByID(t *testing.T) {
+	t.Parallel()
+
+	store := newSnapshotStore()
+	store.services = []storage.Service{
+		{ID: "z", Name: "Z", CreatedAt: store.now.Add(-time.Hour), LastSeenAt: store.now, SampleInterval: time.Second},
+		{ID: "a", Name: "A", CreatedAt: store.now.Add(-time.Hour), LastSeenAt: store.now, SampleInterval: time.Second},
+	}
+	u := newSnapshotUptime(store)
+
+	status, err := u.buildStatus(context.Background(), store.now)
+	requireNoError(t, err)
+	requireLen(t, status.Services, 2)
+	requireEqual(t, "a", status.Services[0].ID)
+	requireEqual(t, "z", status.Services[1].ID)
+}
+
 func TestDayStatusUsesServiceCreatedAtForToday(t *testing.T) {
 	t.Parallel()
 
@@ -877,12 +934,12 @@ func TestRollupExpectedSlotsUsesServiceCreatedAt(t *testing.T) {
 
 	requireNoError(t, u.runMaintenance(context.Background(), now, true))
 	requireEqual(t, 1, store.rollupCalls)
-	if store.rollupOptions.ExpectedSlotsForServiceDay == nil {
+	if store.rollupOptions.ExpectedSlots == nil {
 		t.Fatal("service-aware expected slots callback is nil")
 	}
 
-	requireEqual(t, 540, store.rollupOptions.ExpectedSlotsForServiceDay("api", "2026-06-25"))
-	requireEqual(t, 0, store.rollupOptions.ExpectedSlotsForServiceDay("api", "2026-06-24"))
+	requireEqual(t, 540, store.rollupOptions.ExpectedSlots(store.services[0], "2026-06-25"))
+	requireEqual(t, 0, store.rollupOptions.ExpectedSlots(store.services[0], "2026-06-24"))
 }
 
 func TestBuildStatusDoesNotClearRuntimeError(t *testing.T) {
@@ -1562,7 +1619,7 @@ func (s *snapshotStore) QueryDaily(_ context.Context, options storage.QueryDaily
 	var statuses []storage.DailyStatus
 	serviceIDs := stringSet(options.ServiceIDs)
 	for _, status := range s.daily {
-		if len(serviceIDs) > 0 {
+		if options.ServiceIDs != nil {
 			if _, ok := serviceIDs[status.ServiceID]; !ok {
 				continue
 			}
@@ -1582,7 +1639,7 @@ func (s *snapshotStore) QueryTodaySamples(_ context.Context, options storage.Que
 	var statuses []storage.TodaySampleStatus
 	serviceIDs := stringSet(options.ServiceIDs)
 	for _, status := range s.today {
-		if len(serviceIDs) > 0 {
+		if options.ServiceIDs != nil {
 			if _, ok := serviceIDs[status.ServiceID]; !ok {
 				continue
 			}

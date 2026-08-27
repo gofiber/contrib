@@ -38,8 +38,13 @@ func TestRedisStoreRollupAndCleanupLifecycle(t *testing.T) {
 	writeHeartbeat("2026-06-25", 1) // duplicate slot must collapse to one up slot
 
 	mustNoErr(t, store.RollupDaily(ctx, RollupOptions{
-		BeforeDay:                  "2026-06-26",
-		ExpectedSlotsForServiceDay: func(string, string) int { return 1440 },
+		BeforeDay: "2026-06-26",
+		ExpectedSlots: func(service Service, _ string) int {
+			if service.ID != "api" || !service.CreatedAt.Equal(created) || service.SampleInterval != time.Minute {
+				t.Fatalf("rollup service = %+v, want persisted api metadata", service)
+			}
+			return 1440
+		},
 	}))
 
 	daily := queryDailyMap(t, store)
@@ -75,6 +80,25 @@ func TestRedisStoreRollupAndCleanupLifecycle(t *testing.T) {
 	}
 }
 
+func TestRedisStoreRollupAllowsNilExpectedSlots(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := &RedisStore{config: RedisConfig{KeyPrefix: "test:uptime"}, client: newFakeRedisClient()}
+	mustNoErr(t, store.Init(ctx))
+	t.Cleanup(func() { mustNoErr(t, store.Close()) })
+
+	created := time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC)
+	mustNoErr(t, store.UpsertService(ctx, Service{ID: "api", Name: "API", CreatedAt: created, LastSeenAt: created, SampleInterval: time.Minute}))
+	mustNoErr(t, store.WriteHeartbeat(ctx, Heartbeat{ServiceID: "api", InstanceID: 1, Day: "2026-06-25", Slot: 0, SeenAt: created}))
+	mustNoErr(t, store.RollupDaily(ctx, RollupOptions{BeforeDay: "2026-06-26"}))
+
+	row := queryDailyMap(t, store)["2026-06-25"]
+	if row.ExpectedSlots != 0 || !row.Finalized {
+		t.Fatalf("daily = %+v, want expected=0 finalized=true", row)
+	}
+}
+
 func TestRedisStoreRollupDoesNotOverwriteFinalizedDailyWhenSamplesAreGone(t *testing.T) {
 	t.Parallel()
 
@@ -94,8 +118,8 @@ func TestRedisStoreRollupDoesNotOverwriteFinalizedDailyWhenSamplesAreGone(t *tes
 	mustNoErr(t, first.WriteHeartbeat(ctx, Heartbeat{ServiceID: "api", InstanceID: 1, Day: "2026-06-25", Slot: 1, SeenAt: created}))
 
 	mustNoErr(t, first.RollupDaily(ctx, RollupOptions{
-		BeforeDay:                  "2026-06-26",
-		ExpectedSlotsForServiceDay: func(string, string) int { return 1440 },
+		BeforeDay:     "2026-06-26",
+		ExpectedSlots: func(Service, string) int { return 1440 },
 	}))
 	before := queryDailyMap(t, first)["2026-06-25"]
 	if before.UpSlots != 2 || before.ExpectedSlots != 1440 || !before.Finalized {
@@ -104,8 +128,8 @@ func TestRedisStoreRollupDoesNotOverwriteFinalizedDailyWhenSamplesAreGone(t *tes
 
 	mustNoErr(t, client.Del(ctx, first.sampleKey("api", "2026-06-25")).Err())
 	mustNoErr(t, second.RollupDaily(ctx, RollupOptions{
-		BeforeDay:                  "2026-06-26",
-		ExpectedSlotsForServiceDay: func(string, string) int { return 1440 },
+		BeforeDay:     "2026-06-26",
+		ExpectedSlots: func(Service, string) int { return 1440 },
 	}))
 
 	after := queryDailyMap(t, first)["2026-06-25"]
@@ -135,8 +159,8 @@ func TestRedisStoreCleanupKeepsSamplesUntilDailyFinalized(t *testing.T) {
 	}
 
 	mustNoErr(t, store.RollupDaily(ctx, RollupOptions{
-		BeforeDay:                  "2026-06-26",
-		ExpectedSlotsForServiceDay: func(string, string) int { return 1440 },
+		BeforeDay:     "2026-06-26",
+		ExpectedSlots: func(Service, string) int { return 1440 },
 	}))
 	mustNoErr(t, store.Cleanup(ctx, CleanupOptions{SamplesBeforeDay: "2026-06-26"}))
 
@@ -147,7 +171,7 @@ func TestRedisStoreCleanupKeepsSamplesUntilDailyFinalized(t *testing.T) {
 	}
 }
 
-func TestRedisStoreQueriesUseProvidedServiceIDs(t *testing.T) {
+func TestRedisStoreQueryServiceIDSemantics(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -156,6 +180,10 @@ func TestRedisStoreQueriesUseProvidedServiceIDs(t *testing.T) {
 	mustNoErr(t, store.Init(ctx))
 	t.Cleanup(func() { mustNoErr(t, store.Close()) })
 
+	created := time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC)
+	for _, serviceID := range []string{"api", "worker"} {
+		mustNoErr(t, store.UpsertService(ctx, Service{ID: serviceID, Name: serviceID, CreatedAt: created, LastSeenAt: created, SampleInterval: time.Minute}))
+	}
 	mustNoErr(t, store.writeDaily(ctx, DailyStatus{
 		ServiceID:     "api",
 		Day:           "2026-06-25",
@@ -163,7 +191,15 @@ func TestRedisStoreQueriesUseProvidedServiceIDs(t *testing.T) {
 		ExpectedSlots: 1440,
 		Finalized:     true,
 	}))
+	mustNoErr(t, store.writeDaily(ctx, DailyStatus{
+		ServiceID:     "worker",
+		Day:           "2026-06-25",
+		UpSlots:       1,
+		ExpectedSlots: 1440,
+		Finalized:     true,
+	}))
 	mustNoErr(t, client.SAdd(ctx, store.sampleKey("api", "2026-06-26"), "1", "2").Err())
+	mustNoErr(t, client.SAdd(ctx, store.sampleKey("worker", "2026-06-26"), "1").Err())
 
 	daily, err := store.QueryDaily(ctx, QueryDailyOptions{
 		ServiceIDs: []string{"api"},
@@ -182,6 +218,40 @@ func TestRedisStoreQueriesUseProvidedServiceIDs(t *testing.T) {
 	mustNoErr(t, err)
 	if len(today) != 1 || today[0].ServiceID != "api" || today[0].UpSlots != 2 {
 		t.Fatalf("today with provided service ids = %+v, want one api row", today)
+	}
+
+	daily, err = store.QueryDaily(ctx, QueryDailyOptions{
+		FromDay: "2026-06-25",
+		ToDay:   "2026-06-25",
+	})
+	mustNoErr(t, err)
+	if len(daily) != 2 {
+		t.Fatalf("daily with nil service ids = %+v, want all services", daily)
+	}
+
+	daily, err = store.QueryDaily(ctx, QueryDailyOptions{
+		ServiceIDs: []string{},
+		FromDay:    "2026-06-25",
+		ToDay:      "2026-06-25",
+	})
+	mustNoErr(t, err)
+	if len(daily) != 0 {
+		t.Fatalf("daily with empty service ids = %+v, want no services", daily)
+	}
+
+	today, err = store.QueryTodaySamples(ctx, QueryTodaySamplesOptions{Day: "2026-06-26"})
+	mustNoErr(t, err)
+	if len(today) != 2 {
+		t.Fatalf("today with nil service ids = %+v, want all services", today)
+	}
+
+	today, err = store.QueryTodaySamples(ctx, QueryTodaySamplesOptions{
+		ServiceIDs: []string{},
+		Day:        "2026-06-26",
+	})
+	mustNoErr(t, err)
+	if len(today) != 0 {
+		t.Fatalf("today with empty service ids = %+v, want no services", today)
 	}
 }
 
@@ -398,8 +468,8 @@ func TestRedisStoreRemoveServiceDropsAllState(t *testing.T) {
 		mustNoErr(t, store.WriteHeartbeat(ctx, Heartbeat{ServiceID: id, InstanceID: 1, Day: "2026-06-25", Slot: 0, SeenAt: created}))
 	}
 	mustNoErr(t, store.RollupDaily(ctx, RollupOptions{
-		BeforeDay:                  "2026-06-26",
-		ExpectedSlotsForServiceDay: func(string, string) int { return 1440 },
+		BeforeDay:     "2026-06-26",
+		ExpectedSlots: func(Service, string) int { return 1440 },
 	}))
 
 	mustNoErr(t, store.RemoveService(ctx, "api"))
@@ -444,8 +514,8 @@ func TestRedisStoreHeartbeatArmsStateTTL(t *testing.T) {
 	mustNoErr(t, store.UpsertService(ctx, Service{ID: "api", Name: "API", CreatedAt: created, LastSeenAt: created, SampleInterval: time.Minute}))
 	mustNoErr(t, store.WriteHeartbeat(ctx, Heartbeat{ServiceID: "api", InstanceID: 1, Day: "2026-06-25", Slot: 0, SeenAt: created}))
 	mustNoErr(t, store.RollupDaily(ctx, RollupOptions{
-		BeforeDay:                  "2026-06-26",
-		ExpectedSlotsForServiceDay: func(string, string) int { return 1440 },
+		BeforeDay:     "2026-06-26",
+		ExpectedSlots: func(Service, string) int { return 1440 },
 	}))
 
 	for _, key := range []string{
@@ -499,8 +569,8 @@ func TestRedisStoreRollupSkipsDayWithExpiredSamples(t *testing.T) {
 	// samples gone, index entry still there: the TTL backstop outlived cleanup
 	mustNoErr(t, client.Del(ctx, store.sampleKey("api", "2026-06-25")).Err())
 	mustNoErr(t, store.RollupDaily(ctx, RollupOptions{
-		BeforeDay:                  "2026-06-26",
-		ExpectedSlotsForServiceDay: func(string, string) int { return 1440 },
+		BeforeDay:     "2026-06-26",
+		ExpectedSlots: func(Service, string) int { return 1440 },
 	}))
 
 	if row, ok := queryDailyMap(t, store)["2026-06-25"]; ok {
@@ -528,15 +598,15 @@ func TestRedisStoreRollupKeepsFinalizedRowWhenSamplesRemain(t *testing.T) {
 	mustNoErr(t, first.UpsertService(ctx, Service{ID: "api", Name: "API", CreatedAt: created, LastSeenAt: created, SampleInterval: time.Minute}))
 	mustNoErr(t, first.WriteHeartbeat(ctx, Heartbeat{ServiceID: "api", InstanceID: 1, Day: "2026-06-25", Slot: 0, SeenAt: created}))
 	mustNoErr(t, first.RollupDaily(ctx, RollupOptions{
-		BeforeDay:                  "2026-06-26",
-		ExpectedSlotsForServiceDay: func(string, string) int { return 1440 },
+		BeforeDay:     "2026-06-26",
+		ExpectedSlots: func(Service, string) int { return 1440 },
 	}))
 
 	// second instance disagrees on expected slots; samples still exist so only
 	// the Lua guard can stop it from rewriting the finalized row
 	mustNoErr(t, second.RollupDaily(ctx, RollupOptions{
-		BeforeDay:                  "2026-06-26",
-		ExpectedSlotsForServiceDay: func(string, string) int { return 96 },
+		BeforeDay:     "2026-06-26",
+		ExpectedSlots: func(Service, string) int { return 96 },
 	}))
 
 	row := queryDailyMap(t, first)["2026-06-25"]
