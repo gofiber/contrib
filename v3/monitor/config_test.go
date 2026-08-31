@@ -4,181 +4,86 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func Test_Config_Default(t *testing.T) {
-	t.Parallel()
-
-	t.Run("use default", func(t *testing.T) {
-		t.Parallel()
-		cfg := configDefault()
-
-		assert.Equal(t, defaultTitle, cfg.Title)
-		assert.Equal(t, defaultRefresh, cfg.Refresh)
-		assert.Equal(t, defaultFontURL, cfg.FontURL)
-		assert.Equal(t, defaultChartJSURL, cfg.ChartJSURL)
-		assert.Equal(t, defaultCustomHead, cfg.CustomHead)
-		assert.Equal(t, false, cfg.APIOnly)
-		assert.IsType(t, (func(fiber.Ctx) bool)(nil), cfg.Next)
-		assert.Equal(t, newIndex(viewBag{defaultTitle, defaultRefresh, defaultFontURL, defaultChartJSURL, defaultCustomHead}), cfg.index)
-	})
-
-	t.Run("set title", func(t *testing.T) {
-		t.Parallel()
-		title := "title"
-		cfg := configDefault(Config{
-			Title: title,
-		})
-
-		assert.Equal(t, title, cfg.Title)
-		assert.Equal(t, defaultRefresh, cfg.Refresh)
-		assert.Equal(t, defaultFontURL, cfg.FontURL)
-		assert.Equal(t, defaultChartJSURL, cfg.ChartJSURL)
-		assert.Equal(t, defaultCustomHead, cfg.CustomHead)
-		assert.Equal(t, false, cfg.APIOnly)
-		assert.IsType(t, (func(fiber.Ctx) bool)(nil), cfg.Next)
-		assert.Equal(t, newIndex(viewBag{title, defaultRefresh, defaultFontURL, defaultChartJSURL, defaultCustomHead}), cfg.index)
-	})
-
-	t.Run("set refresh less than default", func(t *testing.T) {
-		t.Parallel()
-		cfg := configDefault(Config{
-			Refresh: 100 * time.Millisecond,
-		})
-
-		assert.Equal(t, defaultTitle, cfg.Title)
-		assert.Equal(t, minRefresh, cfg.Refresh)
-		assert.Equal(t, defaultFontURL, cfg.FontURL)
-		assert.Equal(t, defaultChartJSURL, cfg.ChartJSURL)
-		assert.Equal(t, defaultCustomHead, cfg.CustomHead)
-		assert.Equal(t, false, cfg.APIOnly)
-		assert.IsType(t, (func(fiber.Ctx) bool)(nil), cfg.Next)
-		assert.Equal(t, newIndex(viewBag{defaultTitle, minRefresh, defaultFontURL, defaultChartJSURL, defaultCustomHead}), cfg.index)
-	})
-
-	t.Run("set refresh", func(t *testing.T) {
-		t.Parallel()
-		refresh := time.Second
-		cfg := configDefault(Config{
-			Refresh: refresh,
-		})
-
-		assert.Equal(t, defaultTitle, cfg.Title)
-		assert.Equal(t, refresh, cfg.Refresh)
-		assert.Equal(t, defaultFontURL, cfg.FontURL)
-		assert.Equal(t, defaultChartJSURL, cfg.ChartJSURL)
-		assert.Equal(t, defaultCustomHead, cfg.CustomHead)
-		assert.Equal(t, false, cfg.APIOnly)
-		assert.IsType(t, (func(fiber.Ctx) bool)(nil), cfg.Next)
-		assert.Equal(t, newIndex(viewBag{defaultTitle, refresh, defaultFontURL, defaultChartJSURL, defaultCustomHead}), cfg.index)
-	})
-
-	t.Run("set font url", func(t *testing.T) {
-		t.Parallel()
-		fontURL := "https://example.com"
-		cfg := configDefault(Config{
-			FontURL: fontURL,
-		})
-
-		assert.Equal(t, defaultTitle, cfg.Title)
-		assert.Equal(t, defaultRefresh, cfg.Refresh)
-		assert.Equal(t, fontURL, cfg.FontURL)
-		assert.Equal(t, defaultChartJSURL, cfg.ChartJSURL)
-		assert.Equal(t, defaultCustomHead, cfg.CustomHead)
-		assert.Equal(t, false, cfg.APIOnly)
-		assert.IsType(t, (func(fiber.Ctx) bool)(nil), cfg.Next)
-		assert.Equal(t, newIndex(viewBag{defaultTitle, defaultRefresh, fontURL, defaultChartJSURL, defaultCustomHead}), cfg.index)
-	})
-
-	t.Run("set chart js url", func(t *testing.T) {
-		t.Parallel()
-		chartURL := "http://example.com"
-		cfg := configDefault(Config{
-			ChartJSURL: chartURL,
-		})
-
-		assert.Equal(t, defaultTitle, cfg.Title)
-		assert.Equal(t, defaultRefresh, cfg.Refresh)
-		assert.Equal(t, defaultFontURL, cfg.FontURL)
-		assert.Equal(t, chartURL, cfg.ChartJSURL)
-		assert.Equal(t, defaultCustomHead, cfg.CustomHead)
-		assert.Equal(t, false, cfg.APIOnly)
-		assert.IsType(t, (func(fiber.Ctx) bool)(nil), cfg.Next)
-		assert.Equal(t, newIndex(viewBag{defaultTitle, defaultRefresh, defaultFontURL, chartURL, defaultCustomHead}), cfg.index)
-	})
-
-	t.Run("set custom head", func(t *testing.T) {
-		t.Parallel()
-		head := "head"
-		cfg := configDefault(Config{
-			CustomHead: head,
-		})
-
-		assert.Equal(t, defaultTitle, cfg.Title)
-		assert.Equal(t, defaultRefresh, cfg.Refresh)
-		assert.Equal(t, defaultFontURL, cfg.FontURL)
-		assert.Equal(t, defaultChartJSURL, cfg.ChartJSURL)
-		assert.Equal(t, head, cfg.CustomHead)
-		assert.Equal(t, false, cfg.APIOnly)
-		assert.IsType(t, (func(fiber.Ctx) bool)(nil), cfg.Next)
-		assert.Equal(t, newIndex(viewBag{defaultTitle, defaultRefresh, defaultFontURL, defaultChartJSURL, head}), cfg.index)
-	})
-
-	t.Run("set api only", func(t *testing.T) {
-		t.Parallel()
-		cfg := configDefault(Config{
-			APIOnly: true,
-		})
-
-		assert.Equal(t, defaultTitle, cfg.Title)
-		assert.Equal(t, defaultRefresh, cfg.Refresh)
-		assert.Equal(t, defaultFontURL, cfg.FontURL)
-		assert.Equal(t, defaultChartJSURL, cfg.ChartJSURL)
-		assert.Equal(t, defaultCustomHead, cfg.CustomHead)
-		assert.Equal(t, true, cfg.APIOnly)
-		assert.IsType(t, (func(fiber.Ctx) bool)(nil), cfg.Next)
-		assert.Equal(t, newIndex(viewBag{defaultTitle, defaultRefresh, defaultFontURL, defaultChartJSURL, defaultCustomHead}), cfg.index)
-	})
-
-	t.Run("set next", func(t *testing.T) {
-		t.Parallel()
-		f := func(c fiber.Ctx) bool {
-			return true
-		}
-		cfg := configDefault(Config{
-			Next: f,
-		})
-
-		assert.Equal(t, defaultTitle, cfg.Title)
-		assert.Equal(t, defaultRefresh, cfg.Refresh)
-		assert.Equal(t, defaultFontURL, cfg.FontURL)
-		assert.Equal(t, defaultChartJSURL, cfg.ChartJSURL)
-		assert.Equal(t, defaultCustomHead, cfg.CustomHead)
-		assert.Equal(t, false, cfg.APIOnly)
-		assert.Equal(t, f(nil), cfg.Next(nil))
-		assert.Equal(t, newIndex(viewBag{defaultTitle, defaultRefresh, defaultFontURL, defaultChartJSURL, defaultCustomHead}), cfg.index)
-	})
+func TestConfigDefaults(t *testing.T) {
+	cfg, err := configDefault().normalized()
+	require.NoError(t, err)
+	assert.Equal(t, defaultTitle, cfg.Title)
+	assert.Equal(t, defaultDescription, cfg.Description)
+	assert.Equal(t, defaultFooter, cfg.Footer)
+	assert.Equal(t, defaultRefresh, cfg.Refresh)
+	assert.False(t, cfg.APIOnly)
+	assert.False(t, cfg.EnableGCPauseMetrics)
+	assert.Equal(t, legacyDefaultFontURL, cfg.FontURL)
+	assert.Equal(t, legacyDefaultChartJSURL, cfg.ChartJSURL)
 }
 
-// Test_Config_Default_APIOnly_Global verifies that ConfigDefault.APIOnly is
-// inherited by per-handler configs that omit the field. This test must NOT be
-// parallel because it mutates package-level state (ConfigDefault.APIOnly).
-func Test_Config_Default_APIOnly_Global(t *testing.T) {
-	orig := ConfigDefault.APIOnly
-	t.Cleanup(func() { ConfigDefault.APIOnly = orig })
+func TestConfigOverrides(t *testing.T) {
+	cfg, err := configDefault(Config{
+		Title:                "Service Monitor",
+		Description:          "Description",
+		Footer:               "Footer",
+		FaviconURL:           "/favicon.svg",
+		Refresh:              5 * time.Second,
+		APIOnly:              true,
+		EnableGCPauseMetrics: true,
+		CustomHead:           "legacy head",
+		FontURL:              "legacy font",
+		ChartJSURL:           "legacy chart",
+	}).normalized()
+	require.NoError(t, err)
+	assert.Equal(t, "Service Monitor", cfg.Title)
+	assert.Equal(t, "Description", cfg.Description)
+	assert.Equal(t, "Footer", cfg.Footer)
+	assert.Equal(t, "/favicon.svg", cfg.FaviconURL)
+	assert.Equal(t, 5*time.Second, cfg.Refresh)
+	assert.True(t, cfg.APIOnly)
+	assert.True(t, cfg.EnableGCPauseMetrics)
+	assert.Equal(t, "legacy head", cfg.CustomHead)
+	assert.Equal(t, "legacy font", cfg.FontURL)
+	assert.Equal(t, "legacy chart", cfg.ChartJSURL)
+}
 
-	ConfigDefault.APIOnly = true
+func TestRefreshNormalization(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    time.Duration
+		expected time.Duration
+	}{
+		{name: "negative", input: -time.Second, expected: defaultRefresh},
+		{name: "zero", expected: defaultRefresh},
+		{name: "below minimum", input: time.Millisecond, expected: minimumRefresh},
+		{name: "custom", input: 5 * time.Second, expected: 5 * time.Second},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := (Config{Refresh: test.input}).normalized()
+			require.NoError(t, err)
+			assert.Equal(t, test.expected, cfg.Refresh)
+		})
+	}
+}
 
-	t.Run("inherited when no config provided", func(t *testing.T) {
-		cfg := configDefault()
-		assert.Equal(t, true, cfg.APIOnly)
-	})
+func TestFaviconURLValidation(t *testing.T) {
+	valid := []string{"", "/assets/favicon.svg", "http://example.com/favicon.ico", "HTTPS://example.com/favicon.svg"}
+	for _, value := range valid {
+		actual, err := normalizeFaviconURL(value)
+		require.NoError(t, err, value)
+		assert.Equal(t, value, actual)
+	}
 
-	t.Run("inherited when other fields overridden", func(t *testing.T) {
-		// Caller sets Title but leaves APIOnly unset — should inherit from ConfigDefault.
-		cfg := configDefault(Config{Title: "custom"})
-		assert.Equal(t, true, cfg.APIOnly)
+	invalid := []string{"//example.com/favicon.svg", "/\\example", "javascript:alert(1)", "data:image/svg+xml,x", "file:///tmp/icon", "ftp://example.com/icon", "https://user@example.com/icon"}
+	for _, value := range invalid {
+		_, err := normalizeFaviconURL(value)
+		assert.ErrorIs(t, err, ErrInvalidFaviconURL, value)
+	}
+}
+
+func TestNewPanicsForInvalidConfig(t *testing.T) {
+	assert.PanicsWithError(t, "fiber: monitor middleware error -> "+ErrInvalidFaviconURL.Error(), func() {
+		New(Config{FaviconURL: "javascript:alert(1)"})
 	})
 }
