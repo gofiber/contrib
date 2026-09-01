@@ -11,7 +11,7 @@ require (
 
 require (
 	github.com/andybalholm/brotli v1.2.3 // indirect
-	github.com/ebitengine/purego v0.10.2 // indirect
+	github.com/ebitengine/purego v0.11.0 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/gofiber/schema v1.8.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect
