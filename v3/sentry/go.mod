@@ -9,7 +9,7 @@ require (
 )
 
 require (
-	github.com/gofiber/schema v1.8.4 // indirect
+	github.com/gofiber/schema v1.8.5 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/valyala/fasthttp v1.73.0 // indirect
