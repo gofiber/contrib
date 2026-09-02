@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/getsentry/sentry-go v0.49.0
 	github.com/gofiber/fiber/v3 v3.5.0
-	github.com/gofiber/utils/v2 v2.4.2
+	github.com/gofiber/utils/v2 v2.4.3
 )
 
 require (
