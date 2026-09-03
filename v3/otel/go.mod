@@ -1,6 +1,6 @@
 module github.com/gofiber/contrib/v3/otel
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/gofiber/fiber/v3 v3.5.0
@@ -31,7 +31,7 @@ require (
 	github.com/valyala/fasthttp v1.73.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/crypto v0.55.0 // indirect
+	golang.org/x/crypto v0.56.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
