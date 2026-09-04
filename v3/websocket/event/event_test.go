@@ -6,10 +6,12 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/fasthttp/websocket"
 	fws "github.com/gofiber/contrib/v3/websocket"
@@ -203,7 +205,7 @@ func TestGlobalBroadcast(t *testing.T) {
 
 	Broadcast([]byte("test"), TextMessage)
 
-	for _, mws := range pool.all() {
+	for _, mws := range pool.snapshot() {
 		mws.(*WebsocketMock).wg.Wait()
 		mws.(*WebsocketMock).AssertNumberOfCalls(t, "Emit", 1)
 	}
@@ -260,7 +262,7 @@ func TestGlobalEmitToList(t *testing.T) {
 
 	EmitToList(uuids, []byte("test"), TextMessage)
 
-	for _, kws := range pool.all() {
+	for _, kws := range pool.snapshot() {
 		kws.(*WebsocketMock).wg.Wait()
 		kws.(*WebsocketMock).AssertNumberOfCalls(t, "Emit", 1)
 	}
@@ -437,7 +439,7 @@ func TestCloseAllSendsGoingAway(t *testing.T) {
 
 	// Give upgrades a moment to register in the pool.
 	require.Eventually(t, func() bool {
-		return len(pool.all()) == numConn
+		return len(pool.snapshot()) == numConn
 	}, 2*time.Second, 10*time.Millisecond, "expected %d pool entries", numConn)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -453,7 +455,7 @@ func TestCloseAllSendsGoingAway(t *testing.T) {
 		require.Equal(t, "bye", ce.Text)
 	}
 
-	require.Empty(t, pool.all())
+	require.Empty(t, pool.snapshot())
 }
 
 func TestCloseSendsFormatCloseMessage(t *testing.T) {
@@ -854,7 +856,7 @@ func TestSendDropFiresEventErrorAfterRetries(t *testing.T) {
 		}
 	})
 
-	// createWS leaves Conn nil, so hasConn() is false and zero settings give
+	// createWS leaves Conn nil, so conn() returns nil and zero settings give
 	// maxSendRetry 0: the message is requeued once and then dropped.
 	kws := createWS()
 	kws.queue <- message{mType: TextMessage, data: []byte("x")}
@@ -1016,4 +1018,210 @@ func (s *WebsocketMock) randomUUID() string {
 
 func (s *WebsocketMock) fireEvent(_ string, _ []byte, _ error) {
 	panic("implement me")
+}
+
+func TestCloseReasonStaysValidUTF8(t *testing.T) {
+	t.Run("short reason is untouched", func(t *testing.T) {
+		require.Equal(t, "bye", closeReason("bye"))
+	})
+
+	t.Run("truncation lands on a rune boundary", func(t *testing.T) {
+		// Each euro sign is three bytes, so a plain byte cut at 123 would slice
+		// the 41st one in half and put invalid UTF-8 in the close frame.
+		reason := closeReason(strings.Repeat("€", 50))
+		require.LessOrEqual(t, len(reason), closeFrameMaxReason)
+		require.True(t, utf8.ValidString(reason))
+		require.Equal(t, 41, utf8.RuneCountInString(reason))
+	})
+
+	t.Run("ascii reason fills the limit exactly", func(t *testing.T) {
+		reason := closeReason(strings.Repeat("a", 200))
+		require.Len(t, reason, closeFrameMaxReason)
+	})
+
+	t.Run("invalid input is scrubbed", func(t *testing.T) {
+		reason := closeReason("ok\xff\xfebye")
+		require.True(t, utf8.ValidString(reason))
+		require.Equal(t, "okbye", reason)
+	})
+}
+
+func TestSanitizeCloseCode(t *testing.T) {
+	// RFC 6455 section 7.4.1: 1006 and 1015 report locally observed failures and
+	// must never travel in a close frame; section 7.4.2 leaves anything outside
+	// 1000-4999 undefined.
+	require.Equal(t, websocket.CloseNormalClosure, sanitizeCloseCode(websocket.CloseAbnormalClosure))
+	require.Equal(t, websocket.CloseNormalClosure, sanitizeCloseCode(websocket.CloseTLSHandshake))
+	require.Equal(t, websocket.CloseNormalClosure, sanitizeCloseCode(0))
+	require.Equal(t, websocket.CloseNormalClosure, sanitizeCloseCode(999))
+	require.Equal(t, websocket.CloseNormalClosure, sanitizeCloseCode(5000))
+
+	// Everything the protocol allows travels unchanged, and 1005 keeps its
+	// meaning because FormatCloseMessage renders it as an empty payload.
+	require.Equal(t, websocket.CloseNormalClosure, sanitizeCloseCode(websocket.CloseNormalClosure))
+	require.Equal(t, websocket.CloseGoingAway, sanitizeCloseCode(websocket.CloseGoingAway))
+	require.Equal(t, websocket.CloseNoStatusReceived, sanitizeCloseCode(websocket.CloseNoStatusReceived))
+	require.Equal(t, 4000, sanitizeCloseCode(4000))
+	require.Empty(t, websocket.FormatCloseMessage(sanitizeCloseCode(websocket.CloseNoStatusReceived), "ignored"))
+}
+
+func TestCloseAllSanitizesReservedCode(t *testing.T) {
+	resetState()
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	app.Use(upgradeMiddleware)
+	app.Get("/", New(func(_ *Websocket) {}))
+
+	go func() { _ = app.Listener(ln) }()
+
+	dialer := &websocket.Dialer{
+		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+		HandshakeTimeout: 5 * time.Second,
+	}
+	conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+	require.NoError(t, err)
+	defer conn.Close()
+
+	require.Eventually(t, func() bool {
+		return len(pool.snapshot()) == 1
+	}, 2*time.Second, 10*time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	// 1006 must never reach the wire; it is replaced by a normal closure.
+	require.NoError(t, CloseAll(ctx, websocket.CloseAbnormalClosure, strings.Repeat("€", 50)))
+
+	_, _, err = conn.ReadMessage()
+	require.Error(t, err)
+	var ce *websocket.CloseError
+	require.ErrorAs(t, err, &ce)
+	require.Equal(t, websocket.CloseNormalClosure, ce.Code)
+	require.True(t, utf8.ValidString(ce.Text))
+	require.LessOrEqual(t, len(ce.Text), closeFrameMaxReason)
+}
+
+func TestCallbackPanicDoesNotStrandPoolEntry(t *testing.T) {
+	resetState()
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	app.Use(upgradeMiddleware)
+	app.Get("/", NewWithConfig(func(_ *Websocket) {
+		panic("callback boom")
+	}, Config{}, fws.Config{
+		// Swallow the panic quietly; the cleanup is what is under test.
+		RecoverHandler: func(*fws.Conn) { _ = recover() },
+	}))
+
+	go func() { _ = app.Listener(ln) }()
+
+	dialer := &websocket.Dialer{
+		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+		HandshakeTimeout: 5 * time.Second,
+	}
+	conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+	require.NoError(t, err)
+	defer conn.Close()
+
+	// The upgrade succeeded, so the connection was registered. A panicking
+	// callback must still take it back out: a stranded entry has a done channel
+	// nobody closes, so every later Broadcast would fill its queue and block.
+	require.Eventually(t, func() bool {
+		return len(pool.snapshot()) == 0
+	}, 2*time.Second, 10*time.Millisecond, "panicking callback stranded a pool entry")
+
+	// The socket is closed rather than left dangling on a hijacked connection.
+	_, _, err = conn.ReadMessage()
+	require.Error(t, err)
+}
+
+func TestMethodBroadcastSkipsSelfAndReportsDead(t *testing.T) {
+	resetState()
+
+	var errs int32
+	On(EventError, func(p *EventPayload) {
+		if errors.Is(p.Error, ErrorInvalidConnection) {
+			atomic.AddInt32(&errs, 1)
+		}
+	})
+
+	sender := createWS()
+	pool.set(sender)
+
+	alive := new(WebsocketMock)
+	require.NoError(t, alive.SetUUID("alive"))
+	alive.On("IsAlive").Return(true)
+	alive.On("Emit", mock.Anything).Return(nil)
+	alive.wg.Add(1)
+	pool.set(alive)
+
+	dead := new(WebsocketMock)
+	require.NoError(t, dead.SetUUID("dead"))
+	dead.On("IsAlive").Return(false)
+	pool.set(dead)
+
+	sender.Broadcast([]byte("test"), true, TextMessage)
+
+	alive.wg.Wait()
+	alive.AssertNumberOfCalls(t, "Emit", 1)
+	dead.AssertNumberOfCalls(t, "Emit", 0)
+	require.Equal(t, int32(1), atomic.LoadInt32(&errs))
+	// The sender was skipped, so nothing was queued on it.
+	require.Empty(t, sender.queue)
+}
+
+func BenchmarkFireEventNoListeners(b *testing.B) {
+	resetState()
+	kws := createWS()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		kws.fireEvent(EventMessage, nil, nil)
+	}
+}
+
+func BenchmarkFireEventSingleListener(b *testing.B) {
+	resetState()
+	On(EventMessage, func(*EventPayload) {})
+	kws := createWS()
+	payload := []byte("hello websocket")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		kws.fireEvent(EventMessage, payload, nil)
+	}
+	b.StopTimer()
+	resetState()
+}
+
+func BenchmarkPoolSnapshot(b *testing.B) {
+	resetState()
+	for i := 0; i < 128; i++ {
+		kws := createWS()
+		kws.UUID = strconv.Itoa(i)
+		pool.set(kws)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if len(pool.snapshot()) != 128 {
+			b.Fatal("unexpected snapshot size")
+		}
+	}
+	b.StopTimer()
+	resetState()
 }

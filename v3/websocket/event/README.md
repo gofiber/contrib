@@ -174,6 +174,11 @@ app.Hooks().OnShutdown(func() error {
 If `ctx` expires before every goroutine exits, `CloseAll` force-closes the
 remaining underlying connections and returns `ctx.Err()`.
 
+The close frame is normalised before it goes on the wire: a `code` reserved for
+local use (`1006`, `1015`) or outside `1000-4999` is replaced with
+`1000 Normal Closure` (RFC 6455 section 7.4), and `reason` is scrubbed to valid
+UTF-8 and cut back to 123 bytes on a rune boundary (RFC 6455 section 5.5.1).
+
 `Drain` only flips the draining flag; it does **not** refuse new connections by
 itself. Gate the upgrade route on `IsDraining` to stop accepting clients during
 shutdown:

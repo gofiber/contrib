@@ -37,8 +37,8 @@ func New(handler func(*websocket.Conn), config ...websocket.Config) fiber.Handle
 |:--------------------|:-----------------------------|:------------------------------------------------------------------------------------------------------------------------------|:-----------------------|
 | Next                | `func(fiber.Ctx) bool`       | Defines a function to skip this middleware when it returns true.                                                              | `nil`                  |
 | HandshakeTimeout    | `time.Duration`              | HandshakeTimeout specifies the duration for the handshake to complete.                                                        | `0` (No timeout)       |
-| Subprotocols        | `[]string`                   | Subprotocols specifies the client's requested subprotocols.                                                                   | `nil`                  |
-| Origins             | `[]string`                   | Allowed Origins based on the Origin header. If empty, everything is allowed.                                                  | `nil`                  |
+| Subprotocols        | `[]string`                   | Subprotocols this server supports, in order of preference. The first entry the client also offers is negotiated.               | `nil`                  |
+| Origins             | `[]string`                   | Allowed Origins based on the Origin header, compared case-insensitively. If empty, everything is allowed.                     | `nil`                  |
 | AllowEmptyOrigin    | `bool`                       | Allows connections without an Origin header when Origins is configured. Useful for non-browser clients.                       | `false`                |
 | ReadBufferSize      | `int`                        | ReadBufferSize specifies the I/O buffer size in bytes for incoming messages.                                                  | `0` (Use default size) |
 | WriteBufferSize     | `int`                        | WriteBufferSize specifies the I/O buffer size in bytes for outgoing messages.                                                 | `0` (Use default size) |
@@ -105,6 +105,22 @@ func main() {
 }
 
 ```
+
+## Handshake rejections
+
+A request that does not ask to switch protocols at all is answered with `426 Upgrade Required`.
+
+A request that *does* ask to upgrade but whose handshake is rejected keeps the status
+RFC 6455 defines for that failure instead:
+
+| Reason                                                     | Status                    |
+|:-----------------------------------------------------------|:--------------------------|
+| Origin not in `Origins` (RFC 6455 section 4.2.2)            | `403 Forbidden`           |
+| Missing/blank `Sec-WebSocket-Key`, unsupported version      | `400 Bad Request`         |
+| Request method is not `GET`                                 | `405 Method Not Allowed`  |
+
+Rejected handshakes also carry `Sec-WebSocket-Version: 13` so a client that asked for
+another version learns which one the server speaks (RFC 6455 section 4.4).
 
 ## Note with cache middleware
 
