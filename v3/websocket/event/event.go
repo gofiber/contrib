@@ -626,23 +626,42 @@ func (kws *Websocket) writeClose(code int, reason string) {
 	_ = conn.WriteControl(CloseMessage, payload, deadline)
 }
 
-// sanitizeCloseCode keeps a status code the protocol forbids off the wire. RFC
-// 6455 section 7.4.1 reserves 1006 and 1015 for failures an endpoint observes
-// locally and says they must never appear in a close frame, and section 7.4.2
-// leaves everything outside 1000-4999 undefined. CloseNoStatusReceived is left
-// alone because FormatCloseMessage already renders it as the empty payload that
-// expresses "no status" on the wire.
+// sanitizeCloseCode keeps a status code the peer would reject off the wire,
+// replacing it with a normal closure.
+//
+// RFC 6455 section 7.4.1 reserves 1005, 1006 and 1015 for conditions an
+// endpoint observes locally and says they must never appear in a close frame,
+// and lists 1004 as reserved with no meaning assigned. Endpoints are stricter
+// still: the receive side of this library accepts only 1000-1003, 1007-1013 and
+// the 3000-4999 application range, so 1004, 1014 and 1016-2999 make a
+// conformant peer fail the connection with a protocol error rather than read a
+// close. Only codes that survive that check are forwarded.
+//
+// CloseNoStatusReceived is the one exception: FormatCloseMessage renders it as
+// the empty payload, which is how "no status" is expressed on the wire.
 func sanitizeCloseCode(code int) int {
-	switch {
-	case code == websocket.CloseNoStatusReceived:
+	switch code {
+	case websocket.CloseNoStatusReceived:
 		return code
-	case code == websocket.CloseAbnormalClosure, code == websocket.CloseTLSHandshake:
-		return websocket.CloseNormalClosure
-	case code < 1000 || code > 4999:
-		return websocket.CloseNormalClosure
-	default:
+	case websocket.CloseNormalClosure,
+		websocket.CloseGoingAway,
+		websocket.CloseProtocolError,
+		websocket.CloseUnsupportedData,
+		websocket.CloseInvalidFramePayloadData,
+		websocket.ClosePolicyViolation,
+		websocket.CloseMessageTooBig,
+		websocket.CloseMandatoryExtension,
+		websocket.CloseInternalServerErr,
+		websocket.CloseServiceRestart,
+		websocket.CloseTryAgainLater:
 		return code
 	}
+	// 3000-3999 is registered for libraries and frameworks, 4000-4999 is
+	// private use; both are accepted by a conformant peer.
+	if code >= 3000 && code <= 4999 {
+		return code
+	}
+	return websocket.CloseNormalClosure
 }
 
 // closeReason makes reason safe to carry in a close frame. RFC 6455 section

@@ -434,9 +434,15 @@ func (conn *Conn) IP() string {
 
 // Close codes 1000-1011 and 1015 are defined in RFC 6455, section 11.7; 1012,
 // 1013 and 1014 were added to the IANA WebSocket Close Code Number Registry
-// afterwards. Note that 1005, 1006 and 1015 are reserved for use by
-// applications and must never be sent in a close frame (RFC 6455, section
-// 7.4.1).
+// afterwards.
+//
+// Not every code may travel in a close frame. RFC 6455, section 7.4.1 reserves
+// 1005, 1006 and 1015 for conditions an endpoint observes locally and forbids
+// sending them, and lists 1004 as reserved with no meaning assigned. Endpoints
+// are stricter still: the underlying library accepts only 1000-1003, 1007-1013
+// and 3000-4999 on receive, so sending 1004, 1014 or anything in 1016-2999
+// makes a conformant peer fail the connection with a protocol error. Prefer
+// 1000-1003, 1007-1013, or the 3000-4999 application range.
 const (
 	CloseNormalClosure           = 1000
 	CloseGoingAway               = 1001

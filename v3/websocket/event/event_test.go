@@ -1047,63 +1047,84 @@ func TestCloseReasonStaysValidUTF8(t *testing.T) {
 }
 
 func TestSanitizeCloseCode(t *testing.T) {
-	// RFC 6455 section 7.4.1: 1006 and 1015 report locally observed failures and
-	// must never travel in a close frame; section 7.4.2 leaves anything outside
-	// 1000-4999 undefined.
-	require.Equal(t, websocket.CloseNormalClosure, sanitizeCloseCode(websocket.CloseAbnormalClosure))
-	require.Equal(t, websocket.CloseNormalClosure, sanitizeCloseCode(websocket.CloseTLSHandshake))
-	require.Equal(t, websocket.CloseNormalClosure, sanitizeCloseCode(0))
-	require.Equal(t, websocket.CloseNormalClosure, sanitizeCloseCode(999))
-	require.Equal(t, websocket.CloseNormalClosure, sanitizeCloseCode(5000))
+	// A code a conformant peer rejects on receive is replaced with a normal
+	// closure: 1005/1006/1015 are reserved for locally observed conditions
+	// (RFC 6455 section 7.4.1), 1004 is reserved with no meaning assigned, and
+	// 1014 plus 1016-2999 are outside the set the library accepts.
+	for _, code := range []int{
+		0, 999, 1004, websocket.CloseAbnormalClosure, 1014,
+		websocket.CloseTLSHandshake, 1016, 2999, 5000,
+	} {
+		require.Equal(t, websocket.CloseNormalClosure, sanitizeCloseCode(code),
+			"code %d must not reach the wire", code)
+	}
 
-	// Everything the protocol allows travels unchanged, and 1005 keeps its
-	// meaning because FormatCloseMessage renders it as an empty payload.
-	require.Equal(t, websocket.CloseNormalClosure, sanitizeCloseCode(websocket.CloseNormalClosure))
-	require.Equal(t, websocket.CloseGoingAway, sanitizeCloseCode(websocket.CloseGoingAway))
+	// Everything a peer accepts travels unchanged.
+	for _, code := range []int{
+		websocket.CloseNormalClosure, websocket.CloseGoingAway,
+		websocket.CloseProtocolError, websocket.CloseUnsupportedData,
+		websocket.CloseInvalidFramePayloadData, websocket.ClosePolicyViolation,
+		websocket.CloseMessageTooBig, websocket.CloseMandatoryExtension,
+		websocket.CloseInternalServerErr, websocket.CloseServiceRestart,
+		websocket.CloseTryAgainLater, 3000, 4000, 4999,
+	} {
+		require.Equal(t, code, sanitizeCloseCode(code), "code %d must survive", code)
+	}
+
+	// 1005 keeps its meaning: FormatCloseMessage renders it as an empty payload.
 	require.Equal(t, websocket.CloseNoStatusReceived, sanitizeCloseCode(websocket.CloseNoStatusReceived))
-	require.Equal(t, 4000, sanitizeCloseCode(4000))
 	require.Empty(t, websocket.FormatCloseMessage(sanitizeCloseCode(websocket.CloseNoStatusReceived), "ignored"))
 }
 
 func TestCloseAllSanitizesReservedCode(t *testing.T) {
-	resetState()
+	// Each of these makes a conformant peer fail the connection with a protocol
+	// error instead of reading a close, so CloseAll must not put them on the
+	// wire. 1006 and 1015 are reserved for locally observed conditions, 1004 is
+	// reserved with no meaning assigned, and 1014 and 1016-2999 are outside the
+	// set the receive side accepts.
+	for _, code := range []int{1004, websocket.CloseAbnormalClosure, 1014, websocket.CloseTLSHandshake, 2999} {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			resetState()
 
-	app := fiber.New()
-	ln := fasthttputil.NewInmemoryListener()
-	defer func() {
-		_ = app.Shutdown()
-		_ = ln.Close()
-	}()
+			app := fiber.New()
+			ln := fasthttputil.NewInmemoryListener()
+			defer func() {
+				_ = app.Shutdown()
+				_ = ln.Close()
+			}()
 
-	app.Use(upgradeMiddleware)
-	app.Get("/", New(func(_ *Websocket) {}))
+			app.Use(upgradeMiddleware)
+			app.Get("/", New(func(_ *Websocket) {}))
 
-	go func() { _ = app.Listener(ln) }()
+			go func() { _ = app.Listener(ln) }()
 
-	dialer := &websocket.Dialer{
-		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
-		HandshakeTimeout: 5 * time.Second,
+			dialer := &websocket.Dialer{
+				NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+				HandshakeTimeout: 5 * time.Second,
+			}
+			conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+			require.NoError(t, err)
+			defer conn.Close()
+
+			require.Eventually(t, func() bool {
+				return len(pool.snapshot()) == 1
+			}, 2*time.Second, 10*time.Millisecond)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			require.NoError(t, CloseAll(ctx, code, strings.Repeat("€", 50)))
+
+			// The peer reads a well formed close rather than rejecting the
+			// frame, and the reason survives as valid UTF-8 within the limit.
+			_, _, err = conn.ReadMessage()
+			require.Error(t, err)
+			var ce *websocket.CloseError
+			require.ErrorAs(t, err, &ce)
+			require.Equal(t, websocket.CloseNormalClosure, ce.Code)
+			require.True(t, utf8.ValidString(ce.Text))
+			require.LessOrEqual(t, len(ce.Text), closeFrameMaxReason)
+		})
 	}
-	conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
-	require.NoError(t, err)
-	defer conn.Close()
-
-	require.Eventually(t, func() bool {
-		return len(pool.snapshot()) == 1
-	}, 2*time.Second, 10*time.Millisecond)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	// 1006 must never reach the wire; it is replaced by a normal closure.
-	require.NoError(t, CloseAll(ctx, websocket.CloseAbnormalClosure, strings.Repeat("€", 50)))
-
-	_, _, err = conn.ReadMessage()
-	require.Error(t, err)
-	var ce *websocket.CloseError
-	require.ErrorAs(t, err, &ce)
-	require.Equal(t, websocket.CloseNormalClosure, ce.Code)
-	require.True(t, utf8.ValidString(ce.Text))
-	require.LessOrEqual(t, len(ce.Text), closeFrameMaxReason)
 }
 
 func TestCallbackPanicDoesNotStrandPoolEntry(t *testing.T) {
