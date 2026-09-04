@@ -12,7 +12,7 @@ A simple [HCaptcha](https://hcaptcha.com) middleware to prevent bot attacks.
 
 :::note
 
-Requires Go **1.25** and above
+Requires Go **1.26** and above
 
 :::
 

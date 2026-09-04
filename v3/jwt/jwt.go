@@ -52,7 +52,7 @@ func New(config ...Config) fiber.Handler {
 				return cfg.ErrorHandler(c, fiber.NewError(fiber.StatusInternalServerError, "claims type cannot be nil"))
 			}
 
-			if claimsType.Kind() == reflect.Ptr {
+			if claimsType.Kind() == reflect.Pointer {
 				claimsType = claimsType.Elem()
 			}
 
