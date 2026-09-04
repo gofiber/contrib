@@ -89,6 +89,9 @@ const defaultRecoverWriteTimeout = 5 * time.Second
 // deliberately constant and carries nothing derived from the panic.
 const defaultRecoverMessage = "internal error"
 
+// defaultRecover is the RecoverHandler used when Config leaves one unset. It
+// recovers the panic, writes the value and stack to stderr, and tells the peer
+// only that something failed.
 func defaultRecover(c *Conn) {
 	if err := recover(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "panic: %v\n%s\n", err, debug.Stack()) //nolint:errcheck // This will never fail
@@ -118,6 +121,9 @@ var (
 	keepHijackedConnsServers sync.Map // map[*fasthttp.Server]struct{}
 )
 
+// ensureKeepHijackedConns sets KeepHijackedConns on the server the first time it
+// is seen, so fasthttp leaves the upgraded connection open for this package to
+// own once the request handler returns.
 func ensureKeepHijackedConns(server *fasthttp.Server) {
 	if server == nil {
 		return
