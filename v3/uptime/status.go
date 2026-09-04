@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 
 	"github.com/gofiber/contrib/v3/uptime/internal/storage"
@@ -156,6 +157,10 @@ func (u *runtime) buildStatus(ctx context.Context, now time.Time) (StatusRespons
 		u.setLastError(err)
 		return StatusResponse{}, err
 	}
+	services = append([]storage.Service(nil), services...)
+	sort.Slice(services, func(i, j int) bool {
+		return services[i].ID < services[j].ID
+	})
 
 	days := dayRange(now, u.config.DaysToShow, u.config.Timezone)
 	fromDay := days[0]
@@ -414,15 +419,6 @@ func slotOf(t time.Time, interval time.Duration, loc *time.Location) int64 {
 
 func expectedSlotsSoFarSince(now, createdAt time.Time, interval time.Duration, loc *time.Location) int {
 	return expectedSlotsForWindow(dayOf(now, loc), createdAt, currentSlotStart(now, interval, loc), interval, loc, false)
-}
-
-func expectedSlotsForDay(day string, interval time.Duration, loc *time.Location) int {
-	start, err := parseDay(day, loc)
-	if err != nil || interval <= 0 {
-		return 0
-	}
-	end := start.AddDate(0, 0, 1)
-	return ceilDuration(end.Sub(start), interval)
 }
 
 func expectedSlotsForServiceDay(day string, createdAt time.Time, interval time.Duration, loc *time.Location) int {

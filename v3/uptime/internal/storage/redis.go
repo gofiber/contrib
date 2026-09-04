@@ -295,10 +295,8 @@ func (s *RedisStore) RollupDaily(ctx context.Context, options RollupOptions) err
 				continue
 			}
 			expectedSlots := 0
-			if options.ExpectedSlotsForServiceDay != nil {
-				expectedSlots = options.ExpectedSlotsForServiceDay(service.ID, day)
-			} else if options.ExpectedSlotsForDay != nil {
-				expectedSlots = options.ExpectedSlotsForDay(day)
+			if options.ExpectedSlots != nil {
+				expectedSlots = options.ExpectedSlots(service, day)
 			}
 			if err := s.writeDaily(ctx, DailyStatus{
 				ServiceID:     service.ID,
