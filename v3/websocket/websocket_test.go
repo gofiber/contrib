@@ -522,6 +522,27 @@ func TestWebsocketRecoverDefaultHandlerShouldNotPanic(t *testing.T) {
 	assert.Equal(t, "test panic", msg["error"])
 }
 
+func TestWebsocketRecoverDoesNotLeakErrorDetail(t *testing.T) {
+	// A panic carrying an error must not put that error's text on the wire. The
+	// operator already gets the full detail on stderr, so rendering it into the
+	// frame would only hand a remote peer an oracle for internal paths, DSNs
+	// and schema names. *errors.errorString has no exported fields, so handing
+	// the value to the encoder unrendered keeps it at {}.
+	app := setupTestApp(Config{}, func(*Conn) {
+		panic(errors.New("dial tcp 10.0.3.14:5432: connection refused"))
+	})
+	defer app.Shutdown()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	_, raw, err := conn.ReadMessage()
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "10.0.3.14")
+	assert.JSONEq(t, `{"error":{}}`, string(raw))
+}
+
 func TestWebsocketPanicClosesConnection(t *testing.T) {
 	app := setupTestApp(Config{}, func(*Conn) {
 		panic("test panic")

@@ -92,10 +92,14 @@ func defaultRecover(c *Conn) {
 			return
 		}
 		_ = c.SetWriteDeadline(time.Now().Add(defaultRecoverWriteTimeout))
-		// The panic value is rendered before encoding: panic(err) is by far the
-		// most common shape and an error marshals to "{}", so the client would
-		// otherwise be told an error occurred without being told which.
-		if err := c.WriteJSON(fiber.Map{"error": fmt.Sprint(err)}); err != nil {
+		// The recovered value is handed to the encoder as-is, deliberately: the
+		// stderr line above already gives the operator the full detail, so
+		// rendering it here would only widen what a remote peer can read out of
+		// a panic. An error value has no exported fields and encodes as {},
+		// which keeps a wrapped internal error (paths, DSNs, schema names) off
+		// the wire. Applications that want to say more, or nothing at all,
+		// should supply their own RecoverHandler.
+		if err := c.WriteJSON(fiber.Map{"error": err}); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "could not write error response: %v\n", err)
 		}
 	}
