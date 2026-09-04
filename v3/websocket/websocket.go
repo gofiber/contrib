@@ -85,6 +85,10 @@ const supportedVersion = "13"
 // descriptor forever.
 const defaultRecoverWriteTimeout = 5 * time.Second
 
+// defaultRecoverMessage is what defaultRecover tells the peer. It is
+// deliberately constant and carries nothing derived from the panic.
+const defaultRecoverMessage = "internal error"
+
 func defaultRecover(c *Conn) {
 	if err := recover(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "panic: %v\n%s\n", err, debug.Stack()) //nolint:errcheck // This will never fail
@@ -92,14 +96,13 @@ func defaultRecover(c *Conn) {
 			return
 		}
 		_ = c.SetWriteDeadline(time.Now().Add(defaultRecoverWriteTimeout))
-		// The recovered value is handed to the encoder as-is, deliberately: the
-		// stderr line above already gives the operator the full detail, so
-		// rendering it here would only widen what a remote peer can read out of
-		// a panic. An error value has no exported fields and encodes as {},
-		// which keeps a wrapped internal error (paths, DSNs, schema names) off
-		// the wire. Applications that want to say more, or nothing at all,
-		// should supply their own RecoverHandler.
-		if err := c.WriteJSON(fiber.Map{"error": err}); err != nil {
+		// A fixed payload: the stderr line above already gives the operator the
+		// full value and stack, so anything derived from the panic here would
+		// only widen what a remote peer can read out of it. panic("...") sent
+		// its string verbatim and a custom error type could expose exported
+		// fields or its own MarshalJSON. Applications that want to tell the peer
+		// more should supply their own RecoverHandler.
+		if err := c.WriteJSON(fiber.Map{"error": defaultRecoverMessage}); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "could not write error response: %v\n", err)
 		}
 	}
@@ -230,14 +233,16 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 			}
 		}
 
-		// queries
-		if args := fctx.QueryArgs(); args.Len() > 0 {
+		// queries: no size hint. Args.Len counts every key/value pair, including
+		// repetitions of the same key, but the assignments below collapse those
+		// to one entry -- so a hint taken from it would size the map for the
+		// repetitions while len stays at 1, and resetMap's entry cap would keep
+		// the oversized buckets pooled instead of dropping them.
+		for key, value := range fctx.QueryArgs().All() {
 			if conn.queries == nil {
-				conn.queries = make(map[string]string, args.Len())
+				conn.queries = make(map[string]string)
 			}
-			for key, value := range args.All() {
-				conn.queries[string(key)] = string(value)
-			}
+			conn.queries[string(key)] = string(value)
 		}
 
 		// cookies
@@ -432,9 +437,11 @@ func (conn *Conn) IP() string {
 
 // Constants are taken from https://github.com/fasthttp/websocket/blob/master/conn.go#L43
 
-// Close codes 1000-1011 and 1015 are defined in RFC 6455, section 11.7; 1012,
-// 1013 and 1014 were added to the IANA WebSocket Close Code Number Registry
-// afterwards.
+// Close codes 1000-1011 and 1015 are defined in RFC 6455, section 11.7; 1012
+// and 1013 were added to the IANA WebSocket Close Code Number Registry
+// afterwards. 1014 is registered too but is deliberately not exported: the
+// underlying library rejects it in both directions, so it can neither be sent
+// nor received through this stack.
 //
 // Not every code may travel in a close frame. RFC 6455, section 7.4.1 reserves
 // 1005, 1006 and 1015 for conditions an endpoint observes locally and forbids
@@ -457,7 +464,6 @@ const (
 	CloseInternalServerErr       = 1011
 	CloseServiceRestart          = 1012
 	CloseTryAgainLater           = 1013
-	CloseBadGateway              = 1014
 	CloseTLSHandshake            = 1015
 )
 

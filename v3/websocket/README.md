@@ -140,13 +140,13 @@ app.Get("/ws/:id", websocket.New(func(c *websocket.Conn) {}))
 ## Note with recover middleware
 
 For internal implementation reasons, currently recover middleware does not work with websocket middleware, please use `config.RecoverHandler` to add recover handler to websocket endpoints.
-By default, config `RecoverHandler` recovers from panic and writes stack trace to stderr, also returns a response that contains panic message in **error** field.
+By default, config `RecoverHandler` recovers from panic, writes the value and stack trace to stderr, and sends the peer a fixed `{"error":"internal error"}`.
 
-The recovered value is handed to the JSON encoder unrendered, so `panic("boom")`
-puts `{"error":"boom"}` on the wire while `panic(err)` encodes as `{"error":{}}`
-and the error text stays on stderr. If your handlers can panic with values that
-carry internal detail, supply a `RecoverHandler` that sends a constant message to
-the peer instead.
+Nothing derived from the panic reaches the client: the operator already has the
+full detail on stderr, and a panic value can carry internal paths, connection
+strings or schema names. If you want the peer told more than that, supply your
+own `RecoverHandler` — it receives the `*websocket.Conn` and calls `recover()`
+itself, so it can write whatever the application considers safe.
 
 Once the recover handler returns, the connection is closed: a handler that panicked
 cannot be assumed to still own it, and nothing else closes a hijacked connection. A

@@ -519,28 +519,36 @@ func TestWebsocketRecoverDefaultHandlerShouldNotPanic(t *testing.T) {
 	var msg fiber.Map
 	err = conn.ReadJSON(&msg)
 	assert.NoError(t, err)
-	assert.Equal(t, "test panic", msg["error"])
+	assert.Equal(t, defaultRecoverMessage, msg["error"])
 }
 
 func TestWebsocketRecoverDoesNotLeakErrorDetail(t *testing.T) {
-	// A panic carrying an error must not put that error's text on the wire. The
-	// operator already gets the full detail on stderr, so rendering it into the
-	// frame would only hand a remote peer an oracle for internal paths, DSNs
-	// and schema names. *errors.errorString has no exported fields, so handing
-	// the value to the encoder unrendered keeps it at {}.
-	app := setupTestApp(Config{}, func(*Conn) {
-		panic(errors.New("dial tcp 10.0.3.14:5432: connection refused"))
-	})
-	defer app.Shutdown()
+	// Nothing derived from the panic may reach the peer: the operator already
+	// gets the full value and stack on stderr, so putting any of it in the frame
+	// would only hand a remote client an oracle for internal paths, DSNs and
+	// schema names. This holds for a string panic as much as for an error one,
+	// since a string is sent verbatim by any encoder.
+	for name, value := range map[string]any{
+		"error":  errors.New("dial tcp 10.0.3.14:5432: connection refused"),
+		"string": "loading /srv/app/conf/tenants.yaml failed",
+	} {
+		t.Run(name, func(t *testing.T) {
+			app := setupTestApp(Config{}, func(*Conn) {
+				panic(value)
+			})
+			defer app.Shutdown()
 
-	conn, _, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
-	require.NoError(t, err)
-	defer conn.Close()
+			conn, _, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
+			require.NoError(t, err)
+			defer conn.Close()
 
-	_, raw, err := conn.ReadMessage()
-	require.NoError(t, err)
-	assert.NotContains(t, string(raw), "10.0.3.14")
-	assert.JSONEq(t, `{"error":{}}`, string(raw))
+			_, raw, err := conn.ReadMessage()
+			require.NoError(t, err)
+			assert.NotContains(t, string(raw), "10.0.3.14")
+			assert.NotContains(t, string(raw), "/srv/app/conf")
+			assert.JSONEq(t, `{"error":"internal error"}`, string(raw))
+		})
+	}
 }
 
 func TestWebsocketPanicClosesConnection(t *testing.T) {
@@ -557,7 +565,7 @@ func TestWebsocketPanicClosesConnection(t *testing.T) {
 	// The recover handler still gets to write its error frame...
 	var msg fiber.Map
 	require.NoError(t, conn.ReadJSON(&msg))
-	assert.Equal(t, "test panic", msg["error"])
+	assert.Equal(t, defaultRecoverMessage, msg["error"])
 
 	// ...and only then is the socket closed. Nothing else would ever close it:
 	// KeepHijackedConns leaves that to this package. The deadline is only so a
@@ -732,7 +740,6 @@ func TestCloseCodeValues(t *testing.T) {
 	assert.Equal(t, 1011, CloseInternalServerErr)
 	assert.Equal(t, 1012, CloseServiceRestart)
 	assert.Equal(t, 1013, CloseTryAgainLater)
-	assert.Equal(t, 1014, CloseBadGateway)
 	assert.Equal(t, 1015, CloseTLSHandshake)
 }
 
