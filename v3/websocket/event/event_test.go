@@ -1120,8 +1120,11 @@ func TestCallbackPanicDoesNotStrandPoolEntry(t *testing.T) {
 	app.Get("/", NewWithConfig(func(_ *Websocket) {
 		panic("callback boom")
 	}, Config{}, fws.Config{
-		// Swallow the panic quietly; the cleanup is what is under test.
-		RecoverHandler: func(*fws.Conn) { _ = recover() },
+		RecoverHandler: func(c *fws.Conn) {
+			if r := recover(); r != nil {
+				_ = c.WriteJSON(fiber.Map{"error": r})
+			}
+		},
 	}))
 
 	go func() { _ = app.Listener(ln) }()
@@ -1134,6 +1137,12 @@ func TestCallbackPanicDoesNotStrandPoolEntry(t *testing.T) {
 	require.NoError(t, err)
 	defer conn.Close()
 
+	// The cleanup must not run ahead of the middleware's recover handler: the
+	// client still receives the error frame the handler is documented to send.
+	var msg fiber.Map
+	require.NoError(t, conn.ReadJSON(&msg))
+	require.Equal(t, "callback boom", msg["error"])
+
 	// The upgrade succeeded, so the connection was registered. A panicking
 	// callback must still take it back out: a stranded entry has a done channel
 	// nobody closes, so every later Broadcast would fill its queue and block.
@@ -1142,8 +1151,14 @@ func TestCallbackPanicDoesNotStrandPoolEntry(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond, "panicking callback stranded a pool entry")
 
 	// The socket is closed rather than left dangling on a hijacked connection.
+	// The deadline only keeps a regression from blocking forever; a timeout
+	// means the socket stayed open, which is the failure being guarded against.
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
 	_, _, err = conn.ReadMessage()
 	require.Error(t, err)
+	var netErr net.Error
+	require.False(t, errors.As(err, &netErr) && netErr.Timeout(),
+		"panicking callback left the connection open: %v", err)
 }
 
 func TestMethodBroadcastSkipsSelfAndReportsDead(t *testing.T) {

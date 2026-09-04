@@ -244,14 +244,14 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 			conn.cookies[string(key)] = string(value)
 		}
 
-		// headers
-		if n := fctx.Request.Header.Len(); n > 0 {
+		// headers: allocated inside the loop because fasthttp's Header.Len is
+		// itself a full iteration, so asking for a size hint would walk every
+		// header a second time.
+		for key, value := range fctx.Request.Header.All() {
 			if conn.headers == nil {
-				conn.headers = make(map[string]string, n)
+				conn.headers = make(map[string]string)
 			}
-			for key, value := range fctx.Request.Header.All() {
-				conn.headers[string(key)] = string(value)
-			}
+			conn.headers[string(key)] = string(value)
 		}
 
 		// ip address
@@ -259,9 +259,23 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 
 		if err := upgrader.Upgrade(fctx, func(fconn *websocket.Conn) {
 			conn.Conn = fconn
+			returned := false
 			defer releaseConn(conn)
+			// Registered before the recover handler so it runs after it. A
+			// handler that panicked cannot be trusted to still own the socket,
+			// and KeepHijackedConns means nothing else will ever close it, so
+			// close it here -- but only once RecoverHandler has had its chance
+			// to write the error frame. A handler that returns normally keeps
+			// the connection, which is what lets a handler hand it to another
+			// goroutine.
+			defer func() {
+				if !returned {
+					_ = fconn.Close()
+				}
+			}()
 			defer cfg.RecoverHandler(conn)
 			handler(conn)
+			returned = true
 		}); err != nil { // Handshake rejected
 			releaseConn(conn)
 			// The upgrader already wrote the status RFC 6455 asks for: 403 for

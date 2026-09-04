@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -519,6 +520,34 @@ func TestWebsocketRecoverDefaultHandlerShouldNotPanic(t *testing.T) {
 	err = conn.ReadJSON(&msg)
 	assert.NoError(t, err)
 	assert.Equal(t, "test panic", msg["error"])
+}
+
+func TestWebsocketPanicClosesConnection(t *testing.T) {
+	app := setupTestApp(Config{}, func(*Conn) {
+		panic("test panic")
+	})
+	defer app.Shutdown()
+
+	conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
+	require.NoError(t, err)
+	defer conn.Close()
+	assert.Equal(t, fiber.StatusSwitchingProtocols, resp.StatusCode)
+
+	// The recover handler still gets to write its error frame...
+	var msg fiber.Map
+	require.NoError(t, conn.ReadJSON(&msg))
+	assert.Equal(t, "test panic", msg["error"])
+
+	// ...and only then is the socket closed. Nothing else would ever close it:
+	// KeepHijackedConns leaves that to this package. The deadline is only so a
+	// regression fails instead of blocking forever; a timeout means the socket
+	// was left open, which is the failure being guarded against.
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	_, _, err = conn.ReadMessage()
+	require.Error(t, err)
+	var netErr net.Error
+	assert.False(t, errors.As(err, &netErr) && netErr.Timeout(),
+		"panicking handler left the connection open: %v", err)
 }
 
 func TestWebsocketRecoverCustomHandlerShouldNotPanic(t *testing.T) {

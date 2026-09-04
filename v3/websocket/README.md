@@ -142,6 +142,11 @@ app.Get("/ws/:id", websocket.New(func(c *websocket.Conn) {}))
 For internal implementation reasons, currently recover middleware does not work with websocket middleware, please use `config.RecoverHandler` to add recover handler to websocket endpoints.
 By default, config `RecoverHandler` recovers from panic and writes stack trace to stderr, also returns a response that contains panic message in **error** field.
 
+Once the recover handler returns, the connection is closed: a handler that panicked
+cannot be assumed to still own it, and nothing else closes a hijacked connection. A
+handler that returns normally keeps its connection open, so it can hand the raw
+`*websocket.Conn` to another goroutine and keep writing after the handler returns.
+
 ```go
 app := fiber.New()
 

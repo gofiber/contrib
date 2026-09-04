@@ -96,9 +96,7 @@ type message struct {
 	retries int
 }
 
-// EventPayload stores information about an event and its connection. One value
-// is shared by every listener of a fired event, so listeners must treat it as
-// read-only; the same already held for Data and SocketAttributes.
+// EventPayload stores information about an event and its connection.
 type EventPayload struct {
 	// Kws is the connection object.
 	Kws *Websocket
@@ -391,11 +389,11 @@ func NewWithConfig(callback func(kws *Websocket), eventCfg Config, wsConfig ...w
 		kws.UUID = kws.createUUID()
 		pool.set(kws)
 
-		// run leaves the pool and the socket clean on the normal path; this
-		// covers the abnormal one. Without it a panic in callback would strand a
-		// pool entry whose done channel is never closed, so the connection would
-		// keep accepting queued messages nobody reads and every later Broadcast
-		// would end up blocked on the full queue.
+		// run leaves the pool clean on the normal path; this covers the abnormal
+		// one. Without it a panic in callback would strand a pool entry whose
+		// done channel is never closed, so the connection would keep accepting
+		// queued messages nobody reads and every later Broadcast would end up
+		// blocked on the full queue.
 		defer kws.shutdown()
 
 		callback(kws)
@@ -949,13 +947,14 @@ func (kws *Websocket) unblockRead() {
 	}
 }
 
-// shutdown makes sure a connection leaves the pool and its socket is closed
-// even when the user callback or the read loop panicked. Both steps are
-// idempotent, so on the normal path, where run already performed them, it costs
-// nothing.
+// shutdown makes sure a connection leaves the pool even when the user callback
+// or the read loop panicked, so no later Broadcast can queue into a connection
+// nobody reads. It is idempotent, so on the normal path, where run already did
+// it, it costs nothing. The socket itself is deliberately left alone: the
+// middleware closes a panicked handler's connection once its RecoverHandler has
+// written the error frame.
 func (kws *Websocket) shutdown() {
 	kws.disconnected(nil)
-	kws.closeConn()
 }
 
 func (kws *Websocket) closeConn() {
@@ -1005,12 +1004,9 @@ func (kws *Websocket) fireEvent(event string, data []byte, err error) {
 	}
 
 	kws.mu.RLock()
-	var attrs map[string]any
-	if len(kws.attributes) > 0 {
-		attrs = make(map[string]any, len(kws.attributes))
-		for key, value := range kws.attributes {
-			attrs[key] = value
-		}
+	attrs := make(map[string]any, len(kws.attributes))
+	for key, value := range kws.attributes {
+		attrs[key] = value
 	}
 	socketUUID := kws.UUID
 	kws.mu.RUnlock()
@@ -1019,12 +1015,14 @@ func (kws *Websocket) fireEvent(event string, data []byte, err error) {
 	// slice are not exposed to the read buffer being reused by the next
 	// frame.
 	var payloadData []byte
-	if len(data) > 0 {
+	if data != nil {
 		payloadData = make([]byte, len(data))
 		copy(payloadData, data)
 	}
 
-	payload := &EventPayload{
+	// Each listener gets its own payload value: one listener mutating the
+	// struct must not be visible to the ones that run after it.
+	payload := EventPayload{
 		Kws:              kws,
 		Name:             event,
 		SocketUUID:       socketUUID,
@@ -1033,10 +1031,12 @@ func (kws *Websocket) fireEvent(event string, data []byte, err error) {
 		Error:            err,
 	}
 	for _, callback := range globalCallbacks {
-		kws.invokeCallback(event, callback, payload)
+		p := payload
+		kws.invokeCallback(event, callback, &p)
 	}
 	for _, callback := range localCallbacks {
-		kws.invokeCallback(event, callback, payload)
+		p := payload
+		kws.invokeCallback(event, callback, &p)
 	}
 }
 
