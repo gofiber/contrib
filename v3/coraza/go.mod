@@ -11,7 +11,7 @@ require (
 require (
 	github.com/andybalholm/brotli v1.2.3 // indirect
 	github.com/corazawaf/libinjection-go v0.3.3 // indirect
-	github.com/go-json-experiment/json v0.0.0-20260623181947-01eb4420fa68 // indirect
+	github.com/go-json-experiment/json v0.0.0-20260820222146-c27c302e5fc3 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/gofiber/schema v1.8.5 // indirect
 	github.com/gofiber/utils/v2 v2.4.3 // indirect
@@ -30,7 +30,7 @@ require (
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/valllabh/ocsf-schema-golang v1.0.3 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
-	golang.org/x/crypto v0.55.0 // indirect
+	golang.org/x/crypto v0.56.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
