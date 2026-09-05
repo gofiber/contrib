@@ -32,4 +32,6 @@ jobs:
     uses: gofiber/.github/.github/workflows/go-lint-multi.yml@main
     with:
       module-dir: v3
+      # v2.6.2 ships x/tools v0.38.0, which cannot decode Go 1.27 export data.
+      golangci-lint-version: "v2.13.2"
       golangci-lint-args: "--tests=false --timeout=5m"
