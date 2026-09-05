@@ -1,8 +1,11 @@
 package websocket
 
 import (
+	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -10,6 +13,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 )
 
 func TestWebSocketMiddlewareDefaultConfig(t *testing.T) {
@@ -79,7 +83,10 @@ func TestWebSocketMiddlewareConfigOrigin(t *testing.T) {
 		}
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "bad handshake")
-		assert.Equal(t, fiber.StatusUpgradeRequired, resp.StatusCode)
+		// RFC 6455: a rejected origin is answered with 403 (section 4.2.2) and the
+		// supported version is advertised (section 4.4).
+		assert.Equal(t, fiber.StatusForbidden, resp.StatusCode)
+		assert.Equal(t, "13", resp.Header.Get(fiber.HeaderSecWebSocketVersion))
 		assert.Equal(t, "", resp.Header.Get("Upgrade"))
 
 		assert.Nil(t, conn)
@@ -154,7 +161,8 @@ func TestWebSocketMiddlewareConfigOrigin(t *testing.T) {
 		})
 		defer conn.Close()
 		assert.Equal(t, err.Error(), "websocket: bad handshake")
-		assert.Equal(t, fiber.StatusUpgradeRequired, resp.StatusCode)
+		assert.Equal(t, fiber.StatusForbidden, resp.StatusCode)
+		assert.Equal(t, "13", resp.Header.Get(fiber.HeaderSecWebSocketVersion))
 		assert.Equal(t, "", resp.Header.Get("Upgrade"))
 
 		assert.Nil(t, conn)
@@ -326,6 +334,39 @@ func TestWebSocketConnLocals(t *testing.T) {
 	err = conn.ReadJSON(&msg)
 	assert.NoError(t, err)
 	assert.Equal(t, "hello websocket", msg["message"])
+}
+
+func TestWebSocketConnLocalsSeeMiddlewareStateAtUpgradeTime(t *testing.T) {
+	// Middleware often sets a local for the request and clears it after c.Next;
+	// the handler must see the value present while the chain was on the stack.
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		c.Locals("claims", "admin")
+		err := c.Next()
+		c.Locals("claims", nil)
+		return err
+	})
+	app.Get("/ws", New(func(c *Conn) {
+		_ = c.WriteJSON(fiber.Map{"claims": c.Locals("claims")})
+	}))
+	go app.Listen(":3000", fiber.ListenConfig{DisableStartupMessage: true})
+	defer app.Shutdown()
+	require.Eventually(t, func() bool {
+		conn, err := net.Dial("tcp", "localhost:3000")
+		if err != nil {
+			return false
+		}
+		conn.Close()
+		return true
+	}, 5*time.Second, 10*time.Millisecond)
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws", nil)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	var msg fiber.Map
+	require.NoError(t, conn.ReadJSON(&msg))
+	assert.Equal(t, "admin", msg["claims"])
 }
 
 func TestWebSocketConnIP(t *testing.T) {
@@ -511,7 +552,60 @@ func TestWebsocketRecoverDefaultHandlerShouldNotPanic(t *testing.T) {
 	var msg fiber.Map
 	err = conn.ReadJSON(&msg)
 	assert.NoError(t, err)
-	assert.Equal(t, "test panic", msg["error"])
+	assert.Equal(t, defaultRecoverMessage, msg["error"])
+}
+
+func TestWebsocketRecoverDoesNotLeakErrorDetail(t *testing.T) {
+	// Nothing derived from the panic may reach the peer, whether it is a string
+	// or an error: the operator already has the full value on stderr.
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{"error", errors.New("dial tcp 10.0.3.14:5432: connection refused")},
+		{"string", "loading /srv/app/conf/tenants.yaml failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := setupTestApp(Config{}, func(*Conn) {
+				panic(tc.value)
+			})
+			defer app.Shutdown()
+
+			conn, _, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
+			require.NoError(t, err)
+			defer conn.Close()
+
+			_, raw, err := conn.ReadMessage()
+			require.NoError(t, err)
+			assert.JSONEq(t, `{"error":"internal error"}`, string(raw))
+		})
+	}
+}
+
+func TestWebsocketPanicClosesConnection(t *testing.T) {
+	app := setupTestApp(Config{}, func(*Conn) {
+		panic("test panic")
+	})
+	defer app.Shutdown()
+
+	conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
+	require.NoError(t, err)
+	defer conn.Close()
+	assert.Equal(t, fiber.StatusSwitchingProtocols, resp.StatusCode)
+
+	// The recover handler still gets to write its error frame...
+	var msg fiber.Map
+	require.NoError(t, conn.ReadJSON(&msg))
+	assert.Equal(t, defaultRecoverMessage, msg["error"])
+
+	// ...and only then is the socket closed; nothing else closes a hijacked
+	// connection. A timeout here means the socket was left open.
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	_, _, err = conn.ReadMessage()
+	require.Error(t, err)
+	var netErr net.Error
+	assert.False(t, errors.As(err, &netErr) && netErr.Timeout(),
+		"panicking handler left the connection open: %v", err)
 }
 
 func TestWebsocketRecoverCustomHandlerShouldNotPanic(t *testing.T) {
@@ -536,4 +630,254 @@ func TestWebsocketRecoverCustomHandlerShouldNotPanic(t *testing.T) {
 	err = conn.ReadJSON(&msg)
 	assert.NoError(t, err)
 	assert.Equal(t, "error occurred", msg["customError"])
+}
+
+func TestWebSocketMiddlewareOriginCaseInsensitive(t *testing.T) {
+	// RFC 6454 section 4 serializes an origin with a case-insensitive scheme
+	// and host, so a configured origin must match regardless of its case.
+	app := setupTestApp(Config{
+		Origins: []string{"HTTP://LocalHost:3000"},
+	}, nil)
+	defer app.Shutdown()
+
+	conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", http.Header{
+		"Origin": []string{"http://localhost:3000"},
+	})
+	require.NoError(t, err)
+	defer conn.Close()
+	assert.Equal(t, fiber.StatusSwitchingProtocols, resp.StatusCode)
+
+	var msg fiber.Map
+	require.NoError(t, conn.ReadJSON(&msg))
+	assert.Equal(t, "hello websocket", msg["message"])
+}
+
+func TestNewPanicsOnNilHandler(t *testing.T) {
+	assert.Panics(t, func() {
+		New(nil)
+	})
+}
+
+func TestWebSocketNonUpgradeRequestIsUpgradeRequired(t *testing.T) {
+	app := fiber.New()
+	app.Get("/ws", New(func(*Conn) {}))
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/ws", nil))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, fiber.StatusUpgradeRequired, resp.StatusCode)
+}
+
+func TestWebSocketPartialHandshakeIsBadRequest(t *testing.T) {
+	app := fiber.New()
+	app.Get("/ws", New(func(*Conn) {}))
+
+	// Either signal on its own is a malformed handshake: 400 from the upgrader,
+	// not the 426 reserved for requests that never asked to switch protocols.
+	cases := map[string][][2]string{
+		"upgrade without connection": {{fiber.HeaderUpgrade, "websocket"}},
+		"connection without upgrade": {{fiber.HeaderConnection, "Upgrade"}},
+		"wrong protocol":             {{fiber.HeaderConnection, "Upgrade"}, {fiber.HeaderUpgrade, "h2c"}},
+	}
+	for name, headers := range cases {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(fiber.MethodGet, "/ws", nil)
+			for _, h := range headers {
+				req.Header.Set(h[0], h[1])
+			}
+			resp, err := app.Test(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			assert.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
+			assert.Equal(t, "13", resp.Header.Get(fiber.HeaderSecWebSocketVersion))
+		})
+	}
+}
+
+func TestWebSocketRejectedHandshakeKeepsUpgraderResponse(t *testing.T) {
+	app := fiber.New()
+	app.Get("/ws", New(func(*Conn) {}))
+
+	// An unsupported version must be answered with the supported one (RFC 6455
+	// section 4.4), not flattened into a bare 426.
+	req := httptest.NewRequest(fiber.MethodGet, "/ws", nil)
+	req.Header.Set(fiber.HeaderConnection, "Upgrade")
+	req.Header.Set(fiber.HeaderUpgrade, "websocket")
+	req.Header.Set(fiber.HeaderSecWebSocketVersion, "12")
+	req.Header.Set(fiber.HeaderSecWebSocketKey, "dGhlIHNhbXBsZSBub25jZQ==")
+
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, "13", resp.Header.Get(fiber.HeaderSecWebSocketVersion))
+}
+
+func TestWebSocketRejectedHandshakeReachesErrorHandler(t *testing.T) {
+	var handled atomic.Int32
+	app := fiber.New(fiber.Config{
+		ErrorHandler: func(c fiber.Ctx, err error) error {
+			handled.Add(1)
+			var fe *fiber.Error
+			require.ErrorAs(t, err, &fe)
+			return c.Status(fe.Code).JSON(fiber.Map{"reason": fe.Message})
+		},
+	})
+	// A header set by earlier middleware, as a request-id or CORS middleware
+	// would. fasthttp's ctx.Error would have reset it away.
+	app.Use(func(c fiber.Ctx) error {
+		c.Set("X-Request-ID", "req-1")
+		return c.Next()
+	})
+	app.Get("/ws", New(func(*Conn) {}, Config{Origins: []string{"http://allowed"}}))
+
+	req := httptest.NewRequest(fiber.MethodGet, "/ws", nil)
+	req.Header.Set(fiber.HeaderConnection, "Upgrade")
+	req.Header.Set(fiber.HeaderUpgrade, "websocket")
+	req.Header.Set(fiber.HeaderSecWebSocketVersion, "13")
+	req.Header.Set(fiber.HeaderSecWebSocketKey, "dGhlIHNhbXBsZSBub25jZQ==")
+	req.Header.Set(fiber.HeaderOrigin, "http://evil")
+
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// The rejection is a *fiber.Error with the upgrader's status, so the
+	// app's own error formatting, logging and metrics all see it.
+	assert.Equal(t, fiber.StatusForbidden, resp.StatusCode)
+	assert.Equal(t, int32(1), handled.Load())
+	assert.Equal(t, fiber.MIMEApplicationJSONCharsetUTF8, resp.Header.Get(fiber.HeaderContentType))
+	assert.Equal(t, "req-1", resp.Header.Get("X-Request-ID"))
+	assert.Equal(t, "13", resp.Header.Get(fiber.HeaderSecWebSocketVersion))
+}
+
+func TestConnCaptureAllocatesOnlyWhatTheRequestCarries(t *testing.T) {
+	// A bare handshake has headers and nothing else, so only the header map
+	// exists afterwards; the accessors for the rest answer without one.
+	fctx := &fasthttp.RequestCtx{}
+	fctx.Request.Header.Set(fiber.HeaderHost, "localhost")
+
+	conn := &Conn{}
+	conn.capture(fctx)
+
+	assert.NotNil(t, conn.headers)
+	assert.Nil(t, conn.locals)
+	assert.Nil(t, conn.queries)
+	assert.Nil(t, conn.cookies)
+	assert.Equal(t, "", conn.Query("missing"))
+	assert.Equal(t, "", conn.Cookies("missing"))
+	assert.Nil(t, conn.Locals("missing"))
+}
+
+func TestConnHeadersLookup(t *testing.T) {
+	conn := &Conn{headers: map[string]string{
+		"Content-Type":  "application/json",
+		"Authorization": "Bearer token",
+	}}
+
+	assert.Equal(t, "application/json", conn.Headers("Content-Type"))
+	assert.Equal(t, "application/json", conn.Headers("content-type"))
+	assert.Equal(t, "application/json", conn.Headers("CONTENT-TYPE"))
+	assert.Equal(t, "Bearer token", conn.Headers("authorization"))
+	assert.Equal(t, "", conn.Headers("X-Missing"))
+	assert.Equal(t, "fallback", conn.Headers("X-Missing", "fallback"))
+
+}
+
+func TestConnCaptureCanonicalizesHeaderNames(t *testing.T) {
+	// Middleware can disable normalizing for one request without the server flag;
+	// capture canonicalizes the names so lookups stay case-insensitive.
+	fctx := &fasthttp.RequestCtx{}
+	fctx.Request.Header.DisableNormalizing()
+	fctx.Request.Header.Set("x-custom", "value")
+
+	conn := &Conn{}
+	conn.capture(fctx)
+
+	assert.Equal(t, "value", conn.Headers("x-custom"))
+	assert.Equal(t, "value", conn.Headers("X-Custom"))
+	assert.Equal(t, "value", conn.Headers("X-CUSTOM"))
+}
+
+func TestConnAccessorsOnEmptyConn(t *testing.T) {
+	conn := &Conn{}
+
+	assert.Nil(t, conn.Locals("missing"))
+	assert.Equal(t, "", conn.Params("missing"))
+	assert.Equal(t, "fallback", conn.Params("missing", "fallback"))
+	assert.Equal(t, "", conn.Query("missing"))
+	assert.Equal(t, "fallback", conn.Query("missing", "fallback"))
+	assert.Equal(t, "", conn.Cookies("missing"))
+	assert.Equal(t, "fallback", conn.Cookies("missing", "fallback"))
+	assert.Equal(t, "", conn.Headers("missing"))
+
+	// Setting a local on a connection that carried none allocates on demand.
+	assert.Equal(t, "value", conn.Locals("key", "value"))
+	assert.Equal(t, "value", conn.Locals("key"))
+}
+
+func TestCloseCodeValues(t *testing.T) {
+	// RFC 6455 section 11.7 plus the later IANA registrations.
+	assert.Equal(t, 1000, CloseNormalClosure)
+	assert.Equal(t, 1011, CloseInternalServerErr)
+	assert.Equal(t, 1012, CloseServiceRestart)
+	assert.Equal(t, 1013, CloseTryAgainLater)
+	assert.Equal(t, 1015, CloseTLSHandshake)
+}
+
+func BenchmarkConnHeaders(b *testing.B) {
+	conn := &Conn{headers: map[string]string{
+		"Host":                  "localhost:3000",
+		"Connection":            "Upgrade",
+		"Upgrade":               "websocket",
+		"Sec-Websocket-Version": "13",
+		"Sec-Websocket-Key":     "dGhlIHNhbXBsZSBub25jZQ==",
+		"User-Agent":            "Go-http-client/1.1",
+		"Accept-Encoding":       "gzip",
+		"Authorization":         "Bearer token",
+	}}
+
+	for _, key := range []string{"Authorization", "authorization", "X-Missing"} {
+		b.Run(key, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = conn.Headers(key, "fallback")
+			}
+		})
+	}
+}
+
+// handshakeRequest is a typical browser upgrade: nine headers, two cookies,
+// two query arguments and one local set by earlier middleware.
+func handshakeRequest() *fasthttp.RequestCtx {
+	fctx := &fasthttp.RequestCtx{}
+	fctx.Request.SetRequestURI("/ws?v=1&room=lobby")
+	h := &fctx.Request.Header
+	h.Set(fiber.HeaderHost, "localhost:3000")
+	h.Set(fiber.HeaderConnection, "Upgrade")
+	h.Set(fiber.HeaderUpgrade, "websocket")
+	h.Set(fiber.HeaderSecWebSocketVersion, "13")
+	h.Set(fiber.HeaderSecWebSocketKey, "dGhlIHNhbXBsZSBub25jZQ==")
+	h.Set(fiber.HeaderUserAgent, "Mozilla/5.0")
+	h.Set(fiber.HeaderAcceptEncoding, "gzip, deflate, br")
+	h.Set(fiber.HeaderOrigin, "http://localhost:3000")
+	h.Set(fiber.HeaderAuthorization, "Bearer token")
+	h.SetCookie("session", "abc123")
+	h.SetCookie("theme", "dark")
+	fctx.SetUserValue("user", "alice")
+	return fctx
+}
+
+// BenchmarkNewConn is the per-upgrade cost of building a Conn: the struct plus
+// only the maps the request carries.
+func BenchmarkNewConn(b *testing.B) {
+	fctx := handshakeRequest()
+	b.ReportAllocs()
+	for b.Loop() {
+		conn := &Conn{ip: "127.0.0.1"}
+		conn.capture(fctx)
+	}
 }

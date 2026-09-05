@@ -1,15 +1,20 @@
 package event
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/fasthttp/websocket"
 	fws "github.com/gofiber/contrib/v3/websocket"
@@ -61,10 +66,9 @@ type WebsocketMock struct {
 func resetState() {
 	pool.Lock()
 	pool.conn = make(map[string]ws)
+	pool.snap = nil
 	pool.Unlock()
-	listeners.Lock()
-	listeners.list = make(map[string][]EventCallback)
-	listeners.Unlock()
+	listeners.list.Store(nil)
 	draining.Store(false)
 }
 
@@ -203,7 +207,7 @@ func TestGlobalBroadcast(t *testing.T) {
 
 	Broadcast([]byte("test"), TextMessage)
 
-	for _, mws := range pool.all() {
+	for _, mws := range pool.snapshot() {
 		mws.(*WebsocketMock).wg.Wait()
 		mws.(*WebsocketMock).AssertNumberOfCalls(t, "Emit", 1)
 	}
@@ -260,7 +264,7 @@ func TestGlobalEmitToList(t *testing.T) {
 
 	EmitToList(uuids, []byte("test"), TextMessage)
 
-	for _, kws := range pool.all() {
+	for _, kws := range pool.snapshot() {
 		kws.(*WebsocketMock).wg.Wait()
 		kws.(*WebsocketMock).AssertNumberOfCalls(t, "Emit", 1)
 	}
@@ -437,7 +441,7 @@ func TestCloseAllSendsGoingAway(t *testing.T) {
 
 	// Give upgrades a moment to register in the pool.
 	require.Eventually(t, func() bool {
-		return len(pool.all()) == numConn
+		return len(pool.snapshot()) == numConn
 	}, 2*time.Second, 10*time.Millisecond, "expected %d pool entries", numConn)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -453,7 +457,7 @@ func TestCloseAllSendsGoingAway(t *testing.T) {
 		require.Equal(t, "bye", ce.Text)
 	}
 
-	require.Empty(t, pool.all())
+	require.Empty(t, pool.snapshot())
 }
 
 func TestCloseSendsFormatCloseMessage(t *testing.T) {
@@ -854,7 +858,7 @@ func TestSendDropFiresEventErrorAfterRetries(t *testing.T) {
 		}
 	})
 
-	// createWS leaves Conn nil, so hasConn() is false and zero settings give
+	// createWS leaves Conn nil, so conn() returns nil and zero settings give
 	// maxSendRetry 0: the message is requeued once and then dropped.
 	kws := createWS()
 	kws.queue <- message{mType: TextMessage, data: []byte("x")}
@@ -1002,7 +1006,7 @@ func (s *WebsocketMock) read(_ context.Context) {
 	panic("implement me")
 }
 
-func (s *WebsocketMock) disconnected(_ error) {
+func (s *WebsocketMock) disconnected(_ error) bool {
 	panic("implement me")
 }
 
@@ -1016,4 +1020,816 @@ func (s *WebsocketMock) randomUUID() string {
 
 func (s *WebsocketMock) fireEvent(_ string, _ []byte, _ error) {
 	panic("implement me")
+}
+
+func (s *WebsocketMock) fireOwnedEvent(_ string, _ []byte, _ error) {
+	panic("implement me")
+}
+
+func TestCloseReasonStaysValidUTF8(t *testing.T) {
+	t.Run("short reason is untouched", func(t *testing.T) {
+		require.Equal(t, "bye", closeReason("bye"))
+	})
+
+	t.Run("truncation lands on a rune boundary", func(t *testing.T) {
+		// Each euro sign is three bytes, so a plain byte cut at 123 would slice
+		// the 41st one in half and put invalid UTF-8 in the close frame.
+		reason := closeReason(strings.Repeat("€", 50))
+		require.LessOrEqual(t, len(reason), closeFrameMaxReason)
+		require.True(t, utf8.ValidString(reason))
+		require.Equal(t, 41, utf8.RuneCountInString(reason))
+	})
+
+	t.Run("ascii reason fills the limit exactly", func(t *testing.T) {
+		reason := closeReason(strings.Repeat("a", 200))
+		require.Len(t, reason, closeFrameMaxReason)
+	})
+
+	t.Run("invalid input is scrubbed", func(t *testing.T) {
+		reason := closeReason("ok\xff\xfebye")
+		require.True(t, utf8.ValidString(reason))
+		require.Equal(t, "okbye", reason)
+	})
+}
+
+func TestSanitizeCloseCode(t *testing.T) {
+	// See sanitizeCloseCode for why each of these is rewritten.
+	for _, code := range []int{
+		0, 999, 1004, websocket.CloseAbnormalClosure, 1014,
+		websocket.CloseTLSHandshake, 1016, 2999, 5000,
+	} {
+		require.Equal(t, websocket.CloseNormalClosure, sanitizeCloseCode(code),
+			"code %d must not reach the wire", code)
+	}
+
+	// Everything a peer accepts travels unchanged.
+	for _, code := range []int{
+		websocket.CloseNormalClosure, websocket.CloseGoingAway,
+		websocket.CloseProtocolError, websocket.CloseUnsupportedData,
+		websocket.CloseInvalidFramePayloadData, websocket.ClosePolicyViolation,
+		websocket.CloseMessageTooBig, websocket.CloseMandatoryExtension,
+		websocket.CloseInternalServerErr, websocket.CloseServiceRestart,
+		websocket.CloseTryAgainLater, 3000, 4000, 4999,
+	} {
+		require.Equal(t, code, sanitizeCloseCode(code), "code %d must survive", code)
+	}
+
+	// 1005 keeps its meaning: FormatCloseMessage renders it as an empty payload.
+	require.Equal(t, websocket.CloseNoStatusReceived, sanitizeCloseCode(websocket.CloseNoStatusReceived))
+	require.Empty(t, websocket.FormatCloseMessage(sanitizeCloseCode(websocket.CloseNoStatusReceived), "ignored"))
+}
+
+func TestCloseAllSanitizesReservedCode(t *testing.T) {
+	// Each of these makes a conformant peer fail the connection with a protocol
+	// error (see sanitizeCloseCode), so CloseAll must not send them.
+	for _, code := range []int{1004, websocket.CloseAbnormalClosure, 1014, websocket.CloseTLSHandshake, 2999} {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			resetState()
+
+			app := fiber.New()
+			ln := fasthttputil.NewInmemoryListener()
+			defer func() {
+				_ = app.Shutdown()
+				_ = ln.Close()
+			}()
+
+			app.Use(upgradeMiddleware)
+			app.Get("/", New(func(_ *Websocket) {}))
+
+			go func() { _ = app.Listener(ln) }()
+
+			dialer := &websocket.Dialer{
+				NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+				HandshakeTimeout: 5 * time.Second,
+			}
+			conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+			require.NoError(t, err)
+			defer conn.Close()
+
+			require.Eventually(t, func() bool {
+				return len(pool.snapshot()) == 1
+			}, 2*time.Second, 10*time.Millisecond)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			require.NoError(t, CloseAll(ctx, code, strings.Repeat("€", 50)))
+
+			// The peer reads a well formed close rather than rejecting the
+			// frame, and the reason survives as valid UTF-8 within the limit.
+			_, _, err = conn.ReadMessage()
+			require.Error(t, err)
+			var ce *websocket.CloseError
+			require.ErrorAs(t, err, &ce)
+			require.Equal(t, websocket.CloseNormalClosure, ce.Code)
+			require.True(t, utf8.ValidString(ce.Text))
+			require.LessOrEqual(t, len(ce.Text), closeFrameMaxReason)
+		})
+	}
+}
+
+func TestCallbackPanicDoesNotStrandPoolEntry(t *testing.T) {
+	resetState()
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	type disconnect struct {
+		err      error
+		detached bool
+	}
+	disconnects := make(chan disconnect, 1)
+	On(EventDisconnect, func(p *EventPayload) {
+		disconnects <- disconnect{err: p.Error, detached: p.Kws.conn() == nil}
+	})
+
+	app.Use(upgradeMiddleware)
+	app.Get("/", NewWithConfig(func(_ *Websocket) {
+		panic("callback boom")
+	}, Config{}, fws.Config{
+		RecoverHandler: func(c *fws.Conn) {
+			if r := recover(); r != nil {
+				_ = c.WriteJSON(fiber.Map{"error": r})
+			}
+		},
+	}))
+
+	go func() { _ = app.Listener(ln) }()
+
+	dialer := &websocket.Dialer{
+		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+		HandshakeTimeout: 5 * time.Second,
+	}
+	conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+	require.NoError(t, err)
+	defer conn.Close()
+
+	// The cleanup must not run ahead of the middleware's recover handler: the
+	// client still receives the error frame the handler is documented to send.
+	var msg fiber.Map
+	require.NoError(t, conn.ReadJSON(&msg))
+	require.Equal(t, "callback boom", msg["error"])
+
+	// A panicking callback must still leave the pool: a stranded entry has a
+	// done channel nobody closes, so every later Broadcast would block.
+	require.Eventually(t, func() bool {
+		return len(pool.snapshot()) == 0
+	}, 2*time.Second, 10*time.Millisecond, "panicking callback stranded a pool entry")
+
+	// Listeners learn it was a crash, not a clean close, and the helper no
+	// longer points at the wrapper the middleware is about to recycle.
+	select {
+	case d := <-disconnects:
+		require.ErrorIs(t, d.err, ErrorCallbackPanic)
+		require.True(t, d.detached, "kws.Conn still aliases the pooled wrapper")
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventDisconnect was not fired for the panicking callback")
+	}
+
+	// The socket must be closed rather than left dangling; a timeout here means
+	// it stayed open.
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	_, _, err = conn.ReadMessage()
+	require.Error(t, err)
+	var netErr net.Error
+	require.False(t, errors.As(err, &netErr) && netErr.Timeout(),
+		"panicking callback left the connection open: %v", err)
+}
+
+func TestCallbackPanicAfterCloseStillReportsError(t *testing.T) {
+	resetState()
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	disconnects := make(chan error, 2)
+	On(EventDisconnect, func(p *EventPayload) { disconnects <- p.Error })
+	errs := make(chan error, 2)
+	On(EventError, func(p *EventPayload) { errs <- p.Error })
+
+	app.Use(upgradeMiddleware)
+	app.Get("/", NewWithConfig(func(kws *Websocket) {
+		// The callback ends the connection cleanly and only then crashes.
+		kws.Close()
+		panic("callback boom after close")
+	}, Config{}, fws.Config{
+		RecoverHandler: func(*fws.Conn) { _ = recover() },
+	}))
+
+	go func() { _ = app.Listener(ln) }()
+
+	dialer := &websocket.Dialer{
+		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+		HandshakeTimeout: 5 * time.Second,
+	}
+	conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+	require.NoError(t, err)
+	defer conn.Close()
+
+	// The close the callback asked for is what the peer sees.
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	_, _, err = conn.ReadMessage()
+	require.True(t, websocket.IsCloseError(err, websocket.CloseNormalClosure), "expected the callback's close frame, got %v", err)
+
+	// The disconnect was clean and happened once; the crash is still reported
+	// on EventError instead of vanishing into the already-spent disconnect.
+	select {
+	case discErr := <-disconnects:
+		require.NoError(t, discErr)
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventDisconnect was not fired for the close")
+	}
+	select {
+	case panicErr := <-errs:
+		require.ErrorIs(t, panicErr, ErrorCallbackPanic)
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventError with ErrorCallbackPanic was not fired")
+	}
+	select {
+	case discErr := <-disconnects:
+		t.Fatalf("EventDisconnect fired twice, second with %v", discErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+	require.Eventually(t, func() bool {
+		return len(pool.snapshot()) == 0
+	}, 2*time.Second, 10*time.Millisecond)
+}
+
+func TestCloseAllListenersStillSeeRequestData(t *testing.T) {
+	// EventDisconnect listeners run on CloseAll's goroutine while each handler
+	// returns concurrently; the request data they read must survive that.
+	resetState()
+
+	const numConn = 25
+	var mu sync.Mutex
+	seen := make(map[string]int)
+	On(EventDisconnect, func(p *EventPayload) {
+		mu.Lock()
+		seen[p.Kws.Query("who")]++
+		mu.Unlock()
+	})
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	app.Use(upgradeMiddleware)
+	app.Get("/", New(func(_ *Websocket) {}))
+
+	go func() { _ = app.Listener(ln) }()
+
+	dialer := &websocket.Dialer{
+		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+		HandshakeTimeout: 5 * time.Second,
+	}
+	clients := make([]*websocket.Conn, 0, numConn)
+	defer func() {
+		for _, c := range clients {
+			_ = c.Close()
+		}
+	}()
+	for i := 0; i < numConn; i++ {
+		conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String()+"/?who=c"+strconv.Itoa(i))
+		require.NoError(t, err)
+		clients = append(clients, conn)
+	}
+	require.Eventually(t, func() bool {
+		return len(pool.snapshot()) == numConn
+	}, 2*time.Second, 10*time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	require.NoError(t, CloseAll(ctx, websocket.CloseGoingAway, "bye"))
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, seen, numConn, "a listener saw an empty or duplicated query value: %v", seen)
+	for i := 0; i < numConn; i++ {
+		require.Equal(t, 1, seen["c"+strconv.Itoa(i)])
+	}
+}
+
+func TestCloseAllListenersSurviveConcurrentUpgrades(t *testing.T) {
+	// A disconnect listener reads the wrapper's request data on CloseAll's
+	// goroutine while new upgrades keep landing; it must never see another
+	// connection's value, an empty one, or a race report.
+	resetState()
+
+	const numConn = 25
+	var mu sync.Mutex
+	seen := make(map[string]int)
+	On(EventDisconnect, func(p *EventPayload) {
+		mu.Lock()
+		seen[p.Kws.Query("who")]++
+		mu.Unlock()
+	})
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	app.Use(upgradeMiddleware)
+	app.Get("/", New(func(_ *Websocket) {}))
+
+	go func() { _ = app.Listener(ln) }()
+
+	dialer := &websocket.Dialer{
+		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+		HandshakeTimeout: 5 * time.Second,
+	}
+	clients := make([]*websocket.Conn, 0, numConn)
+	defer func() {
+		for _, c := range clients {
+			_ = c.Close()
+		}
+	}()
+	for i := 0; i < numConn; i++ {
+		conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String()+"/?who=c"+strconv.Itoa(i))
+		require.NoError(t, err)
+		clients = append(clients, conn)
+	}
+	require.Eventually(t, func() bool {
+		return len(pool.snapshot()) == numConn
+	}, 2*time.Second, 10*time.Millisecond)
+
+	// Keep new upgrades arriving for the whole of CloseAll so a recycled
+	// wrapper would be re-acquired while listeners are still reading it.
+	stop := make(chan struct{})
+	churned := make(chan struct{})
+	go func() {
+		defer close(churned)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			c, _, err := dialer.Dial("ws://"+ln.Addr().String()+"/?who=late"+strconv.Itoa(i), nil)
+			if err == nil {
+				_ = c.Close()
+			}
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := CloseAll(ctx, websocket.CloseGoingAway, "bye")
+	close(stop)
+	<-churned
+	require.NoError(t, err)
+
+	// Late connections may or may not have been caught by CloseAll; whatever
+	// was seen must be a real value that was seen exactly once.
+	mu.Lock()
+	defer mu.Unlock()
+	for i := 0; i < numConn; i++ {
+		require.Equal(t, 1, seen["c"+strconv.Itoa(i)], "connection c%d: %v", i, seen)
+	}
+	require.NotContains(t, seen, "", "a listener read an emptied wrapper")
+	for who, n := range seen {
+		require.Equal(t, 1, n, "%q seen %d times", who, n)
+	}
+}
+
+func TestGlobalFireGivesEachConnectionItsOwnData(t *testing.T) {
+	// Package-level Fire must give each connection its own copy: a listener
+	// mutating Data for one connection must not affect another's or the caller's.
+	resetState()
+
+	var mu sync.Mutex
+	seen := make(map[string]byte)
+	for i, kws := range []*Websocket{createWS(), createWS()} {
+		pool.set(kws)
+		name, marker := "c"+strconv.Itoa(i), byte('X'+i)
+		kws.On("custom", func(p *EventPayload) {
+			mu.Lock()
+			seen[name] = p.Data[0]
+			mu.Unlock()
+			p.Data[0] = marker
+		})
+	}
+
+	payload := []byte("abc")
+	Fire("custom", payload)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, byte('a'), seen["c0"])
+	require.Equal(t, byte('a'), seen["c1"])
+	require.Equal(t, "abc", string(payload))
+}
+
+func TestMethodBroadcastSkipsSelfAndReportsDead(t *testing.T) {
+	resetState()
+
+	var errs int32
+	On(EventError, func(p *EventPayload) {
+		if errors.Is(p.Error, ErrorInvalidConnection) {
+			atomic.AddInt32(&errs, 1)
+		}
+	})
+
+	sender := createWS()
+	pool.set(sender)
+
+	alive := new(WebsocketMock)
+	require.NoError(t, alive.SetUUID("alive"))
+	alive.On("IsAlive").Return(true)
+	alive.On("Emit", mock.Anything).Return(nil)
+	alive.wg.Add(1)
+	pool.set(alive)
+
+	dead := new(WebsocketMock)
+	require.NoError(t, dead.SetUUID("dead"))
+	dead.On("IsAlive").Return(false)
+	pool.set(dead)
+
+	sender.Broadcast([]byte("test"), true, TextMessage)
+
+	alive.wg.Wait()
+	alive.AssertNumberOfCalls(t, "Emit", 1)
+	dead.AssertNumberOfCalls(t, "Emit", 0)
+	require.Equal(t, int32(1), atomic.LoadInt32(&errs))
+	// The sender was skipped, so nothing was queued on it.
+	require.Empty(t, sender.queue)
+}
+
+func BenchmarkFireEventNoListeners(b *testing.B) {
+	resetState()
+	kws := createWS()
+
+	b.ReportAllocs()
+	for b.Loop() {
+		kws.fireEvent(EventMessage, nil, nil)
+	}
+}
+
+func BenchmarkFireEventSingleListener(b *testing.B) {
+	resetState()
+	On(EventMessage, func(*EventPayload) {})
+	kws := createWS()
+	payload := []byte("hello websocket")
+
+	b.ReportAllocs()
+	for b.Loop() {
+		kws.fireEvent(EventMessage, payload, nil)
+	}
+	resetState()
+}
+
+func BenchmarkPoolSnapshot(b *testing.B) {
+	resetState()
+	for i := 0; i < 128; i++ {
+		kws := createWS()
+		kws.UUID = strconv.Itoa(i)
+		pool.set(kws)
+	}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		if len(pool.snapshot()) != 128 {
+			b.Fatal("unexpected snapshot size")
+		}
+	}
+	resetState()
+}
+
+func TestListenersRegistryIsCopyOnWrite(t *testing.T) {
+	var reg safeListeners
+	calls := 0
+	reg.set("e", func(*EventPayload) { calls++ })
+	reg.set("e", func(*EventPayload) { calls += 10 })
+	before := reg.get("e")
+	require.Len(t, before, 2)
+	require.Nil(t, reg.get("other"))
+
+	// A slice handed out earlier is not changed by a later registration.
+	reg.set("e", func(*EventPayload) { calls += 100 })
+	require.Len(t, before, 2)
+	require.Len(t, reg.get("e"), 3)
+	for _, cb := range reg.get("e") {
+		cb(nil)
+	}
+	require.Equal(t, 111, calls)
+
+	reg.remove("e")
+	require.Nil(t, reg.get("e"))
+	reg.remove("e")
+	require.Nil(t, reg.get("e"))
+
+	// Readers never block on writers; the race detector checks the rest.
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			reg.set("spin", func(*EventPayload) {})
+			if i%8 == 0 {
+				reg.remove("spin")
+			}
+		}
+	}()
+	for i := 0; i < 10000; i++ {
+		_ = reg.get("spin")
+	}
+	close(stop)
+	wg.Wait()
+}
+
+func TestPoolSnapshotIsCachedUntilMembershipChanges(t *testing.T) {
+	resetState()
+	defer resetState()
+
+	a, b := createWS(), createWS()
+	pool.set(a)
+	pool.set(b)
+
+	first := pool.snapshot()
+	require.Len(t, first, 2)
+	require.Same(t, &first[0], &pool.snapshot()[0], "unchanged pool must hand out the same slice")
+
+	c := createWS()
+	pool.set(c)
+	third := pool.snapshot()
+	require.Len(t, third, 3)
+	require.NotSame(t, &first[0], &third[0])
+	require.Len(t, first, 2, "an earlier snapshot is never modified")
+
+	pool.delete(c.GetUUID())
+	afterDelete := pool.snapshot()
+	require.Len(t, afterDelete, 2)
+	require.NotSame(t, &third[0], &afterDelete[0])
+
+	// A rename keeps the same set of connections but still refreshes the cache.
+	require.NoError(t, a.SetUUID("renamed"))
+	renamed := pool.snapshot()
+	require.NotSame(t, &afterDelete[0], &renamed[0])
+	require.ElementsMatch(t, afterDelete, renamed)
+}
+
+func TestFrameReaderHandsOutExactSizeOwnedCopies(t *testing.T) {
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	type result struct {
+		msg      []byte
+		prevKept bool
+	}
+	results := make(chan result, 16)
+	app.Use(upgradeMiddleware)
+	app.Get("/", fws.New(func(c *fws.Conn) {
+		var prev, prevCopy []byte
+		for {
+			_, msg, err := readFrame(c)
+			if err != nil {
+				return
+			}
+			// prev was handed out by the previous read; reading this frame
+			// must not have touched it.
+			results <- result{msg: msg, prevKept: bytes.Equal(prev, prevCopy)}
+			prev = msg
+			prevCopy = bytes.Clone(msg)
+		}
+	}))
+	go func() { _ = app.Listener(ln) }()
+
+	// A small client write buffer splits the larger messages into
+	// continuation frames, so the reader is exercised across fragments too.
+	dialer := &websocket.Dialer{
+		NetDial: func(_, _ string) (net.Conn, error) {
+			return ln.Dial()
+		},
+		HandshakeTimeout: 5 * time.Second,
+		WriteBufferSize:  256,
+	}
+	conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+
+	sizes := []int{0, 1, frameBufferInitial - 1, frameBufferInitial, frameBufferInitial + 1, 3000, frameBufferRetained, frameBufferRetained + 1, 16}
+	for _, size := range sizes {
+		want := make([]byte, size)
+		for i := range want {
+			want[i] = byte(i % 251)
+		}
+		require.NoError(t, conn.WriteMessage(websocket.BinaryMessage, want))
+		select {
+		case r := <-results:
+			require.Equal(t, want, r.msg, "size %d", size)
+			require.True(t, r.prevKept, "size %d: reading this frame changed the previous message", size)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("no result for size %d", size)
+		}
+	}
+}
+
+func TestFrameReaderTrimDropsOversizedBuffers(t *testing.T) {
+	fr := &frameReader{buf: make([]byte, frameBufferRetained)}
+	fr.trim()
+	require.Equal(t, frameBufferRetained, cap(fr.buf), "a buffer within the cap goes back to the pool")
+	require.Empty(t, fr.buf)
+
+	fr = &frameReader{buf: make([]byte, frameBufferRetained+1)}
+	fr.trim()
+	require.Nil(t, fr.buf, "a buffer past the cap is dropped")
+}
+
+// frameBench is an upgraded loopback connection whose client side is a raw
+// TCP socket, so a benchmark can feed the server batches of pre-built frames.
+type frameBench struct {
+	server *fws.Conn
+	client net.Conn
+	app    *fiber.App
+	done   chan struct{}
+}
+
+func newFrameBench(tb testing.TB) *frameBench {
+	tb.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(tb, err)
+	done := make(chan struct{})
+	connCh := make(chan *fws.Conn, 1)
+	app := fiber.New()
+	app.Get("/", fws.New(func(c *fws.Conn) {
+		connCh <- c
+		<-done
+	}))
+	go func() { _ = app.Listener(ln, fiber.ListenConfig{DisableStartupMessage: true}) }()
+
+	client, err := net.Dial("tcp", ln.Addr().String())
+	require.NoError(tb, err)
+	_, err = fmt.Fprintf(client, "GET / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n", ln.Addr())
+	require.NoError(tb, err)
+	br := bufio.NewReader(client)
+	status, err := br.ReadString('\n')
+	require.NoError(tb, err)
+	require.Contains(tb, status, "101")
+	for {
+		line, err := br.ReadString('\n')
+		require.NoError(tb, err)
+		if line == "\r\n" {
+			break
+		}
+	}
+	select {
+	case server := <-connCh:
+		return &frameBench{server: server, client: client, app: app, done: done}
+	case <-time.After(5 * time.Second):
+		tb.Fatal("server side never upgraded")
+		return nil
+	}
+}
+
+func (fb *frameBench) close() {
+	close(fb.done)
+	_ = fb.server.Close()
+	_ = fb.client.Close()
+	_ = fb.app.ShutdownWithTimeout(time.Second)
+}
+
+// maskedFrame builds one client-to-server binary frame carrying payload.
+func maskedFrame(payload []byte) []byte {
+	n := len(payload)
+	frame := make([]byte, 0, 14+n)
+	frame = append(frame, 0x80|byte(websocket.BinaryMessage))
+	switch {
+	case n < 126:
+		frame = append(frame, 0x80|byte(n))
+	case n < 1<<16:
+		frame = append(frame, 0x80|126, byte(n>>8), byte(n))
+	default:
+		frame = append(frame, 0x80|127, 0, 0, 0, 0, byte(n>>24), byte(n>>16), byte(n>>8), byte(n))
+	}
+	key := [4]byte{0x11, 0x22, 0x33, 0x44}
+	frame = append(frame, key[:]...)
+	for i, b := range payload {
+		frame = append(frame, b^key[i%4])
+	}
+	return frame
+}
+
+func benchmarkFrameRead(b *testing.B, size int, exact bool) {
+	fb := newFrameBench(b)
+	defer fb.close()
+
+	payload := make([]byte, size)
+	for i := range payload {
+		payload[i] = byte(i % 251)
+	}
+	frame := maskedFrame(payload)
+	batch := frame
+	for len(batch) < 256<<10 {
+		batch = append(batch, frame...)
+	}
+	go func() {
+		for {
+			if _, err := fb.client.Write(batch); err != nil {
+				return
+			}
+		}
+	}()
+
+	b.SetBytes(int64(size))
+	b.ReportAllocs()
+	for b.Loop() {
+		var msg []byte
+		var err error
+		if exact {
+			_, msg, err = readFrame(fb.server)
+		} else {
+			_, msg, err = fb.server.ReadMessage()
+		}
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(msg) != size || msg[size/2] != payload[size/2] {
+			b.Fatalf("bad message of %d bytes", len(msg))
+		}
+	}
+}
+
+var frameBenchSizes = []struct {
+	name string
+	size int
+}{{"128B", 128}, {"4KB", 4 << 10}, {"64KB", 64 << 10}}
+
+func BenchmarkReadMessage(b *testing.B) {
+	for _, s := range frameBenchSizes {
+		b.Run(s.name, func(b *testing.B) { benchmarkFrameRead(b, s.size, false) })
+	}
+}
+
+func BenchmarkFrameReader(b *testing.B) {
+	for _, s := range frameBenchSizes {
+		b.Run(s.name, func(b *testing.B) { benchmarkFrameRead(b, s.size, true) })
+	}
+}
+
+// The per-frame fan-out under the contention a busy server sees: every read
+// goroutine consults the one global registry.
+func BenchmarkFireOwnedEventParallel(b *testing.B) {
+	resetState()
+	On(EventMessage, func(*EventPayload) {})
+	data := []byte("hello websocket")
+
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		kws := createWS()
+		for pb.Next() {
+			kws.fireOwnedEvent(EventMessage, data, nil)
+		}
+	})
+	resetState()
+}
+
+// One connection joins or leaves per ten snapshots: the amortised cost of a
+// broadcast on a pool whose membership keeps changing.
+func BenchmarkPoolSnapshotChurn(b *testing.B) {
+	resetState()
+	for i := 0; i < 128; i++ {
+		kws := createWS()
+		kws.UUID = strconv.Itoa(i)
+		pool.set(kws)
+	}
+	extra := createWS()
+	extra.UUID = "extra"
+
+	b.ReportAllocs()
+	i := 0
+	for b.Loop() {
+		switch i % 20 {
+		case 0:
+			pool.set(extra)
+		case 10:
+			pool.delete(extra.UUID)
+		}
+		i++
+		if len(pool.snapshot()) < 128 {
+			b.Fatal("unexpected snapshot size")
+		}
+	}
+	resetState()
 }
