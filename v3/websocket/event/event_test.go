@@ -1020,6 +1020,10 @@ func (s *WebsocketMock) fireEvent(_ string, _ []byte, _ error) {
 	panic("implement me")
 }
 
+func (s *WebsocketMock) fireOwnedEvent(_ string, _ []byte, _ error) {
+	panic("implement me")
+}
+
 func TestCloseReasonStaysValidUTF8(t *testing.T) {
 	t.Run("short reason is untouched", func(t *testing.T) {
 		require.Equal(t, "bye", closeReason("bye"))
@@ -1047,10 +1051,7 @@ func TestCloseReasonStaysValidUTF8(t *testing.T) {
 }
 
 func TestSanitizeCloseCode(t *testing.T) {
-	// A code a conformant peer rejects on receive is replaced with a normal
-	// closure: 1005/1006/1015 are reserved for locally observed conditions
-	// (RFC 6455 section 7.4.1), 1004 is reserved with no meaning assigned, and
-	// 1014 plus 1016-2999 are outside the set the library accepts.
+	// See sanitizeCloseCode for why each of these is rewritten.
 	for _, code := range []int{
 		0, 999, 1004, websocket.CloseAbnormalClosure, 1014,
 		websocket.CloseTLSHandshake, 1016, 2999, 5000,
@@ -1078,10 +1079,8 @@ func TestSanitizeCloseCode(t *testing.T) {
 
 func TestCloseAllSanitizesReservedCode(t *testing.T) {
 	// Each of these makes a conformant peer fail the connection with a protocol
-	// error instead of reading a close, so CloseAll must not put them on the
-	// wire. 1006 and 1015 are reserved for locally observed conditions, 1004 is
-	// reserved with no meaning assigned, and 1014 and 1016-2999 are outside the
-	// set the receive side accepts.
+	// error instead of reading a close (see sanitizeCloseCode), so CloseAll
+	// must not put them on the wire.
 	for _, code := range []int{1004, websocket.CloseAbnormalClosure, 1014, websocket.CloseTLSHandshake, 2999} {
 		t.Run(strconv.Itoa(code), func(t *testing.T) {
 			resetState()
@@ -1137,6 +1136,15 @@ func TestCallbackPanicDoesNotStrandPoolEntry(t *testing.T) {
 		_ = ln.Close()
 	}()
 
+	type disconnect struct {
+		err      error
+		detached bool
+	}
+	disconnects := make(chan disconnect, 1)
+	On(EventDisconnect, func(p *EventPayload) {
+		disconnects <- disconnect{err: p.Error, detached: p.Kws.conn() == nil}
+	})
+
 	app.Use(upgradeMiddleware)
 	app.Get("/", NewWithConfig(func(_ *Websocket) {
 		panic("callback boom")
@@ -1171,6 +1179,16 @@ func TestCallbackPanicDoesNotStrandPoolEntry(t *testing.T) {
 		return len(pool.snapshot()) == 0
 	}, 2*time.Second, 10*time.Millisecond, "panicking callback stranded a pool entry")
 
+	// Listeners learn it was a crash, not a clean close, and the helper no
+	// longer points at the wrapper the middleware is about to recycle.
+	select {
+	case d := <-disconnects:
+		require.ErrorIs(t, d.err, ErrorCallbackPanic)
+		require.True(t, d.detached, "kws.Conn still aliases the pooled wrapper")
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventDisconnect was not fired for the panicking callback")
+	}
+
 	// The socket is closed rather than left dangling on a hijacked connection.
 	// The deadline only keeps a regression from blocking forever; a timeout
 	// means the socket stayed open, which is the failure being guarded against.
@@ -1180,6 +1198,67 @@ func TestCallbackPanicDoesNotStrandPoolEntry(t *testing.T) {
 	var netErr net.Error
 	require.False(t, errors.As(err, &netErr) && netErr.Timeout(),
 		"panicking callback left the connection open: %v", err)
+}
+
+func TestCloseAllListenersStillSeeRequestData(t *testing.T) {
+	// EventDisconnect listeners run on the goroutine that called CloseAll,
+	// while each connection's handler unwinds concurrently and hands its
+	// wrapper back to the middleware pool. The request data those listeners
+	// read through the wrapper must survive that: emptying the maps at
+	// release time raced with these reads and returned "" (or, under -race,
+	// a report against (*Conn).Query).
+	resetState()
+
+	const numConn = 25
+	var mu sync.Mutex
+	seen := make(map[string]int)
+	On(EventDisconnect, func(p *EventPayload) {
+		mu.Lock()
+		seen[p.Kws.Query("who")]++
+		mu.Unlock()
+	})
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	app.Use(upgradeMiddleware)
+	app.Get("/", New(func(_ *Websocket) {}))
+
+	go func() { _ = app.Listener(ln) }()
+
+	dialer := &websocket.Dialer{
+		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+		HandshakeTimeout: 5 * time.Second,
+	}
+	clients := make([]*websocket.Conn, 0, numConn)
+	defer func() {
+		for _, c := range clients {
+			_ = c.Close()
+		}
+	}()
+	for i := 0; i < numConn; i++ {
+		conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String()+"/?who=c"+strconv.Itoa(i))
+		require.NoError(t, err)
+		clients = append(clients, conn)
+	}
+	require.Eventually(t, func() bool {
+		return len(pool.snapshot()) == numConn
+	}, 2*time.Second, 10*time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	require.NoError(t, CloseAll(ctx, websocket.CloseGoingAway, "bye"))
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, seen, numConn, "a listener saw an empty or duplicated query value: %v", seen)
+	for i := 0; i < numConn; i++ {
+		require.Equal(t, 1, seen["c"+strconv.Itoa(i)])
+	}
 }
 
 func TestMethodBroadcastSkipsSelfAndReportsDead(t *testing.T) {

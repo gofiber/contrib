@@ -110,8 +110,10 @@ func main() {
 
 A request that does not ask to switch protocols at all is answered with `426 Upgrade Required`.
 
-A request that *does* ask to upgrade but whose handshake is rejected keeps the status
-RFC 6455 defines for that failure instead:
+A request that *does* ask to upgrade but whose handshake is rejected is returned as a
+`*fiber.Error` carrying the status RFC 6455 defines for that failure, so it reaches
+the app's `ErrorHandler` like any other error and takes its body and format from
+there:
 
 | Reason                                                     | Status                    |
 |:-----------------------------------------------------------|:--------------------------|
@@ -120,7 +122,8 @@ RFC 6455 defines for that failure instead:
 | Request method is not `GET`                                 | `405 Method Not Allowed`  |
 
 Rejected handshakes also carry `Sec-WebSocket-Version: 13` so a client that asked for
-another version learns which one the server speaks (RFC 6455 section 4.4).
+another version learns which one the server speaks (RFC 6455 section 4.4). Headers set
+by earlier middleware are left in place.
 
 ## Note with cache middleware
 
@@ -149,9 +152,14 @@ own `RecoverHandler` — it receives the `*websocket.Conn` and calls `recover()`
 itself, so it can write whatever the application considers safe.
 
 Once the recover handler returns, the connection is closed: a handler that panicked
-cannot be assumed to still own it, and nothing else closes a hijacked connection. A
-handler that returns normally keeps its connection open, so it can hand the raw
-`*websocket.Conn` to another goroutine and keep writing after the handler returns.
+cannot be assumed to still own it, and nothing else closes a hijacked connection.
+
+A handler that returns normally leaves the socket open. If it needs to keep writing
+from another goroutine after returning, it must capture the embedded connection,
+`c.Conn` (a `*github.com/fasthttp/websocket.Conn`), before it returns. The
+`*websocket.Conn` the handler receives is pooled: it is taken back the moment the
+handler returns and reissued to the next upgrade, so a goroutine that keeps using it
+would first see failed writes and then another client's socket and request data.
 
 ```go
 app := fiber.New()

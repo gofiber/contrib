@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 )
 
 func TestWebSocketMiddlewareDefaultConfig(t *testing.T) {
@@ -528,13 +530,16 @@ func TestWebsocketRecoverDoesNotLeakErrorDetail(t *testing.T) {
 	// would only hand a remote client an oracle for internal paths, DSNs and
 	// schema names. This holds for a string panic as much as for an error one,
 	// since a string is sent verbatim by any encoder.
-	for name, value := range map[string]any{
-		"error":  errors.New("dial tcp 10.0.3.14:5432: connection refused"),
-		"string": "loading /srv/app/conf/tenants.yaml failed",
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{"error", errors.New("dial tcp 10.0.3.14:5432: connection refused")},
+		{"string", "loading /srv/app/conf/tenants.yaml failed"},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			app := setupTestApp(Config{}, func(*Conn) {
-				panic(value)
+				panic(tc.value)
 			})
 			defer app.Shutdown()
 
@@ -544,8 +549,6 @@ func TestWebsocketRecoverDoesNotLeakErrorDetail(t *testing.T) {
 
 			_, raw, err := conn.ReadMessage()
 			require.NoError(t, err)
-			assert.NotContains(t, string(raw), "10.0.3.14")
-			assert.NotContains(t, string(raw), "/srv/app/conf")
 			assert.JSONEq(t, `{"error":"internal error"}`, string(raw))
 		})
 	}
@@ -661,41 +664,92 @@ func TestWebSocketRejectedHandshakeKeepsUpgraderResponse(t *testing.T) {
 	assert.Equal(t, "13", resp.Header.Get(fiber.HeaderSecWebSocketVersion))
 }
 
-func TestConnPoolReleaseClearsState(t *testing.T) {
-	conn := acquireConn()
+func TestWebSocketRejectedHandshakeReachesErrorHandler(t *testing.T) {
+	var handled atomic.Int32
+	app := fiber.New(fiber.Config{
+		ErrorHandler: func(c fiber.Ctx, err error) error {
+			handled.Add(1)
+			var fe *fiber.Error
+			require.ErrorAs(t, err, &fe)
+			return c.Status(fe.Code).JSON(fiber.Map{"reason": fe.Message})
+		},
+	})
+	// A header set by earlier middleware, as a request-id or CORS middleware
+	// would. fasthttp's ctx.Error would have reset it away.
+	app.Use(func(c fiber.Ctx) error {
+		c.Set("X-Request-ID", "req-1")
+		return c.Next()
+	})
+	app.Get("/ws", New(func(*Conn) {}, Config{Origins: []string{"http://allowed"}}))
+
+	req := httptest.NewRequest(fiber.MethodGet, "/ws", nil)
+	req.Header.Set(fiber.HeaderConnection, "Upgrade")
+	req.Header.Set(fiber.HeaderUpgrade, "websocket")
+	req.Header.Set(fiber.HeaderSecWebSocketVersion, "13")
+	req.Header.Set(fiber.HeaderSecWebSocketKey, "dGhlIHNhbXBsZSBub25jZQ==")
+	req.Header.Set(fiber.HeaderOrigin, "http://evil")
+
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// The rejection is a *fiber.Error with the upgrader's status, so the
+	// app's own error formatting, logging and metrics all see it.
+	assert.Equal(t, fiber.StatusForbidden, resp.StatusCode)
+	assert.Equal(t, int32(1), handled.Load())
+	assert.Equal(t, fiber.MIMEApplicationJSONCharsetUTF8, resp.Header.Get(fiber.HeaderContentType))
+	assert.Equal(t, "req-1", resp.Header.Get("X-Request-ID"))
+	assert.Equal(t, "13", resp.Header.Get(fiber.HeaderSecWebSocketVersion))
+}
+
+func TestConnResetEmptiesPooledState(t *testing.T) {
+	conn := &Conn{ip: "127.0.0.1"}
 	conn.Locals("session", "secret")
-	conn.params = map[string]string{"id": "1"}
-	conn.queries = map[string]string{"q": "1"}
-	conn.cookies = map[string]string{"c": "1"}
-	conn.headers = map[string]string{"Authorization": "Bearer token"}
-	conn.ip = "127.0.0.1"
+	setEntry(&conn.params, "id", "1")
+	setEntry(&conn.queries, "q", "1")
+	setEntry(&conn.cookies, "c", "1")
+	setEntry(&conn.headers, "Authorization", "Bearer token")
+	locals, headers := conn.locals, conn.headers
 
-	locals := conn.locals
-	releaseConn(conn)
+	conn.reset()
 
-	// A pooled Conn must not keep the finished connection's data reachable.
-	assert.Nil(t, conn.Conn)
+	// Nothing of the previous connection survives into the next one...
 	assert.Empty(t, conn.ip)
-	assert.Empty(t, locals)
+	assert.Empty(t, conn.locals)
 	assert.Empty(t, conn.params)
 	assert.Empty(t, conn.queries)
 	assert.Empty(t, conn.cookies)
 	assert.Empty(t, conn.headers)
 
-	// The maps themselves survive so the next connection reuses their buckets.
+	// ...but the maps are the same ones, emptied in place, so their buckets
+	// are reused instead of reallocated.
 	assert.NotNil(t, conn.locals)
-	assert.NotNil(t, conn.headers)
+	assert.Equal(t, 0, len(locals))
+	assert.Equal(t, 0, len(headers))
 }
 
-func TestConnPoolDropsOversizedMaps(t *testing.T) {
-	conn := &Conn{queries: make(map[string]string)}
+func TestConnResetDropsOversizedMaps(t *testing.T) {
+	conn := &Conn{}
 	for i := 0; i <= maxPooledMapEntries; i++ {
-		conn.queries[strconv.Itoa(i)] = "value"
+		setEntry(&conn.queries, strconv.Itoa(i), "value")
 	}
+
+	conn.reset()
+
+	assert.Nil(t, conn.queries, "an oversized map must be dropped instead of pooled")
+}
+
+func TestReleaseConnLeavesMapsForLateReaders(t *testing.T) {
+	// A listener fired by Close or CloseAll from another goroutine may still be
+	// reading the wrapper while the handler unwinds, so release must not write
+	// into the maps; that happens on the next acquire instead.
+	conn := &Conn{}
+	conn.Locals("user", "alice")
 
 	releaseConn(conn)
 
-	assert.Nil(t, conn.queries, "an oversized map must be dropped instead of pooled")
+	assert.Nil(t, conn.Conn)
+	assert.Equal(t, "alice", conn.Locals("user"))
 }
 
 func TestConnHeadersLookup(t *testing.T) {
@@ -711,10 +765,22 @@ func TestConnHeadersLookup(t *testing.T) {
 	assert.Equal(t, "", conn.Headers("X-Missing"))
 	assert.Equal(t, "fallback", conn.Headers("X-Missing", "fallback"))
 
-	// A server with header name normalizing turned off stores the key as it
-	// arrived, which the case-insensitive fallback still resolves.
-	raw := &Conn{headers: map[string]string{"x-custom": "value"}}
-	assert.Equal(t, "value", raw.Headers("X-Custom"))
+}
+
+func TestConnCaptureCanonicalizesHeaderNames(t *testing.T) {
+	// With header name normalizing disabled fasthttp hands names over as they
+	// arrived; capture canonicalizes them so lookups stay case-insensitive
+	// without a fallback scan.
+	fctx := &fasthttp.RequestCtx{}
+	fctx.Request.Header.DisableNormalizing()
+	fctx.Request.Header.Set("x-custom", "value")
+
+	conn := &Conn{}
+	conn.capture(fctx)
+
+	assert.Equal(t, "value", conn.Headers("x-custom"))
+	assert.Equal(t, "value", conn.Headers("X-Custom"))
+	assert.Equal(t, "value", conn.Headers("X-CUSTOM"))
 }
 
 func TestConnAccessorsOnEmptyConn(t *testing.T) {
@@ -755,12 +821,13 @@ func BenchmarkConnHeaders(b *testing.B) {
 		"Authorization":         "Bearer token",
 	}}
 
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if conn.Headers("Authorization") == "" {
-			b.Fatal("missing header")
-		}
+	for _, key := range []string{"Authorization", "authorization", "X-Missing"} {
+		b.Run(key, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = conn.Headers(key, "fallback")
+			}
+		})
 	}
 }
 
