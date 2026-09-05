@@ -5,6 +5,7 @@ package event
 import (
 	"context"
 	"errors"
+	"io"
 	"maps"
 	"net"
 	"slices"
@@ -271,6 +272,9 @@ type Websocket struct {
 type safePool struct {
 	sync.RWMutex
 	conn map[string]ws
+	// snap is the last snapshot, kept until the next change to conn so a
+	// burst of broadcasts shares one slice instead of rebuilding it per call.
+	snap []ws
 }
 
 var pool = safePool{
@@ -280,20 +284,31 @@ var pool = safePool{
 func (p *safePool) set(ws ws) {
 	p.Lock()
 	p.conn[ws.GetUUID()] = ws
+	p.snap = nil
 	p.Unlock()
 }
 
-// snapshot copies the live connections into a slice. Every caller only ever
-// iterates the result, so a slice spares them the throwaway map a keyed copy
-// would build on each broadcast and each global event.
+// snapshot returns the live connections as a slice. Callers only ever iterate
+// the result and must not modify it: the same slice is handed out until a
+// connection joins or leaves.
 func (p *safePool) snapshot() []ws {
 	p.RLock()
-	ret := make([]ws, 0, len(p.conn))
-	for _, kws := range p.conn {
-		ret = append(ret, kws)
-	}
+	s := p.snap
 	p.RUnlock()
-	return ret
+	if s != nil {
+		return s
+	}
+	p.Lock()
+	if p.snap == nil {
+		s = make([]ws, 0, len(p.conn))
+		for _, kws := range p.conn {
+			s = append(s, kws)
+		}
+		p.snap = s
+	}
+	s = p.snap
+	p.Unlock()
+	return s
 }
 
 func (p *safePool) get(key string) (ws, error) {
@@ -309,44 +324,60 @@ func (p *safePool) get(key string) (ws, error) {
 func (p *safePool) delete(key string) {
 	p.Lock()
 	delete(p.conn, key)
+	p.snap = nil
 	p.Unlock()
 }
 
 type safeListeners struct {
-	sync.RWMutex
-	list map[string][]EventCallback
+	mu sync.Mutex
+	// list is replaced wholesale on every registration and removal, so a
+	// reader only loads a pointer. Every connection's read goroutine consults
+	// the global registry on every frame, and a read lock there is an atomic
+	// on one cache line that all of them would fight over.
+	list atomic.Pointer[map[string][]EventCallback]
 }
 
-// set registers callback for event. Clip forces append to allocate a fresh
-// backing array, so every stored slice is immutable once published and get can
-// hand it straight to the caller: registration is rare, firing is not.
+// set registers callback for event. The map and the slices in it are never
+// modified once published, so get can hand a slice straight to the caller:
+// registration is rare, firing is not.
 func (l *safeListeners) set(event string, callback EventCallback) {
-	l.Lock()
-	if l.list == nil {
-		l.list = make(map[string][]EventCallback)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	next := make(map[string][]EventCallback)
+	if cur := l.list.Load(); cur != nil {
+		maps.Copy(next, *cur)
 	}
-	l.list[event] = append(slices.Clip(l.list[event]), callback)
-	l.Unlock()
+	next[event] = append(slices.Clip(next[event]), callback)
+	l.list.Store(&next)
 }
 
 // get returns the callbacks registered for event, or nil when there are none.
 // The result is a snapshot that must only be read, never appended to.
 func (l *safeListeners) get(event string) []EventCallback {
-	l.RLock()
-	callbacks := l.list[event]
-	l.RUnlock()
-	return callbacks
+	cur := l.list.Load()
+	if cur == nil {
+		return nil
+	}
+	return (*cur)[event]
 }
 
 func (l *safeListeners) remove(event string) {
-	l.Lock()
-	delete(l.list, event)
-	l.Unlock()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cur := l.list.Load()
+	if cur == nil {
+		return
+	}
+	if _, ok := (*cur)[event]; !ok {
+		return
+	}
+	next := make(map[string][]EventCallback, len(*cur))
+	maps.Copy(next, *cur)
+	delete(next, event)
+	l.list.Store(&next)
 }
 
-var listeners = safeListeners{
-	list: make(map[string][]EventCallback),
-}
+var listeners safeListeners
 
 // New returns a Fiber handler that upgrades the request to WebSocket and wraps
 // it with the event helper using default tuning. For per-instance tuning use
@@ -443,6 +474,9 @@ func (kws *Websocket) SetUUID(uuid string) error {
 		delete(pool.conn, prevUUID)
 	}
 	pool.conn[uuid] = kws
+	// The set of connections is unchanged, but every write to conn drops the
+	// cached snapshot so the rule stays simple.
+	pool.snap = nil
 	return nil
 }
 
@@ -909,6 +943,7 @@ func (kws *Websocket) read(ctx context.Context) {
 	// the deadline is still at least three quarters of the timeout away.
 	refreshEvery := kws.settings.readIdleTimeout / 4
 	var nextRefresh time.Time
+	var frames frameReader
 
 	for {
 		select {
@@ -919,7 +954,7 @@ func (kws *Websocket) read(ctx context.Context) {
 		default:
 		}
 
-		mType, msg, err := conn.ReadMessage()
+		mType, msg, err := frames.read(conn)
 		if err != nil {
 			// Control frames (Ping, Pong, Close) are handled by the
 			// library's Set*Handler hooks above. An orderly client close
@@ -939,14 +974,89 @@ func (kws *Websocket) read(ctx context.Context) {
 
 		switch mType {
 		case TextMessage, BinaryMessage:
-			// ReadMessage returns a slice it allocated for this frame alone,
-			// so the fan-out owns it and skips the copy fireEvent makes for
-			// caller-provided data.
+			// read returns a copy made for this frame alone, so the fan-out
+			// owns it and skips the copy fireEvent makes for caller-provided
+			// data.
 			kws.fireOwnedEvent(EventMessage, msg, nil)
 		default:
-			// Defensive: ReadMessage should not deliver control frames.
+			// Defensive: NextReader never delivers control frames.
 		}
 	}
+}
+
+// frameReader reads data messages into a buffer that persists across frames
+// and hands each one out as an exact-size copy. ReadMessage does the same job
+// through io.ReadAll, which starts at 512 bytes and doubles as it goes, so a
+// 64 KB frame costs it seventeen allocations and twice the frame in garbage.
+// Here the buffer only grows when a frame larger than any before it arrives,
+// the copy is the only allocation per frame, and the fan-out still owns what
+// it is given.
+type frameReader struct {
+	buf   []byte
+	probe [1]byte
+}
+
+const (
+	// frameBufferInitial is what a fresh buffer starts at, io.ReadAll's own
+	// figure, so a connection that only ever sees small frames never grows it.
+	frameBufferInitial = 512
+	// frameBufferRetained caps what a connection keeps between frames. A
+	// buffer that grew past it is dropped after use, so one big frame does
+	// not pin its size for the life of the connection.
+	frameBufferRetained = 64 << 10
+)
+
+func (fr *frameReader) read(conn *websocket.Conn) (int, []byte, error) {
+	mType, r, err := conn.NextReader()
+	if err != nil {
+		return mType, nil, err
+	}
+	buf := fr.buf[:0]
+	if cap(buf) == 0 {
+		buf = make([]byte, 0, frameBufferInitial)
+	}
+	for {
+		if len(buf) == cap(buf) {
+			// Full. A one-byte probe tells a message that exactly fills the
+			// buffer apart from one that continues, so the former does not
+			// double the buffer for nothing.
+			n, err := r.Read(fr.probe[:])
+			if n > 0 {
+				grown := make([]byte, len(buf), 2*cap(buf))
+				copy(grown, buf)
+				buf = append(grown, fr.probe[0])
+			}
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				fr.retain(buf)
+				return mType, nil, err
+			}
+			continue
+		}
+		n, err := r.Read(buf[len(buf):cap(buf)])
+		buf = buf[:len(buf)+n]
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			fr.retain(buf)
+			return mType, nil, err
+		}
+	}
+	msg := make([]byte, len(buf))
+	copy(msg, buf)
+	fr.retain(buf)
+	return mType, msg, nil
+}
+
+func (fr *frameReader) retain(buf []byte) {
+	if cap(buf) <= frameBufferRetained {
+		fr.buf = buf[:0]
+		return
+	}
+	fr.buf = nil
 }
 
 func (kws *Websocket) disconnected(err error) {

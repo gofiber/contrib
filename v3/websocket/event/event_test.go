@@ -1,8 +1,11 @@
 package event
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"strconv"
@@ -63,10 +66,9 @@ type WebsocketMock struct {
 func resetState() {
 	pool.Lock()
 	pool.conn = make(map[string]ws)
+	pool.snap = nil
 	pool.Unlock()
-	listeners.Lock()
-	listeners.list = make(map[string][]EventCallback)
-	listeners.Unlock()
+	listeners.list.Store(nil)
 	draining.Store(false)
 }
 
@@ -1451,6 +1453,336 @@ func BenchmarkPoolSnapshot(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if len(pool.snapshot()) != 128 {
+			b.Fatal("unexpected snapshot size")
+		}
+	}
+	b.StopTimer()
+	resetState()
+}
+
+func TestListenersRegistryIsCopyOnWrite(t *testing.T) {
+	var reg safeListeners
+	calls := 0
+	reg.set("e", func(*EventPayload) { calls++ })
+	reg.set("e", func(*EventPayload) { calls += 10 })
+	before := reg.get("e")
+	require.Len(t, before, 2)
+	require.Nil(t, reg.get("other"))
+
+	// A slice handed out earlier is not changed by a later registration.
+	reg.set("e", func(*EventPayload) { calls += 100 })
+	require.Len(t, before, 2)
+	require.Len(t, reg.get("e"), 3)
+	for _, cb := range reg.get("e") {
+		cb(nil)
+	}
+	require.Equal(t, 111, calls)
+
+	reg.remove("e")
+	require.Nil(t, reg.get("e"))
+	reg.remove("e")
+	require.Nil(t, reg.get("e"))
+
+	// Readers never block on writers; the race detector checks the rest.
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			reg.set("spin", func(*EventPayload) {})
+			if i%8 == 0 {
+				reg.remove("spin")
+			}
+		}
+	}()
+	for i := 0; i < 10000; i++ {
+		_ = reg.get("spin")
+	}
+	close(stop)
+	wg.Wait()
+}
+
+func TestPoolSnapshotIsCachedUntilMembershipChanges(t *testing.T) {
+	resetState()
+	defer resetState()
+
+	a, b := createWS(), createWS()
+	pool.set(a)
+	pool.set(b)
+
+	first := pool.snapshot()
+	require.Len(t, first, 2)
+	require.Same(t, &first[0], &pool.snapshot()[0], "unchanged pool must hand out the same slice")
+
+	c := createWS()
+	pool.set(c)
+	third := pool.snapshot()
+	require.Len(t, third, 3)
+	require.NotSame(t, &first[0], &third[0])
+	require.Len(t, first, 2, "an earlier snapshot is never modified")
+
+	pool.delete(c.GetUUID())
+	afterDelete := pool.snapshot()
+	require.Len(t, afterDelete, 2)
+	require.NotSame(t, &third[0], &afterDelete[0])
+
+	// A rename keeps the same set of connections but still refreshes the cache.
+	require.NoError(t, a.SetUUID("renamed"))
+	renamed := pool.snapshot()
+	require.NotSame(t, &afterDelete[0], &renamed[0])
+	require.ElementsMatch(t, afterDelete, renamed)
+}
+
+func TestFrameReaderHandsOutExactSizeOwnedCopies(t *testing.T) {
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	type result struct {
+		msg      []byte
+		retained int
+		prevKept bool
+	}
+	results := make(chan result, 16)
+	app.Use(upgradeMiddleware)
+	app.Get("/", fws.New(func(c *fws.Conn) {
+		var fr frameReader
+		var prev, prevCopy []byte
+		for {
+			_, msg, err := fr.read(c)
+			if err != nil {
+				return
+			}
+			// prev was handed out by the previous read; reading this frame
+			// must not have touched it.
+			results <- result{msg: msg, retained: cap(fr.buf), prevKept: bytes.Equal(prev, prevCopy)}
+			prev = msg
+			prevCopy = bytes.Clone(msg)
+		}
+	}))
+	go func() { _ = app.Listener(ln) }()
+
+	// A small client write buffer splits the larger messages into
+	// continuation frames, so the reader is exercised across fragments too.
+	dialer := &websocket.Dialer{
+		NetDial: func(_, _ string) (net.Conn, error) {
+			return ln.Dial()
+		},
+		HandshakeTimeout: 5 * time.Second,
+		WriteBufferSize:  256,
+	}
+	conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+
+	sizes := []int{0, 1, frameBufferInitial - 1, frameBufferInitial, frameBufferInitial + 1, 3000, frameBufferRetained, frameBufferRetained + 1, 16}
+	for _, size := range sizes {
+		want := make([]byte, size)
+		for i := range want {
+			want[i] = byte(i % 251)
+		}
+		require.NoError(t, conn.WriteMessage(websocket.BinaryMessage, want))
+		select {
+		case r := <-results:
+			require.Equal(t, want, r.msg, "size %d", size)
+			require.True(t, r.prevKept, "size %d: reading this frame changed the previous message", size)
+			if size > frameBufferRetained {
+				require.Zero(t, r.retained, "size %d: an oversized buffer must not be retained", size)
+			} else {
+				require.GreaterOrEqual(t, r.retained, size, "size %d", size)
+				require.LessOrEqual(t, r.retained, frameBufferRetained, "size %d", size)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("no result for size %d", size)
+		}
+	}
+}
+
+// frameBench is one upgraded loopback connection whose client side is a raw
+// TCP socket, so a benchmark can feed the server pre-built frames in large
+// batches without the client allocating or paying one syscall per frame.
+type frameBench struct {
+	server *fws.Conn
+	client net.Conn
+	app    *fiber.App
+	done   chan struct{}
+}
+
+func newFrameBench(tb testing.TB) *frameBench {
+	tb.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(tb, err)
+	done := make(chan struct{})
+	connCh := make(chan *fws.Conn, 1)
+	app := fiber.New()
+	app.Get("/", fws.New(func(c *fws.Conn) {
+		connCh <- c
+		<-done
+	}))
+	go func() { _ = app.Listener(ln, fiber.ListenConfig{DisableStartupMessage: true}) }()
+
+	client, err := net.Dial("tcp", ln.Addr().String())
+	require.NoError(tb, err)
+	_, err = fmt.Fprintf(client, "GET / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n", ln.Addr())
+	require.NoError(tb, err)
+	br := bufio.NewReader(client)
+	status, err := br.ReadString('\n')
+	require.NoError(tb, err)
+	require.Contains(tb, status, "101")
+	for {
+		line, err := br.ReadString('\n')
+		require.NoError(tb, err)
+		if line == "\r\n" {
+			break
+		}
+	}
+	select {
+	case server := <-connCh:
+		return &frameBench{server: server, client: client, app: app, done: done}
+	case <-time.After(5 * time.Second):
+		tb.Fatal("server side never upgraded")
+		return nil
+	}
+}
+
+func (fb *frameBench) close() {
+	close(fb.done)
+	_ = fb.server.Close()
+	_ = fb.client.Close()
+	_ = fb.app.ShutdownWithTimeout(time.Second)
+}
+
+// maskedFrame builds one client-to-server binary frame carrying payload.
+func maskedFrame(payload []byte) []byte {
+	n := len(payload)
+	frame := make([]byte, 0, 14+n)
+	frame = append(frame, 0x80|byte(websocket.BinaryMessage))
+	switch {
+	case n < 126:
+		frame = append(frame, 0x80|byte(n))
+	case n < 1<<16:
+		frame = append(frame, 0x80|126, byte(n>>8), byte(n))
+	default:
+		frame = append(frame, 0x80|127, 0, 0, 0, 0, byte(n>>24), byte(n>>16), byte(n>>8), byte(n))
+	}
+	key := [4]byte{0x11, 0x22, 0x33, 0x44}
+	frame = append(frame, key[:]...)
+	for i, b := range payload {
+		frame = append(frame, b^key[i%4])
+	}
+	return frame
+}
+
+func benchmarkFrameRead(b *testing.B, size int, exact bool) {
+	fb := newFrameBench(b)
+	defer fb.close()
+
+	payload := make([]byte, size)
+	for i := range payload {
+		payload[i] = byte(i % 251)
+	}
+	frame := maskedFrame(payload)
+	batch := frame
+	for len(batch) < 256<<10 {
+		batch = append(batch, frame...)
+	}
+	go func() {
+		for {
+			if _, err := fb.client.Write(batch); err != nil {
+				return
+			}
+		}
+	}()
+
+	var fr frameReader
+	b.SetBytes(int64(size))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var msg []byte
+		var err error
+		if exact {
+			_, msg, err = fr.read(fb.server)
+		} else {
+			_, msg, err = fb.server.ReadMessage()
+		}
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(msg) != size || msg[size/2] != payload[size/2] {
+			b.Fatalf("bad message of %d bytes", len(msg))
+		}
+	}
+	b.StopTimer()
+}
+
+var frameBenchSizes = []struct {
+	name string
+	size int
+}{{"128B", 128}, {"4KB", 4 << 10}, {"64KB", 64 << 10}}
+
+func BenchmarkReadMessage(b *testing.B) {
+	for _, s := range frameBenchSizes {
+		b.Run(s.name, func(b *testing.B) { benchmarkFrameRead(b, s.size, false) })
+	}
+}
+
+func BenchmarkFrameReader(b *testing.B) {
+	for _, s := range frameBenchSizes {
+		b.Run(s.name, func(b *testing.B) { benchmarkFrameRead(b, s.size, true) })
+	}
+}
+
+// Every connection's read goroutine fires EventMessage through the one global
+// registry, so this is the per-frame fan-out under the contention a busy
+// server sees.
+func BenchmarkFireOwnedEventParallel(b *testing.B) {
+	resetState()
+	On(EventMessage, func(*EventPayload) {})
+	data := []byte("hello websocket")
+
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		kws := createWS()
+		for pb.Next() {
+			kws.fireOwnedEvent(EventMessage, data, nil)
+		}
+	})
+	b.StopTimer()
+	resetState()
+}
+
+// One connection joins or leaves per ten snapshots: the amortised cost of a
+// broadcast on a pool whose membership keeps changing.
+func BenchmarkPoolSnapshotChurn(b *testing.B) {
+	resetState()
+	for i := 0; i < 128; i++ {
+		kws := createWS()
+		kws.UUID = strconv.Itoa(i)
+		pool.set(kws)
+	}
+	extra := createWS()
+	extra.UUID = "extra"
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		switch i % 20 {
+		case 0:
+			pool.set(extra)
+		case 10:
+			pool.delete(extra.UUID)
+		}
+		if len(pool.snapshot()) < 128 {
 			b.Fatal("unexpected snapshot size")
 		}
 	}
