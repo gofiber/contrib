@@ -218,13 +218,14 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 			setEntry(&conn.params, name, utils.CopyString(c.Params(name)))
 		}
 		conn.ip = utils.CopyString(c.IP())
+		// The rest is copied now, while the middleware chain is still on the
+		// stack, so a local or header an outer middleware sets for the request
+		// and clears after c.Next is what the handler sees. The hijack callback
+		// only runs after the whole chain has unwound.
+		conn.capture(fctx, !server.DisableHeaderNamesNormalizing)
 
 		if err := upgrader.Upgrade(fctx, func(fconn *websocket.Conn) {
 			conn.Conn = fconn
-			// Everything else is copied only once the handshake has been
-			// accepted, so a rejected one pays for none of it. fasthttp keeps
-			// the RequestCtx alive until this callback returns.
-			conn.capture(fctx, !server.DisableHeaderNamesNormalizing)
 
 			returned := false
 			// Registered before the recover handler so it runs after it. A
@@ -281,9 +282,9 @@ type Conn struct {
 // less than unconditionally creating all five.
 
 // capture copies the locals, query arguments, cookies and headers of the
-// request into the Conn. It runs inside the hijack callback, where the
-// RequestCtx is still valid, and after the handshake has been accepted.
-// canonical says whether the server already normalizes header names.
+// request into the Conn before the handshake, out of a RequestCtx fasthttp
+// will recycle. canonical says whether the server already normalizes header
+// names.
 func (conn *Conn) capture(fctx *fasthttp.RequestCtx, canonical bool) {
 	fctx.VisitUserValues(func(key []byte, value interface{}) {
 		setEntry(&conn.locals, string(key), value)

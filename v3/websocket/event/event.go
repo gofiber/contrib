@@ -1014,11 +1014,11 @@ func stopTimer(timer *time.Timer) {
 }
 
 func fireGlobalEvent(event string, data []byte, err error) {
-	// One copy of the caller's bytes for the whole fan-out, not one per
-	// connection.
-	data = cloneBytes(data)
+	// Every connection gets its own copy of the bytes: Data is a mutable slice
+	// with no read-only contract, so a listener that changes or retains it for
+	// one connection must not touch what another connection's listeners see.
 	for _, kws := range pool.snapshot() {
-		kws.fireOwnedEvent(event, data, err)
+		kws.fireEvent(event, data, err)
 	}
 }
 

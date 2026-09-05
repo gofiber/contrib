@@ -337,6 +337,41 @@ func TestWebSocketConnLocals(t *testing.T) {
 	assert.Equal(t, "hello websocket", msg["message"])
 }
 
+func TestWebSocketConnLocalsSeeMiddlewareStateAtUpgradeTime(t *testing.T) {
+	// A middleware that sets a local for the duration of the request and
+	// clears it once c.Next returns is common for auth claims. The handler
+	// must see the value that was present while the chain was on the stack,
+	// not the state left behind after the chain unwound.
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		c.Locals("claims", "admin")
+		err := c.Next()
+		c.Locals("claims", nil)
+		return err
+	})
+	app.Get("/ws", New(func(c *Conn) {
+		_ = c.WriteJSON(fiber.Map{"claims": c.Locals("claims")})
+	}))
+	go app.Listen(":3000", fiber.ListenConfig{DisableStartupMessage: true})
+	defer app.Shutdown()
+	require.Eventually(t, func() bool {
+		conn, err := net.Dial("tcp", "localhost:3000")
+		if err != nil {
+			return false
+		}
+		conn.Close()
+		return true
+	}, 5*time.Second, 10*time.Millisecond)
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws", nil)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	var msg fiber.Map
+	require.NoError(t, conn.ReadJSON(&msg))
+	assert.Equal(t, "admin", msg["claims"])
+}
+
 func TestWebSocketConnIP(t *testing.T) {
 	app := setupTestApp(Config{}, func(c *Conn) {
 		ip := c.IP()

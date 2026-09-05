@@ -1348,6 +1348,36 @@ func TestCloseAllListenersSurviveConcurrentUpgrades(t *testing.T) {
 	}
 }
 
+func TestGlobalFireGivesEachConnectionItsOwnData(t *testing.T) {
+	// Package-level Fire fans one payload out to every connection. Each must
+	// get its own copy: a listener that mutates Data for one connection must
+	// not change what another connection's listener sees, nor the caller's
+	// slice.
+	resetState()
+
+	var mu sync.Mutex
+	seen := make(map[string]byte)
+	for i, kws := range []*Websocket{createWS(), createWS()} {
+		pool.set(kws)
+		name, marker := "c"+strconv.Itoa(i), byte('X'+i)
+		kws.On("custom", func(p *EventPayload) {
+			mu.Lock()
+			seen[name] = p.Data[0]
+			mu.Unlock()
+			p.Data[0] = marker
+		})
+	}
+
+	payload := []byte("abc")
+	Fire("custom", payload)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, byte('a'), seen["c0"])
+	require.Equal(t, byte('a'), seen["c1"])
+	require.Equal(t, "abc", string(payload))
+}
+
 func TestMethodBroadcastSkipsSelfAndReportsDead(t *testing.T) {
 	resetState()
 
