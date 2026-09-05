@@ -17,6 +17,11 @@ updates:
       open-pull-requests-limit: 20
       allow:
           - dependency-type: "all"
+      ignore:
+          # v1 is an API-breaking rewrite (glob.Glob is gone). Lift once OPA ships the migration
+          # from open-policy-agent/opa#9116, which is merged upstream but not released yet.
+          - dependency-name: "github.com/gobwas/glob"
+            versions: [">= 1.0.0"]
       directories:
           - "/v3/a*"
           - "/v3/b*"
@@ -121,6 +126,11 @@ updates:
       open-pull-requests-limit: 20
       allow:
           - dependency-type: "all"
+      ignore:
+          # v1 is an API-breaking rewrite (glob.Glob is gone). Lift once OPA ships the migration
+          # from open-policy-agent/opa#9116, which is merged upstream but not released yet.
+          - dependency-name: "github.com/gobwas/glob"
+            versions: [">= 1.0.0"]
       directories:
           - "/v3/m*"
           - "/v3/n*"
@@ -220,6 +230,11 @@ updates:
       open-pull-requests-limit: 20
       allow:
           - dependency-type: "all"
+      ignore:
+          # v1 is an API-breaking rewrite (glob.Glob is gone). Lift once OPA ships the migration
+          # from open-policy-agent/opa#9116, which is merged upstream but not released yet.
+          - dependency-name: "github.com/gobwas/glob"
+            versions: [">= 1.0.0"]
       directories:
           - "/v3/s*"
           - "/v3/t*"
