@@ -677,6 +677,34 @@ func TestWebSocketNonUpgradeRequestIsUpgradeRequired(t *testing.T) {
 	assert.Equal(t, fiber.StatusUpgradeRequired, resp.StatusCode)
 }
 
+func TestWebSocketPartialHandshakeIsBadRequest(t *testing.T) {
+	app := fiber.New()
+	app.Get("/ws", New(func(*Conn) {}))
+
+	// Either upgrade signal on its own is an attempted but malformed
+	// handshake. The upgrader answers it with 400; 426 is reserved for a
+	// request that never asked to switch protocols.
+	cases := map[string][][2]string{
+		"upgrade without connection": {{fiber.HeaderUpgrade, "websocket"}},
+		"connection without upgrade": {{fiber.HeaderConnection, "Upgrade"}},
+		"wrong protocol":             {{fiber.HeaderConnection, "Upgrade"}, {fiber.HeaderUpgrade, "h2c"}},
+	}
+	for name, headers := range cases {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(fiber.MethodGet, "/ws", nil)
+			for _, h := range headers {
+				req.Header.Set(h[0], h[1])
+			}
+			resp, err := app.Test(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			assert.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
+			assert.Equal(t, "13", resp.Header.Get(fiber.HeaderSecWebSocketVersion))
+		})
+	}
+}
+
 func TestWebSocketRejectedHandshakeKeepsUpgraderResponse(t *testing.T) {
 	app := fiber.New()
 	app.Get("/ws", New(func(*Conn) {}))
@@ -743,7 +771,7 @@ func TestConnCaptureAllocatesOnlyWhatTheRequestCarries(t *testing.T) {
 	fctx.Request.Header.Set(fiber.HeaderHost, "localhost")
 
 	conn := &Conn{}
-	conn.capture(fctx, true)
+	conn.capture(fctx)
 
 	assert.NotNil(t, conn.headers)
 	assert.Nil(t, conn.locals)
@@ -770,15 +798,16 @@ func TestConnHeadersLookup(t *testing.T) {
 }
 
 func TestConnCaptureCanonicalizesHeaderNames(t *testing.T) {
-	// With header name normalizing disabled fasthttp hands names over as they
-	// arrived; capture canonicalizes them so lookups stay case-insensitive
-	// without a fallback scan.
+	// With normalizing disabled on the request, as earlier middleware can do
+	// for one request without the server flag being set, fasthttp hands names
+	// over as they arrived; capture canonicalizes them so lookups stay
+	// case-insensitive without a fallback scan.
 	fctx := &fasthttp.RequestCtx{}
 	fctx.Request.Header.DisableNormalizing()
 	fctx.Request.Header.Set("x-custom", "value")
 
 	conn := &Conn{}
-	conn.capture(fctx, false)
+	conn.capture(fctx)
 
 	assert.Equal(t, "value", conn.Headers("x-custom"))
 	assert.Equal(t, "value", conn.Headers("X-Custom"))
@@ -862,6 +891,6 @@ func BenchmarkNewConn(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		conn := &Conn{ip: "127.0.0.1"}
-		conn.capture(fctx, true)
+		conn.capture(fctx)
 	}
 }

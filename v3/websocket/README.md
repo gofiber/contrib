@@ -108,7 +108,8 @@ func main() {
 
 ## Handshake rejections
 
-A request that does not ask to switch protocols at all is answered with `426 Upgrade Required`.
+A request that carries neither an `Upgrade` header nor an `upgrade` token in
+`Connection` never asked to switch protocols and is answered with `426 Upgrade Required`.
 
 A request that *does* ask to upgrade but whose handshake is rejected is returned as a
 `*fiber.Error` carrying the status RFC 6455 defines for that failure, so it reaches
@@ -118,7 +119,7 @@ there:
 | Reason                                                     | Status                    |
 |:-----------------------------------------------------------|:--------------------------|
 | Origin not in `Origins` (RFC 6455 section 4.2.2)            | `403 Forbidden`           |
-| Missing/blank `Sec-WebSocket-Key`, unsupported version      | `400 Bad Request`         |
+| Missing/blank `Sec-WebSocket-Key`, unsupported version, or only one of the `Upgrade`/`Connection` signals | `400 Bad Request` |
 | Request method is not `GET`                                 | `405 Method Not Allowed`  |
 
 Rejected handshakes also carry `Sec-WebSocket-Version: 13` so a client that asked for

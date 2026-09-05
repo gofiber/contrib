@@ -67,9 +67,11 @@ var (
 	ErrorInvalidConnection = errors.New("message cannot be delivered invalid/gone connection")
 	// ErrorUUIDDuplication indicates that the UUID already exists in the pool.
 	ErrorUUIDDuplication = errors.New("UUID already exists in the available connections pool")
-	// ErrorCallbackPanic is carried by the EventDisconnect and EventError fired
-	// when the connection callback passed to New or NewWithConfig panics. The
-	// panic value itself goes to the middleware's RecoverHandler.
+	// ErrorCallbackPanic is carried by the EventError fired when the connection
+	// callback passed to New or NewWithConfig panics, and by the
+	// EventDisconnect fired with it unless the callback had already closed the
+	// connection itself. The panic value goes to the middleware's
+	// RecoverHandler.
 	ErrorCallbackPanic = errors.New("connection callback panicked")
 )
 
@@ -227,7 +229,7 @@ type ws interface {
 	write(messageType int, messageBytes []byte)
 	run()
 	read(ctx context.Context)
-	disconnected(err error)
+	disconnected(err error) bool
 	createUUID() string
 	randomUUID() string
 	fireEvent(event string, data []byte, err error)
@@ -433,7 +435,12 @@ func NewWithConfig(callback func(kws *Websocket), eventCfg Config, wsConfig ...w
 			kws.mu.Lock()
 			kws.Conn = nil
 			kws.mu.Unlock()
-			kws.disconnected(ErrorCallbackPanic)
+			// A callback that closed the connection itself before panicking
+			// has already spent the one disconnect; the crash is still
+			// reported rather than folded into that clean close.
+			if !kws.disconnected(ErrorCallbackPanic) {
+				kws.fireEvent(EventError, nil, ErrorCallbackPanic)
+			}
 		}()
 
 		callback(kws)
@@ -1059,7 +1066,9 @@ func (fr *frameReader) retain(buf []byte) {
 	fr.buf = nil
 }
 
-func (kws *Websocket) disconnected(err error) {
+// disconnected tears the connection down once and reports whether this call
+// was the one that did it; later calls are no-ops that return false.
+func (kws *Websocket) disconnected(err error) bool {
 	disconnected := false
 	kws.once.Do(func() {
 		disconnected = true
@@ -1071,13 +1080,14 @@ func (kws *Websocket) disconnected(err error) {
 	})
 
 	if !disconnected {
-		return
+		return false
 	}
 
 	kws.fireEvent(EventDisconnect, nil, err)
 	if err != nil {
 		kws.fireEvent(EventError, nil, err)
 	}
+	return true
 }
 
 // unblockRead closes the underlying network connection so a read goroutine

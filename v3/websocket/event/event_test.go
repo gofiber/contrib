@@ -1006,7 +1006,7 @@ func (s *WebsocketMock) read(_ context.Context) {
 	panic("implement me")
 }
 
-func (s *WebsocketMock) disconnected(_ error) {
+func (s *WebsocketMock) disconnected(_ error) bool {
 	panic("implement me")
 }
 
@@ -1200,6 +1200,69 @@ func TestCallbackPanicDoesNotStrandPoolEntry(t *testing.T) {
 	var netErr net.Error
 	require.False(t, errors.As(err, &netErr) && netErr.Timeout(),
 		"panicking callback left the connection open: %v", err)
+}
+
+func TestCallbackPanicAfterCloseStillReportsError(t *testing.T) {
+	resetState()
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	disconnects := make(chan error, 2)
+	On(EventDisconnect, func(p *EventPayload) { disconnects <- p.Error })
+	errs := make(chan error, 2)
+	On(EventError, func(p *EventPayload) { errs <- p.Error })
+
+	app.Use(upgradeMiddleware)
+	app.Get("/", NewWithConfig(func(kws *Websocket) {
+		// The callback ends the connection cleanly and only then crashes.
+		kws.Close()
+		panic("callback boom after close")
+	}, Config{}, fws.Config{
+		RecoverHandler: func(*fws.Conn) { _ = recover() },
+	}))
+
+	go func() { _ = app.Listener(ln) }()
+
+	dialer := &websocket.Dialer{
+		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+		HandshakeTimeout: 5 * time.Second,
+	}
+	conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+	require.NoError(t, err)
+	defer conn.Close()
+
+	// The close the callback asked for is what the peer sees.
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	_, _, err = conn.ReadMessage()
+	require.True(t, websocket.IsCloseError(err, websocket.CloseNormalClosure), "expected the callback's close frame, got %v", err)
+
+	// The disconnect was clean and happened once; the crash is still reported
+	// on EventError instead of vanishing into the already-spent disconnect.
+	select {
+	case discErr := <-disconnects:
+		require.NoError(t, discErr)
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventDisconnect was not fired for the close")
+	}
+	select {
+	case panicErr := <-errs:
+		require.ErrorIs(t, panicErr, ErrorCallbackPanic)
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventError with ErrorCallbackPanic was not fired")
+	}
+	select {
+	case discErr := <-disconnects:
+		t.Fatalf("EventDisconnect fired twice, second with %v", discErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+	require.Eventually(t, func() bool {
+		return len(pool.snapshot()) == 0
+	}, 2*time.Second, 10*time.Millisecond)
 }
 
 func TestCloseAllListenersStillSeeRequestData(t *testing.T) {

@@ -197,16 +197,17 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
 		}
+		fctx := c.RequestCtx()
 		// A request that never asked to switch protocols cannot become a
 		// WebSocket connection. Answering here keeps the whole request copy
-		// below off the path taken by plain GETs and crawlers.
-		if !IsWebSocketUpgrade(c) {
+		// below off the path taken by plain GETs and crawlers. One that asked
+		// but got the handshake wrong goes on to the upgrader, whose 400 is
+		// the right answer for a malformed attempt.
+		if !asksToUpgrade(fctx) {
 			return fiber.ErrUpgradeRequired
 		}
-		server := c.App().Server()
-		ensureKeepHijackedConns(server)
+		ensureKeepHijackedConns(c.App().Server())
 
-		fctx := c.RequestCtx()
 		conn := &Conn{}
 
 		// Route params and the IP come from the Fiber context, which is
@@ -222,7 +223,7 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		// stack, so a local or header an outer middleware sets for the request
 		// and clears after c.Next is what the handler sees. The hijack callback
 		// only runs after the whole chain has unwound.
-		conn.capture(fctx, !server.DisableHeaderNamesNormalizing)
+		conn.capture(fctx)
 
 		if err := upgrader.Upgrade(fctx, func(fconn *websocket.Conn) {
 			conn.Conn = fconn
@@ -285,7 +286,7 @@ type Conn struct {
 // request into the Conn before the handshake, out of a RequestCtx fasthttp
 // will recycle. canonical says whether the server already normalizes header
 // names.
-func (conn *Conn) capture(fctx *fasthttp.RequestCtx, canonical bool) {
+func (conn *Conn) capture(fctx *fasthttp.RequestCtx) {
 	fctx.VisitUserValues(func(key []byte, value interface{}) {
 		setEntry(&conn.locals, string(key), value)
 	})
@@ -298,13 +299,12 @@ func (conn *Conn) capture(fctx *fasthttp.RequestCtx, canonical bool) {
 		setEntry(&conn.cookies, string(key), string(value))
 	}
 	// Header names are stored in canonical form so Headers is a single probe.
-	// fasthttp delivers them that way already unless the server disabled
-	// normalizing, and only then is each name rewritten here.
+	// fasthttp delivers them that way unless normalizing was switched off,
+	// server-wide or by earlier middleware on this one request, and the
+	// request does not say which, so every name is checked. A name that is
+	// already canonical comes back as it is without allocating.
 	for key, value := range fctx.Request.Header.All() {
-		if !canonical {
-			key = utils.CanonicalHeaderKey(key)
-		}
-		setEntry(&conn.headers, string(key), string(value))
+		setEntry(&conn.headers, string(utils.CanonicalHeaderKey(key)), string(value))
 	}
 }
 
@@ -463,6 +463,16 @@ func IsCloseError(err error, codes ...int) bool {
 // *CloseError with a code not in the list of expected codes.
 func IsUnexpectedCloseError(err error, expectedCodes ...int) bool {
 	return websocket.IsUnexpectedCloseError(err, expectedCodes...)
+}
+
+// asksToUpgrade reports whether the request attempts a protocol switch at
+// all: an Upgrade header, or an upgrade token in Connection. It is the
+// looser question next to IsWebSocketUpgrade, which wants a well-formed
+// WebSocket handshake; a partial one still reaches the upgrader so the
+// rejection carries the status a malformed handshake deserves.
+func asksToUpgrade(fctx *fasthttp.RequestCtx) bool {
+	h := &fctx.Request.Header
+	return h.ConnectionUpgrade() || len(h.Peek(fiber.HeaderUpgrade)) > 0
 }
 
 // IsWebSocketUpgrade returns true if the client requested upgrade to the
