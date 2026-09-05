@@ -1081,8 +1081,7 @@ func TestSanitizeCloseCode(t *testing.T) {
 
 func TestCloseAllSanitizesReservedCode(t *testing.T) {
 	// Each of these makes a conformant peer fail the connection with a protocol
-	// error instead of reading a close (see sanitizeCloseCode), so CloseAll
-	// must not put them on the wire.
+	// error (see sanitizeCloseCode), so CloseAll must not send them.
 	for _, code := range []int{1004, websocket.CloseAbnormalClosure, 1014, websocket.CloseTLSHandshake, 2999} {
 		t.Run(strconv.Itoa(code), func(t *testing.T) {
 			resetState()
@@ -1174,9 +1173,8 @@ func TestCallbackPanicDoesNotStrandPoolEntry(t *testing.T) {
 	require.NoError(t, conn.ReadJSON(&msg))
 	require.Equal(t, "callback boom", msg["error"])
 
-	// The upgrade succeeded, so the connection was registered. A panicking
-	// callback must still take it back out: a stranded entry has a done channel
-	// nobody closes, so every later Broadcast would fill its queue and block.
+	// A panicking callback must still leave the pool: a stranded entry has a
+	// done channel nobody closes, so every later Broadcast would block.
 	require.Eventually(t, func() bool {
 		return len(pool.snapshot()) == 0
 	}, 2*time.Second, 10*time.Millisecond, "panicking callback stranded a pool entry")
@@ -1191,9 +1189,8 @@ func TestCallbackPanicDoesNotStrandPoolEntry(t *testing.T) {
 		t.Fatal("EventDisconnect was not fired for the panicking callback")
 	}
 
-	// The socket is closed rather than left dangling on a hijacked connection.
-	// The deadline only keeps a regression from blocking forever; a timeout
-	// means the socket stayed open, which is the failure being guarded against.
+	// The socket must be closed rather than left dangling; a timeout here means
+	// it stayed open.
 	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
 	_, _, err = conn.ReadMessage()
 	require.Error(t, err)
@@ -1266,12 +1263,8 @@ func TestCallbackPanicAfterCloseStillReportsError(t *testing.T) {
 }
 
 func TestCloseAllListenersStillSeeRequestData(t *testing.T) {
-	// EventDisconnect listeners run on the goroutine that called CloseAll,
-	// while each connection's handler unwinds concurrently and hands its
-	// wrapper back to the middleware pool. The request data those listeners
-	// read through the wrapper must survive that: emptying the maps at
-	// release time raced with these reads and returned "" (or, under -race,
-	// a report against (*Conn).Query).
+	// EventDisconnect listeners run on CloseAll's goroutine while each handler
+	// returns concurrently; the request data they read must survive that.
 	resetState()
 
 	const numConn = 25
@@ -1327,11 +1320,9 @@ func TestCloseAllListenersStillSeeRequestData(t *testing.T) {
 }
 
 func TestCloseAllListenersSurviveConcurrentUpgrades(t *testing.T) {
-	// The scenario a reviewer raised against a pooled Conn: a disconnect
-	// listener runs on CloseAll's goroutine and reads the wrapper's request
-	// data while the handler returns, and a new upgrade lands on the same
-	// object and rewrites those maps underneath it. Nothing here may see
-	// another connection's value, an empty one, or a race report.
+	// A disconnect listener reads the wrapper's request data on CloseAll's
+	// goroutine while new upgrades keep landing; it must never see another
+	// connection's value, an empty one, or a race report.
 	resetState()
 
 	const numConn = 25
@@ -1414,10 +1405,8 @@ func TestCloseAllListenersSurviveConcurrentUpgrades(t *testing.T) {
 }
 
 func TestGlobalFireGivesEachConnectionItsOwnData(t *testing.T) {
-	// Package-level Fire fans one payload out to every connection. Each must
-	// get its own copy: a listener that mutates Data for one connection must
-	// not change what another connection's listener sees, nor the caller's
-	// slice.
+	// Package-level Fire must give each connection its own copy: a listener
+	// mutating Data for one connection must not affect another's or the caller's.
 	resetState()
 
 	var mu sync.Mutex
@@ -1483,8 +1472,7 @@ func BenchmarkFireEventNoListeners(b *testing.B) {
 	kws := createWS()
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		kws.fireEvent(EventMessage, nil, nil)
 	}
 }
@@ -1496,11 +1484,9 @@ func BenchmarkFireEventSingleListener(b *testing.B) {
 	payload := []byte("hello websocket")
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		kws.fireEvent(EventMessage, payload, nil)
 	}
-	b.StopTimer()
 	resetState()
 }
 
@@ -1513,13 +1499,11 @@ func BenchmarkPoolSnapshot(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if len(pool.snapshot()) != 128 {
 			b.Fatal("unexpected snapshot size")
 		}
 	}
-	b.StopTimer()
 	resetState()
 }
 
@@ -1673,9 +1657,8 @@ func TestFrameReaderTrimDropsOversizedBuffers(t *testing.T) {
 	require.Nil(t, fr.buf, "a buffer past the cap is dropped")
 }
 
-// frameBench is one upgraded loopback connection whose client side is a raw
-// TCP socket, so a benchmark can feed the server pre-built frames in large
-// batches without the client allocating or paying one syscall per frame.
+// frameBench is an upgraded loopback connection whose client side is a raw
+// TCP socket, so a benchmark can feed the server batches of pre-built frames.
 type frameBench struct {
 	server *fws.Conn
 	client net.Conn
@@ -1771,8 +1754,7 @@ func benchmarkFrameRead(b *testing.B, size int, exact bool) {
 
 	b.SetBytes(int64(size))
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		var msg []byte
 		var err error
 		if exact {
@@ -1787,7 +1769,6 @@ func benchmarkFrameRead(b *testing.B, size int, exact bool) {
 			b.Fatalf("bad message of %d bytes", len(msg))
 		}
 	}
-	b.StopTimer()
 }
 
 var frameBenchSizes = []struct {
@@ -1807,9 +1788,8 @@ func BenchmarkFrameReader(b *testing.B) {
 	}
 }
 
-// Every connection's read goroutine fires EventMessage through the one global
-// registry, so this is the per-frame fan-out under the contention a busy
-// server sees.
+// The per-frame fan-out under the contention a busy server sees: every read
+// goroutine consults the one global registry.
 func BenchmarkFireOwnedEventParallel(b *testing.B) {
 	resetState()
 	On(EventMessage, func(*EventPayload) {})
@@ -1822,7 +1802,6 @@ func BenchmarkFireOwnedEventParallel(b *testing.B) {
 			kws.fireOwnedEvent(EventMessage, data, nil)
 		}
 	})
-	b.StopTimer()
 	resetState()
 }
 
@@ -1839,18 +1818,18 @@ func BenchmarkPoolSnapshotChurn(b *testing.B) {
 	extra.UUID = "extra"
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	i := 0
+	for b.Loop() {
 		switch i % 20 {
 		case 0:
 			pool.set(extra)
 		case 10:
 			pool.delete(extra.UUID)
 		}
+		i++
 		if len(pool.snapshot()) < 128 {
 			b.Fatal("unexpected snapshot size")
 		}
 	}
-	b.StopTimer()
 	resetState()
 }

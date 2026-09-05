@@ -29,17 +29,14 @@ type Config struct {
 	// HandshakeTimeout specifies the duration for the handshake to complete.
 	HandshakeTimeout time.Duration
 
-	// Subprotocols lists the subprotocols this server supports, in order of
-	// preference. The handshake negotiates the first entry that also appears in
-	// the client's Sec-WebSocket-Protocol header; when nothing matches, no
-	// subprotocol is negotiated and the response header is omitted, as required
-	// by RFC 6455 section 4.2.2.
+	// Subprotocols lists the subprotocols the server supports in order of
+	// preference. The first one the client also offers is negotiated; with no
+	// match none is (RFC 6455 section 4.2.2).
 	Subprotocols []string
 
 	// Allowed Origin's based on the Origin header, this validate the request origin to
 	// prevent cross-site request forgery. Everything is allowed if left empty.
-	// Comparison is case-insensitive, matching the case-insensitive scheme and
-	// host of a serialized origin (RFC 6454, section 4).
+	// Matching is case-insensitive (RFC 6454 section 4).
 	Origins []string
 
 	// AllowEmptyOrigin allows WebSocket connections when the Origin header is absent.
@@ -80,44 +77,34 @@ type Config struct {
 // supportedVersion is the only WebSocket protocol version defined by RFC 6455.
 const supportedVersion = "13"
 
-// defaultRecoverWriteTimeout bounds the courtesy error frame defaultRecover
-// sends after a panic. The handler is already unwinding, so a peer that stopped
-// reading must not be able to park the hijacked goroutine and its file
-// descriptor forever.
+// defaultRecoverWriteTimeout bounds the error frame defaultRecover sends after
+// a panic, so a peer that stopped reading cannot park the goroutine.
 const defaultRecoverWriteTimeout = 5 * time.Second
 
 // defaultRecoverMessage is what defaultRecover tells the peer. It is
 // deliberately constant and carries nothing derived from the panic.
 const defaultRecoverMessage = "internal error"
 
-// defaultRecover is the RecoverHandler used when Config leaves one unset. It
-// recovers the panic, writes the value and stack to stderr, and tells the peer
-// only that something failed.
+// defaultRecover is the default RecoverHandler: it logs the panic and stack to
+// stderr and sends the peer a fixed error.
 func defaultRecover(c *Conn) {
 	if err := recover(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "panic: %v\n%s\n", err, debug.Stack()) //nolint:errcheck // This will never fail
 		_ = c.SetWriteDeadline(time.Now().Add(defaultRecoverWriteTimeout))
-		// A fixed payload: the stderr line above already gives the operator the
-		// full value and stack, so anything derived from the panic here would
-		// only widen what a remote peer can read out of it. panic("...") sent
-		// its string verbatim and a custom error type could expose exported
-		// fields or its own MarshalJSON. Applications that want to tell the peer
-		// more should supply their own RecoverHandler.
+		// Fixed payload: the panic value may carry internal detail and is already on
+		// stderr.
 		if err := c.WriteJSON(fiber.Map{"error": defaultRecoverMessage}); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "could not write error response: %v\n", err)
 		}
 	}
 }
 
-// keepHijackedConnsServers holds one sync.Once per fasthttp server this package
-// has upgraded on. Every upgrade goes through the lookup, so the steady state is
-// a lock free Load and a Once that has already run; Once.Do is also what makes
-// the flag write visible to every request that takes that fast path.
+// keepHijackedConnsServers holds one sync.Once per fasthttp server, so the
+// steady state per upgrade is a lock-free Load.
 var keepHijackedConnsServers sync.Map // map[*fasthttp.Server]*sync.Once
 
-// ensureKeepHijackedConns sets KeepHijackedConns on the server the first time it
-// is seen, so fasthttp leaves the upgraded connection open for this package to
-// own once the request handler returns.
+// ensureKeepHijackedConns makes fasthttp leave upgraded connections open after
+// the handler returns. It runs once per server.
 func ensureKeepHijackedConns(server *fasthttp.Server) {
 	once, ok := keepHijackedConnsServers.Load(server)
 	if !ok {
@@ -150,10 +137,8 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		cfg.RecoverHandler = defaultRecover
 	}
 
-	// Resolve the origin policy once so the upgrade path never searches for the
-	// wildcard per request. An empty list keeps the historical "allow everything"
-	// default; the clone keeps a later mutation of the caller's slice from
-	// changing the policy of an already mounted handler.
+	// Resolved once: no wildcard search per request, and the clone keeps a later
+	// mutation of cfg.Origins from changing a mounted handler.
 	allowAllOrigins := len(cfg.Origins) == 0 || slices.Contains(cfg.Origins, "*")
 	allowedOrigins := slices.Clone(cfg.Origins)
 
@@ -164,12 +149,9 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		WriteBufferSize:   cfg.WriteBufferSize,
 		EnableCompression: cfg.EnableCompression,
 		WriteBufferPool:   cfg.WriteBufferPool,
-		// Only the status is recorded here. Left to itself the upgrader would
-		// call ctx.Error, whose Response.Reset wipes every header earlier
-		// middleware set (request IDs, CORS) together with the
-		// Sec-WebSocket-Version header the upgrader adds just before. The
-		// handler below turns the status into a *fiber.Error so the rejection
-		// reaches the app's ErrorHandler like any other error.
+		// Record the status only. ctx.Error would Response.Reset, wiping headers
+		// earlier middleware set and the Sec-WebSocket-Version header; the handler
+		// returns a *fiber.Error instead.
 		Error: func(fctx *fasthttp.RequestCtx, status int, _ error) {
 			fctx.SetStatusCode(status)
 		},
@@ -181,10 +163,7 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 			if origin == "" {
 				return cfg.AllowEmptyOrigin
 			}
-			// RFC 6454 section 4 serializes an origin as scheme "://" host
-			// [":" port] and both the scheme and the host are case-insensitive,
-			// so a client may legitimately send an origin whose case differs
-			// from the configured one.
+			// Scheme and host of an origin are case-insensitive (RFC 6454 section 4).
 			for i := range allowedOrigins {
 				if utils.EqualFold(allowedOrigins[i], origin) {
 					return true
@@ -198,11 +177,8 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 			return c.Next()
 		}
 		fctx := c.RequestCtx()
-		// A request that never asked to switch protocols cannot become a
-		// WebSocket connection. Answering here keeps the whole request copy
-		// below off the path taken by plain GETs and crawlers. One that asked
-		// but got the handshake wrong goes on to the upgrader, whose 400 is
-		// the right answer for a malformed attempt.
+		// No upgrade signal at all: answer 426 before copying the request. A partial
+		// handshake goes on to the upgrader for its 400.
 		if !asksToUpgrade(fctx) {
 			return fiber.ErrUpgradeRequired
 		}
@@ -210,32 +186,24 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 
 		conn := &Conn{}
 
-		// Route params and the IP come from the Fiber context, which is
-		// recycled before the hijack callback runs, so they are captured now.
-		// The param names belong to the parsed route and stay valid for the
-		// lifetime of the app; only the values are copied out of the request
-		// buffer.
+		// Route params and the IP come from the Fiber context, which is recycled
+		// before the hijack callback runs. Param names outlive the request; only the
+		// values are copied.
 		for _, name := range c.Route().Params {
 			setEntry(&conn.params, name, utils.CopyString(c.Params(name)))
 		}
 		conn.ip = utils.CopyString(c.IP())
-		// The rest is copied now, while the middleware chain is still on the
-		// stack, so a local or header an outer middleware sets for the request
-		// and clears after c.Next is what the handler sees. The hijack callback
-		// only runs after the whole chain has unwound.
+		// Copied while the middleware chain is still on the stack: the hijack
+		// callback runs only after it has unwound.
 		conn.capture(fctx)
 
 		if err := upgrader.Upgrade(fctx, func(fconn *websocket.Conn) {
 			conn.Conn = fconn
 
 			returned := false
-			// Registered before the recover handler so it runs after it. A
-			// handler that panicked cannot be trusted to still own the socket,
-			// and KeepHijackedConns means nothing else will ever close it, so
-			// close it here -- but only once RecoverHandler has had its chance
-			// to write the error frame. A handler that returns normally leaves
-			// the socket open, so it may keep using the connection from another
-			// goroutine after returning.
+			// Runs after RecoverHandler. A handler that panicked cannot be trusted with
+			// the socket and nothing else closes a hijacked connection; a normal return
+			// leaves it open.
 			defer func() {
 				if !returned {
 					_ = fconn.Close()
@@ -245,14 +213,9 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 			handler(conn)
 			returned = true
 		}); err != nil { // Handshake rejected
-			// The upgrader picked the status RFC 6455 asks for: 403 for an
-			// Origin the server does not accept (section 4.2.2), 400 for a
-			// malformed or unsupported handshake, 405 for a non-GET request.
-			// Section 4.4 also has a server that turns a handshake down
-			// advertise the versions it understands. Returning a *fiber.Error
-			// with that status keeps the rejection on the same path as every
-			// other error: a custom ErrorHandler formats it, error logging and
-			// metrics see it.
+			// The upgrader chose the RFC 6455 status: 403 for a bad Origin, 400 for a
+			// malformed handshake, 405 for a non-GET; section 4.4 asks for the supported
+			// version on rejection. A *fiber.Error keeps it on the ErrorHandler path.
 			status := fctx.Response.StatusCode()
 			c.Set(fiber.HeaderSecWebSocketVersion, supportedVersion)
 			return fiber.NewError(status, utils.StatusMessage(status))
@@ -273,36 +236,28 @@ type Conn struct {
 	ip      string
 }
 
-// A Conn is allocated per upgrade and never reused. An earlier revision pooled
-// it and emptied the maps in place for the next connection, which is unsafe:
-// the event helper's Locals, Params, Query and Cookies closures read those maps
-// from listeners that run on other goroutines during Close and CloseAll, so a
-// new upgrade taking the wrapper could clear and refill them under a listener
-// still reading the previous client's data. The maps are only allocated when
-// the request carries that kind of data, so a typical handshake still allocates
-// less than unconditionally creating all five.
+// A Conn is allocated per upgrade and never reused: the event helper reads
+// these maps from listeners on other goroutines after the handler returns, so
+// pooling them is unsafe. Each map is allocated only when the request carries
+// that kind of data.
 
-// capture copies the locals, query arguments, cookies and headers of the
-// request into the Conn before the handshake, out of a RequestCtx fasthttp
-// will recycle. canonical says whether the server already normalizes header
-// names.
+// capture copies the request's locals, query arguments, cookies and headers
+// into the Conn before fasthttp recycles the RequestCtx.
 func (conn *Conn) capture(fctx *fasthttp.RequestCtx) {
 	fctx.VisitUserValues(func(key []byte, value interface{}) {
 		setEntry(&conn.locals, string(key), value)
 	})
-	// No size hint for the query map: Args.Len counts repeated keys that the
-	// assignments collapse into one entry, so it would over-allocate.
+	// No size hint: Args.Len counts repeated keys that collapse into one entry.
 	for key, value := range fctx.QueryArgs().All() {
 		setEntry(&conn.queries, string(key), string(value))
 	}
 	for key, value := range fctx.Request.Header.Cookies() {
 		setEntry(&conn.cookies, string(key), string(value))
 	}
-	// Header names are stored in canonical form so Headers is a single probe.
-	// fasthttp delivers them that way unless normalizing was switched off,
-	// server-wide or by earlier middleware on this one request, and the
-	// request does not say which, so every name is checked. A name that is
-	// already canonical comes back as it is without allocating.
+	// Names are stored canonical so Headers is one probe. fasthttp delivers them
+	// that way unless normalizing was disabled, server-wide or per request, which
+	// is not observable here, so every name is checked; a canonical name comes
+	// back without allocating.
 	for key, value := range fctx.Request.Header.All() {
 		setEntry(&conn.headers, string(utils.CanonicalHeaderKey(key)), string(value))
 	}
@@ -365,10 +320,8 @@ func (conn *Conn) Cookies(key string, defaultValue ...string) string {
 // If a default value is given, it will return that value if the header doesn't exist.
 // Header lookups are case-insensitive.
 func (conn *Conn) Headers(key string, defaultValue ...string) string {
-	// capture stores names in canonical form, so the canonical form of key is
-	// one map probe. CanonicalHeaderKey returns key itself when it is already
-	// canonical, which is the usual spelling, and allocates a small copy
-	// otherwise.
+	// Names are canonical in the map; CanonicalHeaderKey returns key unchanged
+	// when it already is.
 	if v, ok := conn.headers[utils.CanonicalHeaderKey(key)]; ok {
 		return v
 	}
@@ -385,16 +338,12 @@ func (conn *Conn) IP() string {
 
 // Constants are taken from https://github.com/fasthttp/websocket/blob/master/conn.go#L43
 
-// Close codes 1000-1011 and 1015 are defined in RFC 6455, section 11.7; 1012
-// and 1013 were added to the IANA WebSocket Close Code Number Registry
-// afterwards. 1014 is registered too but is deliberately not exported: the
-// underlying library rejects it in both directions, so it can neither be sent
-// nor received through this stack.
-//
-// Not every code may travel in a close frame: RFC 6455, section 7.4.1 forbids
-// sending 1005, 1006 and 1015, and the underlying library rejects anything but
-// 1000-1003, 1007-1013 and 3000-4999 on receive. The event package's
-// sanitizeCloseCode is the one place that rule is applied.
+// Close codes 1000-1011 and 1015 are defined in RFC 6455 section 11.7; 1012
+// and 1013 come from the IANA registry. 1014 is not exported because the
+// underlying library rejects it in both directions. Not every code may be
+// sent: section 7.4.1 forbids 1005, 1006 and 1015, and the library accepts
+// only 1000-1003, 1007-1013 and 3000-4999 on receive; the event package's
+// sanitizeCloseCode applies that rule.
 const (
 	CloseNormalClosure           = 1000
 	CloseGoingAway               = 1001
@@ -465,11 +414,9 @@ func IsUnexpectedCloseError(err error, expectedCodes ...int) bool {
 	return websocket.IsUnexpectedCloseError(err, expectedCodes...)
 }
 
-// asksToUpgrade reports whether the request attempts a protocol switch at
-// all: an Upgrade header, or an upgrade token in Connection. It is the
-// looser question next to IsWebSocketUpgrade, which wants a well-formed
-// WebSocket handshake; a partial one still reaches the upgrader so the
-// rejection carries the status a malformed handshake deserves.
+// asksToUpgrade reports whether the request carries any upgrade signal: an
+// Upgrade header or an upgrade token in Connection. Unlike IsWebSocketUpgrade
+// it accepts a partial handshake, so the upgrader can answer it with 400.
 func asksToUpgrade(fctx *fasthttp.RequestCtx) bool {
 	h := &fctx.Request.Header
 	return h.ConnectionUpgrade() || len(h.Peek(fiber.HeaderUpgrade)) > 0

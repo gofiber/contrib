@@ -83,9 +83,8 @@ func TestWebSocketMiddlewareConfigOrigin(t *testing.T) {
 		}
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "bad handshake")
-		// RFC 6455 section 4.2.2: an origin the server does not accept is
-		// answered with 403, and section 4.4 asks a rejecting server to
-		// advertise the versions it understands.
+		// RFC 6455: a rejected origin is answered with 403 (section 4.2.2) and the
+		// supported version is advertised (section 4.4).
 		assert.Equal(t, fiber.StatusForbidden, resp.StatusCode)
 		assert.Equal(t, "13", resp.Header.Get(fiber.HeaderSecWebSocketVersion))
 		assert.Equal(t, "", resp.Header.Get("Upgrade"))
@@ -338,10 +337,8 @@ func TestWebSocketConnLocals(t *testing.T) {
 }
 
 func TestWebSocketConnLocalsSeeMiddlewareStateAtUpgradeTime(t *testing.T) {
-	// A middleware that sets a local for the duration of the request and
-	// clears it once c.Next returns is common for auth claims. The handler
-	// must see the value that was present while the chain was on the stack,
-	// not the state left behind after the chain unwound.
+	// Middleware often sets a local for the request and clears it after c.Next;
+	// the handler must see the value present while the chain was on the stack.
 	app := fiber.New()
 	app.Use(func(c fiber.Ctx) error {
 		c.Locals("claims", "admin")
@@ -559,11 +556,8 @@ func TestWebsocketRecoverDefaultHandlerShouldNotPanic(t *testing.T) {
 }
 
 func TestWebsocketRecoverDoesNotLeakErrorDetail(t *testing.T) {
-	// Nothing derived from the panic may reach the peer: the operator already
-	// gets the full value and stack on stderr, so putting any of it in the frame
-	// would only hand a remote client an oracle for internal paths, DSNs and
-	// schema names. This holds for a string panic as much as for an error one,
-	// since a string is sent verbatim by any encoder.
+	// Nothing derived from the panic may reach the peer, whether it is a string
+	// or an error: the operator already has the full value on stderr.
 	for _, tc := range []struct {
 		name  string
 		value any
@@ -604,10 +598,8 @@ func TestWebsocketPanicClosesConnection(t *testing.T) {
 	require.NoError(t, conn.ReadJSON(&msg))
 	assert.Equal(t, defaultRecoverMessage, msg["error"])
 
-	// ...and only then is the socket closed. Nothing else would ever close it:
-	// KeepHijackedConns leaves that to this package. The deadline is only so a
-	// regression fails instead of blocking forever; a timeout means the socket
-	// was left open, which is the failure being guarded against.
+	// ...and only then is the socket closed; nothing else closes a hijacked
+	// connection. A timeout here means the socket was left open.
 	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
 	_, _, err = conn.ReadMessage()
 	require.Error(t, err)
@@ -681,9 +673,8 @@ func TestWebSocketPartialHandshakeIsBadRequest(t *testing.T) {
 	app := fiber.New()
 	app.Get("/ws", New(func(*Conn) {}))
 
-	// Either upgrade signal on its own is an attempted but malformed
-	// handshake. The upgrader answers it with 400; 426 is reserved for a
-	// request that never asked to switch protocols.
+	// Either signal on its own is a malformed handshake: 400 from the upgrader,
+	// not the 426 reserved for requests that never asked to switch protocols.
 	cases := map[string][][2]string{
 		"upgrade without connection": {{fiber.HeaderUpgrade, "websocket"}},
 		"connection without upgrade": {{fiber.HeaderConnection, "Upgrade"}},
@@ -709,9 +700,8 @@ func TestWebSocketRejectedHandshakeKeepsUpgraderResponse(t *testing.T) {
 	app := fiber.New()
 	app.Get("/ws", New(func(*Conn) {}))
 
-	// A handshake that asks for a version the server does not speak must be
-	// answered with the versions it does speak (RFC 6455 section 4.4), not
-	// flattened into a bare 426.
+	// An unsupported version must be answered with the supported one (RFC 6455
+	// section 4.4), not flattened into a bare 426.
 	req := httptest.NewRequest(fiber.MethodGet, "/ws", nil)
 	req.Header.Set(fiber.HeaderConnection, "Upgrade")
 	req.Header.Set(fiber.HeaderUpgrade, "websocket")
@@ -798,10 +788,8 @@ func TestConnHeadersLookup(t *testing.T) {
 }
 
 func TestConnCaptureCanonicalizesHeaderNames(t *testing.T) {
-	// With normalizing disabled on the request, as earlier middleware can do
-	// for one request without the server flag being set, fasthttp hands names
-	// over as they arrived; capture canonicalizes them so lookups stay
-	// case-insensitive without a fallback scan.
+	// Middleware can disable normalizing for one request without the server flag;
+	// capture canonicalizes the names so lookups stay case-insensitive.
 	fctx := &fasthttp.RequestCtx{}
 	fctx.Request.Header.DisableNormalizing()
 	fctx.Request.Header.Set("x-custom", "value")
@@ -855,7 +843,7 @@ func BenchmarkConnHeaders(b *testing.B) {
 	for _, key := range []string{"Authorization", "authorization", "X-Missing"} {
 		b.Run(key, func(b *testing.B) {
 			b.ReportAllocs()
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				_ = conn.Headers(key, "fallback")
 			}
 		})
@@ -888,8 +876,7 @@ func handshakeRequest() *fasthttp.RequestCtx {
 func BenchmarkNewConn(b *testing.B) {
 	fctx := handshakeRequest()
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		conn := &Conn{ip: "127.0.0.1"}
 		conn.capture(fctx)
 	}

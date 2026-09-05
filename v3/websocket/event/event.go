@@ -67,11 +67,9 @@ var (
 	ErrorInvalidConnection = errors.New("message cannot be delivered invalid/gone connection")
 	// ErrorUUIDDuplication indicates that the UUID already exists in the pool.
 	ErrorUUIDDuplication = errors.New("UUID already exists in the available connections pool")
-	// ErrorCallbackPanic is carried by the EventError fired when the connection
-	// callback passed to New or NewWithConfig panics, and by the
-	// EventDisconnect fired with it unless the callback had already closed the
-	// connection itself. The panic value goes to the middleware's
-	// RecoverHandler.
+	// ErrorCallbackPanic is carried by the EventError fired when a connection
+	// callback panics, and by the EventDisconnect fired with it unless the
+	// callback had already closed the connection.
 	ErrorCallbackPanic = errors.New("connection callback panicked")
 )
 
@@ -274,8 +272,7 @@ type Websocket struct {
 type safePool struct {
 	sync.RWMutex
 	conn map[string]ws
-	// snap is the last snapshot, kept until the next change to conn so a
-	// burst of broadcasts shares one slice instead of rebuilding it per call.
+	// snap caches the last snapshot until conn changes.
 	snap []ws
 }
 
@@ -290,9 +287,8 @@ func (p *safePool) set(ws ws) {
 	p.Unlock()
 }
 
-// snapshot returns the live connections as a slice. Callers only ever iterate
-// the result and must not modify it: the same slice is handed out until a
-// connection joins or leaves.
+// snapshot returns the live connections. The slice is shared until membership
+// changes and must not be modified.
 func (p *safePool) snapshot() []ws {
 	p.RLock()
 	s := p.snap
@@ -332,16 +328,13 @@ func (p *safePool) delete(key string) {
 
 type safeListeners struct {
 	mu sync.Mutex
-	// list is replaced wholesale on every registration and removal, so a
-	// reader only loads a pointer. Every connection's read goroutine consults
-	// the global registry on every frame, and a read lock there is an atomic
-	// on one cache line that all of them would fight over.
+	// list is replaced wholesale on every change, so readers load a pointer
+	// instead of taking a lock on every frame.
 	list atomic.Pointer[map[string][]EventCallback]
 }
 
-// set registers callback for event. The map and the slices in it are never
-// modified once published, so get can hand a slice straight to the caller:
-// registration is rare, firing is not.
+// set registers callback for event. Published maps and slices are never
+// modified, so get hands them out without copying.
 func (l *safeListeners) set(event string, callback EventCallback) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -420,13 +413,10 @@ func NewWithConfig(callback func(kws *Websocket), eventCfg Config, wsConfig ...w
 		kws.UUID = kws.createUUID()
 		pool.set(kws)
 
-		// run tears the connection down on the normal path. If callback panics
-		// before run starts nothing else would: the pool entry would keep its
-		// done channel open forever, so every later Broadcast would queue into
-		// a connection nobody reads until the queue filled and blocked. The
-		// connection is detached so conn() and IsAlive agree that it is gone;
-		// the socket is left to the middleware, which closes it once
-		// RecoverHandler has written the error frame.
+		// If callback panics before run starts, the pool entry would keep its done
+		// channel open forever and every later Broadcast would block on its queue.
+		// Detach and disconnect; the middleware closes the socket after
+		// RecoverHandler.
 		completed := false
 		defer func() {
 			if completed {
@@ -435,9 +425,8 @@ func NewWithConfig(callback func(kws *Websocket), eventCfg Config, wsConfig ...w
 			kws.mu.Lock()
 			kws.Conn = nil
 			kws.mu.Unlock()
-			// A callback that closed the connection itself before panicking
-			// has already spent the one disconnect; the crash is still
-			// reported rather than folded into that clean close.
+			// A callback that closed the connection before panicking already spent the
+			// one disconnect; still report the crash.
 			if !kws.disconnected(ErrorCallbackPanic) {
 				kws.fireEvent(EventError, nil, ErrorCallbackPanic)
 			}
@@ -481,8 +470,7 @@ func (kws *Websocket) SetUUID(uuid string) error {
 		delete(pool.conn, prevUUID)
 	}
 	pool.conn[uuid] = kws
-	// The set of connections is unchanged, but every write to conn drops the
-	// cached snapshot so the rule stays simple.
+	// Every write to conn drops the cached snapshot.
 	pool.snap = nil
 	return nil
 }
@@ -590,14 +578,12 @@ func EmitTo(uuid string, message []byte, mType ...int) error {
 // kws; the package-level Broadcast does not.
 func (kws *Websocket) Broadcast(message []byte, except bool, mType ...int) {
 	for _, conn := range pool.snapshot() {
-		// Identity rather than UUID: it needs no lock, and it stays right when
-		// SetUUID runs concurrently.
+		// Identity rather than UUID: no lock, and right under a concurrent SetUUID.
 		if except && conn == ws(kws) {
 			continue
 		}
-		// The snapshot already resolved every target, so unlike EmitTo this
-		// costs no second pool lookup per connection. A target that died in the
-		// meantime still reports EventError on the originating connection.
+		// The snapshot already resolved every target; one that died meanwhile still
+		// reports EventError on kws.
 		if !conn.IsAlive() {
 			kws.fireOwnedEvent(EventError, []byte(conn.GetUUID()), ErrorInvalidConnection)
 			continue
@@ -678,19 +664,12 @@ func (kws *Websocket) writeClose(code int, reason string) {
 	_ = conn.WriteControl(CloseMessage, payload, deadline)
 }
 
-// sanitizeCloseCode keeps a status code the peer would reject off the wire,
-// replacing it with a normal closure.
-//
-// RFC 6455 section 7.4.1 reserves 1005, 1006 and 1015 for conditions an
-// endpoint observes locally and says they must never appear in a close frame,
-// and lists 1004 as reserved with no meaning assigned. Endpoints are stricter
-// still: the receive side of this library accepts only 1000-1003, 1007-1013 and
-// the 3000-4999 application range, so 1004, 1014 and 1016-2999 make a
-// conformant peer fail the connection with a protocol error rather than read a
-// close. Only codes that survive that check are forwarded.
-//
-// CloseNoStatusReceived is the one exception: FormatCloseMessage renders it as
-// the empty payload, which is how "no status" is expressed on the wire.
+// sanitizeCloseCode replaces a status code the peer would reject with a normal
+// closure. RFC 6455 section 7.4.1 forbids sending 1005, 1006 and 1015 and
+// leaves 1004 reserved, and this library accepts only 1000-1003, 1007-1013 and
+// 3000-4999 on receive, so anything else fails the connection with a protocol
+// error. 1005 passes through: FormatCloseMessage renders it as the empty
+// payload, which is how "no status" is expressed.
 func sanitizeCloseCode(code int) int {
 	switch code {
 	case websocket.CloseNoStatusReceived:
@@ -716,11 +695,8 @@ func sanitizeCloseCode(code int) int {
 	return websocket.CloseNormalClosure
 }
 
-// closeReason makes reason safe to carry in a close frame. RFC 6455 section
-// 5.5.1 requires the reason to be valid UTF-8 and section 5.5 leaves it
-// closeFrameMaxReason bytes once the status code is accounted for, so invalid
-// input is scrubbed and an over-long reason is cut back to a rune boundary
-// rather than through the middle of a multi-byte sequence.
+// closeReason makes reason valid UTF-8 (RFC 6455 section 5.5.1) and cuts it
+// back to closeFrameMaxReason bytes on a rune boundary.
 func closeReason(reason string) string {
 	reason = strings.ToValidUTF8(reason, "")
 	if len(reason) <= closeFrameMaxReason {
@@ -797,9 +773,8 @@ func (kws *Websocket) send(ctx context.Context) {
 	for {
 		select {
 		case msg := <-kws.queue:
-			// One observation of the connection per message: the old pair of
-			// reads could disagree with each other and drop the message
-			// between them without retrying or reporting it.
+			// One observation of the connection per message, so a message cannot be
+			// dropped between two disagreeing reads.
 			conn := kws.conn()
 			if conn == nil {
 				if msg.retries <= kws.settings.maxSendRetry {
@@ -858,9 +833,8 @@ func (kws *Websocket) drainQueue() {
 }
 
 func (kws *Websocket) run() {
-	// The control frame handlers close over the connection value rather than
-	// the field: they run on the read goroutine while closeConn may be
-	// clearing kws.Conn.
+	// The handlers close over the connection value: they run on the read
+	// goroutine while closeConn may clear kws.Conn.
 	if conn := kws.conn(); conn != nil {
 		if kws.settings.maxMessageSize > 0 {
 			conn.SetReadLimit(kws.settings.maxMessageSize)
@@ -881,9 +855,8 @@ func (kws *Websocket) run() {
 			return nil
 		})
 		conn.SetPingHandler(func(data string) error {
-			// Same short circuit as the pong handler: once shutdown has started
-			// no event is owed, and RFC 6455 section 5.5.2 lets an endpoint
-			// skip the pong reply once a close is under way.
+			// Same short circuit as the pong handler; RFC 6455 section 5.5.2 lets an
+			// endpoint skip the pong once a close is under way.
 			select {
 			case <-kws.done:
 				return nil
@@ -934,20 +907,16 @@ func (kws *Websocket) run() {
 
 func (kws *Websocket) read(ctx context.Context) {
 	// run installs the connection before this goroutine starts and closeConn
-	// only clears it once the goroutine has exited, so it is read once here
-	// instead of behind the mutex on every single frame. A close racing with
-	// this loop surfaces as a read error and is handled below.
+	// clears it only after it exits, so read it once rather than under the mutex
+	// on every frame.
 	conn := kws.conn()
 	if conn == nil {
 		return
 	}
 
-	// A complete frame is proof the peer is alive, so the idle deadline is
-	// pushed out on data as well as on pongs; relying on pongs alone would drop
-	// a peer that talks steadily but never answers a server ping. Moving the
-	// deadline is a runtime timer update, so it is done at most once per
-	// quarter of the idle timeout rather than on every frame: after any frame
-	// the deadline is still at least three quarters of the timeout away.
+	// A frame proves the peer is alive, so the idle deadline moves on data as
+	// well as on pongs, but only once per quarter of the timeout: moving it is a
+	// runtime timer update.
 	refreshEvery := kws.settings.readIdleTimeout / 4
 	var nextRefresh time.Time
 
@@ -980,9 +949,7 @@ func (kws *Websocket) read(ctx context.Context) {
 
 		switch mType {
 		case TextMessage, BinaryMessage:
-			// readFrame returns a copy made for this frame alone, so the
-			// fan-out owns it and skips the copy fireEvent makes for
-			// caller-provided data.
+			// readFrame returns a copy made for this frame, so the fan-out owns it.
 			kws.fireOwnedEvent(EventMessage, msg, nil)
 		default:
 			// Defensive: NextReader never delivers control frames.
@@ -990,14 +957,10 @@ func (kws *Websocket) read(ctx context.Context) {
 	}
 }
 
-// frameReader reads one data message into a growable buffer and hands it out
-// as an exact-size copy. ReadMessage does the same job through io.ReadAll,
-// which starts at 512 bytes and doubles as it goes, so a 64 KB frame costs it
-// seventeen allocations and twice the frame in garbage. Readers live in
-// framePool, so an idle connection holds no buffer at all: one is taken when
-// a frame starts arriving and returned once its copy is handed out, memory
-// follows the frames in flight rather than the number of connections, and the
-// GC trims what the pool keeps.
+// frameReader reads one message into a growable buffer and returns an
+// exact-size copy, where ReadMessage's io.ReadAll starts at 512 bytes and
+// doubles. Readers are pooled: an idle connection holds no buffer and the GC
+// trims the pool.
 type frameReader struct {
 	buf   []byte
 	probe [1]byte
@@ -1007,9 +970,8 @@ const (
 	// frameBufferInitial is what a fresh buffer starts at, io.ReadAll's own
 	// figure.
 	frameBufferInitial = 512
-	// frameBufferRetained caps what goes back into the pool. A buffer that
-	// grew past it is dropped after use, so one big frame does not leave its
-	// size behind for every later reader.
+	// frameBufferRetained caps what goes back into the pool, so one big frame does
+	// not leave its size behind.
 	frameBufferRetained = 64 << 10
 )
 
@@ -1035,9 +997,8 @@ func (fr *frameReader) readAll(r io.Reader) ([]byte, error) {
 	}
 	for {
 		if len(buf) == cap(buf) {
-			// Full. A one-byte probe tells a message that exactly fills the
-			// buffer apart from one that continues, so the former does not
-			// double the buffer for nothing.
+			// Full: probe one byte so a message that exactly fills the buffer does not
+			// double it.
 			n, err := r.Read(fr.probe[:])
 			if n > 0 {
 				grown := make([]byte, len(buf), 2*cap(buf))
@@ -1152,9 +1113,8 @@ func stopTimer(timer *time.Timer) {
 }
 
 func fireGlobalEvent(event string, data []byte, err error) {
-	// Every connection gets its own copy of the bytes: Data is a mutable slice
-	// with no read-only contract, so a listener that changes or retains it for
-	// one connection must not touch what another connection's listeners see.
+	// Every connection gets its own copy: Data is mutable, and one listener must
+	// not change what another connection's listeners see.
 	for _, kws := range pool.snapshot() {
 		kws.fireEvent(event, data, err)
 	}
@@ -1166,18 +1126,15 @@ func (kws *Websocket) fireEvent(event string, data []byte, err error) {
 	kws.fire(event, data, err, true)
 }
 
-// fireOwnedEvent is fireEvent for data the fan-out already owns: a slice
-// ReadMessage allocated for this frame alone, a fresh []byte(uuid), or one
-// fireGlobalEvent has just copied.
+// fireOwnedEvent is fireEvent for data the fan-out already owns and need not
+// copy.
 func (kws *Websocket) fireOwnedEvent(event string, data []byte, err error) {
 	kws.fire(event, data, err, false)
 }
 
 func (kws *Websocket) fire(event string, data []byte, err error, clone bool) {
-	// Both registries hand back immutable snapshots, so the fan-out below runs
-	// without holding either lock and without copying the callback lists. An
-	// event nobody listens for costs two map lookups and nothing else, which
-	// matters because every inbound frame fires one.
+	// Both registries hand back immutable snapshots: no locks, no copies, and an
+	// event nobody listens for costs two map lookups.
 	globalCallbacks := listeners.get(event)
 	localCallbacks := kws.localListeners.get(event)
 	if len(globalCallbacks) == 0 && len(localCallbacks) == 0 {
@@ -1192,9 +1149,8 @@ func (kws *Websocket) fire(event string, data []byte, err error, clone bool) {
 	socketUUID := kws.UUID
 	kws.mu.RUnlock()
 
-	// Each listener gets its own EventPayload value, so a field one listener
-	// reassigns is not seen by the next. The map behind SocketAttributes and
-	// the bytes behind Data are shared across the fan-out, as they always were.
+	// Each listener gets its own EventPayload value; the attribute map and the
+	// Data bytes are shared, as they always were.
 	payload := EventPayload{
 		Kws:              kws,
 		Name:             event,
@@ -1269,14 +1225,12 @@ func Drain() {
 	draining.Store(true)
 }
 
-// CloseAll sends every active connection in the in-process pool a close
-// control frame with the supplied code and reason, fires EventClose on it and
-// marks it disconnected, and returns once those steps have finished for all of
-// them. Each connection's own goroutines then wind down on their own; CloseAll
-// does not wait for that. If ctx expires first, the connections still in the
-// pool are force closed via Conn.Close.
+// CloseAll sends every connection in the pool a close frame with code and
+// reason, fires EventClose and marks it disconnected, and returns once that is
+// done for all of them; each connection's goroutines then wind down on their
+// own. If ctx expires first, the remaining connections are force closed.
 //
-// The typical usage is from a Fiber shutdown hook:
+// Typical usage from a Fiber shutdown hook:
 //
 //	app.Hooks().OnShutdown(func() error {
 //	    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
