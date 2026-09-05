@@ -5,10 +5,15 @@ package event
 import (
 	"context"
 	"errors"
+	"io"
+	"maps"
 	"net"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gofiber/contrib/v3/websocket"
 	"github.com/gofiber/fiber/v3"
@@ -62,6 +67,10 @@ var (
 	ErrorInvalidConnection = errors.New("message cannot be delivered invalid/gone connection")
 	// ErrorUUIDDuplication indicates that the UUID already exists in the pool.
 	ErrorUUIDDuplication = errors.New("UUID already exists in the available connections pool")
+	// ErrorCallbackPanic is carried by the EventError fired when a connection
+	// callback panics, and by the EventDisconnect fired with it unless the
+	// callback had already closed the connection.
+	ErrorCallbackPanic = errors.New("connection callback panicked")
 )
 
 var (
@@ -218,10 +227,11 @@ type ws interface {
 	write(messageType int, messageBytes []byte)
 	run()
 	read(ctx context.Context)
-	disconnected(err error)
+	disconnected(err error) bool
 	createUUID() string
 	randomUUID() string
 	fireEvent(event string, data []byte, err error)
+	fireOwnedEvent(event string, data []byte, err error)
 }
 
 // Websocket wraps a websocket.Conn with event-bus helpers.
@@ -262,6 +272,8 @@ type Websocket struct {
 type safePool struct {
 	sync.RWMutex
 	conn map[string]ws
+	// snap caches the last snapshot until conn changes.
+	snap []ws
 }
 
 var pool = safePool{
@@ -271,17 +283,30 @@ var pool = safePool{
 func (p *safePool) set(ws ws) {
 	p.Lock()
 	p.conn[ws.GetUUID()] = ws
+	p.snap = nil
 	p.Unlock()
 }
 
-func (p *safePool) all() map[string]ws {
+// snapshot returns the live connections. The slice is shared until membership
+// changes and must not be modified.
+func (p *safePool) snapshot() []ws {
 	p.RLock()
-	ret := make(map[string]ws, len(p.conn))
-	for wsUUID, kws := range p.conn {
-		ret[wsUUID] = kws
-	}
+	s := p.snap
 	p.RUnlock()
-	return ret
+	if s != nil {
+		return s
+	}
+	p.Lock()
+	if p.snap == nil {
+		s = make([]ws, 0, len(p.conn))
+		for _, kws := range p.conn {
+			s = append(s, kws)
+		}
+		p.snap = s
+	}
+	s = p.snap
+	p.Unlock()
+	return s
 }
 
 func (p *safePool) get(key string) (ws, error) {
@@ -297,42 +322,57 @@ func (p *safePool) get(key string) (ws, error) {
 func (p *safePool) delete(key string) {
 	p.Lock()
 	delete(p.conn, key)
+	p.snap = nil
 	p.Unlock()
 }
 
 type safeListeners struct {
-	sync.RWMutex
-	list map[string][]EventCallback
+	mu sync.Mutex
+	// list is replaced wholesale on every change, so readers load a pointer
+	// instead of taking a lock on every frame.
+	list atomic.Pointer[map[string][]EventCallback]
 }
 
+// set registers callback for event. Published maps and slices are never
+// modified, so get hands them out without copying.
 func (l *safeListeners) set(event string, callback EventCallback) {
-	l.Lock()
-	if l.list == nil {
-		l.list = make(map[string][]EventCallback)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	next := make(map[string][]EventCallback)
+	if cur := l.list.Load(); cur != nil {
+		maps.Copy(next, *cur)
 	}
-	l.list[event] = append(l.list[event], callback)
-	l.Unlock()
+	next[event] = append(slices.Clip(next[event]), callback)
+	l.list.Store(&next)
 }
 
+// get returns the callbacks registered for event, or nil when there are none.
+// The result is a snapshot that must only be read, never appended to.
 func (l *safeListeners) get(event string) []EventCallback {
-	l.RLock()
-	defer l.RUnlock()
-	if _, ok := l.list[event]; !ok {
-		return make([]EventCallback, 0)
+	cur := l.list.Load()
+	if cur == nil {
+		return nil
 	}
-
-	return append([]EventCallback(nil), l.list[event]...)
+	return (*cur)[event]
 }
 
 func (l *safeListeners) remove(event string) {
-	l.Lock()
-	delete(l.list, event)
-	l.Unlock()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cur := l.list.Load()
+	if cur == nil {
+		return
+	}
+	if _, ok := (*cur)[event]; !ok {
+		return
+	}
+	next := make(map[string][]EventCallback, len(*cur))
+	maps.Copy(next, *cur)
+	delete(next, event)
+	l.list.Store(&next)
 }
 
-var listeners = safeListeners{
-	list: make(map[string][]EventCallback),
-}
+var listeners safeListeners
 
 // New returns a Fiber handler that upgrades the request to WebSocket and wraps
 // it with the event helper using default tuning. For per-instance tuning use
@@ -344,6 +384,9 @@ func New(callback func(kws *Websocket), config ...websocket.Config) fiber.Handle
 // NewWithConfig returns a Fiber handler that upgrades the request to WebSocket
 // and wraps it with the event helper, using the supplied per-instance tuning.
 func NewWithConfig(callback func(kws *Websocket), eventCfg Config, wsConfig ...websocket.Config) fiber.Handler {
+	if callback == nil {
+		panic("websocket/event: callback must not be nil")
+	}
 	s := resolveSettings(eventCfg)
 	return websocket.New(func(c *websocket.Conn) {
 		kws := &Websocket{
@@ -370,9 +413,29 @@ func NewWithConfig(callback func(kws *Websocket), eventCfg Config, wsConfig ...w
 		kws.UUID = kws.createUUID()
 		pool.set(kws)
 
+		// If callback panics before run starts, the pool entry would keep its done
+		// channel open forever and every later Broadcast would block on its queue.
+		// Detach and disconnect; the middleware closes the socket after
+		// RecoverHandler.
+		completed := false
+		defer func() {
+			if completed {
+				return
+			}
+			kws.mu.Lock()
+			kws.Conn = nil
+			kws.mu.Unlock()
+			// A callback that closed the connection before panicking already spent the
+			// one disconnect; still report the crash.
+			if !kws.disconnected(ErrorCallbackPanic) {
+				kws.fireEvent(EventError, nil, ErrorCallbackPanic)
+			}
+		}()
+
 		callback(kws)
 		kws.fireEvent(EventConnect, nil, nil)
 		kws.run()
+		completed = true
 	}, wsConfig...)
 }
 
@@ -407,6 +470,8 @@ func (kws *Websocket) SetUUID(uuid string) error {
 		delete(pool.conn, prevUUID)
 	}
 	pool.conn[uuid] = kws
+	// Every write to conn drops the cached snapshot.
+	pool.snap = nil
 	return nil
 }
 
@@ -480,11 +545,11 @@ func EmitToList(uuids []string, message []byte, mType ...int) {
 func (kws *Websocket) EmitTo(uuid string, message []byte, mType ...int) error {
 	conn, err := pool.get(uuid)
 	if err != nil {
-		kws.fireEvent(EventError, []byte(uuid), ErrorInvalidConnection)
+		kws.fireOwnedEvent(EventError, []byte(uuid), ErrorInvalidConnection)
 		return ErrorInvalidConnection
 	}
 	if !conn.IsAlive() {
-		kws.fireEvent(EventError, []byte(uuid), ErrorInvalidConnection)
+		kws.fireOwnedEvent(EventError, []byte(uuid), ErrorInvalidConnection)
 		return ErrorInvalidConnection
 	}
 
@@ -512,19 +577,24 @@ func EmitTo(uuid string, message []byte, mType ...int) error {
 // connection (kws) when except is true. Each failed target fires EventError on
 // kws; the package-level Broadcast does not.
 func (kws *Websocket) Broadcast(message []byte, except bool, mType ...int) {
-	selfUUID := kws.GetUUID()
-	for wsUUID := range pool.all() {
-		if except && selfUUID == wsUUID {
+	for _, conn := range pool.snapshot() {
+		// Identity rather than UUID: no lock, and right under a concurrent SetUUID.
+		if except && conn == ws(kws) {
 			continue
 		}
-		// EmitTo already fires EventError on failure.
-		_ = kws.EmitTo(wsUUID, message, mType...)
+		// The snapshot already resolved every target; one that died meanwhile still
+		// reports EventError on kws.
+		if !conn.IsAlive() {
+			kws.fireOwnedEvent(EventError, []byte(conn.GetUUID()), ErrorInvalidConnection)
+			continue
+		}
+		conn.Emit(message, mType...)
 	}
 }
 
 // Broadcast emits to all active connections.
 func Broadcast(message []byte, mType ...int) {
-	for _, kws := range pool.all() {
+	for _, kws := range pool.snapshot() {
 		kws.Emit(message, mType...)
 	}
 }
@@ -585,18 +655,58 @@ func (kws *Websocket) Close() {
 // WriteControl with a write deadline so shutdown cannot block on a slow
 // peer.
 func (kws *Websocket) writeClose(code int, reason string) {
-	if len(reason) > closeFrameMaxReason {
-		reason = reason[:closeFrameMaxReason]
-	}
-	kws.mu.RLock()
-	conn := kws.Conn
-	kws.mu.RUnlock()
+	conn := kws.conn()
 	if conn == nil {
 		return
 	}
-	payload := websocket.FormatCloseMessage(code, reason)
+	payload := websocket.FormatCloseMessage(sanitizeCloseCode(code), closeReason(reason))
 	deadline := time.Now().Add(kws.settings.writeTimeout)
 	_ = conn.WriteControl(CloseMessage, payload, deadline)
+}
+
+// sanitizeCloseCode replaces a status code the peer would reject with a normal
+// closure. RFC 6455 section 7.4.1 forbids sending 1005, 1006 and 1015 and
+// leaves 1004 reserved, and this library accepts only 1000-1003, 1007-1013 and
+// 3000-4999 on receive, so anything else fails the connection with a protocol
+// error. 1005 passes through: FormatCloseMessage renders it as the empty
+// payload, which is how "no status" is expressed.
+func sanitizeCloseCode(code int) int {
+	switch code {
+	case websocket.CloseNoStatusReceived:
+		return code
+	case websocket.CloseNormalClosure,
+		websocket.CloseGoingAway,
+		websocket.CloseProtocolError,
+		websocket.CloseUnsupportedData,
+		websocket.CloseInvalidFramePayloadData,
+		websocket.ClosePolicyViolation,
+		websocket.CloseMessageTooBig,
+		websocket.CloseMandatoryExtension,
+		websocket.CloseInternalServerErr,
+		websocket.CloseServiceRestart,
+		websocket.CloseTryAgainLater:
+		return code
+	}
+	// 3000-3999 is registered for libraries and frameworks, 4000-4999 is
+	// private use; both are accepted by a conformant peer.
+	if code >= 3000 && code <= 4999 {
+		return code
+	}
+	return websocket.CloseNormalClosure
+}
+
+// closeReason makes reason valid UTF-8 (RFC 6455 section 5.5.1) and cuts it
+// back to closeFrameMaxReason bytes on a rune boundary.
+func closeReason(reason string) string {
+	reason = strings.ToValidUTF8(reason, "")
+	if len(reason) <= closeFrameMaxReason {
+		return reason
+	}
+	cut := closeFrameMaxReason
+	for cut > 0 && !utf8.RuneStart(reason[cut]) {
+		cut--
+	}
+	return reason[:cut]
 }
 
 // IsAlive reports whether the connection is active.
@@ -606,10 +716,11 @@ func (kws *Websocket) IsAlive() bool {
 	return kws.isAlive
 }
 
-func (kws *Websocket) hasConn() bool {
+// conn returns the underlying connection, or nil once closeConn has cleared it.
+func (kws *Websocket) conn() *websocket.Conn {
 	kws.mu.RLock()
 	defer kws.mu.RUnlock()
-	return kws.Conn != nil && kws.Conn.Conn != nil
+	return kws.Conn
 }
 
 func (kws *Websocket) setAlive(alive bool) {
@@ -628,9 +739,7 @@ func (kws *Websocket) pong(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			kws.mu.RLock()
-			conn := kws.Conn
-			kws.mu.RUnlock()
+			conn := kws.conn()
 			if conn == nil {
 				return
 			}
@@ -664,7 +773,10 @@ func (kws *Websocket) send(ctx context.Context) {
 	for {
 		select {
 		case msg := <-kws.queue:
-			if !kws.hasConn() {
+			// One observation of the connection per message, so a message cannot be
+			// dropped between two disagreeing reads.
+			conn := kws.conn()
+			if conn == nil {
 				if msg.retries <= kws.settings.maxSendRetry {
 					retryTimer := time.NewTimer(kws.settings.retrySendTimeout)
 					select {
@@ -695,12 +807,6 @@ func (kws *Websocket) send(ctx context.Context) {
 				continue
 			}
 
-			kws.mu.RLock()
-			conn := kws.Conn
-			kws.mu.RUnlock()
-			if conn == nil {
-				continue
-			}
 			_ = conn.SetWriteDeadline(time.Now().Add(kws.settings.writeTimeout))
 			err := conn.WriteMessage(msg.mType, msg.data)
 			if err != nil {
@@ -727,13 +833,14 @@ func (kws *Websocket) drainQueue() {
 }
 
 func (kws *Websocket) run() {
-	if kws.Conn != nil && kws.settings.maxMessageSize > 0 {
-		kws.Conn.SetReadLimit(kws.settings.maxMessageSize)
-	}
-
-	if kws.Conn != nil {
-		_ = kws.Conn.SetReadDeadline(time.Now().Add(kws.settings.readIdleTimeout))
-		kws.Conn.SetPongHandler(func(string) error {
+	// The handlers close over the connection value: they run on the read
+	// goroutine while closeConn may clear kws.Conn.
+	if conn := kws.conn(); conn != nil {
+		if kws.settings.maxMessageSize > 0 {
+			conn.SetReadLimit(kws.settings.maxMessageSize)
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(kws.settings.readIdleTimeout))
+		conn.SetPongHandler(func(string) error {
 			// Best-effort short circuit so a peer that keeps ponging does not
 			// keep firing events once shutdown started. Shutdown correctness
 			// does not depend on winning this race: run closes the underlying
@@ -743,14 +850,24 @@ func (kws *Websocket) run() {
 				return nil
 			default:
 			}
-			_ = kws.Conn.SetReadDeadline(time.Now().Add(kws.settings.readIdleTimeout))
+			_ = conn.SetReadDeadline(time.Now().Add(kws.settings.readIdleTimeout))
 			kws.fireEvent(EventPong, nil, nil)
 			return nil
 		})
-		kws.Conn.SetPingHandler(func(data string) error {
-			kws.fireEvent(EventPing, []byte(data), nil)
+		conn.SetPingHandler(func(data string) error {
+			// Same short circuit as the pong handler; RFC 6455 section 5.5.2 lets an
+			// endpoint skip the pong once a close is under way.
+			select {
+			case <-kws.done:
+				return nil
+			default:
+			}
+			// A ping proves the peer is alive just as a pong does, so the idle
+			// deadline restarts here too.
+			_ = conn.SetReadDeadline(time.Now().Add(kws.settings.readIdleTimeout))
+			kws.fireOwnedEvent(EventPing, []byte(data), nil)
 			deadline := time.Now().Add(kws.settings.writeTimeout)
-			err := kws.Conn.WriteControl(PongMessage, []byte(data), deadline)
+			err := conn.WriteControl(PongMessage, []byte(data), deadline)
 			if errors.Is(err, websocket.ErrCloseSent) {
 				return nil
 			}
@@ -789,6 +906,20 @@ func (kws *Websocket) run() {
 }
 
 func (kws *Websocket) read(ctx context.Context) {
+	// run installs the connection before this goroutine starts and closeConn
+	// clears it only after it exits, so read it once rather than under the mutex
+	// on every frame.
+	conn := kws.conn()
+	if conn == nil {
+		return
+	}
+
+	// A frame proves the peer is alive, so the idle deadline moves on data as
+	// well as on pongs, but only once per quarter of the timeout: moving it is a
+	// runtime timer update.
+	refreshEvery := kws.settings.readIdleTimeout / 4
+	var nextRefresh time.Time
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -798,14 +929,7 @@ func (kws *Websocket) read(ctx context.Context) {
 		default:
 		}
 
-		kws.mu.RLock()
-		conn := kws.Conn
-		kws.mu.RUnlock()
-		if conn == nil {
-			return
-		}
-
-		mType, msg, err := conn.ReadMessage()
+		mType, msg, err := readFrame(conn)
 		if err != nil {
 			// Control frames (Ping, Pong, Close) are handled by the
 			// library's Set*Handler hooks above. An orderly client close
@@ -818,16 +942,112 @@ func (kws *Websocket) read(ctx context.Context) {
 			return
 		}
 
+		if now := time.Now(); now.After(nextRefresh) {
+			_ = conn.SetReadDeadline(now.Add(kws.settings.readIdleTimeout))
+			nextRefresh = now.Add(refreshEvery)
+		}
+
 		switch mType {
 		case TextMessage, BinaryMessage:
-			kws.fireEvent(EventMessage, msg, nil)
+			// readFrame returns a copy made for this frame, so the fan-out owns it.
+			kws.fireOwnedEvent(EventMessage, msg, nil)
 		default:
-			// Defensive: ReadMessage should not deliver control frames.
+			// Defensive: NextReader never delivers control frames.
 		}
 	}
 }
 
-func (kws *Websocket) disconnected(err error) {
+// frameReader reads one message into a growable buffer and returns an
+// exact-size copy, where ReadMessage's io.ReadAll starts at 512 bytes and
+// doubles. Readers are pooled: an idle connection holds no buffer and the GC
+// trims the pool.
+type frameReader struct {
+	buf   []byte
+	probe [1]byte
+}
+
+const (
+	// frameBufferInitial is what a fresh buffer starts at, io.ReadAll's own
+	// figure.
+	frameBufferInitial = 512
+	// frameBufferRetained caps what goes back into the pool, so one big frame does
+	// not leave its size behind.
+	frameBufferRetained = 64 << 10
+)
+
+var framePool = sync.Pool{New: func() interface{} { return new(frameReader) }}
+
+// readFrame reads the next data message from conn and returns a copy the
+// caller owns.
+func readFrame(conn *websocket.Conn) (int, []byte, error) {
+	mType, r, err := conn.NextReader()
+	if err != nil {
+		return mType, nil, err
+	}
+	fr := framePool.Get().(*frameReader)
+	msg, err := fr.readAll(r)
+	fr.release()
+	return mType, msg, err
+}
+
+func (fr *frameReader) readAll(r io.Reader) ([]byte, error) {
+	buf := fr.buf[:0]
+	if cap(buf) == 0 {
+		buf = make([]byte, 0, frameBufferInitial)
+	}
+	for {
+		if len(buf) == cap(buf) {
+			// Full: probe one byte so a message that exactly fills the buffer does not
+			// double it.
+			n, err := r.Read(fr.probe[:])
+			if n > 0 {
+				grown := make([]byte, len(buf), 2*cap(buf))
+				copy(grown, buf)
+				buf = append(grown, fr.probe[0])
+			}
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				fr.buf = buf
+				return nil, err
+			}
+			continue
+		}
+		n, err := r.Read(buf[len(buf):cap(buf)])
+		buf = buf[:len(buf)+n]
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			fr.buf = buf
+			return nil, err
+		}
+	}
+	msg := make([]byte, len(buf))
+	copy(msg, buf)
+	fr.buf = buf
+	return msg, nil
+}
+
+// release puts the reader back into the pool, minus a buffer that grew past
+// frameBufferRetained.
+func (fr *frameReader) release() {
+	fr.trim()
+	framePool.Put(fr)
+}
+
+func (fr *frameReader) trim() {
+	if cap(fr.buf) > frameBufferRetained {
+		fr.buf = nil
+		return
+	}
+	fr.buf = fr.buf[:0]
+}
+
+// disconnected tears the connection down once and reports whether this call
+// was the one that did it; later calls are no-ops that return false.
+func (kws *Websocket) disconnected(err error) bool {
 	disconnected := false
 	kws.once.Do(func() {
 		disconnected = true
@@ -839,13 +1059,14 @@ func (kws *Websocket) disconnected(err error) {
 	})
 
 	if !disconnected {
-		return
+		return false
 	}
 
 	kws.fireEvent(EventDisconnect, nil, err)
 	if err != nil {
 		kws.fireEvent(EventError, nil, err)
 	}
+	return true
 }
 
 // unblockRead closes the underlying network connection so a read goroutine
@@ -858,10 +1079,7 @@ func (kws *Websocket) disconnected(err error) {
 // Conn field is deliberately left in place: closeConn performs the final
 // cleanup once the goroutines have exited, and closing twice is harmless.
 func (kws *Websocket) unblockRead() {
-	kws.mu.RLock()
-	conn := kws.Conn
-	kws.mu.RUnlock()
-	if conn != nil {
+	if conn := kws.conn(); conn != nil {
 		_ = conn.Close()
 	}
 }
@@ -871,6 +1089,7 @@ func (kws *Websocket) closeConn() {
 	conn := kws.Conn
 	kws.Conn = nil
 	kws.mu.Unlock()
+	// Close is nil-receiver safe and closing twice is harmless.
 	if conn != nil {
 		_ = conn.Close()
 	}
@@ -894,46 +1113,69 @@ func stopTimer(timer *time.Timer) {
 }
 
 func fireGlobalEvent(event string, data []byte, err error) {
-	for _, kws := range pool.all() {
+	// Every connection gets its own copy: Data is mutable, and one listener must
+	// not change what another connection's listeners see.
+	for _, kws := range pool.snapshot() {
 		kws.fireEvent(event, data, err)
 	}
 }
 
+// fireEvent delivers event to every listener with a copy of data, so a
+// listener that retains the slice is not exposed to the caller reusing it.
 func (kws *Websocket) fireEvent(event string, data []byte, err error) {
-	// listeners.get returns a fresh slice, so appending the per-connection
-	// listeners to it does not mutate the global registry.
-	callbacks := append(listeners.get(event), kws.localListeners.get(event)...)
-	if len(callbacks) == 0 {
+	kws.fire(event, data, err, true)
+}
+
+// fireOwnedEvent is fireEvent for data the fan-out already owns and need not
+// copy.
+func (kws *Websocket) fireOwnedEvent(event string, data []byte, err error) {
+	kws.fire(event, data, err, false)
+}
+
+func (kws *Websocket) fire(event string, data []byte, err error, clone bool) {
+	// Both registries hand back immutable snapshots: no locks, no copies, and an
+	// event nobody listens for costs two map lookups.
+	globalCallbacks := listeners.get(event)
+	localCallbacks := kws.localListeners.get(event)
+	if len(globalCallbacks) == 0 && len(localCallbacks) == 0 {
 		return
+	}
+	if clone {
+		data = cloneBytes(data)
 	}
 
 	kws.mu.RLock()
-	attrs := make(map[string]any, len(kws.attributes))
-	for key, value := range kws.attributes {
-		attrs[key] = value
-	}
+	attrs := maps.Clone(kws.attributes)
+	socketUUID := kws.UUID
 	kws.mu.RUnlock()
 
-	// Clone payload bytes once before fan-out so listeners that retain the
-	// slice are not exposed to the read buffer being reused by the next
-	// frame.
-	var payloadData []byte
-	if data != nil {
-		payloadData = make([]byte, len(data))
-		copy(payloadData, data)
+	// Each listener gets its own EventPayload value; the attribute map and the
+	// Data bytes are shared, as they always were.
+	payload := EventPayload{
+		Kws:              kws,
+		Name:             event,
+		SocketUUID:       socketUUID,
+		SocketAttributes: attrs,
+		Data:             data,
+		Error:            err,
 	}
+	for _, callback := range globalCallbacks {
+		p := payload
+		kws.invokeCallback(event, callback, &p)
+	}
+	for _, callback := range localCallbacks {
+		p := payload
+		kws.invokeCallback(event, callback, &p)
+	}
+}
 
-	uuid := kws.GetUUID()
-	for _, callback := range callbacks {
-		kws.invokeCallback(event, callback, &EventPayload{
-			Kws:              kws,
-			Name:             event,
-			SocketUUID:       uuid,
-			SocketAttributes: attrs,
-			Data:             payloadData,
-			Error:            err,
-		})
+func cloneBytes(b []byte) []byte {
+	if b == nil {
+		return nil
 	}
+	out := make([]byte, len(b))
+	copy(out, b)
+	return out
 }
 
 // invokeCallback runs a single listener callback with panic recovery so a
@@ -983,12 +1225,12 @@ func Drain() {
 	draining.Store(true)
 }
 
-// CloseAll iterates every active connection in the in-process pool and
-// sends a close control frame with the supplied code and reason, then
-// waits for each helper's run() loop to exit. If ctx expires first,
-// remaining connections are force closed via Conn.Close.
+// CloseAll sends every connection in the pool a close frame with code and
+// reason, fires EventClose and marks it disconnected, and returns once that is
+// done for all of them; each connection's goroutines then wind down on their
+// own. If ctx expires first, the remaining connections are force closed.
 //
-// The typical usage is from a Fiber shutdown hook:
+// Typical usage from a Fiber shutdown hook:
 //
 //	app.Hooks().OnShutdown(func() error {
 //	    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -999,13 +1241,13 @@ func Drain() {
 //
 // Reason is capped at 123 bytes per RFC 6455.
 func CloseAll(ctx context.Context, code int, reason string) error {
-	snapshot := pool.all()
-	if len(snapshot) == 0 {
+	conns := pool.snapshot()
+	if len(conns) == 0 {
 		return nil
 	}
 
 	var wg sync.WaitGroup
-	for _, c := range snapshot {
+	for _, c := range conns {
 		kws, ok := c.(*Websocket)
 		if !ok {
 			continue
@@ -1031,7 +1273,7 @@ func CloseAll(ctx context.Context, code int, reason string) error {
 	case <-done:
 		return nil
 	case <-ctx.Done():
-		for _, c := range pool.all() {
+		for _, c := range pool.snapshot() {
 			kws, ok := c.(*Websocket)
 			if !ok {
 				continue
