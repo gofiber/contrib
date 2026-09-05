@@ -1612,22 +1612,20 @@ func TestFrameReaderHandsOutExactSizeOwnedCopies(t *testing.T) {
 
 	type result struct {
 		msg      []byte
-		retained int
 		prevKept bool
 	}
 	results := make(chan result, 16)
 	app.Use(upgradeMiddleware)
 	app.Get("/", fws.New(func(c *fws.Conn) {
-		var fr frameReader
 		var prev, prevCopy []byte
 		for {
-			_, msg, err := fr.read(c)
+			_, msg, err := readFrame(c)
 			if err != nil {
 				return
 			}
 			// prev was handed out by the previous read; reading this frame
 			// must not have touched it.
-			results <- result{msg: msg, retained: cap(fr.buf), prevKept: bytes.Equal(prev, prevCopy)}
+			results <- result{msg: msg, prevKept: bytes.Equal(prev, prevCopy)}
 			prev = msg
 			prevCopy = bytes.Clone(msg)
 		}
@@ -1658,16 +1656,21 @@ func TestFrameReaderHandsOutExactSizeOwnedCopies(t *testing.T) {
 		case r := <-results:
 			require.Equal(t, want, r.msg, "size %d", size)
 			require.True(t, r.prevKept, "size %d: reading this frame changed the previous message", size)
-			if size > frameBufferRetained {
-				require.Zero(t, r.retained, "size %d: an oversized buffer must not be retained", size)
-			} else {
-				require.GreaterOrEqual(t, r.retained, size, "size %d", size)
-				require.LessOrEqual(t, r.retained, frameBufferRetained, "size %d", size)
-			}
 		case <-time.After(5 * time.Second):
 			t.Fatalf("no result for size %d", size)
 		}
 	}
+}
+
+func TestFrameReaderTrimDropsOversizedBuffers(t *testing.T) {
+	fr := &frameReader{buf: make([]byte, frameBufferRetained)}
+	fr.trim()
+	require.Equal(t, frameBufferRetained, cap(fr.buf), "a buffer within the cap goes back to the pool")
+	require.Empty(t, fr.buf)
+
+	fr = &frameReader{buf: make([]byte, frameBufferRetained+1)}
+	fr.trim()
+	require.Nil(t, fr.buf, "a buffer past the cap is dropped")
 }
 
 // frameBench is one upgraded loopback connection whose client side is a raw
@@ -1766,7 +1769,6 @@ func benchmarkFrameRead(b *testing.B, size int, exact bool) {
 		}
 	}()
 
-	var fr frameReader
 	b.SetBytes(int64(size))
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -1774,7 +1776,7 @@ func benchmarkFrameRead(b *testing.B, size int, exact bool) {
 		var msg []byte
 		var err error
 		if exact {
-			_, msg, err = fr.read(fb.server)
+			_, msg, err = readFrame(fb.server)
 		} else {
 			_, msg, err = fb.server.ReadMessage()
 		}

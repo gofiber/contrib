@@ -950,7 +950,6 @@ func (kws *Websocket) read(ctx context.Context) {
 	// the deadline is still at least three quarters of the timeout away.
 	refreshEvery := kws.settings.readIdleTimeout / 4
 	var nextRefresh time.Time
-	var frames frameReader
 
 	for {
 		select {
@@ -961,7 +960,7 @@ func (kws *Websocket) read(ctx context.Context) {
 		default:
 		}
 
-		mType, msg, err := frames.read(conn)
+		mType, msg, err := readFrame(conn)
 		if err != nil {
 			// Control frames (Ping, Pong, Close) are handled by the
 			// library's Set*Handler hooks above. An orderly client close
@@ -981,9 +980,9 @@ func (kws *Websocket) read(ctx context.Context) {
 
 		switch mType {
 		case TextMessage, BinaryMessage:
-			// read returns a copy made for this frame alone, so the fan-out
-			// owns it and skips the copy fireEvent makes for caller-provided
-			// data.
+			// readFrame returns a copy made for this frame alone, so the
+			// fan-out owns it and skips the copy fireEvent makes for
+			// caller-provided data.
 			kws.fireOwnedEvent(EventMessage, msg, nil)
 		default:
 			// Defensive: NextReader never delivers control frames.
@@ -991,13 +990,14 @@ func (kws *Websocket) read(ctx context.Context) {
 	}
 }
 
-// frameReader reads data messages into a buffer that persists across frames
-// and hands each one out as an exact-size copy. ReadMessage does the same job
-// through io.ReadAll, which starts at 512 bytes and doubles as it goes, so a
-// 64 KB frame costs it seventeen allocations and twice the frame in garbage.
-// Here the buffer only grows when a frame larger than any before it arrives,
-// the copy is the only allocation per frame, and the fan-out still owns what
-// it is given.
+// frameReader reads one data message into a growable buffer and hands it out
+// as an exact-size copy. ReadMessage does the same job through io.ReadAll,
+// which starts at 512 bytes and doubles as it goes, so a 64 KB frame costs it
+// seventeen allocations and twice the frame in garbage. Readers live in
+// framePool, so an idle connection holds no buffer at all: one is taken when
+// a frame starts arriving and returned once its copy is handed out, memory
+// follows the frames in flight rather than the number of connections, and the
+// GC trims what the pool keeps.
 type frameReader struct {
 	buf   []byte
 	probe [1]byte
@@ -1005,19 +1005,30 @@ type frameReader struct {
 
 const (
 	// frameBufferInitial is what a fresh buffer starts at, io.ReadAll's own
-	// figure, so a connection that only ever sees small frames never grows it.
+	// figure.
 	frameBufferInitial = 512
-	// frameBufferRetained caps what a connection keeps between frames. A
-	// buffer that grew past it is dropped after use, so one big frame does
-	// not pin its size for the life of the connection.
+	// frameBufferRetained caps what goes back into the pool. A buffer that
+	// grew past it is dropped after use, so one big frame does not leave its
+	// size behind for every later reader.
 	frameBufferRetained = 64 << 10
 )
 
-func (fr *frameReader) read(conn *websocket.Conn) (int, []byte, error) {
+var framePool = sync.Pool{New: func() interface{} { return new(frameReader) }}
+
+// readFrame reads the next data message from conn and returns a copy the
+// caller owns.
+func readFrame(conn *websocket.Conn) (int, []byte, error) {
 	mType, r, err := conn.NextReader()
 	if err != nil {
 		return mType, nil, err
 	}
+	fr := framePool.Get().(*frameReader)
+	msg, err := fr.readAll(r)
+	fr.release()
+	return mType, msg, err
+}
+
+func (fr *frameReader) readAll(r io.Reader) ([]byte, error) {
 	buf := fr.buf[:0]
 	if cap(buf) == 0 {
 		buf = make([]byte, 0, frameBufferInitial)
@@ -1037,8 +1048,8 @@ func (fr *frameReader) read(conn *websocket.Conn) (int, []byte, error) {
 				break
 			}
 			if err != nil {
-				fr.retain(buf)
-				return mType, nil, err
+				fr.buf = buf
+				return nil, err
 			}
 			continue
 		}
@@ -1048,22 +1059,29 @@ func (fr *frameReader) read(conn *websocket.Conn) (int, []byte, error) {
 			break
 		}
 		if err != nil {
-			fr.retain(buf)
-			return mType, nil, err
+			fr.buf = buf
+			return nil, err
 		}
 	}
 	msg := make([]byte, len(buf))
 	copy(msg, buf)
-	fr.retain(buf)
-	return mType, msg, nil
+	fr.buf = buf
+	return msg, nil
 }
 
-func (fr *frameReader) retain(buf []byte) {
-	if cap(buf) <= frameBufferRetained {
-		fr.buf = buf[:0]
+// release puts the reader back into the pool, minus a buffer that grew past
+// frameBufferRetained.
+func (fr *frameReader) release() {
+	fr.trim()
+	framePool.Put(fr)
+}
+
+func (fr *frameReader) trim() {
+	if cap(fr.buf) > frameBufferRetained {
+		fr.buf = nil
 		return
 	}
-	fr.buf = nil
+	fr.buf = fr.buf[:0]
 }
 
 // disconnected tears the connection down once and reports whether this call
