@@ -154,12 +154,11 @@ itself, so it can write whatever the application considers safe.
 Once the recover handler returns, the connection is closed: a handler that panicked
 cannot be assumed to still own it, and nothing else closes a hijacked connection.
 
-A handler that returns normally leaves the socket open. If it needs to keep writing
-from another goroutine after returning, it must capture the embedded connection,
-`c.Conn` (a `*github.com/fasthttp/websocket.Conn`), before it returns. The
-`*websocket.Conn` the handler receives is pooled: it is taken back the moment the
-handler returns and reissued to the next upgrade, so a goroutine that keeps using it
-would first see failed writes and then another client's socket and request data.
+A handler that returns normally leaves the socket open, so it may hand the
+connection to another goroutine before returning and keep writing after. The
+`*websocket.Conn` it receives is allocated for that upgrade alone and never reused,
+so `Locals`, `Params`, `Query`, `Cookies`, `Headers` and `IP` keep answering with
+that connection's own data for as long as anything holds it.
 
 ```go
 app := fiber.New()

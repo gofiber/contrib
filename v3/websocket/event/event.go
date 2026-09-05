@@ -391,9 +391,9 @@ func NewWithConfig(callback func(kws *Websocket), eventCfg Config, wsConfig ...w
 		// before run starts nothing else would: the pool entry would keep its
 		// done channel open forever, so every later Broadcast would queue into
 		// a connection nobody reads until the queue filled and blocked. The
-		// wrapper is detached as well, because the middleware hands it back to
-		// its pool right after; the socket is left to the middleware, which
-		// closes it once RecoverHandler has written the error frame.
+		// connection is detached so conn() and IsAlive agree that it is gone;
+		// the socket is left to the middleware, which closes it once
+		// RecoverHandler has written the error frame.
 		completed := false
 		defer func() {
 			if completed {
@@ -699,16 +699,10 @@ func (kws *Websocket) IsAlive() bool {
 	return kws.isAlive
 }
 
-// conn returns the underlying connection, or nil once closeConn has cleared it
-// or the middleware has taken the wrapper back. Both checks happen under the
-// lock so a teardown racing with the caller cannot slip a recycled wrapper
-// through between them.
+// conn returns the underlying connection, or nil once closeConn has cleared it.
 func (kws *Websocket) conn() *websocket.Conn {
 	kws.mu.RLock()
 	defer kws.mu.RUnlock()
-	if kws.Conn == nil || kws.Conn.Conn == nil {
-		return nil
-	}
 	return kws.Conn
 }
 
@@ -996,8 +990,7 @@ func (kws *Websocket) closeConn() {
 	conn := kws.Conn
 	kws.Conn = nil
 	kws.mu.Unlock()
-	// Close is promoted from the embedded connection and is nil-receiver safe:
-	// on a wrapper the middleware already took back it just reports ErrNilConn.
+	// Close is nil-receiver safe and closing twice is harmless.
 	if conn != nil {
 		_ = conn.Close()
 	}

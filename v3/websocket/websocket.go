@@ -203,10 +203,11 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		if !IsWebSocketUpgrade(c) {
 			return fiber.ErrUpgradeRequired
 		}
-		ensureKeepHijackedConns(c.App().Server())
+		server := c.App().Server()
+		ensureKeepHijackedConns(server)
 
 		fctx := c.RequestCtx()
-		conn := acquireConn()
+		conn := &Conn{}
 
 		// Route params and the IP come from the Fiber context, which is
 		// recycled before the hijack callback runs, so they are captured now.
@@ -223,18 +224,16 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 			// Everything else is copied only once the handshake has been
 			// accepted, so a rejected one pays for none of it. fasthttp keeps
 			// the RequestCtx alive until this callback returns.
-			conn.capture(fctx)
+			conn.capture(fctx, !server.DisableHeaderNamesNormalizing)
 
 			returned := false
-			defer releaseConn(conn)
 			// Registered before the recover handler so it runs after it. A
 			// handler that panicked cannot be trusted to still own the socket,
 			// and KeepHijackedConns means nothing else will ever close it, so
 			// close it here -- but only once RecoverHandler has had its chance
 			// to write the error frame. A handler that returns normally leaves
-			// the socket open: the embedded fconn may be handed to another
-			// goroutine before returning. The wrapper itself may not be, since
-			// releaseConn takes it back the moment the handler returns.
+			// the socket open, so it may keep using the connection from another
+			// goroutine after returning.
 			defer func() {
 				if !returned {
 					_ = fconn.Close()
@@ -244,7 +243,6 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 			handler(conn)
 			returned = true
 		}); err != nil { // Handshake rejected
-			releaseConn(conn)
 			// The upgrader picked the status RFC 6455 asks for: 403 for an
 			// Origin the server does not accept (section 4.2.2), 400 for a
 			// malformed or unsupported handshake, 405 for a non-GET request.
@@ -273,67 +271,25 @@ type Conn struct {
 	ip      string
 }
 
-// Conn pool
-var poolConn = sync.Pool{
-	New: func() interface{} {
-		return new(Conn)
-	},
-}
-
-// maxPooledMapEntries bounds the maps carried by a pooled Conn. Reusing the
-// buckets of a modest map is the point of the pool, but a single request
-// carrying thousands of query arguments or headers would otherwise make every
-// later connection pay for that footprint, so oversized maps are dropped.
-const maxPooledMapEntries = 64
-
-// acquireConn takes a Conn from the pool and empties whatever the previous
-// connection left in it.
-func acquireConn() *Conn {
-	conn := poolConn.Get().(*Conn)
-	conn.reset()
-	return conn
-}
-
-// releaseConn detaches the socket and hands the Conn back to the pool. The maps
-// are deliberately left alone until the next acquireConn: the event helper's
-// Locals, Params, Query and Cookies closures keep reading them from listeners
-// that run on other goroutines while the handler is still unwinding, and
-// emptying them here raced with those reads.
-func releaseConn(conn *Conn) {
-	conn.Conn = nil
-	poolConn.Put(conn)
-}
-
-// reset empties the maps for the next connection. Emptying rather than
-// replacing them keeps their buckets, which is what saves the allocations;
-// a map that grew past maxPooledMapEntries is dropped instead.
-func (conn *Conn) reset() {
-	conn.ip = ""
-	conn.locals = resetMap(conn.locals)
-	conn.params = resetMap(conn.params)
-	conn.queries = resetMap(conn.queries)
-	conn.cookies = resetMap(conn.cookies)
-	conn.headers = resetMap(conn.headers)
-}
-
-func resetMap[V any](m map[string]V) map[string]V {
-	if len(m) > maxPooledMapEntries {
-		return nil
-	}
-	clear(m)
-	return m
-}
+// A Conn is allocated per upgrade and never reused. An earlier revision pooled
+// it and emptied the maps in place for the next connection, which is unsafe:
+// the event helper's Locals, Params, Query and Cookies closures read those maps
+// from listeners that run on other goroutines during Close and CloseAll, so a
+// new upgrade taking the wrapper could clear and refill them under a listener
+// still reading the previous client's data. The maps are only allocated when
+// the request carries that kind of data, so a typical handshake still allocates
+// less than unconditionally creating all five.
 
 // capture copies the locals, query arguments, cookies and headers of the
 // request into the Conn. It runs inside the hijack callback, where the
 // RequestCtx is still valid, and after the handshake has been accepted.
-func (conn *Conn) capture(fctx *fasthttp.RequestCtx) {
+// canonical says whether the server already normalizes header names.
+func (conn *Conn) capture(fctx *fasthttp.RequestCtx, canonical bool) {
 	fctx.VisitUserValues(func(key []byte, value interface{}) {
 		setEntry(&conn.locals, string(key), value)
 	})
 	// No size hint for the query map: Args.Len counts repeated keys that the
-	// assignments collapse into one entry, and a map sized for the repetitions
-	// with len stuck at 1 would slip past resetMap's entry cap and stay pooled.
+	// assignments collapse into one entry, so it would over-allocate.
 	for key, value := range fctx.QueryArgs().All() {
 		setEntry(&conn.queries, string(key), string(value))
 	}
@@ -341,10 +297,13 @@ func (conn *Conn) capture(fctx *fasthttp.RequestCtx) {
 		setEntry(&conn.cookies, string(key), string(value))
 	}
 	// Header names are stored in canonical form so Headers is a single probe.
-	// fasthttp already delivers them that way unless normalizing is disabled,
-	// in which case CanonicalHeaderKey rewrites them once per connection here.
+	// fasthttp delivers them that way already unless the server disabled
+	// normalizing, and only then is each name rewritten here.
 	for key, value := range fctx.Request.Header.All() {
-		setEntry(&conn.headers, string(utils.CanonicalHeaderKey(key)), string(value))
+		if !canonical {
+			key = utils.CanonicalHeaderKey(key)
+		}
+		setEntry(&conn.headers, string(key), string(value))
 	}
 }
 

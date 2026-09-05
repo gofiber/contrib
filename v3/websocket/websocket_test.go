@@ -5,7 +5,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -702,54 +701,22 @@ func TestWebSocketRejectedHandshakeReachesErrorHandler(t *testing.T) {
 	assert.Equal(t, "13", resp.Header.Get(fiber.HeaderSecWebSocketVersion))
 }
 
-func TestConnResetEmptiesPooledState(t *testing.T) {
-	conn := &Conn{ip: "127.0.0.1"}
-	conn.Locals("session", "secret")
-	setEntry(&conn.params, "id", "1")
-	setEntry(&conn.queries, "q", "1")
-	setEntry(&conn.cookies, "c", "1")
-	setEntry(&conn.headers, "Authorization", "Bearer token")
-	locals, headers := conn.locals, conn.headers
+func TestConnCaptureAllocatesOnlyWhatTheRequestCarries(t *testing.T) {
+	// A bare handshake has headers and nothing else, so only the header map
+	// exists afterwards; the accessors for the rest answer without one.
+	fctx := &fasthttp.RequestCtx{}
+	fctx.Request.Header.Set(fiber.HeaderHost, "localhost")
 
-	conn.reset()
-
-	// Nothing of the previous connection survives into the next one...
-	assert.Empty(t, conn.ip)
-	assert.Empty(t, conn.locals)
-	assert.Empty(t, conn.params)
-	assert.Empty(t, conn.queries)
-	assert.Empty(t, conn.cookies)
-	assert.Empty(t, conn.headers)
-
-	// ...but the maps are the same ones, emptied in place, so their buckets
-	// are reused instead of reallocated.
-	assert.NotNil(t, conn.locals)
-	assert.Equal(t, 0, len(locals))
-	assert.Equal(t, 0, len(headers))
-}
-
-func TestConnResetDropsOversizedMaps(t *testing.T) {
 	conn := &Conn{}
-	for i := 0; i <= maxPooledMapEntries; i++ {
-		setEntry(&conn.queries, strconv.Itoa(i), "value")
-	}
+	conn.capture(fctx, true)
 
-	conn.reset()
-
-	assert.Nil(t, conn.queries, "an oversized map must be dropped instead of pooled")
-}
-
-func TestReleaseConnLeavesMapsForLateReaders(t *testing.T) {
-	// A listener fired by Close or CloseAll from another goroutine may still be
-	// reading the wrapper while the handler unwinds, so release must not write
-	// into the maps; that happens on the next acquire instead.
-	conn := &Conn{}
-	conn.Locals("user", "alice")
-
-	releaseConn(conn)
-
-	assert.Nil(t, conn.Conn)
-	assert.Equal(t, "alice", conn.Locals("user"))
+	assert.NotNil(t, conn.headers)
+	assert.Nil(t, conn.locals)
+	assert.Nil(t, conn.queries)
+	assert.Nil(t, conn.cookies)
+	assert.Equal(t, "", conn.Query("missing"))
+	assert.Equal(t, "", conn.Cookies("missing"))
+	assert.Nil(t, conn.Locals("missing"))
 }
 
 func TestConnHeadersLookup(t *testing.T) {
@@ -776,7 +743,7 @@ func TestConnCaptureCanonicalizesHeaderNames(t *testing.T) {
 	fctx.Request.Header.Set("x-custom", "value")
 
 	conn := &Conn{}
-	conn.capture(fctx)
+	conn.capture(fctx, false)
 
 	assert.Equal(t, "value", conn.Headers("x-custom"))
 	assert.Equal(t, "value", conn.Headers("X-Custom"))
@@ -831,13 +798,35 @@ func BenchmarkConnHeaders(b *testing.B) {
 	}
 }
 
-func BenchmarkAcquireReleaseConn(b *testing.B) {
+// handshakeRequest is a typical browser upgrade: nine headers, two cookies,
+// two query arguments and one local set by earlier middleware.
+func handshakeRequest() *fasthttp.RequestCtx {
+	fctx := &fasthttp.RequestCtx{}
+	fctx.Request.SetRequestURI("/ws?v=1&room=lobby")
+	h := &fctx.Request.Header
+	h.Set(fiber.HeaderHost, "localhost:3000")
+	h.Set(fiber.HeaderConnection, "Upgrade")
+	h.Set(fiber.HeaderUpgrade, "websocket")
+	h.Set(fiber.HeaderSecWebSocketVersion, "13")
+	h.Set(fiber.HeaderSecWebSocketKey, "dGhlIHNhbXBsZSBub25jZQ==")
+	h.Set(fiber.HeaderUserAgent, "Mozilla/5.0")
+	h.Set(fiber.HeaderAcceptEncoding, "gzip, deflate, br")
+	h.Set(fiber.HeaderOrigin, "http://localhost:3000")
+	h.Set(fiber.HeaderAuthorization, "Bearer token")
+	h.SetCookie("session", "abc123")
+	h.SetCookie("theme", "dark")
+	fctx.SetUserValue("user", "alice")
+	return fctx
+}
+
+// BenchmarkNewConn is the per-upgrade cost of building a Conn: the struct plus
+// only the maps the request carries.
+func BenchmarkNewConn(b *testing.B) {
+	fctx := handshakeRequest()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		conn := acquireConn()
-		conn.Locals("local", "value")
-		conn.ip = "127.0.0.1"
-		releaseConn(conn)
+		conn := &Conn{ip: "127.0.0.1"}
+		conn.capture(fctx, true)
 	}
 }

@@ -1261,6 +1261,93 @@ func TestCloseAllListenersStillSeeRequestData(t *testing.T) {
 	}
 }
 
+func TestCloseAllListenersSurviveConcurrentUpgrades(t *testing.T) {
+	// The scenario a reviewer raised against a pooled Conn: a disconnect
+	// listener runs on CloseAll's goroutine and reads the wrapper's request
+	// data while the handler returns, and a new upgrade lands on the same
+	// object and rewrites those maps underneath it. Nothing here may see
+	// another connection's value, an empty one, or a race report.
+	resetState()
+
+	const numConn = 25
+	var mu sync.Mutex
+	seen := make(map[string]int)
+	On(EventDisconnect, func(p *EventPayload) {
+		mu.Lock()
+		seen[p.Kws.Query("who")]++
+		mu.Unlock()
+	})
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	app.Use(upgradeMiddleware)
+	app.Get("/", New(func(_ *Websocket) {}))
+
+	go func() { _ = app.Listener(ln) }()
+
+	dialer := &websocket.Dialer{
+		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+		HandshakeTimeout: 5 * time.Second,
+	}
+	clients := make([]*websocket.Conn, 0, numConn)
+	defer func() {
+		for _, c := range clients {
+			_ = c.Close()
+		}
+	}()
+	for i := 0; i < numConn; i++ {
+		conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String()+"/?who=c"+strconv.Itoa(i))
+		require.NoError(t, err)
+		clients = append(clients, conn)
+	}
+	require.Eventually(t, func() bool {
+		return len(pool.snapshot()) == numConn
+	}, 2*time.Second, 10*time.Millisecond)
+
+	// Keep new upgrades arriving for the whole of CloseAll so a recycled
+	// wrapper would be re-acquired while listeners are still reading it.
+	stop := make(chan struct{})
+	churned := make(chan struct{})
+	go func() {
+		defer close(churned)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			c, _, err := dialer.Dial("ws://"+ln.Addr().String()+"/?who=late"+strconv.Itoa(i), nil)
+			if err == nil {
+				_ = c.Close()
+			}
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := CloseAll(ctx, websocket.CloseGoingAway, "bye")
+	close(stop)
+	<-churned
+	require.NoError(t, err)
+
+	// Late connections may or may not have been caught by CloseAll; whatever
+	// was seen must be a real value that was seen exactly once.
+	mu.Lock()
+	defer mu.Unlock()
+	for i := 0; i < numConn; i++ {
+		require.Equal(t, 1, seen["c"+strconv.Itoa(i)], "connection c%d: %v", i, seen)
+	}
+	require.NotContains(t, seen, "", "a listener read an emptied wrapper")
+	for who, n := range seen {
+		require.Equal(t, 1, n, "%q seen %d times", who, n)
+	}
+}
+
 func TestMethodBroadcastSkipsSelfAndReportsDead(t *testing.T) {
 	resetState()
 
