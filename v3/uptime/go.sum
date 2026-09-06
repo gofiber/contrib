@@ -50,8 +50,8 @@ github.com/gofiber/storage/redis/v3 v3.6.0 h1:ryGdJNq5OTcC/VV7vO07obDG5qmjmhwYkk
 github.com/gofiber/storage/redis/v3 v3.6.0/go.mod h1:InnkIWanfBw4dX6FjTIHMW3/PRO9azi5lhzKoNVnpUY=
 github.com/gofiber/storage/testhelpers/redis v0.1.0 h1:lDUwtanDf3f5YwlDwhbqnqCtj9Y/xc8ctxRE6HpQcws=
 github.com/gofiber/storage/testhelpers/redis v0.1.0/go.mod h1:Y1UccxbGVL04+TF5RuyCsksX+76hu6nJIWjPukBBgJ4=
-github.com/gofiber/utils/v2 v2.4.3 h1:hOkGb/qneZWo3LDu/lvVYLNkLYjYf2L24yzWiNCwZlg=
-github.com/gofiber/utils/v2 v2.4.3/go.mod h1:moBcJN92eNvu0ybYe4zd4W34K6VI3UoZi5gKFwx/jj0=
+github.com/gofiber/utils/v2 v2.5.0 h1:KdxVwQCUHVDmLtA4M7HwqavywROkXFCMSRm86b8pA+E=
+github.com/gofiber/utils/v2 v2.5.0/go.mod h1:moBcJN92eNvu0ybYe4zd4W34K6VI3UoZi5gKFwx/jj0=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
 github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
 github.com/klauspost/compress v1.20.0 h1:a3C1ke2ohxFymNlb2HWAHjDeKCI90scRskErZkR0ezA=
