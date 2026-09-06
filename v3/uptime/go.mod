@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/gofiber/fiber/v3 v3.5.0
 	github.com/gofiber/storage/redis/v3 v3.6.0
-	github.com/gofiber/utils/v2 v2.4.3
+	github.com/gofiber/utils/v2 v2.5.0
 	github.com/redis/go-redis/v9 v9.22.0
 )
 
