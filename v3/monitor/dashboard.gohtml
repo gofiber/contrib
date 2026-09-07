@@ -1317,6 +1317,7 @@
       const candidates = [.1, .2, .5, 1, 2, 5, 10]
         .map((factor) => factor * magnitude)
         .filter((step) => step >= minimumStep);
+      if (!candidates.length) candidates.push(Math.max(minimumStep, roughStep));
       let best = null;
       candidates.forEach((step) => {
         const intervals = Math.ceil(span / step);
@@ -1328,27 +1329,28 @@
       return { max: best.max, step: best.step, intervals: best.intervals };
     }
 
-    function drawTimeLabels(context, width, height, padding, labels) {
+    function drawTimeLabels(context, width, height, padding, labels, mutedColor) {
       if (!labels.length) return;
       const lastIndex = labels.length - 1;
       const entries = lastIndex < 2 ?
         [{ index: 0, align: lastIndex ? "left" : "right" }, ...(lastIndex ? [{ index: lastIndex, align: "right" }] : [])] :
         [{ index: 0, align: "left" }, { index: Math.floor(lastIndex / 2), align: "center" }, { index: lastIndex, align: "right" }];
       const plotWidth = width - padding.left - padding.right;
-      context.fillStyle = cssColor("--muted");
+      const labelMeta = { padding, count: labels.length, plotWidth };
+      context.fillStyle = mutedColor;
       context.font = "10px system-ui, sans-serif";
       context.textBaseline = "alphabetic";
       entries.forEach((entry) => {
-        const x = padding.left + (lastIndex ? entry.index / lastIndex * plotWidth : plotWidth);
+        const x = sampleX(labelMeta, entry.index);
         context.textAlign = entry.align;
         context.fillText(labels[entry.index], x, height - 5);
       });
       context.textAlign = "left";
     }
 
-    function drawGrid(context, width, height, padding, scale, options, labels) {
+    function drawGrid(context, width, height, padding, scale, options, labels, colors) {
       const plotHeight = height - padding.top - padding.bottom;
-      context.strokeStyle = cssColor("--border");
+      context.strokeStyle = colors.border;
       context.lineWidth = 1;
       context.globalAlpha = .55;
       for (let line = 0; line <= scale.intervals; line += 1) {
@@ -1359,7 +1361,7 @@
         context.stroke();
       }
       context.globalAlpha = 1;
-      context.fillStyle = cssColor("--muted");
+      context.fillStyle = colors.muted;
       context.font = "11px system-ui, sans-serif";
       context.textBaseline = "middle";
       for (let line = 0; line <= scale.intervals; line += 1) {
@@ -1367,7 +1369,7 @@
         const y = padding.top + plotHeight / scale.intervals * line;
         context.fillText(options.formatValue ? options.formatValue(value) : formatAxis(value, options.unit), 4, y);
       }
-      drawTimeLabels(context, width, height, padding, labels);
+      drawTimeLabels(context, width, height, padding, labels, colors.muted);
     }
 
     function sampleX(meta, index) {
@@ -1405,13 +1407,17 @@
       context.setLineDash([]);
     }
 
-    function paintLineChart(canvas, meta) {
+    function paintLineChart(canvas, meta, colors) {
+      const paintColors = colors || {
+        border: cssColor("--border"),
+        muted: cssColor("--muted")
+      };
       const context = canvas.getContext("2d");
       context.setTransform(meta.dpr, 0, 0, meta.dpr, 0, 0);
       context.clearRect(0, 0, meta.width, meta.height);
       drawGrid(context, meta.width, meta.height, meta.padding, {
         max: meta.max, step: meta.step, intervals: meta.intervals
-      }, meta.options, meta.labels);
+      }, meta.options, meta.labels, paintColors);
       meta.series.forEach((series) => drawSeries(context, series.data, {
         ...meta, color: series.color
       }));
@@ -1419,6 +1425,7 @@
 
     function drawLineChart(canvas, seriesList, options) {
       if (!canvas) return;
+      if (canvas._clearHover) canvas._clearHover(false);
       const dpr = window.devicePixelRatio || 1;
       const rect = canvas.getBoundingClientRect();
       const width = Math.max(rect.width, 1);
@@ -1496,14 +1503,19 @@
     }
 
     function drawHoverGuides(canvas, meta, index, pointerY, points) {
-      paintLineChart(canvas, meta);
+      const colors = {
+        border: cssColor("--border"),
+        muted: cssColor("--muted"),
+        panelSoft: cssColor("--panel-soft")
+      };
+      paintLineChart(canvas, meta, colors);
       const context = canvas.getContext("2d");
       const x = sampleX(meta, index);
       context.save();
       context.lineWidth = 1;
       context.setLineDash([4, 4]);
       context.globalAlpha = .7;
-      context.strokeStyle = cssColor("--muted");
+      context.strokeStyle = colors.muted;
       context.beginPath();
       context.moveTo(x, meta.padding.top);
       context.lineTo(x, meta.height - meta.padding.bottom);
@@ -1523,7 +1535,7 @@
       points.forEach((point) => {
         context.beginPath();
         context.arc(point.x, point.y, 5, 0, Math.PI * 2);
-        context.fillStyle = cssColor("--panel-soft");
+        context.fillStyle = colors.panelSoft;
         context.fill();
         context.lineWidth = 2;
         context.strokeStyle = point.color;
@@ -1536,15 +1548,35 @@
     }
 
     function setupChartHover(canvas) {
-      const tooltip = canvas.parentElement.querySelector(".chart-tooltip");
-      canvas.addEventListener("pointermove", (event) => {
+      const card = canvas.parentElement;
+      const tooltip = card.querySelector(".chart-tooltip");
+      let hoverFrame = null;
+      let latestPointer = null;
+
+      canvas._clearHover = (repaint) => {
+        latestPointer = null;
+        if (hoverFrame !== null) {
+          window.cancelAnimationFrame(hoverFrame);
+          hoverFrame = null;
+        }
+        if (repaint && canvas._chartMeta) paintLineChart(canvas, canvas._chartMeta);
+        tooltip.hidden = true;
+      };
+
+      const paintHover = () => {
+        hoverFrame = null;
+        const pointer = latestPointer;
+        latestPointer = null;
+        if (!pointer) return;
         const meta = canvas._chartMeta;
         if (!meta || meta.count < 1) {
           tooltip.hidden = true;
           return;
         }
         const rect = canvas.getBoundingClientRect();
-        const relative = Math.min(1, Math.max(0, (event.clientX - rect.left - meta.padding.left) / meta.plotWidth));
+        const canvasX = pointer.clientX - rect.left;
+        const canvasY = pointer.clientY - rect.top;
+        const relative = Math.min(1, Math.max(0, (canvasX - meta.padding.left) / meta.plotWidth));
         const index = Math.round(relative * (meta.count - 1));
         const points = meta.series
           .map((entry) => {
@@ -1558,7 +1590,7 @@
             } : null;
           })
           .filter(Boolean);
-        drawHoverGuides(canvas, meta, index, event.clientY - rect.top, points);
+        drawHoverGuides(canvas, meta, index, canvasY, points);
         const idle = meta.idleWhenMissing && points.length === 0;
         if (!idle && points.length === 0) {
           tooltip.hidden = true;
@@ -1571,7 +1603,7 @@
         if (idle) {
           const row = document.createElement("span");
           row.className = "chart-tooltip__empty";
-          row.textContent = "No requests in this window";
+          row.textContent = "No data in this window";
           tooltip.append(row);
         } else {
           points.forEach((point) => {
@@ -1591,12 +1623,22 @@
           });
         }
         tooltip.hidden = false;
-        tooltip.style.left = Math.max(4, Math.min(event.clientX - rect.left + 12, rect.width - tooltip.offsetWidth - 4)) + "px";
-        tooltip.style.top = Math.max(38, event.clientY - rect.top - tooltip.offsetHeight - 8) + "px";
+        const cardX = canvas.offsetLeft + canvasX;
+        const cardY = canvas.offsetTop + canvasY;
+        const edgeMargin = 4;
+        const maxLeft = Math.max(edgeMargin, card.clientWidth - tooltip.offsetWidth - edgeMargin);
+        const maxTop = Math.max(edgeMargin, card.clientHeight - tooltip.offsetHeight - edgeMargin);
+        const minTop = Math.min(38, maxTop);
+        tooltip.style.left = Math.max(edgeMargin, Math.min(cardX + 12, maxLeft)) + "px";
+        tooltip.style.top = Math.max(minTop, Math.min(cardY - tooltip.offsetHeight - 8, maxTop)) + "px";
+      };
+
+      canvas.addEventListener("pointermove", (event) => {
+        latestPointer = { clientX: event.clientX, clientY: event.clientY };
+        if (hoverFrame === null) hoverFrame = window.requestAnimationFrame(paintHover);
       }, { passive: true });
       canvas.addEventListener("pointerleave", () => {
-        if (canvas._chartMeta) paintLineChart(canvas, canvas._chartMeta);
-        tooltip.hidden = true;
+        canvas._clearHover(true);
       });
     }
 
