@@ -81,6 +81,7 @@ func TestDashboardInteractions(t *testing.T) {
 	assert.Contains(t, pageHTML, `prefers-color-scheme: dark`)
 	assert.Contains(t, pageHTML, `storageSet("monitor.theme"`)
 	assert.Contains(t, pageHTML, `currentTheme === "dark" ? "light" : "dark"`)
+	assert.Regexp(t, `(?s)\.control-dot::before\s*\{[^}]*inset:\s*-10px`, pageHTML)
 	assert.NotContains(t, pageHTML, `.control-dot:hover`)
 	assert.Contains(t, pageHTML, `transition: none`)
 	assert.Contains(t, pageHTML, `data-series="bad"></span>P99`)
