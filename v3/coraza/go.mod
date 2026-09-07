@@ -5,11 +5,10 @@ go 1.27
 require (
 	github.com/corazawaf/coraza/v3 v3.7.0
 	github.com/gofiber/fiber/v3 v3.5.0
-	github.com/valyala/fasthttp v1.73.0
+	github.com/valyala/fasthttp v1.74.0
 )
 
 require (
-	github.com/andybalholm/brotli v1.2.3 // indirect
 	github.com/corazawaf/libinjection-go v0.3.3 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/gofiber/schema v1.8.5 // indirect
@@ -21,6 +20,7 @@ require (
 	github.com/magefile/mage v1.17.2 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
+	github.com/molecule-man/go-brrr v1.0.1 // indirect
 	github.com/petar-dambovaliev/aho-corasick v0.0.0-20250424160509-463d218d4745 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/tidwall/gjson v1.19.0 // indirect
