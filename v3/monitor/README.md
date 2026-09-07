@@ -166,12 +166,12 @@ The snapshot contains these groups:
 {
   "collected_at": "2026-08-20T00:00:00Z",
   "collection": { "partial": false, "errors": [] },
-  "process": { "tcp_connections": 12 },
-  "runtime": {},
-  "system": { "tcp_connections": 42 },
-  "http": {},
-  "pid": {},
-  "os": {}
+  "process": { "cpu_percent": 1.25, "rss_bytes": 67108864, "tcp_connections": 12, "uptime_seconds": 3600 },
+  "runtime": { "goroutines": 8 },
+  "system": { "cpu_percent": 25.5, "memory_used_bytes": 8589934592, "memory_total_bytes": 17179869184, "load1": 0.75, "tcp_connections": 42 },
+  "http": { "requests": 128 },
+  "pid": { "cpu": 1.25, "ram": 67108864, "conns": 12, "goroutines": 8, "requests": "128", "uptime": 3600 },
+  "os": { "cpu": 25.5, "ram": 8589934592, "total_ram": 17179869184, "load_avg": 0.75, "conns": 42 }
 }
 ```
 
