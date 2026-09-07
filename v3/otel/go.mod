@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/gofiber/fiber/v3 v3.5.0
-	github.com/gofiber/utils/v2 v2.5.0
+	github.com/gofiber/utils/v2 v2.5.1
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/contrib v1.46.0
 	go.opentelemetry.io/contrib/propagators/b3 v1.46.0
