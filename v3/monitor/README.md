@@ -166,10 +166,12 @@ The snapshot contains these groups:
 {
   "collected_at": "2026-08-20T00:00:00Z",
   "collection": { "partial": false, "errors": [] },
-  "process": {},
+  "process": { "tcp_connections": 12 },
   "runtime": {},
-  "system": {},
-  "http": {}
+  "system": { "tcp_connections": 42 },
+  "http": {},
+  "pid": {},
+  "os": {}
 }
 ```
 
@@ -181,8 +183,27 @@ such as `system.disk`; raw operating-system errors and paths are not returned.
 
 Existing `monitor.New(config...)` usage remains source compatible.
 
-The JSON snapshot has been redesigned from the legacy `pid` / `os` payload
-to the new `process` / `runtime` / `system` / `http` structure.
+The `process` / `runtime` / `system` / `http` structure remains the primary
+JSON representation. The response also includes legacy `pid` / `os`
+compatibility views derived from those primary values:
+
+| Legacy field | Primary field |
+| ------------ | ------------- |
+| `pid.cpu` | `process.cpu_percent` |
+| `pid.ram` | `process.rss_bytes` |
+| `pid.conns` | `process.tcp_connections` |
+| `pid.goroutines` | `runtime.goroutines` |
+| `pid.requests` (string) | `http.requests` |
+| `pid.uptime` | `process.uptime_seconds` |
+| `os.cpu` | `system.cpu_percent` |
+| `os.ram` | `system.memory_used_bytes` |
+| `os.total_ram` | `system.memory_total_bytes` |
+| `os.load_avg` | `system.load1` |
+| `os.conns` | `system.tcp_connections` |
+
+Legacy numeric fields keep their original non-null JSON types and use zero
+when a nullable primary value is unavailable; the primary field remains `null`
+and `collection.errors` reports collection failures.
 
 Route-mounted monitor instances still serve the dashboard and JSON snapshot,
 but application HTTP metrics require the app-wide `Next` setup shown above.
@@ -192,9 +213,9 @@ Monitor endpoint requests are no longer counted as application traffic.
 
 | Group      | Metrics |
 | ---------- | ------- |
-| Process    | CPU, RSS, threads, file descriptors/handles, runtime since monitor initialization |
+| Process    | CPU, RSS, threads, file descriptors/handles, TCP connections, runtime since monitor initialization |
 | Go runtime | Goroutines, heap allocation/system/in-use/idle/released memory, heap objects, Next GC, mallocs/frees, GOMAXPROCS, GC count, optional last/window/total GC pause, GC CPU fraction |
-| System     | CPU, used/available/total memory, application-filesystem usage/type/free space, 1/5/15-minute load averages, aggregate network rates |
+| System     | CPU, used/available/total memory, application-filesystem usage/type/free space, 1/5/15-minute load averages, aggregate network rates, TCP connections |
 | HTTP       | Requests, in-flight requests, 1xx–5xx status classes, RPS, 4xx/5xx rates, P50/P95/P99 latency |
 
 CPU, network, request-rate, status-rate, and latency values need two collection

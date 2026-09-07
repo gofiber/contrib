@@ -63,6 +63,9 @@ type collector struct {
 	numCPU    int
 	startedAt time.Time
 
+	processTCPConnections func(string, int32) ([]gopsnet.ConnectionStat, error)
+	systemTCPConnections  func(string) ([]gopsnet.ConnectionStat, error)
+
 	processCPUSeen  bool
 	processCPUTime  float64
 	processCPUAt    time.Time
@@ -95,10 +98,12 @@ func newCollector(now time.Time, enableGCPauseMetrics bool) collector {
 		numCPU = 1
 	}
 	current := collector{
-		proc:           proc,
-		numCPU:         numCPU,
-		startedAt:      now,
-		gcPauseEnabled: enableGCPauseMetrics,
+		proc:                  proc,
+		numCPU:                numCPU,
+		startedAt:             now,
+		processTCPConnections: gopsnet.ConnectionsPid,
+		systemTCPConnections:  gopsnet.Connections,
+		gcPauseEnabled:        enableGCPauseMetrics,
 	}
 	for index, name := range runtimeMetricNames {
 		current.runtimeSamples[index].Name = name
@@ -116,7 +121,7 @@ func (c *collector) collect(m *middleware, now time.Time) snapshot {
 	systemValues, systemErrors := c.collectSystem(now)
 	errors = appendCollectionErrors(errors, systemErrors...)
 
-	return snapshot{
+	return (snapshot{
 		CollectedAt: now.UTC(),
 		Collection: collectionStats{
 			Partial: len(errors) > 0,
@@ -126,7 +131,7 @@ func (c *collector) collect(m *middleware, now time.Time) snapshot {
 		Runtime: c.collectRuntime(),
 		System:  systemValues,
 		HTTP:    c.collectHTTP(m, now),
-	}
+	}).withLegacyViews()
 }
 
 func (c *collector) collectProcess(now time.Time) (processStats, []string) {
@@ -136,7 +141,7 @@ func (c *collector) collectProcess(now time.Time) (processStats, []string) {
 	}
 	stats := processStats{UptimeSeconds: uint64(uptime / time.Second)}
 	if c.proc == nil {
-		return stats, []string{"process.cpu", "process.memory", "process.threads", "process.descriptors"}
+		return stats, []string{"process.cpu", "process.memory", "process.threads", "process.descriptors", "process.tcp_connections"}
 	}
 
 	errors := make([]string, 0)
@@ -167,6 +172,11 @@ func (c *collector) collectProcess(now time.Time) (processStats, []string) {
 		stats.OpenDescriptors = valuePointer(descriptors)
 	} else {
 		errors = append(errors, "process.descriptors")
+	}
+	if connections, err := c.processTCPConnections("tcp", c.proc.Pid); err == nil {
+		stats.TCPConnections = valuePointer(len(connections))
+	} else {
+		errors = append(errors, "process.tcp_connections")
 	}
 	return stats, errors
 }
@@ -359,6 +369,11 @@ func (c *collector) collectSystem(now time.Time) (systemStats, []string) {
 		c.networkAt = now
 	} else {
 		errors = append(errors, "system.network")
+	}
+	if connections, err := c.systemTCPConnections("tcp"); err == nil {
+		stats.TCPConnections = valuePointer(len(connections))
+	} else {
+		errors = append(errors, "system.tcp_connections")
 	}
 	return stats, errors
 }

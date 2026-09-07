@@ -840,6 +840,7 @@
           <div class="row"><dt>Threads</dt><dd id="pid-threads">-</dd></div>
           <div class="row"><dt>PID</dt><dd>{{ .PID }}</dd></div>
           <div class="row"><dt>{{ .DescriptorLabel }}</dt><dd id="pid-fds">-</dd></div>
+          <div class="row"><dt>TCP Connections</dt><dd id="pid-tcp-connections">-</dd></div>
         </dl>
       </section>
       <section class="metric-card">
@@ -860,6 +861,7 @@
           <div class="row"><dt>Total RAM</dt><dd id="os-total">-</dd></div>
           <div class="row"><dt>Disk</dt><dd><button type="button" id="disk-details-button" class="metric-action" aria-haspopup="dialog" aria-controls="disk-modal">-</button></dd></div>
           <div class="row"><dt>1m load</dt><dd id="os-load">-</dd></div>
+          <div class="row"><dt>TCP Connections</dt><dd id="os-tcp-connections">-</dd></div>
           <div class="row"><dt>Available RAM</dt><dd id="os-available">-</dd></div>
           <div class="row"><dt>5m load</dt><dd id="os-load-5">-</dd></div>
           <div class="row"><dt>15m load</dt><dd id="os-load-15">-</dd></div>
@@ -1197,6 +1199,7 @@
       setText("pid-rss", optional(process.rss_bytes, formatBytes));
       setText("pid-threads", optional(process.threads, decimal.format));
       setText("pid-fds", optional(process.open_descriptors, decimal.format));
+      setText("pid-tcp-connections", optional(process.tcp_connections, integer.format));
       setText("rt-goroutines", optional(currentRuntime.goroutines, decimal.format));
       setText("heap-details-button", optional(currentRuntime.heap_alloc_bytes, formatBytes));
       setText("rt-heap-objects", optional(currentRuntime.heap_objects, compact.format));
@@ -1208,6 +1211,7 @@
       setText("os-total", optional(currentSystem.memory_total_bytes, formatBytes));
       setText("disk-details-button", percent(currentSystem.disk_used_percent));
       setLoadText("os-load", currentSystem.load1, loadUnsupported);
+      setText("os-tcp-connections", optional(currentSystem.tcp_connections, integer.format));
       setText("os-available", optional(currentSystem.memory_available_bytes, formatBytes));
       setLoadText("os-load-5", currentSystem.load5, loadUnsupported);
       setLoadText("os-load-15", currentSystem.load15, loadUnsupported);

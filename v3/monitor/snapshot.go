@@ -1,6 +1,9 @@
 package monitor
 
-import "time"
+import (
+	"strconv"
+	"time"
+)
 
 type snapshot struct {
 	CollectedAt time.Time       `json:"collected_at"`
@@ -9,6 +12,8 @@ type snapshot struct {
 	Runtime     runtimeStats    `json:"runtime"`
 	System      systemStats     `json:"system"`
 	HTTP        httpStats       `json:"http"`
+	PID         legacyPIDStats  `json:"pid"`
+	OS          legacyOSStats   `json:"os"`
 }
 
 type collectionStats struct {
@@ -21,6 +26,7 @@ type processStats struct {
 	RSSBytes        *uint64  `json:"rss_bytes"`
 	Threads         *int32   `json:"threads"`
 	OpenDescriptors *int32   `json:"open_descriptors"`
+	TCPConnections  *int     `json:"tcp_connections"`
 	UptimeSeconds   uint64   `json:"uptime_seconds"`
 }
 
@@ -60,6 +66,7 @@ type systemStats struct {
 	Load15               *float64 `json:"load15"`
 	NetworkReceiveBPS    *float64 `json:"network_receive_bps"`
 	NetworkSendBPS       *float64 `json:"network_send_bps"`
+	TCPConnections       *int     `json:"tcp_connections"`
 }
 
 type httpStats struct {
@@ -88,6 +95,44 @@ type latencyStats struct {
 	P50NS *uint64 `json:"p50_ns"`
 	P95NS *uint64 `json:"p95_ns"`
 	P99NS *uint64 `json:"p99_ns"`
+}
+
+type legacyPIDStats struct {
+	CPU        float64 `json:"cpu"`
+	RAM        uint64  `json:"ram"`
+	Conns      int     `json:"conns"`
+	Goroutines int     `json:"goroutines"`
+	Requests   string  `json:"requests"`
+	Uptime     float64 `json:"uptime"`
+}
+
+type legacyOSStats struct {
+	CPU      float64 `json:"cpu"`
+	RAM      uint64  `json:"ram"`
+	TotalRAM uint64  `json:"total_ram"`
+	LoadAvg  float64 `json:"load_avg"`
+	Conns    int     `json:"conns"`
+}
+
+// withLegacyViews derives the compatibility payload from the primary snapshot.
+// Legacy numeric fields intentionally retain their original non-null JSON types.
+func (s snapshot) withLegacyViews() snapshot {
+	s.PID = legacyPIDStats{
+		CPU:        valueOrZero(s.Process.CPUPercent),
+		RAM:        valueOrZero(s.Process.RSSBytes),
+		Conns:      valueOrZero(s.Process.TCPConnections),
+		Goroutines: s.Runtime.Goroutines,
+		Requests:   strconv.FormatUint(s.HTTP.Requests, 10),
+		Uptime:     float64(s.Process.UptimeSeconds),
+	}
+	s.OS = legacyOSStats{
+		CPU:      valueOrZero(s.System.CPUPercent),
+		RAM:      valueOrZero(s.System.MemoryUsedBytes),
+		TotalRAM: valueOrZero(s.System.MemoryTotalBytes),
+		LoadAvg:  valueOrZero(s.System.Load1),
+		Conns:    valueOrZero(s.System.TCPConnections),
+	}
+	return s
 }
 
 type cacheEntry struct {
@@ -132,4 +177,11 @@ func (m *middleware) collectSnapshot(now time.Time) snapshot {
 
 func valuePointer[T any](value T) *T {
 	return &value
+}
+
+func valueOrZero[T any](value *T) (zero T) {
+	if value != nil {
+		return *value
+	}
+	return zero
 }
