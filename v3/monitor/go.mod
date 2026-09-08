@@ -12,7 +12,7 @@ require (
 require (
 	github.com/ebitengine/purego v0.11.0 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
-	github.com/gofiber/schema v1.8.5 // indirect
+	github.com/gofiber/schema v1.8.6 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.20.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20260802145828-341c2f0c90b5 // indirect
