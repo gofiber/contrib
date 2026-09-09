@@ -136,7 +136,7 @@ button {
   font: inherit;
   transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease, transform 140ms ease;
 }
-button:hover:not(.bar) {
+button:hover:not(.bar):not(.insights-toggle) {
   border-color: var(--accent);
   transform: translateY(-1px);
 }
@@ -273,7 +273,7 @@ button:hover:not(.bar) {
 .service {
   display: grid;
   grid-template-columns: minmax(180px, 270px) minmax(0, 1fr);
-  gap: 18px;
+  gap: 8px 18px;
   align-items: center;
   min-width: 0;
   padding: 15px;
@@ -282,6 +282,14 @@ button:hover:not(.bar) {
   border-radius: 8px;
   box-shadow: var(--shadow);
   overflow: visible;
+}
+.service-heading {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
 }
 .service-name {
   display: flex;
@@ -380,25 +388,20 @@ button:hover:not(.bar) {
 .bar.gray.is-active {
   background-color: rgb(var(--none-rgb) / 0.52);
 }
-.insights-control {
-  grid-column: 1 / -1;
-  display: flex;
-  justify-content: flex-end;
-  border-top: 1px solid var(--border);
-  padding-top: 6px;
-  margin-top: -6px;
-}
 .insights-toggle {
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
   gap: 9px;
   padding: 4px 8px;
-  border-color: transparent;
+  border: 0;
   border-radius: 4px;
-  background: transparent;
+  background-color: transparent;
   color: var(--muted);
   font-size: 0.8rem;
+  transition: background-color 500ms ease;
 }
+.insights-toggle:hover { background-color: var(--accent-soft); }
 .insights-toggle:after {
   content: "";
   width: 6px;
@@ -415,19 +418,18 @@ button:hover:not(.bar) {
 .service-insights {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  grid-template-columns: 260px minmax(0, 1fr);
   gap: 24px;
   align-items: center;
   min-width: 0;
+  margin-top: 10px;
 }
 .service-insights[hidden] { display: none; }
 .insights-metrics {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1px;
   margin: 0;
-  background: var(--border);
-  border: 1px solid var(--border);
+  background: var(--panel-soft);
   border-radius: 6px;
   overflow: hidden;
 }
@@ -435,15 +437,15 @@ button:hover:not(.bar) {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  padding: 12px;
-  background: var(--bg);
+  padding: 12px 14px;
   overflow-wrap: anywhere;
 }
-.insights-metric dt { color: var(--muted); font-size: 0.78rem; }
+.insights-metric:nth-child(even) { border-left: 1px solid var(--border); }
+.insights-metric:nth-child(n+3) { border-top: 1px solid var(--border); }
+.insights-metric dt { color: var(--muted); font-size: 0.75rem; }
 .insights-metric dd {
-  order: -1;
-  margin: 0 0 3px;
-  font-size: clamp(1.1rem, 2vw, 1.45rem);
+  margin: 4px 0 0;
+  font-size: 1.15rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
@@ -650,6 +652,7 @@ footer {
   .header-divider:after { animation: none; }
   .bar,
   .hovercard,
+  .insights-toggle,
   button { transition: none; }
 }
   </style>
@@ -863,9 +866,7 @@ function bindBars() {
   });
 }
 
-function renderInsightsToggle(article, service, index) {
-  const control = document.createElement("div");
-  control.className = "insights-control";
+function renderInsightsToggle(article, heading, service, index) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "insights-toggle";
@@ -889,8 +890,8 @@ function renderInsightsToggle(article, service, index) {
     setExpanded(expanded);
   });
   setExpanded(expandedServices.has(service.id));
-  control.appendChild(button);
-  article.append(control, container);
+  heading.appendChild(button);
+  article.appendChild(container);
 }
 
 function formatDays(days, capped) {
@@ -1107,6 +1108,8 @@ function renderStatus(status) {
     const article = document.createElement("article");
     article.className = "service";
 
+    const heading = document.createElement("div");
+    heading.className = "service-heading";
     const info = document.createElement("div");
     const nameLine = document.createElement("div");
     nameLine.className = "service-name";
@@ -1117,7 +1120,7 @@ function renderStatus(status) {
     name.className = "name";
     name.textContent = service.name;
     nameLine.append(dot, name);
-    info.appendChild(nameLine);
+    heading.appendChild(nameLine);
 
     if (service.description) {
       const description = document.createElement("div");
@@ -1137,8 +1140,8 @@ function renderStatus(status) {
       bars.appendChild(dayMarkup(day));
     });
 
-    article.append(info, bars);
-    renderInsightsToggle(article, service, index);
+    article.append(heading, info, bars);
+    renderInsightsToggle(article, heading, service, index);
     root.appendChild(article);
   });
   bindBars();
