@@ -399,18 +399,19 @@ button:hover:not(.bar):not(.insights-toggle) {
   background-color: transparent;
   color: var(--muted);
   font-size: 0.8rem;
+  line-height: 1.25;
   transition: background-color 500ms ease;
 }
 .insights-toggle:hover { background-color: var(--accent-soft); }
-.insights-toggle:after {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-right: 1px solid currentColor;
-  border-bottom: 1px solid currentColor;
-  transform: rotate(45deg);
+.insights-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  transform-origin: center;
+  transition: transform 200ms ease;
 }
-.insights-toggle[aria-expanded="true"]:after { transform: rotate(225deg); }
+.insights-toggle[aria-expanded="true"] .insights-icon { transform: rotate(-180deg); }
 .insights-toggle:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -451,18 +452,20 @@ button:hover:not(.bar):not(.insights-toggle) {
 }
 .insights-trend { min-width: 0; margin: 0; }
 .insights-trend figcaption { color: var(--muted); font-size: 0.8rem; margin-bottom: 12px; }
-.trend-plot { display: grid; grid-template-columns: 40px minmax(0, 1fr); }
+.trend-plot { display: grid; grid-template-columns: 48px minmax(0, 1fr); }
 .trend-axis {
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  padding: 2px 0;
+  position: relative;
   color: var(--muted);
   font-size: 0.7rem;
   font-variant-numeric: tabular-nums;
 }
+.trend-axis span {
+  position: absolute;
+  right: 8px;
+  transform: translateY(-50%);
+}
 .trend-svg { display: block; width: 100%; height: 128px; overflow: visible; }
-.trend-grid, .trend-guide { stroke: var(--border); stroke-width: 1; }
+.trend-grid, .trend-guide, .trend-ticks { stroke: var(--border); stroke-width: 1; }
 .trend-guide { stroke-dasharray: 3 3; }
 .trend-path {
   fill: none;
@@ -473,12 +476,19 @@ button:hover:not(.bar):not(.insights-toggle) {
 }
 .trend-point { fill: var(--accent); }
 .trend-dates {
-  display: flex;
-  justify-content: space-between;
-  margin: 6px 0 0 40px;
+  position: relative;
+  height: 1.45em;
+  margin: 6px 0 0 48px;
   color: var(--muted);
   font-size: 0.7rem;
 }
+.trend-dates span {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+.trend-dates span:first-child:not(:only-child) { transform: none; }
+.trend-dates span:last-child:not(:only-child) { transform: translateX(-100%); }
 .trend-empty { margin: 0; padding: 36px 0; color: var(--muted); text-align: center; }
 .empty {
   margin-top: 28px;
@@ -516,6 +526,7 @@ button:hover:not(.bar):not(.insights-toggle) {
 .hovercard[hidden] {
   display: none;
 }
+#trend-hovercard { width: min(244px, calc(100vw - 24px)); }
 .hovercard.is-visible {
   opacity: 1;
   visibility: visible;
@@ -648,11 +659,15 @@ footer {
     height: 24px;
   }
 }
+@media (max-width: 480px) {
+  .trend-dates .trend-date-secondary { display: none; }
+}
 @media (prefers-reduced-motion: reduce) {
   .header-divider:after { animation: none; }
   .bar,
   .hovercard,
   .insights-toggle,
+  .insights-icon,
   button { transition: none; }
 }
   </style>
@@ -866,12 +881,24 @@ function bindBars() {
   });
 }
 
+function svgNode(name, attributes) {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", name);
+  Object.entries(attributes).forEach(([key, value]) => node.setAttribute(key, String(value)));
+  return node;
+}
+
 function renderInsightsToggle(article, heading, service, index) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "insights-toggle";
   button.textContent = "Insights";
   button.dataset.serviceId = service.id;
+  const icon = svgNode("svg", {
+    class: "insights-icon", viewBox: "0 0 16 16", "aria-hidden": "true", focusable: "false",
+    fill: "none", stroke: "currentColor", "stroke-width": 1.5, "stroke-linecap": "round", "stroke-linejoin": "round"
+  });
+  icon.appendChild(svgNode("path", { d: "M4 6 8 10 12 6" }));
+  button.appendChild(icon);
   const container = document.createElement("div");
   container.className = "service-insights";
   container.id = "service-insights-" + index;
@@ -957,6 +984,11 @@ function nearestTrendIndex(clientX, rect, count) {
   return Math.round(fraction * (count - 1));
 }
 
+function trendTickIndices(count) {
+  const ticks = Math.min(count, 5);
+  return Array.from({ length: ticks }, (_, index) => ticks > 1 ? Math.round(index * (count - 1) / (ticks - 1)) : 0);
+}
+
 function hideTrendHoverCard() {
   const card = $("trend-hovercard");
   card.hidden = true;
@@ -968,7 +1000,7 @@ function hideTrendHoverCard() {
   }
 }
 
-function showTrendHoverCard(day, event) {
+function showTrendHoverCard(day, anchor) {
   const card = $("trend-hovercard");
   const title = document.createElement("span");
   title.className = "hovercard-title";
@@ -985,11 +1017,15 @@ function showTrendHoverCard(day, event) {
   }
   card.hidden = false;
   const margin = 12;
+  const gap = 16;
   const width = card.offsetWidth;
   const height = card.offsetHeight;
-  const left = Math.max(margin, Math.min(event.clientX - width / 2, window.innerWidth - width - margin));
-  let top = event.clientY + margin;
-  if (top + height > window.innerHeight - margin) top = event.clientY - height - margin;
+  // Stay beside the selected point instead of following every cursor movement.
+  let left = anchor.x + gap;
+  if (left + width > window.innerWidth - margin) left = anchor.x - width - gap;
+  left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
+  let top = anchor.y - height - gap;
+  if (top < margin) top = anchor.y + gap;
   card.style.left = left + "px";
   card.style.top = Math.max(margin, Math.min(top, window.innerHeight - height - margin)) + "px";
   card.classList.add("is-visible");
@@ -998,8 +1034,9 @@ function showTrendHoverCard(day, event) {
 function renderTrendChart(days) {
   const figure = document.createElement("figure");
   figure.className = "insights-trend";
+  figure.setAttribute("aria-label", "Daily availability trend");
   const caption = document.createElement("figcaption");
-  caption.textContent = "Availability trend · " + formatDays(days.length, false);
+  caption.textContent = formatDays(days.length, false);
   figure.appendChild(caption);
   if (!days.some(validTrendDay)) {
     const empty = document.createElement("p");
@@ -1010,27 +1047,28 @@ function renderTrendChart(days) {
   }
 
   const lower = trendDomain(days);
+  const tickIndices = trendTickIndices(days.length);
+  const tickRates = Array.from({ length: 5 }, (_, index) => 1 - index * (1 - lower) / 4);
   const x = (index) => days.length > 1 ? 8 + index / (days.length - 1) * 584 : 300;
   const y = (rate) => {
     const clamped = Number.isFinite(rate) ? Math.max(lower, Math.min(1, rate)) : lower;
     return 8 + (1 - clamped) / (1 - lower) * 112;
   };
-  const svgNode = (name, attributes) => {
-    const node = document.createElementNS("http://www.w3.org/2000/svg", name);
-    Object.entries(attributes).forEach(([key, value]) => node.setAttribute(key, String(value)));
-    return node;
-  };
   const svg = svgNode("svg", { class: "trend-svg", viewBox: "0 0 600 128", preserveAspectRatio: "none", "aria-hidden": "true", focusable: "false" });
-  [8, 64, 120].forEach(function(height) {
+  tickRates.forEach(function(rate) {
+    const height = y(rate);
     svg.appendChild(svgNode("line", { class: "trend-grid", x1: 8, x2: 592, y1: height, y2: height, "vector-effect": "non-scaling-stroke" }));
   });
+  svg.appendChild(svgNode("path", { class: "trend-ticks", d: tickIndices.map(index => "M" + x(index) + " 120v4").join(" "), "vector-effect": "non-scaling-stroke" }));
   const path = svgNode("path", { class: "trend-path", d: buildTrendPath(days, x, y), "vector-effect": "non-scaling-stroke" });
   const guide = svgNode("line", { class: "trend-guide", y1: 8, y2: 120, visibility: "hidden" });
   const point = svgNode("circle", { class: "trend-point", r: 3, visibility: "hidden" });
   const hit = svgNode("rect", { class: "trend-hit-area", x: 8, y: 8, width: 584, height: 112, fill: "transparent" });
   hit.addEventListener("pointermove", function(event) {
     if (activeTrend && activeTrend.guide !== guide) hideTrendHoverCard();
-    const index = nearestTrendIndex(event.clientX, hit.getBoundingClientRect(), days.length);
+    const rect = hit.getBoundingClientRect();
+    const index = nearestTrendIndex(event.clientX, rect, days.length);
+    if (activeTrend && activeTrend.index === index) return;
     const day = days[index];
     guide.setAttribute("x1", x(index));
     guide.setAttribute("x2", x(index));
@@ -1040,8 +1078,11 @@ function renderTrendChart(days) {
       point.setAttribute("cx", x(index));
       point.setAttribute("cy", y(day.uptime_rate));
     }
-    activeTrend = { guide, point };
-    showTrendHoverCard(day, event);
+    activeTrend = { guide, point, index };
+    showTrendHoverCard(day, {
+      x: rect.left + (x(index) - 8) / 584 * rect.width,
+      y: validTrendDay(day) ? rect.top + (y(day.uptime_rate) - 8) / 112 * rect.height : rect.top + rect.height / 2
+    });
   });
   hit.addEventListener("pointerleave", hideTrendHoverCard);
   hit.addEventListener("pointercancel", hideTrendHoverCard);
@@ -1052,18 +1093,22 @@ function renderTrendChart(days) {
   const axis = document.createElement("div");
   axis.className = "trend-axis";
   axis.setAttribute("aria-hidden", "true");
-  ["100%", Math.round(lower * 100) + "%"].forEach(function(text) {
+  tickRates.forEach(function(rate) {
     const label = document.createElement("span");
-    label.textContent = text;
+    label.textContent = Number((rate * 100).toFixed(2)) + "%";
+    label.style.top = y(rate) + "px";
     axis.appendChild(label);
   });
   plot.append(axis, svg);
   const dates = document.createElement("div");
   dates.className = "trend-dates";
-  const endpoints = days.length === 1 ? [days[0]] : [days[0], days[days.length - 1]];
-  endpoints.forEach(function(day) {
+  tickIndices.forEach(function(index, tick) {
+    const day = days[index];
     const label = document.createElement("span");
-    label.textContent = day.day;
+    label.textContent = day.day.slice(5);
+    label.title = day.day;
+    if (tickIndices.length === 5 && tick % 2 === 1) label.className = "trend-date-secondary";
+    label.style.left = x(index) / 600 * 100 + "%";
     dates.appendChild(label);
   });
   figure.append(plot, dates);
