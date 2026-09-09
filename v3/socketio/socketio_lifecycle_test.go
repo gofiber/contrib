@@ -2,6 +2,7 @@ package socketio
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net"
@@ -123,9 +124,11 @@ func TestSocketIOCloseTimeoutClosesUnresponsivePeer(t *testing.T) {
 	kws.Close()
 	require.False(t, kws.IsAlive(), "Close must mark the session dead synchronously")
 
-	// The client never reads. The server gives up after CloseTimeout.
+	// The client never reads. The server gives up after CloseTimeout, and
+	// CloseTimeout is one budget for the whole tear-down, not one for the
+	// read side and another for the writer.
 	waitClosed(t, kws, 3*time.Second)
-	require.Less(t, time.Since(start), 2500*time.Millisecond)
+	require.Less(t, time.Since(start), 1500*time.Millisecond)
 
 	err := rawReadUntilError(conn, 2*time.Second)
 	require.Error(t, err)
@@ -187,6 +190,98 @@ func TestSocketIOStalledPeerDoesNotWedgeTeardown(t *testing.T) {
 	start := time.Now()
 	waitClosed(t, kws, 10*time.Second)
 	require.Less(t, time.Since(start), 5*time.Second, "stalled write held the tear-down")
+}
+
+// TestSocketIONewCallbackCloseCompletesClosingHandshake pins the documented
+// auth-rejection pattern: a New callback that calls Close before the read
+// loop ever ran. The closing handshake must still complete (SIO
+// DISCONNECT, Close frame, wait for the peer's Close) before the socket is
+// closed, or the client would see a transport error and reconnect.
+func TestSocketIONewCallbackCloseCompletesClosingHandshake(t *testing.T) {
+	resetSIOGlobals(t)
+	connectFired := make(chan struct{}, 1)
+	On(EventConnect, func(_ *EventPayload) {
+		select {
+		case connectFired <- struct{}{}:
+		default:
+		}
+	})
+	closedCh := make(chan *Websocket, 1)
+	On(EventClose, func(p *EventPayload) {
+		select {
+		case closedCh <- p.Kws:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(kws *Websocket) {
+		kws.Close() // e.g. after inspecting kws.HandshakeAuth()
+	})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	mType, msg, err := sioReadSkipPings(conn)
+	require.NoError(t, err)
+	require.Equal(t, websocket.TextMessage, mType)
+	require.Equal(t, "41", string(msg), "SIO DISCONNECT must reach the rejected client")
+	_, _, err = conn.ReadMessage()
+	require.Truef(t, websocket.IsCloseError(err, websocket.CloseNormalClosure),
+		"expected Close frame with code 1000, got %v", err)
+
+	var kws *Websocket
+	select {
+	case kws = <-closedCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventClose did not fire")
+	}
+	waitClosed(t, kws, 2*time.Second)
+	err = rawReadUntilError(conn, 2*time.Second)
+	require.Error(t, err)
+	require.False(t, isTimeout(err), "server did not close the socket: %v", err)
+
+	select {
+	case <-connectFired:
+		t.Fatal("EventConnect fired for a session the callback rejected")
+	default:
+	}
+}
+
+// TestSocketIOShutdownWaitsForClosingSessions verifies that Shutdown also
+// waits for a session that was closed just before it was called and is
+// still draining its closing handshake, even though it already left the
+// pool.
+func TestSocketIOShutdownWaitsForClosingSessions(t *testing.T) {
+	resetSIOGlobals(t)
+	prev := CloseTimeout
+	CloseTimeout = 300 * time.Millisecond
+	defer func() { CloseTimeout = prev }()
+	kwsCh := captureConnect(t)
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+	kws := awaitSession(t, kwsCh)
+
+	// The client never answers the Close frame, so the session drains for
+	// the full CloseTimeout after leaving the pool.
+	kws.Close()
+	require.Empty(t, pool.snapshot(), "a closed session must leave the pool at once")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, Shutdown(ctx))
+	select {
+	case <-kws.closed:
+	default:
+		t.Fatal("Shutdown returned while the session was still draining")
+	}
 }
 
 // TestSocketIOClientDisconnectPacketCompletesClosingHandshake verifies that

@@ -443,8 +443,15 @@ func upgradeMiddleware(c fiber.Ctx) error {
 func resetSIOGlobals(t *testing.T) {
 	t.Helper()
 	pool.reset()
+	resetDraining()
 	listeners.reset()
 	t.Cleanup(func() {
+		// Snapshot the pool and the draining set before touching any
+		// global: every session took those locks after reading the
+		// tunables it captured, so the snapshots order the write below
+		// after those reads for the race detector.
+		sessions := pool.all()
+		inFlight := drainingSessions()
 		// Close every still-pooled connection so its goroutines exit
 		// before the next test snapshots them. Raw test clients rarely
 		// answer the Close frame, so shorten the closing-handshake
@@ -452,7 +459,6 @@ func resetSIOGlobals(t *testing.T) {
 		prevClose := CloseTimeout
 		CloseTimeout = 200 * time.Millisecond
 		defer func() { CloseTimeout = prevClose }()
-		sessions := pool.all()
 		for _, w := range sessions {
 			if k, ok := w.(*Websocket); ok {
 				func() {
@@ -480,7 +486,17 @@ func resetSIOGlobals(t *testing.T) {
 				t.Errorf("resetSIOGlobals: session %s did not release within 5s; goroutine leak suspected", k.UUID)
 			}
 		}
+		// Sessions already closed but still draining their closing
+		// handshake finish as soon as the test's client went away.
+		for _, k := range inFlight {
+			select {
+			case <-k.closed:
+			case <-time.After(5 * time.Second):
+				t.Errorf("resetSIOGlobals: draining session %s did not release within 5s", k.UUID)
+			}
+		}
 		pool.reset()
+		resetDraining()
 		listeners.reset()
 	})
 }

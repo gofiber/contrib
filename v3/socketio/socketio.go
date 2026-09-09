@@ -763,6 +763,45 @@ func (p *safePool) reset() {
 	p.Unlock()
 }
 
+// draining holds WebSocket sessions that have left the pool but still own
+// their socket: the closing handshake, or the last write, is in flight
+// until finishRun. Shutdown waits for these too, so a session closed a
+// moment before Shutdown cannot outlive it. A session is added before it
+// leaves the pool, so it is in at least one of the two sets at any time.
+var draining = struct {
+	sync.Mutex
+	m map[*Websocket]struct{}
+}{m: make(map[*Websocket]struct{})}
+
+func (kws *Websocket) markDraining() {
+	draining.Lock()
+	draining.m[kws] = struct{}{}
+	draining.Unlock()
+}
+
+func (kws *Websocket) unmarkDraining() {
+	draining.Lock()
+	delete(draining.m, kws)
+	draining.Unlock()
+}
+
+func drainingSessions() []*Websocket {
+	draining.Lock()
+	out := make([]*Websocket, 0, len(draining.m))
+	for kws := range draining.m {
+		out = append(out, kws)
+	}
+	draining.Unlock()
+	return out
+}
+
+//nolint:unused // test helper
+func resetDraining() {
+	draining.Lock()
+	draining.m = make(map[*Websocket]struct{})
+	draining.Unlock()
+}
+
 // safeListeners is a copy-on-write registry of event callbacks.
 //
 // Reads are lock-free: a single atomic.Pointer load yields the current
@@ -892,8 +931,11 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 
 		// If the callback actively closed the socket (for example after
 		// inspecting HandshakeAuth), do not emit EventConnect for a connection
-		// user code already rejected.
+		// user code already rejected. The closing handshake it queued still
+		// runs to completion: read drains until the peer's Close frame or
+		// the CloseTimeout deadline, exactly as it would after run.
 		if !kws.IsAlive() {
+			kws.read()
 			kws.finishRun()
 			return
 		}
@@ -1749,6 +1791,12 @@ func (kws *Websocket) heartbeatTick() {
 	}
 	if t := kws.heartbeat.Load(); t != nil && kws.IsAlive() {
 		t.Reset(kws.hbTick)
+		// A tear-down that ran between the check above and the Reset has
+		// already called Stop; take the Reset back so the session is not
+		// retained on the timer heap for another tick.
+		if !kws.IsAlive() {
+			t.Stop()
+		}
 	}
 }
 
@@ -1922,12 +1970,17 @@ func (kws *Websocket) finishRun() {
 		if kws.Conn != nil {
 			// Let an in-flight write finish before closing under it:
 			// closing is what returns a write stalled on a peer that
-			// stopped reading, so the wait is bounded.
-			grace := time.Duration(kws.closeGrace.Load())
-			if grace <= 0 {
-				grace = controlWriteTimeout
+			// stopped reading, so the wait is bounded. The bound is one
+			// budget for the whole tear-down: what is left of the
+			// closing-handshake deadline when one was armed, CloseTimeout
+			// otherwise, and nothing at all when CloseTimeout is zero.
+			wait := time.Duration(kws.closeGrace.Load())
+			if graceful {
+				wait = time.Until(time.Unix(0, kws.teardownDeadline.Load()))
 			}
-			kws.waitSendDone(grace)
+			if wait > 0 {
+				kws.waitSendDone(wait)
+			}
 			if kws.cancelCtx != nil {
 				kws.cancelCtx()
 			}
@@ -1936,6 +1989,7 @@ func (kws *Websocket) finishRun() {
 		} else if kws.cancelCtx != nil {
 			kws.cancelCtx()
 		}
+		kws.unmarkDraining()
 		close(kws.closed)
 	})
 }
@@ -2345,7 +2399,12 @@ func (kws *Websocket) disconnected(err error) {
 	}
 
 	// Remove from the pool BEFORE firing user events so that listeners
-	// observing the pool do not see this dying connection.
+	// observing the pool do not see this dying connection. A WebSocket
+	// session still owns its socket until finishRun, so it is tracked as
+	// draining first: Shutdown must not return while it is in flight.
+	if kws.Conn != nil {
+		kws.markDraining()
+	}
 	pool.delete(kws.GetUUID())
 
 	// Drain pending outbound ack callbacks: invoke each with
@@ -2509,8 +2568,9 @@ func On(event string, callback eventCallback) {
 
 // Shutdown closes every active socket.io connection in the pool and waits
 // for each to release its socket and goroutines, or until ctx is cancelled.
-// Connections still draining their closing handshake when ctx expires are
-// closed outright.
+// Connections that were already closed but are still draining their
+// closing handshake are waited for as well; whatever is still in flight
+// when ctx expires is closed outright.
 //
 // Wire this into fiber.App.Shutdown / fiber.App.ShutdownWithContext so an
 // application shutdown deterministically tears down sockets instead of
@@ -2520,12 +2580,20 @@ func On(event string, callback eventCallback) {
 // draining; otherwise returns nil.
 func Shutdown(ctx context.Context) error {
 	conns := pool.snapshot()
-	if len(conns) == 0 {
+	inFlight := drainingSessions()
+	if len(conns) == 0 && len(inFlight) == 0 {
 		return nil
 	}
-	sockets := make([]*Websocket, 0, len(conns))
+	seen := make(map[*Websocket]struct{}, len(conns)+len(inFlight))
+	sockets := make([]*Websocket, 0, len(conns)+len(inFlight))
 	for _, c := range conns {
 		if kws, ok := c.(*Websocket); ok {
+			seen[kws] = struct{}{}
+			sockets = append(sockets, kws)
+		}
+	}
+	for _, kws := range inFlight {
+		if _, dup := seen[kws]; !dup {
 			sockets = append(sockets, kws)
 		}
 	}
@@ -2535,7 +2603,7 @@ func Shutdown(ctx context.Context) error {
 		wg.Add(1)
 		go func(k *Websocket) {
 			defer wg.Done()
-			k.Close()
+			k.Close() // a no-op for a session that is already draining
 			select {
 			case <-k.closed:
 			case <-ctx.Done():
