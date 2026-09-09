@@ -128,9 +128,10 @@ by earlier middleware are left in place.
 
 ## Reads and writes
 
-`c.ReadMessage()` reads into a pooled buffer and returns an exact-size copy, where the
-library's `ReadMessage` grows a fresh buffer per message; for zero-copy reads use
-`NextReader` with your own buffer.
+`c.ReadMessage()` reads messages up to 64 KiB into a pooled buffer and returns an exact-size
+copy; a larger message comes back in its own buffer, as from the library's `ReadMessage`.
+Bound message size with `SetReadLimit`; for zero-copy reads use `NextReader` with your own
+buffer.
 
 Replies to a burst of pipelined frames leave in one write instead of one per frame: writes
 made while the handler still has unread frames wait until it asks for the next one, at most
