@@ -12,7 +12,7 @@ require (
 require (
 	github.com/ebitengine/purego v0.11.0 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
-	github.com/gofiber/schema v1.8.5 // indirect
+	github.com/gofiber/schema v1.8.6 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.20.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20260802145828-341c2f0c90b5 // indirect
@@ -28,8 +28,8 @@ require (
 	github.com/valyala/fasthttp v1.74.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/crypto v0.56.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 )
