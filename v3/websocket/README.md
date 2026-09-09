@@ -36,7 +36,7 @@ func New(handler func(*websocket.Conn), config ...websocket.Config) fiber.Handle
 | Property            | Type                         | Description                                                                                                                   | Default                |
 |:--------------------|:-----------------------------|:------------------------------------------------------------------------------------------------------------------------------|:-----------------------|
 | Next                | `func(fiber.Ctx) bool`       | Defines a function to skip this middleware when it returns true.                                                              | `nil`                  |
-| HandshakeTimeout    | `time.Duration`              | HandshakeTimeout specifies the duration for the handshake to complete.                                                        | `0` (No timeout)       |
+| HandshakeTimeout    | `time.Duration`              | Bounds sending the 101 response, which fasthttp writes once the handler chain returns. The server's `WriteTimeout`, when set, applies instead. | `0` (No timeout)       |
 | Subprotocols        | `[]string`                   | Subprotocols this server supports, in order of preference. The first entry the client also offers is negotiated.               | `nil`                  |
 | Origins             | `[]string`                   | Allowed Origins based on the Origin header, compared case-insensitively. If empty, everything is allowed.                     | `nil`                  |
 | AllowEmptyOrigin    | `bool`                       | Allows connections without an Origin header when Origins is configured. Useful for non-browser clients.                       | `false`                |
@@ -125,6 +125,25 @@ there:
 Rejected handshakes also carry `Sec-WebSocket-Version: 13` so a client that asked for
 another version learns which one the server speaks (RFC 6455 section 4.4). Headers set
 by earlier middleware are left in place.
+
+## Reads and writes
+
+`c.ReadMessage()` reads into a pooled buffer and returns an exact-size copy, where the
+library's `ReadMessage` grows a fresh buffer per message; for zero-copy reads use
+`NextReader` with your own buffer.
+
+Replies to a burst of pipelined frames leave in one write instead of one per frame: writes
+made while the handler still has unread frames wait until it asks for the next one, at most
+64 KiB or 1 ms. Writes made while nothing is waiting to be read go out immediately, so
+push-only handlers are unaffected, and frames are never reordered. With 5-byte frames and
+16 in flight per connection, server CPU per frame goes from 5.7 µs to 1.0 µs.
+
+To own the connection the upgrade runs through the library's `net/http` `Upgrader` on a
+fasthttp-backed hijack. fasthttp still sends the 101, so middleware running after `c.Next()`
+sees the status and headers and can add its own, and `Sec-WebSocket-Key` is validated as
+RFC 6455 requires. `c.NetConn()` returns the middleware's connection; its `UnsafeConn()`
+is the socket underneath. `Close` sends what is pending, waiting at most 100 ms for a peer
+that is not reading, and interrupts a write stalled on that peer.
 
 ## Note with cache middleware
 

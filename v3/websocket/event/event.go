@@ -5,7 +5,6 @@ package event
 import (
 	"context"
 	"errors"
-	"io"
 	"maps"
 	"net"
 	"slices"
@@ -76,13 +75,13 @@ var (
 var (
 	// PongTimeout is the interval between server-originated Ping frames.
 	// Despite its name, this helper uses Ping for liveness; the historical
-	// name is preserved for backwards compatibility. The value must be less
-	// than any upstream proxy or load balancer idle timeout.
+	// name is preserved for backwards compatibility. The default is
+	// Socket.IO's, chosen to stay under common proxy and NAT idle timeouts.
 	//
 	// Deprecated: prefer Config.PingInterval passed to NewWithConfig. The
 	// package-level value is read once per connection at upgrade time;
 	// mutating it after that has no effect on running connections.
-	PongTimeout = time.Second
+	PongTimeout = defaultPingInterval
 	// RetrySendTimeout controls how long a queued message waits before retrying.
 	RetrySendTimeout = 20 * time.Millisecond
 	// MaxSendRetry defines the max retries for transient socket write issues.
@@ -95,6 +94,13 @@ var (
 	// Deprecated: ReadTimeout is a no-op. Configure Config.ReadIdleTimeout
 	// on NewWithConfig for the actual read deadline behaviour.
 	ReadTimeout = 10 * time.Millisecond
+)
+
+// Socket.IO's heartbeat: a ping every 25s, and a peer that has not answered
+// 20s after one is gone, so 45s of silence ends a connection.
+const (
+	defaultPingInterval = 25 * time.Second
+	defaultPingTimeout  = 20 * time.Second
 )
 
 type message struct {
@@ -125,10 +131,13 @@ type EventPayload struct {
 type Config struct {
 	// PingInterval is the interval between server-originated Ping frames.
 	// Must be less than any upstream proxy or load balancer idle timeout.
-	// Zero falls back to PongTimeout, then 1s.
+	// Zero falls back to PongTimeout, then 25s.
 	PingInterval time.Duration
+	// PingTimeout is how long a peer may stay silent after a Ping before it
+	// is considered dead. Zero falls back to 20s.
+	PingTimeout time.Duration
 	// ReadIdleTimeout bounds how long a connection may stay silent before
-	// it is considered dead. Zero falls back to 3 * PingInterval.
+	// it is considered dead. Zero falls back to PingInterval + PingTimeout.
 	ReadIdleTimeout time.Duration
 	// WriteTimeout bounds a single WriteMessage or WriteControl call. Zero
 	// falls back to 10s.
@@ -153,6 +162,7 @@ type Config struct {
 // settings is the per-connection immutable snapshot.
 type settings struct {
 	pingInterval     time.Duration
+	pingTimeout      time.Duration
 	readIdleTimeout  time.Duration
 	writeTimeout     time.Duration
 	maxMessageSize   int64
@@ -165,6 +175,7 @@ type settings struct {
 func resolveSettings(cfg Config) settings {
 	s := settings{
 		pingInterval:     cfg.PingInterval,
+		pingTimeout:      cfg.PingTimeout,
 		readIdleTimeout:  cfg.ReadIdleTimeout,
 		writeTimeout:     cfg.WriteTimeout,
 		maxMessageSize:   cfg.MaxMessageSize,
@@ -176,11 +187,14 @@ func resolveSettings(cfg Config) settings {
 	if s.pingInterval <= 0 {
 		s.pingInterval = PongTimeout
 		if s.pingInterval <= 0 {
-			s.pingInterval = time.Second
+			s.pingInterval = defaultPingInterval
 		}
 	}
+	if s.pingTimeout <= 0 {
+		s.pingTimeout = defaultPingTimeout
+	}
 	if s.readIdleTimeout <= 0 {
-		s.readIdleTimeout = 3 * s.pingInterval
+		s.readIdleTimeout = s.pingInterval + s.pingTimeout
 	}
 	if s.writeTimeout <= 0 {
 		s.writeTimeout = 10 * time.Second
@@ -929,7 +943,7 @@ func (kws *Websocket) read(ctx context.Context) {
 		default:
 		}
 
-		mType, msg, err := readFrame(conn)
+		mType, msg, err := conn.ReadMessage()
 		if err != nil {
 			// Control frames (Ping, Pong, Close) are handled by the
 			// library's Set*Handler hooks above. An orderly client close
@@ -949,100 +963,12 @@ func (kws *Websocket) read(ctx context.Context) {
 
 		switch mType {
 		case TextMessage, BinaryMessage:
-			// readFrame returns a copy made for this frame, so the fan-out owns it.
+			// ReadMessage returns a copy made for this frame, so the fan-out owns it.
 			kws.fireOwnedEvent(EventMessage, msg, nil)
 		default:
 			// Defensive: NextReader never delivers control frames.
 		}
 	}
-}
-
-// frameReader reads one message into a growable buffer and returns an
-// exact-size copy, where ReadMessage's io.ReadAll starts at 512 bytes and
-// doubles. Readers are pooled: an idle connection holds no buffer and the GC
-// trims the pool.
-type frameReader struct {
-	buf   []byte
-	probe [1]byte
-}
-
-const (
-	// frameBufferInitial is what a fresh buffer starts at, io.ReadAll's own
-	// figure.
-	frameBufferInitial = 512
-	// frameBufferRetained caps what goes back into the pool, so one big frame does
-	// not leave its size behind.
-	frameBufferRetained = 64 << 10
-)
-
-var framePool = sync.Pool{New: func() interface{} { return new(frameReader) }}
-
-// readFrame reads the next data message from conn and returns a copy the
-// caller owns.
-func readFrame(conn *websocket.Conn) (int, []byte, error) {
-	mType, r, err := conn.NextReader()
-	if err != nil {
-		return mType, nil, err
-	}
-	fr := framePool.Get().(*frameReader)
-	msg, err := fr.readAll(r)
-	fr.release()
-	return mType, msg, err
-}
-
-func (fr *frameReader) readAll(r io.Reader) ([]byte, error) {
-	buf := fr.buf[:0]
-	if cap(buf) == 0 {
-		buf = make([]byte, 0, frameBufferInitial)
-	}
-	for {
-		if len(buf) == cap(buf) {
-			// Full: probe one byte so a message that exactly fills the buffer does not
-			// double it.
-			n, err := r.Read(fr.probe[:])
-			if n > 0 {
-				grown := make([]byte, len(buf), 2*cap(buf))
-				copy(grown, buf)
-				buf = append(grown, fr.probe[0])
-			}
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			if err != nil {
-				fr.buf = buf
-				return nil, err
-			}
-			continue
-		}
-		n, err := r.Read(buf[len(buf):cap(buf)])
-		buf = buf[:len(buf)+n]
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			fr.buf = buf
-			return nil, err
-		}
-	}
-	msg := make([]byte, len(buf))
-	copy(msg, buf)
-	fr.buf = buf
-	return msg, nil
-}
-
-// release puts the reader back into the pool, minus a buffer that grew past
-// frameBufferRetained.
-func (fr *frameReader) release() {
-	fr.trim()
-	framePool.Put(fr)
-}
-
-func (fr *frameReader) trim() {
-	if cap(fr.buf) > frameBufferRetained {
-		fr.buf = nil
-		return
-	}
-	fr.buf = fr.buf[:0]
 }
 
 // disconnected tears the connection down once and reports whether this call

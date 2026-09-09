@@ -26,7 +26,10 @@ type Config struct {
 	// Optional. Default: nil
 	Next func(fiber.Ctx) bool
 
-	// HandshakeTimeout specifies the duration for the handshake to complete.
+	// HandshakeTimeout bounds sending the 101 response, which fasthttp writes
+	// once the handler chain returns. The server's WriteTimeout, when set,
+	// applies instead.
+	// Optional. Default: 0 (no deadline)
 	HandshakeTimeout time.Duration
 
 	// Subprotocols lists the subprotocols the server supports in order of
@@ -141,37 +144,24 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 	// mutation of cfg.Origins from changing a mounted handler.
 	allowAllOrigins := len(cfg.Origins) == 0 || slices.Contains(cfg.Origins, "*")
 	allowedOrigins := slices.Clone(cfg.Origins)
-
-	var upgrader = websocket.FastHTTPUpgrader{
-		HandshakeTimeout:  cfg.HandshakeTimeout,
-		Subprotocols:      cfg.Subprotocols,
-		ReadBufferSize:    cfg.ReadBufferSize,
-		WriteBufferSize:   cfg.WriteBufferSize,
-		EnableCompression: cfg.EnableCompression,
-		WriteBufferPool:   cfg.WriteBufferPool,
-		// Record the status only. ctx.Error would Response.Reset, wiping headers
-		// earlier middleware set and the Sec-WebSocket-Version header; the handler
-		// returns a *fiber.Error instead.
-		Error: func(fctx *fasthttp.RequestCtx, status int, _ error) {
-			fctx.SetStatusCode(status)
-		},
-		CheckOrigin: func(fctx *fasthttp.RequestCtx) bool {
-			if allowAllOrigins {
+	originAllowed := func(origin string) bool {
+		if allowAllOrigins {
+			return true
+		}
+		if origin == "" {
+			return cfg.AllowEmptyOrigin
+		}
+		// Scheme and host of an origin are case-insensitive (RFC 6454 section 4).
+		for i := range allowedOrigins {
+			if utils.EqualFold(allowedOrigins[i], origin) {
 				return true
 			}
-			origin := utils.UnsafeString(fctx.Request.Header.Peek(fiber.HeaderOrigin))
-			if origin == "" {
-				return cfg.AllowEmptyOrigin
-			}
-			// Scheme and host of an origin are case-insensitive (RFC 6454 section 4).
-			for i := range allowedOrigins {
-				if utils.EqualFold(allowedOrigins[i], origin) {
-					return true
-				}
-			}
-			return false
-		},
+		}
+		return false
 	}
+
+	upgrader := newUpgrader(&cfg, originAllowed)
+
 	return func(c fiber.Ctx) error {
 		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
@@ -197,32 +187,33 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		// callback runs only after it has unwound.
 		conn.capture(fctx)
 
-		if err := upgrader.Upgrade(fctx, func(fconn *websocket.Conn) {
-			conn.Conn = fconn
-
-			returned := false
-			// Runs after RecoverHandler. A handler that panicked cannot be trusted with
-			// the socket and nothing else closes a hijacked connection; a normal return
-			// leaves it open.
-			defer func() {
-				if !returned {
-					_ = fconn.Close()
-				}
-			}()
-			defer cfg.RecoverHandler(conn)
-			handler(conn)
-			returned = true
-		}); err != nil { // Handshake rejected
-			// The upgrader chose the RFC 6455 status: 403 for a bad Origin, 400 for a
-			// malformed handshake, 405 for a non-GET; section 4.4 asks for the supported
-			// version on rejection. A *fiber.Error keeps it on the ErrorHandler path.
-			status := fctx.Response.StatusCode()
-			c.Set(fiber.HeaderSecWebSocketVersion, supportedVersion)
-			return fiber.NewError(status, utils.StatusMessage(status))
-		}
-
-		return nil
+		return upgrade(c, &upgrader, conn, &cfg, handler)
 	}
+}
+
+func runHandler(conn *Conn, fconn *websocket.Conn, recoverHandler, handler func(*Conn)) {
+	conn.Conn = fconn
+
+	returned := false
+	// Runs after RecoverHandler. A handler that panicked cannot be trusted with
+	// the socket and nothing else closes a hijacked connection; a normal return
+	// leaves it open.
+	defer func() {
+		if !returned {
+			_ = fconn.Close()
+		}
+	}()
+	defer recoverHandler(conn)
+	handler(conn)
+	returned = true
+}
+
+// The upgrader chose the RFC 6455 status: 403 for a bad Origin, 400 for a
+// malformed handshake, 405 for a non-GET; section 4.4 asks for the supported
+// version on rejection. A *fiber.Error keeps it on the ErrorHandler path.
+func rejectHandshake(c fiber.Ctx, status int) error {
+	c.Set(fiber.HeaderSecWebSocketVersion, supportedVersion)
+	return fiber.NewError(status, utils.StatusMessage(status))
 }
 
 // Conn https://godoc.org/github.com/gorilla/websocket#pkg-index
