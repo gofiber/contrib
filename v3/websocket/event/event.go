@@ -75,13 +75,13 @@ var (
 var (
 	// PongTimeout is the interval between server-originated Ping frames.
 	// Despite its name, this helper uses Ping for liveness; the historical
-	// name is preserved for backwards compatibility. The value must be less
-	// than any upstream proxy or load balancer idle timeout.
+	// name is preserved for backwards compatibility. The default is
+	// Socket.IO's, chosen to stay under common proxy and NAT idle timeouts.
 	//
 	// Deprecated: prefer Config.PingInterval passed to NewWithConfig. The
 	// package-level value is read once per connection at upgrade time;
 	// mutating it after that has no effect on running connections.
-	PongTimeout = time.Second
+	PongTimeout = defaultPingInterval
 	// RetrySendTimeout controls how long a queued message waits before retrying.
 	RetrySendTimeout = 20 * time.Millisecond
 	// MaxSendRetry defines the max retries for transient socket write issues.
@@ -94,6 +94,13 @@ var (
 	// Deprecated: ReadTimeout is a no-op. Configure Config.ReadIdleTimeout
 	// on NewWithConfig for the actual read deadline behaviour.
 	ReadTimeout = 10 * time.Millisecond
+)
+
+// Socket.IO's heartbeat: a ping every 25s, and a peer that has not answered
+// 20s after one is gone, so 45s of silence ends a connection.
+const (
+	defaultPingInterval = 25 * time.Second
+	defaultPongTimeout  = 20 * time.Second
 )
 
 type message struct {
@@ -124,10 +131,10 @@ type EventPayload struct {
 type Config struct {
 	// PingInterval is the interval between server-originated Ping frames.
 	// Must be less than any upstream proxy or load balancer idle timeout.
-	// Zero falls back to PongTimeout, then 1s.
+	// Zero falls back to PongTimeout, then 25s.
 	PingInterval time.Duration
 	// ReadIdleTimeout bounds how long a connection may stay silent before
-	// it is considered dead. Zero falls back to 3 * PingInterval.
+	// it is considered dead. Zero falls back to PingInterval + 20s.
 	ReadIdleTimeout time.Duration
 	// WriteTimeout bounds a single WriteMessage or WriteControl call. Zero
 	// falls back to 10s.
@@ -175,11 +182,11 @@ func resolveSettings(cfg Config) settings {
 	if s.pingInterval <= 0 {
 		s.pingInterval = PongTimeout
 		if s.pingInterval <= 0 {
-			s.pingInterval = time.Second
+			s.pingInterval = defaultPingInterval
 		}
 	}
 	if s.readIdleTimeout <= 0 {
-		s.readIdleTimeout = 3 * s.pingInterval
+		s.readIdleTimeout = s.pingInterval + defaultPongTimeout
 	}
 	if s.writeTimeout <= 0 {
 		s.writeTimeout = 10 * time.Second

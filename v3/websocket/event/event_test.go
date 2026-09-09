@@ -587,6 +587,19 @@ func TestCloseConnNilsConnField(t *testing.T) {
 	require.Nil(t, kws.Conn)
 }
 
+func TestHeartbeatDefaultsMirrorSocketIO(t *testing.T) {
+	s := resolveSettings(Config{})
+	require.Equal(t, 25*time.Second, s.pingInterval)
+	require.Equal(t, 45*time.Second, s.readIdleTimeout)
+
+	// The idle timeout follows a custom interval by the same 20s allowance
+	// instead of a multiple of it, and an explicit value wins.
+	s = resolveSettings(Config{PingInterval: 10 * time.Second})
+	require.Equal(t, 30*time.Second, s.readIdleTimeout)
+	s = resolveSettings(Config{PingInterval: 10 * time.Second, ReadIdleTimeout: time.Minute})
+	require.Equal(t, time.Minute, s.readIdleTimeout)
+}
+
 func TestPingIsSentAtInterval(t *testing.T) {
 	resetState()
 
