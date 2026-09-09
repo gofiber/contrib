@@ -1077,21 +1077,29 @@ func (kws *Websocket) handshake() error {
 }
 
 // rejectHandshake answers a rejected SIO CONNECT: CONNECT_ERROR, then the
-// closing handshake. Reading on until the peer's Close frame, bounded by
-// CloseTimeout, keeps the error packet from being lost to a TCP reset that
-// closing with unread inbound data would provoke. Runs before the send
-// goroutine exists, so it writes directly.
+// closing handshake. Reading on until the peer's Close frame keeps the
+// error packet from being lost to a TCP reset that closing with unread
+// inbound data would provoke. One absolute deadline, CloseTimeout from
+// now, bounds all of it - the CONNECT_ERROR write, the Close frame and the
+// drain - so a peer that never answers costs the budget once. Runs before
+// the send goroutine exists, so it writes directly.
 func (kws *Websocket) rejectHandshake(namespace []byte, jsonMessage string) {
 	conn := kws.Conn
-	_ = conn.WriteMessage(TextMessage, buildSIOConnectError(namespace, jsonMessage))
 	grace := time.Duration(kws.closeGrace.Load())
 	if grace <= 0 {
+		// No closing handshake: finishRun closes the socket right away.
+		_ = conn.WriteMessage(TextMessage, buildSIOConnectError(namespace, jsonMessage))
 		return
 	}
-	if err := conn.WriteControl(CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "handshake rejected"), time.Now().Add(grace)); err != nil {
+	deadline := time.Now().Add(grace)
+	_ = conn.SetWriteDeadline(deadline)
+	if err := conn.WriteMessage(TextMessage, buildSIOConnectError(namespace, jsonMessage)); err != nil {
 		return
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(grace))
+	if err := conn.WriteControl(CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "handshake rejected"), deadline); err != nil {
+		return
+	}
+	_ = conn.SetReadDeadline(deadline)
 	for {
 		if _, _, err := conn.ReadMessage(); err != nil {
 			return

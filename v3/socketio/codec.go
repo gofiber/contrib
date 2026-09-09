@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"unicode/utf8"
 
 	"github.com/gofiber/utils/v2"
 	"github.com/gofiber/utils/v2/simd"
@@ -340,14 +341,19 @@ func skipJSONString(b []byte, i int) int {
 }
 
 // unquoteJSONString decodes a JSON string literal. Literals without escape
-// sequences, the overwhelmingly common case for event names, are converted
-// with a single string allocation; the rest go through encoding/json.
+// sequences and with valid UTF-8, the overwhelmingly common case for event
+// names, are converted with a single string allocation; the rest go
+// through encoding/json.
 func unquoteJSONString(elem []byte) (string, error) {
 	if len(elem) < 2 || elem[0] != '"' || elem[len(elem)-1] != '"' {
 		return "", errEventNameNotString
 	}
 	body := elem[1 : len(elem)-1]
-	if bytes.IndexByte(body, '\\') < 0 {
+	// Without escapes the bytes are the string, provided they are valid
+	// UTF-8: json.Valid does not check UTF-8 inside strings, and
+	// encoding/json decodes each invalid byte as U+FFFD, so such names take
+	// the decoder path below and come out as the escaped path decodes them.
+	if bytes.IndexByte(body, '\\') < 0 && utf8.Valid(body) {
 		return string(body), nil
 	}
 	var s string

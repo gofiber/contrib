@@ -129,6 +129,7 @@ func FuzzParseSIOEvent(f *testing.F) {
 		`[]`, `[1]`, `[null]`, `["x", "y"]`,
 		`not json`, `{`, `[`, `["unterminated`,
 		`[{"k":1}]`, `[true,false]`, `["evt",` + string([]byte{0xff}) + `]`,
+		`["` + string([]byte{0xff}) + `"]`, `["a` + string([]byte{0xff, 0xe2, 0x82}) + `b",1]`,
 	} {
 		f.Add([]byte(s))
 	}
@@ -150,6 +151,20 @@ func FuzzParseSIOEvent(f *testing.F) {
 		}
 		if !utf8.ValidString(name) {
 			t.Fatalf("name not valid UTF-8: %q (in %q)", name, payload)
+		}
+		// The name must decode exactly as encoding/json decodes the first
+		// element, escapes and invalid UTF-8 included: the unescaped fast
+		// path and the decoder path may never disagree.
+		elems, splitErr := splitJSONArray(payload, nil)
+		if splitErr != nil || len(elems) == 0 {
+			t.Fatalf("parseSIOEvent succeeded but splitJSONArray failed on %q: %v", payload, splitErr)
+		}
+		var want string
+		if err := json.Unmarshal(elems[0], &want); err != nil {
+			t.Fatalf("name element %q is not a JSON string for encoding/json: %v", elems[0], err)
+		}
+		if name != want {
+			t.Fatalf("name %q differs from encoding/json's %q (in %q)", name, want, payload)
 		}
 	})
 }

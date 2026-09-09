@@ -560,6 +560,40 @@ func TestSocketIOHandshakeRejectionDeliversConnectError(t *testing.T) {
 	require.False(t, isTimeout(err), "server did not close the socket: %v", err)
 }
 
+// TestSocketIOHandshakeRejectionBoundedByCloseTimeout verifies that a
+// rejected peer which never answers the Close frame is released after one
+// CloseTimeout: the CONNECT_ERROR write, the Close frame and the drain
+// share a single absolute deadline. The client reads raw bytes so the
+// websocket library does not answer the Close frame on its behalf.
+func TestSocketIOHandshakeRejectionBoundedByCloseTimeout(t *testing.T) {
+	resetSIOGlobals(t)
+	prev := CloseTimeout
+	CloseTimeout = 300 * time.Millisecond
+	defer func() { CloseTimeout = prev }()
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	_, _, err := conn.ReadMessage() // EIO OPEN
+	require.NoError(t, err)
+
+	start := time.Now()
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`40["not","an","object"]`)))
+
+	// CONNECT_ERROR and the Close frame arrive; the client answers nothing.
+	// The server closes the socket when its deadline expires: after the
+	// peer had its CloseTimeout to answer, and well inside a single budget
+	// plus scheduling slack, never two of them.
+	err = rawReadUntilError(conn, 2*time.Second)
+	require.Error(t, err)
+	require.False(t, isTimeout(err), "server did not close the socket: %v", err)
+	elapsed := time.Since(start)
+	require.GreaterOrEqual(t, elapsed, CloseTimeout, "socket closed before the peer could answer the Close frame")
+	require.Less(t, elapsed, 1500*time.Millisecond)
+}
+
 // TestSocketIOPollingSessionReleasesOnDisconnect verifies that a polling
 // session, which owns no goroutine, still signals its release.
 func TestSocketIOPollingSessionReleasesOnDisconnect(t *testing.T) {
@@ -637,6 +671,24 @@ func TestParseSIOEventNames(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "a\"bé", name)
 	require.Len(t, args, 1)
+
+	// No escapes, valid UTF-8: the bytes are the name.
+	name, _, err = parseSIOEvent([]byte(`["héllo wörld"]`))
+	require.NoError(t, err)
+	require.Equal(t, "héllo wörld", name)
+
+	// json.Valid accepts invalid UTF-8 inside a string and encoding/json
+	// decodes each offending byte as U+FFFD; the unescaped fast path must
+	// come out the same as the escaped path and the old parser did, so a
+	// listener registered for the decoded name still matches.
+	name, _, err = parseSIOEvent([]byte("[\"\xff\"]"))
+	require.NoError(t, err)
+	require.Equal(t, "\ufffd", name)
+	var want string
+	require.NoError(t, json.Unmarshal([]byte("\"a\xffb\xe2\x82\""), &want))
+	name, _, err = parseSIOEvent([]byte("[\"a\xffb\xe2\x82\",1]"))
+	require.NoError(t, err)
+	require.Equal(t, want, name)
 
 	_, _, err = parseSIOEvent([]byte(`[1,2]`))
 	require.ErrorIs(t, err, errEventNameNotString)
