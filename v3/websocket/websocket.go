@@ -72,6 +72,21 @@ type Config struct {
 	// It prints stack trace to the stderr by default
 	// Optional. Default: defaultRecover
 	RecoverHandler func(*Conn)
+
+	// CoalesceWrites sends the replies to a burst of pipelined frames in one
+	// write instead of one per frame. While the handler is still working
+	// through frames the peer already sent, its writes are held back and leave
+	// together the moment it asks for the next frame, on Close, when they reach
+	// 64 KiB, or after one millisecond, whichever comes first. A write made
+	// while nothing is waiting to be read goes out immediately, so a handler
+	// that only pushes is unaffected. Frames are never reordered.
+	//
+	// The upgrade then runs through the library's net/http Upgrader on a
+	// fasthttp-backed hijack. The 101 response carries the headers earlier
+	// middleware set and the handshake headers, not fasthttp's Server and Date
+	// defaults, and Sec-WebSocket-Key is validated as RFC 6455 requires.
+	// Optional. Default: false
+	CoalesceWrites bool
 }
 
 // supportedVersion is the only WebSocket protocol version defined by RFC 6455.
@@ -141,6 +156,26 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 	// mutation of cfg.Origins from changing a mounted handler.
 	allowAllOrigins := len(cfg.Origins) == 0 || slices.Contains(cfg.Origins, "*")
 	allowedOrigins := slices.Clone(cfg.Origins)
+	originAllowed := func(origin string) bool {
+		if allowAllOrigins {
+			return true
+		}
+		if origin == "" {
+			return cfg.AllowEmptyOrigin
+		}
+		// Scheme and host of an origin are case-insensitive (RFC 6454 section 4).
+		for i := range allowedOrigins {
+			if utils.EqualFold(allowedOrigins[i], origin) {
+				return true
+			}
+		}
+		return false
+	}
+
+	var coalescingUpgrader websocket.Upgrader
+	if cfg.CoalesceWrites {
+		coalescingUpgrader = newCoalescingUpgrader(&cfg, originAllowed)
+	}
 
 	var upgrader = websocket.FastHTTPUpgrader{
 		HandshakeTimeout:  cfg.HandshakeTimeout,
@@ -156,20 +191,7 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 			fctx.SetStatusCode(status)
 		},
 		CheckOrigin: func(fctx *fasthttp.RequestCtx) bool {
-			if allowAllOrigins {
-				return true
-			}
-			origin := utils.UnsafeString(fctx.Request.Header.Peek(fiber.HeaderOrigin))
-			if origin == "" {
-				return cfg.AllowEmptyOrigin
-			}
-			// Scheme and host of an origin are case-insensitive (RFC 6454 section 4).
-			for i := range allowedOrigins {
-				if utils.EqualFold(allowedOrigins[i], origin) {
-					return true
-				}
-			}
-			return false
+			return originAllowed(utils.UnsafeString(fctx.Request.Header.Peek(fiber.HeaderOrigin)))
 		},
 	}
 	return func(c fiber.Ctx) error {
@@ -197,32 +219,45 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		// callback runs only after it has unwound.
 		conn.capture(fctx)
 
-		if err := upgrader.Upgrade(fctx, func(fconn *websocket.Conn) {
-			conn.Conn = fconn
+		if cfg.CoalesceWrites {
+			return upgradeCoalescing(c, &coalescingUpgrader, conn, &cfg, handler)
+		}
 
-			returned := false
-			// Runs after RecoverHandler. A handler that panicked cannot be trusted with
-			// the socket and nothing else closes a hijacked connection; a normal return
-			// leaves it open.
-			defer func() {
-				if !returned {
-					_ = fconn.Close()
-				}
-			}()
-			defer cfg.RecoverHandler(conn)
-			handler(conn)
-			returned = true
+		if err := upgrader.Upgrade(fctx, func(fconn *websocket.Conn) {
+			runHandler(conn, fconn, cfg.RecoverHandler, handler)
 		}); err != nil { // Handshake rejected
-			// The upgrader chose the RFC 6455 status: 403 for a bad Origin, 400 for a
-			// malformed handshake, 405 for a non-GET; section 4.4 asks for the supported
-			// version on rejection. A *fiber.Error keeps it on the ErrorHandler path.
-			status := fctx.Response.StatusCode()
-			c.Set(fiber.HeaderSecWebSocketVersion, supportedVersion)
-			return fiber.NewError(status, utils.StatusMessage(status))
+			return rejectHandshake(c, fctx.Response.StatusCode())
 		}
 
 		return nil
 	}
+}
+
+// runHandler runs the application handler on the hijacked connection.
+func runHandler(conn *Conn, fconn *websocket.Conn, recoverHandler, handler func(*Conn)) {
+	conn.Conn = fconn
+
+	returned := false
+	// Runs after RecoverHandler. A handler that panicked cannot be trusted with
+	// the socket and nothing else closes a hijacked connection; a normal return
+	// leaves it open.
+	defer func() {
+		if !returned {
+			_ = fconn.Close()
+		}
+	}()
+	defer recoverHandler(conn)
+	handler(conn)
+	returned = true
+}
+
+// rejectHandshake turns a rejected handshake into a *fiber.Error. The
+// upgrader chose the RFC 6455 status: 403 for a bad Origin, 400 for a
+// malformed handshake, 405 for a non-GET; section 4.4 asks for the supported
+// version on rejection. A *fiber.Error keeps it on the ErrorHandler path.
+func rejectHandshake(c fiber.Ctx, status int) error {
+	c.Set(fiber.HeaderSecWebSocketVersion, supportedVersion)
+	return fiber.NewError(status, utils.StatusMessage(status))
 }
 
 // Conn https://godoc.org/github.com/gorilla/websocket#pkg-index

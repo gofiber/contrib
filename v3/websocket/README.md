@@ -45,6 +45,7 @@ func New(handler func(*websocket.Conn), config ...websocket.Config) fiber.Handle
 | WriteBufferPool     | `websocket.BufferPool`       | WriteBufferPool is a pool of buffers for write operations.                                                                    | `nil`                  |
 | EnableCompression   | `bool`                       | EnableCompression specifies if the client should attempt to negotiate per message compression (RFC 7692).                     | `false`                |
 | RecoverHandler      | `func(*websocket.Conn)`      | RecoverHandler is a panic handler function that recovers from panics.                                                         | `defaultRecover`       |
+| CoalesceWrites      | `bool`                       | Answers a burst of pipelined frames with one write instead of one per frame. See [Write coalescing](#write-coalescing).      | `false`                |
 
 ## Example
 
@@ -125,6 +126,52 @@ there:
 Rejected handshakes also carry `Sec-WebSocket-Version: 13` so a client that asked for
 another version learns which one the server speaks (RFC 6455 section 4.4). Headers set
 by earlier middleware are left in place.
+
+## Write coalescing
+
+`fasthttp/websocket` puts every frame on the wire with its own write syscall. When a peer
+pipelines frames, sending several before it waits for the replies, the server reads them
+all in one go but still answers them one packet at a time. With `CoalesceWrites: true`
+the replies to such a burst leave in a single write instead.
+
+The rule is narrow so that nothing else changes:
+
+- A write is held back only while the handler is still working through frames the peer
+  already sent, that is between one read that delivered input and the next.
+- What is held leaves the moment the handler asks for the next frame, on `Close`, when it
+  reaches 64 KiB, or after one millisecond, whichever comes first.
+- A write made while nothing is waiting to be read goes out immediately. A handler that
+  only pushes, or a goroutine writing while the reader is parked on the socket, is not
+  delayed at all.
+- Frames are never reordered: a frame that does not fit is written after what was pending.
+
+What it costs and buys, measured with 5-byte frames on a server pinned to one core with
+`GOMAXPROCS=1`, the shape of one prefork child under the
+[HttpArena](https://github.com/MDA2AV/HttpArena) `echo-ws` profiles:
+
+| workload                          | default            | `CoalesceWrites`   |
+|:----------------------------------|:-------------------|:-------------------|
+| 1 frame in flight, 8 connections  | 12.6 µs CPU/frame  | unchanged, within run-to-run noise |
+| 16 frames in flight, 8 connections | 5.7 µs CPU/frame  | 1.0 µs CPU/frame   |
+| 16 frames in flight, 64 connections | 5.7 µs CPU/frame | 0.8 µs CPU/frame   |
+| syscalls per frame, 16 in flight  | 1.06               | 0.13               |
+
+A held frame costs one extra copy into the pending buffer, and an idle connection holds no
+pending buffer at all.
+
+The library only ever sees a `net.Conn`, so coalescing means owning it. With the option on,
+the upgrade runs through the library's `net/http` `Upgrader` on a fasthttp-backed hijack
+instead of `FastHTTPUpgrader`. Three things follow:
+
+- The `101 Switching Protocols` response carries the handshake headers and whatever earlier
+  middleware set (a cookie, a request id), but not fasthttp's `Server` and `Date` defaults.
+- `Sec-WebSocket-Key` is validated as RFC 6455 asks, a base64 encoding of 16 bytes; the
+  fasthttp upgrader only checks that it is present.
+- A message larger than the write buffer, which the library hands to the socket as two
+  writes, leaves as one when it is held back with the rest of a batch.
+
+Everything else, `Locals`, `Params`, `Query`, `Cookies`, `Headers`, `IP`, the rejection
+statuses, compression, subprotocols and `RecoverHandler`, behaves the same.
 
 ## Note with cache middleware
 
