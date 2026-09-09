@@ -544,6 +544,86 @@ func TestPollingCloseTerminalPacketsSurviveFullQueue(t *testing.T) {
 	require.Equal(t, "1", frames[PollQueueMaxFrames+1])
 }
 
+// TestPollQueueDrainReservesTerminalPackets pins the byte-cap rule once
+// the packets that end a session are queued: the drain that carries them
+// takes the ordinary prefix that fits beside them and drops the rest,
+// because the sid is released right after and a second drain never comes.
+func TestPollQueueDrainReservesTerminalPackets(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	q := newPollQueue()
+	q.enqueue(bytes.Repeat([]byte("a"), 100))
+	q.enqueue(bytes.Repeat([]byte("b"), 100))
+	q.enqueue(bytes.Repeat([]byte("c"), 100))
+	q.enqueueTerminal([]byte("41"), []byte("1"))
+	require.Equal(t, enqueueOK, q.enqueue([]byte("late")), "frames after the terminal packets are dropped")
+	q.close()
+
+	// 150 bytes hold one 100-byte frame plus the terminal packets and
+	// their separators; the second frame no longer fits and is dropped
+	// together with the third.
+	frames, closed := q.drain(ctx, 150)
+	require.True(t, closed)
+	require.Len(t, frames, 3)
+	require.Len(t, frames[0], 100)
+	require.Equal(t, "41", string(frames[1]))
+	require.Equal(t, "1", string(frames[2]))
+	frames, closed = q.drain(ctx, 150)
+	require.True(t, closed)
+	require.Nil(t, frames)
+
+	// A cap smaller than the first ordinary frame delivers the terminal
+	// packets alone instead of the oversized frame alone.
+	q = newPollQueue()
+	q.enqueue(bytes.Repeat([]byte("a"), 100))
+	q.enqueueTerminal([]byte("41"), []byte("1"))
+	frames, _ = q.drain(ctx, 10)
+	require.Equal(t, [][]byte{[]byte("41"), []byte("1")}, frames)
+
+	// Without a cap everything goes, in order.
+	q = newPollQueue()
+	q.enqueue([]byte("x"))
+	q.enqueueTerminal([]byte("41"), []byte("1"))
+	frames, _ = q.drain(ctx, 0)
+	require.Equal(t, [][]byte{[]byte("x"), []byte("41"), []byte("1")}, frames)
+}
+
+// TestPollingCloseTerminalPacketsWithinBufferCap verifies that after Close
+// on a polling session whose EventClose listener queued more than a
+// long-poll can carry, the drain that ends the session still delivers
+// SIO DISCONNECT and EIO CLOSE within the cap.
+func TestPollingCloseTerminalPacketsWithinBufferCap(t *testing.T) {
+	resetSIOGlobals(t)
+
+	var captured atomic.Pointer[Websocket]
+	On(EventConnect, func(p *EventPayload) { captured.Store(p.Kws) })
+	farewell := []byte(`"` + strings.Repeat("a", 280) + `"`)
+	On(EventClose, func(p *EventPayload) {
+		for i := 0; i < 3; i++ {
+			p.Kws.Emit(farewell)
+		}
+	})
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	_, _ = pollPost(t, c, sid, []byte(`40`))
+	require.Eventually(t, func() bool { return captured.Load() != nil }, 2*time.Second, 10*time.Millisecond)
+	_, _ = pollGet(t, c, sid) // drain the CONNECT ack so the queue starts empty
+
+	kws := captured.Load()
+	kws.Close()
+
+	// The drain a long-poll performs, with a cap no farewell frame fits in.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	frames, closed := kws.pollQ.drain(ctx, 256)
+	require.True(t, closed)
+	require.Equal(t, [][]byte{[]byte("41"), []byte("1")}, frames)
+}
+
 // TestPollQueueDrainSemantics covers the pollQueue primitive directly:
 // FIFO order, batching, byte cap, blocking, close.
 func TestPollQueueDrainSemantics(t *testing.T) {

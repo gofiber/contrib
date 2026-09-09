@@ -68,6 +68,11 @@ type pollQueue struct {
 	mu     sync.Mutex
 	frames [][]byte
 	closed bool
+	// terminal counts the trailing frames that end the session (SIO
+	// DISCONNECT and EIO CLOSE, queued by Close). They stay at the tail:
+	// enqueue drops ordinary frames once they are queued, and drain
+	// carries them whatever the byte cap.
+	terminal int
 	// notify is closed by the next signalLocked call after a successful
 	// enqueue or close, waking every blocked drain. It is recreated by
 	// drain after consuming frames so the next enqueue starts a fresh
@@ -96,8 +101,9 @@ type enqueueResult int
 
 const (
 	// enqueueOK indicates the frame was buffered (or silently dropped
-	// because the queue was already closed, to match post-disconnect
-	// best-effort semantics).
+	// because the queue was already closed or the packets that end the
+	// session were already queued, to match post-disconnect best-effort
+	// semantics).
 	enqueueOK enqueueResult = iota
 	// enqueueDroppedQueueFull indicates the queue is full and
 	// DropFramesOnOverflow is true: the offending frame was discarded
@@ -115,7 +121,7 @@ const (
 func (q *pollQueue) enqueue(frame []byte) enqueueResult {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.closed {
+	if q.closed || q.terminal > 0 {
 		return enqueueOK
 	}
 	if PollQueueMaxFrames > 0 && len(q.frames) >= PollQueueMaxFrames {
@@ -133,15 +139,17 @@ func (q *pollQueue) enqueue(frame []byte) enqueueResult {
 // and EIO CLOSE, past PollQueueMaxFrames: they are two small fixed frames,
 // and a peer that drained a queue an EventClose listener filled must still
 // learn the session is over rather than meet an unknown sid on its next
-// poll. Both land together, so one drain delivers both. A no-op once the
-// queue is closed.
+// poll. Both land together, so one drain delivers both, and drain keeps
+// them inside its byte cap. A no-op once the queue is closed or they are
+// already queued.
 func (q *pollQueue) enqueueTerminal(frames ...[]byte) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.closed {
+	if q.closed || q.terminal > 0 {
 		return
 	}
 	q.frames = append(q.frames, frames...)
+	q.terminal = len(frames)
 	q.signalLocked()
 }
 
@@ -164,26 +172,49 @@ func (q *pollQueue) close() {
 // frame larger than maxBytes is emitted alone rather than blocking
 // forever. The closed flag indicates the session has terminated.
 //
+// Once the packets that end the session are queued, the drain that finds
+// them carries them whatever else is buffered: the sid is released right
+// after Close, so a second drain never comes. They are reserved out of
+// the byte cap first and the ordinary prefix that still fits goes ahead
+// of them; the rest is dropped.
+//
 // On ctx expiry returns (nil, false). On close with empty buffer returns
 // (nil, true).
 func (q *pollQueue) drain(ctx context.Context, maxBytes int) ([][]byte, bool) {
 	for {
 		q.mu.Lock()
 		if len(q.frames) > 0 {
+			ordinary, budget := q.frames, maxBytes
+			var terminal [][]byte
+			if q.terminal > 0 {
+				ordinary = q.frames[:len(q.frames)-q.terminal]
+				terminal = q.frames[len(q.frames)-q.terminal:]
+				for _, f := range terminal {
+					budget -= len(f) + 1
+				}
+			}
 			taken := make([][]byte, 0, len(q.frames))
 			var size int
 			i := 0
-			for ; i < len(q.frames); i++ {
-				f := q.frames[i]
+			for ; i < len(ordinary); i++ {
+				f := ordinary[i]
 				add := len(f)
 				if i > 0 {
 					add++
 				}
-				if maxBytes > 0 && size+add > maxBytes && len(taken) > 0 {
+				if maxBytes > 0 && size+add > budget && (len(taken) > 0 || terminal != nil) {
 					break
 				}
 				taken = append(taken, f)
 				size += add
+			}
+			if terminal != nil {
+				if dropped := len(ordinary) - i; dropped > 0 {
+					logf("warn", "poll_close_drop", "dropped", dropped, "cap", maxBytes)
+				}
+				taken = append(taken, terminal...)
+				i = len(q.frames)
+				q.terminal = 0
 			}
 			// Truncate in place to retain the backing array across
 			// drain cycles. nil out the slots we are dropping so the

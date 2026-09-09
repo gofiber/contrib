@@ -2430,6 +2430,12 @@ func (kws *Websocket) disconnected(err error) {
 			kws.pollQ.close()
 		case kws.Conn == nil:
 		default:
+			// A WebSocket session still owns its socket until finishRun,
+			// so it is tracked as draining before anything can wake the
+			// read loop: finishRun removes the entry, and a reader that
+			// returned before the entry existed would leave a finished
+			// session in the set for good. Shutdown waits for these.
+			kws.markDraining()
 			kws.armCloseDeadline()
 			kws.armTeardownDeadline(err == nil && kws.closeRequested.Load())
 		}
@@ -2440,11 +2446,8 @@ func (kws *Websocket) disconnected(err error) {
 
 	// Remove from the pool BEFORE firing user events so that listeners
 	// observing the pool do not see this dying connection. A WebSocket
-	// session still owns its socket until finishRun, so it is tracked as
-	// draining first: Shutdown must not return while it is in flight.
-	if kws.Conn != nil {
-		kws.markDraining()
-	}
+	// session joined the draining set above, so it is in at least one of
+	// the two sets at any time.
 	pool.delete(kws.GetUUID())
 
 	// Drain pending outbound ack callbacks: invoke each with

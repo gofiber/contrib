@@ -94,7 +94,7 @@ All tunables are package-level variables; override before the first connection i
 | `MaxSendRetry`         | `5`                | Deprecated: no effect; see `RetrySendTimeout`.                                |
 | `ReadTimeout`          | `10ms`             | Deprecated: no longer consulted by the read loop; kept for backward compatibility. |
 | `EnablePolling`        | `false`            | If true, the handler returned from `New` also serves Engine.IO HTTP long-polling on `GET`/`POST`. |
-| `PollingMaxBufferSize` | `1_000_000`        | Cap on a single polling HTTP body (request POST or response GET drain).        |
+| `PollingMaxBufferSize` | `1_000_000`        | Cap on a single polling HTTP body (request POST or response GET drain). The drain that ends a session always carries the SIO DISCONNECT and EIO CLOSE packets; farewell frames that do not fit beside them are dropped. |
 | `MaxPollWait`          | `30s`              | Maximum time a long-poll GET blocks waiting for outbound frames.                |
 | `PollQueueMaxFrames`   | `1024`             | Cap on buffered outbound frames per polling session; overflow honors `DropFramesOnOverflow`. The SIO DISCONNECT and EIO CLOSE packets queued by `Close` are exempt, so a queue an `EventClose` listener filled still ends the session cleanly. |
 
@@ -184,7 +184,7 @@ These package-level variables can be overridden before the first connection is a
 | `RetrySendTimeout`  | `20 * time.Millisecond` | Deprecated: no effect; the send goroutine writes each frame exactly once.                       |
 | `MaxSendRetry`      | `5`                | Deprecated: no effect; see `RetrySendTimeout`.                                                       |
 | `EnablePolling`     | `false`            | If true, the handler also accepts Engine.IO HTTP long-polling on `GET`/`POST` (opt-in fallback).      |
-| `PollingMaxBufferSize` | `1_000_000`     | Cap on a single polling HTTP body (POST request body or GET drain response body), in bytes.           |
+| `PollingMaxBufferSize` | `1_000_000`     | Cap on a single polling HTTP body (POST request body or GET drain response body), in bytes; the packets `Close` queues always fit in the drain that ends the session. |
 | `MaxPollWait`       | `30 * time.Second` | Maximum time a long-poll GET blocks waiting for outbound frames before returning an empty 200.        |
 | `PollQueueMaxFrames`| `1024`             | Maximum buffered outbound frames per polling session before overflow handling applies; the packets `Close` queues are exempt. |
 

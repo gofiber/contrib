@@ -200,7 +200,41 @@ func TestSocketIOCloseWithSaturatedQueueUsesOneBudget(t *testing.T) {
 	waitClosed(t, kws, 10*time.Second)
 	elapsed := time.Since(start)
 	require.GreaterOrEqual(t, elapsed, CloseTimeout, "Close gave up on a queue slot before CloseTimeout")
-	require.Less(t, elapsed, 700*time.Millisecond, "the tear-down spent more than one CloseTimeout budget")
+	// Two budgets would be at least 800ms; the bound stays below that while
+	// leaving the asynchronous read-loop and finishRun path scheduling slack.
+	require.Less(t, elapsed, 750*time.Millisecond, "the tear-down spent more than one CloseTimeout budget")
+}
+
+// TestSocketIODrainingSetEmptyAfterConcurrentTeardown verifies that a
+// tear-down started outside the read loop (a heartbeat timeout, simulated
+// directly) while the peer closes at the same moment never leaves a
+// finished session in the draining set: the session is marked before the
+// read loop is woken, so finishRun's removal cannot run first.
+func TestSocketIODrainingSetEmptyAfterConcurrentTeardown(t *testing.T) {
+	resetSIOGlobals(t)
+	kwsCh := captureConnect(t)
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	for i := 0; i < 25; i++ {
+		conn := dialSIO(t, ln)
+		require.NoError(t, sioHandshake(t, conn))
+		kws := awaitSession(t, kwsCh)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			kws.disconnected(ErrHeartbeatTimeout)
+		}()
+		go func() {
+			defer wg.Done()
+			_ = conn.Close()
+		}()
+		wg.Wait()
+		waitClosed(t, kws, 5*time.Second)
+	}
+	require.Empty(t, drainingSessions(), "finished sessions must not linger in the draining set")
 }
 
 // TestSocketIOStalledPeerDoesNotWedgeTeardown floods a peer that stopped
