@@ -123,7 +123,7 @@ func TestParallelConnections(t *testing.T) {
 	wg := sync.WaitGroup{}
 
 	defer func() {
-		_ = app.Shutdown()
+		_ = app.ShutdownWithTimeout(5 * time.Second)
 		_ = ln.Close()
 	}()
 
@@ -445,8 +445,13 @@ func resetSIOGlobals(t *testing.T) {
 	pool.reset()
 	listeners.reset()
 	t.Cleanup(func() {
-		// Close every still-pooled connection so its read/send/pong
-		// goroutines exit before the next test snapshots them.
+		// Close every still-pooled connection so its goroutines exit
+		// before the next test snapshots them. Raw test clients rarely
+		// answer the Close frame, so shorten the closing-handshake
+		// drain for the leftovers rather than wait CloseTimeout each.
+		prevClose := CloseTimeout
+		CloseTimeout = 200 * time.Millisecond
+		defer func() { CloseTimeout = prevClose }()
 		sessions := pool.all()
 		for _, w := range sessions {
 			if k, ok := w.(*Websocket); ok {
@@ -456,34 +461,39 @@ func resetSIOGlobals(t *testing.T) {
 				}()
 			}
 		}
-		// Wait on workersWg per session so the goroutines have
-		// actually exited before the next test starts. Establishes
-		// happen-before from the previous test's goroutine reads (e.g.
-		// pong reading PingInterval/PingTimeout) to any mutation the
-		// next test performs on package-level tunables; without this,
-		// -race flags cross-test reads vs writes. Each Wait is bounded
+		// Wait for each session to release its socket and goroutines
+		// before the next test starts. Establishes happen-before from
+		// the previous test's goroutine reads (e.g. the heartbeat
+		// reading PingInterval/PingTimeout) to any mutation the next
+		// test performs on package-level tunables; without this,
+		// -race flags cross-test reads vs writes. Each wait is bounded
 		// so a leaked goroutine surfaces as a test failure rather
 		// than hanging the whole suite.
 		for _, w := range sessions {
 			k, ok := w.(*Websocket)
-			if !ok {
+			if !ok || k.closed == nil {
 				continue
 			}
-			done := make(chan struct{})
-			go func() {
-				defer func() { _ = recover() }()
-				defer close(done)
-				k.workersWg.Wait()
-			}()
 			select {
-			case <-done:
+			case <-k.closed:
 			case <-time.After(5 * time.Second):
-				t.Errorf("resetSIOGlobals: workersWg.Wait timed out for session %s; goroutine leak suspected", k.UUID)
+				t.Errorf("resetSIOGlobals: session %s did not release within 5s; goroutine leak suspected", k.UUID)
 			}
 		}
 		pool.reset()
 		listeners.reset()
 	})
+}
+
+// waitClosed blocks until kws has released its socket and goroutines, or
+// fails the test after timeout.
+func waitClosed(t *testing.T, kws *Websocket, timeout time.Duration) {
+	t.Helper()
+	select {
+	case <-kws.closed:
+	case <-time.After(timeout):
+		t.Fatalf("session %s did not release within %v", kws.UUID, timeout)
+	}
 }
 
 //
@@ -557,6 +567,16 @@ func (s *WebsocketMock) fireEvent(_ string, _ []byte, _ error) {
 // ---------------------------------------------------------------------------
 // Socket.IO test helpers
 // ---------------------------------------------------------------------------
+
+// eioOpenPacket mirrors the JSON payload of the Engine.IO OPEN packet so
+// tests can decode what the server put on the wire.
+type eioOpenPacket struct {
+	SID          string   `json:"sid"`
+	Upgrades     []string `json:"upgrades"`
+	PingInterval int      `json:"pingInterval"`
+	PingTimeout  int      `json:"pingTimeout"`
+	MaxPayload   int      `json:"maxPayload"`
+}
 
 // sioHandshake performs the Engine.IO / Socket.IO connection handshake:
 //
@@ -648,7 +668,7 @@ func newSIOTestServer(t *testing.T, callback func(*Websocket)) (*fasthttputil.In
 	go func() { _ = app.Listener(ln) }()
 
 	return ln, func() {
-		_ = app.Shutdown()
+		_ = app.ShutdownWithTimeout(5 * time.Second)
 		_ = ln.Close()
 	}
 }
@@ -877,8 +897,8 @@ func TestSocketIODisconnect(t *testing.T) {
 // client triggers an EventPong on the server when the client replies.
 //
 // We intentionally do NOT mutate the global PingInterval here: that races
-// with previously-spawned pong goroutines reading the same global. Instead,
-// we drive a single PING manually from the server side via kws.write.
+// with heartbeats of earlier sessions reading the same global. Instead, we
+// drive a single PING manually from the server side via kws.write.
 func TestSocketIOHeartbeat(t *testing.T) {
 	resetSIOGlobals(t)
 
@@ -1858,7 +1878,7 @@ func TestSocketIOPackageShutdown(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	go func() { _ = app.Listener(ln) }()
-	defer func() { _ = app.Shutdown() }()
+	defer func() { _ = app.ShutdownWithTimeout(5 * time.Second) }()
 
 	const n = 5
 	conns := make([]*websocket.Conn, 0, n)
@@ -1875,6 +1895,16 @@ func TestSocketIOPackageShutdown(t *testing.T) {
 		require.NoError(t, derr)
 		require.NoError(t, sioHandshake(t, c))
 		conns = append(conns, c)
+		// Keep reading, as a real client does: the library answers the
+		// server's Close frame from inside ReadMessage, which is what
+		// lets the closing handshake complete.
+		go func(c *websocket.Conn) {
+			for {
+				if _, _, err := c.ReadMessage(); err != nil {
+					return
+				}
+			}
+		}(c)
 	}
 
 	// Wait until every handshake has fired EventConnect.
@@ -1885,7 +1915,10 @@ func TestSocketIOPackageShutdown(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	start := time.Now()
 	require.NoError(t, Shutdown(ctx))
+	require.Less(t, time.Since(start), 2*time.Second,
+		"Shutdown should complete as soon as the peers answer the Close frame")
 
 	// Each connection produced exactly one EventDisconnect.
 	require.Eventually(t, func() bool {
@@ -2098,7 +2131,7 @@ func TestSocketIONoGoroutineLeak(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	go func() { _ = app.Listener(ln) }()
-	defer func() { _ = app.Shutdown() }()
+	defer func() { _ = app.ShutdownWithTimeout(5 * time.Second) }()
 
 	wsURL := "ws://" + ln.Addr().String() + "/"
 
@@ -2651,16 +2684,10 @@ func TestSocketIOOnAfterFireDoesNotAffectInflight(t *testing.T) {
 //
 // Run under -race to surface any latent data race.
 func TestSocketIOConcurrentEmitClose(t *testing.T) {
-	// Iteration-2 race fixed in socketio.go:
-	//   - Close() now gates its kws.mu-protected write block behind a
-	//     dedicated closeOnce so concurrent callers cannot double-write.
-	//   - run() now performs a kws.mu.Lock()/Unlock() barrier after
-	//     workersWg.Wait() so any in-flight Close() writer has finished
-	//     before the upgrade handler returns and the vendored websocket
-	//     package's deferred releaseConn() nils the embedded *fasthttp.Conn.
-	//   - Close() skips direct Conn writes once handlerDone marks that the
-	//     upgrade handler is returning and releaseConn may nil the embedded
-	//     *fasthttp.Conn without taking kws.mu.
+	// Close() never writes to the socket itself: it queues the closing
+	// frames behind the pending emits and the send goroutine, the sole
+	// writer, puts them on the wire, so concurrent Close/Emit callers
+	// cannot interleave frames or race the socket's release.
 	resetSIOGlobals(t)
 
 	// Stable connect listener: stash kws handles as connections come in.
@@ -2682,7 +2709,7 @@ func TestSocketIOConcurrentEmitClose(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	go func() { _ = app.Listener(ln) }()
-	defer func() { _ = app.Shutdown() }()
+	defer func() { _ = app.ShutdownWithTimeout(5 * time.Second) }()
 
 	const numConns = 50
 	wsURL := "ws://" + ln.Addr().String() + "/"
@@ -2842,7 +2869,7 @@ func TestSocketIOEmitToVanishedConn(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	go func() { _ = app.Listener(ln) }()
-	defer func() { _ = app.Shutdown() }()
+	defer func() { _ = app.ShutdownWithTimeout(5 * time.Second) }()
 
 	wsURL := "ws://" + ln.Addr().String() + "/"
 	dialer := &websocket.Dialer{HandshakeTimeout: 5 * time.Second}

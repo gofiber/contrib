@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
 )
 
 // EnablePolling toggles HTTP long-polling fallback support. When true, the
@@ -310,14 +311,8 @@ func handlePolling(c fiber.Ctx, callback func(kws *Websocket)) (handled bool, er
 // first SIO CONNECT POST so polling preserves the same callback ordering as
 // the WebSocket path: EIO OPEN -> SIO CONNECT -> SIO CONNECT ACK -> callback.
 func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
-	kws := &Websocket{
-		queue: make(chan message, SendQueueSize),
-		done:  make(chan struct{}, 1),
-		pollQ: newPollQueue(),
-	}
-	kws.UUID = kws.createUUID()
-	kws.isAlive.Store(true)
-	kws.lastPongNanos.Store(time.Now().UnixNano())
+	kws := newWebsocket()
+	kws.pollQ = newPollQueue()
 
 	// Snapshot per-request state into immutable lookup maps. fasthttp
 	// recycles its RequestCtx after the handler returns, so capturing
@@ -326,17 +321,19 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 	// Locals, Params, Query and Cookies from the OPEN request once;
 	// listener callbacks on later transports see those frozen values.
 	// Users needing per-connection mutable state should use
-	// SetAttribute, which is transport-agnostic.
+	// SetAttribute, which is transport-agnostic. Unless the app runs with
+	// Immutable set, Fiber hands out strings that alias the request
+	// buffers, so every value is copied.
 	queries := c.Queries()
 	queriesSnap := make(map[string]string, len(queries))
 	for k, v := range queries {
-		queriesSnap[k] = v
+		queriesSnap[k] = utils.CopyString(v)
 	}
 	var paramsSnap map[string]string
 	if route := c.Route(); route != nil && len(route.Params) > 0 {
 		paramsSnap = make(map[string]string, len(route.Params))
 		for _, k := range route.Params {
-			paramsSnap[k] = c.Params(k)
+			paramsSnap[k] = utils.CopyString(c.Params(k))
 		}
 	}
 	// Locals and Cookies are usually empty for socket.io routes; lazy-
@@ -381,19 +378,12 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 		return writePollingError(c, 3)
 	}
 
-	// Heartbeat goroutine. Polling has no send goroutine (the long-poll
-	// GET handler is the sender) and no read goroutine (POST handlers
-	// are the readers). pong() emits PINGs via kws.write, which routes
-	// to pollQ.enqueue for polling sessions.
-	ctx, cancel := context.WithCancel(context.Background())
-	kws.ctx = ctx
-	kws.cancelCtx = cancel
-	kws.workersWg.Add(1)
-	go func() { defer kws.workersWg.Done(); kws.pong(ctx) }()
-	// Lifecycle goroutine: blocks until disconnected fires, then runs
-	// finishRun to cancel the ctx and join the heartbeat goroutine. This
-	// substitutes for the run() loop used by the WebSocket path.
-	go func() { <-kws.done; kws.finishRun() }()
+	// Heartbeat: a runtime timer, like the WebSocket path. Polling has
+	// no send goroutine (the long-poll GET handler is the sender) and no
+	// read goroutine (POST handlers are the readers), so a session owns
+	// no goroutine at all; the heartbeat emits PINGs via kws.write,
+	// which routes to pollQ.enqueue for polling sessions.
+	kws.startHeartbeat()
 
 	// Handshake budget: enforce parity with the WebSocket path
 	// (handshake() uses HandshakeTimeout via SetReadDeadline). Without
@@ -544,8 +534,7 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 	copy(body, src)
 
 	// Any inbound HTTP body counts as proof of life for the heartbeat
-	// enforcer, mirroring the WebSocket read-loop behaviour at
-	// socketio.go:1960.
+	// enforcer, mirroring the WebSocket read loop.
 	kws.lastPongNanos.Store(time.Now().UnixNano())
 
 	rest := body

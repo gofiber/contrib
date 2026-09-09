@@ -35,7 +35,17 @@ func newPollingTestServer(t *testing.T, callback func(*Websocket)) (*fasthttputi
 	// to wait the default 30s.
 	MaxPollWait = 2 * time.Second
 
-	app := fiber.New()
+	// fasthttp's Shutdown waits for every open connection, and it counts a
+	// keep-alive connection that has not yet sent its first request as
+	// active, not idle. net/http's Transport produces exactly that when
+	// two requests race for a connection: the dial that loses the race is
+	// parked in the idle pool without ever being used. A bounded read
+	// timeout on the server side lets such a connection expire on its
+	// own, and the teardown below closes the client side first anyway.
+	app := fiber.New(fiber.Config{
+		ReadTimeout: 5 * time.Second,
+		IdleTimeout: 5 * time.Second,
+	})
 	ln := fasthttputil.NewInmemoryListener()
 
 	h := New(callback)
@@ -45,17 +55,24 @@ func newPollingTestServer(t *testing.T, callback func(*Websocket)) (*fasthttputi
 
 	go func() { _ = app.Listener(ln) }()
 
-	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-				return ln.Dial()
-			},
+	transport := &http.Transport{
+		DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+			return ln.Dial()
 		},
-		Timeout: 10 * time.Second,
+	}
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   10 * time.Second,
 	}
 
 	return ln, client, func() {
-		_ = app.Shutdown()
+		// Close the client side first: an idle keep-alive connection,
+		// including one that never carried a request, would otherwise
+		// keep app.Shutdown waiting until its read timeout. Then bound
+		// the shutdown so a session still draining a long-poll cannot
+		// stall the whole suite.
+		transport.CloseIdleConnections()
+		_ = app.ShutdownWithTimeout(5 * time.Second)
 		_ = ln.Close()
 		EnablePolling = prevEnable
 		MaxPollWait = prevWait
@@ -353,11 +370,16 @@ func TestPollingOptionsPreflight(t *testing.T) {
 // while another is in flight is rejected with engine.io code 3.
 func TestPollingConcurrentGetsRejected(t *testing.T) {
 	resetSIOGlobals(t)
+	var captured atomic.Pointer[Websocket]
+	On(EventConnect, func(p *EventPayload) {
+		captured.Store(p.Kws)
+	})
 	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
 	defer td()
 
 	sid, _, _ := pollOpen(t, c)
 	_, _ = pollPost(t, c, sid, []byte(`40`))
+	require.Eventually(t, func() bool { return captured.Load() != nil }, 2*time.Second, 10*time.Millisecond)
 	// Drain the connect ack so the next GET will block.
 	_, _ = pollGet(t, c, sid)
 
@@ -369,8 +391,10 @@ func TestPollingConcurrentGetsRejected(t *testing.T) {
 		close(firstDone)
 	}()
 
-	// Give the first poll time to enter drain.
-	time.Sleep(50 * time.Millisecond)
+	// Wait until the first poll actually holds the gate rather than
+	// guessing with a sleep, which lost the race on a loaded CI runner.
+	require.Eventually(t, func() bool { return captured.Load().pollGate.Load() },
+		2*time.Second, 5*time.Millisecond, "first long-poll never took the gate")
 
 	body, status := pollGet(t, c, sid)
 	require.Equal(t, http.StatusBadRequest, status,
@@ -1169,8 +1193,8 @@ func TestPollingHandshakeTimeoutEnforced(t *testing.T) {
 }
 
 // TestPollingHeartbeatTimeoutTearsDown verifies that a polling session
-// torn down with ErrHeartbeatTimeout (as the pong goroutine would call
-// when the client stops responding) cleans up the session, drains any
+// torn down with ErrHeartbeatTimeout (as the heartbeat timer does when
+// the client stops responding) cleans up the session, drains any
 // in-flight long-poll, and rejects subsequent GETs with engine.io code
 // 1.
 //
@@ -1213,8 +1237,8 @@ func TestPollingHeartbeatTimeoutTearsDown(t *testing.T) {
 	_, _ = pollGet(t, c, sid)
 
 	// Start an in-flight long-poll, then simulate a heartbeat timeout
-	// from another goroutine (the production pong goroutine would do
-	// the same on PingInterval+PingTimeout expiry).
+	// from another goroutine (the production heartbeat timer does the
+	// same on PingInterval+PingTimeout expiry).
 	pollResp := make(chan int, 1)
 	go func() {
 		_, st := pollGet(t, c, sid)
@@ -1370,10 +1394,10 @@ func TestPollingQueueOverflowDrop(t *testing.T) {
 	resetSIOGlobals(t)
 
 	// Restore via t.Cleanup (runs AFTER all defers, so AFTER td()
-	// shuts down the test server and AFTER resetSIOGlobals' workersWg
-	// wait). Plain defer here would restore globals BEFORE the pong
-	// goroutine has actually exited, racing it on PollQueueMaxFrames
-	// / DropFramesOnOverflow.
+	// shuts down the test server and AFTER resetSIOGlobals waited for
+	// every session to release). Plain defer here would restore globals
+	// BEFORE a heartbeat tick has actually finished, racing it on
+	// PollQueueMaxFrames / DropFramesOnOverflow.
 	prevCap, prevDrop := PollQueueMaxFrames, DropFramesOnOverflow
 	PollQueueMaxFrames = 4
 	DropFramesOnOverflow = true
@@ -1539,8 +1563,8 @@ func TestPollingHandshakeTimerStoppedAfterConnect(t *testing.T) {
 }
 
 // TestPollingCallbackPanicCleansUp verifies that a panic in the user callback
-// during the first SIO CONNECT runs disconnected() so the lifecycle goroutine,
-// pong goroutine, and pool entry do not leak.
+// during the first SIO CONNECT runs disconnected() so the heartbeat timer
+// and pool entry do not leak.
 func TestPollingCallbackPanicCleansUp(t *testing.T) {
 	resetSIOGlobals(t)
 

@@ -467,7 +467,7 @@ func TestSocketIOEIO3Rejected(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	go func() { _ = app.Listener(ln) }()
-	defer func() { _ = app.Shutdown() }()
+	defer func() { _ = app.ShutdownWithTimeout(5 * time.Second) }()
 
 	httpClient := &http.Client{Timeout: 5 * time.Second}
 	resp, err := httpClient.Get("http://" + ln.Addr().String() + "/?EIO=3")

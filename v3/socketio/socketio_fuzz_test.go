@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 	"testing"
 	"unicode/utf8"
 )
@@ -213,10 +214,10 @@ func FuzzExtractSIONamespace(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		defer func() {
 			if r := recover(); r != nil {
-				t.Fatalf("extractSIONamespace panic on %q: %v", data, r)
+				t.Fatalf("extractSIOConnect panic on %q: %v", data, r)
 			}
 		}()
-		ns := extractSIONamespace(data)
+		ns, _ := extractSIOConnect(data)
 		if ns == nil {
 			return
 		}
@@ -477,6 +478,49 @@ func FuzzBatchedEIOFrame(f *testing.F) {
 		}
 		if count > MaxBatchPackets+1 {
 			t.Fatalf("dispatched %d > MaxBatchPackets %d", count, MaxBatchPackets)
+		}
+	})
+}
+
+// FuzzSplitJSONArray cross-checks the zero-copy array splitter against
+// encoding/json: for every input both must agree on whether it is a JSON
+// array and, when it is, on the exact bytes of every top-level element.
+func FuzzSplitJSONArray(f *testing.F) {
+	for _, seed := range []string{
+		`["ev"]`, `[]`, ` [ "a" , {"b":[1,2]} , "c,]" ] `, `["a\"b","c\\"]`,
+		`[[[[]]]]`, `{"a":1}`, `["a",]`, `null`, `"s"`, `[1e5,-0,true,null]`,
+		"[\" \"]", `["😀"]`, `[` + strings.Repeat(`"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",`, 4) + `1]`,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		got, err := splitJSONArray(data, nil)
+		var ref []json.RawMessage
+		refErr := json.Unmarshal(data, &ref)
+		if refErr == nil && bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+			// encoding/json accepts a JSON null for a slice; the splitter
+			// only accepts arrays.
+			if err == nil {
+				t.Fatalf("splitter accepted %q", data)
+			}
+			return
+		}
+		if refErr != nil {
+			if err == nil {
+				t.Fatalf("encoding/json rejected %q but the splitter accepted it: %q", data, got)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatalf("encoding/json accepted %q, splitter failed: %v", data, err)
+		}
+		if len(got) != len(ref) {
+			t.Fatalf("element count differs for %q: got %d want %d", data, len(got), len(ref))
+		}
+		for i := range ref {
+			if !bytes.Equal(ref[i], got[i]) {
+				t.Fatalf("element %d differs for %q: got %q want %q", i, data, got[i], ref[i])
+			}
 		}
 	})
 }
