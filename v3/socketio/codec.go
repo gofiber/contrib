@@ -263,7 +263,8 @@ func parseSIOAckArgs(payload []byte) ([][]byte, error) {
 // to dst as sub-slices of payload and returns the extended slice. Leading
 // and trailing whitespace around the array and around each element is
 // dropped. It returns an error when payload is not a syntactically valid
-// JSON array.
+// JSON array, or ErrTooManyArgs once more than MaxEventArgs elements would
+// be appended.
 //
 // The payload is validated once with encoding/json's allocation-free
 // scanner, after which only structure matters: nesting depth and string
@@ -276,6 +277,8 @@ func splitJSONArray(payload []byte, dst [][]byte) ([][]byte, error) {
 		return nil, errNotJSONArray
 	}
 	body := p[1 : len(p)-1]
+	limit := MaxEventArgs
+	appended := 0
 	i := 0
 	for i < len(body) {
 		for i < len(body) && isJSONSpace(body[i]) {
@@ -283,6 +286,9 @@ func splitJSONArray(payload []byte, dst [][]byte) ([][]byte, error) {
 		}
 		if i >= len(body) {
 			break
+		}
+		if limit > 0 && appended >= limit {
+			return nil, ErrTooManyArgs
 		}
 		start := i
 		depth := 0
@@ -308,6 +314,7 @@ func splitJSONArray(payload []byte, dst [][]byte) ([][]byte, error) {
 			end--
 		}
 		dst = append(dst, body[start:end:end])
+		appended++
 		i++ // past the separating comma, or past the end
 	}
 	return dst, nil

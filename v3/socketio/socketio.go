@@ -187,6 +187,10 @@ var (
 	// ErrUnknownEIOPacket is surfaced via EventError when the inbound EIO
 	// packet type byte does not match any recognised Engine.IO opcode.
 	ErrUnknownEIOPacket = errors.New("socketio: unknown EIO packet type")
+	// ErrTooManyArgs is surfaced via EventError when an inbound EVENT
+	// array holds more elements than MaxEventArgs; an ACK array over the
+	// limit is dropped silently, like any other malformed ACK.
+	ErrTooManyArgs = errors.New("socketio: packet exceeds MaxEventArgs")
 )
 
 // Tunable package-level knobs. Mutate them before calling New so each new
@@ -273,6 +277,14 @@ var (
 	// frame inside the EventPayload dispatched to user listeners. Set
 	// to zero to disable the bound (not recommended).
 	MaxEventNameLength = 256
+	// MaxEventArgs caps the number of elements accepted in an inbound
+	// SIO EVENT or ACK array, the event name included. Each element
+	// costs a slice header, so without the cap a payload of MaxPayload
+	// bytes made of one-byte elements would allocate an order of
+	// magnitude more than its own size before any listener runs. 256 is
+	// comfortably above any legitimate argument list. Set to zero to
+	// disable the bound (not recommended).
+	MaxEventArgs = 256
 	// SendQueueSize is the buffered capacity of the per-connection
 	// outbound frame queue. Tune it before connections are accepted;
 	// existing sockets retain the size in effect at New() time.

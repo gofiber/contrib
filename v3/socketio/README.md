@@ -33,7 +33,7 @@ This middleware implements the full Engine.IO v4 / Socket.IO v5 wire protocol. H
 - **Reserved-event-name guard.** User code cannot register or emit names reserved by the protocol (e.g. `connect`, `disconnect`).
 - **EIO version validation.** Handshakes that advertise an unsupported `EIO` version are rejected.
 - **Auth payload validation.** The auth blob must be a JSON object and is bounded by `MaxAuthPayload`; oversize or malformed payloads are answered with CONNECT_ERROR.
-- **DoS hardening.** `MaxPayload`, `MaxBatchPackets`, `MaxEventNameLength`, and `MaxAuthPayload` bound every attacker-controlled length.
+- **DoS hardening.** `MaxPayload`, `MaxBatchPackets`, `MaxEventNameLength`, `MaxEventArgs`, and `MaxAuthPayload` bound every attacker-controlled length and count.
 - **Lock-free listener registry** plus `atomic.Bool isAlive`, removing the per-event mutex from the hot path.
 - **Optional drop-frames-on-overflow.** When `DropFramesOnOverflow` is true, a saturated send queue drops the offending frame and fires `EventError` instead of tearing down the connection.
 - **Graceful drain.** The package-level `Shutdown(ctx)` closes every active socket and waits for each worker to exit (or until `ctx` is cancelled).
@@ -84,6 +84,7 @@ All tunables are package-level variables; override before the first connection i
 | `MaxAuthPayload`       | `8 KiB`            | Max bytes for the SIO CONNECT auth JSON.                                      |
 | `MaxBatchPackets`      | `256`              | Max EIO packets in a single `0x1E`-batched frame.                             |
 | `MaxEventNameLength`   | `256`              | Max length of an inbound SIO event name.                                      |
+| `MaxEventArgs`         | `256`              | Max elements (event name included) in an inbound SIO EVENT or ACK array.      |
 | `CloseTimeout`         | `5s`               | Bound on the closing handshake: how long the server keeps reading for the peer's Close frame after `Close`, and how long `Close` waits for a saturated send queue. Zero closes the socket as soon as the frames are queued. |
 | `WriteTimeout`         | `0` (disabled)     | Deadline for a single WebSocket frame write by the send goroutine; a peer that stops reading is otherwise only detected by the heartbeat. |
 | `OutboundAckTimeout`   | `30s`              | Default ack deadline for `EmitWithAck`.                                       |
@@ -177,6 +178,7 @@ These package-level variables can be overridden before the first connection is a
 | `MaxAuthPayload`    | `8 << 10` (8 KiB)  | Maximum size in bytes for the Socket.IO CONNECT auth JSON.                                           |
 | `MaxBatchPackets`   | `256`              | Maximum number of Engine.IO packets accepted in a single `0x1E`-batched frame.                       |
 | `MaxEventNameLength`| `256`              | Maximum length of an inbound Socket.IO event name.                                                   |
+| `MaxEventArgs`      | `256`              | Maximum number of elements, event name included, in an inbound Socket.IO EVENT or ACK array.         |
 | `OutboundAckTimeout`| `30 * time.Second` | Default timeout used by `EmitWithAck` when no per-call timeout is supplied.                          |
 | `DropFramesOnOverflow` | `false`         | If true, saturated outbound queues drop the offending frame and fire `EventError`.                   |
 | `RetrySendTimeout`  | `20 * time.Millisecond` | Deprecated: no effect; the send goroutine writes each frame exactly once.                       |

@@ -554,6 +554,30 @@ func TestParseSIOEventNames(t *testing.T) {
 	require.Contains(t, err.Error(), "failed to parse event payload")
 }
 
+// TestSplitJSONArrayBoundsElements pins the MaxEventArgs cap: an array with
+// more elements than the limit is rejected before its slice headers are
+// allocated, on both the EVENT and the ACK path.
+func TestSplitJSONArrayBoundsElements(t *testing.T) {
+	prev := MaxEventArgs
+	MaxEventArgs = 3
+	defer func() { MaxEventArgs = prev }()
+
+	got, err := splitJSONArray([]byte(`[1,2,3]`), nil)
+	require.NoError(t, err)
+	require.Len(t, got, 3)
+	_, err = splitJSONArray([]byte(`[1,2,3,4]`), nil)
+	require.ErrorIs(t, err, ErrTooManyArgs)
+	_, _, err = parseSIOEvent([]byte(`["ev",1,2,3]`))
+	require.ErrorIs(t, err, ErrTooManyArgs)
+	_, err = parseSIOAckArgs([]byte(`[1,2,3,4]`))
+	require.ErrorIs(t, err, ErrTooManyArgs)
+
+	MaxEventArgs = 0
+	got, err = splitJSONArray([]byte(`[1,2,3,4,5,6,7,8,9]`), nil)
+	require.NoError(t, err)
+	require.Len(t, got, 9)
+}
+
 func TestParseSIOAckArgs(t *testing.T) {
 	args, err := parseSIOAckArgs([]byte(`[]`))
 	require.NoError(t, err)

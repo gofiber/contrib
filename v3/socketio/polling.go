@@ -327,7 +327,7 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 	queries := c.Queries()
 	queriesSnap := make(map[string]string, len(queries))
 	for k, v := range queries {
-		queriesSnap[k] = utils.CopyString(v)
+		queriesSnap[utils.CopyString(k)] = utils.CopyString(v)
 	}
 	var paramsSnap map[string]string
 	if route := c.Route(); route != nil && len(route.Params) > 0 {

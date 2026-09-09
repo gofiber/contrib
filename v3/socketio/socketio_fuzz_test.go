@@ -511,6 +511,12 @@ func FuzzSplitJSONArray(f *testing.F) {
 			}
 			return
 		}
+		if MaxEventArgs > 0 && len(ref) > MaxEventArgs {
+			if !errors.Is(err, ErrTooManyArgs) {
+				t.Fatalf("%d elements must exceed MaxEventArgs=%d, got err=%v", len(ref), MaxEventArgs, err)
+			}
+			return
+		}
 		if err != nil {
 			t.Fatalf("encoding/json accepted %q, splitter failed: %v", data, err)
 		}
