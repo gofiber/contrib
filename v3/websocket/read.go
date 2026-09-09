@@ -4,6 +4,8 @@ import (
 	"errors"
 	"io"
 	"sync"
+
+	"github.com/gofiber/utils/v2"
 )
 
 const (
@@ -65,15 +67,18 @@ func (fr *frameReader) readAll(r io.Reader) ([]byte, error) {
 			return nil, err
 		}
 	}
-	msg := make([]byte, len(buf))
-	copy(msg, buf)
 	fr.buf = buf
-	return msg, nil
+	return utils.CopyBytes(buf), nil
 }
 
 func (fr *frameReader) release() {
+	fr.trim()
+	framePool.Put(fr)
+}
+
+// trim drops a buffer that grew past frameBufferRetained.
+func (fr *frameReader) trim() {
 	if cap(fr.buf) > frameBufferRetained {
 		fr.buf = nil
 	}
-	framePool.Put(fr)
 }

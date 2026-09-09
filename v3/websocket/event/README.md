@@ -133,7 +133,8 @@ hard default.
 | Config field        | Default | Description |
 |:--------------------|:--------|:------------|
 | `PingInterval`      | `25s`   | Interval between server-originated Ping frames. Socket.IO's default; must be less than any upstream proxy or load balancer idle timeout. |
-| `ReadIdleTimeout`   | `PingInterval + 20s` | Maximum silence before the connection is disconnected. The 20s is Socket.IO's ping timeout, so a peer that stops answering is dropped 45s into its silence. |
+| `PingTimeout`       | `20s`   | How long a peer may stay silent after a Ping before it is considered dead. Socket.IO's default. |
+| `ReadIdleTimeout`   | `PingInterval + PingTimeout` | Maximum silence before the connection is disconnected, 45s by default. |
 | `WriteTimeout`      | `10s`   | Bounds a single `WriteMessage` / `WriteControl` call. |
 | `MaxMessageSize`    | `1 MiB` | Inbound frame size limit. Set to `math.MaxInt64` to opt out. |
 | `SendQueueSize`     | `100`   | Per-connection outbound message queue capacity. |

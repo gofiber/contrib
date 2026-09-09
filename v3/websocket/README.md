@@ -139,8 +139,11 @@ push-only handlers are unaffected, and frames are never reordered. With 5-byte f
 16 in flight per connection, server CPU per frame goes from 5.7 µs to 1.0 µs.
 
 To own the connection the upgrade runs through the library's `net/http` `Upgrader` on a
-fasthttp-backed hijack: the 101 carries the handshake headers and what earlier middleware
-set, but not fasthttp's `Date`, and `Sec-WebSocket-Key` is validated as RFC 6455 requires.
+fasthttp-backed hijack. fasthttp still sends the 101, so middleware running after `c.Next()`
+sees the status and headers and can add its own, and `Sec-WebSocket-Key` is validated as
+RFC 6455 requires. `c.NetConn()` returns the middleware's connection; its `UnsafeConn()`
+is the socket underneath. `Close` sends what is pending, waiting at most 100 ms for a peer
+that is not reading, and interrupts a write stalled on that peer.
 
 ## Note with cache middleware
 

@@ -100,7 +100,7 @@ var (
 // 20s after one is gone, so 45s of silence ends a connection.
 const (
 	defaultPingInterval = 25 * time.Second
-	defaultPongTimeout  = 20 * time.Second
+	defaultPingTimeout  = 20 * time.Second
 )
 
 type message struct {
@@ -133,8 +133,11 @@ type Config struct {
 	// Must be less than any upstream proxy or load balancer idle timeout.
 	// Zero falls back to PongTimeout, then 25s.
 	PingInterval time.Duration
+	// PingTimeout is how long a peer may stay silent after a Ping before it
+	// is considered dead. Zero falls back to 20s.
+	PingTimeout time.Duration
 	// ReadIdleTimeout bounds how long a connection may stay silent before
-	// it is considered dead. Zero falls back to PingInterval + 20s.
+	// it is considered dead. Zero falls back to PingInterval + PingTimeout.
 	ReadIdleTimeout time.Duration
 	// WriteTimeout bounds a single WriteMessage or WriteControl call. Zero
 	// falls back to 10s.
@@ -159,6 +162,7 @@ type Config struct {
 // settings is the per-connection immutable snapshot.
 type settings struct {
 	pingInterval     time.Duration
+	pingTimeout      time.Duration
 	readIdleTimeout  time.Duration
 	writeTimeout     time.Duration
 	maxMessageSize   int64
@@ -171,6 +175,7 @@ type settings struct {
 func resolveSettings(cfg Config) settings {
 	s := settings{
 		pingInterval:     cfg.PingInterval,
+		pingTimeout:      cfg.PingTimeout,
 		readIdleTimeout:  cfg.ReadIdleTimeout,
 		writeTimeout:     cfg.WriteTimeout,
 		maxMessageSize:   cfg.MaxMessageSize,
@@ -185,8 +190,11 @@ func resolveSettings(cfg Config) settings {
 			s.pingInterval = defaultPingInterval
 		}
 	}
+	if s.pingTimeout <= 0 {
+		s.pingTimeout = defaultPingTimeout
+	}
 	if s.readIdleTimeout <= 0 {
-		s.readIdleTimeout = s.pingInterval + defaultPongTimeout
+		s.readIdleTimeout = s.pingInterval + s.pingTimeout
 	}
 	if s.writeTimeout <= 0 {
 		s.writeTimeout = 10 * time.Second

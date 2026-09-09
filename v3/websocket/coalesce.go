@@ -2,32 +2,31 @@ package websocket
 
 import (
 	"bufio"
-	"errors"
+	"bytes"
+	"io"
 	"net"
 	"net/http"
-	"strings"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/fasthttp/websocket"
 	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/utils/v2"
 	"github.com/valyala/fasthttp"
 )
 
-// The upgrade runs through the library's net/http Upgrader on a fasthttp-backed
-// Hijacker, so the middleware owns the net.Conn the library writes to and can
-// answer a burst of pipelined frames with one write.
+// The handshake runs through the library's net/http Upgrader on a
+// fasthttp-backed Hijacker, so the middleware owns the net.Conn the library
+// writes to and can answer a burst of pipelined frames with one write.
+// fasthttp still sends the 101: the headers the library composed are mirrored
+// onto the response before the hijack, where later middleware sees them.
 
 const (
-	coalesceLimit    = 64 << 10         // flush once this much is pending
-	coalesceMaxDelay = time.Millisecond // flush if the reader has not returned by then
-	coalesceRetain   = 16 << 10         // largest pending buffer kept between bursts
-	hijackBufferSize = 16               // below the sizes the library would reuse
+	coalesceLimit    = 64 << 10               // a write that would push pending past this goes out
+	coalesceMaxDelay = time.Millisecond       // flush if the reader has not returned by then
+	closeFlushGrace  = 100 * time.Millisecond // how long Close waits to send what is pending
 )
-
-var errNotAttached = errors.New("websocket: connection not attached yet")
 
 var handshakeHeaders = [...]string{
 	http.CanonicalHeaderKey(fiber.HeaderConnection),
@@ -39,16 +38,25 @@ var handshakeHeaders = [...]string{
 	http.CanonicalHeaderKey(fiber.HeaderOrigin),
 }
 
-// coalescingConn defers a write only while batch && !parked: the reader was
-// handed input by its last fill and has not come back for more. Pending bytes
-// leave before a blocking read, at coalesceLimit, on Close, or after
-// coalesceMaxDelay.
-type coalescingConn struct {
-	src net.Conn // fasthttp's hijacked conn: reads, and the Close fasthttp expects
-	raw net.Conn // the socket: writes, deadlines, addresses; nil until attach
+// hijackReadWriter is handed to the library on hijack. It only inspects the
+// pair and, at these sizes, allocates its own buffers from Config.
+var hijackReadWriter = bufio.NewReadWriter(bufio.NewReaderSize(bytes.NewReader(nil), 16), bufio.NewWriterSize(io.Discard, 16))
 
-	batch  atomic.Bool
-	parked atomic.Bool
+var scratchPool = sync.Pool{New: func() any { b := make([]byte, 4096); return &b }}
+
+// coalescingConn defers a write only while batch is set: the reader was
+// handed input by its last fill and has not come back for more. Pending bytes
+// leave before the reader blocks, when a write would not fit, on Close, or
+// after coalesceMaxDelay.
+//
+// mu guards pending and the flags; wmu orders socket writes and is never
+// taken under mu, so Close and the reader never wait behind a stalled writer.
+type coalescingConn struct {
+	src   net.Conn // fasthttp's hijacked conn; its Close is the one fasthttp expects
+	raw   net.Conn // the socket underneath, nil until attach
+	stash []byte   // bytes fasthttp had read past the handshake
+
+	batch atomic.Bool
 
 	mu       sync.Mutex
 	pending  []byte
@@ -57,49 +65,61 @@ type coalescingConn struct {
 	armed    bool
 	closed   bool
 	err      error
+
+	wmu sync.Mutex
 }
 
 func newCoalescingConn() *coalescingConn {
 	return &coalescingConn{maxDelay: coalesceMaxDelay}
 }
 
-// attach binds the hijacked conn and sends the 101 the library wrote meanwhile.
-func (c *coalescingConn) attach(src net.Conn, handshakeTimeout time.Duration) error {
+// takeHandshake returns what the library wrote during Upgrade, the 101 that
+// fasthttp sends instead.
+func (c *coalescingConn) takeHandshake() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	p := c.pending
+	c.pending = nil
+	return p
+}
+
+// attach binds the hijacked conn. Whatever fasthttp buffered past the
+// handshake is stashed so reads can go straight to the socket; with that
+// buffer empty the expired deadline fails before any syscall.
+func (c *coalescingConn) attach(src net.Conn) {
 	raw := src
 	if u, ok := src.(interface{ UnsafeConn() net.Conn }); ok {
 		raw = u.UnsafeConn()
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.src, c.raw = src, raw
-	if handshakeTimeout > 0 {
-		if err := raw.SetWriteDeadline(time.Now().Add(handshakeTimeout)); err != nil {
-			return err
+	_ = src.SetReadDeadline(time.Unix(1, 0))
+	scratch := scratchPool.Get().(*[]byte)
+	var stash []byte
+	for {
+		n, err := src.Read(*scratch)
+		stash = append(stash, (*scratch)[:n]...)
+		if err != nil {
+			break
 		}
 	}
-	if err := c.flushLocked(); err != nil {
-		return err
-	}
-	if handshakeTimeout > 0 {
-		return raw.SetWriteDeadline(time.Time{})
-	}
-	return nil
+	scratchPool.Put(scratch)
+	_ = raw.SetReadDeadline(time.Time{})
+	c.mu.Lock()
+	c.src, c.raw, c.stash = src, raw, stash
+	c.mu.Unlock()
 }
 
 func (c *coalescingConn) Read(p []byte) (int, error) {
-	if c.src == nil {
-		return 0, errNotAttached
-	}
 	c.batch.Store(false)
-	c.mu.Lock()
-	err := c.flushLocked()
-	c.mu.Unlock()
-	if err != nil {
+	if err := c.flush(); err != nil {
 		return 0, err
 	}
-	c.parked.Store(true)
-	n, err := c.src.Read(p)
-	c.parked.Store(false)
+	if len(c.stash) > 0 {
+		n := copy(p, c.stash)
+		c.stash = c.stash[n:]
+		c.batch.Store(true)
+		return n, nil
+	}
+	n, err := c.raw.Read(p)
 	if n > 0 {
 		c.batch.Store(true)
 	}
@@ -108,31 +128,110 @@ func (c *coalescingConn) Read(p []byte) (int, error) {
 
 func (c *coalescingConn) Write(p []byte) (int, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.err != nil {
-		return 0, c.err
+		err := c.err
+		c.mu.Unlock()
+		return 0, err
 	}
 	if c.closed {
+		c.mu.Unlock()
 		return 0, net.ErrClosed
 	}
-	if c.raw == nil || (c.batch.Load() && !c.parked.Load() && len(c.pending)+len(p) <= coalesceLimit) {
+	if c.raw == nil || (c.batch.Load() && len(c.pending)+len(p) <= coalesceLimit) {
 		c.pending = append(c.pending, p...)
 		if c.raw != nil && !c.armed {
 			c.arm()
 		}
+		c.mu.Unlock()
 		return len(p), nil
 	}
-	if err := c.flushLocked(); err != nil {
+	c.mu.Unlock()
+
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	var err error
+	if pending := c.take(); len(pending) > 0 {
+		bufs := net.Buffers{pending, p} // one writev on a TCP socket
+		_, err = bufs.WriteTo(c.raw)
+		c.recycle(pending)
+	} else {
+		_, err = c.raw.Write(p)
+	}
+	if err != nil {
+		c.fail(err)
 		return 0, err
 	}
-	n, err := c.raw.Write(p)
-	if err != nil {
-		c.err = err
-	}
-	return n, err
+	_ = c.drainLocked()
+	return len(p), nil
 }
 
-// arm starts the safety timer; it is left to expire rather than stopped per flush.
+// flush sends what is pending unless a writer holds the socket, which then
+// drains it before releasing.
+func (c *coalescingConn) flush() error {
+	c.mu.Lock()
+	empty, err := len(c.pending) == 0, c.err
+	c.mu.Unlock()
+	if err != nil || empty {
+		return err
+	}
+	if !c.wmu.TryLock() {
+		return nil
+	}
+	defer c.wmu.Unlock()
+	return c.drainLocked()
+}
+
+// drainLocked writes pending until it is empty. Caller holds wmu.
+func (c *coalescingConn) drainLocked() error {
+	for {
+		pending := c.take()
+		if len(pending) == 0 {
+			return nil
+		}
+		_, err := c.raw.Write(pending)
+		c.recycle(pending)
+		if err != nil {
+			c.fail(err)
+			return err
+		}
+	}
+}
+
+// take removes the pending bytes, or returns nil when there are none or the
+// connection has already failed.
+func (c *coalescingConn) take() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.armed {
+		c.timer.Stop()
+		c.armed = false
+	}
+	if len(c.pending) == 0 || c.err != nil {
+		return nil
+	}
+	p := c.pending
+	c.pending = nil
+	return p
+}
+
+// recycle keeps a written buffer for the next batch.
+func (c *coalescingConn) recycle(p []byte) {
+	c.mu.Lock()
+	if c.pending == nil && cap(p) <= coalesceLimit {
+		c.pending = p[:0]
+	}
+	c.mu.Unlock()
+}
+
+func (c *coalescingConn) fail(err error) {
+	c.mu.Lock()
+	if c.err == nil {
+		c.err = err
+	}
+	c.mu.Unlock()
+}
+
+// arm starts the safety timer. Caller holds mu.
 func (c *coalescingConn) arm() {
 	if c.timer == nil {
 		c.timer = time.AfterFunc(c.maxDelay, c.onTimer)
@@ -142,33 +241,26 @@ func (c *coalescingConn) arm() {
 	c.armed = true
 }
 
+// onTimer sends what a reader that did not come back left pending, and stops
+// deferring until the next fill proves the reader is still consuming.
 func (c *coalescingConn) onTimer() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.armed = false
-	if len(c.pending) == 0 {
+	empty := len(c.pending) == 0
+	if !empty {
+		c.batch.Store(false)
+	}
+	c.mu.Unlock()
+	if empty || !c.wmu.TryLock() {
 		return
 	}
-	c.batch.Store(false)
-	_ = c.flushLocked()
+	_ = c.drainLocked()
+	c.wmu.Unlock()
 }
 
-func (c *coalescingConn) flushLocked() error {
-	if len(c.pending) == 0 {
-		return nil
-	}
-	_, err := c.raw.Write(c.pending)
-	if cap(c.pending) > coalesceRetain {
-		c.pending = nil
-	} else {
-		c.pending = c.pending[:0]
-	}
-	if err != nil {
-		c.err = err
-	}
-	return err
-}
-
+// Close sends what is pending, within closeFlushGrace, and closes the socket.
+// A writer stalled on a full window is expired first so it cannot hold the
+// close up. A second Close is a no-op: fasthttp recycles its conn on the first.
 func (c *coalescingConn) Close() error {
 	c.mu.Lock()
 	if c.closed {
@@ -176,35 +268,29 @@ func (c *coalescingConn) Close() error {
 		return nil
 	}
 	c.closed = true
-	if c.raw != nil {
-		_ = c.flushLocked()
-	}
-	if c.armed {
-		c.timer.Stop()
-		c.armed = false
-	}
-	c.pending = nil
-	src := c.src
+	src, raw := c.src, c.raw
 	c.mu.Unlock()
-	if src == nil {
+	if raw == nil {
 		return nil
 	}
+	if !c.wmu.TryLock() {
+		_ = raw.SetWriteDeadline(time.Unix(1, 0))
+		c.wmu.Lock()
+	}
+	_ = raw.SetWriteDeadline(time.Now().Add(closeFlushGrace))
+	_ = c.drainLocked()
+	c.wmu.Unlock()
 	return src.Close()
 }
 
-func (c *coalescingConn) LocalAddr() net.Addr {
-	if c.raw == nil {
-		return nil
-	}
-	return c.raw.LocalAddr()
-}
+// UnsafeConn returns the socket underneath, as fasthttp's hijacked conn does.
+func (c *coalescingConn) UnsafeConn() net.Conn { return c.raw }
 
-func (c *coalescingConn) RemoteAddr() net.Addr {
-	if c.raw == nil {
-		return nil
-	}
-	return c.raw.RemoteAddr()
-}
+func (c *coalescingConn) LocalAddr() net.Addr  { return c.raw.LocalAddr() }
+func (c *coalescingConn) RemoteAddr() net.Addr { return c.raw.RemoteAddr() }
+
+// The deadline setters tolerate a nil raw: the library clears the deadlines
+// during Upgrade, before fasthttp has handed the socket over.
 
 func (c *coalescingConn) SetDeadline(t time.Time) error {
 	if c.raw == nil {
@@ -227,8 +313,8 @@ func (c *coalescingConn) SetWriteDeadline(t time.Time) error {
 	return c.raw.SetWriteDeadline(t)
 }
 
-// upgradeResponseWriter never writes: a rejection records its status for
-// Fiber to answer, an accepted handshake is hijacked into conn.
+// upgradeResponseWriter never writes a response: a rejection records its
+// status for Fiber to answer, an accepted handshake is hijacked into conn.
 type upgradeResponseWriter struct {
 	conn   *coalescingConn
 	header http.Header
@@ -242,23 +328,19 @@ func (w *upgradeResponseWriter) Header() http.Header {
 	return w.header
 }
 
-func (w *upgradeResponseWriter) Write([]byte) (int, error) {
-	return 0, http.ErrHijacked
-}
-
-func (w *upgradeResponseWriter) WriteHeader(int) {}
+func (w *upgradeResponseWriter) Write([]byte) (int, error) { return 0, http.ErrHijacked }
+func (w *upgradeResponseWriter) WriteHeader(code int)      { w.status = code }
 
 func (w *upgradeResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	rw := bufio.NewReadWriter(bufio.NewReaderSize(w.conn, hijackBufferSize), bufio.NewWriterSize(w.conn, hijackBufferSize))
-	return w.conn, rw, nil
+	return w.conn, hijackReadWriter, nil
 }
 
 func upgradeRequest(fctx *fasthttp.RequestCtx) *http.Request {
 	h := &fctx.Request.Header
 	header := make(http.Header, len(handshakeHeaders))
 	for _, name := range handshakeHeaders {
-		if v := h.Peek(name); len(v) > 0 {
-			header[name] = []string{string(v)}
+		for _, v := range h.PeekAll(name) {
+			header[name] = append(header[name], string(v))
 		}
 	}
 	method := http.MethodGet
@@ -268,45 +350,27 @@ func upgradeRequest(fctx *fasthttp.RequestCtx) *http.Request {
 	return &http.Request{Method: method, Header: header}
 }
 
-// upgradeResponseHeader forwards what earlier middleware set and negotiates
-// the subprotocol in server-preference order, which the net/http upgrader
-// would not.
-func upgradeResponseHeader(fctx *fasthttp.RequestCtx, subprotocols []string) http.Header {
-	var header http.Header
-	for key, value := range fctx.Response.Header.All() {
-		switch utils.UnsafeString(key) {
-		case fiber.HeaderContentType, fiber.HeaderContentLength, fiber.HeaderDate,
-			fiber.HeaderConnection, fiber.HeaderUpgrade, fiber.HeaderSecWebSocketAccept:
-			continue
-		}
-		if header == nil {
-			header = http.Header{}
-		}
-		name := http.CanonicalHeaderKey(string(key))
-		header[name] = append(header[name], string(value))
-	}
-	if subprotocols != nil {
-		protocol := http.CanonicalHeaderKey(fiber.HeaderSecWebSocketProtocol)
-		delete(header, protocol)
-		if chosen := selectSubprotocol(fctx.Request.Header.Peek(fiber.HeaderSecWebSocketProtocol), subprotocols); chosen != "" {
-			if header == nil {
-				header = http.Header{}
-			}
-			header[protocol] = []string{chosen}
-		}
-	}
-	return header
-}
-
-func selectSubprotocol(offered []byte, subprotocols []string) string {
-	for _, serverProtocol := range subprotocols {
-		for clientProtocol := range strings.SplitSeq(utils.UnsafeString(offered), ",") {
-			if strings.TrimSpace(clientProtocol) == serverProtocol {
-				return serverProtocol
+// subprotocolHeader hands the library the negotiated subprotocol, chosen in
+// the server's order of preference, which the library's own selection would
+// not keep. With no Subprotocols configured, one set on the response by
+// earlier middleware stands.
+func subprotocolHeader(fctx *fasthttp.RequestCtx, req *http.Request, subprotocols []string) http.Header {
+	var chosen string
+	if subprotocols == nil {
+		chosen = string(fctx.Response.Header.Peek(fiber.HeaderSecWebSocketProtocol))
+	} else {
+		offered := websocket.Subprotocols(req)
+		for _, s := range subprotocols {
+			if slices.Contains(offered, s) {
+				chosen = s
+				break
 			}
 		}
 	}
-	return ""
+	if chosen == "" {
+		return nil
+	}
+	return http.Header{http.CanonicalHeaderKey(fiber.HeaderSecWebSocketProtocol): {chosen}}
 }
 
 func newUpgrader(cfg *Config, originAllowed func(origin string) bool) websocket.Upgrader {
@@ -315,14 +379,6 @@ func newUpgrader(cfg *Config, originAllowed func(origin string) bool) websocket.
 		WriteBufferSize:   cfg.WriteBufferSize,
 		WriteBufferPool:   cfg.WriteBufferPool,
 		EnableCompression: cfg.EnableCompression,
-		Error: func(w http.ResponseWriter, _ *http.Request, status int, _ error) {
-			if status == fiber.StatusUpgradeRequired { // partial handshake: 400, as documented
-				status = fiber.StatusBadRequest
-			}
-			if uw, ok := w.(*upgradeResponseWriter); ok {
-				uw.status = status
-			}
-		},
 		CheckOrigin: func(r *http.Request) bool {
 			return originAllowed(r.Header.Get(fiber.HeaderOrigin))
 		},
@@ -331,22 +387,36 @@ func newUpgrader(cfg *Config, originAllowed func(origin string) bool) websocket.
 
 func upgrade(c fiber.Ctx, upgrader *websocket.Upgrader, conn *Conn, cfg *Config, handler func(*Conn)) error {
 	fctx := c.RequestCtx()
+	if len(fctx.Response.Header.Peek(fiber.HeaderSecWebSocketExtensions)) > 0 {
+		// Application extensions are unsupported, as on the fasthttp upgrader.
+		fctx.SetStatusCode(fiber.StatusInternalServerError)
+		return rejectHandshake(c, fiber.StatusInternalServerError)
+	}
 	cc := newCoalescingConn()
 	w := &upgradeResponseWriter{conn: cc}
-	fconn, err := upgrader.Upgrade(w, upgradeRequest(fctx), upgradeResponseHeader(fctx, cfg.Subprotocols))
+	req := upgradeRequest(fctx)
+	fconn, err := upgrader.Upgrade(w, req, subprotocolHeader(fctx, req, cfg.Subprotocols))
 	if err != nil {
-		if w.status == 0 {
-			w.status = fiber.StatusInternalServerError
+		status := w.status
+		switch status {
+		case 0:
+			status = fiber.StatusInternalServerError
+		case fiber.StatusUpgradeRequired: // a Connection header without its Upgrade counterpart: 400, as documented
+			status = fiber.StatusBadRequest
 		}
-		fctx.SetStatusCode(w.status)
-		return rejectHandshake(c, w.status)
+		fctx.SetStatusCode(status)
+		return rejectHandshake(c, status)
 	}
-	fctx.HijackSetNoResponse(true) // the 101 is already in cc; attach sends it
-	fctx.Hijack(func(netConn net.Conn) {
-		if err := cc.attach(netConn, cfg.HandshakeTimeout); err != nil {
-			_ = cc.Close()
-			return
+	// The library wrote the 101 into cc. fasthttp sends the response once the
+	// chain has unwound, so mirror those headers onto it.
+	fctx.SetStatusCode(fiber.StatusSwitchingProtocols)
+	for line := range bytes.SplitSeq(cc.takeHandshake(), []byte("\r\n")) {
+		if key, value, ok := bytes.Cut(line, []byte(": ")); ok {
+			fctx.Response.Header.SetBytesKV(key, value)
 		}
+	}
+	fctx.Hijack(func(netConn net.Conn) {
+		cc.attach(netConn)
 		runHandler(conn, fconn, cfg.RecoverHandler, handler)
 	})
 	return nil
