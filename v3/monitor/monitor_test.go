@@ -87,6 +87,9 @@ func TestJSONUsesFinalSnapshotShape(t *testing.T) {
 		`"runtime"`,
 		`"system"`,
 		`"http"`,
+		`"pid"`,
+		`"os"`,
+		`"tcp_connections"`,
 		`"heap_sys_bytes"`,
 		`"gc_pause_window_ns"`,
 		`"memory_available_bytes"`,
@@ -95,6 +98,7 @@ func TestJSONUsesFinalSnapshotShape(t *testing.T) {
 	} {
 		assert.Contains(t, string(body), field)
 	}
+	assert.Equal(t, "0", current.PID.Requests)
 }
 
 func TestMonitorMethodHandling(t *testing.T) {

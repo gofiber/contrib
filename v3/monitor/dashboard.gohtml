@@ -182,6 +182,7 @@
       gap: 7px;
     }
     .control-dot {
+      position: relative;
       width: 10px;
       height: 10px;
       padding: 0;
@@ -190,6 +191,11 @@
       background: var(--muted);
       box-shadow: 0 0 0 4px color-mix(in srgb, var(--muted) 16%, transparent);
       transition: none;
+    }
+    .control-dot::before {
+      content: "";
+      position: absolute;
+      inset: -10px;
     }
     .control-dot[data-active="light"] {
       background: #facc15;
@@ -524,8 +530,26 @@
       pointer-events: none;
       backdrop-filter: blur(10px);
     }
-    .chart-tooltip strong { display: block; margin-bottom: 4px; color: var(--accent); }
-    .chart-tooltip span { display: block; color: var(--muted); }
+    .chart-tooltip strong { display: block; margin-bottom: 5px; color: var(--accent); }
+    .chart-tooltip__empty { display: block; color: var(--muted); }
+    .chart-tooltip__row {
+      display: grid;
+      grid-template-columns: 8px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 7px;
+      margin-top: 3px;
+    }
+    .chart-tooltip__marker {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+    }
+    .chart-tooltip__name { color: var(--muted); }
+    .chart-tooltip__value {
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }
     footer {
       margin-top: 20px;
       color: var(--muted);
@@ -816,6 +840,7 @@
           <div class="row"><dt>Threads</dt><dd id="pid-threads">-</dd></div>
           <div class="row"><dt>PID</dt><dd>{{ .PID }}</dd></div>
           <div class="row"><dt>{{ .DescriptorLabel }}</dt><dd id="pid-fds">-</dd></div>
+          <div class="row"><dt>TCP Connections</dt><dd id="pid-tcp-connections">-</dd></div>
         </dl>
       </section>
       <section class="metric-card">
@@ -836,6 +861,7 @@
           <div class="row"><dt>Total RAM</dt><dd id="os-total">-</dd></div>
           <div class="row"><dt>Disk</dt><dd><button type="button" id="disk-details-button" class="metric-action" aria-haspopup="dialog" aria-controls="disk-modal">-</button></dd></div>
           <div class="row"><dt>1m load</dt><dd id="os-load">-</dd></div>
+          <div class="row"><dt>TCP Connections</dt><dd id="os-tcp-connections">-</dd></div>
           <div class="row"><dt>Available RAM</dt><dd id="os-available">-</dd></div>
           <div class="row"><dt>5m load</dt><dd id="os-load-5">-</dd></div>
           <div class="row"><dt>15m load</dt><dd id="os-load-15">-</dd></div>
@@ -1047,21 +1073,6 @@
       return values.slice(Math.max(0, values.length - currentSampleWindow));
     }
 
-    function fillForward(values) {
-      let previous = null;
-      return values.map((value) => {
-        if (finite(value)) {
-          previous = value;
-          return value;
-        }
-        return finite(previous) ? previous : null;
-      });
-    }
-
-    function fillZero(values) {
-      return values.map((value) => finite(value) ? value : 0);
-    }
-
     function appendDetailRows(list, rows) {
       rows.forEach(([label, value]) => {
         const row = document.createElement("div");
@@ -1188,6 +1199,7 @@
       setText("pid-rss", optional(process.rss_bytes, formatBytes));
       setText("pid-threads", optional(process.threads, decimal.format));
       setText("pid-fds", optional(process.open_descriptors, decimal.format));
+      setText("pid-tcp-connections", optional(process.tcp_connections, integer.format));
       setText("rt-goroutines", optional(currentRuntime.goroutines, decimal.format));
       setText("heap-details-button", optional(currentRuntime.heap_alloc_bytes, formatBytes));
       setText("rt-heap-objects", optional(currentRuntime.heap_objects, compact.format));
@@ -1199,6 +1211,7 @@
       setText("os-total", optional(currentSystem.memory_total_bytes, formatBytes));
       setText("disk-details-button", percent(currentSystem.disk_used_percent));
       setLoadText("os-load", currentSystem.load1, loadUnsupported);
+      setText("os-tcp-connections", optional(currentSystem.tcp_connections, integer.format));
       setText("os-available", optional(currentSystem.memory_available_bytes, formatBytes));
       setLoadText("os-load-5", currentSystem.load5, loadUnsupported);
       setLoadText("os-load-15", currentSystem.load15, loadUnsupported);
@@ -1291,40 +1304,89 @@
       return formatDurationNS(value).replace(" ", "");
     }
 
-    function drawGrid(context, width, height, padding, min, max, options) {
-      const lines = 5;
+    function niceScale(min, observedMax, floorMax, minimumStep) {
+      if (floorMax > min && observedMax <= floorMax) {
+        return { max: floorMax, step: (floorMax - min) / 5, intervals: 5 };
+      }
+
+      const baseMax = Math.max(floorMax, observedMax, min + 1);
+      const targetMax = Math.max(baseMax + (baseMax - min) * .08, min + minimumStep * 4);
+      const span = targetMax - min;
+      const roughStep = span / 5;
+      const magnitude = 10 ** Math.floor(Math.log10(roughStep));
+      const candidates = [.1, .2, .5, 1, 2, 5, 10]
+        .map((factor) => factor * magnitude)
+        .filter((step) => step >= minimumStep);
+      if (!candidates.length) candidates.push(Math.max(minimumStep, roughStep));
+      let best = null;
+      candidates.forEach((step) => {
+        const intervals = Math.ceil(span / step);
+        const max = min + intervals * step;
+        const outsideRange = intervals < 4 ? 4 - intervals : Math.max(0, intervals - 6);
+        const score = outsideRange * 3 + Math.abs(intervals - 5) * .1 + (max - targetMax) / span;
+        if (!best || score < best.score) best = { max, step, intervals, score };
+      });
+      return { max: best.max, step: best.step, intervals: best.intervals };
+    }
+
+    function drawTimeLabels(context, width, height, padding, labels, mutedColor) {
+      if (!labels.length) return;
+      const lastIndex = labels.length - 1;
+      const entries = lastIndex < 2 ?
+        [{ index: 0, align: lastIndex ? "left" : "right" }, ...(lastIndex ? [{ index: lastIndex, align: "right" }] : [])] :
+        [{ index: 0, align: "left" }, { index: Math.floor(lastIndex / 2), align: "center" }, { index: lastIndex, align: "right" }];
+      const plotWidth = width - padding.left - padding.right;
+      const labelMeta = { padding, count: labels.length, plotWidth };
+      context.fillStyle = mutedColor;
+      context.font = "10px system-ui, sans-serif";
+      context.textBaseline = "alphabetic";
+      entries.forEach((entry) => {
+        const x = sampleX(labelMeta, entry.index);
+        context.textAlign = entry.align;
+        context.fillText(labels[entry.index], x, height - 5);
+      });
+      context.textAlign = "left";
+    }
+
+    function drawGrid(context, width, height, padding, scale, options, labels, colors) {
       const plotHeight = height - padding.top - padding.bottom;
-      context.strokeStyle = cssColor("--border");
+      context.strokeStyle = colors.border;
       context.lineWidth = 1;
       context.globalAlpha = .55;
-      for (let line = 0; line <= lines; line += 1) {
-        const y = padding.top + plotHeight / lines * line;
+      for (let line = 0; line <= scale.intervals; line += 1) {
+        const y = padding.top + plotHeight / scale.intervals * line;
         context.beginPath();
         context.moveTo(padding.left, y);
         context.lineTo(width - padding.right, y);
         context.stroke();
       }
       context.globalAlpha = 1;
-      context.fillStyle = cssColor("--muted");
+      context.fillStyle = colors.muted;
       context.font = "11px system-ui, sans-serif";
       context.textBaseline = "middle";
-      for (let line = 0; line <= lines; line += 1) {
-        const value = max - (max - min) / lines * line;
-        const y = padding.top + plotHeight / lines * line;
+      for (let line = 0; line <= scale.intervals; line += 1) {
+        const value = scale.max - scale.step * line;
+        const y = padding.top + plotHeight / scale.intervals * line;
         context.fillText(options.formatValue ? options.formatValue(value) : formatAxis(value, options.unit), 4, y);
       }
-      context.textBaseline = "alphabetic";
+      drawTimeLabels(context, width, height, padding, labels, colors.muted);
+    }
+
+    function sampleX(meta, index) {
+      return meta.padding.left + (meta.count === 1 ? meta.plotWidth : index / (meta.count - 1) * meta.plotWidth);
+    }
+
+    function sampleY(meta, value) {
+      return meta.padding.top + (1 - (value - meta.min) / (meta.max - meta.min || 1)) * meta.plotHeight;
     }
 
     function drawSeries(context, data, config) {
-      const plotWidth = config.width - config.padding.left - config.padding.right;
-      const plotHeight = config.height - config.padding.top - config.padding.bottom;
       if (!data.length) return;
       context.lineWidth = 2;
       context.strokeStyle = config.color;
       context.lineJoin = "round";
       context.lineCap = "round";
-      context.setLineDash(Array.isArray(config.dash) ? config.dash : []);
+      context.setLineDash([]);
       let drawing = false;
       context.beginPath();
       data.forEach((value, index) => {
@@ -1332,8 +1394,8 @@
           drawing = false;
           return;
         }
-        const x = config.padding.left + (data.length === 1 ? plotWidth : index / (data.length - 1) * plotWidth);
-        const y = config.padding.top + (1 - (value - config.min) / (config.max - config.min || 1)) * plotHeight;
+        const x = sampleX(config, index);
+        const y = sampleY(config, value);
         if (!drawing) {
           context.moveTo(x, y);
           drawing = true;
@@ -1345,38 +1407,61 @@
       context.setLineDash([]);
     }
 
+    function paintLineChart(canvas, meta, colors) {
+      const paintColors = colors || {
+        border: cssColor("--border"),
+        muted: cssColor("--muted")
+      };
+      const context = canvas.getContext("2d");
+      context.setTransform(meta.dpr, 0, 0, meta.dpr, 0, 0);
+      context.clearRect(0, 0, meta.width, meta.height);
+      drawGrid(context, meta.width, meta.height, meta.padding, {
+        max: meta.max, step: meta.step, intervals: meta.intervals
+      }, meta.options, meta.labels, paintColors);
+      meta.series.forEach((series) => drawSeries(context, series.data, {
+        ...meta, color: series.color
+      }));
+    }
+
     function drawLineChart(canvas, seriesList, options) {
       if (!canvas) return;
-      const context = canvas.getContext("2d");
+      if (canvas._clearHover) canvas._clearHover(false);
       const dpr = window.devicePixelRatio || 1;
       const rect = canvas.getBoundingClientRect();
       const width = Math.max(rect.width, 1);
       const height = Math.max(rect.height, 1);
-      const padding = { top: 12, right: 10, bottom: 18, left: options.leftPadding || 58 };
+      const padding = { top: 12, right: 10, bottom: 24, left: options.leftPadding || 58 };
       canvas.width = Math.floor(width * dpr);
       canvas.height = Math.floor(height * dpr);
-      context.setTransform(dpr, 0, 0, dpr, 0, 0);
-      context.clearRect(0, 0, width, height);
       const values = [];
       seriesList.forEach((series) => series.data.forEach((value) => {
         if (finite(value)) values.push(value);
       }));
       const min = finite(options.minValue) ? options.minValue : 0;
       const floorMax = finite(options.minMax) ? options.minMax : 0;
-      const max = Math.max(floorMax, values.length ? Math.max(...values) : 1, 1);
-      drawGrid(context, width, height, padding, min, max, options);
-      seriesList.forEach((series) => drawSeries(context, series.data, {
-        width, height, padding, min, max, color: series.color, dash: series.dash
-      }));
-      canvas._chartMeta = {
+      const observedMax = values.length ? Math.max(...values) : 1;
+      const scale = niceScale(min, observedMax, floorMax, finite(options.minimumStep) ? options.minimumStep : 0);
+      const labels = visibleSamples(history.labels);
+      const meta = {
         series: seriesList,
-        labels: visibleSamples(history.labels),
-        count: Math.max(0, ...seriesList.map((series) => series.data.length)),
-        pad: padding,
-        plotWidth: width - padding.left - padding.right,
+        labels,
+        count: Math.max(labels.length, ...seriesList.map((series) => series.data.length)),
+        padding,
+        plotWidth: Math.max(1, width - padding.left - padding.right),
+        plotHeight: Math.max(1, height - padding.top - padding.bottom),
+        width,
+        height,
+        dpr,
+        min,
+        max: scale.max,
+        step: scale.step,
+        intervals: scale.intervals,
+        options,
         idleWhenMissing: Boolean(options.idleWhenMissing),
         formatter: options.formatValue || ((value) => formatAxis(value, options.unit))
       };
+      canvas._chartMeta = meta;
+      paintLineChart(canvas, meta);
     }
 
     function drawCharts() {
@@ -1402,45 +1487,112 @@
       drawLineChart(byId("request-chart"), [
         { name: "RPS", data: visibleSamples(history.rps), color: accent }
       ], { minValue: 0, unit: "req/s" });
-      const p50 = visibleSamples(history.p50);
-      const p95 = visibleSamples(history.p95);
-      const p99 = visibleSamples(history.p99);
       drawLineChart(byId("latency-chart"), [
-        { name: "P50", data: visibleSamples(fillForward(history.p50)), rawData: p50, color: accent },
-        { name: "P95", data: visibleSamples(fillForward(history.p95)), rawData: p95, color: warn, dash: [6, 4] },
-        { name: "P99", data: visibleSamples(fillForward(history.p99)), rawData: p99, color: bad }
-      ], { minValue: 0, formatValue: durationAxisNS, leftPadding: 70, idleWhenMissing: true });
-      const error4xx = visibleSamples(history.error4xx);
-      const error5xx = visibleSamples(history.error5xx);
+        { name: "P50", data: visibleSamples(history.p50), color: accent },
+        { name: "P95", data: visibleSamples(history.p95), color: warn },
+        { name: "P99", data: visibleSamples(history.p99), color: bad }
+      ], { minValue: 0, minimumStep: 1, formatValue: durationAxisNS, leftPadding: 70, idleWhenMissing: true });
       drawLineChart(byId("http-error-chart"), [
-        { name: "4xx", data: fillZero(error4xx), rawData: error4xx, color: warn },
-        { name: "5xx", data: fillZero(error5xx), rawData: error5xx, color: bad }
+        { name: "4xx", data: visibleSamples(history.error4xx), color: warn },
+        { name: "5xx", data: visibleSamples(history.error5xx), color: bad }
       ], { minValue: 0, unit: "%", idleWhenMissing: true });
       drawLineChart(byId("gc-pause-chart"), [
         { name: "Window", data: visibleSamples(history.gcWindow), color: accent },
         { name: "Last", data: visibleSamples(history.gcLast), color: warn }
-      ], { minValue: 0, formatValue: durationAxisNS, leftPadding: 70 });
+      ], { minValue: 0, minimumStep: 1, formatValue: durationAxisNS, leftPadding: 70 });
+    }
+
+    function drawHoverGuides(canvas, meta, index, pointerY, points) {
+      const colors = {
+        border: cssColor("--border"),
+        muted: cssColor("--muted"),
+        panelSoft: cssColor("--panel-soft")
+      };
+      paintLineChart(canvas, meta, colors);
+      const context = canvas.getContext("2d");
+      const x = sampleX(meta, index);
+      context.save();
+      context.lineWidth = 1;
+      context.setLineDash([4, 4]);
+      context.globalAlpha = .7;
+      context.strokeStyle = colors.muted;
+      context.beginPath();
+      context.moveTo(x, meta.padding.top);
+      context.lineTo(x, meta.height - meta.padding.bottom);
+      context.stroke();
+
+      if (points.length) {
+        const nearest = points.reduce((best, point) =>
+          Math.abs(point.y - pointerY) < Math.abs(best.y - pointerY) ? point : best);
+        context.strokeStyle = nearest.color;
+        context.beginPath();
+        context.moveTo(meta.padding.left, nearest.y);
+        context.lineTo(meta.width - meta.padding.right, nearest.y);
+        context.stroke();
+      }
+      context.restore();
+
+      points.forEach((point) => {
+        context.beginPath();
+        context.arc(point.x, point.y, 5, 0, Math.PI * 2);
+        context.fillStyle = colors.panelSoft;
+        context.fill();
+        context.lineWidth = 2;
+        context.strokeStyle = point.color;
+        context.stroke();
+        context.beginPath();
+        context.arc(point.x, point.y, 2, 0, Math.PI * 2);
+        context.fillStyle = point.color;
+        context.fill();
+      });
     }
 
     function setupChartHover(canvas) {
-      const tooltip = canvas.parentElement.querySelector(".chart-tooltip");
-      canvas.addEventListener("mousemove", (event) => {
+      const card = canvas.parentElement;
+      const tooltip = card.querySelector(".chart-tooltip");
+      let hoverFrame = null;
+      let latestPointer = null;
+
+      canvas._clearHover = (repaint) => {
+        latestPointer = null;
+        if (hoverFrame !== null) {
+          window.cancelAnimationFrame(hoverFrame);
+          hoverFrame = null;
+        }
+        if (repaint && canvas._chartMeta) paintLineChart(canvas, canvas._chartMeta);
+        tooltip.hidden = true;
+      };
+
+      const paintHover = () => {
+        hoverFrame = null;
+        const pointer = latestPointer;
+        latestPointer = null;
+        if (!pointer) return;
         const meta = canvas._chartMeta;
         if (!meta || meta.count < 1) {
           tooltip.hidden = true;
           return;
         }
         const rect = canvas.getBoundingClientRect();
-        const relative = Math.min(1, Math.max(0, (event.clientX - rect.left - meta.pad.left) / meta.plotWidth));
+        const canvasX = pointer.clientX - rect.left;
+        const canvasY = pointer.clientY - rect.top;
+        const relative = Math.min(1, Math.max(0, (canvasX - meta.padding.left) / meta.plotWidth));
         const index = Math.round(relative * (meta.count - 1));
-        const rows = meta.series
+        const points = meta.series
           .map((entry) => {
-            const values = Array.isArray(entry.rawData) ? entry.rawData : entry.data;
-            return finite(values[index]) ? [entry.name, meta.formatter(values[index])] : null;
+            const value = entry.data[index];
+            return finite(value) ? {
+              name: entry.name,
+              value: meta.formatter(value),
+              color: entry.color,
+              x: sampleX(meta, index),
+              y: sampleY(meta, value)
+            } : null;
           })
           .filter(Boolean);
-        const idle = meta.idleWhenMissing && rows.length === 0;
-        if (!idle && rows.length === 0) {
+        drawHoverGuides(canvas, meta, index, canvasY, points);
+        const idle = meta.idleWhenMissing && points.length === 0;
+        if (!idle && points.length === 0) {
           tooltip.hidden = true;
           return;
         }
@@ -1450,21 +1602,43 @@
         tooltip.append(title);
         if (idle) {
           const row = document.createElement("span");
-          row.textContent = "No requests in this window";
+          row.className = "chart-tooltip__empty";
+          row.textContent = "No data in this window";
           tooltip.append(row);
         } else {
-          rows.forEach(([name, value]) => {
+          points.forEach((point) => {
             const row = document.createElement("span");
-            row.textContent = name + ": " + value;
+            row.className = "chart-tooltip__row";
+            const marker = document.createElement("span");
+            marker.className = "chart-tooltip__marker";
+            marker.style.backgroundColor = point.color;
+            const name = document.createElement("span");
+            name.className = "chart-tooltip__name";
+            name.textContent = point.name;
+            const value = document.createElement("span");
+            value.className = "chart-tooltip__value";
+            value.textContent = point.value;
+            row.append(marker, name, value);
             tooltip.append(row);
           });
         }
         tooltip.hidden = false;
-        tooltip.style.left = Math.min(event.clientX - rect.left + 12, rect.width - tooltip.offsetWidth - 4) + "px";
-        tooltip.style.top = Math.max(38, event.clientY - rect.top - tooltip.offsetHeight - 8) + "px";
-      });
-      canvas.addEventListener("mouseleave", () => {
-        tooltip.hidden = true;
+        const cardX = canvas.offsetLeft + canvasX;
+        const cardY = canvas.offsetTop + canvasY;
+        const edgeMargin = 4;
+        const maxLeft = Math.max(edgeMargin, card.clientWidth - tooltip.offsetWidth - edgeMargin);
+        const maxTop = Math.max(edgeMargin, card.clientHeight - tooltip.offsetHeight - edgeMargin);
+        const minTop = Math.min(38, maxTop);
+        tooltip.style.left = Math.max(edgeMargin, Math.min(cardX + 12, maxLeft)) + "px";
+        tooltip.style.top = Math.max(minTop, Math.min(cardY - tooltip.offsetHeight - 8, maxTop)) + "px";
+      };
+
+      canvas.addEventListener("pointermove", (event) => {
+        latestPointer = { clientX: event.clientX, clientY: event.clientY };
+        if (hoverFrame === null) hoverFrame = window.requestAnimationFrame(paintHover);
+      }, { passive: true });
+      canvas.addEventListener("pointerleave", () => {
+        canvas._clearHover(true);
       });
     }
 

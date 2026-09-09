@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/disk"
+	gopsnet "github.com/shirou/gopsutil/v4/net"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -49,11 +51,49 @@ func TestMissingProcessUsesStableErrors(t *testing.T) {
 	collector := newCollector(time.Now(), false)
 	collector.proc = nil
 	_, errors := collector.collectProcess(time.Now())
-	assert.Equal(t, []string{"process.cpu", "process.memory", "process.threads", "process.descriptors"}, errors)
+	assert.Equal(t, []string{"process.cpu", "process.memory", "process.threads", "process.descriptors", "process.tcp_connections"}, errors)
 	for _, value := range errors {
 		assert.NotContains(t, value, `C:\`)
 		assert.NotContains(t, value, "/proc/")
 	}
+}
+
+func TestTCPConnectionCollectionAndFailure(t *testing.T) {
+	collector := newCollector(time.Now(), false)
+	if collector.proc == nil {
+		t.Skip("current process is unavailable")
+	}
+	collector.processTCPConnections = func(kind string, pid int32) ([]gopsnet.ConnectionStat, error) {
+		assert.Equal(t, "tcp", kind)
+		assert.Equal(t, collector.proc.Pid, pid)
+		return make([]gopsnet.ConnectionStat, 2), nil
+	}
+	collector.systemTCPConnections = func(kind string) ([]gopsnet.ConnectionStat, error) {
+		assert.Equal(t, "tcp", kind)
+		return make([]gopsnet.ConnectionStat, 5), nil
+	}
+
+	processValues, processErrors := collector.collectProcess(time.Now())
+	require.NotNil(t, processValues.TCPConnections)
+	assert.Equal(t, 2, *processValues.TCPConnections)
+	assert.NotContains(t, processErrors, "process.tcp_connections")
+	systemValues, systemErrors := collector.collectSystem(time.Now())
+	require.NotNil(t, systemValues.TCPConnections)
+	assert.Equal(t, 5, *systemValues.TCPConnections)
+	assert.NotContains(t, systemErrors, "system.tcp_connections")
+
+	collector.processTCPConnections = func(string, int32) ([]gopsnet.ConnectionStat, error) {
+		return nil, errors.New("permission denied")
+	}
+	collector.systemTCPConnections = func(string) ([]gopsnet.ConnectionStat, error) {
+		return nil, errors.New("permission denied")
+	}
+	processValues, processErrors = collector.collectProcess(time.Now())
+	assert.Nil(t, processValues.TCPConnections)
+	assert.Contains(t, processErrors, "process.tcp_connections")
+	systemValues, systemErrors = collector.collectSystem(time.Now())
+	assert.Nil(t, systemValues.TCPConnections)
+	assert.Contains(t, systemErrors, "system.tcp_connections")
 }
 
 func TestWindowsLoadIsUnsupportedWithoutPartial(t *testing.T) {

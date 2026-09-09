@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -9,6 +10,73 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestLegacySnapshotViews(t *testing.T) {
+	processCPU := 12.5
+	processRAM := uint64(1024)
+	processConnections := 3
+	systemCPU := 45.5
+	systemRAM := uint64(2048)
+	totalRAM := uint64(4096)
+	loadAverage := 1.25
+	systemConnections := 9
+	current := (snapshot{
+		Process: processStats{
+			CPUPercent:     &processCPU,
+			RSSBytes:       &processRAM,
+			TCPConnections: &processConnections,
+			UptimeSeconds:  60,
+		},
+		Runtime: runtimeStats{Goroutines: 7},
+		System: systemStats{
+			CPUPercent:       &systemCPU,
+			MemoryUsedBytes:  &systemRAM,
+			MemoryTotalBytes: &totalRAM,
+			Load1:            &loadAverage,
+			TCPConnections:   &systemConnections,
+		},
+		HTTP: httpStats{Requests: 9007199254740993},
+	}).withLegacyViews()
+
+	assert.Equal(t, legacyPIDStats{
+		CPU:        processCPU,
+		RAM:        processRAM,
+		Conns:      processConnections,
+		Goroutines: 7,
+		Requests:   "9007199254740993",
+		Uptime:     60,
+	}, current.PID)
+	assert.Equal(t, legacyOSStats{
+		CPU:      systemCPU,
+		RAM:      systemRAM,
+		TotalRAM: totalRAM,
+		LoadAvg:  loadAverage,
+		Conns:    systemConnections,
+	}, current.OS)
+
+	encoded, err := json.Marshal(current)
+	require.NoError(t, err)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(encoded, &payload))
+	pid, ok := payload["pid"].(map[string]any)
+	require.True(t, ok)
+	osValues, ok := payload["os"].(map[string]any)
+	require.True(t, ok)
+	assert.ElementsMatch(t, []string{"cpu", "ram", "conns", "goroutines", "requests", "uptime"}, mapKeys(pid))
+	assert.ElementsMatch(t, []string{"cpu", "ram", "total_ram", "load_avg", "conns"}, mapKeys(osValues))
+	assert.IsType(t, "", pid["requests"])
+	for _, value := range []any{pid["cpu"], pid["ram"], pid["conns"], pid["goroutines"], pid["uptime"], osValues["cpu"], osValues["ram"], osValues["total_ram"], osValues["load_avg"], osValues["conns"]} {
+		assert.IsType(t, float64(0), value)
+	}
+}
+
+func mapKeys(values map[string]any) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	return keys
+}
 
 func TestSnapshotCacheTTL(t *testing.T) {
 	m, err := newMiddleware(Config{Refresh: time.Second})
