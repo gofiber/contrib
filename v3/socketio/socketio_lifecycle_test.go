@@ -571,11 +571,25 @@ func TestParseSIOAckArgs(t *testing.T) {
 // TestBuildSIOEventEncodesLikeEncodingJSON pins the SWAR JSON string
 // encoder to encoding/json's output for event names and raw-text arguments.
 func TestBuildSIOEventEncodesLikeEncodingJSON(t *testing.T) {
-	for _, name := range []string{"plain", `q"uote`, "<tag>&", "ünï", "\x00ctl\t", "\xff invalid", "  sep", "back\\slash"} {
+	for _, name := range []string{"plain", `q"uote`, "<tag>&", "ünï", "\x00ctl\t", "  sep", "back\\slash"} {
 		want, err := json.Marshal(name)
 		require.NoError(t, err)
 		require.Equal(t, `42[`+string(want)+`]`, string(buildSIOEvent(nil, name, nil)), "name %q", name)
 		require.Equal(t, `42["e",`+string(want)+`]`, string(buildSIOEvent(nil, "e", []byte(name))), "raw arg %q", name)
+	}
+	// Invalid UTF-8 is replaced with U+FFFD by both encoders, but how the
+	// replacement character itself is spelled differs between Go releases
+	// (escaped as \ufffd up to Go 1.26, literal from Go 1.27), so compare
+	// what the frames decode to rather than their bytes.
+	invalid := "\xff invalid"
+	var want string
+	require.NoError(t, json.Unmarshal([]byte(`"\ufffd invalid"`), &want))
+	for _, frame := range [][]byte{buildSIOEvent(nil, invalid, nil), buildSIOEvent(nil, "e", []byte(invalid))} {
+		elems, err := splitJSONArray(frame[2:], nil)
+		require.NoError(t, err, "frame %q", frame)
+		var got string
+		require.NoError(t, json.Unmarshal(elems[len(elems)-1], &got), "frame %q", frame)
+		require.Equal(t, want, got, "frame %q", frame)
 	}
 	// Valid JSON passes through untouched.
 	require.Equal(t, `42/ns,["e",{"a":1},[2],"s",3]`,
