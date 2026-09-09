@@ -231,6 +231,15 @@ func TestCoalescingConnHoldsRepliesUntilReaderReturns(t *testing.T) {
 	assert.Equal(t, [][]byte{[]byte("reply1reply2")}, src.written())
 }
 
+func TestCoalescingConnWritesThroughAfterSingleFrameFill(t *testing.T) {
+	c, src := attachedConn(t)
+	feedAndRead(t, c, src, "hello") // too small to hold two frames
+
+	_, err := c.Write([]byte("reply"))
+	require.NoError(t, err)
+	assert.Equal(t, [][]byte{[]byte("reply")}, src.written())
+}
+
 func TestCoalescingConnWritesThroughWithoutPendingInput(t *testing.T) {
 	c, src := attachedConn(t)
 
@@ -252,7 +261,7 @@ func TestCoalescingConnWritesThroughWhileReaderParked(t *testing.T) {
 func TestCoalescingConnTimerFlushesWhenReaderStalls(t *testing.T) {
 	c, src := attachedConn(t)
 	c.maxDelay = 5 * time.Millisecond
-	feedAndRead(t, c, src, "hello")
+	feedAndRead(t, c, src, "hello, world")
 
 	_, err := c.Write([]byte("late"))
 	require.NoError(t, err)
@@ -266,7 +275,7 @@ func TestCoalescingConnTimerFlushesWhenReaderStalls(t *testing.T) {
 
 func TestCoalescingConnLargeWriteGoesDirectAfterPending(t *testing.T) {
 	c, src := attachedConn(t)
-	feedAndRead(t, c, src, "hello")
+	feedAndRead(t, c, src, "hello, world")
 
 	_, err := c.Write([]byte("small"))
 	require.NoError(t, err)
@@ -278,7 +287,7 @@ func TestCoalescingConnLargeWriteGoesDirectAfterPending(t *testing.T) {
 
 func TestCoalescingConnCloseFlushesAndIsIdempotent(t *testing.T) {
 	c, src := attachedConn(t)
-	feedAndRead(t, c, src, "hello")
+	feedAndRead(t, c, src, "hello, world")
 
 	_, err := c.Write([]byte("bye"))
 	require.NoError(t, err)
@@ -358,7 +367,7 @@ func TestCoalescingConnHandshakeIsTakenNotSent(t *testing.T) {
 
 func TestCoalescingConnServesBytesFasthttpBufferedFirst(t *testing.T) {
 	src, raw := newScriptedConn(), newScriptedConn()
-	src.reads <- []byte("early")
+	src.reads <- []byte("early frames")
 	c := newCoalescingConn()
 	c.maxDelay = time.Hour
 	c.attach(&hijackedConn{scriptedConn: src, raw: raw})
@@ -366,7 +375,7 @@ func TestCoalescingConnServesBytesFasthttpBufferedFirst(t *testing.T) {
 	buf := make([]byte, 64)
 	n, err := c.Read(buf)
 	require.NoError(t, err)
-	assert.Equal(t, "early", string(buf[:n]))
+	assert.Equal(t, "early frames", string(buf[:n]))
 	assert.Empty(t, raw.entered, "the stash is served without touching the socket")
 
 	raw.reads <- []byte("later")

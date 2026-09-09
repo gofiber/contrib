@@ -26,6 +26,10 @@ const (
 	coalesceLimit    = 64 << 10               // a write that would push pending past this goes out
 	coalesceMaxDelay = time.Millisecond       // flush if the reader has not returned by then
 	closeFlushGrace  = 100 * time.Millisecond // how long Close waits to send what is pending
+	// minCoalesceFill is the smallest fill that can hold two client frames, each
+	// at least 6 bytes of header and mask; a smaller one has nothing to
+	// coalesce a reply with, so the reply goes straight out.
+	minCoalesceFill = 12
 )
 
 var handshakeHeaders = [...]string{
@@ -44,8 +48,8 @@ var hijackReadWriter = bufio.NewReadWriter(bufio.NewReaderSize(bytes.NewReader(n
 
 var scratchPool = sync.Pool{New: func() any { b := make([]byte, 4096); return &b }}
 
-// coalescingConn defers a write only while batch is set: the reader was
-// handed input by its last fill and has not come back for more. Pending bytes
+// coalescingConn defers a write only while batch is set: the reader's last
+// fill could hold more than one frame and it has not come back for more. Pending bytes
 // leave before the reader blocks, when a write would not fit, on Close, or
 // after coalesceMaxDelay.
 //
@@ -116,13 +120,11 @@ func (c *coalescingConn) Read(p []byte) (int, error) {
 	if len(c.stash) > 0 {
 		n := copy(p, c.stash)
 		c.stash = c.stash[n:]
-		c.batch.Store(true)
+		c.batch.Store(n >= minCoalesceFill)
 		return n, nil
 	}
 	n, err := c.raw.Read(p)
-	if n > 0 {
-		c.batch.Store(true)
-	}
+	c.batch.Store(n >= minCoalesceFill)
 	return n, err
 }
 
