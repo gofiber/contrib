@@ -1603,7 +1603,7 @@ func TestFrameReaderHandsOutExactSizeOwnedCopies(t *testing.T) {
 	app.Get("/", fws.New(func(c *fws.Conn) {
 		var prev, prevCopy []byte
 		for {
-			_, msg, err := readFrame(c)
+			_, msg, err := c.ReadMessage()
 			if err != nil {
 				return
 			}
@@ -1629,7 +1629,8 @@ func TestFrameReaderHandsOutExactSizeOwnedCopies(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = conn.Close() }()
 
-	sizes := []int{0, 1, frameBufferInitial - 1, frameBufferInitial, frameBufferInitial + 1, 3000, frameBufferRetained, frameBufferRetained + 1, 16}
+	// Around the pooled reader's growth points: its 512-byte start and 64 KiB retain cap.
+	sizes := []int{0, 1, 511, 512, 513, 3000, 64 << 10, 64<<10 + 1, 16}
 	for _, size := range sizes {
 		want := make([]byte, size)
 		for i := range want {
@@ -1644,17 +1645,6 @@ func TestFrameReaderHandsOutExactSizeOwnedCopies(t *testing.T) {
 			t.Fatalf("no result for size %d", size)
 		}
 	}
-}
-
-func TestFrameReaderTrimDropsOversizedBuffers(t *testing.T) {
-	fr := &frameReader{buf: make([]byte, frameBufferRetained)}
-	fr.trim()
-	require.Equal(t, frameBufferRetained, cap(fr.buf), "a buffer within the cap goes back to the pool")
-	require.Empty(t, fr.buf)
-
-	fr = &frameReader{buf: make([]byte, frameBufferRetained+1)}
-	fr.trim()
-	require.Nil(t, fr.buf, "a buffer past the cap is dropped")
 }
 
 // frameBench is an upgraded loopback connection whose client side is a raw
@@ -1758,9 +1748,9 @@ func benchmarkFrameRead(b *testing.B, size int, exact bool) {
 		var msg []byte
 		var err error
 		if exact {
-			_, msg, err = readFrame(fb.server)
-		} else {
 			_, msg, err = fb.server.ReadMessage()
+		} else {
+			_, msg, err = fb.server.Conn.ReadMessage()
 		}
 		if err != nil {
 			b.Fatal(err)

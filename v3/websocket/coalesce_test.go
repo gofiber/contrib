@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"net/http/httptest"
 	"slices"
 	"sync"
@@ -282,23 +281,8 @@ func clientFrame(op int, payload []byte) []byte {
 	return f
 }
 
-func TestCoalesceWritesHandshakeAndMessage(t *testing.T) {
-	app := setupTestApp(Config{CoalesceWrites: true}, nil)
-	defer app.Shutdown()
-
-	conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
-	require.NoError(t, err)
-	defer conn.Close()
-	assert.Equal(t, fiber.StatusSwitchingProtocols, resp.StatusCode)
-	assert.Equal(t, "websocket", resp.Header.Get(fiber.HeaderUpgrade))
-
-	var msg fiber.Map
-	require.NoError(t, conn.ReadJSON(&msg))
-	assert.Equal(t, "hello websocket", msg["message"])
-}
-
-func TestCoalesceWritesPipelinedEcho(t *testing.T) {
-	app := setupTestApp(Config{CoalesceWrites: true}, func(c *Conn) {
+func TestPipelinedEcho(t *testing.T) {
+	app := setupTestApp(Config{}, func(c *Conn) {
 		defer c.Close()
 		for {
 			mt, p, err := c.ReadMessage()
@@ -333,14 +317,14 @@ func TestCoalesceWritesPipelinedEcho(t *testing.T) {
 	}
 }
 
-func TestCoalesceWritesRejectionsKeepStatuses(t *testing.T) {
+func TestHandshakeRejectionStatuses(t *testing.T) {
 	app := fiber.New()
 	app.Use(func(c fiber.Ctx) error {
 		c.Set("X-Request-ID", "req-1")
 		return c.Next()
 	})
 	// All, so a POST reaches the middleware's 405 rather than the router's.
-	app.All("/ws", New(func(*Conn) {}, Config{CoalesceWrites: true, Origins: []string{"http://allowed"}}))
+	app.All("/ws", New(func(*Conn) {}, Config{Origins: []string{"http://allowed"}}))
 
 	full := [][2]string{
 		{fiber.HeaderConnection, "Upgrade"},
@@ -383,26 +367,14 @@ func TestCoalesceWritesRejectionsKeepStatuses(t *testing.T) {
 	}
 }
 
-func TestCoalesceWritesAcceptsAllowedOrigin(t *testing.T) {
-	app := setupTestApp(Config{CoalesceWrites: true, Origins: []string{"http://localhost:3000"}}, nil)
-	defer app.Shutdown()
-
-	conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", http.Header{
-		fiber.HeaderOrigin: []string{"HTTP://LOCALHOST:3000"},
-	})
-	require.NoError(t, err)
-	defer conn.Close()
-	assert.Equal(t, fiber.StatusSwitchingProtocols, resp.StatusCode)
-}
-
-func TestCoalesceWritesKeepsMiddlewareResponseHeaders(t *testing.T) {
-	app := fiber.New()
+func TestUpgradeResponseKeepsMiddlewareHeaders(t *testing.T) {
+	app := fiber.New(fiber.Config{ServerHeader: "Fiber"})
 	app.Use(func(c fiber.Ctx) error {
 		c.Set("X-Request-ID", "req-1")
 		c.Cookie(&fiber.Cookie{Name: "session", Value: "s1"})
 		return c.Next()
 	})
-	app.Get("/ws", New(func(*Conn) {}, Config{CoalesceWrites: true}))
+	app.Get("/ws", New(func(*Conn) {}))
 	listenTestApp(t, app)
 	defer app.Shutdown()
 
@@ -412,59 +384,59 @@ func TestCoalesceWritesKeepsMiddlewareResponseHeaders(t *testing.T) {
 	assert.Equal(t, fiber.StatusSwitchingProtocols, resp.StatusCode)
 	assert.Equal(t, "req-1", resp.Header.Get("X-Request-ID"))
 	assert.Contains(t, resp.Header.Get(fiber.HeaderSetCookie), "session=s1")
+	assert.Equal(t, "Fiber", resp.Header.Get(fiber.HeaderServer))
 	assert.Equal(t, "websocket", resp.Header.Get(fiber.HeaderUpgrade))
 }
 
-func TestCoalesceWritesCapturesRequest(t *testing.T) {
-	app := setupTestApp(Config{CoalesceWrites: true}, func(c *Conn) {
-		_ = c.WriteJSON(fiber.Map{
-			"param":  c.Params("param1"),
-			"query":  c.Query("q"),
-			"header": c.Headers("X-Test"),
-			"cookie": c.Cookies("session"),
-			"local":  c.Locals("allowed"),
-			"ip":     c.IP(),
-		})
+func TestConnReadMessageReturnsOwnedCopy(t *testing.T) {
+	app := setupTestApp(Config{}, func(c *Conn) {
+		defer c.Close()
+		for {
+			mt, p, err := c.ReadMessage()
+			if err != nil {
+				return
+			}
+			if err := c.WriteMessage(mt, p); err != nil {
+				return
+			}
+		}
 	})
 	defer app.Shutdown()
 
-	conn, _, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message/a/b?q=1", http.Header{
-		"X-Test": []string{"v"},
-		"Cookie": []string{"session=s1"},
-	})
+	conn, _, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
 	require.NoError(t, err)
 	defer conn.Close()
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
 
-	var msg fiber.Map
-	require.NoError(t, conn.ReadJSON(&msg))
-	assert.Equal(t, "a", msg["param"])
-	assert.Equal(t, "1", msg["query"])
-	assert.Equal(t, "v", msg["header"])
-	assert.Equal(t, "s1", msg["cookie"])
-	assert.Equal(t, true, msg["local"])
-	assert.Equal(t, "127.0.0.1", msg["ip"])
+	// Sizes around the pooled buffer's growth points, including an exact fill.
+	for _, size := range []int{0, 5, frameBufferInitial, frameBufferInitial + 1, 100 << 10} {
+		payload := bytes.Repeat([]byte{byte(size)}, size)
+		require.NoError(t, conn.WriteMessage(websocket.BinaryMessage, payload))
+		mt, p, err := conn.ReadMessage()
+		require.NoError(t, err)
+		assert.Equal(t, websocket.BinaryMessage, mt)
+		assert.Equal(t, payload, p)
+	}
 }
 
-func TestCoalesceWritesCompression(t *testing.T) {
-	app := setupTestApp(Config{CoalesceWrites: true, EnableCompression: true}, func(c *Conn) {
-		c.EnableWriteCompression(true)
-		_ = c.WriteJSON(fiber.Map{"message": "hello websocket"})
-	})
-	defer app.Shutdown()
-
-	dialer := websocket.Dialer{EnableCompression: true}
-	conn, resp, err := dialer.Dial("ws://localhost:3000/ws/message", nil)
+func TestFrameReaderCopyIsExactAndPoolIsTrimmed(t *testing.T) {
+	fr := &frameReader{}
+	msg, err := fr.readAll(bytes.NewReader(bytes.Repeat([]byte{'x'}, frameBufferRetained)))
 	require.NoError(t, err)
-	defer conn.Close()
-	assert.Contains(t, resp.Header.Get(fiber.HeaderSecWebSocketExtensions), "permessage-deflate")
+	assert.Len(t, msg, frameBufferRetained)
+	assert.Equal(t, len(msg), cap(msg))
+	fr.release()
+	assert.Equal(t, frameBufferRetained, cap(fr.buf), "a buffer within the cap goes back to the pool")
 
-	var msg fiber.Map
-	require.NoError(t, conn.ReadJSON(&msg))
-	assert.Equal(t, "hello websocket", msg["message"])
+	msg, err = fr.readAll(bytes.NewReader(bytes.Repeat([]byte{'x'}, frameBufferRetained+1)))
+	require.NoError(t, err)
+	assert.Len(t, msg, frameBufferRetained+1)
+	fr.release()
+	assert.Nil(t, fr.buf, "a buffer past the cap is dropped")
 }
 
-func TestCoalesceWritesSubprotocol(t *testing.T) {
-	app := setupTestApp(Config{CoalesceWrites: true, Subprotocols: []string{"chat", "json"}}, func(c *Conn) {
+func TestSubprotocolServerPreference(t *testing.T) {
+	app := setupTestApp(Config{Subprotocols: []string{"chat", "json"}}, func(c *Conn) {
 		_ = c.WriteMessage(websocket.TextMessage, []byte(c.Subprotocol()))
 	})
 	defer app.Shutdown()
@@ -478,51 +450,6 @@ func TestCoalesceWritesSubprotocol(t *testing.T) {
 	_, p, err := conn.ReadMessage()
 	require.NoError(t, err)
 	assert.Equal(t, "chat", string(p))
-}
-
-func TestCoalesceWritesPanicClosesConnection(t *testing.T) {
-	app := setupTestApp(Config{CoalesceWrites: true}, func(*Conn) {
-		panic("test panic")
-	})
-	defer app.Shutdown()
-
-	conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
-	require.NoError(t, err)
-	defer conn.Close()
-	assert.Equal(t, fiber.StatusSwitchingProtocols, resp.StatusCode)
-
-	var msg fiber.Map
-	require.NoError(t, conn.ReadJSON(&msg))
-	assert.Equal(t, defaultRecoverMessage, msg["error"])
-
-	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
-	_, _, err = conn.ReadMessage()
-	require.Error(t, err)
-	var netErr net.Error
-	assert.False(t, errors.As(err, &netErr) && netErr.Timeout(),
-		"panicking handler left the connection open: %v", err)
-}
-
-func TestCoalesceWritesHandlerReturnLeavesSocketOpen(t *testing.T) {
-	writeErr := make(chan error, 1)
-	app := setupTestApp(Config{CoalesceWrites: true}, func(c *Conn) {
-		conn := c.Conn
-		go func() {
-			time.Sleep(50 * time.Millisecond)
-			writeErr <- conn.WriteMessage(websocket.TextMessage, []byte("after return"))
-		}()
-	})
-	defer app.Shutdown()
-
-	conn, _, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
-	require.NoError(t, err)
-	defer conn.Close()
-
-	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
-	_, p, err := conn.ReadMessage()
-	require.NoError(t, err)
-	assert.Equal(t, "after return", string(p))
-	assert.NoError(t, <-writeErr)
 }
 
 // listenTestApp serves app on :3000 and waits until it accepts connections.

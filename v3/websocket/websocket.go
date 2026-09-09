@@ -72,13 +72,6 @@ type Config struct {
 	// It prints stack trace to the stderr by default
 	// Optional. Default: defaultRecover
 	RecoverHandler func(*Conn)
-
-	// CoalesceWrites answers a burst of pipelined frames with one write instead
-	// of one per frame: writes made while the handler still has unread frames
-	// wait until it asks for the next one, at most 64 KiB or 1 ms. Writes made
-	// while nothing is waiting to be read go out immediately.
-	// Optional. Default: false
-	CoalesceWrites bool
 }
 
 // supportedVersion is the only WebSocket protocol version defined by RFC 6455.
@@ -164,28 +157,8 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		return false
 	}
 
-	var coalescingUpgrader websocket.Upgrader
-	if cfg.CoalesceWrites {
-		coalescingUpgrader = newCoalescingUpgrader(&cfg, originAllowed)
-	}
+	upgrader := newUpgrader(&cfg, originAllowed)
 
-	var upgrader = websocket.FastHTTPUpgrader{
-		HandshakeTimeout:  cfg.HandshakeTimeout,
-		Subprotocols:      cfg.Subprotocols,
-		ReadBufferSize:    cfg.ReadBufferSize,
-		WriteBufferSize:   cfg.WriteBufferSize,
-		EnableCompression: cfg.EnableCompression,
-		WriteBufferPool:   cfg.WriteBufferPool,
-		// Record the status only. ctx.Error would Response.Reset, wiping headers
-		// earlier middleware set and the Sec-WebSocket-Version header; the handler
-		// returns a *fiber.Error instead.
-		Error: func(fctx *fasthttp.RequestCtx, status int, _ error) {
-			fctx.SetStatusCode(status)
-		},
-		CheckOrigin: func(fctx *fasthttp.RequestCtx) bool {
-			return originAllowed(utils.UnsafeString(fctx.Request.Header.Peek(fiber.HeaderOrigin)))
-		},
-	}
 	return func(c fiber.Ctx) error {
 		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
@@ -211,17 +184,7 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 		// callback runs only after it has unwound.
 		conn.capture(fctx)
 
-		if cfg.CoalesceWrites {
-			return upgradeCoalescing(c, &coalescingUpgrader, conn, &cfg, handler)
-		}
-
-		if err := upgrader.Upgrade(fctx, func(fconn *websocket.Conn) {
-			runHandler(conn, fconn, cfg.RecoverHandler, handler)
-		}); err != nil { // Handshake rejected
-			return rejectHandshake(c, fctx.Response.StatusCode())
-		}
-
-		return nil
+		return upgrade(c, &upgrader, conn, &cfg, handler)
 	}
 }
 

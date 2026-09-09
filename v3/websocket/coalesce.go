@@ -16,9 +16,9 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// Config.CoalesceWrites upgrades through the library's net/http Upgrader on a
-// fasthttp-backed Hijacker, so the middleware owns the net.Conn the library
-// writes to and can answer a burst of frames with one write.
+// The upgrade runs through the library's net/http Upgrader on a fasthttp-backed
+// Hijacker, so the middleware owns the net.Conn the library writes to and can
+// answer a burst of pipelined frames with one write.
 
 const (
 	coalesceLimit    = 64 << 10         // flush once this much is pending
@@ -275,7 +275,7 @@ func upgradeResponseHeader(fctx *fasthttp.RequestCtx, subprotocols []string) htt
 	var header http.Header
 	for key, value := range fctx.Response.Header.All() {
 		switch utils.UnsafeString(key) {
-		case fiber.HeaderContentType, fiber.HeaderContentLength, fiber.HeaderServer, fiber.HeaderDate,
+		case fiber.HeaderContentType, fiber.HeaderContentLength, fiber.HeaderDate,
 			fiber.HeaderConnection, fiber.HeaderUpgrade, fiber.HeaderSecWebSocketAccept:
 			continue
 		}
@@ -309,7 +309,7 @@ func selectSubprotocol(offered []byte, subprotocols []string) string {
 	return ""
 }
 
-func newCoalescingUpgrader(cfg *Config, originAllowed func(origin string) bool) websocket.Upgrader {
+func newUpgrader(cfg *Config, originAllowed func(origin string) bool) websocket.Upgrader {
 	return websocket.Upgrader{
 		ReadBufferSize:    cfg.ReadBufferSize,
 		WriteBufferSize:   cfg.WriteBufferSize,
@@ -329,7 +329,7 @@ func newCoalescingUpgrader(cfg *Config, originAllowed func(origin string) bool) 
 	}
 }
 
-func upgradeCoalescing(c fiber.Ctx, upgrader *websocket.Upgrader, conn *Conn, cfg *Config, handler func(*Conn)) error {
+func upgrade(c fiber.Ctx, upgrader *websocket.Upgrader, conn *Conn, cfg *Config, handler func(*Conn)) error {
 	fctx := c.RequestCtx()
 	cc := newCoalescingConn()
 	w := &upgradeResponseWriter{conn: cc}

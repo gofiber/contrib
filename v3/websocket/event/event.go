@@ -5,7 +5,6 @@ package event
 import (
 	"context"
 	"errors"
-	"io"
 	"maps"
 	"net"
 	"slices"
@@ -929,7 +928,7 @@ func (kws *Websocket) read(ctx context.Context) {
 		default:
 		}
 
-		mType, msg, err := readFrame(conn)
+		mType, msg, err := conn.ReadMessage()
 		if err != nil {
 			// Control frames (Ping, Pong, Close) are handled by the
 			// library's Set*Handler hooks above. An orderly client close
@@ -949,100 +948,12 @@ func (kws *Websocket) read(ctx context.Context) {
 
 		switch mType {
 		case TextMessage, BinaryMessage:
-			// readFrame returns a copy made for this frame, so the fan-out owns it.
+			// ReadMessage returns a copy made for this frame, so the fan-out owns it.
 			kws.fireOwnedEvent(EventMessage, msg, nil)
 		default:
 			// Defensive: NextReader never delivers control frames.
 		}
 	}
-}
-
-// frameReader reads one message into a growable buffer and returns an
-// exact-size copy, where ReadMessage's io.ReadAll starts at 512 bytes and
-// doubles. Readers are pooled: an idle connection holds no buffer and the GC
-// trims the pool.
-type frameReader struct {
-	buf   []byte
-	probe [1]byte
-}
-
-const (
-	// frameBufferInitial is what a fresh buffer starts at, io.ReadAll's own
-	// figure.
-	frameBufferInitial = 512
-	// frameBufferRetained caps what goes back into the pool, so one big frame does
-	// not leave its size behind.
-	frameBufferRetained = 64 << 10
-)
-
-var framePool = sync.Pool{New: func() interface{} { return new(frameReader) }}
-
-// readFrame reads the next data message from conn and returns a copy the
-// caller owns.
-func readFrame(conn *websocket.Conn) (int, []byte, error) {
-	mType, r, err := conn.NextReader()
-	if err != nil {
-		return mType, nil, err
-	}
-	fr := framePool.Get().(*frameReader)
-	msg, err := fr.readAll(r)
-	fr.release()
-	return mType, msg, err
-}
-
-func (fr *frameReader) readAll(r io.Reader) ([]byte, error) {
-	buf := fr.buf[:0]
-	if cap(buf) == 0 {
-		buf = make([]byte, 0, frameBufferInitial)
-	}
-	for {
-		if len(buf) == cap(buf) {
-			// Full: probe one byte so a message that exactly fills the buffer does not
-			// double it.
-			n, err := r.Read(fr.probe[:])
-			if n > 0 {
-				grown := make([]byte, len(buf), 2*cap(buf))
-				copy(grown, buf)
-				buf = append(grown, fr.probe[0])
-			}
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			if err != nil {
-				fr.buf = buf
-				return nil, err
-			}
-			continue
-		}
-		n, err := r.Read(buf[len(buf):cap(buf)])
-		buf = buf[:len(buf)+n]
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			fr.buf = buf
-			return nil, err
-		}
-	}
-	msg := make([]byte, len(buf))
-	copy(msg, buf)
-	fr.buf = buf
-	return msg, nil
-}
-
-// release puts the reader back into the pool, minus a buffer that grew past
-// frameBufferRetained.
-func (fr *frameReader) release() {
-	fr.trim()
-	framePool.Put(fr)
-}
-
-func (fr *frameReader) trim() {
-	if cap(fr.buf) > frameBufferRetained {
-		fr.buf = nil
-		return
-	}
-	fr.buf = fr.buf[:0]
 }
 
 // disconnected tears the connection down once and reports whether this call

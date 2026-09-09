@@ -45,7 +45,6 @@ func New(handler func(*websocket.Conn), config ...websocket.Config) fiber.Handle
 | WriteBufferPool     | `websocket.BufferPool`       | WriteBufferPool is a pool of buffers for write operations.                                                                    | `nil`                  |
 | EnableCompression   | `bool`                       | EnableCompression specifies if the client should attempt to negotiate per message compression (RFC 7692).                     | `false`                |
 | RecoverHandler      | `func(*websocket.Conn)`      | RecoverHandler is a panic handler function that recovers from panics.                                                         | `defaultRecover`       |
-| CoalesceWrites      | `bool`                       | Answers a burst of pipelined frames with one write. See [Write coalescing](#write-coalescing).                              | `false`                |
 
 ## Example
 
@@ -127,20 +126,21 @@ Rejected handshakes also carry `Sec-WebSocket-Version: 13` so a client that aske
 another version learns which one the server speaks (RFC 6455 section 4.4). Headers set
 by earlier middleware are left in place.
 
-## Write coalescing
+## Reads and writes
 
-`CoalesceWrites: true` answers a burst of pipelined frames with one write instead of one
-per frame: writes made while the handler still has unread frames wait until it asks for the
-next one, at most 64 KiB or 1 ms. Writes made while nothing is waiting to be read go out
-immediately, so push-only handlers are unaffected, and frames are never reordered.
+`c.ReadMessage()` reads into a pooled buffer and returns an exact-size copy, where the
+library's `ReadMessage` grows a fresh buffer per message; for zero-copy reads use
+`NextReader` with your own buffer.
 
-With 5-byte frames and 16 in flight per connection, server CPU per frame goes from 5.7 µs to
-1.0 µs and syscalls per frame from 1.06 to 0.13; one frame in flight is unchanged.
+Replies to a burst of pipelined frames leave in one write instead of one per frame: writes
+made while the handler still has unread frames wait until it asks for the next one, at most
+64 KiB or 1 ms. Writes made while nothing is waiting to be read go out immediately, so
+push-only handlers are unaffected, and frames are never reordered. With 5-byte frames and
+16 in flight per connection, server CPU per frame goes from 5.7 µs to 1.0 µs.
 
-The upgrade then runs through the library's `net/http` `Upgrader` on a fasthttp-backed
-hijack: the 101 carries the handshake headers and what earlier middleware set but not
-fasthttp's `Server` and `Date` defaults, and `Sec-WebSocket-Key` is validated as RFC 6455
-requires.
+To own the connection the upgrade runs through the library's `net/http` `Upgrader` on a
+fasthttp-backed hijack: the 101 carries the handshake headers and what earlier middleware
+set, but not fasthttp's `Date`, and `Sec-WebSocket-Key` is validated as RFC 6455 requires.
 
 ## Note with cache middleware
 
