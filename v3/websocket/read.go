@@ -24,7 +24,7 @@ type frameReader struct {
 // exact-size copy the caller owns, where the library's ReadMessage grows a
 // fresh buffer per message. On error p is nil.
 func (conn *Conn) ReadMessage() (messageType int, p []byte, err error) {
-	messageType, r, err := conn.Conn.NextReader()
+	messageType, r, err := conn.NextReader()
 	if err != nil {
 		return messageType, nil, err
 	}
