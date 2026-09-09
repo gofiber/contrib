@@ -19,8 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// scriptedConn is a net.Conn whose reads the test feeds and whose writes are
-// recorded one entry per call, which is one syscall on a real socket.
+// scriptedConn feeds reads from a channel and records each write.
 type scriptedConn struct {
 	reads chan []byte
 
@@ -102,8 +101,7 @@ func (s *scriptedConn) writeDeadlines() []time.Time {
 	return slices.Clone(s.deadlines)
 }
 
-// hijackedConn mimics fasthttp's hijacked connection: reads through it, and
-// UnsafeConn exposes the socket underneath.
+// hijackedConn mimics fasthttp's hijacked conn; UnsafeConn is the socket underneath.
 type hijackedConn struct {
 	*scriptedConn
 	raw *scriptedConn
@@ -111,9 +109,7 @@ type hijackedConn struct {
 
 func (h *hijackedConn) UnsafeConn() net.Conn { return h.raw }
 
-// attachedConn returns a coalescing conn attached to a scripted socket, with
-// the safety timer effectively off so tests observe only the reader-driven
-// behaviour.
+// attachedConn returns an attached conn with the safety timer effectively off.
 func attachedConn(t *testing.T) (*coalescingConn, *scriptedConn) {
 	t.Helper()
 	src := newScriptedConn()
@@ -123,7 +119,7 @@ func attachedConn(t *testing.T) (*coalescingConn, *scriptedConn) {
 	return c, src
 }
 
-// feedAndRead delivers data to the reader, which leaves it holding a batch.
+// feedAndRead leaves the reader holding a batch.
 func feedAndRead(t *testing.T, c *coalescingConn, src *scriptedConn, data string) {
 	t.Helper()
 	src.reads <- []byte(data)
@@ -133,8 +129,7 @@ func feedAndRead(t *testing.T, c *coalescingConn, src *scriptedConn, data string
 	require.Equal(t, data, string(buf[:n]))
 }
 
-// readInBackground parks the reader on the socket and returns a function that
-// releases it.
+// readInBackground parks the reader and returns a function that releases it.
 func readInBackground(t *testing.T, c *coalescingConn, src *scriptedConn) func() {
 	t.Helper()
 	done := make(chan struct{})
@@ -158,9 +153,8 @@ func TestCoalescingConnHoldsRepliesUntilReaderReturns(t *testing.T) {
 	require.NoError(t, err)
 	_, err = c.Write([]byte("reply2"))
 	require.NoError(t, err)
-	assert.Equal(t, 0, src.writeCount(), "replies must wait while the reader still has input")
+	assert.Equal(t, 0, src.writeCount())
 
-	// The reader comes back for more: everything owed leaves in one write.
 	release := readInBackground(t, c, src)
 	defer release()
 	assert.Equal(t, [][]byte{[]byte("reply1reply2")}, src.written())
@@ -169,7 +163,6 @@ func TestCoalescingConnHoldsRepliesUntilReaderReturns(t *testing.T) {
 func TestCoalescingConnWritesThroughWithoutPendingInput(t *testing.T) {
 	c, src := attachedConn(t)
 
-	// Nothing has been read: a push must not wait for a reader that may never come.
 	_, err := c.Write([]byte("push"))
 	require.NoError(t, err)
 	assert.Equal(t, [][]byte{[]byte("push")}, src.written())
@@ -181,7 +174,6 @@ func TestCoalescingConnWritesThroughWhileReaderParked(t *testing.T) {
 	release := readInBackground(t, c, src)
 	defer release()
 
-	// The reader is waiting on the peer, so nothing would flush a deferred write.
 	_, err := c.Write([]byte("push"))
 	require.NoError(t, err)
 	assert.Equal(t, [][]byte{[]byte("push")}, src.written())
@@ -196,7 +188,6 @@ func TestCoalescingConnTimerFlushesWhenReaderStalls(t *testing.T) {
 	require.NoError(t, err)
 	assert.Eventually(t, func() bool { return src.writeCount() == 1 }, time.Second, time.Millisecond)
 
-	// A reader that did not come back is not consuming: later writes go straight through.
 	require.Eventually(t, func() bool { return !c.batch.Load() }, time.Second, time.Millisecond)
 	_, err = c.Write([]byte("next"))
 	require.NoError(t, err)
@@ -212,7 +203,7 @@ func TestCoalescingConnLargeWriteGoesDirectAfterPending(t *testing.T) {
 	big := bytes.Repeat([]byte{'x'}, coalesceLimit)
 	_, err = c.Write(big)
 	require.NoError(t, err)
-	assert.Equal(t, [][]byte{[]byte("small"), big}, src.written(), "pending bytes leave first, then the frame that did not fit")
+	assert.Equal(t, [][]byte{[]byte("small"), big}, src.written())
 }
 
 func TestCoalescingConnCloseFlushesAndIsIdempotent(t *testing.T) {
@@ -241,7 +232,7 @@ func TestCoalescingConnHandshakeWaitsForAttach(t *testing.T) {
 	assert.Equal(t, [][]byte{response}, src.written())
 
 	deadlines := src.writeDeadlines()
-	require.Len(t, deadlines, 2, "the handshake timeout is set for the 101 and cleared after it")
+	require.Len(t, deadlines, 2)
 	assert.False(t, deadlines[0].IsZero())
 	assert.True(t, deadlines[1].IsZero())
 }
@@ -260,13 +251,13 @@ func TestCoalescingConnWritesBypassHijackedReader(t *testing.T) {
 
 	_, err := c.Write([]byte("out"))
 	require.NoError(t, err)
-	assert.Equal(t, [][]byte{[]byte("out")}, raw.written(), "writes go to the socket underneath")
+	assert.Equal(t, [][]byte{[]byte("out")}, raw.written())
 	assert.Equal(t, 0, src.writeCount())
 
 	feedAndRead(t, c, src, "in")
 
 	require.NoError(t, c.Close())
-	assert.True(t, src.isClosed(), "closing the hijacked conn is what hands it back to fasthttp")
+	assert.True(t, src.isClosed())
 }
 
 func TestCoalescingConnWriteErrorIsSticky(t *testing.T) {
@@ -280,7 +271,7 @@ func TestCoalescingConnWriteErrorIsSticky(t *testing.T) {
 	require.EqualError(t, err, "boom")
 }
 
-// clientFrame builds one masked client frame for a payload of up to 125 bytes.
+// clientFrame builds one masked client frame (payload up to 125 bytes).
 func clientFrame(op int, payload []byte) []byte {
 	key := [4]byte{1, 2, 3, 4}
 	f := []byte{0x80 | byte(op), 0x80 | byte(len(payload))}
@@ -325,8 +316,7 @@ func TestCoalesceWritesPipelinedEcho(t *testing.T) {
 	require.NoError(t, err)
 	defer conn.Close()
 
-	// Sixteen frames in one write, as a pipelining peer sends them: every echo
-	// must come back, in order, and nothing may wait for a frame that never comes.
+	// Sixteen frames in one write, as a pipelining peer sends them.
 	const frames = 16
 	var burst []byte
 	for i := range frames {
@@ -349,8 +339,7 @@ func TestCoalesceWritesRejectionsKeepStatuses(t *testing.T) {
 		c.Set("X-Request-ID", "req-1")
 		return c.Next()
 	})
-	// All rather than Get, so a POST reaches the middleware and its 405 rather
-	// than the router's.
+	// All, so a POST reaches the middleware's 405 rather than the router's.
 	app.All("/ws", New(func(*Conn) {}, Config{CoalesceWrites: true, Origins: []string{"http://allowed"}}))
 
 	full := [][2]string{
@@ -536,7 +525,7 @@ func TestCoalesceWritesHandlerReturnLeavesSocketOpen(t *testing.T) {
 	assert.NoError(t, <-writeErr)
 }
 
-// listenTestApp serves app on :3000 and returns once it accepts connections.
+// listenTestApp serves app on :3000 and waits until it accepts connections.
 func listenTestApp(t *testing.T, app *fiber.App) {
 	t.Helper()
 	go func() {

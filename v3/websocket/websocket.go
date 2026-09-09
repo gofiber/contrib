@@ -73,18 +73,10 @@ type Config struct {
 	// Optional. Default: defaultRecover
 	RecoverHandler func(*Conn)
 
-	// CoalesceWrites sends the replies to a burst of pipelined frames in one
-	// write instead of one per frame. While the handler is still working
-	// through frames the peer already sent, its writes are held back and leave
-	// together the moment it asks for the next frame, on Close, when they reach
-	// 64 KiB, or after one millisecond, whichever comes first. A write made
-	// while nothing is waiting to be read goes out immediately, so a handler
-	// that only pushes is unaffected. Frames are never reordered.
-	//
-	// The upgrade then runs through the library's net/http Upgrader on a
-	// fasthttp-backed hijack. The 101 response carries the headers earlier
-	// middleware set and the handshake headers, not fasthttp's Server and Date
-	// defaults, and Sec-WebSocket-Key is validated as RFC 6455 requires.
+	// CoalesceWrites answers a burst of pipelined frames with one write instead
+	// of one per frame: writes made while the handler still has unread frames
+	// wait until it asks for the next one, at most 64 KiB or 1 ms. Writes made
+	// while nothing is waiting to be read go out immediately.
 	// Optional. Default: false
 	CoalesceWrites bool
 }
@@ -233,7 +225,6 @@ func New(handler func(*Conn), config ...Config) fiber.Handler {
 	}
 }
 
-// runHandler runs the application handler on the hijacked connection.
 func runHandler(conn *Conn, fconn *websocket.Conn, recoverHandler, handler func(*Conn)) {
 	conn.Conn = fconn
 
@@ -251,8 +242,7 @@ func runHandler(conn *Conn, fconn *websocket.Conn, recoverHandler, handler func(
 	returned = true
 }
 
-// rejectHandshake turns a rejected handshake into a *fiber.Error. The
-// upgrader chose the RFC 6455 status: 403 for a bad Origin, 400 for a
+// The upgrader chose the RFC 6455 status: 403 for a bad Origin, 400 for a
 // malformed handshake, 405 for a non-GET; section 4.4 asks for the supported
 // version on rejection. A *fiber.Error keeps it on the ErrorHandler path.
 func rejectHandshake(c fiber.Ctx, status int) error {
