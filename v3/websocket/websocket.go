@@ -26,7 +26,10 @@ type Config struct {
 	// Optional. Default: nil
 	Next func(fiber.Ctx) bool
 
-	// HandshakeTimeout specifies the duration for the handshake to complete.
+	// HandshakeTimeout bounds sending the 101 response, which fasthttp writes
+	// once the handler chain returns. The server's WriteTimeout, when set,
+	// applies instead.
+	// Optional. Default: 0 (no deadline)
 	HandshakeTimeout time.Duration
 
 	// Subprotocols lists the subprotocols the server supports in order of

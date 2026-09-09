@@ -36,7 +36,7 @@ func New(handler func(*websocket.Conn), config ...websocket.Config) fiber.Handle
 | Property            | Type                         | Description                                                                                                                   | Default                |
 |:--------------------|:-----------------------------|:------------------------------------------------------------------------------------------------------------------------------|:-----------------------|
 | Next                | `func(fiber.Ctx) bool`       | Defines a function to skip this middleware when it returns true.                                                              | `nil`                  |
-| HandshakeTimeout    | `time.Duration`              | HandshakeTimeout specifies the duration for the handshake to complete.                                                        | `0` (No timeout)       |
+| HandshakeTimeout    | `time.Duration`              | Bounds sending the 101 response, which fasthttp writes once the handler chain returns. The server's `WriteTimeout`, when set, applies instead. | `0` (No timeout)       |
 | Subprotocols        | `[]string`                   | Subprotocols this server supports, in order of preference. The first entry the client also offers is negotiated.               | `nil`                  |
 | Origins             | `[]string`                   | Allowed Origins based on the Origin header, compared case-insensitively. If empty, everything is allowed.                     | `nil`                  |
 | AllowEmptyOrigin    | `bool`                       | Allows connections without an Origin header when Origins is configured. Useful for non-browser clients.                       | `false`                |

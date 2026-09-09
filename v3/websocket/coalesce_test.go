@@ -18,11 +18,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var errScriptedTimeout = errors.New("scripted: i/o timeout")
+var (
+	errScriptedTimeout = errors.New("scripted: i/o timeout")
+	errNoDeadlines     = errors.New("scripted: deadlines unsupported")
+)
 
 // scriptedConn feeds reads from a channel and records each write. A past read
 // deadline makes a read with nothing queued fail at once; a past write
-// deadline, or Close, releases a write that was told to block.
+// deadline, or Close, releases a write that was told to block. Told to refuse
+// deadlines, it rejects them as a net.Conn may.
 type scriptedConn struct {
 	reads   chan []byte
 	entered chan struct{} // one token per read that reached the socket
@@ -34,6 +38,7 @@ type scriptedConn struct {
 	writeErr       error
 	blockWrites    bool
 	unblock        chan struct{}
+	noDeadlines    bool
 	readDeadline   time.Time
 	writeDeadlines []time.Time
 }
@@ -120,13 +125,20 @@ func (s *scriptedConn) SetDeadline(t time.Time) error {
 
 func (s *scriptedConn) SetReadDeadline(t time.Time) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.noDeadlines {
+		return errNoDeadlines
+	}
 	s.readDeadline = t
-	s.mu.Unlock()
 	return nil
 }
 
 func (s *scriptedConn) SetWriteDeadline(t time.Time) error {
 	s.mu.Lock()
+	if s.noDeadlines {
+		s.mu.Unlock()
+		return errNoDeadlines
+	}
 	s.writeDeadlines = append(s.writeDeadlines, t)
 	s.mu.Unlock()
 	if !t.IsZero() && t.Before(time.Now()) {
@@ -163,6 +175,12 @@ func (s *scriptedConn) stallWrites() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.blockWrites = true
+}
+
+func (s *scriptedConn) refuseDeadlines() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.noDeadlines = true
 }
 
 // hijackedConn mimics fasthttp's hijacked conn: reads come through it,
@@ -327,6 +345,34 @@ func TestCoalescingConnCloseInterruptsStalledWriter(t *testing.T) {
 	assert.True(t, src.isClosed())
 }
 
+func TestCoalescingConnCloseFailsStalledWriterWithoutWriteDeadline(t *testing.T) {
+	c, src := attachedConn(t)
+	src.refuseDeadlines()
+	src.stallWrites()
+
+	writeErr := make(chan error, 1)
+	go func() {
+		_, err := c.Write([]byte("stuck"))
+		writeErr <- err
+	}()
+	select {
+	case <-src.writing:
+	case <-time.After(time.Second):
+		t.Fatal("writer never reached the socket")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- c.Close() }()
+	select {
+	case err := <-closed:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("Close waited behind a writer it could not expire")
+	}
+	require.Error(t, <-writeErr)
+	assert.True(t, src.isClosed())
+}
+
 func TestCoalescingConnReaderDoesNotWaitForStalledWriter(t *testing.T) {
 	c, src := attachedConn(t)
 	src.stallWrites()
@@ -391,6 +437,41 @@ func TestCoalescingConnServesBytesFasthttpBufferedFirst(t *testing.T) {
 	assert.True(t, src.isClosed(), "closing the hijacked conn hands it back to fasthttp")
 }
 
+func TestCoalescingConnReadsThroughSourceWithoutReadDeadline(t *testing.T) {
+	src, raw := newScriptedConn(), newScriptedConn()
+	src.refuseDeadlines()
+	src.reads <- []byte("early frames")
+	c := newCoalescingConn()
+	c.maxDelay = time.Hour
+
+	attached := make(chan struct{})
+	go func() {
+		c.attach(&hijackedConn{scriptedConn: src, raw: raw})
+		close(attached)
+	}()
+	select {
+	case <-attached:
+	case <-time.After(time.Second):
+		t.Fatal("attach blocked draining a conn that refuses read deadlines")
+	}
+
+	buf := make([]byte, 64)
+	n, err := c.Read(buf)
+	require.NoError(t, err)
+	assert.Equal(t, "early frames", string(buf[:n]))
+
+	src.reads <- []byte("later")
+	n, err = c.Read(buf)
+	require.NoError(t, err)
+	assert.Equal(t, "later", string(buf[:n]), "reads stay on fasthttp's conn")
+	assert.Empty(t, raw.entered)
+
+	_, err = c.Write([]byte("out"))
+	require.NoError(t, err)
+	require.NoError(t, c.Close())
+	assert.Equal(t, [][]byte{[]byte("out")}, raw.written(), "writes still reach the socket")
+}
+
 func TestCoalescingConnWriteErrorIsSticky(t *testing.T) {
 	c, src := attachedConn(t)
 	src.failWrites(errors.New("boom"))
@@ -452,7 +533,7 @@ func handshakeRequestHeaders() [][2]string {
 }
 
 func TestPipelinedEcho(t *testing.T) {
-	app := setupTestApp(Config{}, echoHandler)
+	app := setupTestApp(Config{HandshakeTimeout: time.Second}, echoHandler)
 	defer app.Shutdown()
 
 	conn, _, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws/message", nil)
@@ -554,10 +635,9 @@ func TestUpgradeResponseIsVisibleAfterNext(t *testing.T) {
 		return err
 	})
 	app.Get("/ws", New(func(*Conn) {}))
-	listenTestApp(t, app)
-	defer app.Shutdown()
+	addr := listenTestApp(t, app)
 
-	conn, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/ws", nil)
+	conn, resp, err := websocket.DefaultDialer.Dial("ws://"+addr+"/ws", nil)
 	require.NoError(t, err)
 	defer conn.Close()
 
@@ -625,18 +705,32 @@ func TestSubprotocolServerPreference(t *testing.T) {
 	assert.Equal(t, "chat", string(p))
 }
 
-// listenTestApp serves app on :3000 and waits until it accepts connections.
-func listenTestApp(t *testing.T, app *fiber.App) {
+func TestHandshakeTimeoutBoundsUpgradeResponse(t *testing.T) {
+	app := fiber.New()
+	app.Get("/ws", New(func(*Conn) {}, Config{HandshakeTimeout: time.Nanosecond}))
+	addr := listenTestApp(t, app)
+
+	// The deadline has passed by the time fasthttp writes the 101, so the
+	// connection is closed unanswered.
+	conn, resp, err := websocket.DefaultDialer.Dial("ws://"+addr+"/ws", nil)
+	require.Error(t, err)
+	assert.Nil(t, conn)
+	assert.Nil(t, resp)
+}
+
+// listenTestApp serves app on a free port until the test ends and returns the
+// address to dial.
+func listenTestApp(t *testing.T, app *fiber.App) string {
 	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	served := make(chan error, 1)
 	go func() {
-		_ = app.Listen(":3000", fiber.ListenConfig{DisableStartupMessage: true})
+		served <- app.Listener(ln, fiber.ListenConfig{DisableStartupMessage: true})
 	}()
-	require.Eventually(t, func() bool {
-		conn, err := net.Dial("tcp", "localhost:3000")
-		if err != nil {
-			return false
-		}
-		conn.Close()
-		return true
-	}, 5*time.Second, 10*time.Millisecond)
+	t.Cleanup(func() {
+		assert.NoError(t, app.Shutdown())
+		assert.NoError(t, <-served)
+	})
+	return ln.Addr().String()
 }

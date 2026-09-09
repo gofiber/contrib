@@ -126,9 +126,11 @@ closes.
 
 ## Configuration
 
-Per-instance tuning via `event.Config` passed to `NewWithConfig`. Zero values
-fall back to the matching package-level var, which itself falls back to the
-hard default.
+Per-instance tuning via `event.Config` passed to `NewWithConfig`. A zero value
+falls back to the default below. `PingInterval` consults the package-level
+`PongTimeout` first, and `SendQueueSize`, `MaxSendRetry` and `RetrySendTimeout`
+the package-level vars of the same name; the other fields have no package-level
+counterpart.
 
 | Config field        | Default | Description |
 |:--------------------|:--------|:------------|

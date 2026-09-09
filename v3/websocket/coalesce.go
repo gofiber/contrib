@@ -56,9 +56,10 @@ var scratchPool = sync.Pool{New: func() any { b := make([]byte, 4096); return &b
 // mu guards pending and the flags; wmu orders socket writes and is never
 // taken under mu, so Close and the reader never wait behind a stalled writer.
 type coalescingConn struct {
-	src   net.Conn // fasthttp's hijacked conn; its Close is the one fasthttp expects
-	raw   net.Conn // the socket underneath, nil until attach
-	stash []byte   // bytes fasthttp had read past the handshake
+	src   net.Conn  // fasthttp's hijacked conn; its Close is the one fasthttp expects
+	raw   net.Conn  // the socket underneath, nil until attach
+	rd    io.Reader // raw once fasthttp's buffer is in stash, else src
+	stash []byte    // bytes fasthttp had read past the handshake
 
 	batch atomic.Bool
 
@@ -89,26 +90,31 @@ func (c *coalescingConn) takeHandshake() []byte {
 
 // attach binds the hijacked conn. Whatever fasthttp buffered past the
 // handshake is stashed so reads can go straight to the socket; with that
-// buffer empty the expired deadline fails before any syscall.
+// buffer empty the expired deadline fails before any syscall. A conn that
+// refuses the deadline would block the drain instead, so it keeps reading
+// through fasthttp's buffer.
 func (c *coalescingConn) attach(src net.Conn) {
 	raw := src
+	var rd io.Reader = src
+	var stash []byte
 	if u, ok := src.(interface{ UnsafeConn() net.Conn }); ok {
 		raw = u.UnsafeConn()
-	}
-	_ = src.SetReadDeadline(time.Unix(1, 0))
-	scratch := scratchPool.Get().(*[]byte)
-	var stash []byte
-	for {
-		n, err := src.Read(*scratch)
-		stash = append(stash, (*scratch)[:n]...)
-		if err != nil {
-			break
+		if src.SetReadDeadline(time.Unix(1, 0)) == nil {
+			scratch := scratchPool.Get().(*[]byte)
+			for {
+				n, err := src.Read(*scratch)
+				stash = append(stash, (*scratch)[:n]...)
+				if err != nil {
+					break
+				}
+			}
+			scratchPool.Put(scratch)
+			_ = raw.SetReadDeadline(time.Time{})
+			rd = raw
 		}
 	}
-	scratchPool.Put(scratch)
-	_ = raw.SetReadDeadline(time.Time{})
 	c.mu.Lock()
-	c.src, c.raw, c.stash = src, raw, stash
+	c.src, c.raw, c.rd, c.stash = src, raw, rd, stash
 	c.mu.Unlock()
 }
 
@@ -123,7 +129,7 @@ func (c *coalescingConn) Read(p []byte) (int, error) {
 		c.batch.Store(n >= minCoalesceFill)
 		return n, nil
 	}
-	n, err := c.raw.Read(p)
+	n, err := c.rd.Read(p)
 	c.batch.Store(n >= minCoalesceFill)
 	return n, err
 }
@@ -150,7 +156,6 @@ func (c *coalescingConn) Write(p []byte) (int, error) {
 	c.mu.Unlock()
 
 	c.wmu.Lock()
-	defer c.wmu.Unlock()
 	var err error
 	if pending := c.take(); len(pending) > 0 {
 		bufs := net.Buffers{pending, p} // one writev on a TCP socket
@@ -161,9 +166,10 @@ func (c *coalescingConn) Write(p []byte) (int, error) {
 	}
 	if err != nil {
 		c.fail(err)
+		c.wmu.Unlock()
 		return 0, err
 	}
-	_ = c.drainLocked()
+	_ = c.drainAndRelease()
 	return len(p), nil
 }
 
@@ -179,21 +185,34 @@ func (c *coalescingConn) flush() error {
 	if !c.wmu.TryLock() {
 		return nil
 	}
-	defer c.wmu.Unlock()
-	return c.drainLocked()
+	return c.drainAndRelease()
 }
 
-// drainLocked writes pending until it is empty. Caller holds wmu.
-func (c *coalescingConn) drainLocked() error {
+// drainAndRelease writes pending until it is empty, then releases wmu. Caller
+// holds wmu. The release happens under mu, after the last look at pending, so
+// a write that lands later arms a timer that finds the socket free: a holder
+// never leaves bytes behind that nothing would send.
+func (c *coalescingConn) drainAndRelease() error {
 	for {
-		pending := c.take()
-		if len(pending) == 0 {
-			return nil
+		c.mu.Lock()
+		if c.armed {
+			c.timer.Stop()
+			c.armed = false
 		}
+		if len(c.pending) == 0 || c.err != nil {
+			err := c.err
+			c.wmu.Unlock()
+			c.mu.Unlock()
+			return err
+		}
+		pending := c.pending
+		c.pending = nil
+		c.mu.Unlock()
 		_, err := c.raw.Write(pending)
 		c.recycle(pending)
 		if err != nil {
 			c.fail(err)
+			c.wmu.Unlock()
 			return err
 		}
 	}
@@ -244,7 +263,8 @@ func (c *coalescingConn) arm() {
 }
 
 // onTimer sends what a reader that did not come back left pending, and stops
-// deferring until the next fill proves the reader is still consuming.
+// deferring until the next fill proves the reader is still consuming. A
+// writer that holds the socket sends it instead, before letting go.
 func (c *coalescingConn) onTimer() {
 	c.mu.Lock()
 	c.armed = false
@@ -256,13 +276,14 @@ func (c *coalescingConn) onTimer() {
 	if empty || !c.wmu.TryLock() {
 		return
 	}
-	_ = c.drainLocked()
-	c.wmu.Unlock()
+	_ = c.drainAndRelease()
 }
 
 // Close sends what is pending, within closeFlushGrace, and closes the socket.
 // A writer stalled on a full window is expired first so it cannot hold the
-// close up. A second Close is a no-op: fasthttp recycles its conn on the first.
+// close up. A conn that refuses deadlines is closed under such a writer
+// instead, and pending bytes are dropped rather than sent without a bound on
+// the wait. A second Close is a no-op.
 func (c *coalescingConn) Close() error {
 	c.mu.Lock()
 	if c.closed {
@@ -276,12 +297,16 @@ func (c *coalescingConn) Close() error {
 		return nil
 	}
 	if !c.wmu.TryLock() {
-		_ = raw.SetWriteDeadline(time.Unix(1, 0))
+		if raw.SetWriteDeadline(time.Unix(1, 0)) != nil {
+			_ = raw.Close()
+		}
 		c.wmu.Lock()
 	}
-	_ = raw.SetWriteDeadline(time.Now().Add(closeFlushGrace))
-	_ = c.drainLocked()
-	c.wmu.Unlock()
+	if raw.SetWriteDeadline(time.Now().Add(closeFlushGrace)) == nil {
+		_ = c.drainAndRelease()
+	} else {
+		c.wmu.Unlock()
+	}
 	return src.Close()
 }
 
@@ -416,6 +441,11 @@ func upgrade(c fiber.Ctx, upgrader *websocket.Upgrader, conn *Conn, cfg *Config,
 		if key, value, ok := bytes.Cut(line, []byte(": ")); ok {
 			fctx.Response.Header.SetBytesKV(key, value)
 		}
+	}
+	if netConn := fctx.Conn(); netConn != nil && cfg.HandshakeTimeout > 0 {
+		// Bounds fasthttp's write of the 101; fasthttp clears it before the
+		// hijack, and replaces it with its own when the server has a WriteTimeout.
+		_ = netConn.SetWriteDeadline(time.Now().Add(cfg.HandshakeTimeout))
 	}
 	fctx.Hijack(func(netConn net.Conn) {
 		cc.attach(netConn)
