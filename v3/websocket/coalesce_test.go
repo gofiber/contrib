@@ -492,11 +492,13 @@ func TestFrameReaderCopyIsExactAndTrimmed(t *testing.T) {
 	fr.trim()
 	assert.Equal(t, frameBufferRetained, cap(fr.buf), "a buffer within the cap is kept")
 
+	// Past the cap the buffer is handed over instead of copied, having grown
+	// by at most a quarter.
 	msg, err = fr.readAll(bytes.NewReader(bytes.Repeat([]byte{'x'}, frameBufferRetained+1)))
 	require.NoError(t, err)
 	assert.Len(t, msg, frameBufferRetained+1)
-	fr.trim()
-	assert.Nil(t, fr.buf, "a buffer past the cap is dropped")
+	assert.LessOrEqual(t, cap(msg), frameBufferRetained+frameBufferRetained/4)
+	assert.Nil(t, fr.buf, "a buffer past the cap is not kept")
 }
 
 // clientFrame builds one masked client frame (payload up to 125 bytes).
@@ -677,14 +679,22 @@ func TestConnReadMessageReturnsOwnedCopy(t *testing.T) {
 	defer conn.Close()
 	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
 
-	// Sizes around the pooled buffer's growth points, including an exact fill.
-	for _, size := range []int{0, 5, frameBufferInitial, frameBufferInitial + 1, 100 << 10} {
+	// Sizes around the pooled buffer's growth points, including an exact fill
+	// and one past what the pool retains. Every result must survive the reads
+	// that follow it.
+	var results [][]byte
+	sizes := []int{0, 5, frameBufferInitial, frameBufferInitial + 1, 100 << 10, frameBufferRetained, 7}
+	for _, size := range sizes {
 		payload := bytes.Repeat([]byte{byte(size)}, size)
 		require.NoError(t, conn.WriteMessage(websocket.BinaryMessage, payload))
 		mt, p, err := conn.ReadMessage()
 		require.NoError(t, err)
 		assert.Equal(t, websocket.BinaryMessage, mt)
 		assert.Equal(t, payload, p)
+		results = append(results, p)
+	}
+	for i, size := range sizes {
+		assert.Equal(t, bytes.Repeat([]byte{byte(size)}, size), results[i], "message %d was overwritten", i)
 	}
 }
 
