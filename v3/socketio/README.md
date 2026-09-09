@@ -85,7 +85,7 @@ All tunables are package-level variables; override before the first connection i
 | `MaxBatchPackets`      | `256`              | Max EIO packets in a single `0x1E`-batched frame.                             |
 | `MaxEventNameLength`   | `256`              | Max length of an inbound SIO event name.                                      |
 | `MaxEventArgs`         | `256`              | Max elements (event name included) in an inbound SIO EVENT or ACK array.      |
-| `CloseTimeout`         | `5s`               | Bound on the closing handshake: how long the server keeps reading for the peer's Close frame after `Close`, and how long `Close` waits for a saturated send queue. Zero closes the socket as soon as the frames are queued. |
+| `CloseTimeout`         | `5s`               | One budget for the whole tear-down after `Close`: waiting for a slot in a saturated send queue, reading for the peer's Close frame and letting a stalled write finish all share it. Zero closes the socket as soon as the frames are queued. |
 | `WriteTimeout`         | `0` (disabled)     | Deadline for a single WebSocket frame write by the send goroutine; a peer that stops reading is otherwise only detected by the heartbeat. |
 | `OutboundAckTimeout`   | `30s`              | Default ack deadline for `EmitWithAck`.                                       |
 | `SendQueueSize`        | `100`              | Capacity of the per-connection outbound queue.                                |
@@ -96,7 +96,7 @@ All tunables are package-level variables; override before the first connection i
 | `EnablePolling`        | `false`            | If true, the handler returned from `New` also serves Engine.IO HTTP long-polling on `GET`/`POST`. |
 | `PollingMaxBufferSize` | `1_000_000`        | Cap on a single polling HTTP body (request POST or response GET drain).        |
 | `MaxPollWait`          | `30s`              | Maximum time a long-poll GET blocks waiting for outbound frames.                |
-| `PollQueueMaxFrames`   | `1024`             | Cap on buffered outbound frames per polling session; overflow honors `DropFramesOnOverflow`. |
+| `PollQueueMaxFrames`   | `1024`             | Cap on buffered outbound frames per polling session; overflow honors `DropFramesOnOverflow`. The SIO DISCONNECT and EIO CLOSE packets queued by `Close` are exempt, so a queue an `EventClose` listener filled still ends the session cleanly. |
 
 Use `socketio.Shutdown(ctx)` from `fiber.App.ShutdownWithContext` for a deterministic drain.
 
@@ -172,7 +172,7 @@ These package-level variables can be overridden before the first connection is a
 | `PingInterval`      | `25 * time.Second` | Interval between Engine.IO PING frames sent by the server to keep the connection alive.              |
 | `PingTimeout`       | `20 * time.Second` | How long the server waits for the client's PONG before considering the connection dead.              |
 | `HandshakeTimeout`  | `10 * time.Second` | Maximum time allowed for the Engine.IO / Socket.IO handshake (including namespace CONNECT) to complete. |
-| `CloseTimeout`      | `5 * time.Second`  | Bound on the closing handshake after `Close` or a client SIO DISCONNECT; the socket is closed once the peer's Close frame arrives or the timeout elapses. |
+| `CloseTimeout`      | `5 * time.Second`  | Budget for the whole tear-down after `Close` or a client SIO DISCONNECT; the socket is closed once the peer's Close frame arrives or the budget is spent, whatever it was spent on. |
 | `WriteTimeout`      | `0` (disabled)     | Deadline for a single WebSocket frame write; zero relies on the heartbeat to detect a peer that stopped reading. |
 | `MaxPayload`        | `1 << 20` (1 MiB)  | Maximum size in bytes for a single inbound WebSocket frame; oversize messages close the socket.      |
 | `MaxAuthPayload`    | `8 << 10` (8 KiB)  | Maximum size in bytes for the Socket.IO CONNECT auth JSON.                                           |
@@ -186,7 +186,7 @@ These package-level variables can be overridden before the first connection is a
 | `EnablePolling`     | `false`            | If true, the handler also accepts Engine.IO HTTP long-polling on `GET`/`POST` (opt-in fallback).      |
 | `PollingMaxBufferSize` | `1_000_000`     | Cap on a single polling HTTP body (POST request body or GET drain response body), in bytes.           |
 | `MaxPollWait`       | `30 * time.Second` | Maximum time a long-poll GET blocks waiting for outbound frames before returning an empty 200.        |
-| `PollQueueMaxFrames`| `1024`             | Maximum buffered outbound frames per polling session before overflow handling applies.               |
+| `PollQueueMaxFrames`| `1024`             | Maximum buffered outbound frames per polling session before overflow handling applies; the packets `Close` queues are exempt. |
 
 ```go
 func init() {

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -133,6 +135,72 @@ func TestSocketIOCloseTimeoutClosesUnresponsivePeer(t *testing.T) {
 	err := rawReadUntilError(conn, 2*time.Second)
 	require.Error(t, err)
 	require.False(t, isTimeout(err), "server did not close the socket: %v", err)
+}
+
+// TestSocketIOCloseWithSaturatedQueueUsesOneBudget verifies that Close on a
+// session whose send queue is saturated behind a peer that stopped reading
+// releases the socket after one CloseTimeout: the wait for a queue slot,
+// the closing-handshake deadline and the wait for the stalled writer share
+// a single budget instead of each starting their own. It runs over a real
+// TCP socket, like TestSocketIOStalledPeerDoesNotWedgeTeardown: the send
+// goroutine really blocks inside a write once the kernel buffers are full,
+// and closing the socket is what returns it.
+func TestSocketIOCloseWithSaturatedQueueUsesOneBudget(t *testing.T) {
+	resetSIOGlobals(t)
+	prevClose, prevDrop, prevSize := CloseTimeout, DropFramesOnOverflow, SendQueueSize
+	CloseTimeout = 400 * time.Millisecond
+	DropFramesOnOverflow = true
+	SendQueueSize = 4
+	defer func() { CloseTimeout, DropFramesOnOverflow, SendQueueSize = prevClose, prevDrop, prevSize }()
+
+	kwsCh := captureConnect(t)
+	var drops atomic.Int64
+	On(EventError, func(p *EventPayload) {
+		if errors.Is(p.Error, ErrSendQueueOverflow) {
+			drops.Add(1)
+		}
+	})
+
+	app := fiber.New()
+	app.Use(upgradeMiddleware)
+	app.Get("/", New(func(_ *Websocket) {}))
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = app.Listener(ln) }()
+	defer func() { _ = app.ShutdownWithTimeout(5 * time.Second) }()
+
+	dialer := &websocket.Dialer{HandshakeTimeout: 5 * time.Second}
+	conn, _, err := dialer.Dial("ws://"+ln.Addr().String()+"/", nil)
+	require.NoError(t, err)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+	kws := awaitSession(t, kwsCh)
+
+	// Never read again. 64 KiB frames fill the kernel buffers, then the
+	// send goroutine blocks and the queue stays full; the overflow policy
+	// drops the rest rather than tearing the session down, so Close finds
+	// a saturated queue behind a stalled writer.
+	payload := bytes.Repeat([]byte("x"), 64<<10)
+	var flood sync.WaitGroup
+	flood.Add(1)
+	go func() {
+		defer flood.Done()
+		for kws.IsAlive() {
+			kws.Emit(payload)
+		}
+	}()
+	// Joined before the deferred restore of the tunables the flood reads.
+	defer flood.Wait()
+	require.Eventually(t, func() bool {
+		return len(kws.queue) == cap(kws.queue) && drops.Load() >= 32
+	}, 15*time.Second, time.Millisecond)
+
+	start := time.Now()
+	kws.Close()
+	waitClosed(t, kws, 10*time.Second)
+	elapsed := time.Since(start)
+	require.GreaterOrEqual(t, elapsed, CloseTimeout, "Close gave up on a queue slot before CloseTimeout")
+	require.Less(t, elapsed, 700*time.Millisecond, "the tear-down spent more than one CloseTimeout budget")
 }
 
 // TestSocketIOStalledPeerDoesNotWedgeTeardown floods a peer that stopped

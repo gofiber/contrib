@@ -129,6 +129,22 @@ func (q *pollQueue) enqueue(frame []byte) enqueueResult {
 	return enqueueOK
 }
 
+// enqueueTerminal appends the packets that end a session, SIO DISCONNECT
+// and EIO CLOSE, past PollQueueMaxFrames: they are two small fixed frames,
+// and a peer that drained a queue an EventClose listener filled must still
+// learn the session is over rather than meet an unknown sid on its next
+// poll. Both land together, so one drain delivers both. A no-op once the
+// queue is closed.
+func (q *pollQueue) enqueueTerminal(frames ...[]byte) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.closed {
+		return
+	}
+	q.frames = append(q.frames, frames...)
+	q.signalLocked()
+}
+
 // close releases any blocked drain and marks the queue terminal: future
 // enqueue calls become no-ops, and a drain that finds an empty buffer
 // returns the closed flag. Idempotent.

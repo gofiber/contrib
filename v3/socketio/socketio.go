@@ -550,6 +550,12 @@ type Websocket struct {
 	// tear-down armed to return the read loop, so a concurrent idle
 	// refresh that lost the race can reinstate it.
 	teardownDeadline atomic.Int64
+	// closeDeadline is the end (unix nanoseconds) of the tear-down budget:
+	// CloseTimeout from the moment the tear-down began, set by whichever
+	// of beginClose and disconnected ran first. Waiting for queue space,
+	// the closing handshake and an in-flight write all share what is left
+	// of it. Zero when CloseTimeout is zero: nothing waits.
+	closeDeadline atomic.Int64
 	// mu guards UUID, attributes and handshakeAuth.
 	mu sync.RWMutex
 	// Conn is the underlying Fiber WebSocket connection. Treat it as
@@ -1642,15 +1648,17 @@ func (kws *Websocket) Close() {
 
 	disconnect := buildSIODisconnect(kws.getNamespace())
 	if kws.pollQ != nil {
-		// Polling: enqueue SIO DISCONNECT and EIO CLOSE so the next
-		// drain (or any in-flight long-poll) delivers them; the
+		// Polling: queue SIO DISCONNECT and EIO CLOSE so the next
+		// drain (or any in-flight long-poll) delivers them. They are
+		// appended past PollQueueMaxFrames: an EventClose listener
+		// may have filled the queue, and the peer must still learn
+		// the session is over rather than meet an unknown sid. The
 		// queue is closed by disconnected() below, after which
 		// further enqueues are silent no-ops. There is no
 		// equivalent of the WebSocket Close control frame on
 		// polling - the EIO "1" packet is the protocol-level
 		// disconnect signal.
-		kws.pollQ.enqueue(disconnect)
-		kws.pollQ.enqueue([]byte{eioClose})
+		kws.pollQ.enqueueTerminal(disconnect, []byte{eioClose})
 	} else {
 		kws.beginClose(disconnect)
 	}
@@ -1661,19 +1669,24 @@ func (kws *Websocket) Close() {
 // beginClose queues the closing handshake behind everything already in the
 // send queue: the optional SIO DISCONNECT frame, then a Close control
 // frame, both written by the send goroutine. It sets closeRequested so the
-// tear-down leaves the socket open, bounded by CloseTimeout, for the read
-// loop to consume the peer's Close frame. A queue that stays saturated for
-// CloseTimeout means the peer stopped reading; the marker is then dropped
-// and disconnected closes the socket outright.
+// tear-down leaves the socket open for the read loop to consume the peer's
+// Close frame. A saturated queue means the peer stopped reading; the wait
+// for a slot, the closing handshake and the stalled write then share one
+// tear-down budget, CloseTimeout from now, and once it is spent the marker
+// is dropped and disconnected closes the socket outright.
 func (kws *Websocket) beginClose(disconnect []byte) {
 	msg := message{mType: closeFrameMarker, data: disconnect}
+	deadline := kws.armCloseDeadline()
 	select {
 	case kws.queue <- msg:
 		kws.closeRequested.Store(true)
 		return
 	default:
 	}
-	wait := time.Duration(kws.closeGrace.Load())
+	if deadline.IsZero() {
+		return
+	}
+	wait := time.Until(deadline)
 	if wait <= 0 {
 		return
 	}
@@ -1686,6 +1699,24 @@ func (kws *Websocket) beginClose(disconnect []byte) {
 		logf("warn", "close_queue_stalled", "uuid", kws.UUID, "queue_cap", cap(kws.queue))
 	case <-kws.done:
 	}
+}
+
+// armCloseDeadline starts the tear-down budget, CloseTimeout from now, if
+// no earlier caller did, and returns when it ends. The zero time means
+// there is no budget: CloseTimeout is zero and nothing waits.
+func (kws *Websocket) armCloseDeadline() time.Time {
+	if d := kws.closeDeadline.Load(); d != 0 {
+		return time.Unix(0, d)
+	}
+	grace := time.Duration(kws.closeGrace.Load())
+	if grace <= 0 {
+		return time.Time{}
+	}
+	deadline := time.Now().Add(grace)
+	if !kws.closeDeadline.CompareAndSwap(0, deadline.UnixNano()) {
+		return time.Unix(0, kws.closeDeadline.Load())
+	}
+	return deadline
 }
 
 // getNamespace returns the Socket.IO namespace this connection is bound to,
@@ -1980,11 +2011,12 @@ func (kws *Websocket) finishRun() {
 			// closing is what returns a write stalled on a peer that
 			// stopped reading, so the wait is bounded. The bound is one
 			// budget for the whole tear-down: what is left of the
-			// closing-handshake deadline when one was armed, CloseTimeout
-			// otherwise, and nothing at all when CloseTimeout is zero.
-			wait := time.Duration(kws.closeGrace.Load())
-			if graceful {
-				wait = time.Until(time.Unix(0, kws.teardownDeadline.Load()))
+			// deadline armed when it began (waiting for queue space and
+			// the closing handshake already came out of it), and nothing
+			// at all when CloseTimeout is zero.
+			var wait time.Duration
+			if d := kws.closeDeadline.Load(); d != 0 {
+				wait = time.Until(time.Unix(0, d))
 			}
 			if wait > 0 {
 				kws.waitSendDone(wait)
@@ -2022,22 +2054,21 @@ func (kws *Websocket) waitSendDone(d time.Duration) {
 }
 
 // armTeardownDeadline sets the read deadline that returns the read loop:
-// CloseTimeout from now when the closing handshake is queued, so the loop
-// drains until the peer's Close frame; as good as immediately otherwise.
-// The socket itself is closed by finishRun once the send goroutine is out
-// of any write: SetReadDeadline is safe to call concurrently with a read,
-// closing under a write is not on every net.Conn. The immediate deadline
-// is a moment ahead rather than in the past because a conn that
-// implements deadlines with a timer fires a deadline that was reset, not
-// one that was stopped.
+// the end of the tear-down budget when the closing handshake is queued, so
+// the loop drains until the peer's Close frame; as good as immediately
+// otherwise. The socket itself is closed by finishRun once the send
+// goroutine is out of any write: SetReadDeadline is safe to call
+// concurrently with a read, closing under a write is not on every
+// net.Conn. The deadline is always a moment ahead rather than in the past
+// because a conn that implements deadlines with a timer fires a deadline
+// that was reset, not one that was stopped.
 func (kws *Websocket) armTeardownDeadline(graceful bool) {
-	grace := time.Millisecond
+	deadline := time.Now().Add(time.Millisecond)
 	if graceful {
-		if g := time.Duration(kws.closeGrace.Load()); g > 0 {
-			grace = g
+		if d := kws.closeDeadline.Load(); d > deadline.UnixNano() {
+			deadline = time.Unix(0, d)
 		}
 	}
-	deadline := time.Now().Add(grace)
 	kws.teardownDeadline.Store(deadline.UnixNano())
 	_ = kws.Conn.SetReadDeadline(deadline)
 }
@@ -2399,6 +2430,7 @@ func (kws *Websocket) disconnected(err error) {
 			kws.pollQ.close()
 		case kws.Conn == nil:
 		default:
+			kws.armCloseDeadline()
 			kws.armTeardownDeadline(err == nil && kws.closeRequested.Load())
 		}
 	})

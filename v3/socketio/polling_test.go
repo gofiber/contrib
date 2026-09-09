@@ -457,6 +457,93 @@ func TestPollingCloseDeliversDisconnect(t *testing.T) {
 	require.Contains(t, string(body), `"code":1`)
 }
 
+// TestPollQueueEnqueueTerminalBypassesCap pins the pollQueue contract for
+// the packets that end a session: they are appended past
+// PollQueueMaxFrames, together, and are a no-op once the queue is closed.
+func TestPollQueueEnqueueTerminalBypassesCap(t *testing.T) {
+	prevCap := PollQueueMaxFrames
+	PollQueueMaxFrames = 2
+	t.Cleanup(func() { PollQueueMaxFrames = prevCap })
+
+	q := newPollQueue()
+	require.Equal(t, enqueueOK, q.enqueue([]byte("a")))
+	require.Equal(t, enqueueOK, q.enqueue([]byte("b")))
+	require.Equal(t, enqueueRejectedDisconnect, q.enqueue([]byte("c")))
+	q.enqueueTerminal([]byte("41"), []byte("1"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	frames, closed := q.drain(ctx, 0)
+	require.False(t, closed)
+	require.Equal(t, [][]byte{[]byte("a"), []byte("b"), []byte("41"), []byte("1")}, frames)
+
+	q.close()
+	q.enqueueTerminal([]byte("41"), []byte("1"))
+	frames, closed = q.drain(ctx, 0)
+	require.True(t, closed)
+	require.Nil(t, frames)
+}
+
+// TestPollingCloseTerminalPacketsSurviveFullQueue verifies that Close on a
+// polling session still queues SIO DISCONNECT and EIO CLOSE when an
+// EventClose listener filled the queue to PollQueueMaxFrames: before, both
+// enqueues were rejected and their result ignored, so the peer drained the
+// farewell frames and then met an unknown sid instead of a disconnect.
+func TestPollingCloseTerminalPacketsSurviveFullQueue(t *testing.T) {
+	resetSIOGlobals(t)
+	prevCap := PollQueueMaxFrames
+	PollQueueMaxFrames = 2
+	t.Cleanup(func() { PollQueueMaxFrames = prevCap })
+
+	var captured atomic.Pointer[Websocket]
+	On(EventConnect, func(p *EventPayload) { captured.Store(p.Kws) })
+	On(EventClose, func(p *EventPayload) {
+		for i := 0; i < PollQueueMaxFrames; i++ {
+			p.Kws.Emit([]byte(`"bye"`))
+		}
+	})
+	disc := make(chan error, 1)
+	On(EventDisconnect, func(p *EventPayload) {
+		select {
+		case disc <- p.Error:
+		default:
+		}
+	})
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	_, _ = pollPost(t, c, sid, []byte(`40`))
+	require.Eventually(t, func() bool { return captured.Load() != nil }, 2*time.Second, 10*time.Millisecond)
+	_, _ = pollGet(t, c, sid) // drain the CONNECT ack so the queue starts empty
+
+	kws := captured.Load()
+	kws.Close()
+	select {
+	case err := <-disc:
+		require.NoError(t, err, "the farewell frames must not overflow the queue")
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventDisconnect did not fire")
+	}
+
+	// No long-poll was in flight, so everything is still buffered: the
+	// listener's frames up to the cap, then the two terminal packets.
+	q := kws.pollQ
+	q.mu.Lock()
+	frames := make([]string, 0, len(q.frames))
+	for _, f := range q.frames {
+		frames = append(frames, string(f))
+	}
+	q.mu.Unlock()
+	require.Len(t, frames, PollQueueMaxFrames+2)
+	for _, f := range frames[:PollQueueMaxFrames] {
+		require.True(t, strings.HasPrefix(f, "42"), "farewell frame %q is not an event", f)
+	}
+	require.Equal(t, "41", frames[PollQueueMaxFrames])
+	require.Equal(t, "1", frames[PollQueueMaxFrames+1])
+}
+
 // TestPollQueueDrainSemantics covers the pollQueue primitive directly:
 // FIFO order, batching, byte cap, blocking, close.
 func TestPollQueueDrainSemantics(t *testing.T) {
