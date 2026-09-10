@@ -6,6 +6,7 @@
 package jwtware
 
 import (
+	"net/url"
 	"reflect"
 	"strings"
 
@@ -59,7 +60,7 @@ func New(config ...Config) fiber.Handler {
 	// extractor of a chain supplied the token, and whether it came from the URL
 	// at all, is only known per request, so the parameters it could have come
 	// from are collected here and compared then.
-	queryKeys := urlParams(cfg.Extractor)
+	urlKeys := urlParams(cfg.Extractor)
 
 	reject := func(c fiber.Ctx, err error) error {
 		handlerErr := errorHandler(c, err)
@@ -101,35 +102,68 @@ func New(config ...Config) fiber.Handler {
 		// Store user information from token into context.
 		fiber.StoreInContext(c, tokenKey, token)
 
-		if fromQuery(c, queryKeys, extracted) {
+		if fromURL(c, urlKeys, extracted) {
 			return keepPrivate(c, successHandler)
 		}
 		return successHandler(c)
 	}
 }
 
-// urlParams lists the parameters whose value the extractor may find in the
-// query string, in the order a chain tries them. It is empty for the extractors
-// that never read it, which is the default.
+// urlParam names a parameter whose value the extractor may find in the request
+// URL, and how to read it back.
+type urlParam struct {
+	key    string
+	inPath bool
+}
+
+// urlParams lists those parameters, in the order a chain tries them. It is
+// empty for the extractors that never read the URL, which is the default.
 //
-// Form parameters count: Fiber's FormValue searches the query string before the
-// request body, so a form extractor answers "GET /?token=<jwt>" from the URL.
-// Which of the two a given request used is settled per request, by fromQuery.
+// The list covers every built-in source that can put the token in the URL and
+// no others: a query parameter obviously, a form parameter because Fiber's
+// FormValue searches the query string before the request body, and a route
+// parameter because it is part of the path. A header, an Authorization header
+// and a cookie never reach the URL. A SourceCustom extractor reads wherever its
+// author wrote it to, so only they can say.
+//
+// Which source a given request actually used is settled per request, by fromURL.
 //
 // The chain is walked with a visited set, as the extractors package walks its
 // own: the metadata is the caller's to build, and a chain that refers back to
 // itself would otherwise be followed along every path through it.
-func urlParams(e extractors.Extractor) []string {
-	var params []string
+func urlParams(e extractors.Extractor) []urlParam {
+	var params []urlParam
 	walkExtractor(&e, func(candidate *extractors.Extractor) bool {
 		switch candidate.Source {
 		case extractors.SourceQuery, extractors.SourceForm:
 			// The empty key is a real parameter: Fiber reads "/?=<token>" from it.
-			params = append(params, candidate.Key)
+			params = append(params, urlParam{key: candidate.Key})
+		case extractors.SourceParam:
+			params = append(params, urlParam{key: candidate.Key, inPath: true})
 		}
 		return false
 	})
 	return params
+}
+
+// fromURL reports whether the token the extractor returned is the value one of
+// those parameters holds, which is what makes the URL sensitive. A chain that
+// answered from a header, a cookie or a request body leaves the URL clean, and
+// its response is none of this function's business.
+func fromURL(c fiber.Ctx, params []urlParam, token string) bool {
+	for _, param := range params {
+		if !param.inPath {
+			if c.Query(param.key) == token {
+				return true
+			}
+			continue
+		}
+		// FromParam unescapes what it read, so the comparison has to as well.
+		if unescaped, err := url.PathUnescape(c.Params(param.key)); err == nil && unescaped == token {
+			return true
+		}
+	}
+	return false
 }
 
 // walkExtractor visits an extractor and its chain in the order a chain is
@@ -155,19 +189,6 @@ func walkExtractor(e *extractors.Extractor, visit func(*extractors.Extractor) bo
 		return false
 	}
 	return walk(e)
-}
-
-// fromQuery reports whether the token the extractor returned is the value of
-// one of those parameters, which is what makes the URL sensitive. A chain that
-// answered from a header or a cookie leaves the URL clean, and its response is
-// none of this function's business.
-func fromQuery(c fiber.Ctx, params []string, token string) bool {
-	for _, param := range params {
-		if c.Query(param) == token {
-			return true
-		}
-	}
-	return false
 }
 
 // keepPrivate runs the handler and then keeps its response out of shared

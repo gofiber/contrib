@@ -863,3 +863,62 @@ func TestTypedNilErrorFromHandler(t *testing.T) {
 		require.NotNil(t, resp)
 	})
 }
+
+// TestPathParamTokenIsPrivate covers extractors.FromParam: a route parameter is
+// part of the URL, so a token read from one is in every log and cache key the
+// path reaches.
+func TestPathParamTokenIsPrivate(t *testing.T) {
+	t.Parallel()
+
+	// A route parameter is only in scope for handlers on that route, so the
+	// middleware goes on the route rather than on app.Use.
+	app := fiber.New()
+	app.Get("/auth/:token", jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+		Extractor:  extractors.FromParam("token"),
+	}), func(c fiber.Ctx) error { return c.SendString("OK") })
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/auth/"+hamac[0].Token, nil))
+	require.NoError(t, err)
+
+	require.Equal(t, fiber.StatusOK, resp.StatusCode)
+	require.Equal(t, "private", resp.Header.Get(fiber.HeaderCacheControl))
+}
+
+// TestHeaderTokenIsNotMarkedPrivate is the other side of it: the sources that
+// never reach the URL leave the response's caching to the application.
+func TestHeaderTokenIsNotMarkedPrivate(t *testing.T) {
+	t.Parallel()
+
+	for name, extractor := range map[string]extractors.Extractor{
+		"auth header": extractors.FromAuthHeader("Bearer"),
+		"header":      extractors.FromHeader("X-Token"),
+		"cookie":      extractors.FromCookie("token"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			app := fiber.New()
+			app.Use(jwtware.New(jwtware.Config{
+				SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+				Extractor:  extractor,
+			}))
+			app.Get("/ok", func(c fiber.Ctx) error { return c.SendString("OK") })
+
+			req := httptest.NewRequest(http.MethodGet, "/ok", nil)
+			switch extractor.Source {
+			case extractors.SourceCookie:
+				req.AddCookie(&http.Cookie{Name: "token", Value: hamac[0].Token})
+			case extractors.SourceAuthHeader:
+				req.Header.Set(fiber.HeaderAuthorization, "Bearer "+hamac[0].Token)
+			default:
+				req.Header.Set("X-Token", hamac[0].Token)
+			}
+
+			resp, err := app.Test(req)
+			require.NoError(t, err)
+			require.Equal(t, fiber.StatusOK, resp.StatusCode)
+			require.Empty(t, resp.Header.Get(fiber.HeaderCacheControl))
+		})
+	}
+}
