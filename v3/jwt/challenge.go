@@ -70,13 +70,10 @@ var challengeDescriptions = [...]string{
 type challenge struct {
 	badRequest   []string
 	unauthorized []string
-	// keepExisting records that the error handler is the caller's, and so may
-	// have written a challenge of its own that must not be overwritten.
-	keepExisting bool
 }
 
 // newChallenge renders the challenges for the configured credential source.
-func newChallenge(cfg Config, keepExisting bool) *challenge {
+func newChallenge(cfg Config) *challenge {
 	scheme := firstAuthScheme(cfg.Extractor)
 	if scheme == "" {
 		// The token does not travel in an Authorization header, but a 401 still
@@ -89,11 +86,13 @@ func newChallenge(cfg Config, keepExisting bool) *challenge {
 	ch := &challenge{
 		badRequest:   make([]string, len(challengeDescriptions)),
 		unauthorized: make([]string, len(challengeDescriptions)),
-		keepExisting: keepExisting,
 	}
+	bearer := strings.EqualFold(scheme, "Bearer")
 	for reason, description := range challengeDescriptions {
-		// The error parameters are defined for the bearer scheme only.
-		if !strings.EqualFold(scheme, "Bearer") {
+		// The error parameters are defined for the bearer scheme only, and
+		// RFC 6750 Section 3.1 asks that a request which presented no usable
+		// credential be answered without naming an error about one.
+		if !bearer || challengeReason(reason) == reasonMissing {
 			ch.badRequest[reason] = prefix
 			ch.unauthorized[reason] = prefix
 			continue
@@ -102,12 +101,6 @@ func newChallenge(cfg Config, keepExisting bool) *challenge {
 		ch.unauthorized[reason] = withError(prefix, errorInvalidToken, description)
 	}
 	return ch
-}
-
-// customErrorHandler reports whether the caller supplied the error handler. The
-// default one never writes a challenge, so its response needs no inspecting.
-func customErrorHandler(config []Config) bool {
-	return len(config) > 0 && config[0].ErrorHandler != nil
 }
 
 // withError appends the RFC 6750 Section 3 error parameters to a challenge.
@@ -151,7 +144,10 @@ func (ch *challenge) apply(c fiber.Ctx, handlerErr, cause error) {
 		return
 	}
 
-	if ch.keepExisting && len(c.Response().Header.Peek(header)) > 0 {
+	// A challenge already on the response belongs to whoever put it there: an
+	// error handler of the caller's, or another authentication middleware that
+	// ran before this one and whose scheme the client may still be able to use.
+	if len(c.Response().Header.Peek(header)) > 0 {
 		return
 	}
 

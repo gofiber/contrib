@@ -136,14 +136,21 @@ For an overview and additional examples, see the Fiber Extractors guide:
   The scheme is taken from the extractor (`Bearer` unless the token comes from an
   `Authorization` header with another scheme), the realm from `Realm`, and the
   `error_description` from the reason the token failed. Error parameters are only
-  added for the bearer scheme, as RFC 6750 defines them. An `ErrorHandler` that
-  sets its own `WWW-Authenticate` keeps it.
-- **Tokens in the query string are not cached.** When the extractor can read the
-  token from the query, successful responses are marked `Cache-Control: private`,
+  added for the bearer scheme, as RFC 6750 defines them, and a request that
+  presented no usable credential is answered with a bare `Bearer realm="..."`
+  instead, which [RFC 6750 Section
+  3.1](https://www.rfc-editor.org/rfc/rfc6750#section-3.1) asks for. A challenge
+  already on the response is never replaced, whether an `ErrorHandler` of yours
+  or an earlier authentication middleware put it there.
+- **Tokens in the query string are not stored in shared caches.** When the token
+  arrived in the query, the successful response is marked `Cache-Control: private`,
   as [RFC 6750 Section
   2.3](https://www.rfc-editor.org/rfc/rfc6750#section-2.3) asks, since the URL a
-  shared cache keys on contains the token. A handler that sets its own
-  `Cache-Control` keeps it.
+  shared cache keys on contains the token. A policy the handler set is kept,
+  except that `public` is dropped and `private` added unless the policy already
+  keeps the response out of shared caches. Responses to tokens that arrived in a
+  header or a cookie are untouched, including from an extractor chain that could
+  have read the query but did not.
 
 ### What your application has to configure
 
@@ -176,6 +183,10 @@ the values involved:
   ```go
   SuccessHandler: func(c fiber.Ctx) error {
       if typ, _ := jwtware.FromContext(c).Header["typ"].(string); !strings.EqualFold(typ, "at+jwt") {
+          // A rejection from here does not pass through the middleware's own
+          // rejection path, so it has to carry its own challenge.
+          c.Set(fiber.HeaderWWWAuthenticate,
+              `Bearer realm="Restricted", error="invalid_token", error_description="The access token is of an unexpected type"`)
           return c.Status(fiber.StatusUnauthorized).SendString("unexpected token type")
       }
       return c.Next()
@@ -189,7 +200,7 @@ the values involved:
 A request that carries no credentials at all is answered with **400** and
 `missing or malformed JWT`, which is what this middleware has always done and
 what the extractor can tell us: it reports a missing and a malformed credential
-as the same error. [RFC 6750 Section
+as the same error, which is also why its challenge names no error code. [RFC 6750 Section
 3.1](https://www.rfc-editor.org/rfc/rfc6750#section-3.1) reserves 400 for a
 malformed request and answers a request that "lacks any authentication
 information" with 401 instead. If you need those OAuth 2.0 semantics exactly,

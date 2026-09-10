@@ -7,6 +7,7 @@ package jwtware
 
 import (
 	"reflect"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/extractors"
@@ -42,7 +43,7 @@ func New(config ...Config) fiber.Handler {
 	parser := jwt.NewParser(options...)
 
 	newClaims := claimsFactory(cfg.Claims)
-	authChallenge := newChallenge(cfg, customErrorHandler(config))
+	authChallenge := newChallenge(cfg)
 
 	// Hoisting the fields out of the config keeps the request path from chasing
 	// the same pointers on every call.
@@ -53,9 +54,11 @@ func New(config ...Config) fiber.Handler {
 	successHandler := cfg.SuccessHandler
 	errorHandler := cfg.ErrorHandler
 
-	if readsQuery(cfg.Extractor) {
-		successHandler = markPrivate(successHandler)
-	}
+	// A token read from the query string ends up in the URL a shared cache keys
+	// on, so those responses need the RFC 6750 Section 2.3 directive. Which
+	// extractor of a chain supplied the token is only known per request, so the
+	// parameters it could have come from are collected here and compared then.
+	queryKeys := queryParams(cfg.Extractor)
 
 	reject := func(c fiber.Ctx, err error) error {
 		handlerErr := errorHandler(c, err)
@@ -93,35 +96,122 @@ func New(config ...Config) fiber.Handler {
 
 		// Store user information from token into context.
 		fiber.StoreInContext(c, tokenKey, token)
+
+		if fromQuery(c, queryKeys, auth) {
+			return keepPrivate(c, successHandler)
+		}
 		return successHandler(c)
 	}
 }
 
-// readsQuery reports whether the extractor can take the token from the query
-// string, where it ends up in URLs that caches and logs keep.
-func readsQuery(e extractors.Extractor) bool {
-	return e.Contains(func(candidate extractors.Extractor) bool {
-		return candidate.Source == extractors.SourceQuery
-	})
+// queryParams lists the query string parameters the extractor may read the
+// token from, in the order a chain tries them. It is empty for the extractors
+// that never look at the query, which is the default.
+func queryParams(e extractors.Extractor) []string {
+	var params []string
+	if e.Source == extractors.SourceQuery && e.Key != "" {
+		params = append(params, e.Key)
+	}
+	for _, chained := range e.Chain {
+		params = append(params, queryParams(chained)...)
+	}
+	return params
 }
 
-// markPrivate wraps a handler so that a successful response to a request whose
-// token travelled in the query string is kept out of shared caches, which
-// RFC 6750 Section 2.3 asks of a resource server. A handler that states its own
-// caching policy keeps it.
-func markPrivate(next fiber.Handler) fiber.Handler {
-	return func(c fiber.Ctx) error {
-		err := next(c)
+// fromQuery reports whether the token the extractor returned is the value of
+// one of those parameters, which is what makes the URL sensitive. A chain that
+// answered from a header or a cookie leaves the URL clean, and its response is
+// none of this function's business.
+func fromQuery(c fiber.Ctx, params []string, token string) bool {
+	for _, param := range params {
+		if c.Query(param) == token {
+			return true
+		}
+	}
+	return false
+}
 
-		status := c.Response().StatusCode()
-		if status < fiber.StatusOK || status >= fiber.StatusMultipleChoices {
-			return err
-		}
-		if len(c.Response().Header.Peek(fiber.HeaderCacheControl)) == 0 {
-			c.Set(fiber.HeaderCacheControl, "private")
-		}
+// keepPrivate runs the handler and then keeps its response out of shared
+// caches, as RFC 6750 Section 2.3 asks of a resource server answering a request
+// whose token travelled in the URL.
+func keepPrivate(c fiber.Ctx, next fiber.Handler) error {
+	err := next(c)
+
+	// Only a response a cache would store needs the directive.
+	status := c.Response().StatusCode()
+	if status < fiber.StatusOK || status >= fiber.StatusMultipleChoices {
 		return err
 	}
+
+	existing := string(c.Response().Header.Peek(fiber.HeaderCacheControl))
+	c.Set(fiber.HeaderCacheControl, privateCacheControl(existing))
+	return err
+}
+
+// privateCacheControl returns value with any directive that would let a shared
+// cache store the response replaced by one that would not. A policy the handler
+// set is otherwise kept: only "public" is dropped, and "private" is added only
+// when nothing already keeps the response out of shared caches.
+func privateCacheControl(value string) string {
+	if value == "" {
+		return "private"
+	}
+
+	directives := splitCacheControl(value)
+	kept := directives[:0]
+	private := false
+	for _, directive := range directives {
+		name := directive
+		if i := strings.IndexByte(name, '='); i >= 0 {
+			name = name[:i]
+		}
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "public":
+			// Contradicts what this response needs; drop it.
+			continue
+		case "no-store":
+			private = true
+		case "private":
+			// RFC 9111 Section 5.2.2.7: with field names, only those fields are
+			// private and a shared cache may still store the body, so only the
+			// bare form settles it.
+			private = private || !strings.Contains(directive, "=")
+		}
+		kept = append(kept, directive)
+	}
+	if !private {
+		kept = append(kept, "private")
+	}
+
+	return strings.Join(kept, ", ")
+}
+
+// splitCacheControl splits a Cache-Control value on the commas that separate
+// directives, leaving the ones inside a quoted field list alone.
+func splitCacheControl(value string) []string {
+	var (
+		directives []string
+		start      int
+		quoted     bool
+	)
+	for i := 0; i < len(value); i++ {
+		switch value[i] {
+		case '"':
+			quoted = !quoted
+		case ',':
+			if quoted {
+				continue
+			}
+			if directive := strings.TrimSpace(value[start:i]); directive != "" {
+				directives = append(directives, directive)
+			}
+			start = i + 1
+		}
+	}
+	if directive := strings.TrimSpace(value[start:]); directive != "" {
+		directives = append(directives, directive)
+	}
+	return directives
 }
 
 // claimsFactory returns a function that allocates an empty claims value of the

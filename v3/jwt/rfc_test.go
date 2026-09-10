@@ -177,7 +177,9 @@ func TestChallengeOnRejection(t *testing.T) {
 			name:      "missing credentials",
 			authValue: "",
 			status:    fiber.StatusBadRequest,
-			challenge: `Bearer realm="Restricted", error="invalid_request", error_description="The access token is missing or malformed"`,
+			// RFC 6750 Section 3.1: nothing usable was presented, so the
+			// challenge names no error about it.
+			challenge: `Bearer realm="Restricted"`,
 		},
 		{
 			name:      "malformed credentials",
@@ -479,5 +481,107 @@ func TestQueryTokenResponseIsPrivate(t *testing.T) {
 		resp := doGet(t, app, "Bearer "+hamac[0].Token)
 		require.Equal(t, fiber.StatusOK, resp.StatusCode)
 		require.Empty(t, resp.Header.Get(fiber.HeaderCacheControl))
+	})
+}
+
+// TestChallengeFromEarlierMiddlewareIsKept checks that a challenge another
+// authentication middleware already put on the response survives, whether or
+// not this middleware's error handler is the default one.
+func TestChallengeFromEarlierMiddlewareIsKept(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		c.Set(fiber.HeaderWWWAuthenticate, `Basic realm="other"`)
+		return c.Next()
+	})
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+	}))
+	app.Get("/ok", func(c fiber.Ctx) error { return c.SendString("OK") })
+
+	resp := doGet(t, app, "Bearer not-a-jwt")
+	require.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
+	require.Equal(t, `Basic realm="other"`, resp.Header.Get(fiber.HeaderWWWAuthenticate))
+}
+
+// TestQueryTokenIsPrivateOverPublicPolicy covers a handler that would otherwise
+// let a shared cache store a response whose URL carries the token.
+func TestQueryTokenIsPrivateOverPublicPolicy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		policy   string
+		expected string
+	}{
+		{name: "public is replaced", policy: "public, max-age=60", expected: "max-age=60, private"},
+		{name: "no-store is enough", policy: "no-store", expected: "no-store"},
+		{name: "private is enough", policy: "private, max-age=60", expected: "private, max-age=60"},
+		{name: "field-scoped private is not", policy: `private="x-user", max-age=60`, expected: `private="x-user", max-age=60, private`},
+		{name: "unrelated policy is kept", policy: "max-age=60", expected: "max-age=60, private"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			app := fiber.New()
+			app.Use(jwtware.New(jwtware.Config{
+				SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+				Extractor:  extractors.FromQuery("token"),
+			}))
+			app.Get("/ok", func(c fiber.Ctx) error {
+				c.Set(fiber.HeaderCacheControl, test.policy)
+				return c.SendString("OK")
+			})
+
+			resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/ok?token="+hamac[0].Token, nil))
+			require.NoError(t, err)
+			require.Equal(t, fiber.StatusOK, resp.StatusCode)
+			require.Equal(t, test.expected, resp.Header.Get(fiber.HeaderCacheControl))
+		})
+	}
+}
+
+// TestChainedQueryTokenMarksOnlyQueryRequests covers a chain that can read the
+// query but did not: a token that never appeared in the URL leaves the
+// response as cacheable as the application made it.
+func TestChainedQueryTokenMarksOnlyQueryRequests(t *testing.T) {
+	t.Parallel()
+
+	newApp := func() *fiber.App {
+		app := fiber.New()
+		app.Use(jwtware.New(jwtware.Config{
+			SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+			Extractor: extractors.Chain(
+				extractors.FromCookie("token"),
+				extractors.FromQuery("token"),
+			),
+		}))
+		app.Get("/ok", func(c fiber.Ctx) error { return c.SendString("OK") })
+		return app
+	}
+
+	t.Run("cookie is left alone", func(t *testing.T) {
+		t.Parallel()
+
+		req := httptest.NewRequest(http.MethodGet, "/ok", nil)
+		req.AddCookie(&http.Cookie{Name: "token", Value: hamac[0].Token})
+		resp, err := newApp().Test(req)
+		require.NoError(t, err)
+
+		require.Equal(t, fiber.StatusOK, resp.StatusCode)
+		require.Empty(t, resp.Header.Get(fiber.HeaderCacheControl))
+	})
+
+	t.Run("query is marked private", func(t *testing.T) {
+		t.Parallel()
+
+		resp, err := newApp().Test(httptest.NewRequest(http.MethodGet, "/ok?token="+hamac[0].Token, nil))
+		require.NoError(t, err)
+
+		require.Equal(t, fiber.StatusOK, resp.StatusCode)
+		require.Equal(t, "private", resp.Header.Get(fiber.HeaderCacheControl))
 	})
 }
