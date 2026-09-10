@@ -15,10 +15,20 @@ import (
 // that violates the rules producers have to follow.
 var ErrCriticalHeader = errors.New("the JWT header contains an unsupported critical extension")
 
-// joseHeaderParameters holds the Header Parameter names RFC 7515 and RFC 7518
-// define for use with JWS. RFC 7515 Section 4.1.11 forbids listing any of them
-// in "crit", so finding one there invalidates the token.
+// joseHeaderParameters holds the Header Parameter names the core JOSE
+// specifications already define: RFC 7515 for JWS, RFC 7516 and RFC 7518 for
+// JWE. RFC 7515 Section 4.1.11 forbids a producer from listing any of them in
+// "crit", which only ever names extensions, so finding one there invalidates
+// the token.
+//
+// The JWE names are here because a name JOSE has already defined is not an
+// extension whatever the message is, and one of them in the "crit" list of a
+// JWS is a producer with a bug rather than an extension a recipient could
+// understand. "b64" (RFC 7797) is a real extension and belongs in "crit", so it
+// is not listed here; unprocessableCriticalHeaders refuses it for its own
+// reason.
 var joseHeaderParameters = map[string]struct{}{
+	// RFC 7515 Section 4.1, for JWS.
 	"alg":      {},
 	"jku":      {},
 	"jwk":      {},
@@ -30,6 +40,17 @@ var joseHeaderParameters = map[string]struct{}{
 	"typ":      {},
 	"cty":      {},
 	"crit":     {},
+	// RFC 7516 Section 4.1, for JWE.
+	"enc": {},
+	"zip": {},
+	// RFC 7518 Sections 4.6.1, 4.7.1 and 4.8.1, for JWE key management.
+	"epk": {},
+	"apu": {},
+	"apv": {},
+	"iv":  {},
+	"tag": {},
+	"p2s": {},
+	"p2c": {},
 }
 
 // unprocessableCriticalHeaders names the critical extensions that no

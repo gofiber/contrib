@@ -270,6 +270,14 @@ func TestCheckCriticalHeaders(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			// A name JOSE already defines is not an extension, whichever
+			// specification defines it and whichever message type it is for.
+			name:    "JWA header parameter declared understood",
+			header:  map[string]any{"alg": HS256, "crit": []any{"epk"}, "epk": "v"},
+			known:   []string{"epk"},
+			wantErr: true,
+		},
+		{
 			// RFC 7797 changes how the payload is encoded, which the parser has
 			// already settled; declaring it understood must not help.
 			name:    "b64 declared understood",
