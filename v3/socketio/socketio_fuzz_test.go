@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 	"testing"
 	"unicode/utf8"
 )
@@ -128,6 +129,7 @@ func FuzzParseSIOEvent(f *testing.F) {
 		`[]`, `[1]`, `[null]`, `["x", "y"]`,
 		`not json`, `{`, `[`, `["unterminated`,
 		`[{"k":1}]`, `[true,false]`, `["evt",` + string([]byte{0xff}) + `]`,
+		`["` + string([]byte{0xff}) + `"]`, `["a` + string([]byte{0xff, 0xe2, 0x82}) + `b",1]`,
 	} {
 		f.Add([]byte(s))
 	}
@@ -149,6 +151,20 @@ func FuzzParseSIOEvent(f *testing.F) {
 		}
 		if !utf8.ValidString(name) {
 			t.Fatalf("name not valid UTF-8: %q (in %q)", name, payload)
+		}
+		// The name must decode exactly as encoding/json decodes the first
+		// element, escapes and invalid UTF-8 included: the unescaped fast
+		// path and the decoder path may never disagree.
+		elems, splitErr := splitJSONArray(payload, nil)
+		if splitErr != nil || len(elems) == 0 {
+			t.Fatalf("parseSIOEvent succeeded but splitJSONArray failed on %q: %v", payload, splitErr)
+		}
+		var want string
+		if err := json.Unmarshal(elems[0], &want); err != nil {
+			t.Fatalf("name element %q is not a JSON string for encoding/json: %v", elems[0], err)
+		}
+		if name != want {
+			t.Fatalf("name %q differs from encoding/json's %q (in %q)", name, want, payload)
 		}
 	})
 }
@@ -213,10 +229,10 @@ func FuzzExtractSIONamespace(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		defer func() {
 			if r := recover(); r != nil {
-				t.Fatalf("extractSIONamespace panic on %q: %v", data, r)
+				t.Fatalf("extractSIOConnect panic on %q: %v", data, r)
 			}
 		}()
-		ns := extractSIONamespace(data)
+		ns, _ := extractSIOConnect(data)
 		if ns == nil {
 			return
 		}
@@ -477,6 +493,55 @@ func FuzzBatchedEIOFrame(f *testing.F) {
 		}
 		if count > MaxBatchPackets+1 {
 			t.Fatalf("dispatched %d > MaxBatchPackets %d", count, MaxBatchPackets)
+		}
+	})
+}
+
+// FuzzSplitJSONArray cross-checks the zero-copy array splitter against
+// encoding/json: for every input both must agree on whether it is a JSON
+// array and, when it is, on the exact bytes of every top-level element.
+func FuzzSplitJSONArray(f *testing.F) {
+	for _, seed := range []string{
+		`["ev"]`, `[]`, ` [ "a" , {"b":[1,2]} , "c,]" ] `, `["a\"b","c\\"]`,
+		`[[[[]]]]`, `{"a":1}`, `["a",]`, `null`, `"s"`, `[1e5,-0,true,null]`,
+		"[\" \"]", `["😀"]`, `[` + strings.Repeat(`"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",`, 4) + `1]`,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		got, err := splitJSONArray(data, nil)
+		var ref []json.RawMessage
+		refErr := json.Unmarshal(data, &ref)
+		if refErr == nil && bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+			// encoding/json accepts a JSON null for a slice; the splitter
+			// only accepts arrays.
+			if err == nil {
+				t.Fatalf("splitter accepted %q", data)
+			}
+			return
+		}
+		if refErr != nil {
+			if err == nil {
+				t.Fatalf("encoding/json rejected %q but the splitter accepted it: %q", data, got)
+			}
+			return
+		}
+		if MaxEventArgs > 0 && len(ref) > MaxEventArgs {
+			if !errors.Is(err, ErrTooManyArgs) {
+				t.Fatalf("%d elements must exceed MaxEventArgs=%d, got err=%v", len(ref), MaxEventArgs, err)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatalf("encoding/json accepted %q, splitter failed: %v", data, err)
+		}
+		if len(got) != len(ref) {
+			t.Fatalf("element count differs for %q: got %d want %d", data, len(got), len(ref))
+		}
+		for i := range ref {
+			if !bytes.Equal(ref[i], got[i]) {
+				t.Fatalf("element %d differs for %q: got %q want %q", i, data, got[i], ref[i])
+			}
 		}
 	})
 }

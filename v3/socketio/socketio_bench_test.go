@@ -141,6 +141,13 @@ func BenchmarkBroadcastFanout(b *testing.B) {
 	ln, stop := benchServer(b)
 	defer stop()
 
+	// The benchmark enqueues far faster than 1024 clients can drain, so
+	// let the queues shed frames instead of tearing the connections down;
+	// a broadcast to an emptied pool would measure nothing.
+	prevDrop := DropFramesOnOverflow
+	DropFramesOnOverflow = true
+	defer func() { DropFramesOnOverflow = prevDrop }()
+
 	conns := make([]*websocket.Conn, fanout)
 	var ready sync.WaitGroup
 	ready.Add(fanout)
@@ -171,6 +178,9 @@ func BenchmarkBroadcastFanout(b *testing.B) {
 	}
 	b.StopTimer()
 	b.ReportMetric(float64(fanout), "subs")
+	if live := len(pool.snapshot()); live != fanout {
+		b.Fatalf("only %d/%d subscribers alive at the end; the benchmark measured a shrinking pool", live, fanout)
+	}
 
 	for _, c := range conns {
 		_ = c.Close()
@@ -208,4 +218,40 @@ func BenchmarkSteadyStateMemory(b *testing.B) {
 	for _, c := range clients {
 		_ = c.Close()
 	}
+}
+
+// BenchmarkParseSIOEvent measures the inbound event parser on a typical
+// chat payload: name plus three arguments of mixed shape.
+func BenchmarkParseSIOEvent(b *testing.B) {
+	payload := []byte(`["chat message",{"user":"alice","text":"hello world, this is a fairly ordinary message"},42,[1,2,3]]`)
+	b.ReportAllocs()
+	for b.Loop() {
+		name, args, err := parseSIOEvent(payload)
+		if err != nil || name != "chat message" || len(args) != 3 {
+			b.Fatalf("unexpected parse result: %q %d %v", name, len(args), err)
+		}
+	}
+}
+
+// BenchmarkBuildSIOEvent measures the outbound event encoder for a JSON
+// argument and for a raw-text argument that must be JSON-string encoded.
+func BenchmarkBuildSIOEvent(b *testing.B) {
+	jsonArg := []byte(`{"user":"alice","text":"hello world, this is a fairly ordinary message"}`)
+	rawArg := []byte(`hello world, this is a fairly ordinary <message> & more`)
+	b.Run("json", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if f := buildSIOEvent(nil, "chat message", jsonArg); len(f) == 0 {
+				b.Fatal("empty frame")
+			}
+		}
+	})
+	b.Run("raw-text", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if f := buildSIOEvent(nil, "chat message", rawArg); len(f) == 0 {
+				b.Fatal("empty frame")
+			}
+		}
+	})
 }

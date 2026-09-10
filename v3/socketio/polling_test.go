@@ -35,7 +35,17 @@ func newPollingTestServer(t *testing.T, callback func(*Websocket)) (*fasthttputi
 	// to wait the default 30s.
 	MaxPollWait = 2 * time.Second
 
-	app := fiber.New()
+	// fasthttp's Shutdown waits for every open connection, and it counts a
+	// keep-alive connection that has not yet sent its first request as
+	// active, not idle. net/http's Transport produces exactly that when
+	// two requests race for a connection: the dial that loses the race is
+	// parked in the idle pool without ever being used. A bounded read
+	// timeout on the server side lets such a connection expire on its
+	// own, and the teardown below closes the client side first anyway.
+	app := fiber.New(fiber.Config{
+		ReadTimeout: 5 * time.Second,
+		IdleTimeout: 5 * time.Second,
+	})
 	ln := fasthttputil.NewInmemoryListener()
 
 	h := New(callback)
@@ -45,17 +55,24 @@ func newPollingTestServer(t *testing.T, callback func(*Websocket)) (*fasthttputi
 
 	go func() { _ = app.Listener(ln) }()
 
-	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-				return ln.Dial()
-			},
+	transport := &http.Transport{
+		DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+			return ln.Dial()
 		},
-		Timeout: 10 * time.Second,
+	}
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   10 * time.Second,
 	}
 
 	return ln, client, func() {
-		_ = app.Shutdown()
+		// Close the client side first: an idle keep-alive connection,
+		// including one that never carried a request, would otherwise
+		// keep app.Shutdown waiting until its read timeout. Then bound
+		// the shutdown so a session still draining a long-poll cannot
+		// stall the whole suite.
+		transport.CloseIdleConnections()
+		_ = app.ShutdownWithTimeout(5 * time.Second)
 		_ = ln.Close()
 		EnablePolling = prevEnable
 		MaxPollWait = prevWait
@@ -353,11 +370,16 @@ func TestPollingOptionsPreflight(t *testing.T) {
 // while another is in flight is rejected with engine.io code 3.
 func TestPollingConcurrentGetsRejected(t *testing.T) {
 	resetSIOGlobals(t)
+	var captured atomic.Pointer[Websocket]
+	On(EventConnect, func(p *EventPayload) {
+		captured.Store(p.Kws)
+	})
 	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
 	defer td()
 
 	sid, _, _ := pollOpen(t, c)
 	_, _ = pollPost(t, c, sid, []byte(`40`))
+	require.Eventually(t, func() bool { return captured.Load() != nil }, 2*time.Second, 10*time.Millisecond)
 	// Drain the connect ack so the next GET will block.
 	_, _ = pollGet(t, c, sid)
 
@@ -369,8 +391,10 @@ func TestPollingConcurrentGetsRejected(t *testing.T) {
 		close(firstDone)
 	}()
 
-	// Give the first poll time to enter drain.
-	time.Sleep(50 * time.Millisecond)
+	// Wait until the first poll actually holds the gate rather than
+	// guessing with a sleep, which lost the race on a loaded CI runner.
+	require.Eventually(t, func() bool { return captured.Load().pollGate.Load() },
+		2*time.Second, 5*time.Millisecond, "first long-poll never took the gate")
 
 	body, status := pollGet(t, c, sid)
 	require.Equal(t, http.StatusBadRequest, status,
@@ -431,6 +455,173 @@ func TestPollingCloseDeliversDisconnect(t *testing.T) {
 	body, status := pollGet(t, c, sid)
 	require.Equal(t, http.StatusBadRequest, status)
 	require.Contains(t, string(body), `"code":1`)
+}
+
+// TestPollQueueEnqueueTerminalBypassesCap pins the pollQueue contract for
+// the packets that end a session: they are appended past
+// PollQueueMaxFrames, together, and are a no-op once the queue is closed.
+func TestPollQueueEnqueueTerminalBypassesCap(t *testing.T) {
+	prevCap := PollQueueMaxFrames
+	PollQueueMaxFrames = 2
+	t.Cleanup(func() { PollQueueMaxFrames = prevCap })
+
+	q := newPollQueue()
+	require.Equal(t, enqueueOK, q.enqueue([]byte("a")))
+	require.Equal(t, enqueueOK, q.enqueue([]byte("b")))
+	require.Equal(t, enqueueRejectedDisconnect, q.enqueue([]byte("c")))
+	q.enqueueTerminal([]byte("41"), []byte("1"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	frames, closed := q.drain(ctx, 0)
+	require.False(t, closed)
+	require.Equal(t, [][]byte{[]byte("a"), []byte("b"), []byte("41"), []byte("1")}, frames)
+
+	q.close()
+	q.enqueueTerminal([]byte("41"), []byte("1"))
+	frames, closed = q.drain(ctx, 0)
+	require.True(t, closed)
+	require.Nil(t, frames)
+}
+
+// TestPollingCloseTerminalPacketsSurviveFullQueue verifies that Close on a
+// polling session still queues SIO DISCONNECT and EIO CLOSE when an
+// EventClose listener filled the queue to PollQueueMaxFrames: before, both
+// enqueues were rejected and their result ignored, so the peer drained the
+// farewell frames and then met an unknown sid instead of a disconnect.
+func TestPollingCloseTerminalPacketsSurviveFullQueue(t *testing.T) {
+	resetSIOGlobals(t)
+	prevCap := PollQueueMaxFrames
+	PollQueueMaxFrames = 2
+	t.Cleanup(func() { PollQueueMaxFrames = prevCap })
+
+	var captured atomic.Pointer[Websocket]
+	On(EventConnect, func(p *EventPayload) { captured.Store(p.Kws) })
+	On(EventClose, func(p *EventPayload) {
+		for i := 0; i < PollQueueMaxFrames; i++ {
+			p.Kws.Emit([]byte(`"bye"`))
+		}
+	})
+	disc := make(chan error, 1)
+	On(EventDisconnect, func(p *EventPayload) {
+		select {
+		case disc <- p.Error:
+		default:
+		}
+	})
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	_, _ = pollPost(t, c, sid, []byte(`40`))
+	require.Eventually(t, func() bool { return captured.Load() != nil }, 2*time.Second, 10*time.Millisecond)
+	_, _ = pollGet(t, c, sid) // drain the CONNECT ack so the queue starts empty
+
+	kws := captured.Load()
+	kws.Close()
+	select {
+	case err := <-disc:
+		require.NoError(t, err, "the farewell frames must not overflow the queue")
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventDisconnect did not fire")
+	}
+
+	// No long-poll was in flight, so everything is still buffered: the
+	// listener's frames up to the cap, then the two terminal packets.
+	q := kws.pollQ
+	q.mu.Lock()
+	frames := make([]string, 0, len(q.frames))
+	for _, f := range q.frames {
+		frames = append(frames, string(f))
+	}
+	q.mu.Unlock()
+	require.Len(t, frames, PollQueueMaxFrames+2)
+	for _, f := range frames[:PollQueueMaxFrames] {
+		require.True(t, strings.HasPrefix(f, "42"), "farewell frame %q is not an event", f)
+	}
+	require.Equal(t, "41", frames[PollQueueMaxFrames])
+	require.Equal(t, "1", frames[PollQueueMaxFrames+1])
+}
+
+// TestPollQueueDrainReservesTerminalPackets pins the byte-cap rule once
+// the packets that end a session are queued: the drain that carries them
+// takes the ordinary prefix that fits beside them and drops the rest,
+// because the sid is released right after and a second drain never comes.
+func TestPollQueueDrainReservesTerminalPackets(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	q := newPollQueue()
+	q.enqueue(bytes.Repeat([]byte("a"), 100))
+	q.enqueue(bytes.Repeat([]byte("b"), 100))
+	q.enqueue(bytes.Repeat([]byte("c"), 100))
+	q.enqueueTerminal([]byte("41"), []byte("1"))
+	require.Equal(t, enqueueOK, q.enqueue([]byte("late")), "frames after the terminal packets are dropped")
+	q.close()
+
+	// 150 bytes hold one 100-byte frame plus the terminal packets and
+	// their separators; the second frame no longer fits and is dropped
+	// together with the third.
+	frames, closed := q.drain(ctx, 150)
+	require.True(t, closed)
+	require.Len(t, frames, 3)
+	require.Len(t, frames[0], 100)
+	require.Equal(t, "41", string(frames[1]))
+	require.Equal(t, "1", string(frames[2]))
+	frames, closed = q.drain(ctx, 150)
+	require.True(t, closed)
+	require.Nil(t, frames)
+
+	// A cap smaller than the first ordinary frame delivers the terminal
+	// packets alone instead of the oversized frame alone.
+	q = newPollQueue()
+	q.enqueue(bytes.Repeat([]byte("a"), 100))
+	q.enqueueTerminal([]byte("41"), []byte("1"))
+	frames, _ = q.drain(ctx, 10)
+	require.Equal(t, [][]byte{[]byte("41"), []byte("1")}, frames)
+
+	// Without a cap everything goes, in order.
+	q = newPollQueue()
+	q.enqueue([]byte("x"))
+	q.enqueueTerminal([]byte("41"), []byte("1"))
+	frames, _ = q.drain(ctx, 0)
+	require.Equal(t, [][]byte{[]byte("x"), []byte("41"), []byte("1")}, frames)
+}
+
+// TestPollingCloseTerminalPacketsWithinBufferCap verifies that after Close
+// on a polling session whose EventClose listener queued more than a
+// long-poll can carry, the drain that ends the session still delivers
+// SIO DISCONNECT and EIO CLOSE within the cap.
+func TestPollingCloseTerminalPacketsWithinBufferCap(t *testing.T) {
+	resetSIOGlobals(t)
+
+	var captured atomic.Pointer[Websocket]
+	On(EventConnect, func(p *EventPayload) { captured.Store(p.Kws) })
+	farewell := []byte(`"` + strings.Repeat("a", 280) + `"`)
+	On(EventClose, func(p *EventPayload) {
+		for i := 0; i < 3; i++ {
+			p.Kws.Emit(farewell)
+		}
+	})
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	_, _ = pollPost(t, c, sid, []byte(`40`))
+	require.Eventually(t, func() bool { return captured.Load() != nil }, 2*time.Second, 10*time.Millisecond)
+	_, _ = pollGet(t, c, sid) // drain the CONNECT ack so the queue starts empty
+
+	kws := captured.Load()
+	kws.Close()
+
+	// The drain a long-poll performs, with a cap no farewell frame fits in.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	frames, closed := kws.pollQ.drain(ctx, 256)
+	require.True(t, closed)
+	require.Equal(t, [][]byte{[]byte("41"), []byte("1")}, frames)
 }
 
 // TestPollQueueDrainSemantics covers the pollQueue primitive directly:
@@ -1169,8 +1360,8 @@ func TestPollingHandshakeTimeoutEnforced(t *testing.T) {
 }
 
 // TestPollingHeartbeatTimeoutTearsDown verifies that a polling session
-// torn down with ErrHeartbeatTimeout (as the pong goroutine would call
-// when the client stops responding) cleans up the session, drains any
+// torn down with ErrHeartbeatTimeout (as the heartbeat timer does when
+// the client stops responding) cleans up the session, drains any
 // in-flight long-poll, and rejects subsequent GETs with engine.io code
 // 1.
 //
@@ -1213,8 +1404,8 @@ func TestPollingHeartbeatTimeoutTearsDown(t *testing.T) {
 	_, _ = pollGet(t, c, sid)
 
 	// Start an in-flight long-poll, then simulate a heartbeat timeout
-	// from another goroutine (the production pong goroutine would do
-	// the same on PingInterval+PingTimeout expiry).
+	// from another goroutine (the production heartbeat timer does the
+	// same on PingInterval+PingTimeout expiry).
 	pollResp := make(chan int, 1)
 	go func() {
 		_, st := pollGet(t, c, sid)
@@ -1370,10 +1561,10 @@ func TestPollingQueueOverflowDrop(t *testing.T) {
 	resetSIOGlobals(t)
 
 	// Restore via t.Cleanup (runs AFTER all defers, so AFTER td()
-	// shuts down the test server and AFTER resetSIOGlobals' workersWg
-	// wait). Plain defer here would restore globals BEFORE the pong
-	// goroutine has actually exited, racing it on PollQueueMaxFrames
-	// / DropFramesOnOverflow.
+	// shuts down the test server and AFTER resetSIOGlobals waited for
+	// every session to release). Plain defer here would restore globals
+	// BEFORE a heartbeat tick has actually finished, racing it on
+	// PollQueueMaxFrames / DropFramesOnOverflow.
 	prevCap, prevDrop := PollQueueMaxFrames, DropFramesOnOverflow
 	PollQueueMaxFrames = 4
 	DropFramesOnOverflow = true
@@ -1539,8 +1730,8 @@ func TestPollingHandshakeTimerStoppedAfterConnect(t *testing.T) {
 }
 
 // TestPollingCallbackPanicCleansUp verifies that a panic in the user callback
-// during the first SIO CONNECT runs disconnected() so the lifecycle goroutine,
-// pong goroutine, and pool entry do not leak.
+// during the first SIO CONNECT runs disconnected() so the heartbeat timer
+// and pool entry do not leak.
 func TestPollingCallbackPanicCleansUp(t *testing.T) {
 	resetSIOGlobals(t)
 

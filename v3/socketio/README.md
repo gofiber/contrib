@@ -24,19 +24,23 @@ This middleware implements the full Engine.IO v4 / Socket.IO v5 wire protocol. H
 - **Inbound acks.** Client-initiated callbacks surface as `EventPayload.HasAck` / `AckID`; reply once with `payload.Ack(args...)`.
 - **Outbound acks.** Server-initiated `EmitWithAck`, `EmitWithAckTimeout`, and `EmitWithAckArgs` round-trip a callback id and invoke the supplied callback when the client acks (or on timeout/disconnect).
 - **Multi-arg events.** Inbound events expose every argument tuple as `EventPayload.Args [][]byte`; outbound `EmitArgs` / `EmitWithAckArgs` send pre-encoded JSON tuples.
-- **Deterministic heartbeat.** Server PINGs every `PingInterval`; the connection is torn down if no PONG arrives within `PingTimeout`.
+- **Deterministic heartbeat.** Server PINGs every `PingInterval`; the connection is torn down if no PONG arrives within `PingTimeout`. The heartbeat is a runtime timer, not a goroutine, and an idle read deadline of `PingInterval + PingTimeout` backs it up.
+- **Closing handshake.** `Close` queues the SIO DISCONNECT packet and a Close frame behind the emits already pending, keeps reading until the peer's Close frame arrives (bounded by `CloseTimeout`), then closes the socket, so `socket.io-client` reports `io server disconnect` and does not reconnect. A client SIO DISCONNECT is answered the same way. Every tear-down releases the socket, including when a write is stalled on a peer that stopped reading.
+- **Two goroutines per connection.** The upgrade handler's goroutine runs the read loop and one goroutine serialises writes; polling sessions own no goroutine at all.
+- **Zero-copy inbound, SWAR outbound.** Inbound events are validated once and split into sub-slices of the frame they arrived in; outbound frames are built in a single pre-sized allocation with the SWAR JSON string encoder from `gofiber/utils`, and a broadcast builds each namespace's frame once for all its recipients.
+- **Coalesced writes.** On top of the websocket middleware's write coalescing, replies to a burst of pipelined client frames leave in one write.
 - **EIO 0x1E batched frames.** Multi-packet WebSocket frames separated by ASCII RS (`0x1E`) are parsed correctly, with a hard cap (`MaxBatchPackets`) to prevent slice-header amplification.
 - **Reserved-event-name guard.** User code cannot register or emit names reserved by the protocol (e.g. `connect`, `disconnect`).
 - **EIO version validation.** Handshakes that advertise an unsupported `EIO` version are rejected.
 - **Auth payload validation.** The auth blob must be a JSON object and is bounded by `MaxAuthPayload`; oversize or malformed payloads are answered with CONNECT_ERROR.
-- **DoS hardening.** `MaxPayload`, `MaxBatchPackets`, `MaxEventNameLength`, and `MaxAuthPayload` bound every attacker-controlled length.
+- **DoS hardening.** `MaxPayload`, `MaxBatchPackets`, `MaxEventNameLength`, `MaxEventArgs`, and `MaxAuthPayload` bound every attacker-controlled length and count.
 - **Lock-free listener registry** plus `atomic.Bool isAlive`, removing the per-event mutex from the hot path.
 - **Optional drop-frames-on-overflow.** When `DropFramesOnOverflow` is true, a saturated send queue drops the offending frame and fires `EventError` instead of tearing down the connection.
 - **Graceful drain.** The package-level `Shutdown(ctx)` closes every active socket and waits for each worker to exit (or until `ctx` is cancelled).
 
 ## Known limitations
 
-- **One namespace per Engine.IO connection.** Each WebSocket binds the namespace negotiated during the SIO CONNECT packet; multiplexing several namespaces over one EIO connection is not supported.
+- **One namespace per Engine.IO connection.** Each WebSocket binds the namespace negotiated during the SIO CONNECT packet; multiplexing several namespaces over one EIO connection is not supported. A CONNECT for another namespace on an established connection is answered with CONNECT_ERROR (`Invalid namespace`) instead of an acknowledgement whose events would never be delivered.
 - **No BINARY_EVENT (5) / BINARY_ACK (6).** Binary Socket.IO frames are passed through as raw `EventMessage` data; attachment reassembly is not implemented.
 - **No connection-state recovery.** Resume-on-reconnect (Socket.IO's `connectionStateRecovery` feature) is not implemented; reconnects always start a fresh session.
 - **No polling-to-WebSocket transport upgrade.** When polling is enabled, sessions that open with `transport=polling` advertise an empty `upgrades` array and stay on polling for the session lifetime. Clients that need WebSocket from the start should configure `transports: ['websocket']`.
@@ -45,10 +49,27 @@ This middleware implements the full Engine.IO v4 / Socket.IO v5 wire protocol. H
 
 #### Production hardening notes
 
-- **Rate limiting**. Each polling open allocates a `*Websocket` plus 2 short-lived goroutines. With `EnablePolling = true` an unauthenticated client can create sessions until `HandshakeTimeout` reaps idle ones (10s default). Mount `github.com/gofiber/fiber/v3/middleware/limiter` upstream of the route to bound concurrent session creation.
+- **Rate limiting**. Each polling open allocates a `*Websocket` and arms a heartbeat timer (no goroutine). With `EnablePolling = true` an unauthenticated client can create sessions until `HandshakeTimeout` reaps idle ones (10s default). Mount `github.com/gofiber/fiber/v3/middleware/limiter` upstream of the route to bound concurrent session creation.
 - **Write timeout**. A long-poll GET response that the client never reads pins a fasthttp worker on TCP backpressure. Configure `fiber.Config{WriteTimeout: ...}` (a few seconds is typically appropriate) so abandoned reads do not strand workers.
 - **Burst sizing**. `PollQueueMaxFrames` (default `1024`) bounds the per-session outbound buffer. With the default `DropFramesOnOverflow = false` a synchronous burst of more than 1024 emits inside a single listener call disconnects the session with `ErrSendQueueClosed`. Either pace large bursts across drains, raise `PollQueueMaxFrames`, or set `DropFramesOnOverflow = true` to tolerate overflow at the cost of dropped frames + `EventError`.
 - **Listener panics**. Both transports recover panics inside the `New()` callback and inside event listeners; the panic value is logged via the package `Logger` hook. Avoid `panic(string(attackerControlledBytes))` to prevent log injection in downstream consumers.
+
+## Performance
+
+The hot paths avoid `encoding/json`'s reflection and copy nothing they do not have to. Inbound frames are handed over by the websocket middleware's pooled `ReadMessage`, validated once, and split into sub-slices; outbound frames are assembled in one pre-sized buffer with `gofiber/utils`' SWAR JSON string encoder; a broadcast builds each namespace's frame once and shares it between recipients. Each WebSocket connection costs two goroutines (the upgrade handler running the read loop, plus the writer) and one runtime timer instead of four goroutines; a polling session costs none.
+
+`benchstat` over `go test -run '^$' -bench . -benchmem -count=6` on a 4 vCPU runner, before and after (in-memory listener, root namespace):
+
+| Benchmark                                         | Before               | After                | Change        |
+|:--------------------------------------------------|:---------------------|:---------------------|:--------------|
+| Parse inbound event (name + 3 args)               | 2.71 µs, 16 allocs   | 0.75 µs, 2 allocs    | -72% time     |
+| Build outbound event, JSON argument               | 716 ns, 5 allocs     | 421 ns, 1 alloc      | -41% time     |
+| Build outbound event, raw-text argument           | 1.13 µs, 12 allocs   | 198 ns, 1 alloc      | -82% time     |
+| Round trip: emit, listener, reply (1 connection)  | 15.9 µs, 24 allocs   | 8.5 µs, 10 allocs    | -47% time     |
+| Broadcast to 1024 subscribers                     | 1.58 ms, 7192 allocs | 0.54 ms, 2009 allocs | -66% time     |
+| Connect: handshake and close                      | 119 µs, 143 allocs   | 140 µs, 155 allocs   | +17% time     |
+
+The connect path is the one that got slower; almost all of it is the websocket middleware's upgrade now running through `net/http`'s upgrader on a fasthttp hijack, which is what makes write coalescing possible, and the same shift appears when the previous socketio code is built against it.
 
 ## Configuration
 
@@ -63,16 +84,19 @@ All tunables are package-level variables; override before the first connection i
 | `MaxAuthPayload`       | `8 KiB`            | Max bytes for the SIO CONNECT auth JSON.                                      |
 | `MaxBatchPackets`      | `256`              | Max EIO packets in a single `0x1E`-batched frame.                             |
 | `MaxEventNameLength`   | `256`              | Max length of an inbound SIO event name.                                      |
+| `MaxEventArgs`         | `256`              | Max elements (event name included) in an inbound SIO EVENT or ACK array.      |
+| `CloseTimeout`         | `5s`               | One budget for the whole tear-down after `Close`: waiting for a slot in a saturated send queue, reading for the peer's Close frame and letting a stalled write finish all share it. Zero closes the socket as soon as the frames are queued. |
+| `WriteTimeout`         | `0` (disabled)     | Deadline for a single WebSocket frame write by the send goroutine; a peer that stops reading is otherwise only detected by the heartbeat. |
 | `OutboundAckTimeout`   | `30s`              | Default ack deadline for `EmitWithAck`.                                       |
 | `SendQueueSize`        | `100`              | Capacity of the per-connection outbound queue.                                |
 | `DropFramesOnOverflow` | `false`            | If true, drop the offending frame on overflow (fires `EventError`).           |
-| `RetrySendTimeout`     | `20ms`             | Back-off between send retries.                                                |
-| `MaxSendRetry`         | `5`                | Max send retries before a frame is dropped.                                   |
+| `RetrySendTimeout`     | `20ms`             | Deprecated: no effect. The websocket middleware allocates a connection per upgrade, so there is no released connection to retry against. |
+| `MaxSendRetry`         | `5`                | Deprecated: no effect; see `RetrySendTimeout`.                                |
 | `ReadTimeout`          | `10ms`             | Deprecated: no longer consulted by the read loop; kept for backward compatibility. |
 | `EnablePolling`        | `false`            | If true, the handler returned from `New` also serves Engine.IO HTTP long-polling on `GET`/`POST`. |
-| `PollingMaxBufferSize` | `1_000_000`        | Cap on a single polling HTTP body (request POST or response GET drain).        |
+| `PollingMaxBufferSize` | `1_000_000`        | Cap on a single polling HTTP body (request POST or response GET drain). The drain that ends a session always carries the SIO DISCONNECT and EIO CLOSE packets; farewell frames that do not fit beside them are dropped. |
 | `MaxPollWait`          | `30s`              | Maximum time a long-poll GET blocks waiting for outbound frames.                |
-| `PollQueueMaxFrames`   | `1024`             | Cap on buffered outbound frames per polling session; overflow honors `DropFramesOnOverflow`. |
+| `PollQueueMaxFrames`   | `1024`             | Cap on buffered outbound frames per polling session; overflow honors `DropFramesOnOverflow`. The SIO DISCONNECT and EIO CLOSE packets queued by `Close` are exempt, so a queue an `EventClose` listener filled still ends the session cleanly. |
 
 Use `socketio.Shutdown(ctx)` from `fiber.App.ShutdownWithContext` for a deterministic drain.
 
@@ -148,18 +172,21 @@ These package-level variables can be overridden before the first connection is a
 | `PingInterval`      | `25 * time.Second` | Interval between Engine.IO PING frames sent by the server to keep the connection alive.              |
 | `PingTimeout`       | `20 * time.Second` | How long the server waits for the client's PONG before considering the connection dead.              |
 | `HandshakeTimeout`  | `10 * time.Second` | Maximum time allowed for the Engine.IO / Socket.IO handshake (including namespace CONNECT) to complete. |
+| `CloseTimeout`      | `5 * time.Second`  | Budget for the whole tear-down after `Close` or a client SIO DISCONNECT; the socket is closed once the peer's Close frame arrives or the budget is spent, whatever it was spent on. |
+| `WriteTimeout`      | `0` (disabled)     | Deadline for a single WebSocket frame write; zero relies on the heartbeat to detect a peer that stopped reading. |
 | `MaxPayload`        | `1 << 20` (1 MiB)  | Maximum size in bytes for a single inbound WebSocket frame; oversize messages close the socket.      |
 | `MaxAuthPayload`    | `8 << 10` (8 KiB)  | Maximum size in bytes for the Socket.IO CONNECT auth JSON.                                           |
 | `MaxBatchPackets`   | `256`              | Maximum number of Engine.IO packets accepted in a single `0x1E`-batched frame.                       |
 | `MaxEventNameLength`| `256`              | Maximum length of an inbound Socket.IO event name.                                                   |
+| `MaxEventArgs`      | `256`              | Maximum number of elements, event name included, in an inbound Socket.IO EVENT or ACK array.         |
 | `OutboundAckTimeout`| `30 * time.Second` | Default timeout used by `EmitWithAck` when no per-call timeout is supplied.                          |
 | `DropFramesOnOverflow` | `false`         | If true, saturated outbound queues drop the offending frame and fire `EventError`.                   |
-| `RetrySendTimeout`  | `20 * time.Millisecond` | Back-off between WebSocket send retries.                                                        |
-| `MaxSendRetry`      | `5`                | Maximum number of WebSocket send retries before a frame is dropped.                                  |
+| `RetrySendTimeout`  | `20 * time.Millisecond` | Deprecated: no effect; the send goroutine writes each frame exactly once.                       |
+| `MaxSendRetry`      | `5`                | Deprecated: no effect; see `RetrySendTimeout`.                                                       |
 | `EnablePolling`     | `false`            | If true, the handler also accepts Engine.IO HTTP long-polling on `GET`/`POST` (opt-in fallback).      |
-| `PollingMaxBufferSize` | `1_000_000`     | Cap on a single polling HTTP body (POST request body or GET drain response body), in bytes.           |
+| `PollingMaxBufferSize` | `1_000_000`     | Cap on a single polling HTTP body (POST request body or GET drain response body), in bytes; the packets `Close` queues always fit in the drain that ends the session. |
 | `MaxPollWait`       | `30 * time.Second` | Maximum time a long-poll GET blocks waiting for outbound frames before returning an empty 200.        |
-| `PollQueueMaxFrames`| `1024`             | Maximum buffered outbound frames per polling session before overflow handling applies.               |
+| `PollQueueMaxFrames`| `1024`             | Maximum buffered outbound frames per polling session before overflow handling applies; the packets `Close` queues are exempt. |
 
 ```go
 func init() {
@@ -499,11 +526,11 @@ socket.on("disconnect", (reason) => {
 | Const           | Event        | Description                                                                                                                                                |
 |:----------------|:-------------|:-----------------------------------------------------------------------------------------------------------------------------------------------------------|
 | EventMessage    | `message`    | Fired when a `socket.emit("message", …)` event is received from the client                                                                                |
-| EventPing       | `ping`       | Fired when a WebSocket PING control frame is received (RFC 6455). Engine.IO PING is server-originated and not surfaced via this event.                     |
+| EventPing       | `ping`       | Fired when a WebSocket PING control frame is received (RFC 6455); `Data` carries its payload. Engine.IO PING is server-originated and not surfaced via this event. |
 | EventPong       | `pong`       | Fired when an Engine.IO PONG (`"3"`) replies to the server's heartbeat or when a WebSocket PONG control frame is received.                                 |
-| EventDisconnect | `disconnect` | Fired on disconnection. The error provided in disconnection event as defined in RFC 6455, section 11.7.                                                    |
+| EventDisconnect | `disconnect` | Fired exactly once on disconnection. `Error` is nil for a clean close (`Close`, a client SIO DISCONNECT, or a peer Close frame with code 1000, 1001 or none, RFC 6455 section 11.7) and carries the cause otherwise. |
 | EventConnect    | `connect`    | Fired after the Engine.IO / Socket.IO handshake completes; `ep.HandshakeAuth` is populated with the client's `auth` payload (raw JSON, nil if not provided) |
-| EventClose      | `close`      | Fired when the connection is actively closed from the server. Different from client disconnection                                                          |
+| EventClose      | `close`      | Fired exactly once when the connection is actively closed from the server via `Close`, before the closing frames are queued: frames a listener emits still reach the client. Different from client disconnection |
 | EventError      | `error`      | Fired when some error appears useful also for debugging websockets                                                                                         |
 
 Custom events map directly to the event name used in `socket.emit("myEvent", …)` on the client and `kws.EmitEvent("myEvent", data)` on the server.
@@ -515,9 +542,9 @@ Custom events map directly to the event name used in `socket.emit("myEvent", …
 | Kws              | `*Websocket`        | The connection object                                                                             |
 | Name             | `string`            | The name of the event                                                                             |
 | SocketUUID       | `string`            | Unique connection UUID                                                                            |
-| SocketAttributes | `map[string]any`    | Optional websocket attributes                                                                     |
+| SocketAttributes | `map[string]any`    | Snapshot of the connection's attributes at dispatch time; nil when none were set                  |
 | Error            | `error`             | (optional) Fired from disconnection or error events                                               |
-| Data             | `[]byte`            | Raw JSON of the event payload (first argument of `socket.emit`)                                   |
+| Data             | `[]byte`            | Raw JSON of the event payload (first argument of `socket.emit`); a sub-slice of the frame the event arrived in, safe to retain |
 | Args             | `[][]byte`          | All raw JSON arguments after the event name; useful when the client emits multiple values         |
 | AckID            | `uint64`            | Ack id assigned by the client when it emitted with a callback (0 if `HasAck` is false)            |
 | HasAck           | `bool`              | True when the inbound event expects an ack reply; respond via `EventPayload.Ack(args...)`         |
