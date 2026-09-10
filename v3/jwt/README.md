@@ -12,6 +12,7 @@ JWT returns a JSON Web Token (JWT) auth middleware.
 For valid token, it sets the token in Ctx.Locals (and in the underlying `context.Context` when `PassLocalsToContext` is enabled) and calls next handler.
 For invalid token, it returns "401 - Unauthorized" error.
 For missing token, it returns "400 - Bad Request" error.
+Either way the response carries the `WWW-Authenticate` challenge required by [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110#section-15.5.2) and [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750#section-3). See [Standards compliance](#standards-compliance).
 
 Special thanks and credits to [Echo](https://echo.labstack.com/middleware/jwt)
 
@@ -46,6 +47,7 @@ jwtware.FromContext(ctx any) *jwt.Token    // jwt "github.com/golang-jwt/jwt/v5"
 | Next               | `func(fiber.Ctx) bool`               | Defines a function to skip this middleware when it returns true                       | `nil`                        |
 | SuccessHandler     | `func(fiber.Ctx) error`              | Executed when a token is valid.                                                       | `c.Next()`                   |
 | ErrorHandler       | `func(fiber.Ctx, error) error`       | ErrorHandler defines a function which is executed for an invalid token.               | `401 Invalid or expired JWT` |
+| Realm              | `string`                             | Protected area named in the `WWW-Authenticate` challenge sent with a rejection.       | `"Restricted"`               |
 | SigningKey         | `SigningKey`                         | Signing key used to validate the token. Used as a fallback if `SigningKeys` is empty. | `nil`                        |
 | SigningKeys        | `map[string]SigningKey`              | Map of signing keys used to validate tokens via the `kid` header.                     | `nil`                        |
 | Claims             | `jwt.Claims`                         | Claims are extendable claims data defining token content.                             | `jwt.MapClaims{}`            |
@@ -54,6 +56,7 @@ jwtware.FromContext(ctx any) *jwt.Token    // jwt "github.com/golang-jwt/jwt/v5"
 | KeyFunc            | `jwt.Keyfunc`                        | User-defined function that supplies the public key for token validation.              | `nil` (uses internal default)|
 | JWKSetURLs         | `[]string`                           | List of JSON Web Key (JWK) Set URLs used to obtain signing keys for parsing JWTs.     | `nil`                        |
 | ParserOptions      | `[]jwt.ParserOption`                 | List of [`jwt.ParserOption`](https://pkg.go.dev/github.com/golang-jwt/jwt/v5#ParserOption), provides additional options for JWT parsing.                | `nil`                        |
+| KnownCriticalHeaders | `[]string`                         | JWS `crit` header parameters this application understands and processes itself.       | `nil`                        |
 
 ## Available Extractors
 
@@ -85,6 +88,126 @@ For an overview and additional examples, see the Fiber Extractors guide:
 - **Cookie-based extractors** (`FromCookie`): Secure for web applications but requires proper cookie security settings (HttpOnly, Secure, SameSite).
 
 **Recommendation**: Use `FromAuthHeader("Bearer")` (the default) for production applications unless you have specific requirements that necessitate alternative extractors.
+
+## Standards compliance
+
+### What the middleware enforces
+
+- **The signing algorithm comes from your configuration, not from the token.** When
+  `SigningKey.JWTAlg` is set - or when every entry of `SigningKeys` sets it - the
+  parser rejects any other `alg` before a key is looked up, as
+  [RFC 8725 Section 3.1](https://www.rfc-editor.org/rfc/rfc8725#section-3.1) asks.
+  Pass `jwt.WithValidMethods` in `ParserOptions` to pin the algorithms yourself; a
+  value you pass wins over the derived one. Configurations that leave the
+  algorithm open (`KeyFunc`, `JWKSetURLs`, or a `SigningKey` without `JWTAlg`)
+  are only as strict as the key material and the JWK `alg` allow, so pinning is
+  worth it.
+- **`alg: none` is refused**, and keys are never read out of the token: the `jwk`,
+  `jku`, `x5u` and `x5c` header parameters are ignored, per
+  [RFC 8725 Sections 3.4 and 3.5](https://www.rfc-editor.org/rfc/rfc8725#section-3.4).
+- **Critical header parameters** (`crit`) are checked as
+  [RFC 7515 Section 4.1.11](https://www.rfc-editor.org/rfc/rfc7515#section-4.1.11)
+  requires: a token that marks a header parameter critical is rejected unless the
+  parameter is listed in `KnownCriticalHeaders`. A `crit` value that is not a
+  non-empty array of names, repeats a name, names a registered JOSE parameter
+  such as `alg`, or names a parameter the header does not contain, is rejected as
+  well. Nothing else uses `crit`, so leaving `KnownCriticalHeaders` unset is the
+  safe default.
+- **`exp` and `nbf`** are validated on every request by
+  `github.com/golang-jwt/jwt/v5` ([RFC 7519 Sections 4.1.4 and
+  4.1.5](https://www.rfc-editor.org/rfc/rfc7519#section-4.1.4)). Use
+  `jwt.WithLeeway`, `jwt.WithExpirationRequired` or `jwt.WithNotBeforeRequired` in
+  `ParserOptions` to tighten this.
+- **Base64url segments must be unpadded** ([RFC 7515 Section
+  2](https://www.rfc-editor.org/rfc/rfc7515#section-2)), and an `Authorization`
+  header has to be well-formed `token68` ([RFC 9110 Section
+  11.6.2](https://www.rfc-editor.org/rfc/rfc9110#section-11.6.2)).
+- **Rejections carry a challenge.** Every 400, 401 and 407 response the
+  middleware produces gets a `WWW-Authenticate` (or `Proxy-Authenticate`) header,
+  which [RFC 9110 Section
+  15.5.2](https://www.rfc-editor.org/rfc/rfc9110#section-15.5.2) requires of a 401
+  and [RFC 6750 Section 3](https://www.rfc-editor.org/rfc/rfc6750#section-3)
+  requires of a resource server refusing a bearer token:
+
+  ```text
+  WWW-Authenticate: Bearer realm="Restricted", error="invalid_token", error_description="The access token expired"
+  ```
+
+  The scheme is taken from the extractor (`Bearer` unless the token comes from an
+  `Authorization` header with another scheme), the realm from `Realm`, and the
+  `error_description` from the reason the token failed. Error parameters are only
+  added for the bearer scheme, as RFC 6750 defines them. An `ErrorHandler` that
+  sets its own `WWW-Authenticate` keeps it.
+- **Tokens in the query string are not cached.** When the extractor can read the
+  token from the query, successful responses are marked `Cache-Control: private`,
+  as [RFC 6750 Section
+  2.3](https://www.rfc-editor.org/rfc/rfc6750#section-2.3) asks, since the URL a
+  shared cache keys on contains the token. A handler that sets its own
+  `Cache-Control` keeps it.
+
+### What your application has to configure
+
+Some rules cannot be applied by a middleware, because only the application knows
+the values involved:
+
+- **`aud`** - [RFC 7519 Section
+  4.1.3](https://www.rfc-editor.org/rfc/rfc7519#section-4.1.3) requires a token
+  whose audience is not this application to be rejected. The audience is only
+  checked when you name it:
+
+  ```go
+  app.Use(jwtware.New(jwtware.Config{
+      SigningKey: jwtware.SigningKey{JWTAlg: jwtware.RS256, Key: publicKey},
+      ParserOptions: []jwt.ParserOption{
+          jwt.WithAudience("https://api.example.com"),
+          jwt.WithIssuer("https://issuer.example.com"),
+          jwt.WithExpirationRequired(),
+      },
+  }))
+  ```
+
+- **`typ`** - if your deployment issues several kinds of JWT, check the media type
+  as [RFC 8725 Section
+  3.11](https://www.rfc-editor.org/rfc/rfc8725#section-3.11) recommends. For
+  example, an OAuth 2.0 access token per [RFC
+  9068](https://www.rfc-editor.org/rfc/rfc9068#section-2.1) carries
+  `"typ": "at+jwt"`:
+
+  ```go
+  SuccessHandler: func(c fiber.Ctx) error {
+      if typ, _ := jwtware.FromContext(c).Header["typ"].(string); !strings.EqualFold(typ, "at+jwt") {
+          return c.Status(fiber.StatusUnauthorized).SendString("unexpected token type")
+      }
+      return c.Next()
+  },
+  ```
+
+- **`jti`** - replay detection needs state the middleware does not keep.
+
+### Status code for a request without credentials
+
+A request that carries no credentials at all is answered with **400** and
+`missing or malformed JWT`, which is what this middleware has always done and
+what the extractor can tell us: it reports a missing and a malformed credential
+as the same error. [RFC 6750 Section
+3.1](https://www.rfc-editor.org/rfc/rfc6750#section-3.1) reserves 400 for a
+malformed request and answers a request that "lacks any authentication
+information" with 401 instead. If you need those OAuth 2.0 semantics exactly,
+say so in an `ErrorHandler`:
+
+```go
+ErrorHandler: func(c fiber.Ctx, err error) error {
+    if errors.Is(err, extractors.ErrNotFound) {
+        if c.Get(fiber.HeaderAuthorization) == "" {
+            // No credentials at all: challenge without naming an error.
+            c.Set(fiber.HeaderWWWAuthenticate, `Bearer realm="Restricted"`)
+            return c.SendStatus(fiber.StatusUnauthorized)
+        }
+        return c.Status(fiber.StatusBadRequest).SendString(jwtware.ErrMissingToken.Error())
+    }
+    return c.Status(fiber.StatusUnauthorized).SendString("Invalid or expired JWT")
+},
+```
 
 ## HS256 Example
 

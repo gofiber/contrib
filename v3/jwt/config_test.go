@@ -142,3 +142,136 @@ func TestPanicOnUnsupportedJWKSetURLScheme(t *testing.T) {
 	})
 	require.Panics(t, func() { makeCfg(config) })
 }
+
+func TestValidAlgorithms(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		config []Config
+		want   []string
+	}{
+		{
+			name:   "no configuration",
+			config: nil,
+			want:   nil,
+		},
+		{
+			name:   "single key with an algorithm",
+			config: []Config{{SigningKey: SigningKey{JWTAlg: HS256, Key: []byte("secret")}}},
+			want:   []string{HS256},
+		},
+		{
+			name:   "single key without an algorithm",
+			config: []Config{{SigningKey: SigningKey{Key: []byte("secret")}}},
+			want:   nil,
+		},
+		{
+			name: "key set with algorithms",
+			config: []Config{{SigningKeys: map[string]SigningKey{
+				"one": {JWTAlg: HS512, Key: []byte("a")},
+				"two": {JWTAlg: HS256, Key: []byte("b")},
+			}}},
+			want: []string{HS256, HS512},
+		},
+		{
+			name: "key set with a duplicate algorithm",
+			config: []Config{{SigningKeys: map[string]SigningKey{
+				"one": {JWTAlg: HS256, Key: []byte("a")},
+				"two": {JWTAlg: HS256, Key: []byte("b")},
+			}}},
+			want: []string{HS256},
+		},
+		{
+			name: "one unrestricted key leaves the set unrestricted",
+			config: []Config{{SigningKeys: map[string]SigningKey{
+				"one": {JWTAlg: HS256, Key: []byte("a")},
+				"two": {Key: []byte("b")},
+			}}},
+			want: nil,
+		},
+		{
+			name: "a remote key set decides for itself",
+			config: []Config{{
+				JWKSetURLs: []string{"https://example.com/jwks.json"},
+				SigningKey: SigningKey{JWTAlg: HS256, Key: []byte("secret")},
+			}},
+			want: nil,
+		},
+		{
+			name: "a caller's key function decides for itself",
+			config: []Config{{
+				KeyFunc:    func(*jwt.Token) (any, error) { return nil, nil },
+				SigningKey: SigningKey{JWTAlg: HS256, Key: []byte("secret")},
+			}},
+			want: nil,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, test.want, validAlgorithms(test.config))
+		})
+	}
+}
+
+func TestCheckCriticalHeaders(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		header  map[string]any
+		name    string
+		known   []string
+		wantErr bool
+	}{
+		{
+			name:   "no crit header",
+			header: map[string]any{"alg": HS256},
+		},
+		{
+			name:   "understood extension",
+			header: map[string]any{"alg": HS256, "crit": []any{"ext"}, "ext": true},
+			known:  []string{"ext"},
+		},
+		{
+			name:    "unknown extension",
+			header:  map[string]any{"alg": HS256, "crit": []any{"ext"}, "ext": true},
+			wantErr: true,
+		},
+		{
+			name:    "empty list",
+			header:  map[string]any{"alg": HS256, "crit": []any{}},
+			wantErr: true,
+		},
+		{
+			name:    "wrong type",
+			header:  map[string]any{"alg": HS256, "crit": "ext", "ext": true},
+			wantErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := checkCriticalHeaders(test.header, knownCriticalHeaders(test.known))
+			if test.wantErr {
+				require.ErrorIs(t, err, ErrCriticalHeader)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestFirstAuthScheme(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "Bearer", firstAuthScheme(extractors.FromAuthHeader("Bearer")))
+	require.Empty(t, firstAuthScheme(extractors.FromCookie("token")))
+	require.Equal(t, "Bearer", firstAuthScheme(extractors.Chain(
+		extractors.FromCookie("token"),
+		extractors.FromAuthHeader("Bearer"),
+	)))
+}

@@ -8,9 +8,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/valyala/fasthttp"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/extractors"
@@ -849,4 +851,54 @@ func TestParserOptions(t *testing.T) {
 	// Assert
 	assert.NoError(t, err)
 	assert.Equal(t, 401, resp.StatusCode)
+}
+
+// TestConcurrentRequests exercises the parser and the claims factory that the
+// middleware builds once and then shares between requests.
+func TestConcurrentRequests(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+		Claims:     &customClaims{},
+	}))
+	app.Get("/ok", func(c fiber.Ctx) error {
+		claims, ok := jwtware.FromContext(c).Claims.(*customClaims)
+		if !ok || claims.Name != "John Doe" {
+			return c.SendStatus(fiber.StatusInternalServerError)
+		}
+		return c.SendString("OK")
+	})
+
+	handler := app.Handler()
+
+	const workers, requests = 8, 50
+	statuses := make([][]int, workers)
+
+	var wg sync.WaitGroup
+	for worker := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			statuses[worker] = make([]int, requests)
+			for i := range requests {
+				fctx := &fasthttp.RequestCtx{}
+				fctx.Request.Header.SetMethod(fiber.MethodGet)
+				fctx.Request.SetRequestURI("/ok")
+				fctx.Request.Header.Set(fiber.HeaderAuthorization, "Bearer "+hamac[0].Token)
+
+				handler(fctx)
+				statuses[worker][i] = fctx.Response.StatusCode()
+			}
+		}()
+	}
+	wg.Wait()
+
+	for _, worker := range statuses {
+		for _, status := range worker {
+			assert.Equal(t, fiber.StatusOK, status)
+		}
+	}
 }
