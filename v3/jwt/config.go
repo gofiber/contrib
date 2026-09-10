@@ -101,6 +101,11 @@ type Config struct {
 	// critical to be rejected unless the recipient understands that parameter,
 	// so by default every such token is rejected.
 	//
+	// An extension that changes how the JWS is parsed or verified cannot be
+	// listed here, because the parser has already decoded and verified the
+	// token by the time the application sees it. "b64" (RFC 7797) is the one
+	// such extension defined for JWS, and naming it panics at New.
+	//
 	// Optional. Default: nil
 	KnownCriticalHeaders []string
 }
@@ -133,8 +138,11 @@ func makeCfg(config []Config) (cfg Config) {
 			if errors.Is(err, extractors.ErrNotFound) {
 				return c.Status(fiber.StatusBadRequest).SendString(ErrMissingToken.Error())
 			}
+			// A typed-nil *fiber.Error satisfies errors.As without being
+			// something to dereference; leave it to Fiber, as its own error
+			// handler does.
 			var fiberErr *fiber.Error
-			if errors.As(err, &fiberErr) {
+			if errors.As(err, &fiberErr) && fiberErr != nil {
 				return c.Status(fiberErr.Code).SendString(fiberErr.Message)
 			}
 			return c.Status(fiber.StatusUnauthorized).SendString("Invalid or expired JWT")
@@ -193,6 +201,15 @@ func makeCfg(config []Config) (cfg Config) {
 			}
 		} else {
 			cfg.KeyFunc = signingKeyFunc(cfg.SigningKey)
+		}
+	}
+
+	// An extension that changes how the JWS is parsed cannot be handled by the
+	// application, whatever it declares: the parser has already decoded the
+	// token by the time anything of yours sees it.
+	for _, name := range cfg.KnownCriticalHeaders {
+		if _, unprocessable := unprocessableCriticalHeaders[name]; unprocessable {
+			panic(fmt.Sprintf("Fiber: JWT middleware configuration: KnownCriticalHeaders cannot contain %q, which changes how the JWS is parsed; tokens carrying it are always rejected", name))
 		}
 	}
 

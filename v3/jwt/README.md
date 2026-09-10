@@ -105,6 +105,11 @@ For an overview and additional examples, see the Fiber Extractors guide:
 - **`alg: none` is refused**, and keys are never read out of the token: the `jwk`,
   `jku`, `x5u` and `x5c` header parameters are ignored, per
   [RFC 8725 Sections 3.4 and 3.5](https://www.rfc-editor.org/rfc/rfc8725#section-3.4).
+  This describes the built-in key lookup - `SigningKey`, `SigningKeys` and
+  `JWKSetURLs`. A `KeyFunc` of your own is handed the parsed token and can read
+  whatever it likes out of the header, and a `SigningKey.Key` set to
+  `jwt.UnsafeAllowNoneSignatureType` accepts `alg: none` by design; neither is
+  something the middleware overrides.
 - **Critical header parameters** (`crit`) are checked as
   [RFC 7515 Section 4.1.11](https://www.rfc-editor.org/rfc/rfc7515#section-4.1.11)
   requires: a token that marks a header parameter critical is rejected unless the
@@ -112,16 +117,20 @@ For an overview and additional examples, see the Fiber Extractors guide:
   non-empty array of names, repeats a name, names a registered JOSE parameter
   such as `alg`, or names a parameter the header does not contain, is rejected as
   well. Nothing else uses `crit`, so leaving `KnownCriticalHeaders` unset is the
-  safe default.
+  safe default. `b64` ([RFC 7797](https://www.rfc-editor.org/rfc/rfc7797)) cannot
+  be declared: it changes how the payload is encoded, which the parser has
+  already settled before your code sees the token, so naming it panics at `New`
+  and tokens carrying it are always rejected.
 - **`exp` and `nbf`** are validated by default on every request by
   `github.com/golang-jwt/jwt/v5` ([RFC 7519 Sections 4.1.4 and
   4.1.5](https://www.rfc-editor.org/rfc/rfc7519#section-4.1.4)). Use
   `jwt.WithLeeway`, `jwt.WithExpirationRequired` or `jwt.WithNotBeforeRequired` in
   `ParserOptions` to tighten this - and note that `jwt.WithoutClaimsValidation()`
   in `ParserOptions` turns it off entirely, so an expired token is accepted.
-- **Base64url segments must be unpadded** ([RFC 7515 Section
-  2](https://www.rfc-editor.org/rfc/rfc7515#section-2)), and an `Authorization`
-  header has to be well-formed `token68` ([RFC 9110 Section
+- **Base64url segments must be unpadded** by default ([RFC 7515 Section
+  2](https://www.rfc-editor.org/rfc/rfc7515#section-2)) - `jwt.WithPaddingAllowed()`
+  in `ParserOptions` accepts padded segments - and an `Authorization` header has
+  to be well-formed `token68` ([RFC 9110 Section
   11.6.2](https://www.rfc-editor.org/rfc/rfc9110#section-11.6.2)).
 - **Rejections carry a challenge.** Every 400, 401 and 407 response the
   middleware produces gets a `WWW-Authenticate` (or `Proxy-Authenticate`) header,

@@ -149,6 +149,34 @@ func TestCriticalHeaders(t *testing.T) {
 	}
 }
 
+// TestUnencodedPayloadIsRejected covers RFC 7797's "b64". golang-jwt always
+// base64url-decodes the second segment, so a JWS that says the payload is
+// unencoded would be verified over the payload as it stands and then read as
+// the decoding of that payload - claims its signer never asserted. The header
+// is refused whether or not it is marked critical, since the parser has settled
+// the encoding either way.
+func TestUnencodedPayloadIsRejected(t *testing.T) {
+	t.Parallel()
+
+	claims := jwt.MapClaims{"name": "John Doe"}
+
+	for name, header := range map[string]map[string]any{
+		"marked critical":        {"crit": []string{"b64"}, "b64": false},
+		"without the crit entry": {"b64": false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			app := protectedApp(jwtware.Config{
+				SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+			})
+
+			resp := doGet(t, app, "Bearer "+signWith(t, claims, header))
+			require.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
+		})
+	}
+}
+
 // TestCriticalHeaderWrapsCustomKeyfunc makes sure the "crit" check is not
 // something a caller loses by supplying a key function of their own.
 func TestCriticalHeaderWrapsCustomKeyfunc(t *testing.T) {
@@ -872,6 +900,27 @@ func TestTypedNilErrorFromHandler(t *testing.T) {
 
 	require.NotPanics(t, func() {
 		resp := doGet(t, app, "Bearer not-a-jwt")
+		require.NotNil(t, resp)
+	})
+}
+
+// TestTypedNilErrorReachesDefaultHandler is the same typed nil arriving at the
+// default error handler, which reads a *fiber.Error's status the same way and
+// so has to guard the same case. A token processor is one of the places a
+// caller's own code hands the middleware an error.
+func TestTypedNilErrorReachesDefaultHandler(t *testing.T) {
+	t.Parallel()
+
+	app := protectedApp(jwtware.Config{
+		SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+		TokenProcessorFunc: func(string) (string, error) {
+			var typedNil *fiber.Error
+			return "", typedNil
+		},
+	})
+
+	require.NotPanics(t, func() {
+		resp := doGet(t, app, "Bearer "+hamac[0].Token)
 		require.NotNil(t, resp)
 	})
 }

@@ -143,6 +143,22 @@ func TestPanicOnUnsupportedJWKSetURLScheme(t *testing.T) {
 	require.Panics(t, func() { makeCfg(config) })
 }
 
+// TestPanicOnUnprocessableCriticalHeader refuses a configuration that claims to
+// handle an extension only the parser could have handled.
+func TestPanicOnUnprocessableCriticalHeader(t *testing.T) {
+	t.Parallel()
+
+	config := []Config{{
+		SigningKey:           SigningKey{JWTAlg: HS256, Key: []byte("secret")},
+		KnownCriticalHeaders: []string{"b64"},
+	}}
+	require.PanicsWithValue(
+		t,
+		`Fiber: JWT middleware configuration: KnownCriticalHeaders cannot contain "b64", which changes how the JWS is parsed; tokens carrying it are always rejected`,
+		func() { makeCfg(config) },
+	)
+}
+
 // TestValidAlgorithms pins which configurations produce a pinned algorithm list
 // for the parser, and which leave the key material to decide.
 func TestValidAlgorithms(t *testing.T) {
@@ -251,6 +267,22 @@ func TestCheckCriticalHeaders(t *testing.T) {
 		{
 			name:    "wrong type",
 			header:  map[string]any{"alg": HS256, "crit": "ext", "ext": true},
+			wantErr: true,
+		},
+		{
+			// RFC 7797 changes how the payload is encoded, which the parser has
+			// already settled; declaring it understood must not help.
+			name:    "b64 declared understood",
+			header:  map[string]any{"alg": HS256, "crit": []any{"b64"}, "b64": false},
+			known:   []string{"b64"},
+			wantErr: true,
+		},
+		{
+			// RFC 7797 Section 6 requires the crit entry, so this token is not
+			// conformant - but the payload is still encoded the way the parser
+			// does not expect.
+			name:    "b64 without the crit entry",
+			header:  map[string]any{"alg": HS256, "b64": false},
 			wantErr: true,
 		},
 	}

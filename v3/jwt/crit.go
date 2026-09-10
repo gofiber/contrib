@@ -32,6 +32,20 @@ var joseHeaderParameters = map[string]struct{}{
 	"crit":     {},
 }
 
+// unprocessableCriticalHeaders names the critical extensions that no
+// configuration can declare understood, because they change how the JWS itself
+// is parsed or verified and this middleware only sees a token after the parser
+// has done both.
+//
+// "b64" (RFC 7797) is the one such extension defined for JWS. With "b64": false
+// the payload travels unencoded and the signature covers it verbatim;
+// github.com/golang-jwt/jwt does not implement that and always base64url-decodes
+// the second segment. Honouring a declaration would therefore let it read the
+// decoding of a signed message as the claims of a token nobody issued.
+var unprocessableCriticalHeaders = map[string]struct{}{
+	"b64": {},
+}
+
 // criticalHeaderGuard wraps a key function with the "crit" check of RFC 7515
 // Section 4.1.11, which github.com/golang-jwt/jwt does not perform.
 //
@@ -51,6 +65,17 @@ func criticalHeaderGuard(next jwt.Keyfunc, known map[string]struct{}) jwt.Keyfun
 // checkCriticalHeaders reports whether the JOSE header may be processed, given
 // the set of critical extensions the application declared it understands.
 func checkCriticalHeaders(header map[string]any, known map[string]struct{}) error {
+	// These are refused on sight, whatever their value and whether or not
+	// "crit" names them: RFC 7797 Section 6 requires the "crit" entry, but a
+	// producer that leaves it out still hands the parser a payload it may read
+	// the wrong way round. Running before "crit" is looked at is also what keeps
+	// a declaration from getting past the check.
+	for name := range unprocessableCriticalHeaders {
+		if _, present := header[name]; present {
+			return fmt.Errorf(`%w: the %q header parameter changes how the JWS is parsed and cannot be honoured here`, ErrCriticalHeader, name)
+		}
+	}
+
 	value, ok := header["crit"]
 	if !ok {
 		return nil
