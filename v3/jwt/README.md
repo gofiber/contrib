@@ -152,15 +152,34 @@ For an overview and additional examples, see the Fiber Extractors guide:
   3.1](https://www.rfc-editor.org/rfc/rfc6750#section-3.1) asks for. A challenge
   already on the response is never replaced, whether an `ErrorHandler` of yours
   or an earlier authentication middleware put it there.
-- **Tokens in the query string are not stored in shared caches.** When the token
-  arrived in the query, the successful response is marked `Cache-Control: private`,
-  as [RFC 6750 Section
+- **Tokens in the URL are not stored in shared caches.** When the request URL
+  carries a token - a query parameter, a form parameter (Fiber's `FormValue`
+  reads the query before the body), or a route parameter - the successful
+  response is marked `Cache-Control: private`, as [RFC 6750 Section
   2.3](https://www.rfc-editor.org/rfc/rfc6750#section-2.3) asks, since the URL a
   shared cache keys on contains the token. A policy the handler set is kept,
   except that `public` is dropped and `private` added unless the policy already
-  keeps the response out of shared caches. Responses to tokens that arrived in a
-  header or a cookie are untouched, including from an extractor chain that could
-  have read the query but did not.
+  keeps the response out of shared caches; a policy too malformed to parse, such
+  as one with an unterminated quoted string, is replaced rather than appended to.
+
+  What decides this is whether the URL carries a credential, not which extractor
+  supplied the one that authenticated: a chain that preferred a cookie still
+  answered a request whose URL a cache would key on. A request whose URL holds
+  nothing is untouched, including one to a chain that could have read the query
+  but found it empty.
+
+  **Register a cache outside this middleware**, not inside it:
+
+  ```go
+  app.Use(cache.New())            // sees the finished response
+  app.Use(jwtware.New(cfg))
+  ```
+
+  The directive is put on the response before your handler runs as well as
+  after, so a cache registered *inside* this middleware still sees it in the
+  ordinary case. The exception it cannot cover is a handler that replaces
+  `Cache-Control` outright: such a cache reads the replacement as its own stack
+  unwinds, which is before this middleware can merge the policy back.
 
 ### What your application has to configure
 

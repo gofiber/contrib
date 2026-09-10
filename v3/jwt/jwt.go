@@ -6,7 +6,6 @@
 package jwtware
 
 import (
-	"net/url"
 	"reflect"
 	"strings"
 
@@ -80,9 +79,6 @@ func New(config ...Config) fiber.Handler {
 			return reject(c, err)
 		}
 
-		// The extractor's own answer is what the URL held; a processor may turn
-		// it into something else entirely.
-		extracted := auth
 		if processToken != nil {
 			if auth, err = processToken(auth); err != nil {
 				return reject(c, err)
@@ -102,7 +98,7 @@ func New(config ...Config) fiber.Handler {
 		// Store user information from token into context.
 		fiber.StoreInContext(c, tokenKey, token)
 
-		if fromURL(c, urlKeys, extracted) {
+		if urlCarriesCredential(c, urlKeys) {
 			return keepPrivate(c, successHandler)
 		}
 		return successHandler(c)
@@ -126,7 +122,8 @@ type urlParam struct {
 // and a cookie never reach the URL. A SourceCustom extractor reads wherever its
 // author wrote it to, so only they can say.
 //
-// Which source a given request actually used is settled per request, by fromURL.
+// Whether a given request's URL actually carries one is settled per request, by
+// urlCarriesCredential.
 //
 // The chain is walked with a visited set, as the extractors package walks its
 // own: the metadata is the caller's to build, and a chain that refers back to
@@ -146,20 +143,29 @@ func urlParams(e extractors.Extractor) []urlParam {
 	return params
 }
 
-// fromURL reports whether the token the extractor returned is the value one of
-// those parameters holds, which is what makes the URL sensitive. A chain that
-// answered from a header, a cookie or a request body leaves the URL clean, and
-// its response is none of this function's business.
-func fromURL(c fiber.Ctx, params []urlParam, token string) bool {
+// urlCarriesCredential reports whether the request URL holds a value in one of
+// those parameters, which is what makes it sensitive.
+//
+// It asks whether the parameter is populated, not whether its value is the
+// credential that authenticated: what a shared cache keys on is the URL, so a
+// chain that preferred a cookie over the query still answered a request whose
+// URL carries a token, and storing that response under it would hand the next
+// caller of that URL someone else's. A chain that reads only headers, cookies
+// or the request body leaves the URL clean and its response alone.
+func urlCarriesCredential(c fiber.Ctx, params []urlParam) bool {
 	for _, param := range params {
-		if !param.inPath {
-			if c.Query(param.key) == token {
+		if param.inPath {
+			// A route parameter that matched is part of the path by
+			// construction, so having a value is what there is to ask.
+			if c.Params(param.key) != "" {
 				return true
 			}
 			continue
 		}
-		// FromParam unescapes what it read, so the comparison has to as well.
-		if unescaped, err := url.PathUnescape(c.Params(param.key)); err == nil && unescaped == token {
+		// Only the query string: a form parameter reaches this list because
+		// FormValue reads the query before the body, and a value in the body is
+		// not in the URL.
+		if c.Request().URI().QueryArgs().Has(param.key) {
 			return true
 		}
 	}
@@ -191,21 +197,42 @@ func walkExtractor(e *extractors.Extractor, visit func(*extractors.Extractor) bo
 	return walk(e)
 }
 
-// keepPrivate runs the handler and then keeps its response out of shared
-// caches, as RFC 6750 Section 2.3 asks of a resource server answering a request
-// whose token travelled in the URL.
+// keepPrivate keeps the response to a request whose URL carries a token out of
+// shared caches, as RFC 6750 Section 2.3 asks of a resource server.
+//
+// The directive goes on twice. Once before the handler runs, because a cache
+// registered after this middleware reads the response and decides whether to
+// store it as its own stack unwinds - which happens before control comes back
+// here, so a directive added only afterwards would reach the client but not the
+// cache that already stored the body. Once after, because only then is the
+// handler's own policy known and mergeable, and because the status the RFC
+// scopes this to is only known then.
+//
+// A handler that replaces the header outright while a cache sits between it and
+// this middleware is the case neither pass can cover, since that cache reads the
+// replacement before this function runs again. Registering the cache outside
+// this middleware rather than inside it avoids that ordering entirely, which is
+// what the README recommends.
 func keepPrivate(c fiber.Ctx, next fiber.Handler) error {
+	setPrivate(c)
+
 	err := next(c)
 
-	// Only a response a cache would store needs the directive.
+	// Only a response a cache would store needs the directive, and the early
+	// pass already covered anything downstream that has stored one by now.
 	status := c.Response().StatusCode()
 	if status < fiber.StatusOK || status >= fiber.StatusMultipleChoices {
 		return err
 	}
 
+	setPrivate(c)
+	return err
+}
+
+// setPrivate merges the directive into whatever policy the response carries.
+func setPrivate(c fiber.Ctx) {
 	existing := string(c.Response().Header.Peek(fiber.HeaderCacheControl))
 	c.Set(fiber.HeaderCacheControl, privateCacheControl(existing))
-	return err
 }
 
 // privateCacheControl returns value with any directive that would let a shared
@@ -217,7 +244,14 @@ func privateCacheControl(value string) string {
 		return "private"
 	}
 
-	directives := splitCacheControl(value)
+	directives, wellFormed := splitCacheControl(value)
+	if !wellFormed {
+		// An unterminated quoted string swallows everything after it, so
+		// appending "private" to one would produce a policy that does not
+		// contain the directive at all. There is nothing to merge into: a
+		// policy no cache can parse is replaced rather than extended.
+		return "private"
+	}
 	kept := directives[:0]
 	private := false
 	for _, directive := range directives {
@@ -246,8 +280,10 @@ func privateCacheControl(value string) string {
 }
 
 // splitCacheControl splits a Cache-Control value on the commas that separate
-// directives, leaving the ones inside a quoted field list alone.
-func splitCacheControl(value string) []string {
+// directives, leaving the ones inside a quoted field list alone. It also reports
+// whether the value was well formed, which it is not when a quoted string is
+// left open.
+func splitCacheControl(value string) ([]string, bool) {
 	var (
 		directives []string
 		start      int
@@ -276,7 +312,7 @@ func splitCacheControl(value string) []string {
 	if directive := strings.TrimSpace(value[start:]); directive != "" {
 		directives = append(directives, directive)
 	}
-	return directives
+	return directives, !quoted
 }
 
 // claimsFactory returns a function that allocates an empty claims value of the

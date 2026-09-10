@@ -628,6 +628,87 @@ func TestChainedQueryTokenMarksOnlyQueryRequests(t *testing.T) {
 	})
 }
 
+// TestUnselectedURLCredentialIsPrivate covers a request whose URL carries a
+// token the chain did not use. A shared cache keys on the URL, so storing this
+// response would file one caller's body under another's credential and hand it
+// to whoever presents that credential next; which extractor happened to win is
+// beside the point.
+func TestUnselectedURLCredentialIsPrivate(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+		Extractor: extractors.Chain(
+			extractors.FromCookie("token"),
+			extractors.FromQuery("token"),
+		),
+	}))
+	app.Get("/ok", func(c fiber.Ctx) error {
+		return c.SendString(jwtware.FromContext(c).Claims.(jwt.MapClaims)["name"].(string))
+	})
+
+	// The cookie wins the chain; the query string still holds someone else's.
+	req := httptest.NewRequest(http.MethodGet, "/ok?token="+signWith(t, jwt.MapClaims{"name": "bob"}, nil), nil)
+	req.AddCookie(&http.Cookie{Name: "token", Value: signWith(t, jwt.MapClaims{"name": "alice"}, nil)})
+
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	require.Equal(t, fiber.StatusOK, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, "alice", string(body), "the cookie is what authenticated")
+	require.Equal(t, "private", resp.Header.Get(fiber.HeaderCacheControl))
+}
+
+// TestPrivateIsSetBeforeTheHandlerRuns pins the ordering the directive depends
+// on: a cache registered after this middleware reads the response as its own
+// stack unwinds, so anything downstream has to be able to see the directive
+// while it still matters.
+func TestPrivateIsSetBeforeTheHandlerRuns(t *testing.T) {
+	t.Parallel()
+
+	var seen string
+	app := fiber.New()
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+		Extractor:  extractors.FromQuery("token"),
+	}))
+	app.Get("/ok", func(c fiber.Ctx) error {
+		seen = string(c.Response().Header.Peek(fiber.HeaderCacheControl))
+		return c.SendString("OK")
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/ok?token="+hamac[0].Token, nil))
+	require.NoError(t, err)
+	require.Equal(t, fiber.StatusOK, resp.StatusCode)
+	require.Equal(t, "private", seen, "downstream code has to see it too, not just the client")
+	require.Equal(t, "private", resp.Header.Get(fiber.HeaderCacheControl))
+}
+
+// TestMalformedCachePolicyIsReplaced covers a handler policy with an
+// unterminated quoted string. Appending to one hides the appended directive
+// inside the open quotes, so a policy no cache can parse is replaced instead.
+func TestMalformedCachePolicyIsReplaced(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+		Extractor:  extractors.FromQuery("token"),
+	}))
+	app.Get("/ok", func(c fiber.Ctx) error {
+		c.Set(fiber.HeaderCacheControl, `ext="unterminated`)
+		return c.SendString("OK")
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/ok?token="+hamac[0].Token, nil))
+	require.NoError(t, err)
+	require.Equal(t, fiber.StatusOK, resp.StatusCode)
+	require.Equal(t, "private", resp.Header.Get(fiber.HeaderCacheControl))
+}
+
 // TestQueryTokenWithProcessorIsPrivate covers a TokenProcessorFunc that turns
 // the extracted value into something else: what the URL held is the extractor's
 // answer, not the processor's, and that is what decides whether the response
