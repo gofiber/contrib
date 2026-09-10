@@ -1,6 +1,7 @@
 package jwtware_test
 
 import (
+	"encoding/hex"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -584,4 +585,108 @@ func TestChainedQueryTokenMarksOnlyQueryRequests(t *testing.T) {
 		require.Equal(t, fiber.StatusOK, resp.StatusCode)
 		require.Equal(t, "private", resp.Header.Get(fiber.HeaderCacheControl))
 	})
+}
+
+// TestQueryTokenWithProcessorIsPrivate covers a TokenProcessorFunc that turns
+// the extracted value into something else: what the URL held is the extractor's
+// answer, not the processor's, and that is what decides whether the response
+// may be stored by a shared cache.
+func TestQueryTokenWithProcessorIsPrivate(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+		Extractor:  extractors.FromQuery("token"),
+		TokenProcessorFunc: func(token string) (string, error) {
+			decoded, err := hex.DecodeString(token)
+			return string(decoded), err
+		},
+	}))
+	app.Get("/ok", func(c fiber.Ctx) error { return c.SendString("OK") })
+
+	target := "/ok?token=" + hex.EncodeToString([]byte(hamac[0].Token))
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, target, nil))
+	require.NoError(t, err)
+
+	require.Equal(t, fiber.StatusOK, resp.StatusCode)
+	require.Equal(t, "private", resp.Header.Get(fiber.HeaderCacheControl))
+}
+
+// TestQueryTokenPrivateOverQuotedPolicy covers a Cache-Control value whose
+// quoted field list contains an escaped quote, a comma and the word "private":
+// none of that may hide a real "public" directive from the scan.
+func TestQueryTokenPrivateOverQuotedPolicy(t *testing.T) {
+	t.Parallel()
+
+	policy := `ext="a\", private, b", public`
+
+	app := fiber.New()
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+		Extractor:  extractors.FromQuery("token"),
+	}))
+	app.Get("/ok", func(c fiber.Ctx) error {
+		c.Set(fiber.HeaderCacheControl, policy)
+		return c.SendString("OK")
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/ok?token="+hamac[0].Token, nil))
+	require.NoError(t, err)
+
+	require.Equal(t, fiber.StatusOK, resp.StatusCode)
+	require.Equal(t, `ext="a\", private, b", private`, resp.Header.Get(fiber.HeaderCacheControl))
+}
+
+// TestChallengeUsesReturnedErrorStatus covers an error handler that leaves the
+// status to Fiber while an earlier middleware had already put a different one
+// on the response: the challenge has to match the status the client will see.
+func TestChallengeUsesReturnedErrorStatus(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		c.Status(fiber.StatusProxyAuthRequired)
+		return c.Next()
+	})
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey:   jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+		ErrorHandler: func(_ fiber.Ctx, _ error) error { return fiber.ErrUnauthorized },
+	}))
+	app.Get("/ok", func(c fiber.Ctx) error { return c.SendString("OK") })
+
+	resp := doGet(t, app, "Bearer not-a-jwt")
+	require.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
+	require.Equal(t,
+		`Bearer realm="Restricted", error="invalid_token", error_description="The access token is malformed"`,
+		resp.Header.Get(fiber.HeaderWWWAuthenticate))
+	require.Empty(t, resp.Header.Get(fiber.HeaderProxyAuthenticate))
+}
+
+// TestCyclicExtractorChain builds the extractor metadata a caller could hand
+// over by aliasing a slice, which the walks over Chain must survive.
+func TestCyclicExtractorChain(t *testing.T) {
+	t.Parallel()
+
+	chain := make([]extractors.Extractor, 1)
+	cyclic := extractors.Extractor{
+		Extract:    extractors.FromAuthHeader("Bearer").Extract,
+		Key:        fiber.HeaderAuthorization,
+		AuthScheme: "Bearer",
+		Source:     extractors.SourceAuthHeader,
+		Chain:      chain,
+	}
+	chain[0] = cyclic
+
+	app := fiber.New()
+	require.NotPanics(t, func() {
+		app.Use(jwtware.New(jwtware.Config{
+			SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+			Extractor:  cyclic,
+		}))
+	})
+	app.Get("/ok", func(c fiber.Ctx) error { return c.SendString("OK") })
+
+	resp := doGet(t, app, "Bearer "+hamac[0].Token)
+	require.Equal(t, fiber.StatusOK, resp.StatusCode)
 }

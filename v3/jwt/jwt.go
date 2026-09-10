@@ -78,6 +78,9 @@ func New(config ...Config) fiber.Handler {
 			return reject(c, err)
 		}
 
+		// The extractor's own answer is what the URL held; a processor may turn
+		// it into something else entirely.
+		extracted := auth
 		if processToken != nil {
 			if auth, err = processToken(auth); err != nil {
 				return reject(c, err)
@@ -97,7 +100,7 @@ func New(config ...Config) fiber.Handler {
 		// Store user information from token into context.
 		fiber.StoreInContext(c, tokenKey, token)
 
-		if fromQuery(c, queryKeys, auth) {
+		if fromQuery(c, queryKeys, extracted) {
 			return keepPrivate(c, successHandler)
 		}
 		return successHandler(c)
@@ -108,12 +111,18 @@ func New(config ...Config) fiber.Handler {
 // token from, in the order a chain tries them. It is empty for the extractors
 // that never look at the query, which is the default.
 func queryParams(e extractors.Extractor) []string {
-	var params []string
+	return appendQueryParams(nil, e, 0)
+}
+
+func appendQueryParams(params []string, e extractors.Extractor, depth int) []string {
+	if depth > maxExtractorDepth {
+		return params
+	}
 	if e.Source == extractors.SourceQuery && e.Key != "" {
 		params = append(params, e.Key)
 	}
 	for _, chained := range e.Chain {
-		params = append(params, queryParams(chained)...)
+		params = appendQueryParams(params, chained, depth+1)
 	}
 	return params
 }
@@ -196,6 +205,12 @@ func splitCacheControl(value string) []string {
 	)
 	for i := 0; i < len(value); i++ {
 		switch value[i] {
+		case '\\':
+			// RFC 9110 Section 5.6.4: inside a quoted string a backslash quotes
+			// the next character, so neither of them ends anything.
+			if quoted {
+				i++
+			}
 		case '"':
 			quoted = !quoted
 		case ',':

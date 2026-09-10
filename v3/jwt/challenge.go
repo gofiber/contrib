@@ -119,11 +119,13 @@ func withError(prefix, code, description string) string {
 // still recognised as a rejection. cause is the failure the handler was called
 // with, and picks the error_description.
 func (ch *challenge) apply(c fiber.Ctx, handlerErr, cause error) {
+	// A handler that returns a *fiber.Error leaves the status to Fiber's own
+	// error handler, and that code is the one the client will see; whatever is
+	// on the response right now may belong to a middleware that ran earlier.
+	// A handler that wrote its response returns nil, so the common path never
+	// reaches errors.As.
 	status := c.Response().StatusCode()
-	switch status {
-	case fiber.StatusBadRequest, fiber.StatusUnauthorized, fiber.StatusProxyAuthRequired:
-		// The handler wrote the status itself, so it needs no interpreting.
-	default:
+	if handlerErr != nil {
 		var fiberErr *fiber.Error
 		if errors.As(handlerErr, &fiberErr) {
 			status = fiberErr.Code
@@ -191,15 +193,28 @@ func describe(err error) challengeReason {
 	}
 }
 
+// maxExtractorDepth bounds the walks over an extractor's Chain. The metadata is
+// the caller's to build, and a chain that refers back to itself - which the
+// extractors package guards against in its own traversal - would otherwise
+// recurse until the stack ran out.
+const maxExtractorDepth = 32
+
 // firstAuthScheme reports the Authorization header scheme the extractor accepts,
 // walking a chain in the order it is tried. It returns an empty string when the
 // token never comes from an Authorization header.
 func firstAuthScheme(e extractors.Extractor) string {
+	return authSchemeAt(e, 0)
+}
+
+func authSchemeAt(e extractors.Extractor, depth int) string {
+	if depth > maxExtractorDepth {
+		return ""
+	}
 	if e.Source == extractors.SourceAuthHeader && e.AuthScheme != "" {
 		return e.AuthScheme
 	}
 	for _, chained := range e.Chain {
-		if scheme := firstAuthScheme(chained); scheme != "" {
+		if scheme := authSchemeAt(chained, depth+1); scheme != "" {
 			return scheme
 		}
 	}
