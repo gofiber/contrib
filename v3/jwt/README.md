@@ -113,11 +113,12 @@ For an overview and additional examples, see the Fiber Extractors guide:
   such as `alg`, or names a parameter the header does not contain, is rejected as
   well. Nothing else uses `crit`, so leaving `KnownCriticalHeaders` unset is the
   safe default.
-- **`exp` and `nbf`** are validated on every request by
+- **`exp` and `nbf`** are validated by default on every request by
   `github.com/golang-jwt/jwt/v5` ([RFC 7519 Sections 4.1.4 and
   4.1.5](https://www.rfc-editor.org/rfc/rfc7519#section-4.1.4)). Use
   `jwt.WithLeeway`, `jwt.WithExpirationRequired` or `jwt.WithNotBeforeRequired` in
-  `ParserOptions` to tighten this.
+  `ParserOptions` to tighten this - and note that `jwt.WithoutClaimsValidation()`
+  in `ParserOptions` turns it off entirely, so an expired token is accepted.
 - **Base64url segments must be unpadded** ([RFC 7515 Section
   2](https://www.rfc-editor.org/rfc/rfc7515#section-2)), and an `Authorization`
   header has to be well-formed `token68` ([RFC 9110 Section

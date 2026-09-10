@@ -3,6 +3,7 @@ package jwtware
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
@@ -72,35 +73,46 @@ type challenge struct {
 	unauthorized []string
 }
 
-// newChallenge renders the challenges for the configured credential source.
+// newChallenge renders the challenges for the configured credential sources.
 func newChallenge(cfg Config) *challenge {
-	scheme := firstAuthScheme(cfg.Extractor)
-	if scheme == "" {
+	schemes := authSchemes(cfg.Extractor)
+	if len(schemes) == 0 {
 		// The token does not travel in an Authorization header, but a 401 still
 		// has to name a scheme the client can retry with, and for a JWT that is
 		// the bearer scheme of RFC 6750.
-		scheme = "Bearer"
+		schemes = []string{"Bearer"}
 	}
-	prefix := fmt.Sprintf("%s realm=%q", scheme, cfg.Realm)
 
 	ch := &challenge{
 		badRequest:   make([]string, len(challengeDescriptions)),
 		unauthorized: make([]string, len(challengeDescriptions)),
 	}
-	bearer := strings.EqualFold(scheme, "Bearer")
 	for reason, description := range challengeDescriptions {
+		ch.badRequest[reason] = render(schemes, cfg.Realm, errorInvalidRequest, description, challengeReason(reason))
+		ch.unauthorized[reason] = render(schemes, cfg.Realm, errorInvalidToken, description, challengeReason(reason))
+	}
+	return ch
+}
+
+// render builds the header value for one failure: one challenge per scheme the
+// extractor accepts, in the order a chain tries them. RFC 9110 Section 11.6.1
+// carries them as a comma separated list, so a client that cannot use the first
+// still sees the others.
+func render(schemes []string, realm, code, description string, reason challengeReason) string {
+	challenges := make([]string, 0, len(schemes))
+	for _, scheme := range schemes {
+		prefix := fmt.Sprintf("%s realm=%q", scheme, realm)
+
 		// The error parameters are defined for the bearer scheme only, and
 		// RFC 6750 Section 3.1 asks that a request which presented no usable
 		// credential be answered without naming an error about one.
-		if !bearer || challengeReason(reason) == reasonMissing {
-			ch.badRequest[reason] = prefix
-			ch.unauthorized[reason] = prefix
+		if !strings.EqualFold(scheme, "Bearer") || reason == reasonMissing {
+			challenges = append(challenges, prefix)
 			continue
 		}
-		ch.badRequest[reason] = withError(prefix, errorInvalidRequest, description)
-		ch.unauthorized[reason] = withError(prefix, errorInvalidToken, description)
+		challenges = append(challenges, withError(prefix, code, description))
 	}
-	return ch
+	return strings.Join(challenges, ", ")
 }
 
 // withError appends the RFC 6750 Section 3 error parameters to a challenge.
@@ -126,8 +138,10 @@ func (ch *challenge) apply(c fiber.Ctx, handlerErr, cause error) {
 	// reaches errors.As.
 	status := c.Response().StatusCode()
 	if handlerErr != nil {
+		// A typed-nil *fiber.Error satisfies errors.As without being something
+		// to dereference, and Fiber's own error handler tolerates one.
 		var fiberErr *fiber.Error
-		if errors.As(handlerErr, &fiberErr) {
+		if errors.As(handlerErr, &fiberErr) && fiberErr != nil {
 			status = fiberErr.Code
 		}
 	}
@@ -193,17 +207,21 @@ func describe(err error) challengeReason {
 	}
 }
 
-// firstAuthScheme reports the Authorization header scheme the extractor accepts,
-// walking a chain in the order it is tried. It returns an empty string when the
-// token never comes from an Authorization header.
-func firstAuthScheme(e extractors.Extractor) string {
-	var scheme string
+// authSchemes lists the Authorization header schemes the extractor accepts, in
+// the order a chain tries them and without repeats. It is empty when the token
+// never comes from an Authorization header.
+func authSchemes(e extractors.Extractor) []string {
+	var schemes []string
 	walkExtractor(&e, func(candidate *extractors.Extractor) bool {
-		if candidate.Source == extractors.SourceAuthHeader && candidate.AuthScheme != "" {
-			scheme = candidate.AuthScheme
-			return true
+		if candidate.Source != extractors.SourceAuthHeader || candidate.AuthScheme == "" {
+			return false
+		}
+		if !slices.ContainsFunc(schemes, func(known string) bool {
+			return strings.EqualFold(known, candidate.AuthScheme)
+		}) {
+			schemes = append(schemes, candidate.AuthScheme)
 		}
 		return false
 	})
-	return scheme
+	return schemes
 }

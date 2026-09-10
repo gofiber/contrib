@@ -56,9 +56,10 @@ func New(config ...Config) fiber.Handler {
 
 	// A token read from the query string ends up in the URL a shared cache keys
 	// on, so those responses need the RFC 6750 Section 2.3 directive. Which
-	// extractor of a chain supplied the token is only known per request, so the
-	// parameters it could have come from are collected here and compared then.
-	queryKeys := queryParams(cfg.Extractor)
+	// extractor of a chain supplied the token, and whether it came from the URL
+	// at all, is only known per request, so the parameters it could have come
+	// from are collected here and compared then.
+	queryKeys := urlParams(cfg.Extractor)
 
 	reject := func(c fiber.Ctx, err error) error {
 		handlerErr := errorHandler(c, err)
@@ -107,17 +108,22 @@ func New(config ...Config) fiber.Handler {
 	}
 }
 
-// queryParams lists the query string parameters the extractor may read the
-// token from, in the order a chain tries them. It is empty for the extractors
-// that never look at the query, which is the default.
+// urlParams lists the parameters whose value the extractor may find in the
+// query string, in the order a chain tries them. It is empty for the extractors
+// that never read it, which is the default.
+//
+// Form parameters count: Fiber's FormValue searches the query string before the
+// request body, so a form extractor answers "GET /?token=<jwt>" from the URL.
+// Which of the two a given request used is settled per request, by fromQuery.
 //
 // The chain is walked with a visited set, as the extractors package walks its
 // own: the metadata is the caller's to build, and a chain that refers back to
 // itself would otherwise be followed along every path through it.
-func queryParams(e extractors.Extractor) []string {
+func urlParams(e extractors.Extractor) []string {
 	var params []string
 	walkExtractor(&e, func(candidate *extractors.Extractor) bool {
-		if candidate.Source == extractors.SourceQuery {
+		switch candidate.Source {
+		case extractors.SourceQuery, extractors.SourceForm:
 			// The empty key is a real parameter: Fiber reads "/?=<token>" from it.
 			params = append(params, candidate.Key)
 		}

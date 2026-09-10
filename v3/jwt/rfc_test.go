@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -778,4 +779,87 @@ func TestEmptyQueryParamTokenIsPrivate(t *testing.T) {
 
 	require.Equal(t, fiber.StatusOK, resp.StatusCode)
 	require.Equal(t, "private", resp.Header.Get(fiber.HeaderCacheControl))
+}
+
+// TestFormTokenFromQueryIsPrivate covers extractors.FromForm: Fiber's FormValue
+// searches the query string before the request body, so a form parameter can
+// carry the token in the URL just as a query parameter does - and when it comes
+// from the body instead, the URL is clean and the response is left alone.
+func TestFormTokenFromQueryIsPrivate(t *testing.T) {
+	t.Parallel()
+
+	newApp := func() *fiber.App {
+		app := fiber.New()
+		app.Use(jwtware.New(jwtware.Config{
+			SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+			Extractor:  extractors.FromForm("token"),
+		}))
+		handler := func(c fiber.Ctx) error { return c.SendString("OK") }
+		app.Get("/ok", handler)
+		app.Post("/ok", handler)
+		return app
+	}
+
+	t.Run("from the query string", func(t *testing.T) {
+		t.Parallel()
+
+		resp, err := newApp().Test(httptest.NewRequest(http.MethodGet, "/ok?token="+hamac[0].Token, nil))
+		require.NoError(t, err)
+
+		require.Equal(t, fiber.StatusOK, resp.StatusCode)
+		require.Equal(t, "private", resp.Header.Get(fiber.HeaderCacheControl))
+	})
+
+	t.Run("from the request body", func(t *testing.T) {
+		t.Parallel()
+
+		req := httptest.NewRequest(http.MethodPost, "/ok", strings.NewReader("token="+hamac[0].Token))
+		req.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationForm)
+		resp, err := newApp().Test(req)
+		require.NoError(t, err)
+
+		require.Equal(t, fiber.StatusOK, resp.StatusCode)
+		require.Empty(t, resp.Header.Get(fiber.HeaderCacheControl), "the URL never held the token")
+	})
+}
+
+// TestChallengeNamesEveryScheme covers a chain accepting more than one scheme:
+// the challenge has to offer each of them, not only the first, or a client
+// whose credential the later extractor took is told to retry with the wrong one.
+func TestChallengeNamesEveryScheme(t *testing.T) {
+	t.Parallel()
+
+	app := protectedApp(jwtware.Config{
+		SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+		Extractor: extractors.Chain(
+			extractors.FromAuthHeader("Basic"),
+			extractors.FromAuthHeader("Bearer"),
+		),
+	})
+
+	resp := doGet(t, app, "Bearer not-a-jwt")
+	require.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
+	require.Equal(t,
+		`Basic realm="Restricted", Bearer realm="Restricted", error="invalid_token", error_description="The access token is malformed"`,
+		resp.Header.Get(fiber.HeaderWWWAuthenticate))
+}
+
+// TestTypedNilErrorFromHandler covers an error handler returning an interface
+// holding a nil *fiber.Error, which errors.As matches without giving anything
+// to dereference.
+func TestTypedNilErrorFromHandler(t *testing.T) {
+	t.Parallel()
+
+	app := protectedApp(jwtware.Config{
+		SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+		ErrorHandler: func(_ fiber.Ctx, _ error) error {
+			var typedNil *fiber.Error
+			return typedNil
+		},
+	})
+
+	require.NotPanics(t, func() {
+		resp := doGet(t, app, "Bearer not-a-jwt")
+		require.NotNil(t, resp)
+	})
 }

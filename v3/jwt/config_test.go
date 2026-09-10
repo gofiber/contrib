@@ -265,13 +265,20 @@ func TestCheckCriticalHeaders(t *testing.T) {
 	}
 }
 
-func TestFirstAuthScheme(t *testing.T) {
+func TestAuthSchemes(t *testing.T) {
 	t.Parallel()
 
-	require.Equal(t, "Bearer", firstAuthScheme(extractors.FromAuthHeader("Bearer")))
-	require.Empty(t, firstAuthScheme(extractors.FromCookie("token")))
-	require.Equal(t, "Bearer", firstAuthScheme(extractors.Chain(
+	require.Equal(t, []string{"Bearer"}, authSchemes(extractors.FromAuthHeader("Bearer")))
+	require.Empty(t, authSchemes(extractors.FromCookie("token")))
+	require.Equal(t, []string{"Bearer"}, authSchemes(extractors.Chain(
 		extractors.FromCookie("token"),
 		extractors.FromAuthHeader("Bearer"),
+	)))
+
+	// Every scheme the chain accepts, in the order it tries them, without repeats.
+	require.Equal(t, []string{"Basic", "Bearer"}, authSchemes(extractors.Chain(
+		extractors.FromAuthHeader("Basic"),
+		extractors.FromAuthHeader("Bearer"),
+		extractors.FromAuthHeader("bearer"),
 	)))
 }
