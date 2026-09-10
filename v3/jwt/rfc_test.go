@@ -17,15 +17,15 @@ import (
 
 // signWith builds a token signed with the shared HMAC test key, applying the
 // given mutations to its header first.
-func signWith(t *testing.T, claims jwt.Claims, header map[string]any) string {
-	t.Helper()
+func signWith(tb testing.TB, claims jwt.Claims, header map[string]any) string {
+	tb.Helper()
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	for name, value := range header {
 		token.Header[name] = value
 	}
 	signed, err := token.SignedString([]byte(defaultSigningKey))
-	require.NoError(t, err)
+	require.NoError(tb, err)
 	return signed
 }
 
