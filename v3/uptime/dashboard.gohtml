@@ -136,7 +136,7 @@ button {
   font: inherit;
   transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease, transform 140ms ease;
 }
-button:hover:not(.bar) {
+button:hover:not(.bar):not(.insights-toggle) {
   border-color: var(--accent);
   transform: translateY(-1px);
 }
@@ -273,7 +273,7 @@ button:hover:not(.bar) {
 .service {
   display: grid;
   grid-template-columns: minmax(180px, 270px) minmax(0, 1fr);
-  gap: 18px;
+  gap: 8px 18px;
   align-items: center;
   min-width: 0;
   padding: 15px;
@@ -282,6 +282,14 @@ button:hover:not(.bar) {
   border-radius: 8px;
   box-shadow: var(--shadow);
   overflow: visible;
+}
+.service-heading {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
 }
 .service-name {
   display: flex;
@@ -380,6 +388,108 @@ button:hover:not(.bar) {
 .bar.gray.is-active {
   background-color: rgb(var(--none-rgb) / 0.52);
 }
+.insights-toggle {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 9px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 4px;
+  background-color: transparent;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.25;
+  transition: background-color 500ms ease;
+}
+.insights-toggle:hover { background-color: var(--accent-soft); }
+.insights-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  transform-origin: center;
+  transition: transform 200ms ease;
+}
+.insights-toggle[aria-expanded="true"] .insights-icon { transform: rotate(-180deg); }
+.insights-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.service-insights {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 24px;
+  align-items: center;
+  min-width: 0;
+  margin-top: 10px;
+}
+.service-insights[hidden] { display: none; }
+.insights-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+  background: var(--panel-soft);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.insights-metric {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 12px 14px;
+  overflow-wrap: anywhere;
+}
+.insights-metric:nth-child(even) { border-left: 1px solid var(--border); }
+.insights-metric:nth-child(n+3) { border-top: 1px solid var(--border); }
+.insights-metric dt { color: var(--muted); font-size: 0.75rem; }
+.insights-metric dd {
+  margin: 4px 0 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.insights-trend { min-width: 0; margin: 0; }
+.insights-trend figcaption { color: var(--muted); font-size: 0.8rem; margin-bottom: 12px; }
+.trend-plot { display: grid; grid-template-columns: 48px minmax(0, 1fr); }
+.trend-axis {
+  position: relative;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+}
+.trend-axis span {
+  position: absolute;
+  right: 8px;
+  transform: translateY(-50%);
+}
+.trend-svg { display: block; width: 100%; height: 128px; overflow: visible; }
+.trend-grid, .trend-guide, .trend-ticks { stroke: var(--border); stroke-width: 1; }
+.trend-guide { stroke-dasharray: 3 3; }
+.trend-path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.trend-point { fill: var(--accent); }
+.trend-dates {
+  position: relative;
+  height: 1.45em;
+  margin: 6px 0 0 48px;
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+.trend-dates span {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+.trend-dates span:first-child:not(:only-child) { transform: none; }
+.trend-dates span:last-child:not(:only-child) { transform: translateX(-100%); }
+.trend-empty { margin: 0; padding: 36px 0; color: var(--muted); text-align: center; }
 .empty {
   margin-top: 28px;
   padding: 18px 0;
@@ -416,6 +526,7 @@ button:hover:not(.bar) {
 .hovercard[hidden] {
   display: none;
 }
+#trend-hovercard { width: min(244px, calc(100vw - 24px)); }
 .hovercard.is-visible {
   opacity: 1;
   visibility: visible;
@@ -534,6 +645,7 @@ footer {
   }
   .status-line { justify-self: end; }
   .service { grid-template-columns: 1fr; }
+  .service-insights { grid-template-columns: 1fr; gap: 18px; }
   .bars {
     display: flex;
     flex-wrap: wrap;
@@ -547,10 +659,15 @@ footer {
     height: 24px;
   }
 }
+@media (max-width: 480px) {
+  .trend-dates .trend-date-secondary { display: none; }
+}
 @media (prefers-reduced-motion: reduce) {
   .header-divider:after { animation: none; }
   .bar,
   .hovercard,
+  .insights-toggle,
+  .insights-icon,
   button { transition: none; }
 }
   </style>
@@ -592,6 +709,7 @@ footer {
     <span id="page-scroll-dock-value" class="page-scroll-dock__core">0%</span>
   </button>
   <div id="uptime-hovercard" class="hovercard" role="tooltip" hidden></div>
+  <div id="trend-hovercard" class="hovercard" aria-hidden="true" hidden></div>
   <script>
 const initialStatus = {{ .StatusJSON }};
 const apiPath = {{ .APIPathJSON }};
@@ -616,6 +734,8 @@ let lastStatus = initialStatus;
 let lastSuccessAt = initialStatus ? Date.now() : 0;
 let activeBar = null;
 let refreshInFlight = false;
+const expandedServices = new Set();
+let activeTrend = null;
 
 function t(key) {
   return messages[key] || key;
@@ -761,10 +881,251 @@ function bindBars() {
   });
 }
 
+function svgNode(name, attributes) {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", name);
+  Object.entries(attributes).forEach(([key, value]) => node.setAttribute(key, String(value)));
+  return node;
+}
+
+function renderInsightsToggle(article, heading, service, index) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "insights-toggle";
+  button.textContent = "Insights";
+  button.dataset.serviceId = service.id;
+  const icon = svgNode("svg", {
+    class: "insights-icon", viewBox: "0 0 16 16", "aria-hidden": "true", focusable: "false",
+    fill: "none", stroke: "currentColor", "stroke-width": 1.5, "stroke-linecap": "round", "stroke-linejoin": "round"
+  });
+  icon.appendChild(svgNode("path", { d: "M4 6 8 10 12 6" }));
+  button.appendChild(icon);
+  const container = document.createElement("div");
+  container.className = "service-insights";
+  container.id = "service-insights-" + index;
+  button.setAttribute("aria-controls", container.id);
+  function setExpanded(expanded) {
+    button.setAttribute("aria-expanded", String(expanded));
+    container.hidden = !expanded;
+    container.replaceChildren();
+    if (expanded) renderServiceInsights(container, service);
+  }
+  button.addEventListener("click", function() {
+    const expanded = !expandedServices.has(service.id);
+    if (expanded) expandedServices.add(service.id);
+    else expandedServices.delete(service.id);
+    hideTrendHoverCard();
+    setExpanded(expanded);
+  });
+  setExpanded(expandedServices.has(service.id));
+  heading.appendChild(button);
+  article.appendChild(container);
+}
+
+function formatDays(days, capped) {
+  return days + (capped ? "+" : "") + (days === 1 && !capped ? " day" : " days");
+}
+
+function renderServiceInsights(container, service) {
+  const summary = service.summary || {};
+  const metrics = document.createElement("dl");
+  metrics.className = "insights-metrics";
+  const values = [
+    ["Availability", percent(summary.availability_rate)],
+    ["Downtime", formatSeconds(summary.estimated_downtime_seconds)],
+    ["Affected days", formatDays(summary.affected_days, false)],
+    ["Stable streak", formatDays(summary.stable_streak_days, summary.stable_streak_capped)]
+  ];
+  values.forEach(function(entry) {
+    const metric = document.createElement("div");
+    metric.className = "insights-metric";
+    const label = document.createElement("dt");
+    label.textContent = entry[0];
+    const value = document.createElement("dd");
+    value.textContent = summary.has_data ? entry[1] : "—";
+    metric.append(label, value);
+    metrics.appendChild(metric);
+  });
+  container.append(metrics, renderTrendChart(service.daily || []));
+}
+
+function validTrendDay(day) {
+  return day.has_data && day.expected_slots > 0;
+}
+
+function trendDomain(days) {
+  let minimum = 1;
+  days.forEach(function(day) {
+    if (validTrendDay(day) && Number.isFinite(day.uptime_rate)) {
+      minimum = Math.min(minimum, day.uptime_rate);
+    }
+  });
+  return minimum >= 0.99 ? 0.99 : Math.max(0, Math.floor(minimum * 100) - 1) / 100;
+}
+
+function buildTrendPath(days, x, y) {
+  let connected = false;
+  const commands = [];
+  days.forEach(function(day, index) {
+    if (!validTrendDay(day)) {
+      connected = false;
+      return;
+    }
+    commands.push((connected ? "L" : "M") + x(index) + " " + y(day.uptime_rate));
+    // A round-capped zero-length segment also shows isolated valid days.
+    if (!connected) commands.push("l0 0");
+    connected = true;
+  });
+  return commands.join(" ");
+}
+
+function nearestTrendIndex(clientX, rect, count) {
+  if (count <= 1 || rect.width <= 0) return 0;
+  const fraction = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  return Math.round(fraction * (count - 1));
+}
+
+function trendTickIndices(count) {
+  const ticks = Math.min(count, 5);
+  return Array.from({ length: ticks }, (_, index) => ticks > 1 ? Math.round(index * (count - 1) / (ticks - 1)) : 0);
+}
+
+function hideTrendHoverCard() {
+  const card = $("trend-hovercard");
+  card.hidden = true;
+  card.classList.remove("is-visible");
+  if (activeTrend) {
+    activeTrend.guide.setAttribute("visibility", "hidden");
+    activeTrend.point.setAttribute("visibility", "hidden");
+    activeTrend = null;
+  }
+}
+
+function showTrendHoverCard(day, anchor) {
+  const card = $("trend-hovercard");
+  const title = document.createElement("span");
+  title.className = "hovercard-title";
+  title.textContent = day.day;
+  card.replaceChildren(title);
+  if (validTrendDay(day)) {
+    card.append(
+      cardRow("Availability", percent(day.uptime_rate)),
+      cardRow("Downtime", formatSeconds(day.estimated_downtime_seconds)),
+      cardRow(t("slots"), day.up_slots + " / " + day.expected_slots)
+    );
+  } else {
+    card.appendChild(cardNote(t("noData")));
+  }
+  card.hidden = false;
+  const margin = 12;
+  const gap = 16;
+  const width = card.offsetWidth;
+  const height = card.offsetHeight;
+  // Stay beside the selected point instead of following every cursor movement.
+  let left = anchor.x + gap;
+  if (left + width > window.innerWidth - margin) left = anchor.x - width - gap;
+  left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
+  let top = anchor.y - height - gap;
+  if (top < margin) top = anchor.y + gap;
+  card.style.left = left + "px";
+  card.style.top = Math.max(margin, Math.min(top, window.innerHeight - height - margin)) + "px";
+  card.classList.add("is-visible");
+}
+
+function renderTrendChart(days) {
+  const figure = document.createElement("figure");
+  figure.className = "insights-trend";
+  figure.setAttribute("aria-label", "Daily availability trend");
+  const caption = document.createElement("figcaption");
+  caption.textContent = formatDays(days.length, false);
+  figure.appendChild(caption);
+  if (!days.some(validTrendDay)) {
+    const empty = document.createElement("p");
+    empty.className = "trend-empty";
+    empty.textContent = t("noData");
+    figure.appendChild(empty);
+    return figure;
+  }
+
+  const lower = trendDomain(days);
+  const tickIndices = trendTickIndices(days.length);
+  const tickRates = Array.from({ length: 5 }, (_, index) => 1 - index * (1 - lower) / 4);
+  const x = (index) => days.length > 1 ? 8 + index / (days.length - 1) * 584 : 300;
+  const y = (rate) => {
+    const clamped = Number.isFinite(rate) ? Math.max(lower, Math.min(1, rate)) : lower;
+    return 8 + (1 - clamped) / (1 - lower) * 112;
+  };
+  const svg = svgNode("svg", { class: "trend-svg", viewBox: "0 0 600 128", preserveAspectRatio: "none", "aria-hidden": "true", focusable: "false" });
+  tickRates.forEach(function(rate) {
+    const height = y(rate);
+    svg.appendChild(svgNode("line", { class: "trend-grid", x1: 8, x2: 592, y1: height, y2: height, "vector-effect": "non-scaling-stroke" }));
+  });
+  svg.appendChild(svgNode("path", { class: "trend-ticks", d: tickIndices.map(index => "M" + x(index) + " 120v4").join(" "), "vector-effect": "non-scaling-stroke" }));
+  const path = svgNode("path", { class: "trend-path", d: buildTrendPath(days, x, y), "vector-effect": "non-scaling-stroke" });
+  const guide = svgNode("line", { class: "trend-guide", y1: 8, y2: 120, visibility: "hidden" });
+  const point = svgNode("circle", { class: "trend-point", r: 3, visibility: "hidden" });
+  const hit = svgNode("rect", { class: "trend-hit-area", x: 8, y: 8, width: 584, height: 112, fill: "transparent" });
+  hit.addEventListener("pointermove", function(event) {
+    if (activeTrend && activeTrend.guide !== guide) hideTrendHoverCard();
+    const rect = hit.getBoundingClientRect();
+    const index = nearestTrendIndex(event.clientX, rect, days.length);
+    if (activeTrend && activeTrend.index === index) return;
+    const day = days[index];
+    guide.setAttribute("x1", x(index));
+    guide.setAttribute("x2", x(index));
+    guide.setAttribute("visibility", "visible");
+    point.setAttribute("visibility", validTrendDay(day) ? "visible" : "hidden");
+    if (validTrendDay(day)) {
+      point.setAttribute("cx", x(index));
+      point.setAttribute("cy", y(day.uptime_rate));
+    }
+    activeTrend = { guide, point, index };
+    showTrendHoverCard(day, {
+      x: rect.left + (x(index) - 8) / 584 * rect.width,
+      y: validTrendDay(day) ? rect.top + (y(day.uptime_rate) - 8) / 112 * rect.height : rect.top + rect.height / 2
+    });
+  });
+  hit.addEventListener("pointerleave", hideTrendHoverCard);
+  hit.addEventListener("pointercancel", hideTrendHoverCard);
+  svg.append(path, guide, point, hit);
+
+  const plot = document.createElement("div");
+  plot.className = "trend-plot";
+  const axis = document.createElement("div");
+  axis.className = "trend-axis";
+  axis.setAttribute("aria-hidden", "true");
+  tickRates.forEach(function(rate) {
+    const label = document.createElement("span");
+    label.textContent = Number((rate * 100).toFixed(2)) + "%";
+    label.style.top = y(rate) + "px";
+    axis.appendChild(label);
+  });
+  plot.append(axis, svg);
+  const dates = document.createElement("div");
+  dates.className = "trend-dates";
+  tickIndices.forEach(function(index, tick) {
+    const day = days[index];
+    const label = document.createElement("span");
+    label.textContent = day.day.slice(5);
+    label.title = day.day;
+    if (tickIndices.length === 5 && tick % 2 === 1) label.className = "trend-date-secondary";
+    label.style.left = x(index) / 600 * 100 + "%";
+    dates.appendChild(label);
+  });
+  figure.append(plot, dates);
+  return figure;
+}
+
 function renderStatus(status) {
   if (!status) return;
   lastStatus = status;
   hideHoverCard();
+  hideTrendHoverCard();
+  const focusedToggle = document.activeElement && document.activeElement.closest(".insights-toggle");
+  const focusedServiceID = focusedToggle ? focusedToggle.dataset.serviceId : null;
+  const serviceIDs = new Set((status.services || []).map(service => service.id));
+  expandedServices.forEach(function(id) {
+    if (!serviceIDs.has(id)) expandedServices.delete(id);
+  });
 
   $("updated-at").textContent = formatTime(status.generated_at);
   setStatus(status.storage && status.storage.status === "ok" ? "live" : "error");
@@ -788,10 +1149,12 @@ function renderStatus(status) {
     root.appendChild(empty);
     return;
   }
-  status.services.forEach(function(service) {
+  status.services.forEach(function(service, index) {
     const article = document.createElement("article");
     article.className = "service";
 
+    const heading = document.createElement("div");
+    heading.className = "service-heading";
     const info = document.createElement("div");
     const nameLine = document.createElement("div");
     nameLine.className = "service-name";
@@ -802,7 +1165,7 @@ function renderStatus(status) {
     name.className = "name";
     name.textContent = service.name;
     nameLine.append(dot, name);
-    info.appendChild(nameLine);
+    heading.appendChild(nameLine);
 
     if (service.description) {
       const description = document.createElement("div");
@@ -822,10 +1185,16 @@ function renderStatus(status) {
       bars.appendChild(dayMarkup(day));
     });
 
-    article.append(info, bars);
+    article.append(heading, info, bars);
+    renderInsightsToggle(article, heading, service, index);
     root.appendChild(article);
   });
   bindBars();
+  if (focusedServiceID !== null) {
+    root.querySelectorAll(".insights-toggle").forEach(function(button) {
+      if (button.dataset.serviceId === focusedServiceID) button.focus({ preventScroll: true });
+    });
+  }
 }
 
 function updateSummary(services) {
@@ -852,6 +1221,11 @@ function formatSeconds(seconds) {
   const value = Math.max(0, Number(seconds || 0));
   if (value < 60) return Math.round(value) + "s";
   if (value < 3600) return Math.floor(value / 60) + "m";
+  if (value >= 86400) {
+    const days = Math.floor(value / 86400);
+    const hours = Math.floor((value % 86400) / 3600);
+    return hours ? days + "d " + hours + "h" : days + "d";
+  }
   const hours = Math.floor(value / 3600);
   const minutes = Math.floor((value % 3600) / 60);
   return minutes ? hours + "h " + minutes + "m" : hours + "h";
@@ -909,10 +1283,12 @@ function scrollUpQuarter() {
 
 $("page-scroll-dock").addEventListener("click", scrollUpQuarter);
 window.addEventListener("scroll", function() {
+  hideTrendHoverCard();
   updateScrollDock();
   repositionHoverCard();
 }, { passive: true });
 window.addEventListener("resize", function() {
+  hideTrendHoverCard();
   updateScrollDock();
   repositionHoverCard();
 });

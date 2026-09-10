@@ -57,6 +57,26 @@ type ServiceStatus struct {
 	SampleIntervalSeconds int64 `json:"sample_interval_seconds"`
 	// Daily contains per-day uptime history.
 	Daily []DayStatus `json:"daily"`
+	// Summary contains derived metrics for the same history window as Daily.
+	Summary ServiceSummary `json:"summary"`
+}
+
+// ServiceSummary contains derived metrics for the history window represented by Daily.
+type ServiceSummary struct {
+	// HasData reports whether any day has data and a positive expected slot count.
+	HasData bool `json:"has_data"`
+	// AvailabilityRate is total up slots divided by total expected slots over valid days.
+	AvailabilityRate float64 `json:"availability_rate"`
+	// EstimatedDowntimeSeconds sums the normalized downtime of valid days.
+	EstimatedDowntimeSeconds int64 `json:"estimated_downtime_seconds"`
+	// AffectedDays counts valid days that missed at least one expected slot.
+	AffectedDays int `json:"affected_days"`
+	// StableStreakDays counts consecutive perfect days backward from the newest
+	// valid day, including today if perfect so far. An internal no-data day ends it.
+	StableStreakDays int `json:"stable_streak_days"`
+	// StableStreakCapped reports that the streak reaches the start of the returned
+	// window and the service predates it, so the streak may be longer.
+	StableStreakCapped bool `json:"stable_streak_capped"`
 }
 
 // DayStatus is the service uptime summary for one local day.
@@ -216,6 +236,7 @@ func (u *runtime) buildStatus(ctx context.Context, now time.Time) (StatusRespons
 		for _, day := range days {
 			serviceStatus.Daily = append(serviceStatus.Daily, u.dayStatus(service.ID, day, today, createdDay, service.CreatedAt, now, interval, dailyByService, todayByService))
 		}
+		serviceStatus.Summary = summarizeService(serviceStatus.Daily, createdDay < fromDay)
 		resp.Services = append(resp.Services, serviceStatus)
 	}
 

@@ -219,6 +219,38 @@ turn every request into another attempt against the unavailable store.
 The same snapshot payload is available at `UI.Path + "/api/status"` for custom
 dashboards.
 
+## Service insights
+
+Each service card has an **Insights** button, collapsed by default. Expanding
+it shows four metrics and a daily availability trend for the same `DaysToShow`
+window as the existing uptime bars:
+
+- **Availability**: total up slots divided by total expected slots across valid
+  days, rather than an average of daily percentages.
+- **Downtime**: the sum of the daily estimated downtime.
+- **Affected days**: valid days with at least one missed expected slot.
+- **Stable streak**: consecutive perfect days backward from the newest valid
+  day, including today when every completed expected slot so far is up. Newest
+  no-data days are skipped; an internal no-data gap or imperfect day stops the
+  streak. `N+ days` means it reaches the window boundary and the service existed
+  before that window, so the streak may be longer.
+
+Days without data or expected slots do not contribute to the metrics and are
+not treated as downtime. With no valid days, all four metrics display `—`, and
+the trend displays `No data`. Missing days create gaps in the trend.
+
+Expanded cards stay expanded across automatic refreshes; reloading the page
+collapses them again. Charts are rendered only while expanded. The trend uses
+native SVG and Vanilla JavaScript, with zero additional dependencies, storage
+queries, or persistent data. Existing daily bars remain keyboard accessible.
+
+Each service in the status JSON also includes a `summary` object with
+`has_data`, `availability_rate`, `estimated_downtime_seconds`, `affected_days`,
+`stable_streak_days`, and `stable_streak_capped`. When `has_data` is false, the
+numeric fields are zero and `stable_streak_capped` is false; clients should
+display no data rather than 0% availability. These metrics add no latency,
+incident, or alerting semantics and require no new configuration.
+
 ## Dashboard favicon
 
 The built-in dashboard includes an embedded favicon by default. Set
