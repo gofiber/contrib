@@ -47,6 +47,8 @@ func protectedApp(cfg jwtware.Config) *fiber.App {
 	return app
 }
 
+// doGet sends a GET to the protected route, optionally with an Authorization
+// header, and returns the response for the caller to assert on.
 func doGet(t *testing.T, app *fiber.App, authorization string) *http.Response {
 	t.Helper()
 
@@ -218,6 +220,8 @@ func TestChallengeOnRejection(t *testing.T) {
 	}
 }
 
+// TestChallengeIsAbsentOnSuccess keeps the challenge on the rejection path: a
+// request whose token verified is not being asked for credentials.
 func TestChallengeIsAbsentOnSuccess(t *testing.T) {
 	t.Parallel()
 
@@ -230,6 +234,8 @@ func TestChallengeIsAbsentOnSuccess(t *testing.T) {
 	require.Empty(t, resp.Header.Get(fiber.HeaderWWWAuthenticate))
 }
 
+// TestChallengeUsesConfiguredRealmAndScheme reads the realm from Config.Realm
+// and the scheme from the extractor rather than assuming Bearer.
 func TestChallengeUsesConfiguredRealmAndScheme(t *testing.T) {
 	t.Parallel()
 
@@ -267,6 +273,8 @@ func TestChallengeForNonHeaderExtractor(t *testing.T) {
 		resp.Header.Get(fiber.HeaderWWWAuthenticate))
 }
 
+// TestChallengeFromCustomErrorHandlerIsKept covers the rule that a challenge
+// already on the response is never replaced, whoever put it there.
 func TestChallengeFromCustomErrorHandlerIsKept(t *testing.T) {
 	t.Parallel()
 
@@ -302,6 +310,8 @@ func TestChallengeForDeferredStatus(t *testing.T) {
 		resp.Header.Get(fiber.HeaderWWWAuthenticate))
 }
 
+// TestNoChallengeOnUnrelatedStatus limits the header to the statuses RFC 9110
+// defines it for: an ErrorHandler answering with anything else gets none.
 func TestNoChallengeOnUnrelatedStatus(t *testing.T) {
 	t.Parallel()
 
@@ -362,6 +372,8 @@ func TestAlgorithmIsPinnedToConfiguration(t *testing.T) {
 	})
 }
 
+// TestUnexpectedAlgorithmIsReported checks that ErrJWTAlg survives to the
+// ErrorHandler when the key function is the one refusing the algorithm.
 func TestUnexpectedAlgorithmIsReported(t *testing.T) {
 	t.Parallel()
 

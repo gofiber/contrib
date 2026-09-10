@@ -246,6 +246,8 @@ func validAlgorithms(config []Config) []string {
 	}
 }
 
+// multiKeyfunc resolves keys against several JWK Set URLs at once, giving each
+// of them the same refresh policy and taking the first key that matches.
 func multiKeyfunc(givenKeys map[string]keyfunc.GivenKey, jwkSetURLs []string) (jwt.Keyfunc, error) {
 	opts := keyfuncOptions(givenKeys)
 	multiple := make(map[string]keyfunc.Options, len(jwkSetURLs))
@@ -262,6 +264,9 @@ func multiKeyfunc(givenKeys map[string]keyfunc.GivenKey, jwkSetURLs []string) (j
 	return multi.Keyfunc, nil
 }
 
+// keyfuncOptions is the refresh policy every JWK Set in a configuration is
+// fetched under: hourly in the background, rate limited, and re-fetched on a
+// key ID the cache has not seen.
 func keyfuncOptions(givenKeys map[string]keyfunc.GivenKey) keyfunc.Options {
 	return keyfunc.Options{
 		GivenKeys: givenKeys,
@@ -275,6 +280,10 @@ func keyfuncOptions(givenKeys map[string]keyfunc.GivenKey) keyfunc.Options {
 	}
 }
 
+// signingKeyFunc returns the key function for a single configured key. A key
+// that names an algorithm refuses a token signed with any other, wrapping
+// ErrJWTAlg so callers can match on it; this is the check RFC 8725 Section 3.1
+// asks for, and validAlgorithms hoists it into the parser where it can.
 func signingKeyFunc(key SigningKey) jwt.Keyfunc {
 	return func(token *jwt.Token) (interface{}, error) {
 		if key.JWTAlg != "" {

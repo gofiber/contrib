@@ -53,18 +53,22 @@ func benchCtx(setup ...func(*fasthttp.RequestCtx)) *fasthttp.RequestCtx {
 	return fctx
 }
 
+// withBearer presents the token the way RFC 6750 Section 2.1 prefers.
 func withBearer(token string) func(*fasthttp.RequestCtx) {
 	return func(fctx *fasthttp.RequestCtx) {
 		fctx.Request.Header.Set(fiber.HeaderAuthorization, "Bearer "+token)
 	}
 }
 
+// withCookie presents the token in a cookie.
 func withCookie(name, token string) func(*fasthttp.RequestCtx) {
 	return func(fctx *fasthttp.RequestCtx) {
 		fctx.Request.Header.SetCookie(name, token)
 	}
 }
 
+// withQuery presents the token in the query string, the source that also
+// exercises the Cache-Control marking on the way out.
 func withQuery(param, token string) func(*fasthttp.RequestCtx) {
 	return func(fctx *fasthttp.RequestCtx) {
 		fctx.Request.SetRequestURI("/?" + param + "=" + token)
@@ -132,11 +136,15 @@ func Benchmark_Middleware_JWT_Baseline(b *testing.B) {
 	runBench(b, app.Handler(), benchCtx(), fiber.StatusTeapot)
 }
 
+// Benchmark_Middleware_JWT_MapClaims measures the default claims type, where
+// the parser decodes straight into a map.
 func Benchmark_Middleware_JWT_MapClaims(b *testing.B) {
 	h := benchHandler(b, hmacKey(jwtware.HS256))
 	runBench(b, h, benchCtx(withBearer(hamac[0].Token)), fiber.StatusTeapot)
 }
 
+// Benchmark_Middleware_JWT_CustomClaims measures a struct claims type, the path
+// that used to walk reflect on every request.
 func Benchmark_Middleware_JWT_CustomClaims(b *testing.B) {
 	cfg := hmacKey(jwtware.HS256)
 	cfg.Claims = &customClaims{}
@@ -145,6 +153,8 @@ func Benchmark_Middleware_JWT_CustomClaims(b *testing.B) {
 	runBench(b, h, benchCtx(withBearer(hamac[0].Token)), fiber.StatusTeapot)
 }
 
+// Benchmark_Middleware_JWT_ParserOptions measures a configuration carrying
+// parser options, which the middleware now applies once instead of per request.
 func Benchmark_Middleware_JWT_ParserOptions(b *testing.B) {
 	cfg := hmacKey(jwtware.HS256)
 	cfg.ParserOptions = []jwt.ParserOption{
@@ -157,6 +167,8 @@ func Benchmark_Middleware_JWT_ParserOptions(b *testing.B) {
 	runBench(b, h, benchCtx(withBearer(hamac[0].Token)), fiber.StatusTeapot)
 }
 
+// Benchmark_Middleware_JWT_MissingToken measures the rejection path, including
+// the challenge the response is answered with.
 func Benchmark_Middleware_JWT_MissingToken(b *testing.B) {
 	h := benchHandler(b, hmacKey(jwtware.HS256))
 	runBench(b, h, benchCtx(), fiber.StatusBadRequest)

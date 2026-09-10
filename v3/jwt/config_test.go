@@ -143,6 +143,8 @@ func TestPanicOnUnsupportedJWKSetURLScheme(t *testing.T) {
 	require.Panics(t, func() { makeCfg(config) })
 }
 
+// TestValidAlgorithms pins which configurations produce a pinned algorithm list
+// for the parser, and which leave the key material to decide.
 func TestValidAlgorithms(t *testing.T) {
 	t.Parallel()
 
@@ -216,6 +218,8 @@ func TestValidAlgorithms(t *testing.T) {
 	}
 }
 
+// TestCheckCriticalHeaders walks the crit values RFC 7515 Section 4.1.11 admits
+// and the malformed ones it does not.
 func TestCheckCriticalHeaders(t *testing.T) {
 	t.Parallel()
 
@@ -265,6 +269,8 @@ func TestCheckCriticalHeaders(t *testing.T) {
 	}
 }
 
+// TestAuthSchemes collects the schemes an extractor answers for, in the order
+// the challenge lists them.
 func TestAuthSchemes(t *testing.T) {
 	t.Parallel()
 
