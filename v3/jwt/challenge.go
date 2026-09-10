@@ -193,30 +193,17 @@ func describe(err error) challengeReason {
 	}
 }
 
-// maxExtractorDepth bounds the walks over an extractor's Chain. The metadata is
-// the caller's to build, and a chain that refers back to itself - which the
-// extractors package guards against in its own traversal - would otherwise
-// recurse until the stack ran out.
-const maxExtractorDepth = 32
-
 // firstAuthScheme reports the Authorization header scheme the extractor accepts,
 // walking a chain in the order it is tried. It returns an empty string when the
 // token never comes from an Authorization header.
 func firstAuthScheme(e extractors.Extractor) string {
-	return authSchemeAt(e, 0)
-}
-
-func authSchemeAt(e extractors.Extractor, depth int) string {
-	if depth > maxExtractorDepth {
-		return ""
-	}
-	if e.Source == extractors.SourceAuthHeader && e.AuthScheme != "" {
-		return e.AuthScheme
-	}
-	for _, chained := range e.Chain {
-		if scheme := authSchemeAt(chained, depth+1); scheme != "" {
-			return scheme
+	var scheme string
+	walkExtractor(&e, func(candidate *extractors.Extractor) bool {
+		if candidate.Source == extractors.SourceAuthHeader && candidate.AuthScheme != "" {
+			scheme = candidate.AuthScheme
+			return true
 		}
-	}
-	return ""
+		return false
+	})
+	return scheme
 }

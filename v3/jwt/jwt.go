@@ -110,21 +110,45 @@ func New(config ...Config) fiber.Handler {
 // queryParams lists the query string parameters the extractor may read the
 // token from, in the order a chain tries them. It is empty for the extractors
 // that never look at the query, which is the default.
+//
+// The chain is walked with a visited set, as the extractors package walks its
+// own: the metadata is the caller's to build, and a chain that refers back to
+// itself would otherwise be followed along every path through it.
 func queryParams(e extractors.Extractor) []string {
-	return appendQueryParams(nil, e, 0)
+	var params []string
+	walkExtractor(&e, func(candidate *extractors.Extractor) bool {
+		if candidate.Source == extractors.SourceQuery {
+			// The empty key is a real parameter: Fiber reads "/?=<token>" from it.
+			params = append(params, candidate.Key)
+		}
+		return false
+	})
+	return params
 }
 
-func appendQueryParams(params []string, e extractors.Extractor, depth int) []string {
-	if depth > maxExtractorDepth {
-		return params
+// walkExtractor visits an extractor and its chain in the order a chain is
+// tried, stopping early when visit returns true. Each node is visited once.
+func walkExtractor(e *extractors.Extractor, visit func(*extractors.Extractor) bool) bool {
+	visited := make(map[*extractors.Extractor]struct{})
+
+	var walk func(*extractors.Extractor) bool
+	walk = func(candidate *extractors.Extractor) bool {
+		if _, seen := visited[candidate]; seen {
+			return false
+		}
+		visited[candidate] = struct{}{}
+
+		if visit(candidate) {
+			return true
+		}
+		for i := range candidate.Chain {
+			if walk(&candidate.Chain[i]) {
+				return true
+			}
+		}
+		return false
 	}
-	if e.Source == extractors.SourceQuery && e.Key != "" {
-		params = append(params, e.Key)
-	}
-	for _, chained := range e.Chain {
-		params = appendQueryParams(params, chained, depth+1)
-	}
-	return params
+	return walk(e)
 }
 
 // fromQuery reports whether the token the extractor returned is the value of
@@ -178,12 +202,11 @@ func privateCacheControl(value string) string {
 		case "public":
 			// Contradicts what this response needs; drop it.
 			continue
-		case "no-store":
-			private = true
-		case "private":
-			// RFC 9111 Section 5.2.2.7: with field names, only those fields are
-			// private and a shared cache may still store the body, so only the
-			// bare form settles it.
+		case "no-store", "private":
+			// RFC 9111 Section 5.2.3: a recipient ignores a directive carrying
+			// an argument the directive is not defined to take, and Section
+			// 5.2.2.7's field-scoped "private" leaves the body storable by a
+			// shared cache either way. Only the bare forms settle it.
 			private = private || !strings.Contains(directive, "=")
 		}
 		kept = append(kept, directive)

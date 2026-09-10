@@ -690,3 +690,92 @@ func TestCyclicExtractorChain(t *testing.T) {
 	resp := doGet(t, app, "Bearer "+hamac[0].Token)
 	require.Equal(t, fiber.StatusOK, resp.StatusCode)
 }
+
+// TestBranchingCyclicExtractorChain covers extractor metadata whose cycle
+// branches: following every path through such a chain is exponential, so the
+// walk has to visit each node once rather than merely bounding its depth.
+func TestBranchingCyclicExtractorChain(t *testing.T) {
+	t.Parallel()
+
+	chain := make([]extractors.Extractor, 2)
+	cyclic := extractors.Extractor{
+		Extract:    extractors.FromAuthHeader("Bearer").Extract,
+		Key:        fiber.HeaderAuthorization,
+		AuthScheme: "Bearer",
+		Source:     extractors.SourceAuthHeader,
+		Chain:      chain,
+	}
+	chain[0] = cyclic
+	chain[1] = cyclic
+
+	built := make(chan fiber.Handler, 1)
+	go func() {
+		built <- jwtware.New(jwtware.Config{
+			SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+			Extractor:  cyclic,
+		})
+	}()
+
+	select {
+	case handler := <-built:
+		require.NotNil(t, handler)
+	case <-time.After(10 * time.Second):
+		t.Fatal("building the middleware did not finish: the chain walk is not visiting each node once")
+	}
+}
+
+// TestQueryTokenPrivateOverArgumentedDirectives covers directives carrying an
+// argument they are not defined to take: RFC 9111 Section 5.2.3 has a recipient
+// ignore those, so they cannot be what keeps the response out of a shared cache.
+func TestQueryTokenPrivateOverArgumentedDirectives(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		policy   string
+		expected string
+	}{
+		{name: "argumented no-store", policy: "no-store=foo", expected: "no-store=foo, private"},
+		{name: "bare no-store", policy: "no-store", expected: "no-store"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			app := fiber.New()
+			app.Use(jwtware.New(jwtware.Config{
+				SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+				Extractor:  extractors.FromQuery("token"),
+			}))
+			app.Get("/ok", func(c fiber.Ctx) error {
+				c.Set(fiber.HeaderCacheControl, test.policy)
+				return c.SendString("OK")
+			})
+
+			resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/ok?token="+hamac[0].Token, nil))
+			require.NoError(t, err)
+			require.Equal(t, fiber.StatusOK, resp.StatusCode)
+			require.Equal(t, test.expected, resp.Header.Get(fiber.HeaderCacheControl))
+		})
+	}
+}
+
+// TestEmptyQueryParamTokenIsPrivate covers extractors.FromQuery(""), which reads
+// the token from "/?=<jwt>": the URL carries it just the same.
+func TestEmptyQueryParamTokenIsPrivate(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+		Extractor:  extractors.FromQuery(""),
+	}))
+	app.Get("/ok", func(c fiber.Ctx) error { return c.SendString("OK") })
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/ok?="+hamac[0].Token, nil))
+	require.NoError(t, err)
+
+	require.Equal(t, fiber.StatusOK, resp.StatusCode)
+	require.Equal(t, "private", resp.Header.Get(fiber.HeaderCacheControl))
+}

@@ -192,8 +192,9 @@ func Benchmark_Middleware_JWT_Algorithms(b *testing.B) {
 }
 
 // Benchmark_Middleware_JWT_Extractors measures where the token is read from.
-// The query case also carries the RFC 6750 Section 2.3 cache directive the
-// middleware adds to those responses.
+// These answer 2xx, unlike the rest, so the query case measures the RFC 6750
+// Section 2.3 cache directive the middleware adds to a response a cache could
+// otherwise store.
 func Benchmark_Middleware_JWT_Extractors(b *testing.B) {
 	token := hamac[0].Token
 
@@ -212,8 +213,12 @@ func Benchmark_Middleware_JWT_Extractors(b *testing.B) {
 			cfg := hmacKey(jwtware.HS256)
 			cfg.Extractor = test.extractor
 
-			h := benchHandler(b, cfg)
-			runBench(b, h, benchCtx(test.setup), fiber.StatusTeapot)
+			// A 2xx answer, so the query case pays for the cache directive it
+			// earns rather than being waved through as a non-cacheable status.
+			h := benchHandlerFunc(b, cfg, func(c fiber.Ctx) error {
+				return c.SendStatus(fiber.StatusOK)
+			})
+			runBench(b, h, benchCtx(test.setup), fiber.StatusOK)
 		})
 	}
 }
