@@ -168,18 +168,29 @@ For an overview and additional examples, see the Fiber Extractors guide:
   nothing is untouched, including one to a chain that could have read the query
   but found it empty.
 
-  **Register a cache outside this middleware**, not inside it:
+  **Register a cache inside this middleware**, so that every request is
+  authenticated before it can be answered:
 
   ```go
-  app.Use(cache.New())            // sees the finished response
   app.Use(jwtware.New(cfg))
+  app.Use(cache.New())            // runs only for authenticated requests
   ```
 
-  The directive is put on the response before your handler runs as well as
-  after, so a cache registered *inside* this middleware still sees it in the
-  ordinary case. The exception it cannot cover is a handler that replaces
-  `Cache-Control` outright: such a cache reads the replacement as its own stack
-  unwinds, which is before this middleware can merge the policy back.
+  A cache registered *outside* it answers from its store before this middleware
+  runs at all, so a hit is served with no authentication whatsoever. Fiber's
+  cache keys on the method, path and query by default - not on cookies
+  (`KeyCookies`) or on the `Authorization` header (`KeyHeaders`) - so with any
+  extractor that reads a cookie or a header, a stored response is handed to
+  requests that present no credential at all. Put a cache in front of this
+  middleware only if its key covers every credential your extractor reads.
+
+  Either way, a cache key that does not identify the user shares one user's
+  response with the next: that is your key's business, not this middleware's.
+  What this middleware guarantees is the directive, and for a URL that carries a
+  token it goes on before your handler runs, so an inner cache sees it when it
+  decides whether to store. The one case that leaves is a handler which replaces
+  `Cache-Control` outright, since such a cache reads the replacement before this
+  middleware regains control.
 
 ### What your application has to configure
 

@@ -210,9 +210,10 @@ func walkExtractor(e *extractors.Extractor, visit func(*extractors.Extractor) bo
 //
 // A handler that replaces the header outright while a cache sits between it and
 // this middleware is the case neither pass can cover, since that cache reads the
-// replacement before this function runs again. Registering the cache outside
-// this middleware rather than inside it avoids that ordering entirely, which is
-// what the README recommends.
+// replacement before this function runs again. Moving the cache outside this
+// middleware would not help: it would then answer before any of this runs, so a
+// hit would skip authentication altogether. The README says to keep the cache
+// inside and key it on whatever identifies the user.
 func keepPrivate(c fiber.Ctx, next fiber.Handler) error {
 	setPrivate(c)
 
