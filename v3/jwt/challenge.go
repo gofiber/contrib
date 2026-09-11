@@ -124,7 +124,8 @@ func withError(prefix, code, description string) string {
 }
 
 // apply adds the challenge to a response that rejected the request, unless the
-// error handler already wrote one of its own.
+// error handler already wrote one of its own. A challenge inherited from an
+// earlier middleware is kept and this one added beside it.
 //
 // handlerErr is what the error handler returned, so that a handler which only
 // returns a *fiber.Error - leaving the status to Fiber's own error handler - is
@@ -136,7 +137,7 @@ func withError(prefix, code, description string) string {
 // answered without a challenge, because the status does not exist yet and the
 // same handler maps other errors to 403 and 500, where a challenge would be
 // wrong. The README tells such a handler to name the status itself.
-func (ch *challenge) apply(c fiber.Ctx, handlerErr, cause error) {
+func (ch *challenge) apply(c fiber.Ctx, handlerErr, cause error, inherited challengeHeaders) {
 	// A handler that returns a *fiber.Error leaves the status to Fiber's own
 	// error handler, and that code is the one the client will see; whatever is
 	// on the response right now may belong to a middleware that ran earlier.
@@ -166,14 +167,45 @@ func (ch *challenge) apply(c fiber.Ctx, handlerErr, cause error) {
 		return
 	}
 
-	// A challenge already on the response belongs to whoever put it there: an
-	// error handler of the caller's, or another authentication middleware that
-	// ran before this one and whose scheme the client may still be able to use.
-	if len(c.Response().Header.Peek(header)) > 0 {
-		return
+	// Who put a challenge there decides what happens to it.
+	switch existing := string(c.Response().Header.Peek(header)); {
+	case existing == "":
+		c.Set(header, values[describe(cause)])
+	case existing == inherited.get(header):
+		// Another authentication middleware ran before this one and its scheme
+		// may still be one the client can use. RFC 9110 Section 11.6.1 lets the
+		// field carry more than one challenge, and a client refused for a bad
+		// token is owed the reason, so this one goes beside it rather than
+		// instead of it.
+		c.Set(header, existing+", "+values[describe(cause)])
+	default:
+		// The error handler wrote this for this rejection. It is the answer.
 	}
+}
 
-	c.Set(header, values[describe(cause)])
+// challengeHeaders is the pair of challenge headers as they stood before an
+// error handler ran.
+type challengeHeaders struct {
+	wwwAuthenticate   string
+	proxyAuthenticate string
+}
+
+// inheritedChallenges reads them off the response. Peeking an absent header
+// yields an empty slice, which converts to "" without allocating, so the usual
+// rejection - nothing there to inherit - stays allocation free.
+func inheritedChallenges(c fiber.Ctx) challengeHeaders {
+	return challengeHeaders{
+		wwwAuthenticate:   string(c.Response().Header.Peek(fiber.HeaderWWWAuthenticate)),
+		proxyAuthenticate: string(c.Response().Header.Peek(fiber.HeaderProxyAuthenticate)),
+	}
+}
+
+// get returns the one belonging to the named header.
+func (h challengeHeaders) get(header string) string {
+	if header == fiber.HeaderProxyAuthenticate {
+		return h.proxyAuthenticate
+	}
+	return h.wwwAuthenticate
 }
 
 // describe classifies a failure so that the challenge can say what was wrong

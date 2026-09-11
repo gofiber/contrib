@@ -150,8 +150,13 @@ For an overview and additional examples, see the Fiber Extractors guide:
   presented no usable credential is answered with a bare `Bearer realm="..."`
   instead, which [RFC 6750 Section
   3.1](https://www.rfc-editor.org/rfc/rfc6750#section-3.1) asks for. A challenge
-  already on the response is never replaced, whether an `ErrorHandler` of yours
-  or an earlier authentication middleware put it there.
+  already on the response is never replaced. One your `ErrorHandler` wrote is the
+  answer and is left exactly as it is; one inherited from an authentication
+  middleware that ran earlier is kept and this middleware's added beside it,
+  which [RFC 9110 Section
+  11.6.1](https://www.rfc-editor.org/rfc/rfc9110#section-11.6.1) allows and
+  which leaves the client both a scheme it may be able to use and the reason its
+  token was refused.
 
   A custom `ErrorHandler` has to leave the status somewhere the middleware can
   read it: on the response (`c.Status(...)`), or in a returned `*fiber.Error`.
@@ -181,7 +186,8 @@ For an overview and additional examples, see the Fiber Extractors guide:
   supplied the one that authenticated: a chain that preferred a cookie still
   answered a request whose URL a cache would key on. A request whose URL holds
   nothing is untouched, including one to a chain that could have read the query
-  but found it empty.
+  but found it absent or empty - `?token=` names the parameter without carrying
+  a credential, and the extractors read it as no credential too.
 
   **Register a cache inside this middleware**, so that every request is
   authenticated before it can be answered:

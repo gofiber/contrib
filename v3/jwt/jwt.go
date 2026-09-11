@@ -62,8 +62,13 @@ func New(config ...Config) fiber.Handler {
 	urlKeys := urlParams(cfg.Extractor)
 
 	reject := func(c fiber.Ctx, err error) error {
+		// Read before the handler runs: whatever is on the response now came
+		// from a middleware that ran earlier, and anything the handler adds is
+		// its own answer to this rejection. The two are treated differently.
+		inherited := inheritedChallenges(c)
+
 		handlerErr := errorHandler(c, err)
-		authChallenge.apply(c, handlerErr, err)
+		authChallenge.apply(c, handlerErr, err, inherited)
 		return handlerErr
 	}
 
@@ -164,8 +169,11 @@ func urlCarriesCredential(c fiber.Ctx, params []urlParam) bool {
 		}
 		// Only the query string: a form parameter reaches this list because
 		// FormValue reads the query before the body, and a value in the body is
-		// not in the URL.
-		if c.Request().URI().QueryArgs().Has(param.key) {
+		// not in the URL. The value has to be there, not just the key: the
+		// extractors read "?token=" as no credential, so nothing sensitive is
+		// in a URL that only names the parameter. Note that this is the value,
+		// so FromQuery("") reading "/?=<token>" still counts.
+		if len(c.Request().URI().QueryArgs().Peek(param.key)) > 0 {
 			return true
 		}
 	}

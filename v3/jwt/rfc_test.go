@@ -526,10 +526,12 @@ func TestQueryTokenResponseIsPrivate(t *testing.T) {
 	})
 }
 
-// TestChallengeFromEarlierMiddlewareIsKept checks that a challenge another
-// authentication middleware already put on the response survives, whether or
-// not this middleware's error handler is the default one.
-func TestChallengeFromEarlierMiddlewareIsKept(t *testing.T) {
+// TestChallengeJoinsAnEarlierMiddlewares checks that a challenge another
+// authentication middleware already put on the response survives and that this
+// middleware's own goes beside it: RFC 9110 Section 11.6.1 lets the field carry
+// several, the client may be able to use either scheme, and a request refused
+// for a bad token is still owed the reason it was refused.
+func TestChallengeJoinsAnEarlierMiddlewares(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
@@ -544,7 +546,10 @@ func TestChallengeFromEarlierMiddlewareIsKept(t *testing.T) {
 
 	resp := doGet(t, app, "Bearer not-a-jwt")
 	require.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
-	require.Equal(t, `Basic realm="other"`, resp.Header.Get(fiber.HeaderWWWAuthenticate))
+	require.Equal(
+		t,
+		`Basic realm="other", Bearer realm="Restricted", error="invalid_token", error_description="The access token is malformed"`,
+		resp.Header.Get(fiber.HeaderWWWAuthenticate))
 }
 
 // TestQueryTokenIsPrivateOverPublicPolicy covers a handler that would otherwise
@@ -707,6 +712,32 @@ func TestMalformedCachePolicyIsReplaced(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, fiber.StatusOK, resp.StatusCode)
 	require.Equal(t, "private", resp.Header.Get(fiber.HeaderCacheControl))
+}
+
+// TestEmptyQueryValueIsNotACredential covers "?token=" alongside a cookie that
+// authenticated. The parameter is named but holds nothing, which the extractors
+// read as no credential, so there is nothing in the URL for a shared cache to
+// leak and no reason to keep the response out of one.
+func TestEmptyQueryValueIsNotACredential(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+		Extractor: extractors.Chain(
+			extractors.FromCookie("token"),
+			extractors.FromQuery("token"),
+		),
+	}))
+	app.Get("/ok", func(c fiber.Ctx) error { return c.SendString("OK") })
+
+	req := httptest.NewRequest(http.MethodGet, "/ok?token=", nil)
+	req.AddCookie(&http.Cookie{Name: "token", Value: hamac[0].Token})
+
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	require.Equal(t, fiber.StatusOK, resp.StatusCode)
+	require.Empty(t, resp.Header.Get(fiber.HeaderCacheControl))
 }
 
 // TestQueryTokenWithProcessorIsPrivate covers a TokenProcessorFunc that turns
