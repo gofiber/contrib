@@ -143,8 +143,12 @@ For an overview and additional examples, see the Fiber Extractors guide:
   WWW-Authenticate: Bearer realm="Restricted", error="invalid_token", error_description="The access token expired"
   ```
 
-  The scheme is taken from the extractor (`Bearer` unless the token comes from an
-  `Authorization` header with another scheme), the realm from `Realm`, and the
+  The schemes are taken from the extractor: an `Authorization` header names its
+  own, and every other source - a query parameter, a cookie, a form field, a
+  route parameter, one of your own - carries what RFC 6750 calls a bearer token
+  and so contributes `Bearer`. A chain offers each of them, in the order it tries
+  them, so a client refused on the credential it did send is never told to retry
+  with a scheme it never used. The realm comes from `Realm`, and the
   `error_description` from the reason the token failed. Error parameters are only
   added for the bearer scheme, as RFC 6750 defines them, and a request that
   presented no usable credential is answered with a bare `Bearer realm="..."`

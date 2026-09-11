@@ -526,6 +526,32 @@ func TestQueryTokenResponseIsPrivate(t *testing.T) {
 	})
 }
 
+// TestChallengeOffersBearerForMixedChains covers a chain that reads both an
+// Authorization header with its own scheme and a URL parameter. A token refused
+// from the query is a bearer token, so the challenge has to offer Bearer beside
+// the header's scheme rather than answering with a scheme the client never used.
+func TestChallengeOffersBearerForMixedChains(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+		Extractor: extractors.Chain(
+			extractors.FromAuthHeader("Basic"),
+			extractors.FromQuery("token"),
+		),
+	}))
+	app.Get("/ok", func(c fiber.Ctx) error { return c.SendString("OK") })
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/ok?token=not-a-jwt", nil))
+	require.NoError(t, err)
+	require.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
+	require.Equal(
+		t,
+		`Basic realm="Restricted", Bearer realm="Restricted", error="invalid_token", error_description="The access token is malformed"`,
+		resp.Header.Get(fiber.HeaderWWWAuthenticate))
+}
+
 // TestChallengeJoinsAnEarlierMiddlewares checks that a challenge another
 // authentication middleware already put on the response survives and that this
 // middleware's own goes beside it: RFC 9110 Section 11.6.1 lets the field carry

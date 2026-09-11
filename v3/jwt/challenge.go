@@ -60,6 +60,11 @@ var challengeDescriptions = [...]string{
 	reasonUnverifiable:     "The access token could not be verified",
 }
 
+// bearerScheme is the authentication scheme RFC 6750 defines for a JWT, and the
+// one this middleware answers with wherever the token did not come from an
+// Authorization header naming some other scheme.
+const bearerScheme = "Bearer"
+
 // challenge holds the authentication challenge that has to accompany a rejected
 // request.
 //
@@ -80,7 +85,7 @@ func newChallenge(cfg Config) *challenge {
 		// The token does not travel in an Authorization header, but a 401 still
 		// has to name a scheme the client can retry with, and for a JWT that is
 		// the bearer scheme of RFC 6750.
-		schemes = []string{"Bearer"}
+		schemes = []string{bearerScheme}
 	}
 
 	ch := &challenge{
@@ -106,7 +111,7 @@ func render(schemes []string, realm, code, description string, reason challengeR
 		// The error parameters are defined for the bearer scheme only, and
 		// RFC 6750 Section 3.1 asks that a request which presented no usable
 		// credential be answered without naming an error about one.
-		if !strings.EqualFold(scheme, "Bearer") || reason == reasonMissing {
+		if !strings.EqualFold(scheme, bearerScheme) || reason == reasonMissing {
 			challenges = append(challenges, prefix)
 			continue
 		}
@@ -250,15 +255,32 @@ func describe(err error) challengeReason {
 // never comes from an Authorization header.
 func authSchemes(e extractors.Extractor) []string {
 	var schemes []string
+	add := func(scheme string) {
+		if !slices.ContainsFunc(schemes, func(known string) bool {
+			return strings.EqualFold(known, scheme)
+		}) {
+			schemes = append(schemes, scheme)
+		}
+	}
+
 	walkExtractor(&e, func(candidate *extractors.Extractor) bool {
-		if candidate.Source != extractors.SourceAuthHeader || candidate.AuthScheme == "" {
+		// A chain node carries a copy of its first extractor's source without
+		// that extractor's scheme, and the extractor itself is visited next, so
+		// reading the copy would announce a scheme in the wrong place.
+		if len(candidate.Chain) > 0 {
 			return false
 		}
-		if !slices.ContainsFunc(schemes, func(known string) bool {
-			return strings.EqualFold(known, candidate.AuthScheme)
-		}) {
-			schemes = append(schemes, candidate.AuthScheme)
+		if candidate.Source == extractors.SourceAuthHeader && candidate.AuthScheme != "" {
+			add(candidate.AuthScheme)
+			return false
 		}
+		// Everywhere else a JWT can travel - a query parameter, a cookie, a
+		// form field, a route parameter, an Authorization header with no scheme
+		// of its own, an extractor of the caller's - carries what RFC 6750
+		// calls a bearer token. A chain that mixes the two kinds has to offer
+		// both, or a client refused on the credential it did send is told to
+		// retry with a scheme it never used.
+		add(bearerScheme)
 		return false
 	})
 	return schemes

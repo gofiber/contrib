@@ -314,17 +314,34 @@ func TestCheckCriticalHeaders(t *testing.T) {
 func TestAuthSchemes(t *testing.T) {
 	t.Parallel()
 
+	// An Authorization header names its own scheme; everywhere else a JWT can
+	// travel carries a bearer token.
 	require.Equal(t, []string{"Bearer"}, authSchemes(extractors.FromAuthHeader("Bearer")))
-	require.Empty(t, authSchemes(extractors.FromCookie("token")))
-	require.Equal(t, []string{"Bearer"}, authSchemes(extractors.Chain(
-		extractors.FromCookie("token"),
-		extractors.FromAuthHeader("Bearer"),
-	)))
+	require.Equal(t, []string{"Basic"}, authSchemes(extractors.FromAuthHeader("Basic")))
+	require.Equal(t, []string{"Bearer"}, authSchemes(extractors.FromCookie("token")))
+	require.Equal(t, []string{"Bearer"}, authSchemes(extractors.FromQuery("token")))
 
 	// Every scheme the chain accepts, in the order it tries them, without repeats.
 	require.Equal(t, []string{"Basic", "Bearer"}, authSchemes(extractors.Chain(
 		extractors.FromAuthHeader("Basic"),
 		extractors.FromAuthHeader("Bearer"),
 		extractors.FromAuthHeader("bearer"),
+	)))
+
+	// A chain that mixes the two kinds offers both, in the order it tries them.
+	require.Equal(t, []string{"Basic", "Bearer"}, authSchemes(extractors.Chain(
+		extractors.FromAuthHeader("Basic"),
+		extractors.FromQuery("token"),
+	)))
+	require.Equal(t, []string{"Bearer", "Basic"}, authSchemes(extractors.Chain(
+		extractors.FromQuery("token"),
+		extractors.FromAuthHeader("Basic"),
+	)))
+
+	// The chain node copies its first extractor's source but not its scheme, so
+	// reading it would put a bearer challenge in front of the real one.
+	require.Equal(t, []string{"Basic", "Negotiate"}, authSchemes(extractors.Chain(
+		extractors.FromAuthHeader("Basic"),
+		extractors.FromAuthHeader("Negotiate"),
 	)))
 }
