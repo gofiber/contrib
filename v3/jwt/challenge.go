@@ -130,6 +130,12 @@ func withError(prefix, code, description string) string {
 // returns a *fiber.Error - leaving the status to Fiber's own error handler - is
 // still recognised as a rejection. cause is the failure the handler was called
 // with, and picks the error_description.
+//
+// Those two are the whole of what can be read here. A handler that returns an
+// error of its own for fiber.Config.ErrorHandler to map to a status later is
+// answered without a challenge, because the status does not exist yet and the
+// same handler maps other errors to 403 and 500, where a challenge would be
+// wrong. The README tells such a handler to name the status itself.
 func (ch *challenge) apply(c fiber.Ctx, handlerErr, cause error) {
 	// A handler that returns a *fiber.Error leaves the status to Fiber's own
 	// error handler, and that code is the one the client will see; whatever is

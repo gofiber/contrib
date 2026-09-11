@@ -152,6 +152,21 @@ For an overview and additional examples, see the Fiber Extractors guide:
   3.1](https://www.rfc-editor.org/rfc/rfc6750#section-3.1) asks for. A challenge
   already on the response is never replaced, whether an `ErrorHandler` of yours
   or an earlier authentication middleware put it there.
+
+  A custom `ErrorHandler` has to leave the status somewhere the middleware can
+  read it: on the response (`c.Status(...)`), or in a returned `*fiber.Error`.
+  Both work, including `fiber.ErrUnauthorized` on its own. What it cannot do is
+  return some error of its own and rely on `fiber.Config.ErrorHandler` to turn
+  that into a 401 later - the status does not exist yet when the challenge is
+  applied, and guessing at it would put `WWW-Authenticate` on the 403s and 500s
+  such a handler also produces. If you do route rejections through your own
+  error type, set the challenge there:
+
+  ```go
+  ErrorHandler: func(c fiber.Ctx, err error) error {
+      return fiber.ErrUnauthorized // or c.Status(fiber.StatusUnauthorized)
+  },
+  ```
 - **Tokens in the URL are not stored in shared caches.** When the request URL
   carries a token - a query parameter, a form parameter (Fiber's `FormValue`
   reads the query before the body), or a route parameter - the successful
