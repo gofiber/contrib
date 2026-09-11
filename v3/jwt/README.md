@@ -197,6 +197,11 @@ For an overview and additional examples, see the Fiber Extractors guide:
   but found it absent or empty - `?token=` names the parameter without carrying
   a credential, and the extractors read it as no credential too.
 
+  The three sources above are the ones a middleware can recognise. An extractor
+  of your own reads wherever you wrote it to, so if that is somewhere in the URL,
+  mark the response yourself - there is nothing in its metadata to tell this
+  middleware where it looked.
+
   **Register a cache inside this middleware**, so that every request is
   authenticated before it can be answered:
 
