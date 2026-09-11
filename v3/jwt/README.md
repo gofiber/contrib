@@ -167,7 +167,8 @@ For an overview and additional examples, see the Fiber Extractors guide:
   token was refused.
 
   A custom `ErrorHandler` has to leave the status somewhere the middleware can
-  read it: on the response (`c.Status(...)`), or in a returned `*fiber.Error`.
+  read it: on the response (`c.SendStatus(...)`, or `c.Status(...)` followed by a
+  send), or in a returned `*fiber.Error`.
   Both work, including `fiber.ErrUnauthorized` on its own. What it cannot do is
   return some error of its own and rely on `fiber.Config.ErrorHandler` to turn
   that into a 401 later - the status does not exist yet when the challenge is
@@ -177,7 +178,7 @@ For an overview and additional examples, see the Fiber Extractors guide:
 
   ```go
   ErrorHandler: func(c fiber.Ctx, err error) error {
-      return fiber.ErrUnauthorized // or c.Status(fiber.StatusUnauthorized)
+      return fiber.ErrUnauthorized // or c.SendStatus(fiber.StatusUnauthorized)
   },
   ```
 - **Tokens in the URL are not stored in shared caches.** When the request URL
@@ -379,6 +380,7 @@ package main
 import (
  "github.com/gofiber/fiber/v3"
 
+ "github.com/gofiber/fiber/v3/extractors"
  jwtware "github.com/gofiber/contrib/v3/jwt"
 )
 
@@ -440,6 +442,8 @@ import (
 
  "github.com/gofiber/fiber/v3"
 
+
+ "github.com/gofiber/fiber/v3/extractors"
  "github.com/golang-jwt/jwt/v5"
 
  jwtware "github.com/gofiber/contrib/v3/jwt"
@@ -564,6 +568,7 @@ import (
  "fmt"
   "github.com/gofiber/fiber/v3"
 
+  "github.com/gofiber/fiber/v3/extractors"
   jwtware "github.com/gofiber/contrib/v3/jwt"
   "github.com/golang-jwt/jwt/v5"
 )
