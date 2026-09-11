@@ -129,9 +129,13 @@ For an overview and additional examples, see the Fiber Extractors guide:
   in `ParserOptions` turns it off entirely, so an expired token is accepted.
 - **Base64url segments must be unpadded** by default ([RFC 7515 Section
   2](https://www.rfc-editor.org/rfc/rfc7515#section-2)) - `jwt.WithPaddingAllowed()`
-  in `ParserOptions` accepts padded segments - and an `Authorization` header has
-  to be well-formed `token68` ([RFC 9110 Section
-  11.6.2](https://www.rfc-editor.org/rfc/rfc9110#section-11.6.2)).
+  in `ParserOptions` accepts padded segments. An `Authorization` header read by
+  `FromAuthHeader` with a scheme - the default `FromAuthHeader("Bearer")`
+  included - also has to be well-formed `token68` ([RFC 9110 Section
+  11.6.2](https://www.rfc-editor.org/rfc/rfc9110#section-11.6.2)); that check is
+  the extractor's, so `FromAuthHeader("")`, `FromHeader("Authorization")` and an
+  extractor of your own hand the header over unchecked, and a
+  `TokenProcessorFunc` runs after it in any case.
 - **Rejections carry a challenge.** Every 400, 401 and 407 response the
   middleware produces gets a `WWW-Authenticate` (or `Proxy-Authenticate`) header,
   which [RFC 9110 Section
