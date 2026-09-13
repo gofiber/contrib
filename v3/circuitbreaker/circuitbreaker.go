@@ -1,7 +1,6 @@
 package circuitbreaker
 
 import (
-	"context"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -34,10 +33,22 @@ type Config struct {
 	Interval time.Duration
 	// Custom failure detector function (return true if response should count as failure)
 	IsFailure func(c fiber.Ctx, err error) bool
-	// Callbacks for state transitions
-	OnOpen     func(fiber.Ctx) error // Called when circuit opens
-	OnHalfOpen func(fiber.Ctx) error // Called when circuit transitions to half-open
-	OnClose    func(fiber.Ctx) error // Called when circuit closes
+
+	// Clock reads the current time. Recovery is derived from it rather than
+	// scheduled, so substituting a clock drives the circuit through every
+	// state without waiting.
+	//
+	// Optional. Default: time.Now
+	Clock func() time.Time
+
+	// OnOpen and OnHalfOpen answer a request refused because the circuit is
+	// open, or because half-open is already at HalfOpenMaxConcurrent. OnClose
+	// runs after the probe that closed the circuit, by which point the handler
+	// has answered: its return value is discarded and it must not advance the
+	// chain. None of the three fires on a transition alone.
+	OnOpen     func(fiber.Ctx) error
+	OnHalfOpen func(fiber.Ctx) error
+	OnClose    func(fiber.Ctx) error
 }
 
 // DefaultConfig provides sensible defaults for the circuit breaker
@@ -47,6 +58,7 @@ var DefaultConfig = Config{
 	SuccessThreshold:      1,
 	HalfOpenMaxConcurrent: 1,
 	Interval:              0,
+	Clock:                 time.Now,
 	IsFailure: func(c fiber.Ctx, err error) bool {
 		return err != nil || c.Response().StatusCode() >= http.StatusInternalServerError
 	},
@@ -65,26 +77,35 @@ var DefaultConfig = Config{
 	},
 }
 
-// CircuitBreaker implements the circuit breaker pattern
+// CircuitBreaker implements the circuit breaker pattern. Requests reach it
+// through Middleware; the state machine is not driven from outside.
 type CircuitBreaker struct {
-	failureCount      int64              // Count of failures (atomic)
-	successCount      int64              // Count of successes in half-open state (atomic)
-	totalRequests     int64              // Count of total requests (atomic)
-	rejectedRequests  int64              // Count of rejected requests (atomic)
-	state             State              // Current state of circuit breaker
-	mutex             sync.RWMutex       // Protects state transitions
-	failureThreshold  int                // Max failures before opening circuit
-	timeout           time.Duration      // Duration to stay open before transitioning to half-open
-	successThreshold  int                // Successes required to close circuit
-	openTimer         *time.Timer        // Timer for state transition from open to half-open
-	ctx               context.Context    // Context for cancellation
-	cancel            context.CancelFunc // Cancel function for cleanup
-	config            Config             // Configuration settings
-	now               func() time.Time   // Function for getting current time (useful for testing)
-	halfOpenSemaphore chan struct{}      // Controls limited requests in half-open state
-	lastStateChange   time.Time          // Time of last state change
-	interval          time.Duration      // Interval for resetting failure counts
-	expiry            time.Time          // Time when the failure count will be reset
+	failureCount     int64 // Count of failures (atomic)
+	successCount     int64 // Count of successes in half-open state (atomic)
+	totalRequests    int64 // Count of total requests (atomic)
+	rejectedRequests int64 // Count of rejected requests (atomic)
+
+	mutex sync.RWMutex // Protects every field below
+
+	state           State
+	lastStateChange time.Time
+	openedAt        time.Time // with timeout, the recovery deadline
+	forced          bool      // ForceOpen suspends recovery until closed explicitly
+
+	// A slot is released by generation, so a probe outliving its half-open
+	// window cannot free one belonging to a later window.
+	halfOpenInFlight int
+	halfOpenGen      uint64
+
+	expiry time.Time // when the failure count is dropped, if Interval is set
+
+	config                Config
+	clock                 func() time.Time
+	failureThreshold      int
+	successThreshold      int
+	halfOpenMaxConcurrent int
+	timeout               time.Duration
+	interval              time.Duration
 }
 
 // New initializes a circuit breaker with the given configuration
@@ -102,6 +123,9 @@ func New(config Config) *CircuitBreaker {
 	if config.HalfOpenMaxConcurrent <= 0 {
 		config.HalfOpenMaxConcurrent = DefaultConfig.HalfOpenMaxConcurrent
 	}
+	if config.Clock == nil {
+		config.Clock = DefaultConfig.Clock
+	}
 	if config.IsFailure == nil {
 		config.IsFailure = DefaultConfig.IsFailure
 	}
@@ -115,8 +139,7 @@ func New(config Config) *CircuitBreaker {
 		config.OnClose = DefaultConfig.OnClose
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	now := time.Now()
+	now := config.Clock()
 
 	var expiry time.Time
 	if config.Interval > 0 {
@@ -124,39 +147,216 @@ func New(config Config) *CircuitBreaker {
 	}
 
 	return &CircuitBreaker{
-		failureThreshold:  config.FailureThreshold,
-		timeout:           config.Timeout,
-		successThreshold:  config.SuccessThreshold,
-		state:             StateClosed,
-		ctx:               ctx,
-		cancel:            cancel,
-		config:            config,
-		now:               time.Now,
-		halfOpenSemaphore: make(chan struct{}, config.HalfOpenMaxConcurrent),
-		lastStateChange:   now,
-		totalRequests:     0,
-		rejectedRequests:  0,
-		interval:          config.Interval,
-		expiry:            expiry,
+		state:                 StateClosed,
+		lastStateChange:       now,
+		expiry:                expiry,
+		config:                config,
+		clock:                 config.Clock,
+		failureThreshold:      config.FailureThreshold,
+		successThreshold:      config.SuccessThreshold,
+		halfOpenMaxConcurrent: config.HalfOpenMaxConcurrent,
+		timeout:               config.Timeout,
+		interval:              config.Interval,
 	}
 }
 
-// Stop cancels the circuit breaker and releases resources
-func (cb *CircuitBreaker) Stop() {
+// Middleware wraps the fiber handler with circuit breaker logic
+func Middleware(cb *CircuitBreaker) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		return cb.serve(c, c.Next)
+	}
+}
+
+// serve admits one request, runs next, reports the outcome and releases the
+// half-open slot it took, so no caller has to pair those steps up.
+func (cb *CircuitBreaker) serve(c fiber.Ctx, next func() error) error {
+	allowed, state, release := cb.admit(cb.clock())
+	if !allowed {
+		// New never leaves these nil; the guards spare a hand-built one.
+		if state == StateHalfOpen && cb.config.OnHalfOpen != nil {
+			return cb.config.OnHalfOpen(c)
+		}
+		if state == StateOpen && cb.config.OnOpen != nil {
+			return cb.config.OnOpen(c)
+		}
+		return c.SendStatus(fiber.StatusServiceUnavailable)
+	}
+	defer release()
+
+	err := next()
+
+	if cb.config.IsFailure(c, err) {
+		cb.recordFailure(cb.clock())
+		return err
+	}
+
+	if cb.recordSuccess(cb.clock()) && cb.config.OnClose != nil {
+		// The handler has answered; OnClose must not overwrite that.
+		_ = cb.config.OnClose(c)
+	}
+	return err
+}
+
+// admit reports whether one request may proceed, the state that settled it,
+// and the release for what it took - a no-op unless it took a probe slot.
+func (cb *CircuitBreaker) admit(now time.Time) (bool, State, func()) {
+	atomic.AddInt64(&cb.totalRequests, 1)
+
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
 
-	if cb.openTimer != nil {
-		cb.openTimer.Stop()
+	cb.recoverLocked(now)
+
+	switch cb.state {
+	case StateOpen:
+		atomic.AddInt64(&cb.rejectedRequests, 1)
+		return false, StateOpen, func() {}
+	case StateHalfOpen:
+		if cb.halfOpenInFlight >= cb.halfOpenMaxConcurrent {
+			atomic.AddInt64(&cb.rejectedRequests, 1)
+			return false, StateHalfOpen, func() {}
+		}
+		cb.halfOpenInFlight++
+		gen := cb.halfOpenGen
+		return true, StateHalfOpen, func() { cb.releaseProbe(gen) }
+	default:
+		return true, StateClosed, func() {}
 	}
-	cb.cancel()
+}
+
+// releaseProbe gives back a slot taken in generation gen. The transition that
+// ends a window reclaims every slot of it, so a probe outliving its window has
+// nothing to return: releasing would free a slot another probe now holds.
+func (cb *CircuitBreaker) releaseProbe(gen uint64) {
+	cb.mutex.Lock()
+	defer cb.mutex.Unlock()
+
+	if cb.halfOpenGen != gen || cb.halfOpenInFlight == 0 {
+		return
+	}
+	cb.halfOpenInFlight--
+}
+
+// recoverLocked moves an open circuit to half-open once its deadline has
+// passed. Nothing schedules it - the first request or state read after the
+// deadline applies it - so a circuit with no traffic keeps reporting open.
+func (cb *CircuitBreaker) recoverLocked(now time.Time) {
+	if cb.state != StateOpen || cb.forced {
+		return
+	}
+	if now.Before(cb.openedAt.Add(cb.timeout)) {
+		return
+	}
+
+	cb.state = StateHalfOpen
+	cb.lastStateChange = now
+	atomic.StoreInt64(&cb.failureCount, 0)
+	atomic.StoreInt64(&cb.successCount, 0)
+	cb.beginHalfOpenWindowLocked()
+}
+
+// beginHalfOpenWindowLocked frees every slot and starts a new window, which
+// makes the slots of the window that just ended unreleasable.
+func (cb *CircuitBreaker) beginHalfOpenWindowLocked() {
+	cb.halfOpenInFlight = 0
+	cb.halfOpenGen++
+}
+
+// openLocked opens the circuit on a fresh deadline; a forced open suspends
+// recovery until the circuit is closed explicitly.
+func (cb *CircuitBreaker) openLocked(now time.Time, forced bool) {
+	cb.state = StateOpen
+	cb.openedAt = now
+	cb.lastStateChange = now
+	cb.forced = forced
+	atomic.StoreInt64(&cb.failureCount, 0)
+	cb.beginHalfOpenWindowLocked()
+}
+
+// closeLocked returns the circuit to normal operation.
+func (cb *CircuitBreaker) closeLocked(now time.Time) {
+	cb.state = StateClosed
+	cb.lastStateChange = now
+	cb.forced = false
+	cb.openedAt = time.Time{}
+	atomic.StoreInt64(&cb.failureCount, 0)
+	atomic.StoreInt64(&cb.successCount, 0)
+	if cb.interval > 0 {
+		cb.expiry = now.Add(cb.interval)
+	}
+	cb.beginHalfOpenWindowLocked()
+}
+
+// recordFailure counts a failure and opens the circuit if that was enough.
+func (cb *CircuitBreaker) recordFailure(now time.Time) {
+	cb.mutex.Lock()
+	defer cb.mutex.Unlock()
+
+	cb.recoverLocked(now)
+
+	switch cb.state {
+	case StateHalfOpen:
+		// One failure ends the trial.
+		cb.openLocked(now, false)
+	case StateClosed:
+		cb.dropExpiredFailuresLocked(now)
+		if int(atomic.AddInt64(&cb.failureCount, 1)) >= cb.failureThreshold {
+			cb.openLocked(now, false)
+		}
+	}
+}
+
+// recordSuccess counts a success and reports whether this one closed the
+// circuit, so OnClose does not depend on a second state read that another
+// request could win.
+func (cb *CircuitBreaker) recordSuccess(now time.Time) bool {
+	cb.mutex.Lock()
+	defer cb.mutex.Unlock()
+
+	cb.recoverLocked(now)
+
+	if cb.state != StateHalfOpen {
+		return false
+	}
+	if int(atomic.AddInt64(&cb.successCount, 1)) < cb.successThreshold {
+		return false
+	}
+
+	cb.closeLocked(now)
+	return true
+}
+
+// dropExpiredFailuresLocked forgets accumulated failures once the Interval
+// window has elapsed, the boundary instant included.
+func (cb *CircuitBreaker) dropExpiredFailuresLocked(now time.Time) {
+	if cb.interval <= 0 || cb.expiry.After(now) {
+		return
+	}
+	atomic.StoreInt64(&cb.failureCount, 0)
+	cb.expiry = now.Add(cb.interval)
+}
+
+// stateAt reports the state at now, applying a due recovery first. The common
+// case does not need the write lock.
+func (cb *CircuitBreaker) stateAt(now time.Time) State {
+	cb.mutex.RLock()
+	state := cb.state
+	due := state == StateOpen && !cb.forced && !now.Before(cb.openedAt.Add(cb.timeout))
+	cb.mutex.RUnlock()
+
+	if !due {
+		return state
+	}
+
+	cb.mutex.Lock()
+	defer cb.mutex.Unlock()
+	cb.recoverLocked(now)
+	return cb.state
 }
 
 // GetState returns the current state of the circuit breaker
 func (cb *CircuitBreaker) GetState() State {
-	cb.mutex.RLock()
-	defer cb.mutex.RUnlock()
-	return cb.state
+	return cb.stateAt(cb.clock())
 }
 
 // IsOpen returns true if the circuit is open
@@ -164,32 +364,22 @@ func (cb *CircuitBreaker) IsOpen() bool {
 	return cb.GetState() == StateOpen
 }
 
-// Reset resets the circuit breaker to its initial closed state
+// Reset resets the circuit breaker to closed, ForceOpen included.
 func (cb *CircuitBreaker) Reset() {
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
 
-	// Reset counters
-	atomic.StoreInt64(&cb.failureCount, 0)
-	atomic.StoreInt64(&cb.successCount, 0)
-
-	// Reset state
-	now := cb.now()
-	cb.state = StateClosed
-	cb.lastStateChange = now
-	if cb.interval > 0 {
-		cb.expiry = now.Add(cb.interval)
-	}
-
-	// Cancel any pending state transitions
-	if cb.openTimer != nil {
-		cb.openTimer.Stop()
-	}
+	cb.closeLocked(cb.clock())
 }
 
-// ForceOpen forcibly opens the circuit regardless of failure count
+// ForceOpen forcibly opens the circuit regardless of failure count, and keeps
+// it open: a forced-open circuit does not recover on its own when Timeout
+// elapses, only when Reset or ForceClose is called.
 func (cb *CircuitBreaker) ForceOpen() {
-	cb.transitionToOpen()
+	cb.mutex.Lock()
+	defer cb.mutex.Unlock()
+
+	cb.openLocked(cb.clock(), true)
 }
 
 // ForceClose forcibly closes the circuit regardless of current state
@@ -197,21 +387,11 @@ func (cb *CircuitBreaker) ForceClose() {
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
 
-	now := cb.now()
-	cb.state = StateClosed
-	cb.lastStateChange = now
-	atomic.StoreInt64(&cb.failureCount, 0)
-	atomic.StoreInt64(&cb.successCount, 0)
-
-	if cb.interval > 0 {
-		cb.expiry = now.Add(cb.interval)
-	}
-	if cb.openTimer != nil {
-		cb.openTimer.Stop()
-	}
+	cb.closeLocked(cb.clock())
 }
 
-// SetTimeout updates the timeout duration
+// SetTimeout updates the timeout duration. A circuit that is already open
+// recovers on the new deadline, since the deadline is derived, not scheduled.
 func (cb *CircuitBreaker) SetTimeout(timeout time.Duration) {
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
@@ -219,148 +399,49 @@ func (cb *CircuitBreaker) SetTimeout(timeout time.Duration) {
 	cb.timeout = timeout
 }
 
-// transitionToOpen changes state to open and schedules transition to half-open
-func (cb *CircuitBreaker) transitionToOpen() {
-	cb.mutex.Lock()
-	defer cb.mutex.Unlock()
+// Stop releases the circuit breaker's resources.
+//
+// Deprecated: recovery is derived from the clock rather than scheduled, so
+// there is nothing to stop. This does nothing.
+func (cb *CircuitBreaker) Stop() {}
 
-	if cb.state != StateOpen {
-		cb.state = StateOpen
-		cb.lastStateChange = cb.now()
-
-		// Stop existing timer if any
-		if cb.openTimer != nil {
-			cb.openTimer.Stop()
-		}
-
-		// Schedule transition to half-open after timeout
-		cb.openTimer = time.AfterFunc(cb.timeout, func() {
-			cb.transitionToHalfOpen()
-		})
-
-		// Reset failure counter
-		atomic.StoreInt64(&cb.failureCount, 0)
-	}
-}
-
-// transitionToHalfOpen changes state from open to half-open
-func (cb *CircuitBreaker) transitionToHalfOpen() {
-	cb.mutex.Lock()
-	defer cb.mutex.Unlock()
-
-	if cb.state == StateOpen {
-		cb.state = StateHalfOpen
-		cb.lastStateChange = cb.now()
-
-		// Reset counters
-		atomic.StoreInt64(&cb.failureCount, 0)
-		atomic.StoreInt64(&cb.successCount, 0)
-
-		// Empty the semaphore channel
-		select {
-		case <-cb.halfOpenSemaphore:
-		default:
-		}
-	}
-}
-
-// transitionToClosed changes state from half-open to closed
-func (cb *CircuitBreaker) transitionToClosed() {
-	cb.mutex.Lock()
-	defer cb.mutex.Unlock()
-
-	if cb.state == StateHalfOpen {
-		now := cb.now()
-		cb.state = StateClosed
-		cb.lastStateChange = now
-
-		// Reset counters
-		atomic.StoreInt64(&cb.failureCount, 0)
-		atomic.StoreInt64(&cb.successCount, 0)
-		if cb.interval > 0 {
-			cb.expiry = now.Add(cb.interval)
-		}
-	}
-}
-
-func (cb *CircuitBreaker) resetFromExpiry() {
-	if cb.interval <= 0 {
-		return
-	}
-	cb.mutex.Lock()
-	defer cb.mutex.Unlock()
-	now := cb.now()
-	// Reset when the window has elapsed (now >= expiry), including the boundary instant.
-	if !cb.expiry.After(now) {
-		atomic.StoreInt64(&cb.failureCount, 0)
-		cb.expiry = now.Add(cb.interval)
-	}
-}
-
-// AllowRequest determines if a request is allowed based on circuit state
+// AllowRequest determines if a request is allowed based on circuit state.
+//
+// Deprecated: use Middleware, which admits, reports and releases as one
+// operation. A slot taken here is held until ReleaseSemaphore returns it or
+// the next state change reclaims it.
 func (cb *CircuitBreaker) AllowRequest() (bool, State) {
-	atomic.AddInt64(&cb.totalRequests, 1)
-
-	cb.mutex.RLock()
-	state := cb.state
-	cb.mutex.RUnlock()
-
-	switch state {
-	case StateOpen:
-		atomic.AddInt64(&cb.rejectedRequests, 1)
-		return false, state
-	case StateHalfOpen:
-		select {
-		case cb.halfOpenSemaphore <- struct{}{}:
-			return true, state
-		default:
-			atomic.AddInt64(&cb.rejectedRequests, 1)
-			return false, state
-		}
-	default: // StateClosed
-		return true, state
-	}
+	allowed, state, _ := cb.admit(cb.clock())
+	return allowed, state
 }
 
-// ReleaseSemaphore releases a slot in the half-open semaphore
+// ReleaseSemaphore releases a slot in the half-open semaphore.
+//
+// Deprecated: use Middleware. This releases a slot in the current half-open
+// window, which is not necessarily the one it was taken in.
 func (cb *CircuitBreaker) ReleaseSemaphore() {
-	select {
-	case <-cb.halfOpenSemaphore:
-	default:
+	cb.mutex.Lock()
+	defer cb.mutex.Unlock()
+
+	if cb.halfOpenInFlight > 0 {
+		cb.halfOpenInFlight--
 	}
 }
 
-// ReportSuccess increments success count and closes circuit if threshold met
+// ReportSuccess increments success count and closes circuit if threshold met.
+//
+// Deprecated: use Middleware, which reports the outcome of the request it
+// admitted and runs OnClose when that success closes the circuit.
 func (cb *CircuitBreaker) ReportSuccess() {
-	cb.mutex.RLock()
-	currentState := cb.state
-	cb.mutex.RUnlock()
-
-	if currentState == StateHalfOpen {
-		newSuccessCount := atomic.AddInt64(&cb.successCount, 1)
-		if int(newSuccessCount) >= cb.successThreshold {
-			cb.transitionToClosed()
-		}
-	}
+	cb.recordSuccess(cb.clock())
 }
 
-// ReportFailure increments failure count and opens circuit if threshold met
+// ReportFailure increments failure count and opens circuit if threshold met.
+//
+// Deprecated: use Middleware, which reports the outcome of the request it
+// admitted.
 func (cb *CircuitBreaker) ReportFailure() {
-	cb.mutex.RLock()
-	currentState := cb.state
-	cb.mutex.RUnlock()
-
-	switch currentState {
-	case StateHalfOpen:
-		// In half-open, a single failure trips the circuit
-		cb.transitionToOpen()
-	case StateClosed:
-		cb.resetFromExpiry()
-		newFailureCount := atomic.AddInt64(&cb.failureCount, 1)
-		if int(newFailureCount) >= cb.failureThreshold {
-			cb.transitionToOpen()
-		}
-	}
+	cb.recordFailure(cb.clock())
 }
 
 // Metrics returns basic metrics about the circuit breaker
@@ -376,10 +457,11 @@ func (cb *CircuitBreaker) Metrics() fiber.Map {
 
 // GetStateStats returns detailed statistics about the circuit breaker
 func (cb *CircuitBreaker) GetStateStats() fiber.Map {
+	// Settle any due recovery first, so state and timestamps agree.
+	state := cb.GetState()
+
 	cb.mutex.RLock()
 	defer cb.mutex.RUnlock()
-	state := cb.state
-	expiry := cb.expiry
 
 	return fiber.Map{
 		"state":            state,
@@ -391,7 +473,7 @@ func (cb *CircuitBreaker) GetStateStats() fiber.Map {
 		"openDuration":     cb.timeout,
 		"failureThreshold": cb.failureThreshold,
 		"successThreshold": cb.successThreshold,
-		"expiry":           expiry,
+		"expiry":           cb.expiry,
 	}
 }
 
@@ -410,46 +492,5 @@ func (cb *CircuitBreaker) HealthHandler() fiber.Handler {
 		}
 
 		return c.JSON(data)
-	}
-}
-
-// Middleware wraps the fiber handler with circuit breaker logic
-func Middleware(cb *CircuitBreaker) fiber.Handler {
-	return func(c fiber.Ctx) error {
-		allowed, state := cb.AllowRequest()
-
-		if !allowed {
-			// Call appropriate callback based on state
-			if state == StateHalfOpen && cb.config.OnHalfOpen != nil {
-				return cb.config.OnHalfOpen(c)
-			} else if state == StateOpen && cb.config.OnOpen != nil {
-				return cb.config.OnOpen(c)
-			}
-			return c.SendStatus(fiber.StatusServiceUnavailable)
-		}
-
-		// If request allowed in half-open state, ensure semaphore is released
-		halfOpen := state == StateHalfOpen
-		if halfOpen {
-			defer cb.ReleaseSemaphore()
-		}
-
-		// Execute the request
-		err := c.Next()
-
-		// Check if the response should be considered a failure
-		if cb.config.IsFailure(c, err) {
-			cb.ReportFailure()
-		} else {
-			cb.ReportSuccess()
-
-			// If transition to closed state just happened, trigger callback
-			if halfOpen && cb.GetState() == StateClosed && cb.config.OnClose != nil {
-				// We don't return this error as it would override the actual response
-				_ = cb.config.OnClose(c)
-			}
-		}
-
-		return err
 	}
 }

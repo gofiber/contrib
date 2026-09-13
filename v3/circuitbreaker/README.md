@@ -26,11 +26,16 @@ We only support the latest two versions of Go. Visit [https://go.dev/doc/devel/r
 2. **Open State:**  
    - Requests are **blocked immediately** to prevent overload.  
    - The circuit stays open for a **timeout period** before moving to **Half-Open**.  
+   - Recovery is derived from the clock rather than scheduled in the background, so it is
+     applied by the first request or state read that arrives after the timeout has elapsed.
+     A circuit with no traffic keeps reporting `open` until something asks.  
 
 3. **Half-Open State:**  
    - Allows a limited number of requests to test service recovery.  
-   - If requests **succeed**, the circuit resets to **Closed**.  
-   - If requests **fail**, the circuit returns to **Open**.
+   - `HalfOpenMaxConcurrent` bounds how many of those probes run at once; the rest are
+     refused by `OnHalfOpen`.  
+   - If enough requests **succeed** (`SuccessThreshold`), the circuit resets to **Closed**.  
+   - If a single request **fails**, the circuit returns to **Open**.
 
 ## Benefits of Using a Circuit Breaker
 
@@ -48,22 +53,58 @@ go get -u github.com/gofiber/contrib/v3/circuitbreaker
 ## Signature
 
 ```go
-circuitbreaker.New(config ...circuitbreaker.Config) *circuitbreaker.Middleware 
+// Build a circuit breaker, then mount it in front of the routes it protects.
+circuitbreaker.New(config circuitbreaker.Config) *circuitbreaker.CircuitBreaker
+circuitbreaker.Middleware(cb *circuitbreaker.CircuitBreaker) fiber.Handler
 ```
+
+`Middleware` admits a request, runs the handler chain, reports the outcome and releases
+the half-open slot it took, so none of that has to be paired up by hand. `AllowRequest`,
+`ReleaseSemaphore`, `ReportSuccess` and `ReportFailure` remain available for callers that
+already drive the circuit themselves, but they are **deprecated**: a half-open slot taken
+through `AllowRequest` is held until `ReleaseSemaphore` returns it or the next state change
+reclaims it.
 
 ## Config
 
 | Property | Type | Description | Default |
 |:---------|:-----|:------------|:--------|
-| FailureThreshold | `int` | Number of consecutive errors required to open the circuit | `5` |
-| Timeout | `time.Duration` | Timeout for the circuit breaker | `10 * time.Second` |
-| SuccessThreshold | `int` | Number of successful requests required to close the circuit | `5` |
-| HalfOpenMaxConcurrent | `int` | Max concurrent requests in half-open state | `1` |
+| FailureThreshold | `int` | Number of failures required to open the circuit | `5` |
+| Timeout | `time.Duration` | How long the circuit stays open before a probe is allowed | `5 * time.Second` |
+| SuccessThreshold | `int` | Number of successful probes required to close the circuit | `1` |
+| HalfOpenMaxConcurrent | `int` | Max concurrent probes in half-open state | `1` |
 | Interval | `time.Duration` | Period after which failure counts reset in closed state. Zero means failures accumulate until the circuit opens. | `0` |
-| IsFailure | `func(error) bool` | Custom function to determine if an error is a failure | `Status >= 500` |
-| OnOpen | `func(fiber.Ctx) error` | Callback function when the circuit is opened | `503 response` |
-| OnClose | `func(fiber.Ctx) error` | Callback function when the circuit is closed | `Continue request` |
-| OnHalfOpen | `func(fiber.Ctx) error` | Callback function when the circuit is half-open | `429 response` |
+| IsFailure | `func(c fiber.Ctx, err error) bool` | Decides whether a served request counts as a failure | `err != nil \|\| Status >= 500` |
+| Clock | `func() time.Time` | Reads the current time. Recovery is derived from it, so substituting a clock drives the circuit through every state without waiting. | `time.Now` |
+| OnOpen | `func(fiber.Ctx) error` | Answers a request **refused because the circuit is open** | `503 response` |
+| OnHalfOpen | `func(fiber.Ctx) error` | Answers a request **refused because half-open is already at `HalfOpenMaxConcurrent`** | `429 response` |
+| OnClose | `func(fiber.Ctx) error` | Runs after the successful probe that **closed** the circuit, once the handler has already answered. Its return value is discarded. | `no-op` |
+
+### About the callbacks
+
+`OnOpen`, `OnHalfOpen` and `OnClose` write responses for requests the circuit breaker
+handled itself. They are **not** transition observers, and none of them fires when the
+circuit merely changes state:
+
+- `OnOpen` fires for each request *refused while* open — not at the moment the circuit opens.
+- `OnHalfOpen` fires for each probe *refused while* half-open — not when half-open is entered.
+- `OnClose` fires once, after the probe whose success closed the circuit. The protected
+  handler has already written the response by then, so `OnClose` must not advance the
+  handler chain.
+
+## Operator controls
+
+| Method | Effect |
+|:-------|:-------|
+| `GetState()` / `IsOpen()` | Current state, with any due recovery applied first |
+| `Metrics()` / `GetStateStats()` | Counters, and the thresholds and timestamps behind them |
+| `HealthHandler()` | A Fiber handler answering 503 while open, 200 otherwise |
+| `ForceOpen()` | Opens the circuit **and keeps it open** |
+| `ForceClose()` / `Reset()` | Returns the circuit to closed and starts a new failure-count window |
+| `SetTimeout(d)` | Changes the recovery timeout, including for a circuit that is already open |
+
+`ForceOpen` is sticky: unlike a circuit that opened on failures, a forced-open circuit does
+**not** recover on its own when `Timeout` elapses. Call `ForceClose` or `Reset` to end it.
 
 ## Circuit Breaker Usage in Fiber (Example)
 
@@ -110,14 +151,12 @@ func main() {
     })
 
     app.Listen(":3000")
-
-    // In your application shutdown logic
-    app.Shutdown(func() {
-        // Make sure to stop the circuit breaker when your application shuts down:
-        cb.Stop()
-    })
 }
 ```
+
+> The circuit breaker starts nothing in the background, so it needs no shutdown step.
+> `cb.Stop()` is **deprecated** and does nothing; it is kept only so existing callers
+> still compile.
 
 ### 2. Route & Route-Group Specific Circuit Breaker
 
