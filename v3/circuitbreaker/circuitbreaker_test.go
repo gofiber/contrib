@@ -167,8 +167,12 @@ func TestCircuitBreakerCallbacks(t *testing.T) {
 	)
 
 	cb := New(Config{
-		FailureThreshold:      2,
-		Timeout:               1 * time.Millisecond, // Short timeout for quick tests
+		FailureThreshold: 2,
+		// The subtests drive every state change themselves, so the recovery
+		// timeout must be long enough that the timer New arms can never fire
+		// during the test. A short one races the hand-driven transitions and
+		// admits the request the OnOpen subtest expects to be rejected.
+		Timeout:               time.Hour,
 		SuccessThreshold:      1,
 		HalfOpenMaxConcurrent: 1,
 		OnOpen: func(c fiber.Ctx) error {
