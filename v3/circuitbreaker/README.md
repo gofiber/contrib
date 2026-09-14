@@ -82,9 +82,9 @@ reclaims it.
 
 ### About the callbacks
 
-`OnOpen`, `OnHalfOpen` and `OnClose` write responses for requests the circuit breaker
-handled itself. They are **not** transition observers, and none of them fires when the
-circuit merely changes state:
+`OnOpen` and `OnHalfOpen` write the response for a request the circuit breaker refused
+itself; `OnClose` writes nothing. None of them is a transition observer, and none fires
+when the circuit merely changes state:
 
 - `OnOpen` fires for each request *refused while* open — not at the moment the circuit opens.
 - `OnHalfOpen` fires for each probe *refused while* half-open — not when half-open is entered.
