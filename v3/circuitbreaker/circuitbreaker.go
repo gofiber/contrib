@@ -237,14 +237,17 @@ func (cb *CircuitBreaker) releaseProbe(gen uint64) {
 	cb.halfOpenInFlight--
 }
 
+// recoveryDueLocked reports whether the open to half-open transition has come
+// due. Either lock is enough to read it.
+func (cb *CircuitBreaker) recoveryDueLocked(now time.Time) bool {
+	return cb.state == StateOpen && !cb.forced && !now.Before(cb.openedAt.Add(cb.timeout))
+}
+
 // recoverLocked moves an open circuit to half-open once its deadline has
 // passed. Nothing schedules it - the first request or state read after the
 // deadline applies it - so a circuit with no traffic keeps reporting open.
 func (cb *CircuitBreaker) recoverLocked(now time.Time) {
-	if cb.state != StateOpen || cb.forced {
-		return
-	}
-	if now.Before(cb.openedAt.Add(cb.timeout)) {
+	if !cb.recoveryDueLocked(now) {
 		return
 	}
 
@@ -341,7 +344,7 @@ func (cb *CircuitBreaker) dropExpiredFailuresLocked(now time.Time) {
 func (cb *CircuitBreaker) stateAt(now time.Time) State {
 	cb.mutex.RLock()
 	state := cb.state
-	due := state == StateOpen && !cb.forced && !now.Before(cb.openedAt.Add(cb.timeout))
+	due := cb.recoveryDueLocked(now)
 	cb.mutex.RUnlock()
 
 	if !due {
@@ -455,16 +458,32 @@ func (cb *CircuitBreaker) Metrics() fiber.Map {
 	}
 }
 
-// GetStateStats returns detailed statistics about the circuit breaker
+// GetStateStats returns detailed statistics about the circuit breaker.
+//
+// The state and the fields describing it are read under one lock, so a
+// transition racing the read cannot pair the old state with the new
+// timestamps.
 func (cb *CircuitBreaker) GetStateStats() fiber.Map {
-	// Settle any due recovery first, so state and timestamps agree.
-	state := cb.GetState()
+	now := cb.clock()
 
 	cb.mutex.RLock()
-	defer cb.mutex.RUnlock()
+	if !cb.recoveryDueLocked(now) {
+		defer cb.mutex.RUnlock()
+		return cb.statsLocked()
+	}
+	cb.mutex.RUnlock()
 
+	cb.mutex.Lock()
+	defer cb.mutex.Unlock()
+
+	cb.recoverLocked(now)
+	return cb.statsLocked()
+}
+
+// statsLocked builds the statistics map. Caller holds either lock.
+func (cb *CircuitBreaker) statsLocked() fiber.Map {
 	return fiber.Map{
-		"state":            state,
+		"state":            cb.state,
 		"failures":         atomic.LoadInt64(&cb.failureCount),
 		"successes":        atomic.LoadInt64(&cb.successCount),
 		"totalRequests":    atomic.LoadInt64(&cb.totalRequests),

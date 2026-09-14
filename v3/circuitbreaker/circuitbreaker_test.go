@@ -37,6 +37,20 @@ func (c *fakeClock) Advance(d time.Duration) {
 	c.t = c.t.Add(d)
 }
 
+// AdvanceToParity advances at least one second, stopping on a second whose
+// Unix value has the requested parity. TestGetStateStatsIsNotTorn uses it to
+// encode which transition a timestamp belongs to.
+func (c *fakeClock) AdvanceToParity(parity int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for {
+		c.t = c.t.Add(time.Second)
+		if c.t.Unix()%2 == parity {
+			return
+		}
+	}
+}
+
 // noTimeout lets a handler block for as long as a test needs it to.
 var noTimeout = fiber.TestConfig{Timeout: 0, FailOnTimeout: false}
 
@@ -754,4 +768,116 @@ func TestDefaultsAreApplied(t *testing.T) {
 	require.Equal(t, circuitbreaker.DefaultConfig.Timeout, stats["openDuration"])
 	require.Equal(t, circuitbreaker.StateClosed, stats["state"])
 	require.True(t, stats["expiry"].(time.Time).IsZero(), "a zero Interval sets no window")
+}
+
+// TestGetStateStatsIsNotTorn pins that the reported state and the timestamps
+// describing it come from the same moment.
+//
+// The gap between reading the state and reading its metadata cannot be entered
+// on demand through the interface, so the test makes a torn pairing detectable
+// instead: every transition to open lands on an even second and every
+// transition to closed on an odd one, so "closed" reported with an even
+// lastStateChange is proof the two halves came from different moments.
+func TestGetStateStatsIsNotTorn(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 1,
+		Timeout:          time.Hour, // recovery must not move the state here
+		Clock:            clock.Now,
+	})
+	app := newApp(cb)
+
+	// The circuit starts closed at the clock's base instant, whose parity is
+	// arbitrary; close it once on an odd second so the starting pairing obeys
+	// the rule the reader checks.
+	clock.AdvanceToParity(1)
+	cb.ForceClose()
+
+	const rounds = 400
+	torn := make(chan string, 1)
+	stop := make(chan struct{})
+	readerDone := make(chan struct{})
+
+	go func() {
+		defer close(readerDone)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+
+			stats := cb.GetStateStats()
+			state, _ := stats["state"].(circuitbreaker.State)
+			changed, _ := stats["lastStateChange"].(time.Time)
+			parity := changed.Unix() % 2
+
+			switch state {
+			case circuitbreaker.StateOpen:
+				if parity != 0 {
+					select {
+					case torn <- "open reported with a lastStateChange from a close":
+					default:
+					}
+					return
+				}
+			case circuitbreaker.StateClosed:
+				if parity != 1 {
+					select {
+					case torn <- "closed reported with a lastStateChange from an open":
+					default:
+					}
+					return
+				}
+			}
+		}
+	}()
+
+	for i := 0; i < rounds; i++ {
+		clock.AdvanceToParity(0)
+		get(t, app, "/fail") // opens on an even second
+		clock.AdvanceToParity(1)
+		cb.ForceClose() // closes on an odd second
+	}
+
+	close(stop)
+	<-readerDone
+
+	select {
+	case msg := <-torn:
+		t.Fatalf("GetStateStats returned a torn snapshot: %s", msg)
+	default:
+	}
+}
+
+// TestGetStateStatsSettlesDueRecovery pins that reading the stats applies a
+// recovery that has come due, and reports it with the timestamps that belong
+// to it - the branch where the read has to take the write lock.
+func TestGetStateStatsSettlesDueRecovery(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 1,
+		Interval:         time.Minute,
+		Timeout:          30 * time.Second,
+		Clock:            clock.Now,
+	})
+	app := newApp(cb)
+
+	trip(t, app, 1)
+	openedAt := clock.Now()
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetStateStats()["state"])
+	require.Equal(t, openedAt, cb.GetStateStats()["lastStateChange"])
+
+	clock.Advance(30 * time.Second)
+	recoveredAt := clock.Now()
+
+	stats := cb.GetStateStats()
+	require.Equal(t, circuitbreaker.StateHalfOpen, stats["state"], "the stats read settles a due recovery")
+	require.Equal(t, recoveredAt, stats["lastStateChange"], "and reports the moment it happened")
+	require.Equal(t, 30*time.Second, stats["openDuration"])
+	require.Equal(t, int64(0), stats["failures"], "entering half-open clears the counters")
 }
