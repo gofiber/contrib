@@ -52,8 +52,13 @@ func (c *fakeClock) AdvanceToParity(parity int64) {
 	}
 }
 
-// noTimeout lets a handler block for as long as a test needs it to.
+// noTimeout lets a handler block for as long as a test needs it to, which the
+// background requests rely on. Everything a test waits for itself is bounded by
+// waitBound instead, so a breaker that wrongly admits or never answers a
+// request fails the test with a diagnostic rather than hanging the suite.
 var noTimeout = fiber.TestConfig{Timeout: 0, FailOnTimeout: false}
+
+const waitBound = 10 * time.Second
 
 // newApp mounts cb in front of an "/ok" route that succeeds and a "/fail"
 // route that answers 500, which the default IsFailure counts as a failure.
@@ -71,7 +76,8 @@ func newApp(cb *circuitbreaker.CircuitBreaker) *fiber.App {
 
 func get(t *testing.T, app *fiber.App, target string) *http.Response {
 	t.Helper()
-	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, target, nil), noTimeout)
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, target, nil),
+		fiber.TestConfig{Timeout: waitBound, FailOnTimeout: true})
 	require.NoError(t, err)
 	return resp
 }
@@ -95,7 +101,11 @@ func inBackground(app *fiber.App, target string) *bgRequest {
 
 func (r *bgRequest) wait(t *testing.T) *http.Response {
 	t.Helper()
-	<-r.done
+	select {
+	case <-r.done:
+	case <-time.After(waitBound):
+		t.Fatal("a background request never completed")
+	}
 	require.NoError(t, r.err)
 	return r.resp
 }
@@ -106,7 +116,7 @@ func awaitEntry(t *testing.T, entered <-chan struct{}, msg string) {
 	t.Helper()
 	select {
 	case <-entered:
-	case <-time.After(10 * time.Second):
+	case <-time.After(waitBound):
 		t.Fatal(msg)
 	}
 }

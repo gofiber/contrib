@@ -229,29 +229,54 @@ func (cb *CircuitBreaker) serve(c fiber.Ctx, next func() error) error {
 
 // admit reports whether one request may proceed, how it was admitted, and the
 // release for what it took - a no-op unless it took a probe slot.
+//
+// Closed and open both decide from the state alone, so the two that carry the
+// traffic share the read lock rather than serializing every request. Only
+// crossing a transition or taking a probe slot needs exclusive access.
 func (cb *CircuitBreaker) admit(now time.Time) (bool, admission, func()) {
 	atomic.AddInt64(&cb.totalRequests, 1)
+
+	cb.mutex.RLock()
+	state := cb.state
+	readOnly := state != StateHalfOpen && !cb.recoveryDueLocked(now)
+	cb.mutex.RUnlock()
+
+	if readOnly {
+		return cb.admitOnState(state)
+	}
 
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
 
 	cb.recoverLocked(now)
 
-	switch cb.state {
-	case StateOpen:
+	if cb.state == StateHalfOpen {
+		return cb.admitProbeLocked()
+	}
+	return cb.admitOnState(cb.state)
+}
+
+// admitOnState admits or refuses on the state alone, which is all a closed or
+// open circuit needs, so the caller may have read that state under either lock.
+func (cb *CircuitBreaker) admitOnState(state State) (bool, admission, func()) {
+	if state == StateOpen {
 		atomic.AddInt64(&cb.rejectedRequests, 1)
 		return false, admission{state: StateOpen}, func() {}
-	case StateHalfOpen:
-		if cb.halfOpenInFlight >= cb.halfOpenMaxConcurrent {
-			atomic.AddInt64(&cb.rejectedRequests, 1)
-			return false, admission{state: StateHalfOpen}, func() {}
-		}
-		cb.halfOpenInFlight++
-		gen := cb.halfOpenGen
-		return true, admission{state: StateHalfOpen, gen: gen}, func() { cb.releaseProbe(gen) }
-	default:
-		return true, admission{state: StateClosed}, func() {}
 	}
+	return true, admission{state: StateClosed}, func() {}
+}
+
+// admitProbeLocked takes a slot of the current half-open window if one is free,
+// tagged with that window so a probe outliving it cannot free a later slot.
+func (cb *CircuitBreaker) admitProbeLocked() (bool, admission, func()) {
+	if cb.halfOpenInFlight >= cb.halfOpenMaxConcurrent {
+		atomic.AddInt64(&cb.rejectedRequests, 1)
+		return false, admission{state: StateHalfOpen}, func() {}
+	}
+
+	cb.halfOpenInFlight++
+	gen := cb.halfOpenGen
+	return true, admission{state: StateHalfOpen, gen: gen}, func() { cb.releaseProbe(gen) }
 }
 
 // releaseProbe gives back a slot taken in generation gen. The transition that
@@ -357,6 +382,16 @@ func (cb *CircuitBreaker) recordFailure(now time.Time, adm admission) {
 // Only a probe of the current half-open window vouches for recovery, by the
 // same matching rule the failure path uses.
 func (cb *CircuitBreaker) recordSuccess(now time.Time, adm admission) bool {
+	// A closed circuit records no successes, so the path that carries the
+	// traffic needs no more than the read lock.
+	cb.mutex.RLock()
+	closed := cb.state == StateClosed
+	cb.mutex.RUnlock()
+
+	if closed {
+		return false
+	}
+
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
 
