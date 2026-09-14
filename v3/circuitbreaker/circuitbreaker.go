@@ -97,10 +97,11 @@ type CircuitBreaker struct {
 	openedAt        time.Time // with timeout, the recovery deadline
 	forced          bool      // ForceOpen suspends recovery until closed explicitly
 
-	// A slot is released by generation, so a probe outliving its half-open
-	// window cannot free one belonging to a later window.
+	// gen advances on every transition. A slot is released by it, and an
+	// outcome matched against it, so a request that outlived the circuit that
+	// admitted it can neither free a later probe's slot nor be counted.
 	halfOpenInFlight int
-	halfOpenGen      uint64
+	gen              uint64
 
 	expiry time.Time // when the failure count is dropped, if Interval is set
 
@@ -183,18 +184,15 @@ type admission struct {
 	any bool
 }
 
-// current reports whether the circuit is still in the state, and the half-open
-// window, that admitted the request. An outcome that fails this describes a
-// circuit that no longer exists: the request may have started before the
-// circuit even opened, or have been probing a window that has since ended.
-func (a admission) current(state State, gen uint64) bool {
-	if a.any {
-		return true
-	}
-	if a.state != state {
-		return false
-	}
-	return state != StateHalfOpen || a.gen == gen
+// current reports whether the circuit is still the one that admitted the
+// request. Every transition advances the generation, so matching it is the
+// whole test - the state cannot have changed without it. An outcome that fails
+// this describes a circuit that no longer exists: the request may have started
+// before the circuit opened, have probed a window that has since ended, or
+// have outlived a whole open-and-recover cycle whose closing probe already
+// judged the dependency more recently.
+func (a admission) current(gen uint64) bool {
+	return a.any || a.gen == gen
 }
 
 // serve admits one request, runs next, reports the outcome and releases the
@@ -237,12 +235,12 @@ func (cb *CircuitBreaker) admit(now time.Time) (bool, admission, func()) {
 	atomic.AddInt64(&cb.totalRequests, 1)
 
 	cb.mutex.RLock()
-	state := cb.state
+	state, gen := cb.state, cb.gen
 	readOnly := state != StateHalfOpen && !cb.recoveryDueLocked(now)
 	cb.mutex.RUnlock()
 
 	if readOnly {
-		return cb.admitOnState(state)
+		return cb.admitOnState(state, gen)
 	}
 
 	cb.mutex.Lock()
@@ -253,17 +251,17 @@ func (cb *CircuitBreaker) admit(now time.Time) (bool, admission, func()) {
 	if cb.state == StateHalfOpen {
 		return cb.admitProbeLocked()
 	}
-	return cb.admitOnState(cb.state)
+	return cb.admitOnState(cb.state, cb.gen)
 }
 
 // admitOnState admits or refuses on the state alone, which is all a closed or
 // open circuit needs, so the caller may have read that state under either lock.
-func (cb *CircuitBreaker) admitOnState(state State) (bool, admission, func()) {
+func (cb *CircuitBreaker) admitOnState(state State, gen uint64) (bool, admission, func()) {
 	if state == StateOpen {
 		atomic.AddInt64(&cb.rejectedRequests, 1)
-		return false, admission{state: StateOpen}, func() {}
+		return false, admission{state: StateOpen, gen: gen}, func() {}
 	}
-	return true, admission{state: StateClosed}, func() {}
+	return true, admission{state: StateClosed, gen: gen}, func() {}
 }
 
 // admitProbeLocked takes a slot of the current half-open window if one is free,
@@ -275,7 +273,7 @@ func (cb *CircuitBreaker) admitProbeLocked() (bool, admission, func()) {
 	}
 
 	cb.halfOpenInFlight++
-	gen := cb.halfOpenGen
+	gen := cb.gen
 	return true, admission{state: StateHalfOpen, gen: gen}, func() { cb.releaseProbe(gen) }
 }
 
@@ -286,7 +284,7 @@ func (cb *CircuitBreaker) releaseProbe(gen uint64) {
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
 
-	if cb.halfOpenGen != gen || cb.halfOpenInFlight == 0 {
+	if cb.gen != gen || cb.halfOpenInFlight == 0 {
 		return
 	}
 	cb.halfOpenInFlight--
@@ -310,14 +308,14 @@ func (cb *CircuitBreaker) recoverLocked(now time.Time) {
 	cb.lastStateChange = now
 	atomic.StoreInt64(&cb.failureCount, 0)
 	atomic.StoreInt64(&cb.successCount, 0)
-	cb.beginHalfOpenWindowLocked()
+	cb.nextGenLocked()
 }
 
-// beginHalfOpenWindowLocked frees every slot and starts a new window, which
-// makes the slots of the window that just ended unreleasable.
-func (cb *CircuitBreaker) beginHalfOpenWindowLocked() {
+// nextGenLocked starts a new generation, freeing every probe slot and leaving
+// the admissions of the generation that just ended stale.
+func (cb *CircuitBreaker) nextGenLocked() {
 	cb.halfOpenInFlight = 0
-	cb.halfOpenGen++
+	cb.gen++
 }
 
 // openLocked opens the circuit on a fresh deadline; a forced open suspends
@@ -328,7 +326,7 @@ func (cb *CircuitBreaker) openLocked(now time.Time, forced bool) {
 	cb.lastStateChange = now
 	cb.forced = forced
 	atomic.StoreInt64(&cb.failureCount, 0)
-	cb.beginHalfOpenWindowLocked()
+	cb.nextGenLocked()
 }
 
 // closeLocked returns the circuit to normal operation.
@@ -342,7 +340,7 @@ func (cb *CircuitBreaker) closeLocked(now time.Time) {
 	if cb.interval > 0 {
 		cb.expiry = now.Add(cb.interval)
 	}
-	cb.beginHalfOpenWindowLocked()
+	cb.nextGenLocked()
 }
 
 // recordFailure counts a failure and opens the circuit if that was enough.
@@ -359,7 +357,7 @@ func (cb *CircuitBreaker) recordFailure(now time.Time, adm admission) {
 
 	cb.recoverLocked(now)
 
-	if !adm.current(cb.state, cb.halfOpenGen) {
+	if !adm.current(cb.gen) {
 		return
 	}
 
@@ -397,7 +395,7 @@ func (cb *CircuitBreaker) recordSuccess(now time.Time, adm admission) bool {
 
 	cb.recoverLocked(now)
 
-	if cb.state != StateHalfOpen || !adm.current(cb.state, cb.halfOpenGen) {
+	if cb.state != StateHalfOpen || !adm.current(cb.gen) {
 		return false
 	}
 	if int(atomic.AddInt64(&cb.successCount, 1)) < cb.successThreshold {

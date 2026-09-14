@@ -1087,6 +1087,61 @@ func TestStaleFailureDoesNotReopenTheCircuit(t *testing.T) {
 	require.Equal(t, circuitbreaker.StateClosed, cb.GetState())
 }
 
+// An outcome can outlive not just the state that admitted it but a whole
+// open-and-recover cycle, arriving back in a closed circuit that looks like the
+// one it left. The probe that closed that circuit judged the dependency more
+// recently, so a failure from before the outage must not undo it - otherwise
+// every recovery can be bounced straight back open by the backlog behind it.
+func TestStaleFailureCannotReopenARecoveredCircuit(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
+	})
+
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	releaseSlow := releaser(t, release)
+
+	app := fiber.New()
+	app.Use(circuitbreaker.Middleware(cb))
+	app.Get("/slow", func(c fiber.Ctx) error {
+		entered <- struct{}{}
+		<-release
+		return c.SendStatus(fiber.StatusInternalServerError)
+	})
+	app.Get("/ok", func(c fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+	app.Get("/fail", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusInternalServerError)
+	})
+
+	// Admitted while closed, and still running for the rest of the test.
+	slow := inBackground(app, "/slow")
+	awaitEntry(t, entered, "the slow request was not admitted while closed")
+
+	// The circuit opens, comes due, and a genuine probe closes it again.
+	get(t, app, "/fail")
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState())
+	clock.Advance(time.Minute)
+	require.Equal(t, fiber.StatusOK, get(t, app, "/ok").StatusCode)
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState(), "a probe closed the circuit")
+
+	// Only now does the request admitted before any of that fail.
+	releaseSlow()
+	slow.wait(t)
+
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState(),
+		"a failure admitted before the circuit opened must not reopen it after a probe recovered it")
+	require.Equal(t, fiber.StatusOK, get(t, app, "/ok").StatusCode,
+		"the recovered circuit still serves traffic")
+}
+
 // TestStaleFailuresCannotStarveRecovery is why the failure path matters more
 // than symmetry. Each stale failure that reopens the circuit also resets the
 // deadline, so a backlog of them can hold the circuit open indefinitely and
