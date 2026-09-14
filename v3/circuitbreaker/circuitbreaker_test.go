@@ -1,6 +1,7 @@
 package circuitbreaker_test
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -220,6 +221,12 @@ func TestHalfOpenProbeClosesTheCircuit(t *testing.T) {
 	require.Equal(t, fiber.StatusOK, resp.StatusCode)
 	require.Equal(t, circuitbreaker.StateClosed, cb.GetState())
 	require.Equal(t, 1, closeCalls, "OnClose runs for the probe that closed the circuit")
+
+	// OnClose runs after the handler has answered, so a callback that writes
+	// nothing must leave that answer untouched.
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, "OK", string(body), "the closing probe keeps the protected handler's response")
 }
 
 func TestHalfOpenFailureReopens(t *testing.T) {
@@ -880,4 +887,137 @@ func TestGetStateStatsSettlesDueRecovery(t *testing.T) {
 	require.Equal(t, recoveredAt, stats["lastStateChange"], "and reports the moment it happened")
 	require.Equal(t, 30*time.Second, stats["openDuration"])
 	require.Equal(t, int64(0), stats["failures"], "entering half-open clears the counters")
+}
+
+// TestStaleSuccessDoesNotCloseTheCircuit pins that only a probe from the
+// current half-open window can vouch for recovery.
+//
+// A request admitted while the circuit was closed may still be in flight when
+// other traffic opens the circuit and the recovery deadline passes. Its
+// success says nothing about the state of the dependency now, so it must
+// neither close the circuit nor fire OnClose.
+func TestStaleSuccessDoesNotCloseTheCircuit(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	var closeCalls int64
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
+		OnClose: func(c fiber.Ctx) error {
+			atomic.AddInt64(&closeCalls, 1)
+			return nil
+		},
+	})
+
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	releaseSlow := releaser(t, release)
+
+	app := fiber.New()
+	app.Use(circuitbreaker.Middleware(cb))
+	app.Get("/slow", func(c fiber.Ctx) error {
+		entered <- struct{}{}
+		<-release
+		return c.SendString("OK")
+	})
+	app.Get("/ok", func(c fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+	app.Get("/fail", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusInternalServerError)
+	})
+
+	// Admitted while closed, and still running for the rest of the test.
+	slow := inBackground(app, "/slow")
+	awaitEntry(t, entered, "the slow request was not admitted while closed")
+
+	// Other traffic opens the circuit underneath it, and the deadline passes.
+	get(t, app, "/fail")
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState())
+	clock.Advance(time.Minute)
+
+	// Its success must not be mistaken for a recovery probe.
+	releaseSlow()
+	require.Equal(t, fiber.StatusOK, slow.wait(t).StatusCode)
+
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState(),
+		"a success from a request admitted while closed must not close the circuit")
+	require.Equal(t, int64(0), atomic.LoadInt64(&closeCalls),
+		"OnClose must not fire for a request that was never a half-open probe")
+
+	// A genuine probe still closes it.
+	require.Equal(t, fiber.StatusOK, get(t, app, "/ok").StatusCode)
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState())
+	require.Equal(t, int64(1), atomic.LoadInt64(&closeCalls))
+}
+
+// TestProbeFromAnEndedWindowDoesNotCloseTheCircuit is the other half of
+// matching a success to its admission: a probe admitted to one half-open
+// window can still be running when that window ends and a later one begins.
+// It was testing a state the circuit has already left, so its success must not
+// close the new window.
+func TestProbeFromAnEndedWindowDoesNotCloseTheCircuit(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	var closeCalls int64
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold:      1,
+		SuccessThreshold:      1,
+		HalfOpenMaxConcurrent: 2, // room for the stranded probe and the one that ends the window
+		Timeout:               time.Minute,
+		Clock:                 clock.Now,
+		OnClose: func(c fiber.Ctx) error {
+			atomic.AddInt64(&closeCalls, 1)
+			return nil
+		},
+	})
+
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	releaseStranded := releaser(t, release)
+
+	app := fiber.New()
+	app.Use(circuitbreaker.Middleware(cb))
+	app.Get("/stranded", func(c fiber.Ctx) error {
+		entered <- struct{}{}
+		<-release
+		return c.SendString("OK")
+	})
+	app.Get("/ok", func(c fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+	app.Get("/fail", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusInternalServerError)
+	})
+
+	trip(t, app, 1)
+	clock.Advance(time.Minute)
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState())
+
+	// A probe of this window that stays in flight.
+	stranded := inBackground(app, "/stranded")
+	awaitEntry(t, entered, "the stranded probe was not admitted")
+
+	// End the window, then open a fresh one.
+	get(t, app, "/fail")
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState())
+	clock.Advance(time.Minute)
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState())
+
+	// The stranded probe belongs to the window that has ended.
+	releaseStranded()
+	require.Equal(t, fiber.StatusOK, stranded.wait(t).StatusCode)
+
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState(),
+		"a probe from an ended window must not close the window that replaced it")
+	require.Equal(t, int64(0), atomic.LoadInt64(&closeCalls))
+
+	// A probe of the current window still closes it.
+	require.Equal(t, fiber.StatusOK, get(t, app, "/ok").StatusCode)
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState())
+	require.Equal(t, int64(1), atomic.LoadInt64(&closeCalls))
 }

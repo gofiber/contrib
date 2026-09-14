@@ -42,10 +42,15 @@ type Config struct {
 	Clock func() time.Time
 
 	// OnOpen and OnHalfOpen answer a request refused because the circuit is
-	// open, or because half-open is already at HalfOpenMaxConcurrent. OnClose
-	// runs after the probe that closed the circuit, by which point the handler
-	// has answered: its return value is discarded and it must not advance the
-	// chain. None of the three fires on a transition alone.
+	// open, or because half-open is already at HalfOpenMaxConcurrent. None of
+	// the three fires on a transition alone.
+	//
+	// OnClose is a notification, not a response writer: it runs after the
+	// probe that closed the circuit, by which point the protected handler has
+	// already answered. Fiber writes to the response eagerly, so a Send, JSON
+	// or Status call here replaces that answer even though the error OnClose
+	// returns is discarded. Record the recovery, do not write to the response
+	// and do not advance the chain.
 	OnOpen     func(fiber.Ctx) error
 	OnHalfOpen func(fiber.Ctx) error
 	OnClose    func(fiber.Ctx) error
@@ -167,16 +172,32 @@ func Middleware(cb *CircuitBreaker) fiber.Handler {
 	}
 }
 
+// admission records how a request was let in, so its outcome is applied to the
+// window that admitted it rather than to whatever window it finishes in.
+type admission struct {
+	state State
+	gen   uint64
+	// anyGen belongs to the deprecated protocol, which reports an outcome with
+	// no admission to match it against.
+	anyGen bool
+}
+
+// isProbe reports whether this admission was a half-open probe of the window
+// that is current now.
+func (a admission) isProbe(currentGen uint64) bool {
+	return a.state == StateHalfOpen && (a.anyGen || a.gen == currentGen)
+}
+
 // serve admits one request, runs next, reports the outcome and releases the
 // half-open slot it took, so no caller has to pair those steps up.
 func (cb *CircuitBreaker) serve(c fiber.Ctx, next func() error) error {
-	allowed, state, release := cb.admit(cb.clock())
+	allowed, adm, release := cb.admit(cb.clock())
 	if !allowed {
 		// New never leaves these nil; the guards spare a hand-built one.
-		if state == StateHalfOpen && cb.config.OnHalfOpen != nil {
+		if adm.state == StateHalfOpen && cb.config.OnHalfOpen != nil {
 			return cb.config.OnHalfOpen(c)
 		}
-		if state == StateOpen && cb.config.OnOpen != nil {
+		if adm.state == StateOpen && cb.config.OnOpen != nil {
 			return cb.config.OnOpen(c)
 		}
 		return c.SendStatus(fiber.StatusServiceUnavailable)
@@ -190,16 +211,16 @@ func (cb *CircuitBreaker) serve(c fiber.Ctx, next func() error) error {
 		return err
 	}
 
-	if cb.recordSuccess(cb.clock()) && cb.config.OnClose != nil {
+	if cb.recordSuccess(cb.clock(), adm) && cb.config.OnClose != nil {
 		// The handler has answered; OnClose must not overwrite that.
 		_ = cb.config.OnClose(c)
 	}
 	return err
 }
 
-// admit reports whether one request may proceed, the state that settled it,
-// and the release for what it took - a no-op unless it took a probe slot.
-func (cb *CircuitBreaker) admit(now time.Time) (bool, State, func()) {
+// admit reports whether one request may proceed, how it was admitted, and the
+// release for what it took - a no-op unless it took a probe slot.
+func (cb *CircuitBreaker) admit(now time.Time) (bool, admission, func()) {
 	atomic.AddInt64(&cb.totalRequests, 1)
 
 	cb.mutex.Lock()
@@ -210,17 +231,17 @@ func (cb *CircuitBreaker) admit(now time.Time) (bool, State, func()) {
 	switch cb.state {
 	case StateOpen:
 		atomic.AddInt64(&cb.rejectedRequests, 1)
-		return false, StateOpen, func() {}
+		return false, admission{state: StateOpen}, func() {}
 	case StateHalfOpen:
 		if cb.halfOpenInFlight >= cb.halfOpenMaxConcurrent {
 			atomic.AddInt64(&cb.rejectedRequests, 1)
-			return false, StateHalfOpen, func() {}
+			return false, admission{state: StateHalfOpen}, func() {}
 		}
 		cb.halfOpenInFlight++
 		gen := cb.halfOpenGen
-		return true, StateHalfOpen, func() { cb.releaseProbe(gen) }
+		return true, admission{state: StateHalfOpen, gen: gen}, func() { cb.releaseProbe(gen) }
 	default:
-		return true, StateClosed, func() {}
+		return true, admission{state: StateClosed}, func() {}
 	}
 }
 
@@ -312,13 +333,19 @@ func (cb *CircuitBreaker) recordFailure(now time.Time) {
 // recordSuccess counts a success and reports whether this one closed the
 // circuit, so OnClose does not depend on a second state read that another
 // request could win.
-func (cb *CircuitBreaker) recordSuccess(now time.Time) bool {
+//
+// Only a probe of the current half-open window vouches for recovery. A request
+// admitted while the circuit was closed may have started before the circuit
+// even opened, and a probe whose window has since ended was testing a state
+// the circuit has already left, so neither says anything about the dependency
+// now.
+func (cb *CircuitBreaker) recordSuccess(now time.Time, adm admission) bool {
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
 
 	cb.recoverLocked(now)
 
-	if cb.state != StateHalfOpen {
+	if cb.state != StateHalfOpen || !adm.isProbe(cb.halfOpenGen) {
 		return false
 	}
 	if int(atomic.AddInt64(&cb.successCount, 1)) < cb.successThreshold {
@@ -414,8 +441,8 @@ func (cb *CircuitBreaker) Stop() {}
 // operation. A slot taken here is held until ReleaseSemaphore returns it or
 // the next state change reclaims it.
 func (cb *CircuitBreaker) AllowRequest() (bool, State) {
-	allowed, state, _ := cb.admit(cb.clock())
-	return allowed, state
+	allowed, adm, _ := cb.admit(cb.clock())
+	return allowed, adm.state
 }
 
 // ReleaseSemaphore releases a slot in the half-open semaphore.
@@ -436,7 +463,9 @@ func (cb *CircuitBreaker) ReleaseSemaphore() {
 // Deprecated: use Middleware, which reports the outcome of the request it
 // admitted and runs OnClose when that success closes the circuit.
 func (cb *CircuitBreaker) ReportSuccess() {
-	cb.recordSuccess(cb.clock())
+	// No admission to match, so the success applies to whichever half-open
+	// window is current - the behaviour this method has always had.
+	cb.recordSuccess(cb.clock(), admission{state: StateHalfOpen, anyGen: true})
 }
 
 // ReportFailure increments failure count and opens circuit if threshold met.

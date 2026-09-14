@@ -88,8 +88,11 @@ circuit merely changes state:
 
 - `OnOpen` fires for each request *refused while* open — not at the moment the circuit opens.
 - `OnHalfOpen` fires for each probe *refused while* half-open — not when half-open is entered.
-- `OnClose` fires once, after the probe whose success closed the circuit. The protected
-  handler has already written the response by then, so `OnClose` must not advance the
+- `OnClose` fires once, after the probe whose success closed the circuit — and it is a
+  **notification, not a response writer**. The protected handler has already written the
+  response by then, and Fiber writes eagerly, so a `Send`, `JSON` or `Status` call in
+  `OnClose` **replaces the handler's answer** even though the error it returns is
+  discarded. Record the recovery; do not write to the response, and do not advance the
   handler chain.
 
 ## Operator controls
@@ -194,9 +197,11 @@ cb := circuitbreaker.New(circuitbreaker.Config{
         return c.Status(fiber.StatusTooManyRequests).
             JSON(fiber.Map{"error": "Circuit Half-Open: Retrying service"})
     },
+    // OnClose runs after the protected handler has answered, so writing here
+    // would replace its response. Record the recovery instead.
     OnClose: func(c fiber.Ctx) error {
-        return c.Status(fiber.StatusOK).
-            JSON(fiber.Map{"message": "Circuit Closed: Service recovered"})
+        log.Printf("circuit closed: %s recovered", c.Path())
+        return nil
     },
 })
 
