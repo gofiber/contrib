@@ -1021,3 +1021,177 @@ func TestProbeFromAnEndedWindowDoesNotCloseTheCircuit(t *testing.T) {
 	require.Equal(t, circuitbreaker.StateClosed, cb.GetState())
 	require.Equal(t, int64(1), atomic.LoadInt64(&closeCalls))
 }
+
+// TestStaleFailureDoesNotReopenTheCircuit is the failure-path mirror of
+// TestStaleSuccessDoesNotCloseTheCircuit. A request admitted while the circuit
+// was closed may still be in flight when other traffic opens the circuit and
+// the recovery deadline passes. Its failure describes a circuit that no longer
+// exists, so it must not abort the half-open trial before a real probe runs.
+func TestStaleFailureDoesNotReopenTheCircuit(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
+	})
+
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	releaseSlow := releaser(t, release)
+
+	app := fiber.New()
+	app.Use(circuitbreaker.Middleware(cb))
+	app.Get("/slowfail", func(c fiber.Ctx) error {
+		entered <- struct{}{}
+		<-release
+		return c.SendStatus(fiber.StatusInternalServerError)
+	})
+	app.Get("/ok", func(c fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+	app.Get("/fail", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusInternalServerError)
+	})
+
+	// Admitted while closed, and still running for the rest of the test.
+	slow := inBackground(app, "/slowfail")
+	awaitEntry(t, entered, "the slow request was not admitted while closed")
+
+	// Other traffic opens the circuit underneath it, and the deadline passes.
+	get(t, app, "/fail")
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState())
+	clock.Advance(time.Minute)
+
+	// Its failure must not end a trial that has not run.
+	releaseSlow()
+	slow.wait(t)
+
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState(),
+		"a failure from a request admitted while closed must not reopen the circuit")
+
+	// The trial is still available, so a genuine probe decides.
+	require.Equal(t, fiber.StatusOK, get(t, app, "/ok").StatusCode)
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState())
+}
+
+// TestStaleFailuresCannotStarveRecovery is why the failure path matters more
+// than symmetry. Each stale failure that reopens the circuit also resets the
+// deadline, so a backlog of them can hold the circuit open indefinitely and
+// never let a probe through.
+func TestStaleFailuresCannotStarveRecovery(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
+	})
+
+	const backlog = 5
+	entered := make(chan struct{}, backlog)
+	release := make(chan struct{})
+	releaseAll := releaser(t, release)
+
+	app := fiber.New()
+	app.Use(circuitbreaker.Middleware(cb))
+	app.Get("/slowfail", func(c fiber.Ctx) error {
+		entered <- struct{}{}
+		<-release
+		return c.SendStatus(fiber.StatusInternalServerError)
+	})
+	app.Get("/ok", func(c fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+	app.Get("/fail", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusInternalServerError)
+	})
+
+	// A backlog of requests admitted while closed, all still in flight.
+	stale := make([]*bgRequest, 0, backlog)
+	for i := 0; i < backlog; i++ {
+		stale = append(stale, inBackground(app, "/slowfail"))
+	}
+	for i := 0; i < backlog; i++ {
+		awaitEntry(t, entered, "a backlog request was not admitted while closed")
+	}
+
+	get(t, app, "/fail")
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState())
+	clock.Advance(time.Minute)
+
+	// The whole backlog fails at once, after the deadline.
+	releaseAll()
+	for _, r := range stale {
+		r.wait(t)
+	}
+
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState(),
+		"a backlog of stale failures must not keep pushing the recovery deadline out")
+	require.Equal(t, fiber.StatusOK, get(t, app, "/ok").StatusCode,
+		"a probe must still be admitted")
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState())
+}
+
+// TestProbeFailingAfterSiblingClosedIsIgnored covers the state half of the
+// matching rule, which the generation check alone does not: a probe of a
+// half-open window can still be running when a sibling probe closes the
+// circuit. Its failure belongs to a trial that is over, so it must not reopen
+// a circuit that has just recovered.
+func TestProbeFailingAfterSiblingClosedIsIgnored(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold:      1,
+		SuccessThreshold:      1,
+		HalfOpenMaxConcurrent: 2, // room for the stranded probe and the one that closes
+		Timeout:               time.Minute,
+		Clock:                 clock.Now,
+	})
+
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	releaseStranded := releaser(t, release)
+
+	app := fiber.New()
+	app.Use(circuitbreaker.Middleware(cb))
+	app.Get("/slowfail", func(c fiber.Ctx) error {
+		entered <- struct{}{}
+		<-release
+		return c.SendStatus(fiber.StatusInternalServerError)
+	})
+	app.Get("/ok", func(c fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+	app.Get("/fail", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusInternalServerError)
+	})
+
+	trip(t, app, 1)
+	clock.Advance(time.Minute)
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState())
+
+	// A probe of this window that stays in flight and will fail.
+	stranded := inBackground(app, "/slowfail")
+	awaitEntry(t, entered, "the stranded probe was not admitted")
+
+	// A sibling probe of the same window succeeds and closes the circuit.
+	require.Equal(t, fiber.StatusOK, get(t, app, "/ok").StatusCode)
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState())
+
+	// The stranded probe now fails, against a circuit that has recovered.
+	releaseStranded()
+	stranded.wait(t)
+
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState(),
+		"a probe failing after its trial ended must not reopen the recovered circuit")
+
+	// And a genuine failure still opens it, so the gate has not gone too far.
+	get(t, app, "/fail")
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState())
+}

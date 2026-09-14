@@ -173,19 +173,28 @@ func Middleware(cb *CircuitBreaker) fiber.Handler {
 }
 
 // admission records how a request was let in, so its outcome is applied to the
-// window that admitted it rather than to whatever window it finishes in.
+// circuit that admitted it rather than to whatever the circuit has become by
+// the time it finishes.
 type admission struct {
 	state State
 	gen   uint64
-	// anyGen belongs to the deprecated protocol, which reports an outcome with
-	// no admission to match it against.
-	anyGen bool
+	// any belongs to the deprecated protocol, which reports an outcome with no
+	// admission to match it against.
+	any bool
 }
 
-// isProbe reports whether this admission was a half-open probe of the window
-// that is current now.
-func (a admission) isProbe(currentGen uint64) bool {
-	return a.state == StateHalfOpen && (a.anyGen || a.gen == currentGen)
+// current reports whether the circuit is still in the state, and the half-open
+// window, that admitted the request. An outcome that fails this describes a
+// circuit that no longer exists: the request may have started before the
+// circuit even opened, or have been probing a window that has since ended.
+func (a admission) current(state State, gen uint64) bool {
+	if a.any {
+		return true
+	}
+	if a.state != state {
+		return false
+	}
+	return state != StateHalfOpen || a.gen == gen
 }
 
 // serve admits one request, runs next, reports the outcome and releases the
@@ -207,7 +216,7 @@ func (cb *CircuitBreaker) serve(c fiber.Ctx, next func() error) error {
 	err := next()
 
 	if cb.config.IsFailure(c, err) {
-		cb.recordFailure(cb.clock())
+		cb.recordFailure(cb.clock(), adm)
 		return err
 	}
 
@@ -312,11 +321,22 @@ func (cb *CircuitBreaker) closeLocked(now time.Time) {
 }
 
 // recordFailure counts a failure and opens the circuit if that was enough.
-func (cb *CircuitBreaker) recordFailure(now time.Time) {
+//
+// A failure from a request the circuit has since moved past is ignored rather
+// than treated as a failed probe. Ignoring it cannot make the circuit
+// optimistic - only a success closes it, and those are matched the same way -
+// while acting on it would end a trial that has not run and push the recovery
+// deadline out again, so a backlog of stale failures could starve recovery
+// indefinitely.
+func (cb *CircuitBreaker) recordFailure(now time.Time, adm admission) {
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
 
 	cb.recoverLocked(now)
+
+	if !adm.current(cb.state, cb.halfOpenGen) {
+		return
+	}
 
 	switch cb.state {
 	case StateHalfOpen:
@@ -334,18 +354,15 @@ func (cb *CircuitBreaker) recordFailure(now time.Time) {
 // circuit, so OnClose does not depend on a second state read that another
 // request could win.
 //
-// Only a probe of the current half-open window vouches for recovery. A request
-// admitted while the circuit was closed may have started before the circuit
-// even opened, and a probe whose window has since ended was testing a state
-// the circuit has already left, so neither says anything about the dependency
-// now.
+// Only a probe of the current half-open window vouches for recovery, by the
+// same matching rule the failure path uses.
 func (cb *CircuitBreaker) recordSuccess(now time.Time, adm admission) bool {
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
 
 	cb.recoverLocked(now)
 
-	if cb.state != StateHalfOpen || !adm.isProbe(cb.halfOpenGen) {
+	if cb.state != StateHalfOpen || !adm.current(cb.state, cb.halfOpenGen) {
 		return false
 	}
 	if int(atomic.AddInt64(&cb.successCount, 1)) < cb.successThreshold {
@@ -463,9 +480,9 @@ func (cb *CircuitBreaker) ReleaseSemaphore() {
 // Deprecated: use Middleware, which reports the outcome of the request it
 // admitted and runs OnClose when that success closes the circuit.
 func (cb *CircuitBreaker) ReportSuccess() {
-	// No admission to match, so the success applies to whichever half-open
-	// window is current - the behaviour this method has always had.
-	cb.recordSuccess(cb.clock(), admission{state: StateHalfOpen, anyGen: true})
+	// No admission to match, so the outcome applies to whatever state is
+	// current - the behaviour this method has always had.
+	cb.recordSuccess(cb.clock(), admission{any: true})
 }
 
 // ReportFailure increments failure count and opens circuit if threshold met.
@@ -473,7 +490,8 @@ func (cb *CircuitBreaker) ReportSuccess() {
 // Deprecated: use Middleware, which reports the outcome of the request it
 // admitted.
 func (cb *CircuitBreaker) ReportFailure() {
-	cb.recordFailure(cb.clock())
+	// As with ReportSuccess, there is no admission to match.
+	cb.recordFailure(cb.clock(), admission{any: true})
 }
 
 // Metrics returns basic metrics about the circuit breaker
