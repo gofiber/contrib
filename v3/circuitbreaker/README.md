@@ -228,14 +228,14 @@ app.Get("/external-api", circuitbreaker.Middleware(cb), func(c fiber.Ctx) error 
 
 ### 5. Circuit Breaker with Concurrent Requests Handling
 
-Use a **semaphore-based** approach to **limit concurrent requests.**
+**Limit how many probes run at once** while the circuit is recovering.
 
 ```go
 cb := circuitbreaker.New(circuitbreaker.Config{
-    FailureThreshold:  3,
-    Timeout:           5 * time.Second,
-    SuccessThreshold:  2,
-    HalfOpenSemaphore: make(chan struct{}, 2), // Allow only 2 concurrent requests
+    FailureThreshold:      3,
+    Timeout:               5 * time.Second,
+    SuccessThreshold:      2,
+    HalfOpenMaxConcurrent: 2, // Allow only 2 concurrent probes in half-open
 })
 
 app.Get("/half-open-limit", circuitbreaker.Middleware(cb), func(c fiber.Ctx) error {
