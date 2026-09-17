@@ -514,11 +514,11 @@
       background: var(--panel-soft);
     }
 
-    .chart-card { position: relative; }
     .chart-tooltip {
-      position: absolute;
+      position: fixed;
       z-index: 3;
-      max-width: min(250px, calc(100% - 28px));
+      width: max-content;
+      max-width: min(250px, calc(100vw - 24px));
       padding: 9px 11px;
       border: 1px solid var(--border);
       border-radius: 8px;
@@ -949,6 +949,9 @@
     const REFRESH_MS = {{ .RefreshMS }};
     const MAX_SAMPLES = 90;
     const SAMPLE_WINDOWS = [30, 60, 90];
+    const CHART_POINT_PROXIMITY = 16;
+    const CHART_TOOLTIP_OFFSET = 12;
+    const CHART_TOOLTIP_MARGIN = 12;
     const dash = "\u2014";
     const history = {
       labels: [],
@@ -1425,7 +1428,6 @@
 
     function drawLineChart(canvas, seriesList, options) {
       if (!canvas) return;
-      if (canvas._clearHover) canvas._clearHover(false);
       const dpr = window.devicePixelRatio || 1;
       const rect = canvas.getBoundingClientRect();
       const width = Math.max(rect.width, 1);
@@ -1462,6 +1464,7 @@
       };
       canvas._chartMeta = meta;
       paintLineChart(canvas, meta);
+      if (canvas._refreshHover) canvas._refreshHover();
     }
 
     function drawCharts() {
@@ -1502,7 +1505,48 @@
       ], { minValue: 0, minimumStep: 1, formatValue: durationAxisNS, leftPadding: 70 });
     }
 
-    function drawHoverGuides(canvas, meta, index, pointerY, points) {
+    function pointerInPlot(meta, x, y) {
+      return x >= meta.padding.left && x <= meta.width - meta.padding.right &&
+        y >= meta.padding.top && y <= meta.height - meta.padding.bottom;
+    }
+
+    function nearestSampleIndex(meta, x) {
+      const relative = Math.min(1, Math.max(0, (x - meta.padding.left) / meta.plotWidth));
+      return Math.round(relative * (meta.count - 1));
+    }
+
+    function chartPointsAtSample(meta, index) {
+      return meta.series
+        .map((entry) => {
+          const value = entry.data[index];
+          return finite(value) ? {
+            name: entry.name,
+            value: meta.formatter(value),
+            color: entry.color,
+            x: sampleX(meta, index),
+            y: sampleY(meta, value)
+          } : null;
+        })
+        .filter(Boolean);
+    }
+
+    function focusedHoverPoint(points, pointerX, pointerY) {
+      let focused = null;
+      let nearestDistance = Infinity;
+      points.forEach((point) => {
+        const dx = Math.abs(point.x - pointerX);
+        const dy = Math.abs(point.y - pointerY);
+        if (dx > CHART_POINT_PROXIMITY || dy > CHART_POINT_PROXIMITY) return;
+        const distance = dx * dx + dy * dy;
+        if (distance < nearestDistance) {
+          focused = point;
+          nearestDistance = distance;
+        }
+      });
+      return focused;
+    }
+
+    function drawHoverGuides(canvas, meta, cursorX, focusedPoint) {
       const colors = {
         border: cssColor("--border"),
         muted: cssColor("--muted"),
@@ -1510,136 +1554,149 @@
       };
       paintLineChart(canvas, meta, colors);
       const context = canvas.getContext("2d");
-      const x = sampleX(meta, index);
       context.save();
       context.lineWidth = 1;
       context.setLineDash([4, 4]);
       context.globalAlpha = .7;
       context.strokeStyle = colors.muted;
       context.beginPath();
-      context.moveTo(x, meta.padding.top);
-      context.lineTo(x, meta.height - meta.padding.bottom);
+      context.moveTo(cursorX, meta.padding.top);
+      context.lineTo(cursorX, meta.height - meta.padding.bottom);
       context.stroke();
 
-      if (points.length) {
-        const nearest = points.reduce((best, point) =>
-          Math.abs(point.y - pointerY) < Math.abs(best.y - pointerY) ? point : best);
-        context.strokeStyle = nearest.color;
+      if (focusedPoint) {
+        context.strokeStyle = focusedPoint.color;
         context.beginPath();
-        context.moveTo(meta.padding.left, nearest.y);
-        context.lineTo(meta.width - meta.padding.right, nearest.y);
+        context.moveTo(meta.padding.left, focusedPoint.y);
+        context.lineTo(meta.width - meta.padding.right, focusedPoint.y);
         context.stroke();
       }
       context.restore();
 
-      points.forEach((point) => {
+      if (focusedPoint) {
         context.beginPath();
-        context.arc(point.x, point.y, 5, 0, Math.PI * 2);
+        context.arc(focusedPoint.x, focusedPoint.y, 5, 0, Math.PI * 2);
         context.fillStyle = colors.panelSoft;
         context.fill();
         context.lineWidth = 2;
-        context.strokeStyle = point.color;
+        context.strokeStyle = focusedPoint.color;
         context.stroke();
         context.beginPath();
-        context.arc(point.x, point.y, 2, 0, Math.PI * 2);
-        context.fillStyle = point.color;
+        context.arc(focusedPoint.x, focusedPoint.y, 2, 0, Math.PI * 2);
+        context.fillStyle = focusedPoint.color;
         context.fill();
-      });
+      }
+    }
+
+    function renderChartTooltip(tooltip, meta, index, points) {
+      tooltip.replaceChildren();
+      const title = document.createElement("strong");
+      title.textContent = meta.labels[index] || "Sample";
+      tooltip.append(title);
+      if (points.length === 0) {
+        const row = document.createElement("span");
+        row.className = "chart-tooltip__empty";
+        row.textContent = "No data in this window";
+        tooltip.append(row);
+      } else {
+        points.forEach((point) => {
+          const row = document.createElement("span");
+          row.className = "chart-tooltip__row";
+          const marker = document.createElement("span");
+          marker.className = "chart-tooltip__marker";
+          marker.style.backgroundColor = point.color;
+          const name = document.createElement("span");
+          name.className = "chart-tooltip__name";
+          name.textContent = point.name;
+          const value = document.createElement("span");
+          value.className = "chart-tooltip__value";
+          value.textContent = point.value;
+          row.append(marker, name, value);
+          tooltip.append(row);
+        });
+      }
+    }
+
+    function positionChartTooltip(tooltip, clientX, clientY, width, height) {
+      const margin = CHART_TOOLTIP_MARGIN;
+      const offset = CHART_TOOLTIP_OFFSET;
+      let left = clientX + offset;
+      let top = clientY + offset;
+      if (left + width > window.innerWidth - margin) left = clientX - width - offset;
+      if (top + height > window.innerHeight - margin) top = clientY - height - offset;
+      tooltip.style.left = Math.max(margin, Math.min(left, window.innerWidth - width - margin)) + "px";
+      tooltip.style.top = Math.max(margin, Math.min(top, window.innerHeight - height - margin)) + "px";
     }
 
     function setupChartHover(canvas) {
-      const card = canvas.parentElement;
-      const tooltip = card.querySelector(".chart-tooltip");
+      const tooltip = canvas.parentElement.querySelector(".chart-tooltip");
       let hoverFrame = null;
-      let latestPointer = null;
+      let pointerActive = false;
+      let pointerClientX = 0;
+      let pointerClientY = 0;
+      let tooltipMeta = null;
+      let tooltipIndex = -1;
+      let tooltipWidth = 0;
+      let tooltipHeight = 0;
 
-      canvas._clearHover = (repaint) => {
-        latestPointer = null;
+      const clearHover = () => {
+        if (!pointerActive) return;
+        pointerActive = false;
         if (hoverFrame !== null) {
           window.cancelAnimationFrame(hoverFrame);
           hoverFrame = null;
         }
-        if (repaint && canvas._chartMeta) paintLineChart(canvas, canvas._chartMeta);
+        if (canvas._chartMeta) paintLineChart(canvas, canvas._chartMeta);
         tooltip.hidden = true;
       };
 
       const paintHover = () => {
         hoverFrame = null;
-        const pointer = latestPointer;
-        latestPointer = null;
-        if (!pointer) return;
+        if (!pointerActive) return;
         const meta = canvas._chartMeta;
         if (!meta || meta.count < 1) {
           tooltip.hidden = true;
           return;
         }
         const rect = canvas.getBoundingClientRect();
-        const canvasX = pointer.clientX - rect.left;
-        const canvasY = pointer.clientY - rect.top;
-        const relative = Math.min(1, Math.max(0, (canvasX - meta.padding.left) / meta.plotWidth));
-        const index = Math.round(relative * (meta.count - 1));
-        const points = meta.series
-          .map((entry) => {
-            const value = entry.data[index];
-            return finite(value) ? {
-              name: entry.name,
-              value: meta.formatter(value),
-              color: entry.color,
-              x: sampleX(meta, index),
-              y: sampleY(meta, value)
-            } : null;
-          })
-          .filter(Boolean);
-        drawHoverGuides(canvas, meta, index, canvasY, points);
-        const idle = meta.idleWhenMissing && points.length === 0;
-        if (!idle && points.length === 0) {
+        const canvasX = pointerClientX - rect.left;
+        const canvasY = pointerClientY - rect.top;
+        if (!pointerInPlot(meta, canvasX, canvasY)) {
+          clearHover();
+          return;
+        }
+        const index = nearestSampleIndex(meta, canvasX);
+        const points = chartPointsAtSample(meta, index);
+        const focusedPoint = focusedHoverPoint(points, canvasX, canvasY);
+        drawHoverGuides(canvas, meta, canvasX, focusedPoint);
+        if (!meta.idleWhenMissing && points.length === 0) {
           tooltip.hidden = true;
           return;
         }
-        tooltip.replaceChildren();
-        const title = document.createElement("strong");
-        title.textContent = meta.labels[index] || "Sample";
-        tooltip.append(title);
-        if (idle) {
-          const row = document.createElement("span");
-          row.className = "chart-tooltip__empty";
-          row.textContent = "No data in this window";
-          tooltip.append(row);
-        } else {
-          points.forEach((point) => {
-            const row = document.createElement("span");
-            row.className = "chart-tooltip__row";
-            const marker = document.createElement("span");
-            marker.className = "chart-tooltip__marker";
-            marker.style.backgroundColor = point.color;
-            const name = document.createElement("span");
-            name.className = "chart-tooltip__name";
-            name.textContent = point.name;
-            const value = document.createElement("span");
-            value.className = "chart-tooltip__value";
-            value.textContent = point.value;
-            row.append(marker, name, value);
-            tooltip.append(row);
-          });
-        }
         tooltip.hidden = false;
-        const cardX = canvas.offsetLeft + canvasX;
-        const cardY = canvas.offsetTop + canvasY;
-        const edgeMargin = 4;
-        const maxLeft = Math.max(edgeMargin, card.clientWidth - tooltip.offsetWidth - edgeMargin);
-        const maxTop = Math.max(edgeMargin, card.clientHeight - tooltip.offsetHeight - edgeMargin);
-        const minTop = Math.min(38, maxTop);
-        tooltip.style.left = Math.max(edgeMargin, Math.min(cardX + 12, maxLeft)) + "px";
-        tooltip.style.top = Math.max(minTop, Math.min(cardY - tooltip.offsetHeight - 8, maxTop)) + "px";
+        if (tooltipMeta !== meta || tooltipIndex !== index) {
+          renderChartTooltip(tooltip, meta, index, points);
+          tooltipMeta = meta;
+          tooltipIndex = index;
+          tooltipWidth = tooltip.offsetWidth;
+          tooltipHeight = tooltip.offsetHeight;
+        }
+        positionChartTooltip(tooltip, pointerClientX, pointerClientY, tooltipWidth, tooltipHeight);
+      };
+
+      canvas._refreshHover = () => {
+        if (pointerActive && hoverFrame === null) hoverFrame = window.requestAnimationFrame(paintHover);
       };
 
       canvas.addEventListener("pointermove", (event) => {
-        latestPointer = { clientX: event.clientX, clientY: event.clientY };
-        if (hoverFrame === null) hoverFrame = window.requestAnimationFrame(paintHover);
+        pointerActive = true;
+        pointerClientX = event.clientX;
+        pointerClientY = event.clientY;
+        canvas._refreshHover();
       }, { passive: true });
-      canvas.addEventListener("pointerleave", () => {
-        canvas._clearHover(true);
-      });
+      canvas.addEventListener("pointerleave", clearHover);
+      canvas.addEventListener("pointercancel", clearHover);
+      window.addEventListener("scroll", clearHover, { passive: true });
     }
 
     function setupPagers() {
