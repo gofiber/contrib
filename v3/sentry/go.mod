@@ -10,7 +10,7 @@ require (
 
 require (
 	github.com/gofiber/schema v1.8.7 // indirect
-	github.com/molecule-man/go-brrr v1.1.0 // indirect
+	github.com/molecule-man/go-brrr v1.1.1 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/valyala/fasthttp v1.74.0 // indirect
