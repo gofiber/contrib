@@ -10,7 +10,7 @@ require (
 )
 
 require (
-	github.com/ebitengine/purego v0.11.0 // indirect
+	github.com/ebitengine/purego v0.11.1 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/gofiber/schema v1.8.7 // indirect
 	github.com/google/uuid v1.6.0 // indirect
