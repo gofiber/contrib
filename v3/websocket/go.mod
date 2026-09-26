@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/fasthttp/websocket v1.5.12
 	github.com/gofiber/fiber/v3 v3.5.0
-	github.com/gofiber/utils/v2 v2.5.2
+	github.com/gofiber/utils/v2 v2.6.1
 	github.com/google/uuid v1.6.0
 	github.com/stretchr/testify v1.12.1
 	github.com/valyala/fasthttp v1.74.0
@@ -13,11 +13,11 @@ require (
 )
 
 require (
-	github.com/gofiber/schema v1.8.7 // indirect
-	github.com/klauspost/compress v1.20.0 // indirect
+	github.com/gofiber/schema v1.8.8 // indirect
+	github.com/klauspost/compress v1.20.1 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
-	github.com/molecule-man/go-brrr v1.1.0 // indirect
+	github.com/molecule-man/go-brrr v1.1.1 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/savsgio/gotils v0.0.0-20250924091648-bce9a52d7761 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect
