@@ -466,7 +466,9 @@ button:hover:not(.bar):not(.insights-toggle) {
 }
 .trend-svg { display: block; width: 100%; height: 128px; overflow: visible; }
 .trend-grid, .trend-guide, .trend-ticks { stroke: var(--border); stroke-width: 1; }
-.trend-guide { stroke-dasharray: 3 3; }
+.trend-guide, .trend-focus-guide { stroke-dasharray: 3 3; }
+.trend-guide { stroke: var(--muted); }
+.trend-focus-guide { stroke: var(--accent); stroke-width: 1; }
 .trend-path {
   fill: none;
   stroke: var(--accent);
@@ -735,7 +737,14 @@ let lastSuccessAt = initialStatus ? Date.now() : 0;
 let activeBar = null;
 let refreshInFlight = false;
 const expandedServices = new Set();
+const CHART_POINT_PROXIMITY = 16;
+const CHART_TOOLTIP_OFFSET = 12;
+const CHART_TOOLTIP_MARGIN = 12;
 let activeTrend = null;
+let trendTooltipOwner = null;
+let trendTooltipIndex = -1;
+let trendTooltipWidth = 0;
+let trendTooltipHeight = 0;
 
 function t(key) {
   return messages[key] || key;
@@ -984,6 +993,17 @@ function nearestTrendIndex(clientX, rect, count) {
   return Math.round(fraction * (count - 1));
 }
 
+function trendCursorX(clientX, rect) {
+  return 8 + Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) * 584;
+}
+
+function trendPointFocused(rect, x, y, clientX, clientY) {
+  const pointClientX = rect.left + (x - 8) / 584 * rect.width;
+  const pointClientY = rect.top + (y - 8) / 112 * rect.height;
+  return Math.abs(pointClientX - clientX) <= CHART_POINT_PROXIMITY &&
+    Math.abs(pointClientY - clientY) <= CHART_POINT_PROXIMITY;
+}
+
 function trendTickIndices(count) {
   const ticks = Math.min(count, 5);
   return Array.from({ length: ticks }, (_, index) => ticks > 1 ? Math.round(index * (count - 1) / (ticks - 1)) : 0);
@@ -994,41 +1014,58 @@ function hideTrendHoverCard() {
   card.hidden = true;
   card.classList.remove("is-visible");
   if (activeTrend) {
+    activeTrend.pointerActive = false;
+    if (activeTrend.hoverFrame !== null) {
+      window.cancelAnimationFrame(activeTrend.hoverFrame);
+      activeTrend.hoverFrame = null;
+    }
     activeTrend.guide.setAttribute("visibility", "hidden");
+    activeTrend.focusGuide.setAttribute("visibility", "hidden");
     activeTrend.point.setAttribute("visibility", "hidden");
     activeTrend = null;
   }
+  trendTooltipOwner = null;
+  trendTooltipIndex = -1;
 }
 
-function showTrendHoverCard(day, anchor) {
+function showTrendHoverCard(owner, index, day) {
   const card = $("trend-hovercard");
-  const title = document.createElement("span");
-  title.className = "hovercard-title";
-  title.textContent = day.day;
-  card.replaceChildren(title);
-  if (validTrendDay(day)) {
-    card.append(
-      cardRow("Availability", percent(day.uptime_rate)),
-      cardRow("Downtime", formatSeconds(day.estimated_downtime_seconds)),
-      cardRow(t("slots"), day.up_slots + " / " + day.expected_slots)
-    );
-  } else {
-    card.appendChild(cardNote(t("noData")));
-  }
   card.hidden = false;
-  const margin = 12;
-  const gap = 16;
-  const width = card.offsetWidth;
-  const height = card.offsetHeight;
-  // Stay beside the selected point instead of following every cursor movement.
-  let left = anchor.x + gap;
-  if (left + width > window.innerWidth - margin) left = anchor.x - width - gap;
-  left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
-  let top = anchor.y - height - gap;
-  if (top < margin) top = anchor.y + gap;
-  card.style.left = left + "px";
-  card.style.top = Math.max(margin, Math.min(top, window.innerHeight - height - margin)) + "px";
+  if (trendTooltipOwner !== owner || trendTooltipIndex !== index) {
+    const title = document.createElement("span");
+    title.className = "hovercard-title";
+    title.textContent = day.day;
+    card.replaceChildren(title);
+    if (validTrendDay(day)) {
+      card.append(
+        cardRow("Availability", percent(day.uptime_rate)),
+        cardRow("Downtime", formatSeconds(day.estimated_downtime_seconds)),
+        cardRow(t("slots"), day.up_slots + " / " + day.expected_slots)
+      );
+    } else {
+      card.appendChild(cardNote(t("noData")));
+    }
+    trendTooltipOwner = owner;
+    trendTooltipIndex = index;
+    trendTooltipWidth = card.offsetWidth;
+    trendTooltipHeight = card.offsetHeight;
+  }
+  positionTrendHoverCard(owner.pointerClientX, owner.pointerClientY);
   card.classList.add("is-visible");
+}
+
+function positionTrendHoverCard(clientX, clientY) {
+  const card = $("trend-hovercard");
+  const margin = CHART_TOOLTIP_MARGIN;
+  const offset = CHART_TOOLTIP_OFFSET;
+  const width = trendTooltipWidth;
+  const height = trendTooltipHeight;
+  let left = clientX + offset;
+  let top = clientY + offset;
+  if (left + width > window.innerWidth - margin) left = clientX - width - offset;
+  if (top + height > window.innerHeight - margin) top = clientY - height - offset;
+  card.style.left = Math.max(margin, Math.min(left, window.innerWidth - width - margin)) + "px";
+  card.style.top = Math.max(margin, Math.min(top, window.innerHeight - height - margin)) + "px";
 }
 
 function renderTrendChart(days) {
@@ -1061,32 +1098,56 @@ function renderTrendChart(days) {
   });
   svg.appendChild(svgNode("path", { class: "trend-ticks", d: tickIndices.map(index => "M" + x(index) + " 120v4").join(" "), "vector-effect": "non-scaling-stroke" }));
   const path = svgNode("path", { class: "trend-path", d: buildTrendPath(days, x, y), "vector-effect": "non-scaling-stroke" });
-  const guide = svgNode("line", { class: "trend-guide", y1: 8, y2: 120, visibility: "hidden" });
+  const guide = svgNode("line", { class: "trend-guide", y1: 8, y2: 120, visibility: "hidden", "vector-effect": "non-scaling-stroke" });
+  const focusGuide = svgNode("line", { class: "trend-focus-guide", x1: 8, x2: 592, visibility: "hidden", "vector-effect": "non-scaling-stroke" });
   const point = svgNode("circle", { class: "trend-point", r: 3, visibility: "hidden" });
   const hit = svgNode("rect", { class: "trend-hit-area", x: 8, y: 8, width: 584, height: 112, fill: "transparent" });
-  hit.addEventListener("pointermove", function(event) {
-    if (activeTrend && activeTrend.guide !== guide) hideTrendHoverCard();
+  const trend = { guide, focusGuide, point, hoverFrame: null, pointerActive: false, pointerClientX: 0, pointerClientY: 0 };
+
+  function paintHover() {
+    trend.hoverFrame = null;
+    if (!trend.pointerActive || activeTrend !== trend) return;
     const rect = hit.getBoundingClientRect();
-    const index = nearestTrendIndex(event.clientX, rect, days.length);
-    if (activeTrend && activeTrend.index === index) return;
+    if (rect.width <= 0 || rect.height <= 0 ||
+        trend.pointerClientX < rect.left || trend.pointerClientX > rect.right ||
+        trend.pointerClientY < rect.top || trend.pointerClientY > rect.bottom) {
+      hideTrendHoverCard();
+      return;
+    }
+    const cursorX = trendCursorX(trend.pointerClientX, rect);
+    const index = nearestTrendIndex(trend.pointerClientX, rect, days.length);
     const day = days[index];
-    guide.setAttribute("x1", x(index));
-    guide.setAttribute("x2", x(index));
+    guide.setAttribute("x1", cursorX);
+    guide.setAttribute("x2", cursorX);
     guide.setAttribute("visibility", "visible");
-    point.setAttribute("visibility", validTrendDay(day) ? "visible" : "hidden");
-    if (validTrendDay(day)) {
+    const focused = validTrendDay(day) && Number.isFinite(day.uptime_rate) &&
+      trendPointFocused(rect, x(index), y(day.uptime_rate), trend.pointerClientX, trend.pointerClientY);
+    focusGuide.setAttribute("visibility", focused ? "visible" : "hidden");
+    point.setAttribute("visibility", focused ? "visible" : "hidden");
+    if (focused) {
+      focusGuide.setAttribute("y1", y(day.uptime_rate));
+      focusGuide.setAttribute("y2", y(day.uptime_rate));
       point.setAttribute("cx", x(index));
       point.setAttribute("cy", y(day.uptime_rate));
     }
-    activeTrend = { guide, point, index };
-    showTrendHoverCard(day, {
-      x: rect.left + (x(index) - 8) / 584 * rect.width,
-      y: validTrendDay(day) ? rect.top + (y(day.uptime_rate) - 8) / 112 * rect.height : rect.top + rect.height / 2
-    });
-  });
-  hit.addEventListener("pointerleave", hideTrendHoverCard);
-  hit.addEventListener("pointercancel", hideTrendHoverCard);
-  svg.append(path, guide, point, hit);
+    showTrendHoverCard(trend, index, day);
+  }
+
+  hit.addEventListener("pointermove", function(event) {
+    if (activeTrend !== trend) hideTrendHoverCard();
+    // Register ownership before scheduling so rerenders can cancel pending frames.
+    activeTrend = trend;
+    trend.pointerActive = true;
+    trend.pointerClientX = event.clientX;
+    trend.pointerClientY = event.clientY;
+    if (trend.hoverFrame === null) trend.hoverFrame = window.requestAnimationFrame(paintHover);
+  }, { passive: true });
+  function clearHover() {
+    if (activeTrend === trend) hideTrendHoverCard();
+  }
+  hit.addEventListener("pointerleave", clearHover);
+  hit.addEventListener("pointercancel", clearHover);
+  svg.append(path, guide, focusGuide, point, hit);
 
   const plot = document.createElement("div");
   plot.className = "trend-plot";
