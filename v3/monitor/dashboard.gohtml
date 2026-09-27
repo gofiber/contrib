@@ -6,6 +6,13 @@
   <meta name="description" content="{{ .Description }}">
   <link rel="icon" href="{{ .FaviconURL }}">
   <title>{{ .Title }}</title>
+  <script>
+    // Apply a saved theme before the first paint to avoid a flash of the system theme.
+    try {
+      const savedTheme = localStorage.getItem("monitor.theme");
+      if (savedTheme === "light" || savedTheme === "dark") document.documentElement.dataset.theme = savedTheme;
+    } catch (_) {}
+  </script>
   <style>
     :root,
     :root[data-theme="light"] {
@@ -16,8 +23,8 @@
       --text: #0f172a;
       --muted: #52657f;
       --border: #cfd8e6;
-      --accent: #0f8aa3;
-      --accent-soft: rgba(15, 138, 163, 0.1);
+      --accent: #0e7490;
+      --accent-soft: rgba(14, 116, 144, 0.1);
       --good: #24935f;
       --warn: #bf7b16;
       --bad: #c94a4a;
@@ -142,6 +149,10 @@
     button:hover {
       border-color: var(--accent);
     }
+    button:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
     .status-box {
       display: grid;
       grid-template-columns: minmax(0, 1fr) max-content;
@@ -222,6 +233,10 @@
       border-radius: 50%;
       background: var(--good);
       box-shadow: 0 0 0 4px color-mix(in srgb, var(--good) 18%, transparent);
+    }
+    #live-dot[data-status="connecting"] {
+      background: var(--muted);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--muted) 18%, transparent);
     }
     #live-dot[data-status="stale"] {
       background: var(--warn);
@@ -512,6 +527,8 @@
       height: 190px;
       border-radius: 6px;
       background: var(--panel-soft);
+      /* Vertical swipes scroll the page; horizontal drags scrub the chart. */
+      touch-action: pan-y pinch-zoom;
     }
 
     .chart-tooltip {
@@ -559,15 +576,26 @@
     .modal {
       position: fixed;
       inset: 0;
-      z-index: 120;
-      display: grid;
-      place-items: center;
+      width: 100%;
+      max-width: none;
+      height: 100%;
+      max-height: none;
+      margin: 0;
       padding: 20px;
+      border: 0;
       background: color-mix(in srgb, var(--bg), transparent 18%);
+      color: var(--text);
       backdrop-filter: blur(8px);
     }
-    .modal[hidden] {
-      display: none;
+    .modal[open] {
+      display: grid;
+      place-items: center;
+    }
+    .modal::backdrop {
+      background: transparent;
+    }
+    html:has(.modal[open]) {
+      overflow: hidden;
     }
     .modal__panel {
       width: min(760px, 100%);
@@ -819,12 +847,12 @@
     <header class="header">
       <div class="header-main"><h1>{{ .Title }}</h1></div>
       <div class="header-side">
-        <div class="status-box" aria-live="polite">
-          <span class="status-controls" aria-label="Display preferences">
+        <div class="status-box">
+          <span class="status-controls">
             <button type="button" id="theme-toggle" class="control-dot" data-active="light" title="Theme"><span class="visually-hidden">Toggle theme</span></button>
           </span>
-          <div class="status-line"><span class="status-state"><span id="live-dot" data-status="error"></span><span id="live-text">ERROR</span></span></div>
-          <span id="updated-at">-</span><span id="response-time">-</span>
+          <div id="live-status" class="status-line" role="status" title="Waiting for the first snapshot"><span class="status-state"><span id="live-dot" data-status="connecting"></span><span id="live-text">CONNECTING</span></span></div>
+          <span id="updated-at" title="Snapshot collection time">-</span><span id="response-time" title="Snapshot request time">-</span>
         </div>
       </div>
     </header>
@@ -894,20 +922,20 @@
         </div>
       </div>
       <div class="chart-grid">
-        <article class="chart-card"><div class="chart-head"><span>CPU</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="pid"></span>Process</span><span class="legend-item"><span class="legend-dot" data-series="os"></span>System</span></span></div><canvas id="cpu-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
-        <article class="chart-card"><div class="chart-head"><span>Memory</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="rss"></span>RSS</span><span class="legend-item"><span class="legend-dot" data-series="heap"></span>Heap</span></span></div><canvas id="memory-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
-        <article class="chart-card"><div class="chart-head"><span>Network</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="pid"></span>RX/s</span><span class="legend-item"><span class="legend-dot" data-series="os"></span>TX/s</span></span></div><canvas id="network-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
-        <article class="chart-card"><div class="chart-head"><span>Goroutines</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="main"></span>Count</span></span></div><canvas id="goroutine-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
-        <article class="chart-card"><div class="chart-head"><span>Requests / second</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="main"></span>RPS</span></span></div><canvas id="request-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
-        <article class="chart-card"><div class="chart-head"><span>HTTP latency</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="recent"></span>P50</span><span class="legend-item"><span class="legend-dot" data-series="max"></span>P95</span><span class="legend-item"><span class="legend-dot" data-series="bad"></span>P99</span></span></div><canvas id="latency-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
-        <article class="chart-card"><div class="chart-head"><span>HTTP Error Rate</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="max"></span>4xx</span><span class="legend-item"><span class="legend-dot" data-series="bad"></span>5xx</span></span></div><canvas id="http-error-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
-        <article class="chart-card"><div class="chart-head"><span>GC Pause</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="window"></span>Window</span><span class="legend-item"><span class="legend-dot" data-series="last"></span>Last</span></span></div><canvas id="gc-pause-chart"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>CPU</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="pid"></span>Process</span><span class="legend-item"><span class="legend-dot" data-series="os"></span>System</span></span></div><canvas id="cpu-chart" role="img" aria-label="CPU trend"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>Memory</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="rss"></span>RSS</span><span class="legend-item"><span class="legend-dot" data-series="heap"></span>Heap</span></span></div><canvas id="memory-chart" role="img" aria-label="Memory trend"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>Network</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="pid"></span>RX/s</span><span class="legend-item"><span class="legend-dot" data-series="os"></span>TX/s</span></span></div><canvas id="network-chart" role="img" aria-label="Network trend"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>Goroutines</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="main"></span>Count</span></span></div><canvas id="goroutine-chart" role="img" aria-label="Goroutines trend"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>Requests / second</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="main"></span>RPS</span></span></div><canvas id="request-chart" role="img" aria-label="Requests per second trend"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>HTTP latency</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="recent"></span>P50</span><span class="legend-item"><span class="legend-dot" data-series="max"></span>P95</span><span class="legend-item"><span class="legend-dot" data-series="bad"></span>P99</span></span></div><canvas id="latency-chart" role="img" aria-label="HTTP latency trend"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>HTTP Error Rate</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="max"></span>4xx</span><span class="legend-item"><span class="legend-dot" data-series="bad"></span>5xx</span></span></div><canvas id="http-error-chart" role="img" aria-label="HTTP error rate trend"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
+        <article class="chart-card"><div class="chart-head"><span>GC Pause</span><span class="chart-legend legend-list"><span class="legend-item"><span class="legend-dot" data-series="window"></span>Window</span><span class="legend-item"><span class="legend-dot" data-series="last"></span>Last</span></span></div><canvas id="gc-pause-chart" role="img" aria-label="GC pause trend"></canvas><div class="chart-tooltip" role="tooltip" hidden></div></article>
       </div>
     </div>
     <footer>{{ .Footer }}</footer>
   </main>
-  <button id="page-scroll-dock" class="page-scroll-dock" type="button" title="Scroll up" aria-label="Scroll progress 0%" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="page-scroll-dock-value" class="page-scroll-dock__core">0%</span></button>
-  <div id="disk-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="disk-modal-title" hidden>
+  <button id="page-scroll-dock" class="page-scroll-dock" type="button" title="Scroll up" aria-label="Scroll up; scroll progress 0%"><span id="page-scroll-dock-value" class="page-scroll-dock__core">0%</span></button>
+  <dialog id="disk-modal" class="modal" aria-labelledby="disk-modal-title">
     <div class="modal__panel">
       <div class="modal__head">
         <h2 id="disk-modal-title">Disk Details</h2>
@@ -915,8 +943,8 @@
       </div>
       <div id="disk-modal-list" class="disk-list"></div>
     </div>
-  </div>
-  <div id="heap-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="heap-modal-title" hidden>
+  </dialog>
+  <dialog id="heap-modal" class="modal" aria-labelledby="heap-modal-title">
     <div class="modal__panel">
       <div class="modal__head">
         <h2 id="heap-modal-title">Heap Details</h2>
@@ -924,8 +952,8 @@
       </div>
       <dl id="heap-modal-list" class="detail-list"></dl>
     </div>
-  </div>
-  <div id="gc-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="gc-modal-title" hidden>
+  </dialog>
+  <dialog id="gc-modal" class="modal" aria-labelledby="gc-modal-title">
     <div class="modal__panel">
       <div class="modal__head">
         <h2 id="gc-modal-title">GC Details</h2>
@@ -933,8 +961,8 @@
       </div>
       <dl id="gc-modal-list" class="detail-list"></dl>
     </div>
-  </div>
-  <div id="http-status-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="http-status-modal-title" hidden>
+  </dialog>
+  <dialog id="http-status-modal" class="modal" aria-labelledby="http-status-modal-title">
     <div class="modal__panel">
       <div class="modal__head">
         <h2 id="http-status-modal-title">HTTP Status Codes</h2>
@@ -942,16 +970,28 @@
       </div>
       <dl id="http-status-modal-list" class="detail-list"></dl>
     </div>
-  </div>
+  </dialog>
   <script>
 (() => {
     "use strict";
     const REFRESH_MS = {{ .RefreshMS }};
+    const REQUEST_TIMEOUT_MS = Math.max(REFRESH_MS, 10000);
     const MAX_SAMPLES = 90;
     const SAMPLE_WINDOWS = [30, 60, 90];
     const CHART_POINT_PROXIMITY = 16;
     const CHART_TOOLTIP_OFFSET = 12;
     const CHART_TOOLTIP_MARGIN = 12;
+    const CHART_AXIS_FONT = "11px system-ui, sans-serif";
+    const BYTE_UNITS = ["B", "KiB", "MiB", "GiB", "TiB"];
+    const DURATION_UNITS = [[1, " ns"], [1e3, " \u00b5s"], [1e6, " ms"], [1e9, " s"]];
+    const COUNT_UNITS = [[1, ""], [1e3, "k"], [1e6, "M"]];
+    const STATE_DETAILS = {
+      connecting: "Waiting for the first snapshot",
+      live: "",
+      partial: "Some metrics could not be collected",
+      stale: "The latest refresh failed; showing the last successful snapshot",
+      error: "The monitor endpoint could not be reached"
+    };
     const dash = "\u2014";
     const history = {
       labels: [],
@@ -981,6 +1021,9 @@
     let lastCollectedAt = "";
     let hasUsableSnapshot = false;
     let resizeFrame = 0;
+    let pollTimer = 0;
+    let pollInFlight = false;
+    let lastPollStarted = -Infinity;
 
     const byId = (id) => document.getElementById(id);
     const finite = (value) => typeof value === "number" && Number.isFinite(value);
@@ -994,6 +1037,7 @@
     const decimal = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
     const integer = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
     const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
     function storageGet(key) {
       try {
@@ -1040,6 +1084,10 @@
       if (hours > 0) return hours + "h " + minutes + "m";
       if (minutes > 0) return minutes + "m " + (seconds % 60) + "s";
       return seconds + "s";
+    }
+
+    function formatSpan(seconds) {
+      return formatUptime(seconds).replace(/ 0[smh]$/, "");
     }
 
     const percent = (value) => optional(value, (number) => number.toFixed(1) + "%");
@@ -1248,10 +1296,24 @@
       }
     }
 
-    function updateState(state, responseMS, collectedAt) {
+    function updateState(state, responseMS, collectedAt, collectionErrors) {
       const dot = byId("live-dot");
       if (dot) dot.dataset.status = state;
-      setText("live-text", state.toUpperCase());
+      // The status line is a live region, so rewrite it only when the state changes.
+      const label = state.toUpperCase();
+      const text = byId("live-text");
+      if (text && text.textContent !== label) text.textContent = label;
+      const status = byId("live-status");
+      if (status) {
+        const errors = Array.isArray(collectionErrors) ? collectionErrors : [];
+        const detail = STATE_DETAILS[state] || "";
+        const description = state === "partial" && errors.length ? detail + ": " + errors.join(", ") : detail;
+        if (description) {
+          status.title = description;
+        } else {
+          status.removeAttribute("title");
+        }
+      }
       setText("response-time", finite(responseMS) ? responseMS.toFixed(1) + " ms" : dash);
       if (collectedAt) {
         const date = new Date(collectedAt);
@@ -1290,21 +1352,38 @@
       return true;
     }
 
-    function formatShort(value) {
-      const number = Number(value || 0);
-      if (Math.abs(number) >= 1000000) return (number / 1000000).toFixed(1) + "M";
-      if (Math.abs(number) >= 1000) return (number / 1000).toFixed(1) + "k";
-      if (Math.abs(number) >= 10) return number.toFixed(0);
-      return number.toFixed(1);
+    // Axis ticks stay round in the unit they are displayed in: byte values step
+    // in binary units and every duration tick shares a single unit.
+    function pickUnit(units, largest) {
+      return units.reduce((selected, unit) => largest >= unit[0] ? unit : selected, units[0]);
     }
 
-    function formatAxis(value, unit) {
-      const label = formatShort(value);
-      return unit ? label + " " + unit : label;
+    function axisUnit(options, largest) {
+      if (options.axis === "bytes") {
+        let index = 0;
+        while (index < BYTE_UNITS.length - 1 && largest >= 1024 ** (index + 1)) index += 1;
+        return { divisor: 1024 ** index, symbol: "", suffix: " " + BYTE_UNITS[index] + (options.suffix || "") };
+      }
+      if (options.axis === "duration") {
+        const [divisor, suffix] = pickUnit(DURATION_UNITS, largest);
+        return { divisor, symbol: "", suffix };
+      }
+      const [divisor, symbol] = pickUnit(COUNT_UNITS, largest);
+      return { divisor, symbol, suffix: options.suffix || "" };
     }
 
-    function durationAxisNS(value) {
-      return formatDurationNS(value).replace(" ", "");
+    function decimalsForStep(step) {
+      return Math.max(0, Math.min(3, Math.ceil(-Math.log10(step) - 1e-9)));
+    }
+
+    function axisTicks(min, scale, unit) {
+      const decimals = decimalsForStep(scale.step);
+      const ticks = [];
+      for (let line = 0; line <= scale.intervals; line += 1) {
+        const value = min + scale.step * (scale.intervals - line);
+        ticks.push(Math.abs(value) < scale.step / 2 ? "0" + unit.suffix : value.toFixed(decimals) + unit.symbol + unit.suffix);
+      }
+      return ticks;
     }
 
     function niceScale(min, observedMax, floorMax, minimumStep) {
@@ -1351,28 +1430,38 @@
       context.textAlign = "left";
     }
 
-    function drawGrid(context, width, height, padding, scale, options, labels, colors) {
-      const plotHeight = height - padding.top - padding.bottom;
+    function drawGrid(context, meta, colors) {
       context.strokeStyle = colors.border;
       context.lineWidth = 1;
       context.globalAlpha = .55;
-      for (let line = 0; line <= scale.intervals; line += 1) {
-        const y = padding.top + plotHeight / scale.intervals * line;
+      for (let line = 0; line <= meta.intervals; line += 1) {
+        const y = meta.padding.top + meta.plotHeight / meta.intervals * line;
         context.beginPath();
-        context.moveTo(padding.left, y);
-        context.lineTo(width - padding.right, y);
+        context.moveTo(meta.padding.left, y);
+        context.lineTo(meta.width - meta.padding.right, y);
         context.stroke();
       }
       context.globalAlpha = 1;
       context.fillStyle = colors.muted;
-      context.font = "11px system-ui, sans-serif";
+      context.font = CHART_AXIS_FONT;
       context.textBaseline = "middle";
-      for (let line = 0; line <= scale.intervals; line += 1) {
-        const value = scale.max - scale.step * line;
-        const y = padding.top + plotHeight / scale.intervals * line;
-        context.fillText(options.formatValue ? options.formatValue(value) : formatAxis(value, options.unit), 4, y);
-      }
-      drawTimeLabels(context, width, height, padding, labels, colors.muted);
+      meta.ticks.forEach((tick, line) => {
+        context.fillText(tick, 4, meta.padding.top + meta.plotHeight / meta.intervals * line);
+      });
+      drawTimeLabels(context, meta.width, meta.height, meta.padding, meta.labels, colors.muted);
+    }
+
+    function drawEmptyText(context, meta, color) {
+      const x = meta.padding.left + meta.plotWidth / 2;
+      const y = meta.padding.top + meta.plotHeight / 2;
+      context.fillStyle = color;
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      meta.emptyText.forEach((line, index) => {
+        context.font = (index ? "" : "600 ") + "12px system-ui, sans-serif";
+        context.fillText(line, x, y + (index - (meta.emptyText.length - 1) / 2) * 18);
+      });
+      context.textAlign = "left";
     }
 
     function sampleX(meta, index) {
@@ -1418,12 +1507,19 @@
       const context = canvas.getContext("2d");
       context.setTransform(meta.dpr, 0, 0, meta.dpr, 0, 0);
       context.clearRect(0, 0, meta.width, meta.height);
-      drawGrid(context, meta.width, meta.height, meta.padding, {
-        max: meta.max, step: meta.step, intervals: meta.intervals
-      }, meta.options, meta.labels, paintColors);
+      drawGrid(context, meta, paintColors);
+      if (meta.emptyText) drawEmptyText(context, meta, paintColors.muted);
       meta.series.forEach((series) => drawSeries(context, series.data, {
         ...meta, color: series.color
       }));
+    }
+
+    function chartSummary(label, meta) {
+      if (meta.emptyText) return label + " trend: " + meta.emptyText.join(". ");
+      return label + " trend, latest: " + meta.series.map((series) => {
+        const value = series.data[series.data.length - 1];
+        return series.name + " " + (finite(value) ? meta.formatter(value) : "no data");
+      }).join(", ");
     }
 
     function drawLineChart(canvas, seriesList, options) {
@@ -1432,18 +1528,26 @@
       const rect = canvas.getBoundingClientRect();
       const width = Math.max(rect.width, 1);
       const height = Math.max(rect.height, 1);
-      const padding = { top: 12, right: 10, bottom: 24, left: options.leftPadding || 58 };
       canvas.width = Math.floor(width * dpr);
       canvas.height = Math.floor(height * dpr);
       const values = [];
       seriesList.forEach((series) => series.data.forEach((value) => {
         if (finite(value)) values.push(value);
       }));
+      const labels = visibleSamples(history.labels);
       const min = finite(options.minValue) ? options.minValue : 0;
       const floorMax = finite(options.minMax) ? options.minMax : 0;
-      const observedMax = values.length ? Math.max(...values) : 1;
-      const scale = niceScale(min, observedMax, floorMax, finite(options.minimumStep) ? options.minimumStep : 0);
-      const labels = visibleSamples(history.labels);
+      const observedMax = values.length ? Math.max(...values) : 0;
+      // Scale in display units so ticks are round numbers of KiB, ms, and so on.
+      const unit = axisUnit(options, Math.max(observedMax, floorMax));
+      let minimumStep = finite(options.minimumStep) ? options.minimumStep / unit.divisor : 0;
+      if (options.axis && unit.divisor === 1) minimumStep = Math.max(minimumStep, 1);
+      const scale = niceScale(min / unit.divisor, values.length ? observedMax / unit.divisor : 1, floorMax / unit.divisor, minimumStep);
+      const ticks = values.length ? axisTicks(min / unit.divisor, scale, unit) : [];
+      const context = canvas.getContext("2d");
+      context.font = CHART_AXIS_FONT;
+      const tickWidth = ticks.reduce((widest, tick) => Math.max(widest, context.measureText(tick).width), 0);
+      const padding = { top: 12, right: 10, bottom: 24, left: Math.max(40, Math.ceil(tickWidth) + 14) };
       const meta = {
         series: seriesList,
         labels,
@@ -1455,15 +1559,17 @@
         height,
         dpr,
         min,
-        max: scale.max,
-        step: scale.step,
+        max: scale.max * unit.divisor,
         intervals: scale.intervals,
-        options,
+        ticks,
+        emptyText: values.length ? null : options.emptyText || [labels.length < 2 ? "Waiting for data\u2026" : "No data in this window"],
         idleWhenMissing: Boolean(options.idleWhenMissing),
-        formatter: options.formatValue || ((value) => formatAxis(value, options.unit))
+        formatter: options.format
       };
       canvas._chartMeta = meta;
       paintLineChart(canvas, meta);
+      const summary = chartSummary(options.label, meta);
+      if (canvas.getAttribute("aria-label") !== summary) canvas.setAttribute("aria-label", summary);
       if (canvas._refreshHover) canvas._refreshHover();
     }
 
@@ -1472,37 +1578,44 @@
       const good = cssColor("--good");
       const warn = cssColor("--warn");
       const bad = cssColor("--bad");
+      const gcPauseDisabled = currentRuntime.gc_pause_metrics_enabled === false;
       drawLineChart(byId("cpu-chart"), [
         { name: "Process", data: visibleSamples(history.processCPU), color: accent },
         { name: "System", data: visibleSamples(history.systemCPU), color: warn }
-      ], { minValue: 0, minMax: 100, unit: "%" });
+      ], { label: "CPU", minValue: 0, minMax: 100, suffix: "%", format: percent });
       drawLineChart(byId("memory-chart"), [
-        { name: "RSS", data: visibleSamples(history.rss).map((value) => finite(value) ? value / 1024 / 1024 : null), color: accent },
-        { name: "Heap", data: visibleSamples(history.heap).map((value) => finite(value) ? value / 1024 / 1024 : null), color: good }
-      ], { minValue: 0, unit: "MiB" });
+        { name: "RSS", data: visibleSamples(history.rss), color: accent },
+        { name: "Heap", data: visibleSamples(history.heap), color: good }
+      ], { label: "Memory", minValue: 0, axis: "bytes", format: formatBytes });
       drawLineChart(byId("network-chart"), [
         { name: "RX/s", data: visibleSamples(history.networkRX), color: accent },
         { name: "TX/s", data: visibleSamples(history.networkTX), color: warn }
-      ], { minValue: 0, formatValue: (value) => formatBytes(value) + "/s", leftPadding: 70 });
+      ], { label: "Network", minValue: 0, axis: "bytes", suffix: "/s", format: (value) => formatBytes(value) + "/s" });
       drawLineChart(byId("goroutine-chart"), [
         { name: "Count", data: visibleSamples(history.goroutines), color: accent }
-      ], { minValue: 0, unit: "g" });
+      ], { label: "Goroutines", minValue: 0, minimumStep: 1, format: integer.format });
       drawLineChart(byId("request-chart"), [
         { name: "RPS", data: visibleSamples(history.rps), color: accent }
-      ], { minValue: 0, unit: "req/s" });
+      ], { label: "Requests per second", minValue: 0, suffix: " req/s", format: (value) => value.toFixed(2) + " req/s" });
       drawLineChart(byId("latency-chart"), [
         { name: "P50", data: visibleSamples(history.p50), color: accent },
         { name: "P95", data: visibleSamples(history.p95), color: warn },
         { name: "P99", data: visibleSamples(history.p99), color: bad }
-      ], { minValue: 0, minimumStep: 1, formatValue: durationAxisNS, leftPadding: 70, idleWhenMissing: true });
+      ], { label: "HTTP latency", minValue: 0, axis: "duration", format: formatDurationNS, idleWhenMissing: true });
       drawLineChart(byId("http-error-chart"), [
         { name: "4xx", data: visibleSamples(history.error4xx), color: warn },
         { name: "5xx", data: visibleSamples(history.error5xx), color: bad }
-      ], { minValue: 0, unit: "%", idleWhenMissing: true });
+      ], { label: "HTTP error rate", minValue: 0, suffix: "%", format: (value) => ratio(value / 100), idleWhenMissing: true });
       drawLineChart(byId("gc-pause-chart"), [
         { name: "Window", data: visibleSamples(history.gcWindow), color: accent },
         { name: "Last", data: visibleSamples(history.gcLast), color: warn }
-      ], { minValue: 0, minimumStep: 1, formatValue: durationAxisNS, leftPadding: 70 });
+      ], {
+        label: "GC pause",
+        minValue: 0,
+        axis: "duration",
+        format: formatDurationNS,
+        emptyText: gcPauseDisabled ? ["GC pause metrics are disabled", "Enable Config.EnableGCPauseMetrics"] : null
+      });
     }
 
     function pointerInPlot(meta, x, y) {
@@ -1617,13 +1730,15 @@
       }
     }
 
-    function positionChartTooltip(tooltip, clientX, clientY, width, height) {
+    function positionChartTooltip(tooltip, clientX, clientY, width, height, above) {
       const margin = CHART_TOOLTIP_MARGIN;
       const offset = CHART_TOOLTIP_OFFSET;
       let left = clientX + offset;
-      let top = clientY + offset;
+      // A finger covers the area below a touch point, so touch tooltips open above it.
+      let top = above ? clientY - height - offset * 2 : clientY + offset;
       if (left + width > window.innerWidth - margin) left = clientX - width - offset;
-      if (top + height > window.innerHeight - margin) top = clientY - height - offset;
+      if (!above && top + height > window.innerHeight - margin) top = clientY - height - offset;
+      if (above && top < margin) top = clientY + offset * 2;
       tooltip.style.left = Math.max(margin, Math.min(left, window.innerWidth - width - margin)) + "px";
       tooltip.style.top = Math.max(margin, Math.min(top, window.innerHeight - height - margin)) + "px";
     }
@@ -1634,6 +1749,7 @@
       let pointerActive = false;
       let pointerClientX = 0;
       let pointerClientY = 0;
+      let pointerTouch = false;
       let tooltipMeta = null;
       let tooltipIndex = -1;
       let tooltipWidth = 0;
@@ -1681,21 +1797,34 @@
           tooltipWidth = tooltip.offsetWidth;
           tooltipHeight = tooltip.offsetHeight;
         }
-        positionChartTooltip(tooltip, pointerClientX, pointerClientY, tooltipWidth, tooltipHeight);
+        positionChartTooltip(tooltip, pointerClientX, pointerClientY, tooltipWidth, tooltipHeight, pointerTouch);
       };
 
       canvas._refreshHover = () => {
         if (pointerActive && hoverFrame === null) hoverFrame = window.requestAnimationFrame(paintHover);
       };
 
-      canvas.addEventListener("pointermove", (event) => {
+      const trackPointer = (event) => {
         pointerActive = true;
+        pointerTouch = event.pointerType === "touch";
         pointerClientX = event.clientX;
         pointerClientY = event.clientY;
         canvas._refreshHover();
+      };
+
+      canvas.addEventListener("pointermove", trackPointer, { passive: true });
+      // Touch pointers cannot hover: a tap shows the tooltip, which stays until
+      // the page scrolls or something else is tapped.
+      canvas.addEventListener("pointerdown", (event) => {
+        if (event.pointerType !== "mouse") trackPointer(event);
       }, { passive: true });
-      canvas.addEventListener("pointerleave", clearHover);
+      canvas.addEventListener("pointerleave", (event) => {
+        if (event.pointerType !== "touch") clearHover();
+      });
       canvas.addEventListener("pointercancel", clearHover);
+      document.addEventListener("pointerdown", (event) => {
+        if (event.target !== canvas) clearHover();
+      }, { passive: true });
       window.addEventListener("scroll", clearHover, { passive: true });
     }
 
@@ -1738,23 +1867,18 @@
       { modal: "http-status-modal", trigger: "http-status-button", close: "http-status-modal-close" }
     ];
 
+    // Native modal dialogs keep keyboard focus inside, make the page behind
+    // them inert, and close on Escape.
     function openModal(binding) {
       const modal = byId(binding.modal);
-      if (!modal) return;
-      modal.hidden = false;
+      if (!modal || modal.open) return;
+      modal.showModal();
       byId(binding.close).focus();
     }
 
     function closeModal(binding) {
       const modal = byId(binding.modal);
-      if (!modal || modal.hidden) return;
-      modal.hidden = true;
-      byId(binding.trigger).focus();
-    }
-
-    function closeVisibleModal() {
-      const binding = modalBindings.find((entry) => !byId(entry.modal).hidden);
-      if (binding) closeModal(binding);
+      if (modal && modal.open) modal.close();
     }
 
     function setupModals() {
@@ -1765,18 +1889,31 @@
         modal.addEventListener("click", (event) => {
           if (event.target === modal) closeModal(binding);
         });
-      });
-      window.addEventListener("keydown", (event) => {
-        if (event.key === "Escape") closeVisibleModal();
+        modal.addEventListener("close", () => byId(binding.trigger).focus());
       });
     }
 
+    // Every poll can trigger a server-side collection, so hidden pages stop
+    // polling and resume as soon as they become visible again.
+    function schedulePoll(delay) {
+      window.clearTimeout(pollTimer);
+      pollTimer = document.hidden ? 0 : window.setTimeout(poll, Math.max(0, delay));
+    }
+
     async function poll() {
+      pollTimer = 0;
+      if (pollInFlight) return;
+      pollInFlight = true;
       const started = performance.now();
+      lastPollStarted = started;
+      // A hung request must not freeze the dashboard in its last state.
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
       try {
         const response = await fetch(window.location.pathname + window.location.search, {
           headers: { Accept: "application/json" },
-          cache: "no-store"
+          cache: "no-store",
+          signal: controller.signal
         });
         if (!response.ok) throw new Error("monitor request failed");
         const snapshot = await response.json();
@@ -1784,12 +1921,23 @@
         renderMetrics(snapshot);
         if (appendSample(snapshot)) drawCharts();
         hasUsableSnapshot = true;
-        const partial = snapshot.collection && snapshot.collection.partial;
-        updateState(partial ? "partial" : "live", responseMS, snapshot.collected_at);
+        const collection = snapshot.collection || {};
+        updateState(collection.partial ? "partial" : "live", responseMS, snapshot.collected_at, collection.errors);
       } catch (_) {
         updateState(hasUsableSnapshot ? "stale" : "error", performance.now() - started, lastCollectedAt);
       } finally {
-        window.setTimeout(poll, REFRESH_MS);
+        window.clearTimeout(timeout);
+        pollInFlight = false;
+        schedulePoll(REFRESH_MS);
+      }
+    }
+
+    function handleVisibilityChange() {
+      if (document.hidden) {
+        window.clearTimeout(pollTimer);
+        pollTimer = 0;
+      } else if (!pollInFlight) {
+        schedulePoll(lastPollStarted + REFRESH_MS - performance.now());
       }
     }
 
@@ -1802,8 +1950,7 @@
       const top = window.scrollY || documentElement.scrollTop || document.body.scrollTop || 0;
       const rounded = Math.round(maxScroll ? Math.min(100, Math.max(0, top / maxScroll * 100)) : 0);
       dock.style.setProperty("--scroll-progress", rounded + "%");
-      dock.setAttribute("aria-valuenow", String(rounded));
-      dock.setAttribute("aria-label", "Scroll progress " + rounded + "%");
+      dock.setAttribute("aria-label", "Scroll up; scroll progress " + rounded + "%");
       dock.classList.toggle("page-scroll-dock--visible", window.innerWidth >= 768 && maxScroll > 320 && top > 72);
       value.textContent = rounded + "%";
     }
@@ -1811,13 +1958,15 @@
     function scrollUpQuarter() {
       const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
       const top = window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0;
-      window.scrollTo({ top: Math.max(0, top - maxScroll * .25), behavior: "smooth" });
+      window.scrollTo({ top: Math.max(0, top - maxScroll * .25), behavior: reducedMotion.matches ? "auto" : "smooth" });
     }
 
     document.querySelectorAll("canvas").forEach(setupChartHover);
     setupPagers();
     setupModals();
     document.querySelectorAll(".sample-option").forEach((button) => {
+      const samples = Number(button.dataset.samples);
+      button.title = "Show the last " + samples + " samples (\u2248 " + formatSpan(samples * REFRESH_MS / 1000) + ")";
       button.addEventListener("click", () => applySampleWindow(button.dataset.samples, true));
     });
     byId("theme-toggle").addEventListener("click", toggleTheme);
@@ -1845,8 +1994,9 @@
         updateScrollDock();
       });
     }, { passive: true });
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     updateScrollDock();
-    poll();
+    schedulePoll(0);
   })();
   </script>
 </body>

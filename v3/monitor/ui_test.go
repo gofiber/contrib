@@ -144,11 +144,96 @@ func TestDashboardInteractions(t *testing.T) {
 	} {
 		assert.Contains(t, pageHTML, label)
 	}
-	assert.Contains(t, pageHTML, `event.key === "Escape"`)
+	// Native modal dialogs contain focus, make the page inert, and close on Escape.
+	assert.Equal(t, 4, strings.Count(pageHTML, `<dialog id=`))
+	assert.Contains(t, pageHTML, `modal.showModal()`)
+	assert.Contains(t, pageHTML, `modal.addEventListener("close"`)
+	assert.Contains(t, pageHTML, `html:has(.modal[open])`)
+	assert.NotContains(t, pageHTML, `aria-modal`)
 	assert.Contains(t, pageHTML, `event.target === modal`)
 	assert.Contains(t, pageHTML, `byId(binding.trigger).focus()`)
 	assert.Contains(t, pageHTML, `id="http-error-chart"`)
 	assert.Contains(t, pageHTML, `id="gc-pause-chart"`)
+}
+
+func TestDashboardPollingLifecycle(t *testing.T) {
+	pageHTML, err := renderDashboard(ConfigDefault)
+	require.NoError(t, err)
+
+	for _, contract := range []string{
+		`const REQUEST_TIMEOUT_MS = Math.max(REFRESH_MS, 10000);`,
+		`const controller = new AbortController();`,
+		`signal: controller.signal`,
+		`window.clearTimeout(timeout);`,
+		`if (pollInFlight) return;`,
+		`pollTimer = document.hidden ? 0 : window.setTimeout(poll, Math.max(0, delay));`,
+		`document.addEventListener("visibilitychange", handleVisibilityChange);`,
+		`schedulePoll(lastPollStarted + REFRESH_MS - performance.now());`,
+		`schedulePoll(0);`,
+		`<span id="live-dot" data-status="connecting"></span><span id="live-text">CONNECTING</span>`,
+		`errors.join(", ")`,
+	} {
+		assert.Contains(t, pageHTML, contract)
+	}
+	assert.NotContains(t, pageHTML, `window.setTimeout(poll, REFRESH_MS)`)
+	assert.NotContains(t, pageHTML, `data-status="error"></span>`)
+}
+
+func TestDashboardAccessibilityContract(t *testing.T) {
+	pageHTML, err := renderDashboard(ConfigDefault)
+	require.NoError(t, err)
+
+	// Only connection state changes are announced; timestamps change on every poll.
+	assert.Equal(t, 1, strings.Count(pageHTML, `role="status"`))
+	assert.Contains(t, pageHTML, `class="status-line" role="status"`)
+	assert.NotContains(t, pageHTML, `aria-live`)
+	assert.Contains(t, pageHTML, `if (text && text.textContent !== label) text.textContent = label;`)
+
+	assert.Equal(t, 8, strings.Count(pageHTML, `role="img" aria-label="`))
+	assert.Contains(t, pageHTML, `canvas.setAttribute("aria-label", summary)`)
+	assert.NotContains(t, pageHTML, `aria-value`)
+	assert.NotContains(t, pageHTML, `aria-label="Display preferences"`)
+	assert.Contains(t, pageHTML, `aria-label="Scroll up; scroll progress 0%"`)
+	assert.Contains(t, pageHTML, `reducedMotion.matches ? "auto" : "smooth"`)
+	assert.Regexp(t, `(?s)button:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\)`, pageHTML)
+	// The light accent keeps small uppercase headings above WCAG AA contrast.
+	assert.Contains(t, pageHTML, `--accent: #0e7490;`)
+
+	// Touch pointers cannot hover, so a tap or horizontal drag shows chart values.
+	assert.Contains(t, pageHTML, `touch-action: pan-y pinch-zoom`)
+	assert.Contains(t, pageHTML, `canvas.addEventListener("pointerdown"`)
+	assert.Contains(t, pageHTML, `if (event.pointerType !== "touch") clearHover();`)
+	assert.Contains(t, pageHTML, `positionChartTooltip(tooltip, pointerClientX, pointerClientY, tooltipWidth, tooltipHeight, pointerTouch)`)
+}
+
+func TestDashboardChartAxisContract(t *testing.T) {
+	pageHTML, err := renderDashboard(ConfigDefault)
+	require.NoError(t, err)
+
+	for _, contract := range []string{
+		`function axisUnit(`,
+		`function decimalsForStep(`,
+		`function axisTicks(`,
+		`const BYTE_UNITS = ["B", "KiB", "MiB", "GiB", "TiB"];`,
+		`label: "Memory", minValue: 0, axis: "bytes", format: formatBytes`,
+		`axis: "bytes", suffix: "/s"`,
+		`label: "HTTP latency", minValue: 0, axis: "duration", format: formatDurationNS`,
+		`context.measureText(tick).width`,
+		`Waiting for data\u2026`,
+		`"GC pause metrics are disabled", "Enable Config.EnableGCPauseMetrics"`,
+		`currentRuntime.gc_pause_metrics_enabled === false`,
+	} {
+		assert.Contains(t, pageHTML, contract)
+	}
+	for _, removed := range []string{
+		`function formatShort(`,
+		`function durationAxisNS(`,
+		`unit: "g"`,
+		`leftPadding`,
+		`value / 1024 / 1024`,
+	} {
+		assert.NotContains(t, pageHTML, removed)
+	}
 }
 
 func TestDashboardChartHoverContract(t *testing.T) {
