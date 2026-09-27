@@ -106,8 +106,6 @@ func TestDashboardInteractions(t *testing.T) {
 	assert.Contains(t, pageHTML, `canvas.addEventListener("pointerleave"`)
 	assert.Contains(t, pageHTML, `window.requestAnimationFrame(paintHover)`)
 	assert.Contains(t, pageHTML, `window.cancelAnimationFrame(hoverFrame)`)
-	assert.Contains(t, pageHTML, `if (canvas._clearHover) canvas._clearHover(false)`)
-	assert.Contains(t, pageHTML, `const cardX = canvas.offsetLeft + canvasX`)
 	assert.NotContains(t, pageHTML, `canvas.addEventListener("mousemove"`)
 	assert.NotContains(t, pageHTML, `canvas.addEventListener("mouseleave"`)
 	assert.Contains(t, pageHTML, `marker.style.backgroundColor = point.color`)
@@ -151,6 +149,53 @@ func TestDashboardInteractions(t *testing.T) {
 	assert.Contains(t, pageHTML, `byId(binding.trigger).focus()`)
 	assert.Contains(t, pageHTML, `id="http-error-chart"`)
 	assert.Contains(t, pageHTML, `id="gc-pause-chart"`)
+}
+
+func TestDashboardChartHoverContract(t *testing.T) {
+	pageHTML, err := renderDashboard(ConfigDefault)
+	require.NoError(t, err)
+
+	for _, contract := range []string{
+		`const CHART_POINT_PROXIMITY = 16;`,
+		`const CHART_TOOLTIP_OFFSET = 12;`,
+		`const CHART_TOOLTIP_MARGIN = 12;`,
+		`function pointerInPlot(`,
+		`function nearestSampleIndex(`,
+		`function chartPointsAtSample(`,
+		`function focusedHoverPoint(`,
+		`function positionChartTooltip(`,
+		`dx > CHART_POINT_PROXIMITY || dy > CHART_POINT_PROXIMITY`,
+		`dx * dx + dy * dy`,
+		`drawHoverGuides(canvas, meta, canvasX, focusedPoint)`,
+		`context.moveTo(cursorX, meta.padding.top)`,
+		`if (focusedPoint)`,
+		`context.arc(focusedPoint.x, focusedPoint.y`,
+		`tooltipMeta !== meta || tooltipIndex !== index`,
+		`positionChartTooltip(tooltip, pointerClientX, pointerClientY,`,
+		`window.innerWidth - width - margin`,
+		`window.innerHeight - height - margin`,
+		`canvas.addEventListener("pointercancel"`,
+		`if (canvas._refreshHover) canvas._refreshHover()`,
+		`pointerActive && hoverFrame === null`,
+		`tooltip.replaceChildren()`,
+		`document.createElement("strong")`,
+		`max-width: min(250px, calc(100vw - 24px))`,
+	} {
+		assert.Contains(t, pageHTML, contract)
+	}
+	assert.Regexp(t, `(?s)\.chart-tooltip\s*\{[^}]*position:\s*fixed`, pageHTML)
+	assert.NotContains(t, pageHTML, `canvas.offsetLeft`)
+	assert.NotContains(t, pageHTML, `canvas.offsetTop`)
+	assert.NotContains(t, pageHTML, `innerHTML`)
+
+	// Drawing consumes selected geometry; sample selection and DOM updates stay outside it.
+	_, renderer, found := strings.Cut(pageHTML, "function drawHoverGuides(")
+	require.True(t, found)
+	renderer, _, found = strings.Cut(renderer, "function renderChartTooltip(")
+	require.True(t, found)
+	for _, forbidden := range []string{"sampleX(", "nearestSampleIndex(", "forEach(", "replaceChildren("} {
+		assert.NotContains(t, renderer, forbidden)
+	}
 }
 
 func TestDashboardPollingPreservesQueryString(t *testing.T) {

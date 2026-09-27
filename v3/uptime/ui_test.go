@@ -51,3 +51,49 @@ func TestDashboardInsightsTemplate(t *testing.T) {
 		requireNotContains(t, body, unsafe)
 	}
 }
+
+func TestDashboardTrendHoverContract(t *testing.T) {
+	t.Parallel()
+
+	body, err := renderDashboardHTML(ConfigDefault, StatusResponse{}, "/uptime/api/status")
+	requireNoError(t, err)
+
+	for _, contract := range []string{
+		`const CHART_POINT_PROXIMITY = 16;`,
+		`const CHART_TOOLTIP_OFFSET = 12;`,
+		`const CHART_TOOLTIP_MARGIN = 12;`,
+		`function nearestTrendIndex(`,
+		`function trendCursorX(`,
+		`function trendPointFocused(`,
+		`Math.abs(pointClientX - clientX) <= CHART_POINT_PROXIMITY`,
+		`Math.abs(pointClientY - clientY) <= CHART_POINT_PROXIMITY`,
+		`class: "trend-focus-guide"`,
+		`guide.setAttribute("x1", cursorX)`,
+		`guide.setAttribute("x2", cursorX)`,
+		`validTrendDay(day) && Number.isFinite(day.uptime_rate)`,
+		`focusGuide.setAttribute("visibility", focused ? "visible" : "hidden")`,
+		`point.setAttribute("visibility", focused ? "visible" : "hidden")`,
+		`trendTooltipOwner !== owner || trendTooltipIndex !== index`,
+		`positionTrendHoverCard(owner.pointerClientX, owner.pointerClientY)`,
+		`const margin = CHART_TOOLTIP_MARGIN`,
+		`const offset = CHART_TOOLTIP_OFFSET`,
+		`window.innerWidth - width - margin`,
+		`window.innerHeight - height - margin`,
+		`hit.addEventListener("pointermove"`,
+		`hit.addEventListener("pointerleave"`,
+		`hit.addEventListener("pointercancel"`,
+		`window.requestAnimationFrame(paintHover)`,
+		`window.cancelAnimationFrame(activeTrend.hoverFrame)`,
+		`activeTrend.focusGuide.setAttribute("visibility", "hidden")`,
+	} {
+		requireContains(t, body, contract)
+	}
+	for _, obsolete := range []string{
+		`activeTrend.index === index`,
+		`guide.setAttribute("x1", x(index))`,
+		`guide.setAttribute("x2", x(index))`,
+		`anchor.x`, `anchor.y`,
+	} {
+		requireNotContains(t, body, obsolete)
+	}
+}
