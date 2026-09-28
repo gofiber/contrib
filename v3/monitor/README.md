@@ -223,12 +223,20 @@ windows. Their first snapshot is `null`.
 
 Exact GC pause metrics are `null` unless `EnableGCPauseMetrics` is true; when
 enabled, the first window pause is also `null` while its baseline is
-established.
+established. While they are disabled, the GC Pause trend explains how to
+enable them.
 
 Snapshots are collected only when JSON is requested and are shared within the
 configured refresh TTL. The dashboard keeps at most 90 trend samples in browser
 memory and displays 60 by default. The 30/60/90 selector changes only the
 visible browser history and remembers the choice in local storage.
+
+The dashboard stops polling while its browser tab is hidden and refreshes as
+soon as the tab is visible again, so a forgotten tab does not keep triggering
+collections. A snapshot request that takes longer than the refresh interval, or
+10 seconds if that is longer, is aborted and the dashboard reports its data as
+stale. A `PARTIAL` status lists the metric groups that could not be collected
+in its tooltip.
 
 The eight trend panels cover CPU, memory, network, goroutines, requests per
 second, HTTP latency, HTTP error rates, and GC pauses. Heap, GC,
@@ -272,6 +280,9 @@ filesystem paths, or device names.
   dependency.
 - It initially follows the browser color scheme and provides a persisted
   Light/Dark toggle.
+- Detail views are native modal dialogs, charts expose their latest values to
+  assistive technologies, and on touch screens a tap or horizontal drag on a
+  chart shows its values.
 - Linux, macOS, and Windows are supported with graceful degradation when a
   metric is unavailable. Load averages are intentionally unsupported on Windows
   because gopsutil's Windows implementation starts a background sampler.
