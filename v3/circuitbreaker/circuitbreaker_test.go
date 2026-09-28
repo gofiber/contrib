@@ -1,848 +1,1262 @@
-package circuitbreaker
+package circuitbreaker_test
 
 import (
-	"encoding/json"
-	"errors"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/gofiber/contrib/v3/circuitbreaker"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
 )
 
-// mockTime helps control time for deterministic testing
-type mockTime struct {
-	mu      sync.Mutex
-	current time.Time
+// fakeClock is the only source of time the circuit breaker reads when it is
+// handed to Config.Clock, so advancing it drives recovery directly instead of
+// standing in for a timer the test cannot reach.
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
 }
 
-func newMockTime(t time.Time) *mockTime {
-	return &mockTime{current: t}
+func newFakeClock() *fakeClock {
+	return &fakeClock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 }
 
-func (m *mockTime) Now() time.Time {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.current
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
 }
 
-func (m *mockTime) Add(d time.Duration) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.current = m.current.Add(d)
+func (c *fakeClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
 }
 
-// TestCircuitBreakerStates tests each state transition of the circuit breaker
-func TestCircuitBreakerStates(t *testing.T) {
-	mockClock := newMockTime(time.Now())
-
-	// Create circuit breaker with test config
-	cb := New(Config{
-		FailureThreshold:      2,
-		Timeout:               5 * time.Second,
-		SuccessThreshold:      2,
-		HalfOpenMaxConcurrent: 1,
-	})
-
-	// Override the time function
-	cb.now = mockClock.Now
-
-	// Test initial state
-	t.Run("Initial State", func(t *testing.T) {
-		require.Equal(t, StateClosed, cb.GetState())
-		allowed, state := cb.AllowRequest()
-		require.True(t, allowed)
-		require.Equal(t, StateClosed, state)
-	})
-
-	// Test transition to open state
-	t.Run("Transition to Open", func(t *testing.T) {
-		// Report failures to trip the circuit
-		cb.ReportFailure()
-		require.Equal(t, StateClosed, cb.GetState())
-
-		cb.ReportFailure() // This should trip the circuit
-		require.Equal(t, StateOpen, cb.GetState())
-
-		allowed, state := cb.AllowRequest()
-		require.False(t, allowed)
-		require.Equal(t, StateOpen, state)
-	})
-
-	// Test transition to half-open state
-	t.Run("Transition to HalfOpen", func(t *testing.T) {
-		// Advance time past the timeout to trigger half-open
-		mockClock.Add(6 * time.Second)
-
-		// Force timer activation by checking state
-		// (In real usage this would happen automatically with timer)
-		if cb.openTimer != nil {
-			cb.openTimer.Stop()
-			cb.transitionToHalfOpen()
+// AdvanceToParity advances at least one second, stopping on a second whose
+// Unix value has the requested parity. TestGetStateStatsIsNotTorn uses it to
+// encode which transition a timestamp belongs to.
+func (c *fakeClock) AdvanceToParity(parity int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for {
+		c.t = c.t.Add(time.Second)
+		if c.t.Unix()%2 == parity {
+			return
 		}
-
-		require.Equal(t, StateHalfOpen, cb.GetState())
-
-		allowed, state := cb.AllowRequest()
-		require.True(t, allowed)
-		require.Equal(t, StateHalfOpen, state)
-
-		// Release the semaphore for next test
-		cb.ReleaseSemaphore()
-	})
-
-	// Test half-open limited concurrency
-	t.Run("HalfOpen Limited Concurrency", func(t *testing.T) {
-		// Try to allow two concurrent requests when only one is permitted
-		allowed1, _ := cb.AllowRequest()
-		allowed2, _ := cb.AllowRequest()
-
-		require.True(t, allowed1)
-		require.False(t, allowed2)
-
-		// Release the semaphore
-		cb.ReleaseSemaphore()
-	})
-
-	// Test transition back to open on failure in half-open
-	t.Run("HalfOpen to Open on Failure", func(t *testing.T) {
-		allowed, _ := cb.AllowRequest()
-		require.True(t, allowed)
-
-		cb.ReportFailure()
-		require.Equal(t, StateOpen, cb.GetState())
-
-		// Even though we took a semaphore, it should be cleared by state transition
-		allowed, _ = cb.AllowRequest()
-		require.False(t, allowed)
-	})
-
-	// Test transition to half-open again
-	t.Run("Back to HalfOpen", func(t *testing.T) {
-		mockClock.Add(6 * time.Second)
-
-		// Force timer activation
-		if cb.openTimer != nil {
-			cb.openTimer.Stop()
-			cb.transitionToHalfOpen()
-		}
-
-		require.Equal(t, StateHalfOpen, cb.GetState())
-	})
-
-	// Test transition to closed state
-	t.Run("Transition to Closed", func(t *testing.T) {
-		allowed, _ := cb.AllowRequest()
-		require.True(t, allowed)
-
-		cb.ReportSuccess()
-		require.Equal(t, StateHalfOpen, cb.GetState())
-
-		cb.ReleaseSemaphore()
-		allowed, _ = cb.AllowRequest()
-		require.True(t, allowed)
-
-		cb.ReportSuccess() // This should close the circuit
-		require.Equal(t, StateClosed, cb.GetState())
-
-		cb.ReleaseSemaphore()
-	})
-
-	// Test proper cleanup
-	t.Run("Cleanup", func(t *testing.T) {
-		cb.Stop()
-	})
+	}
 }
 
-// TestCircuitBreakerCallbacks tests the callback functions
-func TestCircuitBreakerCallbacks(t *testing.T) {
-	var (
-		openCalled     bool
-		halfOpenCalled bool
-		closedCalled   bool
-	)
+// noTimeout lets a handler block for as long as a test needs it to, which the
+// background requests rely on. Everything a test waits for itself is bounded by
+// waitBound instead, so a breaker that wrongly admits or never answers a
+// request fails the test with a diagnostic rather than hanging the suite.
+var noTimeout = fiber.TestConfig{Timeout: 0, FailOnTimeout: false}
 
-	cb := New(Config{
-		FailureThreshold:      2,
-		Timeout:               1 * time.Millisecond, // Short timeout for quick tests
-		SuccessThreshold:      1,
-		HalfOpenMaxConcurrent: 1,
-		OnOpen: func(c fiber.Ctx) error {
-			openCalled = true
-			return c.SendStatus(fiber.StatusServiceUnavailable)
-		},
-		OnHalfOpen: func(c fiber.Ctx) error {
-			halfOpenCalled = true
-			return c.SendStatus(fiber.StatusTooManyRequests)
-		},
-		OnClose: func(c fiber.Ctx) error {
-			closedCalled = true
-			return c.Next()
-		},
-	})
+const waitBound = 10 * time.Second
 
+// newApp mounts cb in front of an "/ok" route that succeeds and a "/fail"
+// route that answers 500, which the default IsFailure counts as a failure.
+func newApp(cb *circuitbreaker.CircuitBreaker) *fiber.App {
 	app := fiber.New()
-
-	app.Use(Middleware(cb))
-
-	app.Get("/test", func(c fiber.Ctx) error {
+	app.Use(circuitbreaker.Middleware(cb))
+	app.Get("/ok", func(c fiber.Ctx) error {
 		return c.SendString("OK")
 	})
-
-	// Test OnOpen callback
-	t.Run("OnOpen Callback", func(t *testing.T) {
-		// Trip the circuit
-		cb.ReportFailure()
-		cb.ReportFailure()
-
-		// Request should be rejected
-		req := httptest.NewRequest("GET", "/test", nil)
-		resp, err := app.Test(req)
-
-		require.NoError(t, err)
-		require.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
-		require.True(t, openCalled)
+	app.Get("/fail", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusInternalServerError)
 	})
-
-	// Test OnHalfOpen callback
-	t.Run("OnHalfOpen Callback", func(t *testing.T) {
-		cb.transitionToHalfOpen()
-
-		// Acquire the one allowed request
-		allowed, state := cb.AllowRequest()
-		require.True(t, allowed)
-		require.Equal(t, StateHalfOpen, state)
-
-		// Second request should be rejected with OnHalfOpen callback
-		req := httptest.NewRequest("GET", "/test", nil)
-		resp, err := app.Test(req)
-
-		require.NoError(t, err)
-		require.Equal(t, fiber.StatusTooManyRequests, resp.StatusCode)
-		require.True(t, halfOpenCalled)
-
-		// Release the semaphore
-		cb.ReleaseSemaphore()
-	})
-
-	// Test OnClose callback
-	t.Run("OnClose Callback", func(t *testing.T) {
-		// Reset for clean test
-		closedCalled = false
-
-		// Get to half-open state
-		cb.transitionToHalfOpen()
-
-		// Create a test request
-		req := httptest.NewRequest("GET", "/test", nil)
-		resp, err := app.Test(req)
-
-		require.NoError(t, err)
-		require.Equal(t, fiber.StatusOK, resp.StatusCode)
-		require.True(t, closedCalled) // OnClose should be called after successful request
-	})
-
-	// Clean up
-	cb.Stop()
+	return app
 }
 
-// TestMiddleware tests the middleware functionality
-func TestMiddleware(t *testing.T) {
-	customErr := errors.New("custom error")
+func get(t *testing.T, app *fiber.App, target string) *http.Response {
+	t.Helper()
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, target, nil),
+		fiber.TestConfig{Timeout: waitBound, FailOnTimeout: true})
+	require.NoError(t, err)
+	return resp
+}
 
-	cb := New(Config{
-		FailureThreshold: 2,
-		Timeout:          5 * time.Second,
+// bgRequest is a request running on its own goroutine. Assertions stay on the
+// test goroutine: require's FailNow is only defined there.
+type bgRequest struct {
+	done chan struct{}
+	resp *http.Response
+	err  error
+}
+
+func inBackground(app *fiber.App, target string) *bgRequest {
+	r := &bgRequest{done: make(chan struct{})}
+	go func() {
+		defer close(r.done)
+		r.resp, r.err = app.Test(httptest.NewRequest(fiber.MethodGet, target, nil), noTimeout)
+	}()
+	return r
+}
+
+func (r *bgRequest) wait(t *testing.T) *http.Response {
+	t.Helper()
+	select {
+	case <-r.done:
+	case <-time.After(waitBound):
+		t.Fatal("a background request never completed")
+	}
+	require.NoError(t, r.err)
+	return r.resp
+}
+
+// awaitEntry waits for a handler to report that it was admitted. Bounding the
+// wait keeps a refused probe a test failure rather than a hang.
+func awaitEntry(t *testing.T, entered <-chan struct{}, msg string) {
+	t.Helper()
+	select {
+	case <-entered:
+	case <-time.After(waitBound):
+		t.Fatal(msg)
+	}
+}
+
+// releaser closes a handler's release channel exactly once, on the test's way
+// out if an assertion did not get there first.
+func releaser(t *testing.T, release chan struct{}) func() {
+	t.Helper()
+	done := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(done)
+	return done
+}
+
+// trip drives the circuit open through the middleware.
+func trip(t *testing.T, app *fiber.App, failures int) {
+	t.Helper()
+	for i := 0; i < failures; i++ {
+		get(t, app, "/fail")
+	}
+}
+
+func TestOpensAfterFailureThreshold(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 3,
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
+	})
+	app := newApp(cb)
+
+	trip(t, app, 2)
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState(), "two failures of three must not open the circuit")
+
+	trip(t, app, 1)
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState())
+	require.True(t, cb.IsOpen())
+}
+
+func TestOpenRejectsWithOnOpen(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	var openCalls int
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 1,
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
+		OnOpen: func(c fiber.Ctx) error {
+			openCalls++
+			return c.SendStatus(fiber.StatusServiceUnavailable)
+		},
+	})
+	app := newApp(cb)
+
+	trip(t, app, 1)
+	require.Zero(t, openCalls, "OnOpen answers a refused request; it does not fire when the circuit opens")
+
+	resp := get(t, app, "/ok")
+	require.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
+	require.Equal(t, 1, openCalls)
+}
+
+func TestRecoversToHalfOpenOnTheClock(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 1,
+		Timeout:          30 * time.Second,
+		Clock:            clock.Now,
+	})
+	app := newApp(cb)
+
+	trip(t, app, 1)
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState())
+
+	clock.Advance(29 * time.Second)
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState(), "the circuit must stay open until the timeout elapses")
+
+	clock.Advance(time.Second)
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState(), "the boundary instant counts as elapsed")
+}
+
+func TestHalfOpenProbeClosesTheCircuit(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	var closeCalls int
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 1,
 		SuccessThreshold: 2,
-		IsFailure: func(c fiber.Ctx, err error) bool {
-			// Count as failure if status >= 400 or has error
-			return err != nil || c.Response().StatusCode() >= 400
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
+		OnClose: func(c fiber.Ctx) error {
+			closeCalls++
+			return nil
+		},
+	})
+	app := newApp(cb)
+
+	trip(t, app, 1)
+	clock.Advance(time.Minute)
+
+	resp := get(t, app, "/ok")
+	require.Equal(t, fiber.StatusOK, resp.StatusCode, "a half-open probe reaches the handler")
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState(), "one success of two keeps the trial open")
+	require.Zero(t, closeCalls)
+
+	resp = get(t, app, "/ok")
+	require.Equal(t, fiber.StatusOK, resp.StatusCode)
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState())
+	require.Equal(t, 1, closeCalls, "OnClose runs for the probe that closed the circuit")
+
+	// OnClose runs after the handler has answered, so a callback that writes
+	// nothing must leave that answer untouched.
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, "OK", string(body), "the closing probe keeps the protected handler's response")
+}
+
+func TestHalfOpenFailureReopens(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 5,
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
+	})
+	app := newApp(cb)
+
+	trip(t, app, 5)
+	clock.Advance(time.Minute)
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState())
+
+	get(t, app, "/fail")
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState(), "one failed probe ends the trial regardless of the threshold")
+
+	clock.Advance(time.Minute)
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState(), "reopening starts a fresh recovery deadline")
+}
+
+func TestHalfOpenAdmitsAtMostMaxConcurrent(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	var halfOpenCalls int64
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold:      1,
+		SuccessThreshold:      99, // never close, so the window stays open
+		HalfOpenMaxConcurrent: 2,
+		Timeout:               time.Minute,
+		Clock:                 clock.Now,
+		OnHalfOpen: func(c fiber.Ctx) error {
+			atomic.AddInt64(&halfOpenCalls, 1)
+			return c.SendStatus(fiber.StatusTooManyRequests)
 		},
 	})
 
+	entered := make(chan struct{}, 8)
+	release := make(chan struct{})
 	app := fiber.New()
-	app.Use(Middleware(cb))
-
-	// Success handler
-	app.Get("/success", func(c fiber.Ctx) error {
-		return c.SendStatus(fiber.StatusOK)
+	app.Use(circuitbreaker.Middleware(cb))
+	app.Get("/block", func(c fiber.Ctx) error {
+		entered <- struct{}{}
+		<-release
+		return c.SendString("OK")
 	})
-
-	// Client error handler - 400 series
-	app.Get("/client-error", func(c fiber.Ctx) error {
-		return c.SendStatus(fiber.StatusBadRequest)
-	})
-
-	// Server error handler - 500 series
-	app.Get("/server-error", func(c fiber.Ctx) error {
+	app.Get("/fail", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusInternalServerError)
 	})
 
-	// Error handler
-	app.Get("/error", func(c fiber.Ctx) error {
-		return customErr
-	})
+	trip(t, app, 1)
+	clock.Advance(time.Minute)
 
-	t.Run("Successful Request", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/success", nil)
-		resp, err := app.Test(req)
+	releaseAll := releaser(t, release)
 
-		require.NoError(t, err)
-		require.Equal(t, fiber.StatusOK, resp.StatusCode)
-	})
+	// Fill both slots and keep them held.
+	held := []*bgRequest{inBackground(app, "/block"), inBackground(app, "/block")}
+	awaitEntry(t, entered, "the first probe of two was not admitted")
+	awaitEntry(t, entered, "the second probe of two was not admitted")
 
-	t.Run("Client Error Counts as Failure", func(t *testing.T) {
-		// Reset to closed state
-		cb.transitionToClosed()
+	resp := get(t, app, "/block")
+	require.Equal(t, fiber.StatusTooManyRequests, resp.StatusCode, "a third concurrent probe is refused")
+	require.Equal(t, int64(1), atomic.LoadInt64(&halfOpenCalls))
 
-		// Send client error requests
-		req := httptest.NewRequest("GET", "/client-error", nil)
-		resp, err := app.Test(req)
-
-		require.NoError(t, err)
-		require.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
-
-		// Should increment failure count - check state remains closed
-		require.Equal(t, StateClosed, cb.GetState())
-
-		// Second failure should trip circuit
-		resp, err = app.Test(req)
-		require.NoError(t, err)
-		require.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
-
-		// Circuit should now be open
-		require.Equal(t, StateOpen, cb.GetState())
-	})
-
-	t.Run("Circuit Open Rejects Requests", func(t *testing.T) {
-		// Circuit should be open from previous test
-		req := httptest.NewRequest("GET", "/success", nil)
-		resp, err := app.Test(req)
-
-		require.NoError(t, err)
-		require.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
-	})
-
-	// Clean up
-	cb.Stop()
+	releaseAll()
+	for _, r := range held {
+		r.wait(t)
+	}
 }
 
-// TestConcurrentAccess tests the circuit breaker under concurrent load
-func TestConcurrentAccess(t *testing.T) {
-	cb := New(Config{
-		FailureThreshold:      5,
-		Timeout:               100 * time.Millisecond,
-		SuccessThreshold:      3,
+// TestHalfOpenSlotsAreNotLeakedAcrossWindows pins the guarantee that a probe
+// which outlives its half-open window cannot free a slot in a later one.
+//
+// The stale release has to land while the new window is already at capacity,
+// which is the only moment the two behaviours differ: a release that ignores
+// which window its slot came from decrements the new window's count and lets
+// an extra probe in.
+func TestHalfOpenSlotsAreNotLeakedAcrossWindows(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold:      1,
+		SuccessThreshold:      99, // never close, so a window ends only by failing
 		HalfOpenMaxConcurrent: 2,
+		Timeout:               time.Minute,
+		Clock:                 clock.Now,
 	})
 
-	t.Run("Concurrent Failures", func(t *testing.T) {
-		var wg sync.WaitGroup
+	strandedIn := make(chan struct{}, 1)
+	strandedOut := make(chan struct{})
+	filledIn := make(chan struct{}, 4)
+	filledOut := make(chan struct{})
 
-		// Simulate 10 goroutines reporting failures
-		for i := 0; i < 10; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				cb.ReportFailure()
-			}()
-		}
-
-		wg.Wait()
-
-		// Circuit should be open after enough failures
-		require.Equal(t, StateOpen, cb.GetState())
+	app := fiber.New()
+	app.Use(circuitbreaker.Middleware(cb))
+	app.Get("/stranded", func(c fiber.Ctx) error {
+		strandedIn <- struct{}{}
+		<-strandedOut
+		return c.SendString("OK")
+	})
+	app.Get("/hold", func(c fiber.Ctx) error {
+		filledIn <- struct{}{}
+		<-filledOut
+		return c.SendString("OK")
+	})
+	app.Get("/probe", func(c fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+	app.Get("/fail", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusInternalServerError)
 	})
 
-	t.Run("Concurrent Half-Open Requests", func(t *testing.T) {
-		// Force transition to half-open
-		cb.transitionToHalfOpen()
+	releaseStranded := releaser(t, strandedOut)
+	releaseFilled := releaser(t, filledOut)
 
-		var wg sync.WaitGroup
-		requestAllowed := make(chan bool, 10)
+	trip(t, app, 1)
+	clock.Advance(time.Minute)
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState())
 
-		// Try 10 concurrent requests
-		for i := 0; i < 10; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				allowed, _ := cb.AllowRequest()
-				requestAllowed <- allowed
+	// A probe takes a slot in this window and stays in flight.
+	stranded := inBackground(app, "/stranded")
+	awaitEntry(t, strandedIn, "the stranded probe was not admitted")
 
-				if allowed {
-					// Simulate request processing
-					time.Sleep(10 * time.Millisecond)
-					cb.ReleaseSemaphore()
-				}
-			}()
-		}
+	// End the window underneath it: the second slot is free, so this failing
+	// probe is admitted and reopens the circuit.
+	get(t, app, "/fail")
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState())
 
-		wg.Wait()
-		close(requestAllowed)
+	// A new window, filled to capacity by two fresh probes.
+	clock.Advance(time.Minute)
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState())
+	filled := []*bgRequest{inBackground(app, "/hold"), inBackground(app, "/hold")}
+	awaitEntry(t, filledIn, "the new half-open window admitted fewer probes than HalfOpenMaxConcurrent")
+	awaitEntry(t, filledIn, "the new half-open window admitted fewer probes than HalfOpenMaxConcurrent")
 
-		// Count allowed requests
-		allowedCount := 0
-		for allowed := range requestAllowed {
-			if allowed {
-				allowedCount++
-			}
-		}
+	// Now let the stranded probe finish. Its slot belonged to the window that
+	// has already ended, so returning it must not free one of these two.
+	releaseStranded()
+	stranded.wait(t)
 
-		// Only HalfOpenMaxConcurrent (2) requests should be allowed
-		require.Equal(t, cb.config.HalfOpenMaxConcurrent, allowedCount)
-	})
+	resp := get(t, app, "/probe")
+	require.Equal(t, fiber.StatusTooManyRequests, resp.StatusCode,
+		"a slot from the previous half-open window was returned into this one, admitting more probes than HalfOpenMaxConcurrent")
 
-	t.Run("Concurrent Successes to Close Circuit", func(t *testing.T) {
-		// Force transition to half-open
-		cb.transitionToHalfOpen()
-
-		var wg sync.WaitGroup
-
-		// Simulate 10 goroutines reporting successes
-		for i := 0; i < 10; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				cb.ReportSuccess()
-			}()
-		}
-
-		wg.Wait()
-
-		// Circuit should be closed after enough successes
-		require.Equal(t, StateClosed, cb.GetState())
-	})
-
-	// Clean up
-	cb.Stop()
+	releaseFilled()
+	for _, r := range filled {
+		r.wait(t)
+	}
 }
 
-// TestCustomFailureDetection tests the custom failure detection logic
-func TestCustomFailureDetection(t *testing.T) {
-	customFailureDetection := false
+func TestForceOpenIsSticky(t *testing.T) {
+	t.Parallel()
 
-	cb := New(Config{
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 5,
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
+	})
+	app := newApp(cb)
+
+	cb.ForceOpen()
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState())
+
+	clock.Advance(10 * time.Minute)
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState(), "a forced-open circuit does not recover on the timeout")
+
+	resp := get(t, app, "/ok")
+	require.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
+
+	cb.Reset()
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState(), "only an explicit close ends a forced open")
+}
+
+func TestForceOpenOverridesAnOpenCircuitsRecovery(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
 		FailureThreshold: 1,
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
+	})
+	app := newApp(cb)
+
+	trip(t, app, 1)
+	cb.ForceOpen() // already open, but now pinned
+
+	clock.Advance(10 * time.Minute)
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState())
+}
+
+func TestForceCloseAndReset(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		close func(*circuitbreaker.CircuitBreaker)
+	}{
+		{"ForceClose", func(cb *circuitbreaker.CircuitBreaker) { cb.ForceClose() }},
+		{"Reset", func(cb *circuitbreaker.CircuitBreaker) { cb.Reset() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			clock := newFakeClock()
+			cb := circuitbreaker.New(circuitbreaker.Config{
+				FailureThreshold: 2,
+				Interval:         10 * time.Second,
+				Timeout:          time.Minute,
+				Clock:            clock.Now,
+			})
+			app := newApp(cb)
+
+			trip(t, app, 2)
+			require.Equal(t, circuitbreaker.StateOpen, cb.GetState())
+
+			clock.Advance(5 * time.Second)
+			tc.close(cb)
+
+			require.Equal(t, circuitbreaker.StateClosed, cb.GetState())
+
+			stats := cb.GetStateStats()
+			require.Equal(t, int64(0), stats["failures"])
+			require.Equal(t, int64(0), stats["successes"])
+			require.Equal(t, clock.Now(), stats["lastStateChange"])
+			require.Equal(t, clock.Now().Add(10*time.Second), stats["expiry"], "closing starts a new failure-count window")
+
+			resp := get(t, app, "/ok")
+			require.Equal(t, fiber.StatusOK, resp.StatusCode, "a closed circuit passes requests through")
+		})
+	}
+}
+
+func TestSetTimeoutAppliesToAnOpenCircuit(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 1,
+		Timeout:          time.Hour,
+		Clock:            clock.Now,
+	})
+	app := newApp(cb)
+
+	trip(t, app, 1)
+	clock.Advance(time.Minute)
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState())
+
+	// The deadline is derived from the timeout, so shortening it recovers a
+	// circuit that is already open.
+	cb.SetTimeout(30 * time.Second)
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState())
+}
+
+func TestIntervalDropsFailuresBetweenWindows(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 3,
+		Interval:         10 * time.Second,
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
+	})
+	app := newApp(cb)
+
+	require.Equal(t, clock.Now().Add(10*time.Second), cb.GetStateStats()["expiry"],
+		"New derives the first window from the configured clock")
+
+	trip(t, app, 2)
+	require.Equal(t, int64(2), cb.Metrics()["failures"])
+
+	// The boundary instant counts as elapsed, so the next failure starts over.
+	clock.Advance(10 * time.Second)
+	trip(t, app, 1)
+	require.Equal(t, int64(1), cb.Metrics()["failures"], "the window elapsed, so the earlier failures are forgotten")
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState())
+
+	trip(t, app, 2)
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState(), "three failures inside one window still open the circuit")
+}
+
+func TestIntervalWindowIsNotDroppedEarly(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 3,
+		Interval:         10 * time.Second,
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
+	})
+	app := newApp(cb)
+
+	trip(t, app, 2)
+	clock.Advance(9 * time.Second)
+	trip(t, app, 1)
+
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState(), "failures inside the window accumulate")
+}
+
+func TestCustomFailureDetection(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	// Count 404 as a failure and ignore 500, the opposite of the default.
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 2,
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
 		IsFailure: func(c fiber.Ctx, err error) bool {
-			// Custom logic: mark as failure only if our flag is set
-			return customFailureDetection
+			return c.Response().StatusCode() == fiber.StatusNotFound
 		},
 	})
 
 	app := fiber.New()
-	app.Use(Middleware(cb))
-
-	app.Get("/test", func(c fiber.Ctx) error {
-		return c.SendStatus(fiber.StatusOK)
+	app.Use(circuitbreaker.Middleware(cb))
+	app.Get("/missing", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusNotFound)
+	})
+	app.Get("/fail", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusInternalServerError)
 	})
 
-	t.Run("Custom Success Logic", func(t *testing.T) {
-		customFailureDetection = false
+	trip(t, app, 5)
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState(), "500 is not a failure under this detector")
 
-		// Even 500 status should be success with our custom logic
-		app.Get("/server-error", func(c fiber.Ctx) error {
-			c.Status(500)
-			return nil
-		})
-
-		req := httptest.NewRequest("GET", "/server-error", nil)
-		resp, err := app.Test(req)
-
-		require.NoError(t, err)
-		require.Equal(t, 500, resp.StatusCode)
-
-		// Circuit should remain closed
-		require.Equal(t, StateClosed, cb.GetState())
-	})
-
-	t.Run("Custom Failure Logic", func(t *testing.T) {
-		customFailureDetection = true
-
-		// Now even 200 status should be failure with our custom logic
-		req := httptest.NewRequest("GET", "/test", nil)
-		resp, err := app.Test(req)
-
-		require.NoError(t, err)
-		require.Equal(t, fiber.StatusOK, resp.StatusCode)
-
-		// Circuit should be open
-		require.Equal(t, StateOpen, cb.GetState())
-	})
-
-	// Clean up
-	cb.Stop()
+	for i := 0; i < 2; i++ {
+		get(t, app, "/missing")
+	}
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState(), "404 is a failure under this detector")
 }
 
-// TestHalfOpenConcurrencyConfig tests that HalfOpenMaxConcurrent setting works
-func TestHalfOpenConcurrencyConfig(t *testing.T) {
-	// Create circuit breaker with 3 concurrent requests in half-open
-	cb := New(Config{
-		FailureThreshold:      2,
-		Timeout:               5 * time.Second,
-		SuccessThreshold:      2,
-		HalfOpenMaxConcurrent: 3,
+// TestDefaultOnCloseDoesNotAdvanceChainTwice guards the regression where a
+// default OnClose that called c.Next() advanced the chain past the middleware
+// that had already answered, reaching the protected handler a second time.
+func TestDefaultOnCloseDoesNotAdvanceChainTwice(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
+		// OnClose deliberately left nil so New installs the default.
 	})
 
-	// Put circuit in half-open state
-	cb.transitionToOpen()
-	cb.transitionToHalfOpen()
+	var protectedCalls int
+	app := fiber.New()
+	app.Use(circuitbreaker.Middleware(cb))
+	app.Get("/fail", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusInternalServerError)
+	})
+	app.Get("/ok", func(c fiber.Ctx) error {
+		return c.SendString("OK")
+	}, func(c fiber.Ctx) error {
+		protectedCalls++
+		return c.SendString("protected")
+	})
 
-	// Try to get more than allowed concurrent requests
-	allowed1, _ := cb.AllowRequest()
-	allowed2, _ := cb.AllowRequest()
-	allowed3, _ := cb.AllowRequest()
-	allowed4, _ := cb.AllowRequest()
+	trip(t, app, 1)
+	clock.Advance(time.Minute)
 
-	require.True(t, allowed1)
-	require.True(t, allowed2)
-	require.True(t, allowed3)
-	require.False(t, allowed4)
-
-	// Release all permits
-	cb.ReleaseSemaphore()
-	cb.ReleaseSemaphore()
-	cb.ReleaseSemaphore()
-
-	// Clean up
-	cb.Stop()
+	resp := get(t, app, "/ok")
+	require.Equal(t, fiber.StatusOK, resp.StatusCode)
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState(), "the probe closed the circuit, so OnClose ran")
+	require.Zero(t, protectedCalls, "the default OnClose must not advance the handler chain")
 }
 
-// TestCircuitBreakerReset tests the Reset method
-func TestCircuitBreakerReset(t *testing.T) {
-	mockClock := newMockTime(time.Now())
-
-	cb := New(Config{
-		FailureThreshold:      2,
-		Timeout:               5 * time.Second,
-		SuccessThreshold:      2,
-		HalfOpenMaxConcurrent: 1,
-		Interval:              10 * time.Second,
-	})
-	cb.now = mockClock.Now
-
-	t.Run("Reset From Open State", func(t *testing.T) {
-		// Put circuit in open state
-		cb.ReportFailure()
-		cb.ReportFailure()
-		require.Equal(t, StateOpen, cb.GetState())
-
-		// Reset the circuit
-		cb.Reset()
-
-		// Verify state and counters
-		require.Equal(t, StateClosed, cb.GetState())
-		require.Equal(t, int64(0), atomic.LoadInt64(&cb.failureCount))
-		require.Equal(t, int64(0), atomic.LoadInt64(&cb.successCount))
-	})
-
-	t.Run("Reset From HalfOpen State", func(t *testing.T) {
-		// Put circuit in half-open state
-		cb.ReportFailure()
-		cb.ReportFailure()
-		cb.transitionToHalfOpen()
-		require.Equal(t, StateHalfOpen, cb.GetState())
-
-		// Take a semaphore
-		allowed, _ := cb.AllowRequest()
-		require.True(t, allowed)
-
-		// Reset the circuit
-		cb.Reset()
-
-		// Verify state and that new requests are allowed
-		require.Equal(t, StateClosed, cb.GetState())
-		allowed, _ = cb.AllowRequest()
-		require.True(t, allowed)
-	})
-
-	t.Run("Reset With Active Timer", func(t *testing.T) {
-		// Put circuit in open state with active timer
-		cb.ReportFailure()
-		cb.ReportFailure()
-		require.Equal(t, StateOpen, cb.GetState())
-
-		// Reset before timer expires
-		cb.Reset()
-
-		// Advance time past original timeout
-		mockClock.Add(6 * time.Second)
-
-		// Verify circuit remains closed
-		require.Equal(t, StateClosed, cb.GetState())
-	})
-
-	t.Run("Reset Updates LastStateChange", func(t *testing.T) {
-		initialTime := cb.lastStateChange
-
-		// Wait a moment
-		mockClock.Add(1 * time.Second)
-
-		// Reset the circuit
-		cb.Reset()
-
-		// Verify lastStateChange was updated
-		require.True(t, cb.lastStateChange.After(initialTime))
-	})
-
-	t.Run("Reset updates expiry", func(t *testing.T) {
-		cb.Reset()
-		require.True(t, cb.expiry.Equal(mockClock.Now().Add(cb.config.Interval)))
-
-		// Advance the mock clock by 6s (still before the original 10s expiry)
-		// to verify that Reset recalculates expiry from the current time.
-		mockClock.Add(6 * time.Second)
-
-		cb.Reset()
-		require.True(t, cb.expiry.Equal(mockClock.Now().Add(cb.config.Interval)))
-	})
-
-	// Clean up
-	cb.Stop()
-}
-
-// TestCircuitBreakerForceOpen tests the ForceOpen method
-func TestForceOpen(t *testing.T) {
-	mockClock := newMockTime(time.Now())
-
-	cb := New(Config{
-		FailureThreshold:      2,
-		Timeout:               5 * time.Second,
-		SuccessThreshold:      2,
-		HalfOpenMaxConcurrent: 1,
-	})
-	cb.now = mockClock.Now
-
-	t.Run("Force Open From Closed State", func(t *testing.T) {
-		require.Equal(t, StateClosed, cb.GetState())
-		cb.ForceOpen()
-		require.Equal(t, StateOpen, cb.GetState())
-
-		// Verify requests are rejected
-		allowed, state := cb.AllowRequest()
-		require.False(t, allowed)
-		require.Equal(t, StateOpen, state)
-	})
-
-	t.Run("Force Open From HalfOpen State", func(t *testing.T) {
-		// First get to half-open state
-		cb.transitionToOpen()
-		cb.transitionToHalfOpen()
-
-		require.Equal(t, StateHalfOpen, cb.GetState())
-
-		// Take a semaphore
-		allowed, _ := cb.AllowRequest()
-		require.True(t, allowed)
-
-		// Force open should clear semaphore
-		cb.ForceOpen()
-		require.Equal(t, StateOpen, cb.GetState())
-
-		// Verify new requests are rejected
-		allowed, _ = cb.AllowRequest()
-		require.False(t, allowed)
-	})
-
-	t.Run("Force Open With Active Timer", func(t *testing.T) {
-		cb.transitionToClosed()
-		cb.ForceOpen()
-
-		// Advance time past timeout
-		mockClock.Add(6 * time.Second)
-
-		// Should still be open since ForceOpen overrides normal timeout
-		require.Equal(t, StateOpen, cb.GetState())
-	})
-
-	t.Run("Force Open Multiple Times", func(t *testing.T) {
-		// Multiple force open calls should maintain open state
-		cb.ForceOpen()
-		cb.ForceOpen()
-		require.Equal(t, StateOpen, cb.GetState())
-
-		// Verify counters are reset each time
-		require.Equal(t, int64(0), atomic.LoadInt64(&cb.failureCount))
-		require.Equal(t, int64(0), atomic.LoadInt64(&cb.successCount))
-	})
-
-	// Clean up
-	cb.Stop()
-}
-
-func newIntervalCB(t *testing.T, interval time.Duration) (*CircuitBreaker, *mockTime) {
-	t.Helper()
-	mockClock := newMockTime(time.Now())
-	cb := New(Config{
-		FailureThreshold:      5,
-		Timeout:               5 * time.Second,
-		SuccessThreshold:      2,
-		HalfOpenMaxConcurrent: 1,
-		Interval:              interval,
-	})
-	cb.now = mockClock.Now
-	t.Cleanup(func() { cb.Stop() })
-	return cb, mockClock
-}
-
-func TestInterval(t *testing.T) {
-	defaultInterval := 10 * time.Second
-	t.Run("Init Sets Expiry", func(t *testing.T) {
-		// New() derives the initial expiry from the real clock, so bound it
-		// between two real timestamps instead of asserting with a tolerance.
-		before := time.Now()
-		cb, _ := newIntervalCB(t, defaultInterval)
-		after := time.Now()
-		require.False(t, cb.expiry.IsZero())
-		require.False(t, cb.expiry.Before(before.Add(defaultInterval)))
-		require.False(t, cb.expiry.After(after.Add(defaultInterval)))
-	})
-
-	t.Run("Init with 0 interval does not set expiry", func(t *testing.T) {
-		cb, _ := newIntervalCB(t, 0)
-		require.True(t, cb.expiry.IsZero())
-	})
-
-	t.Run("Interval Resets Failure Count", func(t *testing.T) {
-		cb, mockClock := newIntervalCB(t, defaultInterval)
-
-		for i := 0; i < 4; i++ {
-			cb.ReportFailure()
-		}
-		require.Equal(t, int64(4), atomic.LoadInt64(&cb.failureCount))
-
-		// Advance time past the interval to trigger reset
-		mockClock.Add(11 * time.Second)
-
-		// Next failure triggers the expiry reset first, then increments
-		cb.ReportFailure()
-		require.Equal(t, int64(1), atomic.LoadInt64(&cb.failureCount))
-	})
-
-	t.Run("Failures spaced multiple intervals apart do not accumulate", func(t *testing.T) {
-		cb, mockClock := newIntervalCB(t, defaultInterval)
-
-		cb.ReportFailure()
-		require.Equal(t, int64(1), atomic.LoadInt64(&cb.failureCount))
-
-		mockClock.Add(3 * defaultInterval)
-
-		// Each failure after a full interval elapses should start a fresh window
-		cb.ReportFailure()
-		require.Equal(t, int64(1), atomic.LoadInt64(&cb.failureCount))
-	})
-
-	t.Run("Interval does not reset Failure Count prematurely", func(t *testing.T) {
-		cb, mockClock := newIntervalCB(t, defaultInterval)
-
-		for i := 0; i < 3; i++ {
-			cb.ReportFailure()
-		}
-		require.Equal(t, int64(3), atomic.LoadInt64(&cb.failureCount))
-
-		require.True(t, cb.expiry.After(mockClock.Now()))
-		// Advance time but not past the interval
-		mockClock.Add(5 * time.Second)
-
-		// Failure count should continue accumulating
-		cb.ReportFailure()
-		require.Equal(t, int64(4), atomic.LoadInt64(&cb.failureCount))
-	})
-}
-
-// TestHealthHandler tests the health check endpoint handler
 func TestHealthHandler(t *testing.T) {
-	cb := New(Config{
-		FailureThreshold:      2,
-		Timeout:               5 * time.Second,
-		SuccessThreshold:      2,
-		HalfOpenMaxConcurrent: 1,
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 1,
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
 	})
 
 	app := fiber.New()
 	app.Get("/health", cb.HealthHandler())
-
-	t.Run("Healthy When Closed", func(t *testing.T) {
-		cb.transitionToClosed()
-
-		req := httptest.NewRequest("GET", "/health", nil)
-		resp, err := app.Test(req)
-
-		require.NoError(t, err)
-		require.Equal(t, fiber.StatusOK, resp.StatusCode)
-
-		var result fiber.Map
-		body, err := io.ReadAll(resp.Body)
-		require.NoError(t, err)
-		err = json.Unmarshal(body, &result)
-		require.NoError(t, err)
-		require.Equal(t, string(StateClosed), result["state"])
-		require.Equal(t, true, result["healthy"])
+	protected := fiber.New()
+	protected.Use(circuitbreaker.Middleware(cb))
+	protected.Get("/fail", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusInternalServerError)
 	})
 
-	t.Run("Unhealthy When Open", func(t *testing.T) {
-		cb.transitionToOpen()
+	resp := get(t, app, "/health")
+	require.Equal(t, fiber.StatusOK, resp.StatusCode)
+	require.Contains(t, resp.Header.Get(fiber.HeaderContentType), fiber.MIMEApplicationJSON)
 
-		req := httptest.NewRequest("GET", "/health", nil)
-		resp, err := app.Test(req)
+	trip(t, protected, 1)
 
-		require.NoError(t, err)
-		require.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
+	resp = get(t, app, "/health")
+	require.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
 
-		var result fiber.Map
-		body, err := io.ReadAll(resp.Body)
-		require.NoError(t, err)
-		err = json.Unmarshal(body, &result)
-		require.NoError(t, err)
-		require.Equal(t, string(StateOpen), result["state"])
-		require.Equal(t, false, result["healthy"])
-	})
-
-	t.Run("Response Content Type", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/health", nil)
-		resp, err := app.Test(req)
-
-		require.NoError(t, err)
-		require.Equal(t, "application/json; charset=utf-8", resp.Header.Get("Content-Type"))
-	})
-
-	// Clean up
-	cb.Stop()
+	// Recovery is visible through the health endpoint without any traffic.
+	clock.Advance(time.Minute)
+	resp = get(t, app, "/health")
+	require.Equal(t, fiber.StatusOK, resp.StatusCode, "half-open is not unhealthy")
 }
 
-func TestDefaultOnCloseDoesNotAdvanceChainTwice(t *testing.T) {
-	cb := New(Config{
+func TestMetricsCountRequestsAndRejections(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 1,
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
+	})
+	app := newApp(cb)
+
+	trip(t, app, 1) // one admitted request that failed
+	get(t, app, "/ok")
+	get(t, app, "/ok") // two refused
+
+	metrics := cb.Metrics()
+	require.Equal(t, circuitbreaker.StateOpen, metrics["state"])
+	require.Equal(t, int64(3), metrics["totalRequests"])
+	require.Equal(t, int64(2), metrics["rejectedRequests"])
+}
+
+func TestConcurrentFailuresOpenOnce(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 5,
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
+	})
+	app := newApp(cb)
+
+	fired := make([]*bgRequest, 0, 20)
+	for i := 0; i < 20; i++ {
+		fired = append(fired, inBackground(app, "/fail"))
+	}
+	for _, r := range fired {
+		r.wait(t)
+	}
+
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState())
+	require.Equal(t, int64(20), cb.Metrics()["totalRequests"])
+}
+
+func TestConcurrentProbesCloseTheCircuitOnce(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	var closeCalls int64
+	cb := circuitbreaker.New(circuitbreaker.Config{
 		FailureThreshold:      1,
+		SuccessThreshold:      2,
+		HalfOpenMaxConcurrent: 4,
+		Timeout:               time.Minute,
+		Clock:                 clock.Now,
+		OnClose: func(c fiber.Ctx) error {
+			atomic.AddInt64(&closeCalls, 1)
+			return nil
+		},
+	})
+	app := newApp(cb)
+
+	trip(t, app, 1)
+	clock.Advance(time.Minute)
+
+	fired := make([]*bgRequest, 0, 20)
+	for i := 0; i < 20; i++ {
+		fired = append(fired, inBackground(app, "/ok"))
+	}
+	for _, r := range fired {
+		r.wait(t)
+	}
+
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState())
+	require.Equal(t, int64(1), atomic.LoadInt64(&closeCalls), "only the probe that crossed the threshold closes the circuit")
+}
+
+// The deprecated protocol keeps working for callers that have not moved to
+// Middleware yet.
+func TestDeprecatedProtocolStillDrivesTheCircuit(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold:      2,
 		SuccessThreshold:      1,
 		HalfOpenMaxConcurrent: 1,
+		Timeout:               time.Minute,
+		Clock:                 clock.Now,
 	})
-	defer cb.Stop()
+
+	allowed, state := cb.AllowRequest()
+	require.True(t, allowed)
+	require.Equal(t, circuitbreaker.StateClosed, state)
+
+	cb.ReportFailure()
+	cb.ReportFailure()
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState())
+
+	allowed, state = cb.AllowRequest()
+	require.False(t, allowed)
+	require.Equal(t, circuitbreaker.StateOpen, state)
+
+	clock.Advance(time.Minute)
+
+	allowed, state = cb.AllowRequest()
+	require.True(t, allowed, "the one half-open slot is available")
+	require.Equal(t, circuitbreaker.StateHalfOpen, state)
+
+	allowed, _ = cb.AllowRequest()
+	require.False(t, allowed, "the slot is still held until it is released")
+
+	cb.ReleaseSemaphore()
+	allowed, _ = cb.AllowRequest()
+	require.True(t, allowed, "releasing the slot admits the next probe")
+
+	cb.ReportSuccess()
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState())
+}
+
+func TestStopIsANoOp(t *testing.T) {
+	t.Parallel()
+
+	cb := circuitbreaker.New(circuitbreaker.Config{Clock: newFakeClock().Now})
+	cb.Stop()
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState(), "Stop leaves a usable circuit breaker")
+}
+
+func TestDefaultsAreApplied(t *testing.T) {
+	t.Parallel()
+
+	cb := circuitbreaker.New(circuitbreaker.Config{})
+	stats := cb.GetStateStats()
+
+	require.Equal(t, circuitbreaker.DefaultConfig.FailureThreshold, stats["failureThreshold"])
+	require.Equal(t, circuitbreaker.DefaultConfig.SuccessThreshold, stats["successThreshold"])
+	require.Equal(t, circuitbreaker.DefaultConfig.Timeout, stats["openDuration"])
+	require.Equal(t, circuitbreaker.StateClosed, stats["state"])
+	require.True(t, stats["expiry"].(time.Time).IsZero(), "a zero Interval sets no window")
+}
+
+// TestGetStateStatsIsNotTorn pins that the reported state and the timestamps
+// describing it come from the same moment.
+//
+// The gap between reading the state and reading its metadata cannot be entered
+// on demand through the interface, so the test makes a torn pairing detectable
+// instead: every transition to open lands on an even second and every
+// transition to closed on an odd one, so "closed" reported with an even
+// lastStateChange is proof the two halves came from different moments.
+func TestGetStateStatsIsNotTorn(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 1,
+		Timeout:          time.Hour, // recovery must not move the state here
+		Clock:            clock.Now,
+	})
+	app := newApp(cb)
+
+	// The circuit starts closed at the clock's base instant, whose parity is
+	// arbitrary; close it once on an odd second so the starting pairing obeys
+	// the rule the reader checks.
+	clock.AdvanceToParity(1)
+	cb.ForceClose()
+
+	const rounds = 400
+	torn := make(chan string, 1)
+	stop := make(chan struct{})
+	readerDone := make(chan struct{})
+
+	go func() {
+		defer close(readerDone)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+
+			stats := cb.GetStateStats()
+			state, _ := stats["state"].(circuitbreaker.State)
+			changed, _ := stats["lastStateChange"].(time.Time)
+			parity := changed.Unix() % 2
+
+			switch state {
+			case circuitbreaker.StateOpen:
+				if parity != 0 {
+					select {
+					case torn <- "open reported with a lastStateChange from a close":
+					default:
+					}
+					return
+				}
+			case circuitbreaker.StateClosed:
+				if parity != 1 {
+					select {
+					case torn <- "closed reported with a lastStateChange from an open":
+					default:
+					}
+					return
+				}
+			}
+		}
+	}()
+
+	for i := 0; i < rounds; i++ {
+		clock.AdvanceToParity(0)
+		get(t, app, "/fail") // opens on an even second
+		clock.AdvanceToParity(1)
+		cb.ForceClose() // closes on an odd second
+	}
+
+	close(stop)
+	<-readerDone
+
+	select {
+	case msg := <-torn:
+		t.Fatalf("GetStateStats returned a torn snapshot: %s", msg)
+	default:
+	}
+}
+
+// TestGetStateStatsSettlesDueRecovery pins that reading the stats applies a
+// recovery that has come due, and reports it with the timestamps that belong
+// to it - the branch where the read has to take the write lock.
+func TestGetStateStatsSettlesDueRecovery(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 1,
+		Interval:         time.Minute,
+		Timeout:          30 * time.Second,
+		Clock:            clock.Now,
+	})
+	app := newApp(cb)
+
+	trip(t, app, 1)
+	openedAt := clock.Now()
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetStateStats()["state"])
+	require.Equal(t, openedAt, cb.GetStateStats()["lastStateChange"])
+
+	clock.Advance(30 * time.Second)
+	recoveredAt := clock.Now()
+
+	stats := cb.GetStateStats()
+	require.Equal(t, circuitbreaker.StateHalfOpen, stats["state"], "the stats read settles a due recovery")
+	require.Equal(t, recoveredAt, stats["lastStateChange"], "and reports the moment it happened")
+	require.Equal(t, 30*time.Second, stats["openDuration"])
+	require.Equal(t, int64(0), stats["failures"], "entering half-open clears the counters")
+}
+
+// TestStaleSuccessDoesNotCloseTheCircuit pins that only a probe from the
+// current half-open window can vouch for recovery.
+//
+// A request admitted while the circuit was closed may still be in flight when
+// other traffic opens the circuit and the recovery deadline passes. Its
+// success says nothing about the state of the dependency now, so it must
+// neither close the circuit nor fire OnClose.
+func TestStaleSuccessDoesNotCloseTheCircuit(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	var closeCalls int64
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
+		OnClose: func(c fiber.Ctx) error {
+			atomic.AddInt64(&closeCalls, 1)
+			return nil
+		},
+	})
+
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	releaseSlow := releaser(t, release)
 
 	app := fiber.New()
-	app.Use(Middleware(cb))
-
-	protectedCalled := int32(0)
-
-	app.Use(func(c fiber.Ctx) error {
-		return c.SendStatus(fiber.StatusUnauthorized)
+	app.Use(circuitbreaker.Middleware(cb))
+	app.Get("/slow", func(c fiber.Ctx) error {
+		entered <- struct{}{}
+		<-release
+		return c.SendString("OK")
+	})
+	app.Get("/ok", func(c fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+	app.Get("/fail", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusInternalServerError)
 	})
 
-	app.Get("/protected", func(c fiber.Ctx) error {
-		atomic.AddInt32(&protectedCalled, 1)
-		return c.SendString("SECRET")
+	// Admitted while closed, and still running for the rest of the test.
+	slow := inBackground(app, "/slow")
+	awaitEntry(t, entered, "the slow request was not admitted while closed")
+
+	// Other traffic opens the circuit underneath it, and the deadline passes.
+	get(t, app, "/fail")
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState())
+	clock.Advance(time.Minute)
+
+	// Its success must not be mistaken for a recovery probe.
+	releaseSlow()
+	require.Equal(t, fiber.StatusOK, slow.wait(t).StatusCode)
+
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState(),
+		"a success from a request admitted while closed must not close the circuit")
+	require.Equal(t, int64(0), atomic.LoadInt64(&closeCalls),
+		"OnClose must not fire for a request that was never a half-open probe")
+
+	// A genuine probe still closes it.
+	require.Equal(t, fiber.StatusOK, get(t, app, "/ok").StatusCode)
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState())
+	require.Equal(t, int64(1), atomic.LoadInt64(&closeCalls))
+}
+
+// TestProbeFromAnEndedWindowDoesNotCloseTheCircuit is the other half of
+// matching a success to its admission: a probe admitted to one half-open
+// window can still be running when that window ends and a later one begins.
+// It was testing a state the circuit has already left, so its success must not
+// close the new window.
+func TestProbeFromAnEndedWindowDoesNotCloseTheCircuit(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	var closeCalls int64
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold:      1,
+		SuccessThreshold:      1,
+		HalfOpenMaxConcurrent: 2, // room for the stranded probe and the one that ends the window
+		Timeout:               time.Minute,
+		Clock:                 clock.Now,
+		OnClose: func(c fiber.Ctx) error {
+			atomic.AddInt64(&closeCalls, 1)
+			return nil
+		},
 	})
 
-	cb.transitionToOpen()
-	cb.transitionToHalfOpen()
-	require.Equal(t, StateHalfOpen, cb.GetState())
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	releaseStranded := releaser(t, release)
 
-	req := httptest.NewRequest("GET", "/protected", nil)
-	resp, err := app.Test(req)
-	require.NoError(t, err)
-	require.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
-	require.Equal(t, int32(0), atomic.LoadInt32(&protectedCalled))
-	require.Equal(t, StateClosed, cb.GetState())
+	app := fiber.New()
+	app.Use(circuitbreaker.Middleware(cb))
+	app.Get("/stranded", func(c fiber.Ctx) error {
+		entered <- struct{}{}
+		<-release
+		return c.SendString("OK")
+	})
+	app.Get("/ok", func(c fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+	app.Get("/fail", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusInternalServerError)
+	})
+
+	trip(t, app, 1)
+	clock.Advance(time.Minute)
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState())
+
+	// A probe of this window that stays in flight.
+	stranded := inBackground(app, "/stranded")
+	awaitEntry(t, entered, "the stranded probe was not admitted")
+
+	// End the window, then open a fresh one.
+	get(t, app, "/fail")
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState())
+	clock.Advance(time.Minute)
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState())
+
+	// The stranded probe belongs to the window that has ended.
+	releaseStranded()
+	require.Equal(t, fiber.StatusOK, stranded.wait(t).StatusCode)
+
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState(),
+		"a probe from an ended window must not close the window that replaced it")
+	require.Equal(t, int64(0), atomic.LoadInt64(&closeCalls))
+
+	// A probe of the current window still closes it.
+	require.Equal(t, fiber.StatusOK, get(t, app, "/ok").StatusCode)
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState())
+	require.Equal(t, int64(1), atomic.LoadInt64(&closeCalls))
+}
+
+// TestStaleFailureDoesNotReopenTheCircuit is the failure-path mirror of
+// TestStaleSuccessDoesNotCloseTheCircuit. A request admitted while the circuit
+// was closed may still be in flight when other traffic opens the circuit and
+// the recovery deadline passes. Its failure describes a circuit that no longer
+// exists, so it must not abort the half-open trial before a real probe runs.
+func TestStaleFailureDoesNotReopenTheCircuit(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
+	})
+
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	releaseSlow := releaser(t, release)
+
+	app := fiber.New()
+	app.Use(circuitbreaker.Middleware(cb))
+	app.Get("/slowfail", func(c fiber.Ctx) error {
+		entered <- struct{}{}
+		<-release
+		return c.SendStatus(fiber.StatusInternalServerError)
+	})
+	app.Get("/ok", func(c fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+	app.Get("/fail", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusInternalServerError)
+	})
+
+	// Admitted while closed, and still running for the rest of the test.
+	slow := inBackground(app, "/slowfail")
+	awaitEntry(t, entered, "the slow request was not admitted while closed")
+
+	// Other traffic opens the circuit underneath it, and the deadline passes.
+	get(t, app, "/fail")
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState())
+	clock.Advance(time.Minute)
+
+	// Its failure must not end a trial that has not run.
+	releaseSlow()
+	slow.wait(t)
+
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState(),
+		"a failure from a request admitted while closed must not reopen the circuit")
+
+	// The trial is still available, so a genuine probe decides.
+	require.Equal(t, fiber.StatusOK, get(t, app, "/ok").StatusCode)
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState())
+}
+
+// An outcome can outlive not just the state that admitted it but a whole
+// open-and-recover cycle, arriving back in a closed circuit that looks like the
+// one it left. The probe that closed that circuit judged the dependency more
+// recently, so a failure from before the outage must not undo it - otherwise
+// every recovery can be bounced straight back open by the backlog behind it.
+func TestStaleFailureCannotReopenARecoveredCircuit(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
+	})
+
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	releaseSlow := releaser(t, release)
+
+	app := fiber.New()
+	app.Use(circuitbreaker.Middleware(cb))
+	app.Get("/slow", func(c fiber.Ctx) error {
+		entered <- struct{}{}
+		<-release
+		return c.SendStatus(fiber.StatusInternalServerError)
+	})
+	app.Get("/ok", func(c fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+	app.Get("/fail", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusInternalServerError)
+	})
+
+	// Admitted while closed, and still running for the rest of the test.
+	slow := inBackground(app, "/slow")
+	awaitEntry(t, entered, "the slow request was not admitted while closed")
+
+	// The circuit opens, comes due, and a genuine probe closes it again.
+	get(t, app, "/fail")
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState())
+	clock.Advance(time.Minute)
+	require.Equal(t, fiber.StatusOK, get(t, app, "/ok").StatusCode)
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState(), "a probe closed the circuit")
+
+	// Only now does the request admitted before any of that fail.
+	releaseSlow()
+	slow.wait(t)
+
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState(),
+		"a failure admitted before the circuit opened must not reopen it after a probe recovered it")
+	require.Equal(t, fiber.StatusOK, get(t, app, "/ok").StatusCode,
+		"the recovered circuit still serves traffic")
+}
+
+// TestStaleFailuresCannotStarveRecovery is why the failure path matters more
+// than symmetry. Each stale failure that reopens the circuit also resets the
+// deadline, so a backlog of them can hold the circuit open indefinitely and
+// never let a probe through.
+func TestStaleFailuresCannotStarveRecovery(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
+	})
+
+	const backlog = 5
+	entered := make(chan struct{}, backlog)
+	release := make(chan struct{})
+	releaseAll := releaser(t, release)
+
+	app := fiber.New()
+	app.Use(circuitbreaker.Middleware(cb))
+	app.Get("/slowfail", func(c fiber.Ctx) error {
+		entered <- struct{}{}
+		<-release
+		return c.SendStatus(fiber.StatusInternalServerError)
+	})
+	app.Get("/ok", func(c fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+	app.Get("/fail", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusInternalServerError)
+	})
+
+	// A backlog of requests admitted while closed, all still in flight.
+	stale := make([]*bgRequest, 0, backlog)
+	for i := 0; i < backlog; i++ {
+		stale = append(stale, inBackground(app, "/slowfail"))
+	}
+	for i := 0; i < backlog; i++ {
+		awaitEntry(t, entered, "a backlog request was not admitted while closed")
+	}
+
+	get(t, app, "/fail")
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState())
+	clock.Advance(time.Minute)
+
+	// The whole backlog fails at once, after the deadline.
+	releaseAll()
+	for _, r := range stale {
+		r.wait(t)
+	}
+
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState(),
+		"a backlog of stale failures must not keep pushing the recovery deadline out")
+	require.Equal(t, fiber.StatusOK, get(t, app, "/ok").StatusCode,
+		"a probe must still be admitted")
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState())
+}
+
+// TestProbeFailingAfterSiblingClosedIsIgnored covers the state half of the
+// matching rule, which the generation check alone does not: a probe of a
+// half-open window can still be running when a sibling probe closes the
+// circuit. Its failure belongs to a trial that is over, so it must not reopen
+// a circuit that has just recovered.
+func TestProbeFailingAfterSiblingClosedIsIgnored(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold:      1,
+		SuccessThreshold:      1,
+		HalfOpenMaxConcurrent: 2, // room for the stranded probe and the one that closes
+		Timeout:               time.Minute,
+		Clock:                 clock.Now,
+	})
+
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	releaseStranded := releaser(t, release)
+
+	app := fiber.New()
+	app.Use(circuitbreaker.Middleware(cb))
+	app.Get("/slowfail", func(c fiber.Ctx) error {
+		entered <- struct{}{}
+		<-release
+		return c.SendStatus(fiber.StatusInternalServerError)
+	})
+	app.Get("/ok", func(c fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+	app.Get("/fail", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusInternalServerError)
+	})
+
+	trip(t, app, 1)
+	clock.Advance(time.Minute)
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState())
+
+	// A probe of this window that stays in flight and will fail.
+	stranded := inBackground(app, "/slowfail")
+	awaitEntry(t, entered, "the stranded probe was not admitted")
+
+	// A sibling probe of the same window succeeds and closes the circuit.
+	require.Equal(t, fiber.StatusOK, get(t, app, "/ok").StatusCode)
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState())
+
+	// The stranded probe now fails, against a circuit that has recovered.
+	releaseStranded()
+	stranded.wait(t)
+
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState(),
+		"a probe failing after its trial ended must not reopen the recovered circuit")
+
+	// And a genuine failure still opens it, so the gate has not gone too far.
+	get(t, app, "/fail")
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState())
 }
