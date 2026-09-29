@@ -73,8 +73,8 @@ github.com/molecule-man/go-brrr v1.1.1 h1:KYwusQhjtV3smALnhmafZf4OBrh7vP4p8O47Dy
 github.com/molecule-man/go-brrr v1.1.1/go.mod h1:7ybW6/7gA3oKY45jOfVNjSJDtrr6ea4tzbsTkjmQDC4=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
-github.com/open-policy-agent/opa v1.21.0 h1:k/N0fieTkBPM0H7mIOrMd/xZPaMsxW70jIzIPeOBst4=
-github.com/open-policy-agent/opa v1.21.0/go.mod h1:eJL6KUOIaW5YLnhJEA6sm3FOYRDJaHZvYT6geATbpPk=
+github.com/open-policy-agent/opa v1.21.1 h1:j6NIMLmdOPUTp9+1fgtWLqbOPqwkTaxNm4T3ngtUB48=
+github.com/open-policy-agent/opa v1.21.1/go.mod h1:eJL6KUOIaW5YLnhJEA6sm3FOYRDJaHZvYT6geATbpPk=
 github.com/philhofer/fwd v1.2.0 h1:e6DnBTl7vGY+Gz322/ASL4Gyp1FspeMvx1RNDoToZuM=
 github.com/philhofer/fwd v1.2.0/go.mod h1:RqIHx9QI14HlwKwm98g9Re5prTQ6LdeRQn+gXJFxsJM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
