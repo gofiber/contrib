@@ -10,17 +10,19 @@ import (
 
 // config is used to configure the Fiber middleware.
 type config struct {
-	Next                   func(fiber.Ctx) bool
-	TracerProvider         oteltrace.TracerProvider
-	MeterProvider          otelmetric.MeterProvider
-	Port                   *int
-	Propagators            propagation.TextMapPropagator
-	TraceResponseHeader    string
-	SpanNameFormatter      func(fiber.Ctx) string
-	CustomAttributes       func(fiber.Ctx) []attribute.KeyValue
-	CustomMetricAttributes func(fiber.Ctx) []attribute.KeyValue
-	clientIP               bool
-	withoutMetrics         bool
+	Next                           func(fiber.Ctx) bool
+	TracerProvider                 oteltrace.TracerProvider
+	MeterProvider                  otelmetric.MeterProvider
+	Port                           *int
+	Propagators                    propagation.TextMapPropagator
+	TraceResponseHeader            string
+	SpanNameFormatter              func(fiber.Ctx) string
+	CustomAttributes               func(fiber.Ctx) []attribute.KeyValue
+	CustomMetricAttributes         func(fiber.Ctx) []attribute.KeyValue
+	CustomResponseAttributes       func(fiber.Ctx) []attribute.KeyValue
+	CustomResponseMetricAttributes func(fiber.Ctx) []attribute.KeyValue
+	clientIP                       bool
+	withoutMetrics                 bool
 }
 
 // Option specifies instrumentation configuration options.
@@ -105,6 +107,22 @@ func WithCustomAttributes(f func(ctx fiber.Ctx) []attribute.KeyValue) Option {
 func WithCustomMetricAttributes(f func(ctx fiber.Ctx) []attribute.KeyValue) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.CustomMetricAttributes = f
+	})
+}
+
+// WithCustomResponseAttributes adds span attributes after the handler has run.
+// The callback can inspect the route, response, and values set by the handler.
+func WithCustomResponseAttributes(f func(ctx fiber.Ctx) []attribute.KeyValue) Option {
+	return optionFunc(func(cfg *config) {
+		cfg.CustomResponseAttributes = f
+	})
+}
+
+// WithCustomResponseMetricAttributes adds attributes to recorded request metrics
+// after the handler has run. Active request metrics retain request attributes.
+func WithCustomResponseMetricAttributes(f func(ctx fiber.Ctx) []attribute.KeyValue) Option {
+	return optionFunc(func(cfg *config) {
+		cfg.CustomResponseMetricAttributes = f
 	})
 }
 

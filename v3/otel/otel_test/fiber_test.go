@@ -564,6 +564,64 @@ func TestCustomMetricAttributes(t *testing.T) {
 	assertScopeMetrics(t, metrics.ScopeMetrics[0], route, requestAttrs, append(requestAttrs, responseAttrs...))
 }
 
+func TestCustomResponseAttributes(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	reader := metric.NewManualReader()
+	meterProvider := metric.NewMeterProvider(metric.WithReader(reader))
+
+	app := fiber.New()
+	app.Use(fiberotel.Middleware(
+		fiberotel.WithTracerProvider(tracerProvider),
+		fiberotel.WithMeterProvider(meterProvider),
+		fiberotel.WithCustomResponseAttributes(func(ctx fiber.Ctx) []attribute.KeyValue {
+			return []attribute.KeyValue{
+				attribute.String("app.trace_outcome", fmt.Sprint(ctx.Locals("outcome"))),
+				attribute.Int("app.trace_status", ctx.Response().StatusCode()),
+			}
+		}),
+		fiberotel.WithCustomResponseMetricAttributes(func(ctx fiber.Ctx) []attribute.KeyValue {
+			return []attribute.KeyValue{
+				attribute.String("app.metric_outcome", fmt.Sprint(ctx.Locals("outcome"))),
+				attribute.String("app.metric_route", ctx.Route().Path),
+			}
+		}),
+	))
+	app.Get("/orders/:id", func(ctx fiber.Ctx) error {
+		ctx.Locals("outcome", "accepted")
+		return ctx.Status(http.StatusAccepted).SendString("ok")
+	})
+
+	r := httptest.NewRequest(http.MethodGet, "/orders/42", nil)
+	resp, err := app.Test(r)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+	assert.Contains(t, spans[0].Attributes(), attribute.String("app.trace_outcome", "accepted"))
+	assert.Contains(t, spans[0].Attributes(), attribute.Int("app.trace_status", http.StatusAccepted))
+	assert.NotContains(t, spans[0].Attributes(), attribute.String("app.metric_outcome", "accepted"))
+
+	metrics := metricdata.ResourceMetrics{}
+	require.NoError(t, reader.Collect(context.Background(), &metrics))
+	require.Len(t, metrics.ScopeMetrics, 1)
+	requestAttrs := []attribute.KeyValue{
+		semconv.NetworkProtocolName("http"),
+		semconv.NetworkProtocolVersion(fmt.Sprintf("1.%d", r.ProtoMinor)),
+		semconv.HTTPRequestMethodKey.String(http.MethodGet),
+		semconv.URLSchemeKey.String("http"),
+		semconv.ServerAddress(r.Host),
+	}
+	responseAttrs := []attribute.KeyValue{
+		semconv.HTTPResponseStatusCode(http.StatusAccepted),
+		semconv.HTTPRouteKey.String("/orders/:id"),
+		attribute.String("app.metric_outcome", "accepted"),
+		attribute.String("app.metric_route", "/orders/:id"),
+	}
+	assertScopeMetrics(t, metrics.ScopeMetrics[0], "/orders/:id", requestAttrs, append(requestAttrs, responseAttrs...))
+}
+
 func TestOutboundTracingPropagation(t *testing.T) {
 	sr := new(tracetest.SpanRecorder)
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
