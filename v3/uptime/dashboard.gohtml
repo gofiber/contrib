@@ -754,12 +754,13 @@ let refreshTimer = 0;
 let lastRefreshStarted = -Infinity;
 const pollMS = Math.max(Number(refreshMS) || 10000, 10000);
 const expandedServices = new Set();
+const trendCharts = new Map();
 const CHART_POINT_PROXIMITY = 16;
 const CHART_TOOLTIP_OFFSET = 12;
 const CHART_TOOLTIP_MARGIN = 12;
 // Lower bounds of the trend plot, tightest first. Each splits into four equal
-// steps that read as round percentages, such as 99.75, 99.5, 99.25 or 80, 60, 40.
-const TREND_FLOORS = [0.99, 0.98, 0.96, 0.92, 0.9, 0.8, 0.6, 0.2, 0];
+// steps that read as round percentages, such as 99.75, 99.5, 99.25 or 85, 70, 55.
+const TREND_FLOORS = [0.99, 0.98, 0.96, 0.92, 0.9, 0.8, 0.6, 0.4, 0.2, 0];
 let activeTrend = null;
 let trendTooltipOwner = null;
 let trendTooltipIndex = -1;
@@ -983,7 +984,7 @@ function renderServiceInsights(container, service) {
     metric.append(label, value);
     metrics.appendChild(metric);
   });
-  container.append(metrics, renderTrendChart(service.daily || []));
+  container.append(metrics, renderTrendChart(service.daily || [], service.id));
 }
 
 function validTrendDay(day) {
@@ -1072,6 +1073,32 @@ function hideTrendHoverCard() {
   trendTooltipIndex = -1;
 }
 
+// Every refresh rebuilds the charts. A tooltip pinned by a tap stays on screen
+// and moves to the rebuilt chart of the same service; any other one is hidden.
+function releasePinnedTrend() {
+  const pinned = activeTrend && activeTrend.pointerTouch ? activeTrend : null;
+  if (!pinned) {
+    hideTrendHoverCard();
+    return null;
+  }
+  if (pinned.hoverFrame !== null) window.cancelAnimationFrame(pinned.hoverFrame);
+  pinned.hoverFrame = null;
+  activeTrend = null;
+  return pinned;
+}
+
+function repinTrend(pinned) {
+  if (!pinned) return;
+  const trend = trendCharts.get(pinned.serviceID);
+  if (!trend) {
+    hideTrendHoverCard();
+    return;
+  }
+  // Own the visible tooltip first so tracking moves it instead of hiding it.
+  activeTrend = trend;
+  trend.track({ pointerType: "touch", clientX: pinned.pointerClientX, clientY: pinned.pointerClientY });
+}
+
 function showTrendHoverCard(owner, index, day) {
   const card = $("trend-hovercard");
   card.hidden = false;
@@ -1114,7 +1141,7 @@ function positionTrendHoverCard(clientX, clientY, above) {
   card.style.top = Math.max(margin, Math.min(top, window.innerHeight - height - margin)) + "px";
 }
 
-function renderTrendChart(days) {
+function renderTrendChart(days, serviceID) {
   const figure = document.createElement("figure");
   figure.className = "insights-trend";
   figure.setAttribute("aria-label", "Daily availability trend");
@@ -1148,7 +1175,8 @@ function renderTrendChart(days) {
   const focusGuide = svgNode("line", { class: "trend-focus-guide", x1: 8, x2: 592, visibility: "hidden", "vector-effect": "non-scaling-stroke" });
   const point = svgNode("circle", { class: "trend-point", r: 3, visibility: "hidden" });
   const hit = svgNode("rect", { class: "trend-hit-area", x: 8, y: 8, width: 584, height: 112, fill: "transparent" });
-  const trend = { hit, guide, focusGuide, point, hoverFrame: null, pointerActive: false, pointerTouch: false, pointerClientX: 0, pointerClientY: 0 };
+  const trend = { serviceID, hit, guide, focusGuide, point, hoverFrame: null, pointerActive: false, pointerTouch: false, pointerClientX: 0, pointerClientY: 0, track: trackPointer };
+  trendCharts.set(serviceID, trend);
 
   function paintHover() {
     trend.hoverFrame = null;
@@ -1238,7 +1266,8 @@ function renderStatus(status) {
   if (!status) return;
   lastStatus = status;
   hideHoverCard();
-  hideTrendHoverCard();
+  const pinnedTrend = releasePinnedTrend();
+  trendCharts.clear();
   const focusedToggle = document.activeElement && document.activeElement.closest(".insights-toggle");
   const focusedServiceID = focusedToggle ? focusedToggle.dataset.serviceId : null;
   const serviceIDs = new Set((status.services || []).map(service => service.id));
@@ -1267,6 +1296,7 @@ function renderStatus(status) {
     empty.className = "empty";
     empty.textContent = t("noServices");
     root.appendChild(empty);
+    repinTrend(pinnedTrend);
     return;
   }
   status.services.forEach(function(service, index) {
@@ -1317,6 +1347,7 @@ function renderStatus(status) {
       if (button.dataset.serviceId === focusedServiceID) button.focus({ preventScroll: true });
     });
   }
+  repinTrend(pinnedTrend);
 }
 
 function updateSummary(services) {
@@ -1381,9 +1412,9 @@ async function refresh() {
     $("response-time").textContent = (performance.now() - started).toFixed(1) + " ms";
     lastSuccessAt = Date.now();
   } catch (err) {
-    // The last successful snapshot stays on screen. A storage error is the more
-    // serious state, so only a page that was live becomes stale.
-    if (currentStatus !== "error") setStatus("stale", t("failedDetail"));
+    // The last successful snapshot stays on screen, including any storage error
+    // banner it reported, so the page is stale whatever state it was in.
+    setStatus("stale", t("failedDetail"));
   } finally {
     window.clearTimeout(timeoutID);
     refreshInFlight = false;
@@ -1391,13 +1422,10 @@ async function refresh() {
   }
 }
 
+// Hiding the page cancels the pending poll; showing it polls as soon as the
+// interval has elapsed. A refresh in flight schedules the next one itself.
 function handleVisibilityChange() {
-  if (document.hidden) {
-    window.clearTimeout(refreshTimer);
-    refreshTimer = 0;
-  } else if (!refreshInFlight) {
-    scheduleRefresh(lastRefreshStarted + pollMS - performance.now());
-  }
+  if (!refreshInFlight) scheduleRefresh(lastRefreshStarted + pollMS - performance.now());
 }
 
 function updateScrollDock() {
@@ -1442,10 +1470,12 @@ document.addEventListener("pointerdown", function(event) {
 document.addEventListener("visibilitychange", handleVisibilityChange);
 setInterval(updateScrollDock, 250);
 setInterval(function() {
-  // Polling pauses while hidden, so neither a hidden page nor one that is
-  // refreshing as it becomes visible is stale. Only a live page can become stale.
-  if (document.hidden || refreshInFlight || !lastSuccessAt || currentStatus !== "live") return;
-  if (Date.now() - lastSuccessAt > Number(refreshMS || 10000) * 3) setStatus("stale", t("staleDetail"));
+  // Polling pauses while hidden, so only a visible page is checked. A refresh
+  // that just started, such as the one when the page becomes visible again,
+  // gets a second to finish; after that, old data is stale even while it runs.
+  if (document.hidden || !lastSuccessAt || currentStatus === "stale") return;
+  if (refreshInFlight && performance.now() - lastRefreshStarted < 1000) return;
+  if (Date.now() - lastSuccessAt > pollMS * 3) setStatus("stale", t("staleDetail"));
 }, 1000);
 
 setStatus("live");

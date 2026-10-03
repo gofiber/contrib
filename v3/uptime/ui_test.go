@@ -112,24 +112,34 @@ func TestDashboardPollingLifecycle(t *testing.T) {
 		`if (refreshInFlight) return;`,
 		`refreshTimer = document.hidden ? 0 : window.setTimeout(refresh, Math.max(0, delay));`,
 		`document.addEventListener("visibilitychange", handleVisibilityChange);`,
-		`scheduleRefresh(lastRefreshStarted + pollMS - performance.now());`,
+		`if (!refreshInFlight) scheduleRefresh(lastRefreshStarted + pollMS - performance.now());`,
 		`scheduleRefresh(pollMS);`,
 		`scheduleRefresh(0);`,
-		// Neither a hidden page nor one refreshing as it becomes visible is stale,
-		// and only a live page can become stale.
-		`if (document.hidden || refreshInFlight || !lastSuccessAt || currentStatus !== "live") return;`,
-		// A failed or aborted refresh keeps the last snapshot on screen and marks it
-		// stale; ERROR is reserved for a storage problem the API reports.
-		`if (currentStatus !== "error") setStatus("stale", t("failedDetail"));`,
+		// Only visible pages are checked. A refresh that just started gets a second to
+		// finish, after which old data is stale even while it is still running.
+		`if (document.hidden || !lastSuccessAt || currentStatus === "stale") return;`,
+		`if (refreshInFlight && performance.now() - lastRefreshStarted < 1000) return;`,
+		`if (Date.now() - lastSuccessAt > pollMS * 3) setStatus("stale", t("staleDetail"));`,
+		// A failed or aborted refresh keeps the last snapshot, including any storage
+		// error banner, on screen and marks it stale from any state. ERROR is
+		// reserved for a storage problem the API reports.
+		`setStatus("stale", t("failedDetail"));`,
 		`setStatus(storageOK ? "live" : "error", storageOK ? "" : t("storageDetail"));`,
 	} {
 		requireContains(t, body, contract)
 	}
 	// Hidden pages must not keep polling, so no fixed-rate timer may drive refresh.
 	requireNotContains(t, body, `setInterval(refresh`)
-	// A failed refresh no longer reads as a red ERROR next to an old snapshot.
+	// A failed refresh no longer reads as a red ERROR next to an old snapshot, and
+	// an ERROR page can still show that it has lost contact.
 	requireNotContains(t, body, `errorDetail`)
 	requireNotContains(t, body, `setStatus("error", t(`)
+	requireNotContains(t, body, `if (currentStatus !== "error") setStatus("stale"`)
+	requireNotContains(t, body, `currentStatus !== "live") return;`)
+	// The stale check only spares a refresh that just started, not every one in
+	// flight, and does not re-derive the interval.
+	requireNotContains(t, body, `refreshInFlight || !lastSuccessAt`)
+	requireNotContains(t, body, `Number(refreshMS || 10000) * 3`)
 }
 
 func TestDashboardAccessibilityContract(t *testing.T) {
@@ -189,9 +199,18 @@ func TestDashboardTrendTouchContract(t *testing.T) {
 		`if (event.pointerType !== "touch") clearHover();`,
 		`if (activeTrend && event.target !== activeTrend.hit) hideTrendHoverCard();`,
 		`let top = above ? clientY - height - offset * 2 : clientY + offset;`,
+		// Every refresh rebuilds the charts; a tapped tooltip stays and moves to the
+		// rebuilt chart of the same service instead of disappearing.
+		`trendCharts.set(serviceID, trend);`,
+		`renderTrendChart(service.daily || [], service.id)`,
+		`const pinnedTrend = releasePinnedTrend();`,
+		`trend.track({ pointerType: "touch", clientX: pinned.pointerClientX, clientY: pinned.pointerClientY });`,
 	} {
 		requireContains(t, body, contract)
 	}
+	// Both ways out of renderStatus re-pin (or hide) a released tooltip.
+	requireEqual(t, 2, strings.Count(body, `repinTrend(pinnedTrend);`))
+	requireNotContains(t, body, "hideHoverCard();\n  hideTrendHoverCard();")
 }
 
 func TestDashboardTrendAxisContract(t *testing.T) {
@@ -201,7 +220,7 @@ func TestDashboardTrendAxisContract(t *testing.T) {
 	requireNoError(t, err)
 
 	// Every domain splits into four steps that read as round percentages.
-	requireContains(t, body, `const TREND_FLOORS = [0.99, 0.98, 0.96, 0.92, 0.9, 0.8, 0.6, 0.2, 0];`)
+	requireContains(t, body, `const TREND_FLOORS = [0.99, 0.98, 0.96, 0.92, 0.9, 0.8, 0.6, 0.4, 0.2, 0];`)
 	requireContains(t, body, `return minimum - floor >= (1 - floor) * 0.04;`)
 	// The old one-point-below-the-minimum domain produced ticks such as 87.25%.
 	requireNotContains(t, body, `Math.floor(minimum * 100) - 1`)
