@@ -260,9 +260,15 @@ func Middleware(opts ...Option) fiber.Handler {
 			responseSizeKnown = true
 		}
 
-		defer func() {
-			responseMetricAttrs = append(responseMetricAttrs, responseAttrs...)
+		responseMetricAttrs = append(responseMetricAttrs, responseAttrs...)
+		if cfg.CustomResponseMetricAttributes != nil {
+			responseMetricAttrs = append(responseMetricAttrs, cfg.CustomResponseMetricAttributes(c)...)
+		}
+		if cfg.CustomResponseAttributes != nil {
+			responseAttrs = append(responseAttrs, cfg.CustomResponseAttributes(c)...)
+		}
 
+		defer func() {
 			if !cfg.withoutMetrics {
 				httpServerActiveRequests.Add(savedCtx, -1, metric.WithAttributes(requestMetricsAttrs...))
 				httpServerDuration.Record(savedCtx, time.Since(start).Seconds(), metric.WithAttributes(responseMetricAttrs...))
