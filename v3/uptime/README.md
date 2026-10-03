@@ -222,10 +222,11 @@ dashboards.
 The built-in dashboard polls that endpoint every `SampleInterval`, but no more
 often than every 10 seconds. It stops polling while its browser tab is hidden
 and refreshes as soon as the tab is visible again, so a forgotten tab does not
-keep reading the backing store. A request that takes longer than the polling
-interval is aborted and reported as `ERROR`, while the last successful snapshot
-stays on screen. Screen readers are told when the `LIVE`, `STALE`, or `ERROR`
-state changes, but not on every refresh.
+keep reading the backing store. A request that fails, or takes longer than the
+polling interval and is aborted, marks the dashboard `STALE` while the last
+successful snapshot stays on screen. `ERROR` means the API reported a storage
+problem. Screen readers are told when the `LIVE`, `STALE`, or `ERROR` state
+changes, but not on every refresh.
 
 ## Service insights
 

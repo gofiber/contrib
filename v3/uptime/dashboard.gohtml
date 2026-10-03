@@ -26,6 +26,8 @@
   --dot-good-rgb: 37 190 133;
   --dot-warn-rgb: 224 173 70;
   --dot-bad-rgb: 226 92 112;
+  --good-text: #187b56;
+  --bad-text: #d0253e;
   --good: rgb(var(--good-rgb) / var(--bar-alpha));
   --warn: rgb(var(--warn-rgb) / var(--bar-alpha));
   --bad: rgb(var(--bad-rgb) / var(--bar-alpha));
@@ -65,6 +67,8 @@
     --warn: rgb(var(--warn-rgb) / var(--bar-alpha));
     --bad: rgb(var(--bad-rgb) / var(--bar-alpha));
     --none: rgb(var(--none-rgb) / 0.34);
+    --good-text: rgb(var(--dot-good-rgb) / 0.98);
+    --bad-text: rgb(var(--dot-bad-rgb) / 0.98);
     --shadow: none;
     --divider-line: #3b82f6;
     --divider-glow: #38bdf8;
@@ -177,8 +181,8 @@ button:hover:not(.bar):not(.insights-toggle) {
   font-size: 0.9rem;
   font-weight: 800;
 }
-.summary-metric.up strong { color: rgb(var(--dot-good-rgb) / 0.98); }
-.summary-metric.down strong { color: rgb(var(--dot-bad-rgb) / 0.98); }
+.summary-metric.up strong { color: var(--good-text); }
+.summary-metric.down strong { color: var(--bad-text); }
 .status-line {
   display: flex;
   align-items: center;
@@ -727,8 +731,8 @@ const messages = {
   live: "LIVE",
   stale: "STALE",
   error: "ERROR",
-  staleDetail: "No successful refresh recently; showing the last snapshot",
-  errorDetail: "The latest refresh failed; showing the last successful snapshot",
+  staleDetail: "No successful refresh recently; showing the last successful snapshot",
+  failedDetail: "The latest refresh failed; showing the last successful snapshot",
   storageDetail: "The status API reports a storage error",
   noServices: "No services have reported heartbeats yet.",
   storageError: "Storage error",
@@ -774,10 +778,10 @@ function setStatus(status, detail) {
   if (text.textContent !== label) text.textContent = label;
   $("live-dot").dataset.status = status;
   const line = $("live-status");
-  if (detail) {
-    line.title = detail;
-  } else {
+  if (!detail) {
     line.removeAttribute("title");
+  } else if (line.title !== detail) {
+    line.title = detail;
   }
 }
 
@@ -1377,7 +1381,9 @@ async function refresh() {
     $("response-time").textContent = (performance.now() - started).toFixed(1) + " ms";
     lastSuccessAt = Date.now();
   } catch (err) {
-    setStatus("error", t("errorDetail"));
+    // The last successful snapshot stays on screen. A storage error is the more
+    // serious state, so only a page that was live becomes stale.
+    if (currentStatus !== "error") setStatus("stale", t("failedDetail"));
   } finally {
     window.clearTimeout(timeoutID);
     refreshInFlight = false;
@@ -1437,8 +1443,8 @@ document.addEventListener("visibilitychange", handleVisibilityChange);
 setInterval(updateScrollDock, 250);
 setInterval(function() {
   // Polling pauses while hidden, so neither a hidden page nor one that is
-  // refreshing as it becomes visible is stale.
-  if (document.hidden || refreshInFlight || !lastSuccessAt || currentStatus === "error") return;
+  // refreshing as it becomes visible is stale. Only a live page can become stale.
+  if (document.hidden || refreshInFlight || !lastSuccessAt || currentStatus !== "live") return;
   if (Date.now() - lastSuccessAt > Number(refreshMS || 10000) * 3) setStatus("stale", t("staleDetail"));
 }, 1000);
 

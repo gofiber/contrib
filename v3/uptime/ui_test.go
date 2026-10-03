@@ -115,13 +115,21 @@ func TestDashboardPollingLifecycle(t *testing.T) {
 		`scheduleRefresh(lastRefreshStarted + pollMS - performance.now());`,
 		`scheduleRefresh(pollMS);`,
 		`scheduleRefresh(0);`,
-		// Neither a hidden page nor one refreshing as it becomes visible is stale.
-		`if (document.hidden || refreshInFlight || !lastSuccessAt || currentStatus === "error") return;`,
+		// Neither a hidden page nor one refreshing as it becomes visible is stale,
+		// and only a live page can become stale.
+		`if (document.hidden || refreshInFlight || !lastSuccessAt || currentStatus !== "live") return;`,
+		// A failed or aborted refresh keeps the last snapshot on screen and marks it
+		// stale; ERROR is reserved for a storage problem the API reports.
+		`if (currentStatus !== "error") setStatus("stale", t("failedDetail"));`,
+		`setStatus(storageOK ? "live" : "error", storageOK ? "" : t("storageDetail"));`,
 	} {
 		requireContains(t, body, contract)
 	}
 	// Hidden pages must not keep polling, so no fixed-rate timer may drive refresh.
 	requireNotContains(t, body, `setInterval(refresh`)
+	// A failed refresh no longer reads as a red ERROR next to an old snapshot.
+	requireNotContains(t, body, `errorDetail`)
+	requireNotContains(t, body, `setStatus("error", t(`)
 }
 
 func TestDashboardAccessibilityContract(t *testing.T) {
@@ -137,10 +145,18 @@ func TestDashboardAccessibilityContract(t *testing.T) {
 	requireContains(t, body, `id="live-status" class="status-line" role="status"`)
 	requireNotContains(t, body, `aria-live`)
 	requireContains(t, body, `if (text.textContent !== label) text.textContent = label;`)
+	requireContains(t, body, `} else if (line.title !== detail) {`)
 
-	// The light accent and hovercard labels keep text above WCAG AA contrast.
+	// The light accent, hovercard labels, and summary counters keep text above WCAG
+	// AA contrast. The dark theme keeps the brighter dot colours for its counters.
 	requireContains(t, body, `--accent: #0e7490;`)
 	requireContains(t, body, `--hovercard-label: #52657f;`)
+	requireContains(t, body, `--good-text: #187b56;`)
+	requireContains(t, body, `--bad-text: #d0253e;`)
+	requireContains(t, body, `--good-text: rgb(var(--dot-good-rgb) / 0.98);`)
+	requireContains(t, body, `--bad-text: rgb(var(--dot-bad-rgb) / 0.98);`)
+	requireContains(t, body, `.summary-metric.up strong { color: var(--good-text); }`)
+	requireContains(t, body, `.summary-metric.down strong { color: var(--bad-text); }`)
 
 	// aria-label is only valid on elements whose role allows naming.
 	requireContains(t, body, `class="summary-metrics" role="group" aria-label="Service summary"`)
