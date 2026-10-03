@@ -10,6 +10,7 @@ on:
       - 'v3/prometheus/**/*.go'
       - 'v3/prometheus/go.mod'
       - 'v3/prometheus/go.sum'
+      - 'v3/prometheus/grafana/*.json'
 
   workflow_dispatch:
 
