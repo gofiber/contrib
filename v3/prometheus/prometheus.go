@@ -5,6 +5,7 @@ package prometheus
 import (
 	"bytes"
 	"errors"
+	"hash/maphash"
 	"maps"
 	"math"
 	"net/http"
@@ -49,8 +50,9 @@ type middleware struct {
 	skipStatusClasses map[string]struct{}
 	dynamicLabels     []dynamicLabel
 	errorLog          promhttp.Logger
-	series            cache[seriesKey, *series]
-	inFlightGauges    cache[inFlightKey, prometheus.Gauge]
+	series            *cache[seriesKey, *series]
+	inFlightGauges    *cache[inFlightKey, prometheus.Gauge]
+	seed              maphash.Seed
 	reportNextPanic   sync.Once
 	reportLabelPanic  sync.Once
 	exemplars         bool
@@ -59,21 +61,27 @@ type middleware struct {
 	observes          bool
 }
 
-// maxCachedDynamic is the number of dynamic labels a seriesKey carries inline.
-// Every slot is hashed on each lookup, used or not, which measured as noise
-// against the lookup itself; a config with more labels is still served, see
-// resolveSeriesUncached.
-const maxCachedDynamic = 5
-
-// seriesKey identifies one label set across every family. The dynamic values are
-// held inline so that the key stays comparable and a lookup allocates nothing:
-// a request builds one from the strings it holds, aliased request memory
-// included, and only the key stored on a miss has to be detached.
+// seriesKey identifies one label set across every family. The dynamic label
+// values enter it as one hash so that a set of any size fits a fixed-size key
+// and a lookup hashes nothing it does not have to; resolveSeries compares the
+// values themselves on a hit, so a collision costs a request the cache and
+// nothing else. A request builds a key from the strings it holds, aliased
+// request memory included, and only a miss detaches anything.
 type seriesKey struct {
 	path    string
 	method  string
 	status  int
-	dynamic [maxCachedDynamic]string
+	dynamic uint64
+}
+
+// hashDynamic folds the dynamic label values into a seriesKey's hash word. The
+// multiplication keeps the order of the values significant.
+func hashDynamic(seed maphash.Seed, values []string) uint64 {
+	var h uint64
+	for _, value := range values {
+		h = h*0x100000001b3 ^ maphash.String(seed, value)
+	}
+	return h
 }
 
 // series holds the child metric of every enabled family for one label set. A
@@ -120,21 +128,48 @@ type inFlightKey struct {
 	method string
 }
 
-// cache is a read-mostly map guarded by a RWMutex: an insert happens once per
-// series for the process life, every other request is a read lock and a lookup.
+// foldAfterPendingHits is how many times entries may be served from the pending
+// map before the reader that finds one there folds it into the snapshot itself.
+// It bounds how long the last series created stay on the slower path when no
+// insert comes along to fold them.
+const foldAfterPendingHits = 64
+
+// cache maps keys to values for the process life, built for its read side: a
+// lookup is an atomic load and a map read on a snapshot that is replaced rather
+// than mutated, so it takes no lock and shares no cache line between readers.
+// Inserts, which happen once per series, go to a pending map behind a mutex and
+// are folded into the next snapshot in batches that grow with it, so each one
+// costs an amortised constant however many series there are, and a flood of new
+// label values cannot turn every request into a copy of the whole map. Entries
+// awaiting a fold are served from the pending map behind a read lock - what
+// every lookup once cost - and a reader that keeps finding its entry there
+// folds it in, so none is served that way for long.
 type cache[K comparable, V any] struct {
-	mu      sync.RWMutex
-	entries map[K]V
+	snapshot    atomic.Pointer[map[K]V]
+	pendingHits atomic.Int32
+	mu          sync.RWMutex
+	pending     map[K]V
 }
 
-func newCache[K comparable, V any]() cache[K, V] {
-	return cache[K, V]{entries: make(map[K]V)}
+func newCache[K comparable, V any]() *cache[K, V] {
+	c := &cache[K, V]{pending: make(map[K]V)}
+	snapshot := make(map[K]V)
+	c.snapshot.Store(&snapshot)
+	return c
 }
 
 func (c *cache[K, V]) lookup(key K) (V, bool) {
+	if value, ok := (*c.snapshot.Load())[key]; ok {
+		return value, true
+	}
+
 	c.mu.RLock()
-	value, ok := c.entries[key]
+	value, ok := c.pending[key]
 	c.mu.RUnlock()
+
+	if ok && c.pendingHits.Add(1) >= foldAfterPendingHits {
+		c.fold()
+	}
 	return value, ok
 }
 
@@ -144,11 +179,44 @@ func (c *cache[K, V]) lookup(key K) (V, bool) {
 func (c *cache[K, V]) insert(key K, value V) V {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if existing, ok := c.entries[key]; ok {
+
+	snapshot := *c.snapshot.Load()
+	if existing, ok := snapshot[key]; ok {
 		return existing
 	}
-	c.entries[key] = value
+	if existing, ok := c.pending[key]; ok {
+		return existing
+	}
+
+	c.pending[key] = value
+
+	// Folding once pending reaches an eighth of the snapshot bounds the copying
+	// at nine entries per entry inserted, while a small snapshot is rebuilt on
+	// every insert, so nothing waits in pending while that is cheap.
+	if len(c.pending) >= max(1, len(snapshot)/8) {
+		c.foldLocked()
+	}
 	return value
+}
+
+// fold moves the pending entries into a new snapshot, unless another goroutine
+// did so first.
+func (c *cache[K, V]) fold() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.pending) > 0 {
+		c.foldLocked()
+	}
+}
+
+// foldLocked is fold with c.mu held. The previous snapshot is left untouched for
+// the readers still on it.
+func (c *cache[K, V]) foldLocked() {
+	next := maps.Clone(*c.snapshot.Load())
+	maps.Copy(next, c.pending)
+	c.snapshot.Store(&next)
+	clear(c.pending)
+	c.pendingHits.Store(0)
 }
 
 // dynamicLabel binds a configured label name to the function producing its
@@ -162,6 +230,12 @@ type dynamicLabel struct {
 // otherMethodLabel is the single method series every request the app is not
 // configured to route collapses onto - see inFlightMethod.
 const otherMethodLabel = "OTHER"
+
+// processStart anchors the request clock. time.Since on a Time that holds a
+// monotonic reading reads only the monotonic clock, where time.Now reads the
+// wall clock as well; measured from a fixed anchor it is a monotonic timestamp
+// for one clock read instead of two.
+var processStart = time.Now()
 
 // reservedLabels are the names Labels and DynamicLabels may not use: the four set
 // here, plus "le", which Prometheus keeps for histogram bucket bounds.
@@ -199,6 +273,12 @@ var allMetrics = []Metric{
 // so it observes every request; requests to Config.MetricsPath are answered with
 // the exposition format. Mount recover.New() after it, never before.
 func New(config ...Config) fiber.Handler {
+	return newMiddleware(config...).handle
+}
+
+// newMiddleware is New short of the method value, so tests can reach the state
+// behind the handler.
+func newMiddleware(config ...Config) *middleware {
 	cfg := configDefault(config...)
 
 	// Every panic below fires before the first Register call: a config rejected part
@@ -288,6 +368,7 @@ func New(config ...Config) fiber.Handler {
 		errorLog:          cfg.MetricsErrorLog,
 		series:            newCache[seriesKey, *series](),
 		inFlightGauges:    newCache[inFlightKey, prometheus.Gauge](),
+		seed:              maphash.MakeSeed(),
 		exemplars:         !cfg.DisableExemplars,
 		recordUnmatched:   cfg.TrackUnmatchedRequests,
 	}
@@ -393,7 +474,7 @@ func New(config ...Config) fiber.Handler {
 	// false for every family when skipAll is set, so the vectors are nil anyway.
 	m.records = m.requestsTotal != nil || m.requestsByClass != nil || m.observes
 
-	return m.handle
+	return m
 }
 
 // resolveFilters parses the three skip lists, rejecting entries that could never
@@ -804,9 +885,9 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	}
 
 	// Only the duration histogram needs the clock.
-	var start time.Time
+	var start time.Duration
 	if m.requestDuration != nil {
-		start = time.Now()
+		start = time.Since(processStart)
 	}
 
 	chainErr := ctx.Next()
@@ -816,7 +897,7 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	// overhead into the metric people set latency alerts on.
 	var chainTime time.Duration
 	if m.requestDuration != nil {
-		chainTime = time.Since(start)
+		chainTime = time.Since(processStart) - start
 	}
 
 	routePath, ok := m.pathLabel(ctx)
@@ -830,12 +911,15 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	// response is still empty here. Running it now - as Fiber's logger does - makes
 	// the status and size below the ones the client sees; its cost is the client's.
 	if chainErr != nil {
-		errorHandlerStart := time.Now()
+		var errorHandlerStart time.Duration
+		if m.requestDuration != nil {
+			errorHandlerStart = time.Since(processStart)
+		}
 		if err := ctx.App().ErrorHandler(ctx, chainErr); err != nil {
 			_ = ctx.SendStatus(fiber.StatusInternalServerError) //nolint:errcheck // mirrors Fiber's own fallback
 		}
 		if m.requestDuration != nil {
-			chainTime += time.Since(errorHandlerStart)
+			chainTime += time.Since(processStart) - errorHandlerStart
 		}
 	}
 
@@ -939,56 +1023,62 @@ func (m *middleware) inFlightGauge(app *fiber.App, method string) prometheus.Gau
 // resolveSeries returns the series for this request's label set, or nil when the
 // request cannot be recorded because a label function panicked.
 func (m *middleware) resolveSeries(ctx fiber.Ctx, routePath, method string, status int, class string) *series {
-	n := len(m.dynamicLabels)
-	if n > maxCachedDynamic {
-		return m.resolveSeriesUncached(ctx, routePath, method, status, class)
+	// The dynamic values may alias the request buffer. They are hashed and
+	// compared from here, and detached only if the set turns out to be new.
+	var stack [8]string
+	var dynamic []string
+	if n := len(m.dynamicLabels); n <= len(stack) {
+		dynamic = stack[:n]
+	} else {
+		dynamic = make([]string, n)
 	}
-
-	// The dynamic values may alias the request buffer; the lookup only compares
-	// against them, so nothing is retained unless the set is new.
-	key := seriesKey{path: routePath, method: method, status: status}
-	if !m.resolveDynamicValues(ctx, key.dynamic[:n]) {
-		return nil
-	}
-
-	if cached, ok := m.series.lookup(key); ok {
-		return cached
-	}
-
-	// First request with this label set. The dynamic values are detached before
-	// anything keeps them: the key, the series and, through client_golang, the
-	// registry.
-	labels := make([]string, 3+n)
-	labels[0] = statusLabel(status)
-	labels[1] = method
-	labels[2] = routePath
-	for i := range n {
-		key.dynamic[i] = detachedLabel(key.dynamic[i])
-		labels[3+i] = key.dynamic[i]
-	}
-
-	created := &series{}
-	m.fillSeries(created, labels, class)
-	return m.series.insert(key, created)
-}
-
-// resolveSeriesUncached serves a config with more dynamic labels than a key holds
-// inline, resolving the children through client_golang on every request as the
-// whole middleware once did. The series itself is heap-allocated per request:
-// its lazy slots go through atomic pointer operations, which the compiler does
-// not know to be non-escaping, so a stack-backed one would be moved there anyway.
-func (m *middleware) resolveSeriesUncached(ctx fiber.Ctx, routePath, method string, status int, class string) *series {
-	labels := make([]string, 3+len(m.dynamicLabels))
-	labels[0] = statusLabel(status)
-	labels[1] = method
-	labels[2] = routePath
-
-	dynamic := labels[3:]
 	if !m.resolveDynamicValues(ctx, dynamic) {
 		return nil
 	}
+
+	key := seriesKey{path: routePath, method: method, status: status}
+	if len(dynamic) > 0 {
+		key.dynamic = hashDynamic(m.seed, dynamic)
+	}
+
+	if cached, ok := m.series.lookup(key); ok {
+		if sameValues(cached.labels[3:], dynamic) {
+			return cached
+		}
+		// Two label sets hashed alike and the slot belongs to the other, or a
+		// value holds invalid UTF-8 and so cannot equal the replaced copy that
+		// was stored. Either way the request is recorded, through client_golang
+		// directly as every request once was; it only forgoes the cache.
+		return m.newSeries(dynamic, routePath, method, status, class)
+	}
+
+	return m.series.insert(key, m.newSeries(dynamic, routePath, method, status, class))
+}
+
+// sameValues reports whether the dynamic values of a cached series equal the
+// ones a request produced.
+func sameValues(stored, values []string) bool {
+	if len(stored) != len(values) {
+		return false
+	}
+	for i, value := range values {
+		if stored[i] != value {
+			return false
+		}
+	}
+	return true
+}
+
+// newSeries resolves the children for one set of label values through
+// client_golang. The dynamic values are detached before anything keeps them:
+// the series and, through client_golang, the registry.
+func (m *middleware) newSeries(dynamic []string, routePath, method string, status int, class string) *series {
+	labels := make([]string, 3+len(dynamic))
+	labels[0] = statusLabel(status)
+	labels[1] = method
+	labels[2] = routePath
 	for i, value := range dynamic {
-		dynamic[i] = detachedLabel(value)
+		labels[3+i] = detachedLabel(value)
 	}
 
 	s := &series{}

@@ -112,6 +112,50 @@ func BenchmarkHandlerUnmatchedRoute(b *testing.B) {
 	benchmarkHandler(b, newBenchmarkApp(b, &Config{}), "/nothing/here", http.StatusNotFound)
 }
 
+// benchmarkHandlerParallel is benchmarkHandler on every core at once, each with
+// its own request context. It measures what the middleware shares between
+// requests: the gap between this and the serial figure, per core, is contention.
+func benchmarkHandlerParallel(b *testing.B, app *fiber.App, path string, wantStatus int) {
+	b.Helper()
+	b.ReportAllocs()
+
+	handler := app.Handler()
+
+	b.RunParallel(func(pb *testing.PB) {
+		var fctx fasthttp.RequestCtx
+		var req fasthttp.Request
+		req.Header.SetMethod(http.MethodGet)
+		req.SetRequestURI(path)
+
+		for pb.Next() {
+			fctx.Init(&req, nil, nil)
+			handler(&fctx)
+			if status := fctx.Response.StatusCode(); status != wantStatus {
+				b.Fatalf("expected status %d, got %d", wantStatus, status)
+			}
+		}
+	})
+}
+
+// BenchmarkHandlerParallelBaseline measures the app without the middleware, on
+// every core.
+func BenchmarkHandlerParallelBaseline(b *testing.B) {
+	benchmarkHandlerParallel(b, newBenchmarkApp(b, nil), "/user/42", http.StatusOK)
+}
+
+// BenchmarkHandlerParallelInstrumented measures the default configuration on
+// every core, with every request on the same series - the worst case for the
+// series' own counters, which every core then updates.
+func BenchmarkHandlerParallelInstrumented(b *testing.B) {
+	benchmarkHandlerParallel(b, newBenchmarkApp(b, &Config{}), "/user/42", http.StatusOK)
+}
+
+// BenchmarkHandlerParallelInstrumentedWithDynamicLabels is the dynamic label
+// configuration on every core.
+func BenchmarkHandlerParallelInstrumentedWithDynamicLabels(b *testing.B) {
+	benchmarkHandlerParallel(b, newBenchmarkApp(b, dynamicLabelsConfig()), "/user/42", http.StatusOK)
+}
+
 // benchmarkRequests drives the app through app.Test and fails the benchmark if a
 // response ever deviates from the expected status, so a benchmark cannot
 // silently measure an error path. It measures a whole net/http round trip on a

@@ -4635,12 +4635,11 @@ func TestConcurrentRequestsShareSeries(t *testing.T) {
 	}
 }
 
-// TestDynamicLabelsBeyondInlineCapacity covers the config a series key cannot
-// hold: more dynamic labels than maxCachedDynamic. Those requests resolve their
-// series through client_golang on every request instead, and have to record the
-// same thing and copy the values just the same.
-func TestDynamicLabelsBeyondInlineCapacity(t *testing.T) {
-	const count = maxCachedDynamic + 1
+// TestManyDynamicLabelsShareOneKey covers a label set wider than the stack
+// buffer resolveSeries keeps for the values: the key hashes the values, so a set
+// of any size is cached and recorded the same way.
+func TestManyDynamicLabelsShareOneKey(t *testing.T) {
+	const count = 9
 
 	labels := make(map[string]func(fiber.Ctx) string, count)
 	for i := range count {
@@ -4699,7 +4698,7 @@ func TestInFlightGaugeCachesOnlyRoutableMethods(t *testing.T) {
 	for i := range 1000 {
 		m.inFlightGauge(app, "ATTACK"+strconv.Itoa(i)).Inc()
 	}
-	if n := len(m.inFlightGauges.entries); n != 0 {
+	if n := m.inFlightGauges.size(); n != 0 {
 		t.Fatalf("expected no cache entries for unroutable methods, got %d", n)
 	}
 
@@ -4707,7 +4706,7 @@ func TestInFlightGaugeCachesOnlyRoutableMethods(t *testing.T) {
 	if again := m.inFlightGauge(app, fiber.MethodGet); again != first {
 		t.Fatal("expected the cached gauge child to be returned on the second lookup")
 	}
-	if n := len(m.inFlightGauges.entries); n != 1 {
+	if n := m.inFlightGauges.size(); n != 1 {
 		t.Fatalf("expected one cache entry for a routable method, got %d", n)
 	}
 
@@ -4822,5 +4821,175 @@ func TestResponseSizeSeriesAppearsOnFirstKnownObservation(t *testing.T) {
 	}
 	if got := gaugeValue(t, metrics, `http_response_size_bytes_sum{method="GET",path="/body",status_code="200"}`); got != 5000 {
 		t.Fatalf("expected response size 5000, got %v", got)
+	}
+}
+
+// size counts the entries a cache holds, wherever they are.
+func (c *cache[K, V]) size() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(*c.snapshot.Load()) + len(c.pending)
+}
+
+// TestCacheFoldsPendingIntoSnapshot pins the two-level structure: a small cache
+// folds on every insert, a larger one batches inserts in the pending map and
+// folds them either when the batch is large enough or after readers have been
+// served from pending often enough. Every entry is found throughout.
+func TestCacheFoldsPendingIntoSnapshot(t *testing.T) {
+	c := newCache[int, int]()
+
+	snapshotLen := func() int { return len(*c.snapshot.Load()) }
+	pendingLen := func() int {
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		return len(c.pending)
+	}
+
+	// Below eight entries the threshold is one, so every insert folds.
+	for i := range 8 {
+		c.insert(i, i)
+		if snapshotLen() != i+1 || pendingLen() != 0 {
+			t.Fatalf("after insert %d: snapshot %d pending %d, expected everything folded", i, snapshotLen(), pendingLen())
+		}
+	}
+
+	// At 16 entries the threshold is two: one insert waits in pending.
+	for i := 8; i < 16; i++ {
+		c.insert(i, i)
+	}
+	if snapshotLen() != 16 || pendingLen() != 0 {
+		t.Fatalf("expected 16 folded entries, got snapshot %d pending %d", snapshotLen(), pendingLen())
+	}
+	c.insert(16, 16)
+	if snapshotLen() != 16 || pendingLen() != 1 {
+		t.Fatalf("expected the 17th entry to wait in pending, got snapshot %d pending %d", snapshotLen(), pendingLen())
+	}
+	if v, ok := c.lookup(16); !ok || v != 16 {
+		t.Fatalf("expected the pending entry to be found, got %v %v", v, ok)
+	}
+
+	// A second insert reaches the threshold and folds both.
+	c.insert(17, 17)
+	if snapshotLen() != 18 || pendingLen() != 0 {
+		t.Fatalf("expected both pending entries folded, got snapshot %d pending %d", snapshotLen(), pendingLen())
+	}
+
+	// Readers fold a lone pending entry after enough hits.
+	c.insert(18, 18)
+	for range foldAfterPendingHits - 1 {
+		if _, ok := c.lookup(18); !ok {
+			t.Fatal("expected the pending entry to be found")
+		}
+	}
+	if pendingLen() != 1 {
+		t.Fatalf("expected the entry to still be pending after %d hits, got pending %d", foldAfterPendingHits-1, pendingLen())
+	}
+	if _, ok := c.lookup(18); !ok {
+		t.Fatal("expected the pending entry to be found")
+	}
+	if snapshotLen() != 19 || pendingLen() != 0 {
+		t.Fatalf("expected the hit count to fold the entry, got snapshot %d pending %d", snapshotLen(), pendingLen())
+	}
+
+	// An insert that lost a race keeps the existing value.
+	if kept := c.insert(5, 500); kept != 5 {
+		t.Fatalf("expected the first value to be kept, got %d", kept)
+	}
+	for i := range 19 {
+		if v, ok := c.lookup(i); !ok || v != i {
+			t.Fatalf("lookup(%d) = %v, %v", i, v, ok)
+		}
+	}
+	if _, ok := c.lookup(99); ok {
+		t.Fatal("expected a missing key to be reported missing")
+	}
+}
+
+// TestDynamicLabelHashCollisionFallsBack plants a cache entry under the hash a
+// request's dynamic values produce, holding another value set. The request has
+// to notice that the slot is not its own and still be recorded, with its own
+// values, while the planted entry is left alone.
+func TestDynamicLabelHashCollisionFallsBack(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	m := newMiddleware(Config{
+		Registerer:              registry,
+		Gatherer:                registry,
+		DisableGoCollector:      true,
+		DisableProcessCollector: true,
+		DynamicLabels: map[string]func(fiber.Ctx) string{
+			"tenant": func(c fiber.Ctx) string { return c.Get("X-Tenant", "none") },
+		},
+	})
+	app := fiber.New()
+	app.Use(m.handle)
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+
+	// The planted series is a real one, resolved for "globex", stored where
+	// "acme" will look.
+	planted := m.newSeries([]string{"globex"}, "/hello", fiber.MethodGet, fiber.StatusOK, "2xx")
+	key := seriesKey{path: "/hello", method: fiber.MethodGet, status: fiber.StatusOK, dynamic: hashDynamic(m.seed, []string{"acme"})}
+	m.series.insert(key, planted)
+
+	for range 3 {
+		req := httptest.NewRequest(fiber.MethodGet, "/hello", nil)
+		req.Header.Set("X-Tenant", "acme")
+		if _, err := app.Test(req, noTimeoutConfig); err != nil {
+			t.Fatalf("unexpected request error: %v", err)
+		}
+	}
+
+	metrics := getMetrics(t, app, "")
+	if got := gaugeValue(t, metrics, `http_requests_total{method="GET",path="/hello",status_code="200",tenant="acme"}`); got != 3 {
+		t.Fatalf("expected the colliding requests to be recorded under their own tenant, got %v", got)
+	}
+	if strings.Contains(metrics, `tenant="globex"} 1`) || strings.Contains(metrics, `tenant="globex"} 2`) || strings.Contains(metrics, `tenant="globex"} 3`) {
+		t.Fatalf("expected the planted series to stay untouched, got %q", metrics)
+	}
+	if cached, ok := m.series.lookup(key); !ok || cached != planted {
+		t.Fatal("expected the planted entry to keep its slot")
+	}
+	if n := m.series.size(); n != 1 {
+		t.Fatalf("expected the colliding requests to add no entry, got %d", n)
+	}
+}
+
+// TestInvalidUTF8DynamicValueIsNotCached covers the other way a hit can fail
+// its comparison: the stored copy had its bytes replaced - a run of them by one
+// replacement character - so the raw value never equals it. The request is
+// recorded with the replacement every time, and the cache does not grow with
+// each repetition.
+func TestInvalidUTF8DynamicValueIsNotCached(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	m := newMiddleware(Config{
+		Registerer:              registry,
+		Gatherer:                registry,
+		DisableGoCollector:      true,
+		DisableProcessCollector: true,
+		DynamicLabels: map[string]func(fiber.Ctx) string{
+			"tenant": func(c fiber.Ctx) string { return c.Get("X-Tenant") },
+		},
+	})
+	app := fiber.New()
+	app.Use(m.handle)
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+
+	for range 3 {
+		req := httptest.NewRequest(fiber.MethodGet, "/hello", nil)
+		req.Header.Set("X-Tenant", "\xff\xfe")
+		if _, err := app.Test(req, noTimeoutConfig); err != nil {
+			t.Fatalf("unexpected request error: %v", err)
+		}
+	}
+
+	metrics := getMetrics(t, app, "")
+	if got := gaugeValue(t, metrics, `http_requests_total{method="GET",path="/hello",status_code="200",tenant="�"}`); got != 3 {
+		t.Fatalf("expected every request to be recorded with the replacement, got %v", got)
+	}
+	if n := m.series.size(); n != 1 {
+		t.Fatalf("expected one entry for the repeated value, got %d", n)
 	}
 }

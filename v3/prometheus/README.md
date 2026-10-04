@@ -248,9 +248,9 @@ the reserved `status_code`, `status_class`, `method`, `path` and `le` labels or 
 The middleware copies each returned value the first time it sees a label set,
 so it is safe to return one of Fiber's zero-copy strings such as `c.Get(...)` or
 `c.Params(...)` directly. A label set that has been recorded before is matched
-against that copy and allocates nothing, for up to five dynamic labels; a
-configuration with more than five resolves its series through client_golang on
-every request and copies the values every time.
+against that copy and allocates nothing. Note that `c.Get("X-Tenant", "none")`
+allocates inside Fiber for the variadic default; `c.Get("X-Tenant")` followed by
+your own empty check does not.
 
 A function that panics costs its request every metric, not the request itself:
 the sample is dropped, the response is unaffected, and the drop is reported to
@@ -484,39 +484,47 @@ nothing in your stack starts spans, and that work goes away.
 
 The middleware is on the path of every request, so it is built to add as little
 to each one as possible: in the default configuration it allocates nothing per
-request, and the only clock reads are the two the duration histogram needs.
+request, takes no lock, and reads the monotonic clock twice, which is what the
+duration histogram needs.
 
 Recording a request means incrementing or observing one child metric per enabled
 family, and the five families share one label set. Rather than asking
 client_golang to resolve the child for each - it validates every label value as
 UTF-8, hashes them, takes a read lock and scans a bucket, every time - the
 middleware resolves the five once, the first time it sees a label set, and keeps
-them in a cache read under a shared lock. Each entry stands for one series in the
-registry and lives as long as it, so the cache grows with the series and never
-needs eviction: with bounded label values it is bounded, and with unbounded ones
-the registry was already the problem (see [Extra labels per request](#extra-labels-per-request)).
-The two size histograms are the exception: a payload whose size cannot be
-determined is not observed, so their children are resolved on the first
-observation, and a route that only ever streams gets no size series. The
-in-flight gauge is cached the same way, per app and method; a method the app
-cannot route shares one series and takes no entry.
+them in a cache keyed by path, method, status and a hash of the dynamic label
+values, whose values are compared on a hit. The cache is read without locking:
+lookups go to an immutable snapshot that inserts replace in batches, so a new
+series costs an amortised constant however many exist. Each entry stands for one
+series in the registry and lives as long as it, so the cache grows with the
+series and never needs eviction: with bounded label values it is bounded, and
+with unbounded ones the registry was already the problem (see
+[Extra labels per request](#extra-labels-per-request)). The two size histograms
+are the exception: a payload whose size cannot be determined is not observed, so
+their children are resolved on the first observation, and a route that only ever
+streams gets no size series. The in-flight gauge is cached the same way, per app
+and method; a method the app cannot route shares one series and takes no entry.
 
 Measured with the `Handler` benchmarks in `prometheus_bench_test.go`, which drive
 the fasthttp handler directly so that only the middleware is on the clock
-(`go test -run xxx -bench 'BenchmarkHandler' -benchmem`):
+(`go test -run xxx -bench 'BenchmarkHandler' -benchmem`). The parallel rows run
+on every core with every request on the same series, the worst case for the
+series' own counters:
 
 | Benchmark | Before | After |
 |:----------|-------:|------:|
-| Baseline, no middleware | 511 ns/op | 528 ns/op |
-| Default configuration | 1509 ns/op | 1101 ns/op |
-| Two dynamic labels | 1960 ns/op, 3 allocs | 1241 ns/op, 1 alloc |
-| Size histograms disabled | 1267 ns/op | 960 ns/op |
+| Baseline, no middleware | 563 ns/op | 538 ns/op |
+| Default configuration | 1555 ns/op | 1155 ns/op |
+| Two dynamic labels | 2165 ns/op, 3 allocs | 1245 ns/op, 1 alloc |
+| Size histograms disabled | 1524 ns/op | 978 ns/op |
+| Parallel, baseline | 215 ns/op | 213 ns/op |
+| Parallel, default configuration | 1132 ns/op | 762 ns/op |
 
-Linux, Intel Xeon 2.80GHz, Go 1.26, `benchstat` over six runs each; the
-allocation counts are those above the baseline's own one. The remaining cost is
-dominated by client_golang's own counter and histogram updates, the two clock
-reads, and the request-context read the exemplar check needs, which
-`DisableExemplars` removes.
+Linux, Intel Xeon 2.80GHz, 4 cores, Go 1.26, `benchstat` over six runs each;
+the allocation counts are those above the baseline's own one. What remains is
+dominated by client_golang's own counter and histogram updates - atomics on
+memory every request to the same series shares - the clock reads, and the
+request-context read the exemplar check needs, which `DisableExemplars` removes.
 
 ## 📊 Result
 
