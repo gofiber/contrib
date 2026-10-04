@@ -307,7 +307,7 @@ app.Use(fiberprometheus.New(fiberprometheus.Config{
 ## Grafana dashboards
 
 The [`grafana`](https://github.com/gofiber/contrib/tree/main/v3/prometheus/grafana)
-folder holds three dashboards for the metrics this middleware exposes. They link
+folder holds four dashboards for the metrics this middleware exposes. They link
 to one another and share their variables, so a selection carries over as you
 move between them.
 
@@ -316,6 +316,7 @@ move between them.
 | [Fiber / HTTP Overview](https://github.com/gofiber/contrib/blob/main/v3/prometheus/grafana/fiber-http-overview.json) | Request rate, error ratios and latency of a service, a table of its routes, in-flight requests and payload throughput. |
 | [Fiber / HTTP Route](https://github.com/gofiber/contrib/blob/main/v3/prometheus/grafana/fiber-http-route.json) | One route in depth: status codes, latency percentiles and distribution, payload sizes, and how its instances compare. |
 | [Fiber / Go Runtime](https://github.com/gofiber/contrib/blob/main/v3/prometheus/grafana/fiber-go-runtime.json) | The Go and process collectors: CPU, memory, the garbage collector, goroutines, threads and file descriptors. |
+| [Fiber / HTTP Wallboard](https://github.com/gofiber/contrib/blob/main/v3/prometheus/grafana/fiber-http-wallboard.json) | The essentials in large type for a screen across the room: request rate, server errors, p99 latency, in-flight requests and whether each instance is up. |
 
 ![Fiber / HTTP Overview dashboard](https://raw.githubusercontent.com/gofiber/contrib/main/v3/prometheus/grafana/screenshots/fiber-http-overview.png)
 
@@ -326,6 +327,19 @@ Selecting a route in the overview's table opens the route dashboard:
 The runtime dashboard follows the same job, service and instance selection:
 
 ![Fiber / Go Runtime dashboard](https://raw.githubusercontent.com/gofiber/contrib/main/v3/prometheus/grafana/screenshots/fiber-go-runtime.png)
+
+The wallboard trades detail for distance: five tiles meant to be read from
+across the room. Those that report a state take its color — server errors turn
+orange at 1% and red at 5%, p99 latency at 1 s and 2.5 s, and an instance that
+stops answering its scrapes turns red. The latency thresholds are starting
+points; set them to your own objectives. Open the wallboard in kiosk mode with
+the controls hidden, so the tiles fill the screen:
+
+```text
+https://grafana.example.com/d/fiber-http-wallboard/fiber-http-wallboard?kiosk&_dash.hideTimePicker&_dash.hideVariables&_dash.hideLinks&var-job=my-service
+```
+
+![Fiber / HTTP Wallboard dashboard](https://raw.githubusercontent.com/gofiber/contrib/main/v3/prometheus/grafana/screenshots/fiber-http-wallboard.png)
 
 ### Importing
 
