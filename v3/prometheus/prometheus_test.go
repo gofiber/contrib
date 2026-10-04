@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
@@ -24,6 +25,7 @@ import (
 	"github.com/gofiber/fiber/v3/middleware/timeout"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/model"
@@ -4567,5 +4569,258 @@ func TestUnmatchedLabelEndingInStarIsSkippable(t *testing.T) {
 	}
 	if !strings.Contains(metrics, `path="/kept"`) {
 		t.Fatalf("expected the real route to survive, got %q", metrics)
+	}
+}
+
+// TestConcurrentRequestsShareSeries drives a handful of label sets from several
+// goroutines at once. The series cache is filled on first sight and read under a
+// shared lock afterwards, so this is where the race detector would catch a bad
+// insert, and the exact counts show that racing inserts hand out the same
+// children rather than each goroutine recording into its own.
+func TestConcurrentRequestsShareSeries(t *testing.T) {
+	app := newAppWithMiddleware(Config{
+		DynamicLabels: map[string]func(fiber.Ctx) string{
+			"tenant": func(c fiber.Ctx) string { return c.Get("X-Tenant", "none") },
+		},
+	}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+	app.Get("/missing", func(c fiber.Ctx) error {
+		return fiber.ErrNotFound
+	})
+
+	paths := []string{"/hello", "/missing"}
+	tenants := []string{"acme", "globex", "initech"}
+	// A multiple of both lengths, so every (path, tenant) pair is hit equally often.
+	const workers, perWorker = 8, 60
+	const perSeries = workers * perWorker / 6
+
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range perWorker {
+				req := httptest.NewRequest(fiber.MethodGet, paths[i%len(paths)], nil)
+				req.Header.Set("X-Tenant", tenants[i%len(tenants)])
+				if _, err := app.Test(req, noTimeoutConfig); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	for _, tenant := range tenants {
+		for path, status := range map[string]string{"/hello": "200", "/missing": "404"} {
+			labels := fmt.Sprintf(`{method="GET",path=%q,status_code=%q,tenant=%q}`, path, status, tenant)
+			if got := gaugeValue(t, metrics, "http_requests_total"+labels); got != perSeries {
+				t.Fatalf("expected %d requests for %s, got %v", perSeries, labels, got)
+			}
+			if got := gaugeValue(t, metrics, "http_request_duration_seconds_count"+labels); got != perSeries {
+				t.Fatalf("expected %d observations for %s, got %v", perSeries, labels, got)
+			}
+		}
+	}
+	if got := gaugeValue(t, metrics, `http_requests_in_progress{method="GET"}`); got != 0 {
+		t.Fatalf("expected the in-flight gauge to settle back to 0, got %v", got)
+	}
+}
+
+// TestDynamicLabelsBeyondInlineCapacity covers the config a series key cannot
+// hold: more dynamic labels than maxCachedDynamic. Those requests resolve their
+// series through client_golang on every request instead, and have to record the
+// same thing and copy the values just the same.
+func TestDynamicLabelsBeyondInlineCapacity(t *testing.T) {
+	const count = maxCachedDynamic + 1
+
+	labels := make(map[string]func(fiber.Ctx) string, count)
+	for i := range count {
+		header := "X-Label-" + strconv.Itoa(i)
+		labels["l"+strconv.Itoa(i)] = func(c fiber.Ctx) string { return c.Get(header, "none") }
+	}
+
+	app := newAppWithMiddleware(Config{DynamicLabels: labels}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+
+	// Rounds 0 and 2 share one label set, round 1 has its own.
+	for round := range 3 {
+		req := httptest.NewRequest(fiber.MethodGet, "/hello", nil)
+		for i := range count {
+			req.Header.Set("X-Label-"+strconv.Itoa(i), fmt.Sprintf("v%d-%d", i, round%2))
+		}
+		if _, err := app.Test(req, noTimeoutConfig); err != nil {
+			t.Fatalf("unexpected request error: %v", err)
+		}
+	}
+
+	series := func(variant int) string {
+		var b strings.Builder
+		b.WriteString("http_requests_total{")
+		for i := range count {
+			fmt.Fprintf(&b, "l%d=%q,", i, fmt.Sprintf("v%d-%d", i, variant))
+		}
+		b.WriteString(`method="GET",path="/hello",status_code="200"}`)
+		return b.String()
+	}
+
+	metrics := getMetrics(t, app, "")
+	if got := gaugeValue(t, metrics, series(0)); got != 2 {
+		t.Fatalf("expected the repeated label set to count 2, got %v", got)
+	}
+	if got := gaugeValue(t, metrics, series(1)); got != 1 {
+		t.Fatalf("expected the single label set to count 1, got %v", got)
+	}
+}
+
+// TestInFlightGaugeCachesOnlyRoutableMethods pins the cache's cardinality bound:
+// a method the app cannot route is collapsed onto the OTHER series and takes no
+// entry, otherwise the cache would grow with every method a client invents -
+// the very thing collapsing exists to prevent.
+func TestInFlightGaugeCachesOnlyRoutableMethods(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	m := &middleware{
+		requestInFlight: promauto.With(registry).NewGaugeVec(
+			prometheus.GaugeOpts{Name: "in_progress"}, []string{"method"}),
+		inFlightGauges: newCache[inFlightKey, prometheus.Gauge](),
+	}
+	app := fiber.New()
+
+	for i := range 1000 {
+		m.inFlightGauge(app, "ATTACK"+strconv.Itoa(i)).Inc()
+	}
+	if n := len(m.inFlightGauges.entries); n != 0 {
+		t.Fatalf("expected no cache entries for unroutable methods, got %d", n)
+	}
+
+	first := m.inFlightGauge(app, fiber.MethodGet)
+	if again := m.inFlightGauge(app, fiber.MethodGet); again != first {
+		t.Fatal("expected the cached gauge child to be returned on the second lookup")
+	}
+	if n := len(m.inFlightGauges.entries); n != 1 {
+		t.Fatalf("expected one cache entry for a routable method, got %d", n)
+	}
+
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("gathering: %v", err)
+	}
+	if len(families) != 1 {
+		t.Fatalf("expected one family, got %d", len(families))
+	}
+	for _, metric := range families[0].GetMetric() {
+		if method := metric.GetLabel()[0].GetValue(); method != otherMethodLabel {
+			continue
+		}
+		if got := metric.GetGauge().GetValue(); got != 1000 {
+			t.Fatalf("expected the OTHER series to hold 1000, got %v", got)
+		}
+		return
+	}
+	t.Fatal("expected an OTHER series for the unroutable methods")
+}
+
+// TestInFlightGaugeHonorsEachAppsMethods covers one handler mounted on two apps
+// whose RequestMethods differ. The gauge children are cached per app, so a
+// method only one of them routes keeps its own series rather than inheriting
+// whichever app happened to come first.
+func TestInFlightGaugeHonorsEachAppsMethods(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	handler := New(Config{
+		Registerer:              registry,
+		Gatherer:                registry,
+		DisableGoCollector:      true,
+		DisableProcessCollector: true,
+	})
+
+	ok := func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	}
+
+	dav := fiber.New(fiber.Config{RequestMethods: append(slices.Clone(fiber.DefaultMethods), "PROPFIND")})
+	dav.Use(handler)
+	dav.Add([]string{"PROPFIND"}, "/dav", ok)
+
+	plain := fiber.New()
+	plain.Use(handler)
+	plain.Get("/hello", ok)
+
+	for _, step := range []struct {
+		app    *fiber.App
+		method string
+		path   string
+	}{
+		{plain, fiber.MethodGet, "/hello"},
+		{dav, "PROPFIND", "/dav"},
+		{dav, fiber.MethodGet, "/dav"},
+	} {
+		resp, err := step.app.Test(httptest.NewRequest(step.method, step.path, nil), noTimeoutConfig)
+		if err != nil {
+			t.Fatalf("%s %s: %v", step.method, step.path, err)
+		}
+		if step.method == "PROPFIND" && resp.StatusCode != fiber.StatusOK {
+			t.Fatalf("expected PROPFIND /dav to be served, got %d", resp.StatusCode)
+		}
+	}
+
+	methods := map[string]bool{}
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("gathering: %v", err)
+	}
+	for _, family := range families {
+		if family.GetName() != "http_requests_in_progress" {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			methods[metric.GetLabel()[0].GetValue()] = true
+		}
+	}
+	if !methods["PROPFIND"] || !methods[fiber.MethodGet] || methods[otherMethodLabel] {
+		t.Fatalf("expected PROPFIND and GET series and no OTHER, got %v", methods)
+	}
+}
+
+// TestResponseSizeSeriesAppearsOnFirstKnownObservation covers the lazily resolved
+// size children. The first request on a series streams a body of unknown length
+// and must not create the response size series - that is what resolving the
+// child up front would do - while a later sized response on the same series must.
+func TestResponseSizeSeriesAppearsOnFirstKnownObservation(t *testing.T) {
+	var sized atomic.Bool
+	app := newAppWithMiddleware(Config{}, "")
+	app.Get("/body", func(c fiber.Ctx) error {
+		if sized.Load() {
+			return c.SendString(strings.Repeat("s", 5000))
+		}
+		return c.SendStream(strings.NewReader(strings.Repeat("s", 5000)))
+	})
+
+	get(t, app, "/body")
+	metrics := getMetrics(t, app, "")
+	if got := gaugeValue(t, metrics, `http_requests_total{method="GET",path="/body",status_code="200"}`); got != 1 {
+		t.Fatalf("expected the streamed request to be counted once, got %v", got)
+	}
+	if strings.Contains(metrics, `http_response_size_bytes_count{method="GET",path="/body",status_code="200"}`) {
+		t.Fatalf("expected no response size series while every response on it streamed, got %q", metrics)
+	}
+
+	sized.Store(true)
+	get(t, app, "/body")
+	metrics = getMetrics(t, app, "")
+	if got := gaugeValue(t, metrics, `http_response_size_bytes_count{method="GET",path="/body",status_code="200"}`); got != 1 {
+		t.Fatalf("expected exactly the sized response to be observed, got %v", got)
+	}
+	if got := gaugeValue(t, metrics, `http_response_size_bytes_sum{method="GET",path="/body",status_code="200"}`); got != 5000 {
+		t.Fatalf("expected response size 5000, got %v", got)
 	}
 }

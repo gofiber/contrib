@@ -177,7 +177,8 @@ type Config struct {
 
 	// DynamicLabels adds labels computed per request, after the handler chain has
 	// returned. Names follow the Labels rules. Every distinct value is a new series,
-	// so map untrusted input first. See the README. Optional. Default: none.
+	// so map untrusted input first. Up to five are matched against the recorded
+	// series without allocating; see the README. Optional. Default: none.
 	DynamicLabels map[string]func(fiber.Ctx) string
 
 	// Next skips the middleware when it returns true, including for MetricsPath, and
