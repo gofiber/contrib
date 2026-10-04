@@ -367,13 +367,16 @@ scrapes leaves them empty.
 
 - **Metric prefix** is `Namespace` and `Subsystem` joined by an underscore. It
   is detected from the `*_requests_total` series, so a custom `Namespace` needs
-  no edits; `http` is preselected when present.
+  no edits — even one such as `my-app` that only the UTF-8 name scheme allows;
+  `http` is preselected when present.
 - **Job**, **Service** and **Instance** narrow the selection. **Service** lists
   the values of the `service` label that `ServiceName` sets; without that option
   the list stays empty and the panels still work.
 - **Filters** applies ad hoc label filters to every query: the labels you add
   through `Labels` or `DynamicLabels`, or those your scrape configuration
-  attaches, such as `cluster` or `namespace`.
+  attaches, such as `cluster` or `namespace`. A filter on a label some series
+  lack empties the panels built on them: the in-flight gauge carries no `path`
+  or dynamic labels, and the wallboard's instance blocks come from `up`.
 - **Route** and **Method**, on the route dashboard, pick the route to show.
 
 ### Requirements
@@ -385,8 +388,11 @@ histogram functions the queries fall back to.
 
 The HTTP panels are built on `requests_total` and `request_duration_seconds`;
 the in-flight, payload and runtime panels need the families and collectors they
-show. `requests_status_class_total` is not used — status classes are derived
-from `status_code` — so dropping it through `DisabledMetrics` costs no panel.
+show. The runtime dashboard and the wallboard find their targets through
+`requests_total` or `requests_in_progress`, so an instance shows up there once
+it has answered any request, even one to a skipped route.
+`requests_status_class_total` is not used — status classes are derived from
+`status_code` — so dropping it through `DisabledMetrics` costs no panel.
 
 Every histogram query works whether Prometheus ingests classic buckets, native
 histograms, or classic histograms it converts with

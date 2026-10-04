@@ -76,15 +76,15 @@
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values({__name__=~\".+_requests_total\", status_code!=\"\", method!=\"\", path!=\"\"}, __name__)",
+        "definition": "label_values({__name__=~\".+_(requests_total|requests_in_progress)\", method!=\"\", code=\"\"}, __name__)",
         "query": {
-          "query": "label_values({__name__=~\".+_requests_total\", status_code!=\"\", method!=\"\", path!=\"\"}, __name__)",
+          "query": "label_values({__name__=~\".+_(requests_total|requests_in_progress)\", method!=\"\", code=\"\"}, __name__)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "includeAll": false,
         "multi": false,
         "refresh": 2,
-        "regex": "/^(.+)_requests_total$/",
+        "regex": "/^(.+)_(?:requests_total|requests_in_progress)$/",
         "sort": 1,
         "hide": 0,
         "options": [],
@@ -102,9 +102,9 @@
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values(${prefix}_requests_total, job)",
+        "definition": "label_values({__name__=~\"${prefix}_(requests_total|requests_in_progress)\"}, job)",
         "query": {
-          "query": "label_values(${prefix}_requests_total, job)",
+          "query": "label_values({__name__=~\"${prefix}_(requests_total|requests_in_progress)\"}, job)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "includeAll": true,
@@ -131,9 +131,9 @@
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values(${prefix}_requests_total{job=~\"$job\"}, service)",
+        "definition": "label_values({__name__=~\"${prefix}_(requests_total|requests_in_progress)\", job=~\"$job\"}, service)",
         "query": {
-          "query": "label_values(${prefix}_requests_total{job=~\"$job\"}, service)",
+          "query": "label_values({__name__=~\"${prefix}_(requests_total|requests_in_progress)\", job=~\"$job\"}, service)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "includeAll": true,
@@ -162,9 +162,9 @@
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values(${prefix}_requests_total{job=~\"$job\", service=~\"$service\"}, instance)",
+        "definition": "label_values({__name__=~\"${prefix}_(requests_total|requests_in_progress)\", job=~\"$job\", service=~\"$service\"}, instance)",
         "query": {
-          "query": "label_values(${prefix}_requests_total{job=~\"$job\", service=~\"$service\"}, instance)",
+          "query": "label_values({__name__=~\"${prefix}_(requests_total|requests_in_progress)\", job=~\"$job\", service=~\"$service\"}, instance)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "includeAll": true,

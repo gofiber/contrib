@@ -76,15 +76,15 @@
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values({__name__=~\".+_requests_total\", status_code!=\"\", method!=\"\", path!=\"\"}, __name__)",
+        "definition": "label_values({__name__=~\".+_(requests_total|requests_in_progress)\", method!=\"\", code=\"\"}, __name__)",
         "query": {
-          "query": "label_values({__name__=~\".+_requests_total\", status_code!=\"\", method!=\"\", path!=\"\"}, __name__)",
+          "query": "label_values({__name__=~\".+_(requests_total|requests_in_progress)\", method!=\"\", code=\"\"}, __name__)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "includeAll": false,
         "multi": false,
         "refresh": 2,
-        "regex": "/^(.+)_requests_total$/",
+        "regex": "/^(.+)_(?:requests_total|requests_in_progress)$/",
         "sort": 1,
         "hide": 0,
         "options": [],
@@ -102,9 +102,9 @@
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values(${prefix}_requests_total, job)",
+        "definition": "label_values({__name__=~\"${prefix}_(requests_total|requests_in_progress)\"}, job)",
         "query": {
-          "query": "label_values(${prefix}_requests_total, job)",
+          "query": "label_values({__name__=~\"${prefix}_(requests_total|requests_in_progress)\"}, job)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "includeAll": true,
@@ -131,9 +131,9 @@
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values(${prefix}_requests_total{job=~\"$job\"}, service)",
+        "definition": "label_values({__name__=~\"${prefix}_(requests_total|requests_in_progress)\", job=~\"$job\"}, service)",
         "query": {
-          "query": "label_values(${prefix}_requests_total{job=~\"$job\"}, service)",
+          "query": "label_values({__name__=~\"${prefix}_(requests_total|requests_in_progress)\", job=~\"$job\"}, service)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "includeAll": true,
@@ -162,9 +162,9 @@
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values(${prefix}_requests_total{job=~\"$job\", service=~\"$service\"}, instance)",
+        "definition": "label_values({__name__=~\"${prefix}_(requests_total|requests_in_progress)\", job=~\"$job\", service=~\"$service\"}, instance)",
         "query": {
-          "query": "label_values(${prefix}_requests_total{job=~\"$job\", service=~\"$service\"}, instance)",
+          "query": "label_values({__name__=~\"${prefix}_(requests_total|requests_in_progress)\", job=~\"$job\", service=~\"$service\"}, instance)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "includeAll": true,
@@ -213,7 +213,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(${prefix}_requests_total{job=~\"$job\", service=~\"$service\", instance=~\"$instance\"}[$__rate_interval]))\nor\nvector(0)",
+          "expr": "sum(rate({__name__=\"${prefix}_requests_total\", job=~\"$job\", service=~\"$service\", instance=~\"$instance\"}[$__rate_interval]))\nor\nvector(0)",
           "legendFormat": "Requests",
           "range": true,
           "instant": false,
@@ -285,7 +285,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "(\n  sum(rate(${prefix}_requests_total{job=~\"$job\", service=~\"$service\", instance=~\"$instance\", status_code=~\"5..\"}[$__rate_interval]))\n  or\n  sum(rate(${prefix}_requests_total{job=~\"$job\", service=~\"$service\", instance=~\"$instance\"}[$__rate_interval])) * 0\n)\n/\nsum(rate(${prefix}_requests_total{job=~\"$job\", service=~\"$service\", instance=~\"$instance\"}[$__rate_interval]))\nor\nvector(NaN)",
+          "expr": "(\n  sum(rate({__name__=\"${prefix}_requests_total\", job=~\"$job\", service=~\"$service\", instance=~\"$instance\", status_code=~\"5..\"}[$__rate_interval]))\n  or\n  sum(rate({__name__=\"${prefix}_requests_total\", job=~\"$job\", service=~\"$service\", instance=~\"$instance\"}[$__rate_interval])) * 0\n)\n/\nsum(rate({__name__=\"${prefix}_requests_total\", job=~\"$job\", service=~\"$service\", instance=~\"$instance\"}[$__rate_interval]))\nor\nvector(NaN)",
           "legendFormat": "Server errors",
           "range": true,
           "instant": false,
@@ -377,7 +377,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(${prefix}_request_duration_seconds_bucket{job=~\"$job\", service=~\"$service\", instance=~\"$instance\"}[$__rate_interval])))\nor\nhistogram_quantile(0.99, sum(rate(${prefix}_request_duration_seconds{job=~\"$job\", service=~\"$service\", instance=~\"$instance\"}[$__rate_interval])))\nor\nvector(NaN)",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate({__name__=\"${prefix}_request_duration_seconds_bucket\", job=~\"$job\", service=~\"$service\", instance=~\"$instance\"}[$__rate_interval])))\nor\nhistogram_quantile(0.99, sum(rate({__name__=\"${prefix}_request_duration_seconds\", job=~\"$job\", service=~\"$service\", instance=~\"$instance\"}[$__rate_interval])))\nor\nvector(NaN)",
           "legendFormat": "Latency p99",
           "range": true,
           "instant": false,
@@ -468,7 +468,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(${prefix}_requests_in_progress{job=~\"$job\", service=~\"$service\", instance=~\"$instance\"})\nor\nvector(0)",
+          "expr": "sum({__name__=\"${prefix}_requests_in_progress\", job=~\"$job\", service=~\"$service\", instance=~\"$instance\"})\nor\nvector(NaN)",
           "legendFormat": "In flight",
           "range": true,
           "instant": false,
@@ -478,7 +478,18 @@
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "mappings": [],
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "nan",
+                "result": {
+                  "text": "unknown",
+                  "index": 0
+                }
+              }
+            }
+          ],
           "links": [
             {
               "title": "Open Fiber / HTTP Overview",
@@ -580,12 +591,8 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
+                "color": "transparent",
                 "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
               }
             ]
           }
