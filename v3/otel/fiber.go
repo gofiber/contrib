@@ -261,12 +261,6 @@ func Middleware(opts ...Option) fiber.Handler {
 		}
 
 		responseMetricAttrs = append(responseMetricAttrs, responseAttrs...)
-		if cfg.CustomResponseMetricAttributes != nil {
-			responseMetricAttrs = append(responseMetricAttrs, cfg.CustomResponseMetricAttributes(c)...)
-		}
-		if cfg.CustomResponseAttributes != nil {
-			responseAttrs = append(responseAttrs, cfg.CustomResponseAttributes(c)...)
-		}
 
 		defer func() {
 			if !cfg.withoutMetrics {
@@ -283,6 +277,15 @@ func Middleware(opts ...Option) fiber.Handler {
 			c.SetContext(savedCtx)
 			cancel()
 		}()
+
+		// Run user callbacks after cleanup is deferred so a panic cannot leave
+		// http.server.active_requests incremented.
+		if cfg.CustomResponseMetricAttributes != nil {
+			responseMetricAttrs = append(responseMetricAttrs, cfg.CustomResponseMetricAttributes(c)...)
+		}
+		if cfg.CustomResponseAttributes != nil {
+			responseAttrs = append(responseAttrs, cfg.CustomResponseAttributes(c)...)
+		}
 
 		if responseSizeKnown {
 			span.SetAttributes(append(responseAttrs, semconv.HTTPResponseBodySizeKey.Int64(responseSize))...)

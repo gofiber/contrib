@@ -52,6 +52,12 @@ You can configure the middleware using functional parameters
 | (⚠️ **Deprecated**) `WithCollectClientIP`         | `bool` | Deprecated alias for `WithClientIP`. | true |
 | `WithoutMetrics`         | `bool` | Disables metrics collection when set to true. | false |
 
+Response attribute callbacks run after the handler chain, but their values are
+exported or aggregated after the request ends. Copy strings read from `fiber.Ctx`
+methods such as `Params`, `Get`, and `GetRespHeader` with `utils.CopyString`,
+unless `fiber.Config.Immutable` is enabled. Keep metric attributes
+low-cardinality; each distinct attribute set creates a metric series.
+
 ## Usage
 
 Please refer to [example](./example)

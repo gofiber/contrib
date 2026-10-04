@@ -110,16 +110,24 @@ func WithCustomMetricAttributes(f func(ctx fiber.Ctx) []attribute.KeyValue) Opti
 	})
 }
 
-// WithCustomResponseAttributes adds span attributes after the handler has run.
-// The callback can inspect the route, response, and values set by the handler.
+// WithCustomResponseAttributes specifies a function called after the handler
+// chain has run; its attributes are added to the server span. The callback can
+// inspect the matched route, response, and values set by handlers. Spans may be
+// exported after the request ends, so copy strings read from fiber.Ctx methods
+// such as Params, Get, and GetRespHeader with utils.CopyString unless
+// fiber.Config.Immutable is enabled.
 func WithCustomResponseAttributes(f func(ctx fiber.Ctx) []attribute.KeyValue) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.CustomResponseAttributes = f
 	})
 }
 
-// WithCustomResponseMetricAttributes adds attributes to recorded request metrics
-// after the handler has run. Active request metrics retain request attributes.
+// WithCustomResponseMetricAttributes specifies a function called after the
+// handler chain has run; its attributes are added to the request duration and
+// body size metrics. Active request metrics retain request-time attributes.
+// Copy strings read from fiber.Ctx as described for WithCustomResponseAttributes,
+// and keep metric attributes low-cardinality because each distinct attribute
+// set creates a new metric series.
 func WithCustomResponseMetricAttributes(f func(ctx fiber.Ctx) []attribute.KeyValue) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.CustomResponseMetricAttributes = f

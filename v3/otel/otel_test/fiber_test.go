@@ -13,6 +13,7 @@ import (
 
 	fiberotel "github.com/gofiber/contrib/v3/otel"
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/recover"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	otelcontrib "go.opentelemetry.io/contrib"
@@ -620,6 +621,73 @@ func TestCustomResponseAttributes(t *testing.T) {
 		attribute.String("app.metric_route", "/orders/:id"),
 	}
 	assertScopeMetrics(t, metrics.ScopeMetrics[0], "/orders/:id", requestAttrs, append(requestAttrs, responseAttrs...))
+}
+
+func TestCustomResponseAttributeCallbacksPanicCleanup(t *testing.T) {
+	t.Parallel()
+
+	for _, callback := range []string{"span", "metric"} {
+		t.Run(callback, func(t *testing.T) {
+			t.Parallel()
+
+			reader := metric.NewManualReader()
+			meterProvider := metric.NewMeterProvider(metric.WithReader(reader))
+			options := []fiberotel.Option{
+				fiberotel.WithMeterProvider(meterProvider),
+			}
+			panickingCallback := func(ctx fiber.Ctx) []attribute.KeyValue {
+				if ctx.Response().StatusCode() == http.StatusNotFound {
+					_ = ctx.Locals("tenant").(string)
+				}
+				return nil
+			}
+			if callback == "span" {
+				options = append(options, fiberotel.WithCustomResponseAttributes(panickingCallback))
+			} else {
+				options = append(options, fiberotel.WithCustomResponseMetricAttributes(panickingCallback))
+			}
+
+			app := fiber.New()
+			app.Use(recover.New())
+			app.Use(fiberotel.Middleware(options...))
+			app.Get("/orders/:id", func(ctx fiber.Ctx) error {
+				ctx.Locals("tenant", "shopper")
+				return ctx.SendStatus(http.StatusOK)
+			})
+
+			resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/missing", nil))
+			require.NoError(t, err)
+			require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+			resp, err = app.Test(httptest.NewRequest(http.MethodGet, "/orders/42", nil))
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+
+			metrics := metricdata.ResourceMetrics{}
+			require.NoError(t, reader.Collect(context.Background(), &metrics))
+			require.Len(t, metrics.ScopeMetrics, 1)
+			var activeRequests metricdata.Sum[int64]
+			var durationCount uint64
+			for _, m := range metrics.ScopeMetrics[0].Metrics {
+				switch m.Name {
+				case fiberotel.MetricNameHTTPServerActiveRequests:
+					var ok bool
+					activeRequests, ok = m.Data.(metricdata.Sum[int64])
+					require.True(t, ok)
+				case fiberotel.MetricNameHTTPServerRequestDuration:
+					histogram, ok := m.Data.(metricdata.Histogram[float64])
+					require.True(t, ok)
+					for _, point := range histogram.DataPoints {
+						durationCount += point.Count
+					}
+				}
+			}
+			require.NotEmpty(t, activeRequests.DataPoints)
+			for _, point := range activeRequests.DataPoints {
+				assert.Zero(t, point.Value)
+			}
+			assert.Equal(t, uint64(2), durationCount)
+		})
+	}
 }
 
 func TestOutboundTracingPropagation(t *testing.T) {
