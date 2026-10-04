@@ -231,12 +231,6 @@ type dynamicLabel struct {
 // configured to route collapses onto - see inFlightMethod.
 const otherMethodLabel = "OTHER"
 
-// processStart anchors the request clock. time.Since on a Time that holds a
-// monotonic reading reads only the monotonic clock, where time.Now reads the
-// wall clock as well; measured from a fixed anchor it is a monotonic timestamp
-// for one clock read instead of two.
-var processStart = time.Now()
-
 // reservedLabels are the names Labels and DynamicLabels may not use: the four set
 // here, plus "le", which Prometheus keeps for histogram bucket bounds.
 var reservedLabels = map[string]struct{}{
@@ -885,19 +879,21 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	}
 
 	// Only the duration histogram needs the clock.
-	var start time.Duration
+	var start time.Time
 	if m.requestDuration != nil {
-		start = time.Since(processStart)
+		start = requestStart(ctx)
 	}
 
 	chainErr := ctx.Next()
 
 	// Read here, not at the observation below: everything between is this middleware's
 	// own bookkeeping, and charging it to the request would put instrumentation
-	// overhead into the metric people set latency alerts on.
+	// overhead into the metric people set latency alerts on. time.Since on a Time
+	// holding a monotonic reading reads only the monotonic clock, so this is the
+	// request's one clock read when fasthttp supplied the start.
 	var chainTime time.Duration
 	if m.requestDuration != nil {
-		chainTime = time.Since(processStart) - start
+		chainTime = time.Since(start)
 	}
 
 	routePath, ok := m.pathLabel(ctx)
@@ -913,13 +909,13 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	if chainErr != nil {
 		var errorHandlerStart time.Duration
 		if m.requestDuration != nil {
-			errorHandlerStart = time.Since(processStart)
+			errorHandlerStart = time.Since(start)
 		}
 		if err := ctx.App().ErrorHandler(ctx, chainErr); err != nil {
 			_ = ctx.SendStatus(fiber.StatusInternalServerError) //nolint:errcheck // mirrors Fiber's own fallback
 		}
 		if m.requestDuration != nil {
-			chainTime += time.Since(processStart) - errorHandlerStart
+			chainTime += time.Since(start) - errorHandlerStart
 		}
 	}
 
@@ -1104,6 +1100,21 @@ func (m *middleware) fillSeries(s *series, labels []string, class string) {
 		s.byClass = m.requestsByClass.WithLabelValues(labels...)
 		labels[0] = statusCode
 	}
+}
+
+// requestStart is when the request's handling began: the moment fasthttp handed
+// it to Fiber, which fasthttp stamps on every request it serves before calling
+// the handler. Starting there, rather than when this middleware is reached, puts
+// routing and any middleware mounted before this one into the duration, and
+// saves the request a clock read - time.Now reads the wall clock and the
+// monotonic clock, where the stamp is already there. A request context that did
+// not come through fasthttp's server, as a handler driven directly in a test is,
+// carries no stamp, and then the clock is read here as it always was.
+func requestStart(ctx fiber.Ctx) time.Time {
+	if start := ctx.RequestCtx().Time(); !start.IsZero() {
+		return start
+	}
+	return time.Now()
 }
 
 // inFlightMethod bounds the gauge's method label to the finite set of methods the

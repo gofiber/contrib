@@ -146,6 +146,15 @@ are two endpoints sharing one series.
 incremented before the router picks a handler, at which point the route pattern
 is not known yet.
 
+`http_request_duration_seconds` runs from the moment fasthttp hands the request
+to Fiber - the timestamp fasthttp takes before calling the handler - until the
+handler chain has returned and the application's error handler, if one ran, is
+done. Routing and any middleware mounted before this one are therefore part of
+it, while the middleware's own bookkeeping and the `DynamicLabels` functions,
+which run after the chain, are not. A handler driven outside fasthttp's server
+carries no such timestamp, and the clock is read when the middleware is reached
+instead.
+
 `http_request_size_bytes` and `http_response_size_bytes` record a payload only
 when its size is known — either `Content-Length` is set, or the body is buffered
 and can be measured. A stream of unannounced length, such as `c.SendStream`
@@ -484,8 +493,8 @@ nothing in your stack starts spans, and that work goes away.
 
 The middleware is on the path of every request, so it is built to add as little
 to each one as possible: in the default configuration it allocates nothing per
-request, takes no lock, and reads the monotonic clock twice, which is what the
-duration histogram needs.
+request, takes no lock, and reads the clock once - the duration histogram starts
+from the timestamp fasthttp already took for the request, see [Metrics](#metrics).
 
 Recording a request means incrementing or observing one child metric per enabled
 family, and the five families share one label set. Rather than asking
@@ -523,8 +532,10 @@ series' own counters:
 Linux, Intel Xeon 2.80GHz, 4 cores, Go 1.26, `benchstat` over six runs each;
 the allocation counts are those above the baseline's own one. What remains is
 dominated by client_golang's own counter and histogram updates - atomics on
-memory every request to the same series shares - the clock reads, and the
+memory every request to the same series shares - the clock read, and the
 request-context read the exemplar check needs, which `DisableExemplars` removes.
+The `Handler` benchmarks drive the handler without fasthttp's server, so they
+pay the fallback clock read that a served request does not.
 
 ## 📊 Result
 

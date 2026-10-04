@@ -29,6 +29,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/model"
+	"github.com/valyala/fasthttp"
 	"go.opentelemetry.io/otel"
 	tracesdk "go.opentelemetry.io/otel/sdk/trace"
 )
@@ -4991,5 +4992,69 @@ func TestInvalidUTF8DynamicValueIsNotCached(t *testing.T) {
 	}
 	if n := m.series.size(); n != 1 {
 		t.Fatalf("expected one entry for the repeated value, got %d", n)
+	}
+}
+
+// TestDurationStartsWhereFasthttpHandsOver pins the start of the stopwatch: the
+// timestamp fasthttp takes before calling the handler, so time spent in routing
+// and in middleware mounted before this one is part of the request duration.
+func TestDurationStartsWhereFasthttpHandsOver(t *testing.T) {
+	const upstreamCost = 80 * time.Millisecond
+
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		time.Sleep(upstreamCost)
+		return c.Next()
+	})
+	app.Use(New(Config{DisableGoCollector: true, DisableProcessCollector: true}))
+	app.Get("/fast", func(c fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	get(t, app, "/fast")
+
+	metrics := getMetrics(t, app, "")
+	series := `http_request_duration_seconds_sum{method="GET",path="/fast",status_code="200"}`
+	if seconds := gaugeValue(t, metrics, series); seconds < upstreamCost.Seconds() {
+		t.Fatalf("expected the upstream middleware's %s to be part of the duration, got %vs", upstreamCost, seconds)
+	}
+}
+
+// TestDurationWithoutFasthttpTimestampReadsTheClock covers a handler driven
+// outside fasthttp's server, whose request context carries no timestamp: the
+// start has to be read then, not taken as the zero time - which would record
+// the decades since 1970 as the request's duration.
+func TestDurationWithoutFasthttpTimestampReadsTheClock(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	app := fiber.New()
+	app.Use(New(Config{
+		Registerer:              registry,
+		Gatherer:                registry,
+		DisableGoCollector:      true,
+		DisableProcessCollector: true,
+	}))
+	app.Get("/fast", func(c fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	var fctx fasthttp.RequestCtx
+	var req fasthttp.Request
+	req.Header.SetMethod(fiber.MethodGet)
+	req.SetRequestURI("/fast")
+	fctx.Init(&req, nil, nil)
+	if !fctx.Time().IsZero() {
+		t.Fatal("expected a request context initialised outside the server to carry no timestamp")
+	}
+	app.Handler()(&fctx)
+	if status := fctx.Response.StatusCode(); status != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d", status)
+	}
+
+	histogram := durationHistogram(t, registry)
+	if histogram.GetSampleCount() != 1 {
+		t.Fatalf("expected one observation, got %d", histogram.GetSampleCount())
+	}
+	if seconds := histogram.GetSampleSum(); seconds < 0 || seconds > 1 {
+		t.Fatalf("expected a duration measured from the middleware's own clock read, got %vs", seconds)
 	}
 }
