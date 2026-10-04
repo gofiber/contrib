@@ -146,14 +146,10 @@ are two endpoints sharing one series.
 incremented before the router picks a handler, at which point the route pattern
 is not known yet.
 
-`http_request_duration_seconds` runs from the moment fasthttp hands the request
-to Fiber - the timestamp fasthttp takes before calling the handler - until the
-handler chain has returned and the application's error handler, if one ran, is
-done. Routing and any middleware mounted before this one are therefore part of
-it, while the middleware's own bookkeeping and the `DynamicLabels` functions,
-which run after the chain, are not. A handler driven outside fasthttp's server
-carries no such timestamp, and the clock is read when the middleware is reached
-instead.
+`http_request_duration_seconds` runs from the timestamp fasthttp takes before
+calling the handler until the handler chain and, if it ran, the error handler
+have returned. Routing and middleware mounted before this one are part of it;
+`DynamicLabels` functions, which run after the chain, are not.
 
 `http_request_size_bytes` and `http_response_size_bytes` record a payload only
 when its size is known — either `Content-Length` is set, or the body is buffered
@@ -256,10 +252,7 @@ the reserved `status_code`, `status_class`, `method`, `path` and `le` labels or 
 
 The middleware copies each returned value the first time it sees a label set,
 so it is safe to return one of Fiber's zero-copy strings such as `c.Get(...)` or
-`c.Params(...)` directly. A label set that has been recorded before is matched
-against that copy and allocates nothing. Note that `c.Get("X-Tenant", "none")`
-allocates inside Fiber for the variadic default; `c.Get("X-Tenant")` followed by
-your own empty check does not.
+`c.Params(...)` directly; a label set seen before allocates nothing.
 
 A function that panics costs its request every metric, not the request itself:
 the sample is dropped, the response is unaffected, and the drop is reported to
@@ -488,54 +481,6 @@ Collecting one costs a request-context read on every instrumented request: Fiber
 installs a background context when the application never set one, which the
 request then has to clear again on release. Set `DisableExemplars: true` when
 nothing in your stack starts spans, and that work goes away.
-
-## Performance
-
-The middleware is on the path of every request, so it is built to add as little
-to each one as possible: in the default configuration it allocates nothing per
-request, takes no lock, and reads the clock once - the duration histogram starts
-from the timestamp fasthttp already took for the request, see [Metrics](#metrics).
-
-Recording a request means incrementing or observing one child metric per enabled
-family, and the five families share one label set. Rather than asking
-client_golang to resolve the child for each - it validates every label value as
-UTF-8, hashes them, takes a read lock and scans a bucket, every time - the
-middleware resolves the five once, the first time it sees a label set, and keeps
-them in a cache keyed by path, method, status and a hash of the dynamic label
-values, whose values are compared on a hit. The cache is read without locking:
-lookups go to an immutable snapshot that inserts replace in batches, so a new
-series costs an amortised constant however many exist. Each entry stands for one
-series in the registry and lives as long as it, so the cache grows with the
-series and never needs eviction: with bounded label values it is bounded, and
-with unbounded ones the registry was already the problem (see
-[Extra labels per request](#extra-labels-per-request)). The two size histograms
-are the exception: a payload whose size cannot be determined is not observed, so
-their children are resolved on the first observation, and a route that only ever
-streams gets no size series. The in-flight gauge is cached the same way, per app
-and method; a method the app cannot route shares one series and takes no entry.
-
-Measured with the `Handler` benchmarks in `prometheus_bench_test.go`, which drive
-the fasthttp handler directly so that only the middleware is on the clock
-(`go test -run xxx -bench 'BenchmarkHandler' -benchmem`). The parallel rows run
-on every core with every request on the same series, the worst case for the
-series' own counters:
-
-| Benchmark | Before | After |
-|:----------|-------:|------:|
-| Baseline, no middleware | 563 ns/op | 538 ns/op |
-| Default configuration | 1555 ns/op | 1155 ns/op |
-| Two dynamic labels | 2165 ns/op, 3 allocs | 1245 ns/op, 1 alloc |
-| Size histograms disabled | 1524 ns/op | 978 ns/op |
-| Parallel, baseline | 215 ns/op | 213 ns/op |
-| Parallel, default configuration | 1132 ns/op | 762 ns/op |
-
-Linux, Intel Xeon 2.80GHz, 4 cores, Go 1.26, `benchstat` over six runs each;
-the allocation counts are those above the baseline's own one. What remains is
-dominated by client_golang's own counter and histogram updates - atomics on
-memory every request to the same series shares - the clock read, and the
-request-context read the exemplar check needs, which `DisableExemplars` removes.
-The `Handler` benchmarks drive the handler without fasthttp's server, so they
-pay the fallback clock read that a served request does not.
 
 ## 📊 Result
 

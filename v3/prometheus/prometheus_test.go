@@ -4573,11 +4573,9 @@ func TestUnmatchedLabelEndingInStarIsSkippable(t *testing.T) {
 	}
 }
 
-// TestConcurrentRequestsShareSeries drives a handful of label sets from several
-// goroutines at once. The series cache is filled on first sight and read under a
-// shared lock afterwards, so this is where the race detector would catch a bad
-// insert, and the exact counts show that racing inserts hand out the same
-// children rather than each goroutine recording into its own.
+// TestConcurrentRequestsShareSeries drives a few label sets from several
+// goroutines at once: the race detector covers the cache, and the exact counts
+// show racing inserts share one series.
 func TestConcurrentRequestsShareSeries(t *testing.T) {
 	app := newAppWithMiddleware(Config{
 		DynamicLabels: map[string]func(fiber.Ctx) string{
@@ -4637,8 +4635,7 @@ func TestConcurrentRequestsShareSeries(t *testing.T) {
 }
 
 // TestManyDynamicLabelsShareOneKey covers a label set wider than the stack
-// buffer resolveSeries keeps for the values: the key hashes the values, so a set
-// of any size is cached and recorded the same way.
+// buffer in resolveSeries.
 func TestManyDynamicLabelsShareOneKey(t *testing.T) {
 	const count = 9
 
@@ -4683,10 +4680,9 @@ func TestManyDynamicLabelsShareOneKey(t *testing.T) {
 	}
 }
 
-// TestInFlightGaugeCachesOnlyRoutableMethods pins the cache's cardinality bound:
-// a method the app cannot route is collapsed onto the OTHER series and takes no
-// entry, otherwise the cache would grow with every method a client invents -
-// the very thing collapsing exists to prevent.
+// TestInFlightGaugeCachesOnlyRoutableMethods pins that an unroutable method
+// takes no cache entry, or the cache would grow with every method a client
+// invents.
 func TestInFlightGaugeCachesOnlyRoutableMethods(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	m := &middleware{
@@ -4731,9 +4727,7 @@ func TestInFlightGaugeCachesOnlyRoutableMethods(t *testing.T) {
 }
 
 // TestInFlightGaugeHonorsEachAppsMethods covers one handler mounted on two apps
-// whose RequestMethods differ. The gauge children are cached per app, so a
-// method only one of them routes keeps its own series rather than inheriting
-// whichever app happened to come first.
+// whose RequestMethods differ.
 func TestInFlightGaugeHonorsEachAppsMethods(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	handler := New(Config{
@@ -4791,10 +4785,9 @@ func TestInFlightGaugeHonorsEachAppsMethods(t *testing.T) {
 	}
 }
 
-// TestResponseSizeSeriesAppearsOnFirstKnownObservation covers the lazily resolved
-// size children. The first request on a series streams a body of unknown length
-// and must not create the response size series - that is what resolving the
-// child up front would do - while a later sized response on the same series must.
+// TestResponseSizeSeriesAppearsOnFirstKnownObservation covers the lazy size
+// children: a stream of unknown length creates no size series, a later sized
+// response on the same series does.
 func TestResponseSizeSeriesAppearsOnFirstKnownObservation(t *testing.T) {
 	var sized atomic.Bool
 	app := newAppWithMiddleware(Config{}, "")
@@ -4825,17 +4818,15 @@ func TestResponseSizeSeriesAppearsOnFirstKnownObservation(t *testing.T) {
 	}
 }
 
-// size counts the entries a cache holds, wherever they are.
+// size counts the entries a cache holds.
 func (c *cache[K, V]) size() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(*c.snapshot.Load()) + len(c.pending)
 }
 
-// TestCacheFoldsPendingIntoSnapshot pins the two-level structure: a small cache
-// folds on every insert, a larger one batches inserts in the pending map and
-// folds them either when the batch is large enough or after readers have been
-// served from pending often enough. Every entry is found throughout.
+// TestCacheFoldsPendingIntoSnapshot pins when pending entries are folded: on
+// every insert while small, then by batch size or by reader hits.
 func TestCacheFoldsPendingIntoSnapshot(t *testing.T) {
 	c := newCache[int, int]()
 
@@ -4906,10 +4897,9 @@ func TestCacheFoldsPendingIntoSnapshot(t *testing.T) {
 	}
 }
 
-// TestDynamicLabelHashCollisionFallsBack plants a cache entry under the hash a
-// request's dynamic values produce, holding another value set. The request has
-// to notice that the slot is not its own and still be recorded, with its own
-// values, while the planted entry is left alone.
+// TestDynamicLabelHashCollisionFallsBack plants a cache entry for another value
+// set under the hash a request produces: the request must still be recorded
+// with its own values and leave the entry alone.
 func TestDynamicLabelHashCollisionFallsBack(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	m := newMiddleware(Config{
@@ -4956,11 +4946,9 @@ func TestDynamicLabelHashCollisionFallsBack(t *testing.T) {
 	}
 }
 
-// TestInvalidUTF8DynamicValueIsNotCached covers the other way a hit can fail
-// its comparison: the stored copy had its bytes replaced - a run of them by one
-// replacement character - so the raw value never equals it. The request is
-// recorded with the replacement every time, and the cache does not grow with
-// each repetition.
+// TestInvalidUTF8DynamicValueIsNotCached covers a value whose stored copy had
+// its bytes replaced: it never matches, is recorded with the replacement every
+// time, and does not grow the cache.
 func TestInvalidUTF8DynamicValueIsNotCached(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	m := newMiddleware(Config{
@@ -4995,9 +4983,8 @@ func TestInvalidUTF8DynamicValueIsNotCached(t *testing.T) {
 	}
 }
 
-// TestDurationStartsWhereFasthttpHandsOver pins the start of the stopwatch: the
-// timestamp fasthttp takes before calling the handler, so time spent in routing
-// and in middleware mounted before this one is part of the request duration.
+// TestDurationStartsWhereFasthttpHandsOver pins that middleware mounted before
+// this one is part of the recorded duration.
 func TestDurationStartsWhereFasthttpHandsOver(t *testing.T) {
 	const upstreamCost = 80 * time.Millisecond
 
@@ -5021,9 +5008,7 @@ func TestDurationStartsWhereFasthttpHandsOver(t *testing.T) {
 }
 
 // TestDurationWithoutFasthttpTimestampReadsTheClock covers a handler driven
-// outside fasthttp's server, whose request context carries no timestamp: the
-// start has to be read then, not taken as the zero time - which would record
-// the decades since 1970 as the request's duration.
+// outside fasthttp's server, whose context carries no timestamp.
 func TestDurationWithoutFasthttpTimestampReadsTheClock(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	app := fiber.New()

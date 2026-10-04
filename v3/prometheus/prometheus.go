@@ -61,12 +61,8 @@ type middleware struct {
 	observes          bool
 }
 
-// seriesKey identifies one label set across every family. The dynamic label
-// values enter it as one hash so that a set of any size fits a fixed-size key
-// and a lookup hashes nothing it does not have to; resolveSeries compares the
-// values themselves on a hit, so a collision costs a request the cache and
-// nothing else. A request builds a key from the strings it holds, aliased
-// request memory included, and only a miss detaches anything.
+// seriesKey identifies one label set across every family. Dynamic label values
+// are hashed so the key stays fixed-size; resolveSeries compares them on a hit.
 type seriesKey struct {
 	path    string
 	method  string
@@ -74,8 +70,7 @@ type seriesKey struct {
 	dynamic uint64
 }
 
-// hashDynamic folds the dynamic label values into a seriesKey's hash word. The
-// multiplication keeps the order of the values significant.
+// hashDynamic folds the dynamic label values into one order-sensitive hash.
 func hashDynamic(seed maphash.Seed, values []string) uint64 {
 	var h uint64
 	for _, value := range values {
@@ -84,33 +79,21 @@ func hashDynamic(seed maphash.Seed, values []string) uint64 {
 	return h
 }
 
-// series holds the child metric of every enabled family for one label set. A
-// field is nil when its family is disabled.
-//
-// client_golang resolves a child from its label values by validating each one
-// as UTF-8, hashing them with FNV, taking a read lock and scanning a bucket for
-// an equal set - and the five families share one label set, so a request paid
-// for that five times. Resolved once here and looked up by key afterwards, with
-// no eviction: the entries live exactly as long as the series in the registry
-// they stand for, which the middleware never deletes.
-//
-// The size histograms are the exception: a payload whose size cannot be
-// determined is not observed at all, and a child resolved up front would show
-// up as a zero-count series. They are resolved on first observation instead,
-// which is why the label values are kept and why a series is never copied.
+// series holds the child metrics of one label set, resolved once instead of on
+// every request; a field is nil when its family is disabled. The size histogram
+// children are resolved on first observation, since a payload of unknown size is
+// not observed and an eager child would appear as an empty series.
 type series struct {
 	total        prometheus.Counter
 	byClass      prometheus.Counter
 	duration     prometheus.Observer
 	requestSize  atomic.Pointer[prometheus.Observer]
 	responseSize atomic.Pointer[prometheus.Observer]
-	// labels are the status-code variant, detached, for the lazy children.
-	labels []string
+	labels       []string // status-code variant, for the lazy children
 }
 
-// sizeObserver returns a size histogram child of a series, resolving it on the
-// first call. Two goroutines racing here both store the child client_golang
-// hands out for these label values, so either store is right.
+// sizeObserver returns a size histogram child, resolving it on first use. Racing
+// goroutines store the same child, so either store is fine.
 func sizeObserver(slot *atomic.Pointer[prometheus.Observer], vec *prometheus.HistogramVec, labels []string) prometheus.Observer {
 	if resolved := slot.Load(); resolved != nil {
 		return *resolved
@@ -120,30 +103,20 @@ func sizeObserver(slot *atomic.Pointer[prometheus.Observer], vec *prometheus.His
 	return child
 }
 
-// inFlightKey identifies an in-flight gauge child. The app is part of the key
-// because the set of methods it routes is per app, and one handler may be
-// mounted on several.
+// inFlightKey identifies an in-flight gauge child. The routable methods are per
+// app, and one handler may be mounted on several.
 type inFlightKey struct {
 	app    *fiber.App
 	method string
 }
 
-// foldAfterPendingHits is how many times entries may be served from the pending
-// map before the reader that finds one there folds it into the snapshot itself.
-// It bounds how long the last series created stay on the slower path when no
-// insert comes along to fold them.
+// foldAfterPendingHits bounds how often pending entries are served under the
+// lock before a reader folds them into the snapshot.
 const foldAfterPendingHits = 64
 
-// cache maps keys to values for the process life, built for its read side: a
-// lookup is an atomic load and a map read on a snapshot that is replaced rather
-// than mutated, so it takes no lock and shares no cache line between readers.
-// Inserts, which happen once per series, go to a pending map behind a mutex and
-// are folded into the next snapshot in batches that grow with it, so each one
-// costs an amortised constant however many series there are, and a flood of new
-// label values cannot turn every request into a copy of the whole map. Entries
-// awaiting a fold are served from the pending map behind a read lock - what
-// every lookup once cost - and a reader that keeps finding its entry there
-// folds it in, so none is served that way for long.
+// cache is a lock-free read path over an immutable snapshot map. Inserts go to a
+// pending map behind a mutex and are folded into a new snapshot in batches that
+// grow with it, so an insert costs an amortised constant.
 type cache[K comparable, V any] struct {
 	snapshot    atomic.Pointer[map[K]V]
 	pendingHits atomic.Int32
@@ -173,9 +146,8 @@ func (c *cache[K, V]) lookup(key K) (V, bool) {
 	return value, ok
 }
 
-// insert stores value under key unless another goroutine got there first, and
-// returns whichever is kept. Both were resolved from the same label values, so
-// client_golang handed out the same children either way.
+// insert stores value unless the key is already present, and returns the kept
+// value.
 func (c *cache[K, V]) insert(key K, value V) V {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -190,17 +162,15 @@ func (c *cache[K, V]) insert(key K, value V) V {
 
 	c.pending[key] = value
 
-	// Folding once pending reaches an eighth of the snapshot bounds the copying
-	// at nine entries per entry inserted, while a small snapshot is rebuilt on
-	// every insert, so nothing waits in pending while that is cheap.
+	// An eighth of the snapshot bounds the copying per insert; a small snapshot
+	// is rebuilt on every insert.
 	if len(c.pending) >= max(1, len(snapshot)/8) {
 		c.foldLocked()
 	}
 	return value
 }
 
-// fold moves the pending entries into a new snapshot, unless another goroutine
-// did so first.
+// fold moves the pending entries into a new snapshot.
 func (c *cache[K, V]) fold() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -209,8 +179,7 @@ func (c *cache[K, V]) fold() {
 	}
 }
 
-// foldLocked is fold with c.mu held. The previous snapshot is left untouched for
-// the readers still on it.
+// foldLocked is fold with c.mu held.
 func (c *cache[K, V]) foldLocked() {
 	next := maps.Clone(*c.snapshot.Load())
 	maps.Copy(next, c.pending)
@@ -270,8 +239,7 @@ func New(config ...Config) fiber.Handler {
 	return newMiddleware(config...).handle
 }
 
-// newMiddleware is New short of the method value, so tests can reach the state
-// behind the handler.
+// newMiddleware is New without the method value, for tests.
 func newMiddleware(config ...Config) *middleware {
 	cfg := configDefault(config...)
 
@@ -888,9 +856,7 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 
 	// Read here, not at the observation below: everything between is this middleware's
 	// own bookkeeping, and charging it to the request would put instrumentation
-	// overhead into the metric people set latency alerts on. time.Since on a Time
-	// holding a monotonic reading reads only the monotonic clock, so this is the
-	// request's one clock read when fasthttp supplied the start.
+	// overhead into the metric people set latency alerts on.
 	var chainTime time.Duration
 	if m.requestDuration != nil {
 		chainTime = time.Since(start)
@@ -994,10 +960,9 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	return nil
 }
 
-// inFlightGauge returns the in-flight gauge child for a method on an app. The
-// first request with each pair resolves it through client_golang and reads
-// App.Config, which is returned by value - some 600 bytes - so neither is paid
-// per request afterwards.
+// inFlightGauge returns the in-flight gauge child for a method on an app,
+// resolving it once per pair: App.Config is returned by value and is not cheap
+// to read per request.
 func (m *middleware) inFlightGauge(app *fiber.App, method string) prometheus.Gauge {
 	key := inFlightKey{app: app, method: method}
 	if gauge, ok := m.inFlightGauges.lookup(key); ok {
@@ -1007,20 +972,19 @@ func (m *middleware) inFlightGauge(app *fiber.App, method string) prometheus.Gau
 	label := inFlightMethod(app.Config().RequestMethods, method)
 	gauge := m.requestInFlight.WithLabelValues(label)
 	if label != method {
-		// Collapsed onto the shared series, and deliberately not cached: a cache
-		// entry per arbitrary method would reintroduce the unbounded growth the
-		// collapsing exists to prevent, in this map instead of the registry.
+		// Not cached: an entry per arbitrary method would reintroduce the
+		// unbounded growth the OTHER series exists to prevent.
 		return gauge
 	}
 
 	return m.inFlightGauges.insert(key, gauge)
 }
 
-// resolveSeries returns the series for this request's label set, or nil when the
-// request cannot be recorded because a label function panicked.
+// resolveSeries returns the series for this request's label set, or nil when a
+// label function panicked.
 func (m *middleware) resolveSeries(ctx fiber.Ctx, routePath, method string, status int, class string) *series {
-	// The dynamic values may alias the request buffer. They are hashed and
-	// compared from here, and detached only if the set turns out to be new.
+	// The dynamic values may alias the request buffer; they are only detached
+	// when the set is new.
 	var stack [8]string
 	var dynamic []string
 	if n := len(m.dynamicLabels); n <= len(stack) {
@@ -1041,18 +1005,15 @@ func (m *middleware) resolveSeries(ctx fiber.Ctx, routePath, method string, stat
 		if sameValues(cached.labels[3:], dynamic) {
 			return cached
 		}
-		// Two label sets hashed alike and the slot belongs to the other, or a
-		// value holds invalid UTF-8 and so cannot equal the replaced copy that
-		// was stored. Either way the request is recorded, through client_golang
-		// directly as every request once was; it only forgoes the cache.
+		// A hash collision, or a value with invalid UTF-8 that cannot equal the
+		// stored replacement: recorded without the cache.
 		return m.newSeries(dynamic, routePath, method, status, class)
 	}
 
 	return m.series.insert(key, m.newSeries(dynamic, routePath, method, status, class))
 }
 
-// sameValues reports whether the dynamic values of a cached series equal the
-// ones a request produced.
+// sameValues reports whether a cached series' dynamic values equal values.
 func sameValues(stored, values []string) bool {
 	if len(stored) != len(values) {
 		return false
@@ -1065,9 +1026,8 @@ func sameValues(stored, values []string) bool {
 	return true
 }
 
-// newSeries resolves the children for one set of label values through
-// client_golang. The dynamic values are detached before anything keeps them:
-// the series and, through client_golang, the registry.
+// newSeries resolves the children for one label set, detaching the dynamic
+// values first.
 func (m *middleware) newSeries(dynamic []string, routePath, method string, status int, class string) *series {
 	labels := make([]string, 3+len(dynamic))
 	labels[0] = statusLabel(status)
@@ -1082,9 +1042,8 @@ func (m *middleware) newSeries(dynamic []string, routePath, method string, statu
 	return s
 }
 
-// fillSeries resolves the children of every enabled family that is always
-// observed, for one set of label values. The status code sits at index 0 and is
-// swapped for the class to resolve the last counter, then restored.
+// fillSeries resolves the eagerly observed children. labels[0] is the status
+// code, swapped for the class to resolve the last counter.
 func (m *middleware) fillSeries(s *series, labels []string, class string) {
 	s.labels = labels
 
@@ -1102,14 +1061,9 @@ func (m *middleware) fillSeries(s *series, labels []string, class string) {
 	}
 }
 
-// requestStart is when the request's handling began: the moment fasthttp handed
-// it to Fiber, which fasthttp stamps on every request it serves before calling
-// the handler. Starting there, rather than when this middleware is reached, puts
-// routing and any middleware mounted before this one into the duration, and
-// saves the request a clock read - time.Now reads the wall clock and the
-// monotonic clock, where the stamp is already there. A request context that did
-// not come through fasthttp's server, as a handler driven directly in a test is,
-// carries no stamp, and then the clock is read here as it always was.
+// requestStart is the timestamp fasthttp took before calling the handler, which
+// saves a clock read and puts routing and earlier middleware into the duration.
+// A context that did not come through fasthttp's server carries none.
 func requestStart(ctx fiber.Ctx) time.Time {
 	if start := ctx.RequestCtx().Time(); !start.IsZero() {
 		return start
@@ -1160,11 +1114,10 @@ func observe(observer prometheus.Observer, value float64, exemplar prometheus.La
 	observer.Observe(value)
 }
 
-// resolveDynamicValues fills dst with the dynamic label values as the functions
-// returned them - possibly aliasing the request buffer, see detachedLabel - and
-// reports whether the request can be recorded. These run after the chain
-// unwinds, past any recover, so a panicking one drops the sample rather than
-// killing the connection.
+// resolveDynamicValues fills dst with the raw dynamic label values, reporting
+// whether the request can be recorded. These run after the chain unwinds, past
+// any recover, so a panicking one drops the sample rather than killing the
+// connection.
 func (m *middleware) resolveDynamicValues(ctx fiber.Ctx, dst []string) (ok bool) {
 	if len(m.dynamicLabels) == 0 {
 		return true
@@ -1199,8 +1152,7 @@ const replacementRune = "�"
 // a scan and no allocation. Use it for values the middleware owns, such as a route
 // pattern; a value read off the request needs detachedLabel instead.
 func validLabel(value string) string {
-	// Route patterns are nearly always ASCII, which the SWAR/SIMD scan settles
-	// faster than a UTF-8 decode; only a non-ASCII byte needs the full check.
+	// ASCII, the common case for a route pattern, is settled by the SIMD scan.
 	if utils.IsASCII(value) || utf8.ValidString(value) {
 		return value
 	}

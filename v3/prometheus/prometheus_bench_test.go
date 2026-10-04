@@ -50,10 +50,9 @@ func dynamicLabelsConfig() *Config {
 	}
 }
 
-// benchmarkHandler drives the app's fasthttp handler directly, on the benchmark
-// goroutine, with one request context reused across iterations. This is the
-// measurement to read for the middleware's own cost: the one allocation it
-// reports is fasthttp's per-request connection id, paid by the baseline too.
+// benchmarkHandler drives the fasthttp handler directly with one reused request
+// context, so only the middleware is measured. The one allocation reported is
+// fasthttp's own, paid by the baseline too.
 func benchmarkHandler(b *testing.B, app *fiber.App, path string, wantStatus int) {
 	b.Helper()
 	b.ReportAllocs()
@@ -112,9 +111,8 @@ func BenchmarkHandlerUnmatchedRoute(b *testing.B) {
 	benchmarkHandler(b, newBenchmarkApp(b, &Config{}), "/nothing/here", http.StatusNotFound)
 }
 
-// benchmarkHandlerParallel is benchmarkHandler on every core at once, each with
-// its own request context. It measures what the middleware shares between
-// requests: the gap between this and the serial figure, per core, is contention.
+// benchmarkHandlerParallel is benchmarkHandler on every core at once; the gap
+// to the serial figure is contention.
 func benchmarkHandlerParallel(b *testing.B, app *fiber.App, path string, wantStatus int) {
 	b.Helper()
 	b.ReportAllocs()
@@ -144,8 +142,7 @@ func BenchmarkHandlerParallelBaseline(b *testing.B) {
 }
 
 // BenchmarkHandlerParallelInstrumented measures the default configuration on
-// every core, with every request on the same series - the worst case for the
-// series' own counters, which every core then updates.
+// every core, all requests on one series.
 func BenchmarkHandlerParallelInstrumented(b *testing.B) {
 	benchmarkHandlerParallel(b, newBenchmarkApp(b, &Config{}), "/user/42", http.StatusOK)
 }
@@ -156,11 +153,8 @@ func BenchmarkHandlerParallelInstrumentedWithDynamicLabels(b *testing.B) {
 	benchmarkHandlerParallel(b, newBenchmarkApp(b, dynamicLabelsConfig()), "/user/42", http.StatusOK)
 }
 
-// benchmarkRequests drives the app through app.Test and fails the benchmark if a
-// response ever deviates from the expected status, so a benchmark cannot
-// silently measure an error path. It measures a whole net/http round trip on a
-// fresh goroutine per request, most of which is harness: compare against
-// BenchmarkBaseline, and read the Handler benchmarks for the middleware itself.
+// benchmarkRequests drives the app through app.Test, which costs a net/http
+// round trip per request; the Handler benchmarks isolate the middleware.
 func benchmarkRequests(b *testing.B, app *fiber.App, path string, wantStatus int) {
 	b.Helper()
 	b.ReportAllocs()
