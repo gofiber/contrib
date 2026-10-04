@@ -1,0 +1,627 @@
+{
+  "uid": "fiber-http-wallboard",
+  "title": "Fiber / HTTP Wallboard",
+  "description": "The health of a Fiber service in a few large tiles, for a screen read from across the room. Open it in kiosk mode.",
+  "tags": [
+    "fiber",
+    "prometheus",
+    "http"
+  ],
+  "editable": true,
+  "graphTooltip": 0,
+  "fiscalYearStartMonth": 0,
+  "liveNow": false,
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "version": 1,
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "weekStart": "",
+  "links": [
+    {
+      "title": "Fiber dashboards",
+      "type": "dashboards",
+      "tags": [
+        "fiber"
+      ],
+      "asDropdown": false,
+      "includeVars": true,
+      "keepTime": true,
+      "icon": "external link",
+      "targetBlank": false,
+      "tooltip": "",
+      "url": ""
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "multi": false,
+        "options": [],
+        "refresh": 1,
+        "regex": ""
+      },
+      {
+        "name": "prefix",
+        "label": "Metric prefix",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values({__name__=~\".+_(requests_total|requests_in_progress)\", method!=\"\", code=\"\"}, __name__)",
+        "query": {
+          "query": "label_values({__name__=~\".+_(requests_total|requests_in_progress)\", method!=\"\", code=\"\"}, __name__)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "includeAll": false,
+        "multi": false,
+        "refresh": 2,
+        "regex": "/^(.+)_(?:requests_total|requests_in_progress)$/",
+        "sort": 1,
+        "hide": 0,
+        "options": [],
+        "current": {
+          "text": "http",
+          "value": "http"
+        },
+        "description": "Namespace and Subsystem the middleware was configured with, joined by an underscore. \"http\" unless Config.Namespace or Config.Subsystem were changed."
+      },
+      {
+        "name": "job",
+        "label": "Job",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values({__name__=~\"${prefix}_(requests_total|requests_in_progress)\"}, job)",
+        "query": {
+          "query": "label_values({__name__=~\"${prefix}_(requests_total|requests_in_progress)\"}, job)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "includeAll": true,
+        "multi": true,
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "hide": 0,
+        "options": [],
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values({__name__=~\"${prefix}_(requests_total|requests_in_progress)\", job=~\"$job\"}, service)",
+        "query": {
+          "query": "label_values({__name__=~\"${prefix}_(requests_total|requests_in_progress)\", job=~\"$job\"}, service)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "includeAll": true,
+        "multi": true,
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "hide": 0,
+        "options": [],
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "allValue": ".*",
+        "description": "The service label set through Config.ServiceName. Empty when it is not configured."
+      },
+      {
+        "name": "instance",
+        "label": "Instance",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values({__name__=~\"${prefix}_(requests_total|requests_in_progress)\", job=~\"$job\", service=~\"$service\"}, instance)",
+        "query": {
+          "query": "label_values({__name__=~\"${prefix}_(requests_total|requests_in_progress)\", job=~\"$job\", service=~\"$service\"}, instance)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "includeAll": true,
+        "multi": true,
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "hide": 0,
+        "options": [],
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "allValue": ".+"
+      },
+      {
+        "name": "Filters",
+        "label": "Filters",
+        "type": "adhoc",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "filters": [],
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "",
+      "description": "Requests per second across the selection, from requests_total.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate({__name__=\"${prefix}_requests_total\", job=~\"$job\", service=~\"$service\", instance=~\"$instance\"}[$__rate_interval]))\nor\nvector(0)",
+          "legendFormat": "Requests",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "mappings": [],
+          "links": [
+            {
+              "title": "Open Fiber / HTTP Overview",
+              "url": "/d/fiber-http-overview/fiber-http-overview?${__url_time_range}&${datasource:queryparam}&${prefix:queryparam}&${job:queryparam}&${service:queryparam}&${instance:queryparam}&${Filters:queryparam}"
+            }
+          ],
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "wideLayout": false,
+        "showPercentChange": false
+      },
+      "id": 1,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 13
+      }
+    },
+    {
+      "type": "stat",
+      "title": "",
+      "description": "Share of requests answered with a 5xx status: orange from 1%, red from 5%.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "(\n  sum(rate({__name__=\"${prefix}_requests_total\", job=~\"$job\", service=~\"$service\", instance=~\"$instance\", status_code=~\"5..\"}[$__rate_interval]))\n  or\n  sum(rate({__name__=\"${prefix}_requests_total\", job=~\"$job\", service=~\"$service\", instance=~\"$instance\"}[$__rate_interval])) * 0\n)\n/\nsum(rate({__name__=\"${prefix}_requests_total\", job=~\"$job\", service=~\"$service\", instance=~\"$instance\"}[$__rate_interval]))\nor\nvector(NaN)",
+          "legendFormat": "Server errors",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "nan",
+                "result": {
+                  "text": "no traffic",
+                  "color": "transparent",
+                  "index": 0
+                }
+              }
+            }
+          ],
+          "links": [
+            {
+              "title": "Open Fiber / HTTP Overview",
+              "url": "/d/fiber-http-overview/fiber-http-overview?${__url_time_range}&${datasource:queryparam}&${prefix:queryparam}&${job:queryparam}&${service:queryparam}&${instance:queryparam}&${Filters:queryparam}"
+            }
+          ],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.01
+              },
+              {
+                "color": "red",
+                "value": 0.05
+              }
+            ]
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background_solid",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "wideLayout": false,
+        "showPercentChange": false
+      },
+      "id": 2,
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 8,
+        "h": 13
+      }
+    },
+    {
+      "type": "stat",
+      "title": "",
+      "description": "p99 of request duration: orange from 1 s, red from 2.5 s. Starting points — set the thresholds to your own objectives.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate({__name__=\"${prefix}_request_duration_seconds_bucket\", job=~\"$job\", service=~\"$service\", instance=~\"$instance\"}[$__rate_interval])))\nor\nhistogram_quantile(0.99, sum(rate({__name__=\"${prefix}_request_duration_seconds\", job=~\"$job\", service=~\"$service\", instance=~\"$instance\"}[$__rate_interval])))\nor\nvector(NaN)",
+          "legendFormat": "Latency p99",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "nan",
+                "result": {
+                  "text": "no traffic",
+                  "color": "transparent",
+                  "index": 0
+                }
+              }
+            }
+          ],
+          "links": [
+            {
+              "title": "Open Fiber / HTTP Overview",
+              "url": "/d/fiber-http-overview/fiber-http-overview?${__url_time_range}&${datasource:queryparam}&${prefix:queryparam}&${job:queryparam}&${service:queryparam}&${instance:queryparam}&${Filters:queryparam}"
+            }
+          ],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 2.5
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background_solid",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "wideLayout": false,
+        "showPercentChange": false
+      },
+      "id": 3,
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 8,
+        "h": 13
+      }
+    },
+    {
+      "type": "stat",
+      "title": "",
+      "description": "Requests being handled right now, from requests_in_progress.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum({__name__=\"${prefix}_requests_in_progress\", job=~\"$job\", service=~\"$service\", instance=~\"$instance\"})\nor\nvector(NaN)",
+          "legendFormat": "In flight",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "nan",
+                "result": {
+                  "text": "unknown",
+                  "index": 0
+                }
+              }
+            }
+          ],
+          "links": [
+            {
+              "title": "Open Fiber / HTTP Overview",
+              "url": "/d/fiber-http-overview/fiber-http-overview?${__url_time_range}&${datasource:queryparam}&${prefix:queryparam}&${job:queryparam}&${service:queryparam}&${instance:queryparam}&${Filters:queryparam}"
+            }
+          ],
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "wideLayout": false,
+        "showPercentChange": false
+      },
+      "id": 4,
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 8,
+        "h": 12
+      }
+    },
+    {
+      "type": "stat",
+      "title": "",
+      "description": "Whether each instance answered its most recent scrape. One that stops answering turns red for as long as Prometheus still scrapes it; one removed from service discovery drops off.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max by (instance) (up{job=~\"$job\", instance=~\"$instance\"})",
+          "legendFormat": "{{instance}}",
+          "range": false,
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DOWN",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "UP",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "links": [
+            {
+              "title": "Open Fiber / Go Runtime for ${__field.labels.instance}",
+              "url": "/d/fiber-go-runtime/fiber-go-runtime?${__url_time_range}&${datasource:queryparam}&${prefix:queryparam}&${job:queryparam}&${service:queryparam}&var-instance=${__field.labels.instance:percentencode}"
+            }
+          ],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background_solid",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "wideLayout": false,
+        "showPercentChange": false
+      },
+      "id": 5,
+      "gridPos": {
+        "x": 8,
+        "y": 13,
+        "w": 16,
+        "h": 12
+      }
+    }
+  ]
+}

@@ -219,6 +219,15 @@ turn every request into another attempt against the unavailable store.
 The same snapshot payload is available at `UI.Path + "/api/status"` for custom
 dashboards.
 
+The built-in dashboard polls that endpoint every `SampleInterval`, but no more
+often than every 10 seconds. It stops polling while its browser tab is hidden
+and refreshes as soon as the tab is visible again, so a forgotten tab does not
+keep reading the backing store. A request that fails, or takes longer than the
+polling interval and is aborted, marks the dashboard `STALE` while the last
+successful snapshot stays on screen. `ERROR` means the API reported a storage
+problem. Screen readers are told when the `LIVE`, `STALE`, or `ERROR` state
+changes, but not on every refresh.
+
 ## Service insights
 
 Each service card has an **Insights** button, collapsed by default. Expanding
@@ -243,6 +252,9 @@ Expanded cards stay expanded across automatic refreshes; reloading the page
 collapses them again. Charts are rendered only while expanded. The trend uses
 native SVG and Vanilla JavaScript, with zero additional dependencies, storage
 queries, or persistent data. Existing daily bars remain keyboard accessible.
+The trend's gridlines use round percentages, it exposes its latest and lowest
+values to assistive technologies, and on touch screens a tap or horizontal drag
+on it shows a day's values.
 
 Each service in the status JSON also includes a `summary` object with
 `has_data`, `availability_rate`, `estimated_downtime_seconds`, `affected_days`,

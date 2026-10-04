@@ -8,7 +8,7 @@ id: prometheus
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Test%20Prometheus/badge.svg)
 
-Prometheus middleware for [Fiber](https://github.com/gofiber/fiber) that instruments incoming requests and serves the metrics endpoint, based on [ansrivas/fiberprometheus](https://github.com/ansrivas/fiberprometheus).
+Prometheus middleware for [Fiber](https://github.com/gofiber/fiber) that instruments incoming requests and serves the metrics endpoint, based on [ansrivas/fiberprometheus](https://github.com/ansrivas/fiberprometheus). It comes with [Grafana dashboards](#grafana-dashboards) for the metrics it exposes.
 
 **Compatible with Fiber v3.**
 
@@ -303,6 +303,107 @@ app.Use(fiberprometheus.New(fiberprometheus.Config{
     SkipStatusClasses: []string{"4xx"},
 }))
 ```
+
+## Grafana dashboards
+
+The [`grafana`](https://github.com/gofiber/contrib/tree/main/v3/prometheus/grafana)
+folder holds four dashboards for the metrics this middleware exposes. They link
+to one another and share their variables, so a selection carries over as you
+move between them.
+
+| Dashboard | Shows |
+|:----------|:------|
+| [Fiber / HTTP Overview](https://github.com/gofiber/contrib/blob/main/v3/prometheus/grafana/fiber-http-overview.json) | Request rate, error ratios and latency of a service, a table of its routes, in-flight requests and payload throughput. |
+| [Fiber / HTTP Route](https://github.com/gofiber/contrib/blob/main/v3/prometheus/grafana/fiber-http-route.json) | One route in depth: status codes, latency percentiles and distribution, payload sizes, and how its instances compare. |
+| [Fiber / Go Runtime](https://github.com/gofiber/contrib/blob/main/v3/prometheus/grafana/fiber-go-runtime.json) | The Go and process collectors: CPU, memory, the garbage collector, goroutines, threads and file descriptors. |
+| [Fiber / HTTP Wallboard](https://github.com/gofiber/contrib/blob/main/v3/prometheus/grafana/fiber-http-wallboard.json) | The essentials in large type for a screen across the room: request rate, server errors, p99 latency, in-flight requests and whether each instance is up. |
+
+![Fiber / HTTP Overview dashboard](https://raw.githubusercontent.com/gofiber/contrib/main/v3/prometheus/grafana/screenshots/fiber-http-overview.png)
+
+Selecting a route in the overview's table opens the route dashboard:
+
+![Fiber / HTTP Route dashboard](https://raw.githubusercontent.com/gofiber/contrib/main/v3/prometheus/grafana/screenshots/fiber-http-route.png)
+
+The runtime dashboard follows the same job, service and instance selection:
+
+![Fiber / Go Runtime dashboard](https://raw.githubusercontent.com/gofiber/contrib/main/v3/prometheus/grafana/screenshots/fiber-go-runtime.png)
+
+The wallboard trades detail for distance: five tiles meant to be read from
+across the room. Those that report a state take its color — server errors turn
+orange at 1% and red at 5%, p99 latency at 1 s and 2.5 s, and an instance that
+stops answering its scrapes turns red. The latency thresholds are starting
+points; set them to your own objectives. Open the wallboard in kiosk mode with
+the controls hidden, so the tiles fill the screen:
+
+```text
+https://grafana.example.com/d/fiber-http-wallboard/fiber-http-wallboard?kiosk&_dash.hideTimePicker&_dash.hideVariables&_dash.hideLinks&var-job=my-service
+```
+
+![Fiber / HTTP Wallboard dashboard](https://raw.githubusercontent.com/gofiber/contrib/main/v3/prometheus/grafana/screenshots/fiber-http-wallboard.png)
+
+### Importing
+
+In Grafana, open **Dashboards → New → Import**, upload one of the JSON files and
+save. Nothing is asked at import time: each dashboard picks its Prometheus data
+source through its **Data source** variable. To provision them instead, copy the
+files into a directory and point a file provider at it:
+
+```yaml
+apiVersion: 1
+providers:
+  - name: fiber
+    folder: Fiber
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards/fiber
+```
+
+Set the data source's **Scrape interval** to the interval Prometheus scrapes
+your application at. The panels compute rates over `$__rate_interval`, which
+Grafana derives from that setting, and a window that holds fewer than two
+scrapes leaves them empty.
+
+### Variables
+
+- **Metric prefix** is `Namespace` and `Subsystem` joined by an underscore. It
+  is detected from the `*_requests_total` series, so a custom `Namespace` needs
+  no edits — even one such as `my-app` that only the UTF-8 name scheme allows;
+  `http` is preselected when present.
+- **Job**, **Service** and **Instance** narrow the selection. **Service** lists
+  the values of the `service` label that `ServiceName` sets; without that option
+  the list stays empty and the panels still work.
+- **Filters** applies ad hoc label filters to every query: the labels you add
+  through `Labels` or `DynamicLabels`, or those your scrape configuration
+  attaches, such as `cluster` or `namespace`. A filter on a label some series
+  lack empties the panels built on them: the in-flight gauge carries no `path`
+  or dynamic labels, and the wallboard's instance blocks come from `up`.
+- **Route** and **Method**, on the route dashboard, pick the route to show.
+
+### Requirements
+
+The dashboards need Grafana 11.3 or later and were tested against 11.3, 11.6,
+12.4 and 13.2; Grafana 11.0 loads them too, but draws every route, method and
+instance in the same color. Prometheus has to be 2.40 or later, for the native
+histogram functions the queries fall back to.
+
+The HTTP panels are built on `requests_total` and `request_duration_seconds`;
+the in-flight, payload and runtime panels need the families and collectors they
+show. The runtime dashboard and the wallboard find their targets through
+`requests_total` or `requests_in_progress`, so an instance shows up there once
+it has answered any request, even one to a skipped route.
+`requests_status_class_total` is not used — status classes are derived from
+`status_code` — so dropping it through `DisabledMetrics` costs no panel.
+
+Every histogram query works whether Prometheus ingests classic buckets, native
+histograms, or classic histograms it converts with
+`convert_classic_histograms_to_nhcb`. Where a histogram is stored both ways, the
+classic buckets are used.
+
+The p99 latency line on the route dashboard shows trace exemplars once
+Prometheus stores them (`--enable-feature=exemplar-storage`) and receives them,
+which takes an encoding that carries exemplars — see [Exemplars](#exemplars).
+Configure the data source's exemplar settings for the `traceID` label to link
+them to your tracing backend.
 
 ## Error handling
 
