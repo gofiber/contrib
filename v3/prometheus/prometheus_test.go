@@ -4946,9 +4946,9 @@ func TestDynamicLabelHashCollisionFallsBack(t *testing.T) {
 	}
 }
 
-// TestInvalidUTF8DynamicValueIsNotCached covers a value whose stored copy had
-// its bytes replaced: it never matches, is recorded with the replacement every
-// time, and does not grow the cache.
+// TestInvalidUTF8DynamicValueIsNotCached covers a value with invalid UTF-8: it
+// is recorded with the replacement every time and never enters the cache, which
+// would otherwise grow with every distinct invalid input mapping to one label.
 func TestInvalidUTF8DynamicValueIsNotCached(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	m := newMiddleware(Config{
@@ -4966,9 +4966,10 @@ func TestInvalidUTF8DynamicValueIsNotCached(t *testing.T) {
 		return c.SendString("hi")
 	})
 
-	for range 3 {
+	// Three distinct invalid inputs that all normalize to one label.
+	for _, raw := range []string{"\xff\xfe", "\xfe", "\xff\xff\xfe"} {
 		req := httptest.NewRequest(fiber.MethodGet, "/hello", nil)
-		req.Header.Set("X-Tenant", "\xff\xfe")
+		req.Header.Set("X-Tenant", raw)
 		if _, err := app.Test(req, noTimeoutConfig); err != nil {
 			t.Fatalf("unexpected request error: %v", err)
 		}
@@ -4978,8 +4979,8 @@ func TestInvalidUTF8DynamicValueIsNotCached(t *testing.T) {
 	if got := gaugeValue(t, metrics, `http_requests_total{method="GET",path="/hello",status_code="200",tenant="�"}`); got != 3 {
 		t.Fatalf("expected every request to be recorded with the replacement, got %v", got)
 	}
-	if n := m.series.size(); n != 1 {
-		t.Fatalf("expected one entry for the repeated value, got %d", n)
+	if n := m.series.size(); n != 0 {
+		t.Fatalf("expected invalid values to take no cache entry, got %d", n)
 	}
 }
 

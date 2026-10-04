@@ -1005,12 +1005,17 @@ func (m *middleware) resolveSeries(ctx fiber.Ctx, routePath, method string, stat
 		if sameValues(cached.labels[3:], dynamic) {
 			return cached
 		}
-		// A hash collision, or a value with invalid UTF-8 that cannot equal the
-		// stored replacement: recorded without the cache.
+		// A hash collision: recorded without the cache.
 		return m.newSeries(dynamic, routePath, method, status, class)
 	}
 
-	return m.series.insert(key, m.newSeries(dynamic, routePath, method, status, class))
+	created := m.newSeries(dynamic, routePath, method, status, class)
+	if !sameValues(created.labels[3:], dynamic) {
+		// A value was replaced, so its raw bytes would never match the entry
+		// again; caching it would grow the cache per distinct invalid input.
+		return created
+	}
+	return m.series.insert(key, created)
 }
 
 // sameValues reports whether a cached series' dynamic values equal values.
