@@ -10,17 +10,19 @@ import (
 
 // config is used to configure the Fiber middleware.
 type config struct {
-	Next                   func(fiber.Ctx) bool
-	TracerProvider         oteltrace.TracerProvider
-	MeterProvider          otelmetric.MeterProvider
-	Port                   *int
-	Propagators            propagation.TextMapPropagator
-	TraceResponseHeader    string
-	SpanNameFormatter      func(fiber.Ctx) string
-	CustomAttributes       func(fiber.Ctx) []attribute.KeyValue
-	CustomMetricAttributes func(fiber.Ctx) []attribute.KeyValue
-	clientIP               bool
-	withoutMetrics         bool
+	Next                           func(fiber.Ctx) bool
+	TracerProvider                 oteltrace.TracerProvider
+	MeterProvider                  otelmetric.MeterProvider
+	Port                           *int
+	Propagators                    propagation.TextMapPropagator
+	TraceResponseHeader            string
+	SpanNameFormatter              func(fiber.Ctx) string
+	CustomAttributes               func(fiber.Ctx) []attribute.KeyValue
+	CustomMetricAttributes         func(fiber.Ctx) []attribute.KeyValue
+	CustomResponseAttributes       func(fiber.Ctx) []attribute.KeyValue
+	CustomResponseMetricAttributes func(fiber.Ctx) []attribute.KeyValue
+	clientIP                       bool
+	withoutMetrics                 bool
 }
 
 // Option specifies instrumentation configuration options.
@@ -105,6 +107,34 @@ func WithCustomAttributes(f func(ctx fiber.Ctx) []attribute.KeyValue) Option {
 func WithCustomMetricAttributes(f func(ctx fiber.Ctx) []attribute.KeyValue) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.CustomMetricAttributes = f
+	})
+}
+
+// WithCustomResponseAttributes specifies a function called after the handler
+// chain has run; its attributes are added to the server span. The callback can
+// inspect the matched route, response, and values set by handlers. Spans may be
+// exported after the request ends, so copy strings read from fiber.Ctx methods
+// such as Params, Get, and GetRespHeader with utils.CopyString unless
+// fiber.Config.Immutable is enabled.
+// If a response attribute callback panics, telemetry records an error with
+// error.type=response_callback_panic and omits the final HTTP status and response
+// size, which depend on outer recovery. The original panic propagates normally.
+func WithCustomResponseAttributes(f func(ctx fiber.Ctx) []attribute.KeyValue) Option {
+	return optionFunc(func(cfg *config) {
+		cfg.CustomResponseAttributes = f
+	})
+}
+
+// WithCustomResponseMetricAttributes specifies a function called after the
+// handler chain has run; its attributes are added to the request duration and
+// body size metrics. Active request metrics retain request-time attributes.
+// Copy strings read from fiber.Ctx as described for WithCustomResponseAttributes,
+// and keep metric attributes low-cardinality because each distinct attribute
+// set creates a new metric series.
+// Callback panics are recorded as described for WithCustomResponseAttributes.
+func WithCustomResponseMetricAttributes(f func(ctx fiber.Ctx) []attribute.KeyValue) Option {
+	return optionFunc(func(cfg *config) {
+		cfg.CustomResponseMetricAttributes = f
 	})
 }
 

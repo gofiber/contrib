@@ -46,9 +46,24 @@ You can configure the middleware using functional parameters
 | `WithSpanNameFormatter`       | `func(fiber.Ctx) string`       | Takes a function that will be called on every request and the returned string will become the span Name.                                   | Default formatter returns the route pathRaw |
 | `WithCustomAttributes`        | `func(fiber.Ctx) []attribute.KeyValue` | Define a function to add custom attributes to the span.                  | nil                                                                 |
 | `WithCustomMetricAttributes`  | `func(fiber.Ctx) []attribute.KeyValue` | Define a function to add custom attributes to the metrics.               | nil                                                                 |
+| `WithCustomResponseAttributes` | `func(fiber.Ctx) []attribute.KeyValue` | Add span attributes after the handler has run. | nil |
+| `WithCustomResponseMetricAttributes` | `func(fiber.Ctx) []attribute.KeyValue` | Add attributes to recorded request metrics after the handler has run; active request metrics retain request attributes. | nil |
 | `WithClientIP`         | `bool` | Specifies whether to collect the client's IP address from the request. | true |
 | (⚠️ **Deprecated**) `WithCollectClientIP`         | `bool` | Deprecated alias for `WithClientIP`. | true |
 | `WithoutMetrics`         | `bool` | Disables metrics collection when set to true. | false |
+
+Response attribute callbacks run after the handler chain, but their values are
+exported or aggregated after the request ends. Copy strings read from `fiber.Ctx`
+methods such as `Params`, `Get`, and `GetRespHeader` with `utils.CopyString`,
+unless `fiber.Config.Immutable` is enabled. Keep metric attributes
+low-cardinality; each distinct attribute set creates a metric series.
+
+If either response attribute callback panics, the original panic propagates to
+the application's recovery middleware. The span and request metrics record
+`error.type=response_callback_panic`, and the span has error status. The final
+HTTP status and response body size are omitted because outer recovery and error
+handling have not run yet. Active-request accounting and context cleanup still
+complete.
 
 ## Usage
 
