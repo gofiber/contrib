@@ -7,6 +7,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/valyala/fasthttp"
 )
 
 // newBenchmarkApp builds an app with the routes the benchmarks exercise. A nil
@@ -38,9 +39,122 @@ func newBenchmarkApp(b *testing.B, cfg *Config) *fiber.App {
 	return app
 }
 
-// benchmarkRequests drives the app and fails the benchmark if a response ever
-// deviates from the expected status, so a benchmark cannot silently measure an
-// error path.
+// dynamicLabelsConfig is the two-label configuration the dynamic label
+// benchmarks share: one value read off the request, one constant.
+func dynamicLabelsConfig() *Config {
+	return &Config{
+		DynamicLabels: map[string]func(fiber.Ctx) string{
+			"tenant": func(c fiber.Ctx) string { return c.Get("X-Tenant", "none") },
+			"zone":   func(fiber.Ctx) string { return "eu" },
+		},
+	}
+}
+
+// benchmarkHandler drives the fasthttp handler directly with one reused request
+// context, so only the middleware is measured. The one allocation reported is
+// fasthttp's own, paid by the baseline too.
+func benchmarkHandler(b *testing.B, app *fiber.App, path string, wantStatus int) {
+	b.Helper()
+	b.ReportAllocs()
+
+	handler := app.Handler()
+
+	var fctx fasthttp.RequestCtx
+	var req fasthttp.Request
+	req.Header.SetMethod(http.MethodGet)
+	req.SetRequestURI(path)
+
+	for b.Loop() {
+		fctx.Init(&req, nil, nil)
+		handler(&fctx)
+		if status := fctx.Response.StatusCode(); status != wantStatus {
+			b.Fatalf("expected status %d, got %d", wantStatus, status)
+		}
+	}
+}
+
+// BenchmarkHandlerBaseline measures the app without the middleware.
+func BenchmarkHandlerBaseline(b *testing.B) {
+	benchmarkHandler(b, newBenchmarkApp(b, nil), "/user/42", http.StatusOK)
+}
+
+// BenchmarkHandlerInstrumented measures the default configuration: six metric
+// families, no dynamic labels.
+func BenchmarkHandlerInstrumented(b *testing.B) {
+	benchmarkHandler(b, newBenchmarkApp(b, &Config{}), "/user/42", http.StatusOK)
+}
+
+// BenchmarkHandlerInstrumentedWithDynamicLabels measures the per-request cost of
+// computing two extra label values.
+func BenchmarkHandlerInstrumentedWithDynamicLabels(b *testing.B) {
+	benchmarkHandler(b, newBenchmarkApp(b, dynamicLabelsConfig()), "/user/42", http.StatusOK)
+}
+
+// BenchmarkHandlerInstrumentedCountersOnly measures the configuration a
+// cardinality-conscious deployment is likely to run: the two size histograms
+// dropped.
+func BenchmarkHandlerInstrumentedCountersOnly(b *testing.B) {
+	cfg := Config{DisabledMetrics: []Metric{MetricRequestSize, MetricResponseSize}}
+	benchmarkHandler(b, newBenchmarkApp(b, &cfg), "/user/42", http.StatusOK)
+}
+
+// BenchmarkHandlerSkippedURI measures a route excluded from instrumentation,
+// which still pays for the in-flight gauge and the route lookup.
+func BenchmarkHandlerSkippedURI(b *testing.B) {
+	cfg := Config{SkipURIs: []string{"/skip"}}
+	benchmarkHandler(b, newBenchmarkApp(b, &cfg), "/skip", http.StatusOK)
+}
+
+// BenchmarkHandlerUnmatchedRoute measures a request that resolves to no route,
+// the path a 404 flood would take.
+func BenchmarkHandlerUnmatchedRoute(b *testing.B) {
+	benchmarkHandler(b, newBenchmarkApp(b, &Config{}), "/nothing/here", http.StatusNotFound)
+}
+
+// benchmarkHandlerParallel is benchmarkHandler on every core at once; the gap
+// to the serial figure is contention.
+func benchmarkHandlerParallel(b *testing.B, app *fiber.App, path string, wantStatus int) {
+	b.Helper()
+	b.ReportAllocs()
+
+	handler := app.Handler()
+
+	b.RunParallel(func(pb *testing.PB) {
+		var fctx fasthttp.RequestCtx
+		var req fasthttp.Request
+		req.Header.SetMethod(http.MethodGet)
+		req.SetRequestURI(path)
+
+		for pb.Next() {
+			fctx.Init(&req, nil, nil)
+			handler(&fctx)
+			if status := fctx.Response.StatusCode(); status != wantStatus {
+				b.Fatalf("expected status %d, got %d", wantStatus, status)
+			}
+		}
+	})
+}
+
+// BenchmarkHandlerParallelBaseline measures the app without the middleware, on
+// every core.
+func BenchmarkHandlerParallelBaseline(b *testing.B) {
+	benchmarkHandlerParallel(b, newBenchmarkApp(b, nil), "/user/42", http.StatusOK)
+}
+
+// BenchmarkHandlerParallelInstrumented measures the default configuration on
+// every core, all requests on one series.
+func BenchmarkHandlerParallelInstrumented(b *testing.B) {
+	benchmarkHandlerParallel(b, newBenchmarkApp(b, &Config{}), "/user/42", http.StatusOK)
+}
+
+// BenchmarkHandlerParallelInstrumentedWithDynamicLabels is the dynamic label
+// configuration on every core.
+func BenchmarkHandlerParallelInstrumentedWithDynamicLabels(b *testing.B) {
+	benchmarkHandlerParallel(b, newBenchmarkApp(b, dynamicLabelsConfig()), "/user/42", http.StatusOK)
+}
+
+// benchmarkRequests drives the app through app.Test, which costs a net/http
+// round trip per request; the Handler benchmarks isolate the middleware.
 func benchmarkRequests(b *testing.B, app *fiber.App, path string, wantStatus int) {
 	b.Helper()
 	b.ReportAllocs()
@@ -78,13 +192,7 @@ func BenchmarkInstrumentedWithService(b *testing.B) {
 // BenchmarkInstrumentedWithDynamicLabels measures the per-request cost of
 // computing two extra label values.
 func BenchmarkInstrumentedWithDynamicLabels(b *testing.B) {
-	cfg := Config{
-		DynamicLabels: map[string]func(fiber.Ctx) string{
-			"tenant": func(c fiber.Ctx) string { return c.Get("X-Tenant", "none") },
-			"zone":   func(fiber.Ctx) string { return "eu" },
-		},
-	}
-	benchmarkRequests(b, newBenchmarkApp(b, &cfg), "/user/42", http.StatusOK)
+	benchmarkRequests(b, newBenchmarkApp(b, dynamicLabelsConfig()), "/user/42", http.StatusOK)
 }
 
 // BenchmarkInstrumentedCountersOnly measures the configuration a

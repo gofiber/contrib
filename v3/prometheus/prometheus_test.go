@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
@@ -24,9 +25,11 @@ import (
 	"github.com/gofiber/fiber/v3/middleware/timeout"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/model"
+	"github.com/valyala/fasthttp"
 	"go.opentelemetry.io/otel"
 	tracesdk "go.opentelemetry.io/otel/sdk/trace"
 )
@@ -4567,5 +4570,477 @@ func TestUnmatchedLabelEndingInStarIsSkippable(t *testing.T) {
 	}
 	if !strings.Contains(metrics, `path="/kept"`) {
 		t.Fatalf("expected the real route to survive, got %q", metrics)
+	}
+}
+
+// TestConcurrentRequestsShareSeries drives a few label sets from several
+// goroutines at once: the race detector covers the cache, and the exact counts
+// show racing inserts share one series.
+func TestConcurrentRequestsShareSeries(t *testing.T) {
+	app := newAppWithMiddleware(Config{
+		DynamicLabels: map[string]func(fiber.Ctx) string{
+			"tenant": func(c fiber.Ctx) string { return c.Get("X-Tenant", "none") },
+		},
+	}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+	app.Get("/missing", func(c fiber.Ctx) error {
+		return fiber.ErrNotFound
+	})
+
+	paths := []string{"/hello", "/missing"}
+	tenants := []string{"acme", "globex", "initech"}
+	// A multiple of both lengths, so every (path, tenant) pair is hit equally often.
+	const workers, perWorker = 8, 60
+	const perSeries = workers * perWorker / 6
+
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range perWorker {
+				req := httptest.NewRequest(fiber.MethodGet, paths[i%len(paths)], nil)
+				req.Header.Set("X-Tenant", tenants[i%len(tenants)])
+				if _, err := app.Test(req, noTimeoutConfig); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+
+	metrics := getMetrics(t, app, "")
+	for _, tenant := range tenants {
+		for path, status := range map[string]string{"/hello": "200", "/missing": "404"} {
+			labels := fmt.Sprintf(`{method="GET",path=%q,status_code=%q,tenant=%q}`, path, status, tenant)
+			if got := gaugeValue(t, metrics, "http_requests_total"+labels); got != perSeries {
+				t.Fatalf("expected %d requests for %s, got %v", perSeries, labels, got)
+			}
+			if got := gaugeValue(t, metrics, "http_request_duration_seconds_count"+labels); got != perSeries {
+				t.Fatalf("expected %d observations for %s, got %v", perSeries, labels, got)
+			}
+		}
+	}
+	if got := gaugeValue(t, metrics, `http_requests_in_progress{method="GET"}`); got != 0 {
+		t.Fatalf("expected the in-flight gauge to settle back to 0, got %v", got)
+	}
+}
+
+// TestManyDynamicLabelsShareOneKey covers a label set wider than the stack
+// buffer in resolveSeries.
+func TestManyDynamicLabelsShareOneKey(t *testing.T) {
+	const count = 9
+
+	labels := make(map[string]func(fiber.Ctx) string, count)
+	for i := range count {
+		header := "X-Label-" + strconv.Itoa(i)
+		labels["l"+strconv.Itoa(i)] = func(c fiber.Ctx) string { return c.Get(header, "none") }
+	}
+
+	app := newAppWithMiddleware(Config{DynamicLabels: labels}, "")
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+
+	// Rounds 0 and 2 share one label set, round 1 has its own.
+	for round := range 3 {
+		req := httptest.NewRequest(fiber.MethodGet, "/hello", nil)
+		for i := range count {
+			req.Header.Set("X-Label-"+strconv.Itoa(i), fmt.Sprintf("v%d-%d", i, round%2))
+		}
+		if _, err := app.Test(req, noTimeoutConfig); err != nil {
+			t.Fatalf("unexpected request error: %v", err)
+		}
+	}
+
+	series := func(variant int) string {
+		var b strings.Builder
+		b.WriteString("http_requests_total{")
+		for i := range count {
+			fmt.Fprintf(&b, "l%d=%q,", i, fmt.Sprintf("v%d-%d", i, variant))
+		}
+		b.WriteString(`method="GET",path="/hello",status_code="200"}`)
+		return b.String()
+	}
+
+	metrics := getMetrics(t, app, "")
+	if got := gaugeValue(t, metrics, series(0)); got != 2 {
+		t.Fatalf("expected the repeated label set to count 2, got %v", got)
+	}
+	if got := gaugeValue(t, metrics, series(1)); got != 1 {
+		t.Fatalf("expected the single label set to count 1, got %v", got)
+	}
+}
+
+// TestInFlightGaugeCachesOnlyRoutableMethods pins that an unroutable method
+// takes no cache entry, or the cache would grow with every method a client
+// invents.
+func TestInFlightGaugeCachesOnlyRoutableMethods(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	m := &middleware{
+		requestInFlight: promauto.With(registry).NewGaugeVec(
+			prometheus.GaugeOpts{Name: "in_progress"}, []string{"method"}),
+		inFlightGauges: newCache[inFlightKey, prometheus.Gauge](),
+	}
+	app := fiber.New()
+
+	for i := range 1000 {
+		m.inFlightGauge(app, "ATTACK"+strconv.Itoa(i)).Inc()
+	}
+	if n := m.inFlightGauges.size(); n != 0 {
+		t.Fatalf("expected no cache entries for unroutable methods, got %d", n)
+	}
+
+	first := m.inFlightGauge(app, fiber.MethodGet)
+	if again := m.inFlightGauge(app, fiber.MethodGet); again != first {
+		t.Fatal("expected the cached gauge child to be returned on the second lookup")
+	}
+	if n := m.inFlightGauges.size(); n != 1 {
+		t.Fatalf("expected one cache entry for a routable method, got %d", n)
+	}
+
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("gathering: %v", err)
+	}
+	if len(families) != 1 {
+		t.Fatalf("expected one family, got %d", len(families))
+	}
+	for _, metric := range families[0].GetMetric() {
+		if method := metric.GetLabel()[0].GetValue(); method != otherMethodLabel {
+			continue
+		}
+		if got := metric.GetGauge().GetValue(); got != 1000 {
+			t.Fatalf("expected the OTHER series to hold 1000, got %v", got)
+		}
+		return
+	}
+	t.Fatal("expected an OTHER series for the unroutable methods")
+}
+
+// TestInFlightGaugeHonorsEachAppsMethods covers one handler mounted on two apps
+// whose RequestMethods differ.
+func TestInFlightGaugeHonorsEachAppsMethods(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	handler := New(Config{
+		Registerer:              registry,
+		Gatherer:                registry,
+		DisableGoCollector:      true,
+		DisableProcessCollector: true,
+	})
+
+	ok := func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	}
+
+	dav := fiber.New(fiber.Config{RequestMethods: append(slices.Clone(fiber.DefaultMethods), "PROPFIND")})
+	dav.Use(handler)
+	dav.Add([]string{"PROPFIND"}, "/dav", ok)
+
+	plain := fiber.New()
+	plain.Use(handler)
+	plain.Get("/hello", ok)
+
+	for _, step := range []struct {
+		app    *fiber.App
+		method string
+		path   string
+	}{
+		{plain, fiber.MethodGet, "/hello"},
+		{dav, "PROPFIND", "/dav"},
+		{dav, fiber.MethodGet, "/dav"},
+	} {
+		resp, err := step.app.Test(httptest.NewRequest(step.method, step.path, nil), noTimeoutConfig)
+		if err != nil {
+			t.Fatalf("%s %s: %v", step.method, step.path, err)
+		}
+		if step.method == "PROPFIND" && resp.StatusCode != fiber.StatusOK {
+			t.Fatalf("expected PROPFIND /dav to be served, got %d", resp.StatusCode)
+		}
+	}
+
+	methods := map[string]bool{}
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("gathering: %v", err)
+	}
+	for _, family := range families {
+		if family.GetName() != "http_requests_in_progress" {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			methods[metric.GetLabel()[0].GetValue()] = true
+		}
+	}
+	if !methods["PROPFIND"] || !methods[fiber.MethodGet] || methods[otherMethodLabel] {
+		t.Fatalf("expected PROPFIND and GET series and no OTHER, got %v", methods)
+	}
+}
+
+// TestResponseSizeSeriesAppearsOnFirstKnownObservation covers the lazy size
+// children: a stream of unknown length creates no size series, a later sized
+// response on the same series does.
+func TestResponseSizeSeriesAppearsOnFirstKnownObservation(t *testing.T) {
+	var sized atomic.Bool
+	app := newAppWithMiddleware(Config{}, "")
+	app.Get("/body", func(c fiber.Ctx) error {
+		if sized.Load() {
+			return c.SendString(strings.Repeat("s", 5000))
+		}
+		return c.SendStream(strings.NewReader(strings.Repeat("s", 5000)))
+	})
+
+	get(t, app, "/body")
+	metrics := getMetrics(t, app, "")
+	if got := gaugeValue(t, metrics, `http_requests_total{method="GET",path="/body",status_code="200"}`); got != 1 {
+		t.Fatalf("expected the streamed request to be counted once, got %v", got)
+	}
+	if strings.Contains(metrics, `http_response_size_bytes_count{method="GET",path="/body",status_code="200"}`) {
+		t.Fatalf("expected no response size series while every response on it streamed, got %q", metrics)
+	}
+
+	sized.Store(true)
+	get(t, app, "/body")
+	metrics = getMetrics(t, app, "")
+	if got := gaugeValue(t, metrics, `http_response_size_bytes_count{method="GET",path="/body",status_code="200"}`); got != 1 {
+		t.Fatalf("expected exactly the sized response to be observed, got %v", got)
+	}
+	if got := gaugeValue(t, metrics, `http_response_size_bytes_sum{method="GET",path="/body",status_code="200"}`); got != 5000 {
+		t.Fatalf("expected response size 5000, got %v", got)
+	}
+}
+
+// size counts the entries a cache holds.
+func (c *cache[K, V]) size() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(*c.snapshot.Load()) + len(c.pending)
+}
+
+// TestCacheFoldsPendingIntoSnapshot pins when pending entries are folded: on
+// every insert while small, then by batch size or by reader hits.
+func TestCacheFoldsPendingIntoSnapshot(t *testing.T) {
+	c := newCache[int, int]()
+
+	snapshotLen := func() int { return len(*c.snapshot.Load()) }
+	pendingLen := func() int {
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		return len(c.pending)
+	}
+
+	// Below eight entries the threshold is one, so every insert folds.
+	for i := range 8 {
+		c.insert(i, i)
+		if snapshotLen() != i+1 || pendingLen() != 0 {
+			t.Fatalf("after insert %d: snapshot %d pending %d, expected everything folded", i, snapshotLen(), pendingLen())
+		}
+	}
+
+	// At 16 entries the threshold is two: one insert waits in pending.
+	for i := 8; i < 16; i++ {
+		c.insert(i, i)
+	}
+	if snapshotLen() != 16 || pendingLen() != 0 {
+		t.Fatalf("expected 16 folded entries, got snapshot %d pending %d", snapshotLen(), pendingLen())
+	}
+	c.insert(16, 16)
+	if snapshotLen() != 16 || pendingLen() != 1 {
+		t.Fatalf("expected the 17th entry to wait in pending, got snapshot %d pending %d", snapshotLen(), pendingLen())
+	}
+	if v, ok := c.lookup(16); !ok || v != 16 {
+		t.Fatalf("expected the pending entry to be found, got %v %v", v, ok)
+	}
+
+	// A second insert reaches the threshold and folds both.
+	c.insert(17, 17)
+	if snapshotLen() != 18 || pendingLen() != 0 {
+		t.Fatalf("expected both pending entries folded, got snapshot %d pending %d", snapshotLen(), pendingLen())
+	}
+
+	// Readers fold a lone pending entry after enough hits.
+	c.insert(18, 18)
+	for range foldAfterPendingHits - 1 {
+		if _, ok := c.lookup(18); !ok {
+			t.Fatal("expected the pending entry to be found")
+		}
+	}
+	if pendingLen() != 1 {
+		t.Fatalf("expected the entry to still be pending after %d hits, got pending %d", foldAfterPendingHits-1, pendingLen())
+	}
+	if _, ok := c.lookup(18); !ok {
+		t.Fatal("expected the pending entry to be found")
+	}
+	if snapshotLen() != 19 || pendingLen() != 0 {
+		t.Fatalf("expected the hit count to fold the entry, got snapshot %d pending %d", snapshotLen(), pendingLen())
+	}
+
+	// An insert that lost a race keeps the existing value.
+	if kept := c.insert(5, 500); kept != 5 {
+		t.Fatalf("expected the first value to be kept, got %d", kept)
+	}
+	for i := range 19 {
+		if v, ok := c.lookup(i); !ok || v != i {
+			t.Fatalf("lookup(%d) = %v, %v", i, v, ok)
+		}
+	}
+	if _, ok := c.lookup(99); ok {
+		t.Fatal("expected a missing key to be reported missing")
+	}
+}
+
+// TestDynamicLabelHashCollisionFallsBack plants a cache entry for another value
+// set under the hash a request produces: the request must still be recorded
+// with its own values and leave the entry alone.
+func TestDynamicLabelHashCollisionFallsBack(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	m := newMiddleware(Config{
+		Registerer:              registry,
+		Gatherer:                registry,
+		DisableGoCollector:      true,
+		DisableProcessCollector: true,
+		DynamicLabels: map[string]func(fiber.Ctx) string{
+			"tenant": func(c fiber.Ctx) string { return c.Get("X-Tenant", "none") },
+		},
+	})
+	app := fiber.New()
+	app.Use(m.handle)
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+
+	// The planted series is a real one, resolved for "globex", stored where
+	// "acme" will look.
+	planted := m.newSeries([]string{"globex"}, "/hello", fiber.MethodGet, fiber.StatusOK, "2xx")
+	key := seriesKey{path: "/hello", method: fiber.MethodGet, status: fiber.StatusOK, dynamic: hashDynamic(m.seed, []string{"acme"})}
+	m.series.insert(key, planted)
+
+	for range 3 {
+		req := httptest.NewRequest(fiber.MethodGet, "/hello", nil)
+		req.Header.Set("X-Tenant", "acme")
+		if _, err := app.Test(req, noTimeoutConfig); err != nil {
+			t.Fatalf("unexpected request error: %v", err)
+		}
+	}
+
+	metrics := getMetrics(t, app, "")
+	if got := gaugeValue(t, metrics, `http_requests_total{method="GET",path="/hello",status_code="200",tenant="acme"}`); got != 3 {
+		t.Fatalf("expected the colliding requests to be recorded under their own tenant, got %v", got)
+	}
+	if strings.Contains(metrics, `tenant="globex"} 1`) || strings.Contains(metrics, `tenant="globex"} 2`) || strings.Contains(metrics, `tenant="globex"} 3`) {
+		t.Fatalf("expected the planted series to stay untouched, got %q", metrics)
+	}
+	if cached, ok := m.series.lookup(key); !ok || cached != planted {
+		t.Fatal("expected the planted entry to keep its slot")
+	}
+	if n := m.series.size(); n != 1 {
+		t.Fatalf("expected the colliding requests to add no entry, got %d", n)
+	}
+}
+
+// TestInvalidUTF8DynamicValueIsNotCached covers a value with invalid UTF-8: it
+// is recorded with the replacement every time and never enters the cache, which
+// would otherwise grow with every distinct invalid input mapping to one label.
+func TestInvalidUTF8DynamicValueIsNotCached(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	m := newMiddleware(Config{
+		Registerer:              registry,
+		Gatherer:                registry,
+		DisableGoCollector:      true,
+		DisableProcessCollector: true,
+		DynamicLabels: map[string]func(fiber.Ctx) string{
+			"tenant": func(c fiber.Ctx) string { return c.Get("X-Tenant") },
+		},
+	})
+	app := fiber.New()
+	app.Use(m.handle)
+	app.Get("/hello", func(c fiber.Ctx) error {
+		return c.SendString("hi")
+	})
+
+	// Three distinct invalid inputs that all normalize to one label.
+	for _, raw := range []string{"\xff\xfe", "\xfe", "\xff\xff\xfe"} {
+		req := httptest.NewRequest(fiber.MethodGet, "/hello", nil)
+		req.Header.Set("X-Tenant", raw)
+		if _, err := app.Test(req, noTimeoutConfig); err != nil {
+			t.Fatalf("unexpected request error: %v", err)
+		}
+	}
+
+	metrics := getMetrics(t, app, "")
+	if got := gaugeValue(t, metrics, `http_requests_total{method="GET",path="/hello",status_code="200",tenant="�"}`); got != 3 {
+		t.Fatalf("expected every request to be recorded with the replacement, got %v", got)
+	}
+	if n := m.series.size(); n != 0 {
+		t.Fatalf("expected invalid values to take no cache entry, got %d", n)
+	}
+}
+
+// TestDurationStartsWhereFasthttpHandsOver pins that middleware mounted before
+// this one is part of the recorded duration.
+func TestDurationStartsWhereFasthttpHandsOver(t *testing.T) {
+	const upstreamCost = 80 * time.Millisecond
+
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		time.Sleep(upstreamCost)
+		return c.Next()
+	})
+	app.Use(New(Config{DisableGoCollector: true, DisableProcessCollector: true}))
+	app.Get("/fast", func(c fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	get(t, app, "/fast")
+
+	metrics := getMetrics(t, app, "")
+	series := `http_request_duration_seconds_sum{method="GET",path="/fast",status_code="200"}`
+	if seconds := gaugeValue(t, metrics, series); seconds < upstreamCost.Seconds() {
+		t.Fatalf("expected the upstream middleware's %s to be part of the duration, got %vs", upstreamCost, seconds)
+	}
+}
+
+// TestDurationWithoutFasthttpTimestampReadsTheClock covers a handler driven
+// outside fasthttp's server, whose context carries no timestamp.
+func TestDurationWithoutFasthttpTimestampReadsTheClock(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	app := fiber.New()
+	app.Use(New(Config{
+		Registerer:              registry,
+		Gatherer:                registry,
+		DisableGoCollector:      true,
+		DisableProcessCollector: true,
+	}))
+	app.Get("/fast", func(c fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	var fctx fasthttp.RequestCtx
+	var req fasthttp.Request
+	req.Header.SetMethod(fiber.MethodGet)
+	req.SetRequestURI("/fast")
+	fctx.Init(&req, nil, nil)
+	if !fctx.Time().IsZero() {
+		t.Fatal("expected a request context initialised outside the server to carry no timestamp")
+	}
+	app.Handler()(&fctx)
+	if status := fctx.Response.StatusCode(); status != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d", status)
+	}
+
+	histogram := durationHistogram(t, registry)
+	if histogram.GetSampleCount() != 1 {
+		t.Fatalf("expected one observation, got %d", histogram.GetSampleCount())
+	}
+	if seconds := histogram.GetSampleSum(); seconds < 0 || seconds > 1 {
+		t.Fatalf("expected a duration measured from the middleware's own clock read, got %vs", seconds)
 	}
 }

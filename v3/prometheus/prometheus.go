@@ -5,6 +5,7 @@ package prometheus
 import (
 	"bytes"
 	"errors"
+	"hash/maphash"
 	"maps"
 	"math"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -48,12 +50,142 @@ type middleware struct {
 	skipStatusClasses map[string]struct{}
 	dynamicLabels     []dynamicLabel
 	errorLog          promhttp.Logger
+	series            *cache[seriesKey, *series]
+	inFlightGauges    *cache[inFlightKey, prometheus.Gauge]
+	seed              maphash.Seed
 	reportNextPanic   sync.Once
 	reportLabelPanic  sync.Once
 	exemplars         bool
 	recordUnmatched   bool
 	records           bool
 	observes          bool
+}
+
+// seriesKey identifies one label set across every family. Dynamic label values
+// are hashed so the key stays fixed-size; resolveSeries compares them on a hit.
+type seriesKey struct {
+	path    string
+	method  string
+	status  int
+	dynamic uint64
+}
+
+// hashDynamic folds the dynamic label values into one order-sensitive hash.
+func hashDynamic(seed maphash.Seed, values []string) uint64 {
+	var h uint64
+	for _, value := range values {
+		h = h*0x100000001b3 ^ maphash.String(seed, value)
+	}
+	return h
+}
+
+// series holds the child metrics of one label set, resolved once instead of on
+// every request; a field is nil when its family is disabled. The size histogram
+// children are resolved on first observation, since a payload of unknown size is
+// not observed and an eager child would appear as an empty series.
+type series struct {
+	total        prometheus.Counter
+	byClass      prometheus.Counter
+	duration     prometheus.Observer
+	requestSize  atomic.Pointer[prometheus.Observer]
+	responseSize atomic.Pointer[prometheus.Observer]
+	labels       []string // status-code variant, for the lazy children
+}
+
+// sizeObserver returns a size histogram child, resolving it on first use. Racing
+// goroutines store the same child, so either store is fine.
+func sizeObserver(slot *atomic.Pointer[prometheus.Observer], vec *prometheus.HistogramVec, labels []string) prometheus.Observer {
+	if resolved := slot.Load(); resolved != nil {
+		return *resolved
+	}
+	child := vec.WithLabelValues(labels...)
+	slot.Store(&child)
+	return child
+}
+
+// inFlightKey identifies an in-flight gauge child. The routable methods are per
+// app, and one handler may be mounted on several.
+type inFlightKey struct {
+	app    *fiber.App
+	method string
+}
+
+// foldAfterPendingHits bounds how often pending entries are served under the
+// lock before a reader folds them into the snapshot.
+const foldAfterPendingHits = 64
+
+// cache is a lock-free read path over an immutable snapshot map. Inserts go to a
+// pending map behind a mutex and are folded into a new snapshot in batches that
+// grow with it, so an insert costs an amortised constant.
+type cache[K comparable, V any] struct {
+	snapshot    atomic.Pointer[map[K]V]
+	pendingHits atomic.Int32
+	mu          sync.RWMutex
+	pending     map[K]V
+}
+
+func newCache[K comparable, V any]() *cache[K, V] {
+	c := &cache[K, V]{pending: make(map[K]V)}
+	snapshot := make(map[K]V)
+	c.snapshot.Store(&snapshot)
+	return c
+}
+
+func (c *cache[K, V]) lookup(key K) (V, bool) {
+	if value, ok := (*c.snapshot.Load())[key]; ok {
+		return value, true
+	}
+
+	c.mu.RLock()
+	value, ok := c.pending[key]
+	c.mu.RUnlock()
+
+	if ok && c.pendingHits.Add(1) >= foldAfterPendingHits {
+		c.fold()
+	}
+	return value, ok
+}
+
+// insert stores value unless the key is already present, and returns the kept
+// value.
+func (c *cache[K, V]) insert(key K, value V) V {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	snapshot := *c.snapshot.Load()
+	if existing, ok := snapshot[key]; ok {
+		return existing
+	}
+	if existing, ok := c.pending[key]; ok {
+		return existing
+	}
+
+	c.pending[key] = value
+
+	// An eighth of the snapshot bounds the copying per insert; a small snapshot
+	// is rebuilt on every insert.
+	if len(c.pending) >= max(1, len(snapshot)/8) {
+		c.foldLocked()
+	}
+	return value
+}
+
+// fold moves the pending entries into a new snapshot.
+func (c *cache[K, V]) fold() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.pending) > 0 {
+		c.foldLocked()
+	}
+}
+
+// foldLocked is fold with c.mu held.
+func (c *cache[K, V]) foldLocked() {
+	next := maps.Clone(*c.snapshot.Load())
+	maps.Copy(next, c.pending)
+	c.snapshot.Store(&next)
+	clear(c.pending)
+	c.pendingHits.Store(0)
 }
 
 // dynamicLabel binds a configured label name to the function producing its
@@ -104,6 +236,11 @@ var allMetrics = []Metric{
 // so it observes every request; requests to Config.MetricsPath are answered with
 // the exposition format. Mount recover.New() after it, never before.
 func New(config ...Config) fiber.Handler {
+	return newMiddleware(config...).handle
+}
+
+// newMiddleware is New without the method value, for tests.
+func newMiddleware(config ...Config) *middleware {
 	cfg := configDefault(config...)
 
 	// Every panic below fires before the first Register call: a config rejected part
@@ -191,6 +328,9 @@ func New(config ...Config) fiber.Handler {
 		skipStatusClasses: make(map[string]struct{}, len(cfg.SkipStatusClasses)),
 		dynamicLabels:     dynamic,
 		errorLog:          cfg.MetricsErrorLog,
+		series:            newCache[seriesKey, *series](),
+		inFlightGauges:    newCache[inFlightKey, prometheus.Gauge](),
+		seed:              maphash.MakeSeed(),
 		exemplars:         !cfg.DisableExemplars,
 		recordUnmatched:   cfg.TrackUnmatchedRequests,
 	}
@@ -296,7 +436,7 @@ func New(config ...Config) fiber.Handler {
 	// false for every family when skipAll is set, so the vectors are nil anyway.
 	m.records = m.requestsTotal != nil || m.requestsByClass != nil || m.observes
 
-	return m.handle
+	return m
 }
 
 // resolveFilters parses the three skip lists, rejecting entries that could never
@@ -694,7 +834,7 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	method := ctx.Method()
 
 	if m.requestInFlight != nil {
-		inFlight := m.requestInFlight.WithLabelValues(inFlightMethod(ctx.App().Config().RequestMethods, method))
+		inFlight := m.inFlightGauge(ctx.App(), method)
 		inFlight.Inc()
 		defer inFlight.Dec()
 	}
@@ -709,7 +849,7 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	// Only the duration histogram needs the clock.
 	var start time.Time
 	if m.requestDuration != nil {
-		start = time.Now()
+		start = requestStart(ctx)
 	}
 
 	chainErr := ctx.Next()
@@ -733,12 +873,15 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	// response is still empty here. Running it now - as Fiber's logger does - makes
 	// the status and size below the ones the client sees; its cost is the client's.
 	if chainErr != nil {
-		errorHandlerStart := time.Now()
+		var errorHandlerStart time.Duration
+		if m.requestDuration != nil {
+			errorHandlerStart = time.Since(start)
+		}
 		if err := ctx.App().ErrorHandler(ctx, chainErr); err != nil {
 			_ = ctx.SendStatus(fiber.StatusInternalServerError) //nolint:errcheck // mirrors Fiber's own fallback
 		}
 		if m.requestDuration != nil {
-			chainTime += time.Since(errorHandlerStart)
+			chainTime += time.Since(start) - errorHandlerStart
 		}
 	}
 
@@ -762,28 +905,13 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		return nil
 	}
 
-	// One buffer shared by every family: the metric vectors copy the values
-	// they are given, so element 0 can be swapped from the status code to the
-	// status class for the last counter.
-	// Stack-backed for the label counts that fit. The slice provably does not
-	// escape - the metric vectors copy the values they are given - so the only
-	// reason it reached the heap was its length not being constant.
-	var stack [8]string
-	var values []string
-	if n := 3 + len(m.dynamicLabels); n <= len(stack) {
-		values = stack[:n]
-	} else {
-		values = make([]string, n)
-	}
-	values[0] = statusLabel(status)
-	values[1] = method
-	values[2] = routePath
-	if !m.resolveDynamicValues(ctx, values) {
+	s := m.resolveSeries(ctx, routePath, method, status, class)
+	if s == nil {
 		return nil
 	}
 
-	if m.requestsTotal != nil {
-		m.requestsTotal.WithLabelValues(values...).Inc()
+	if s.total != nil {
+		s.total.Inc()
 	}
 
 	// Histograms only, and the request-context read is not free: DefaultCtx.Context
@@ -792,8 +920,8 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	if m.observes {
 		exemplar := m.exemplarFor(ctx)
 
-		if m.requestDuration != nil {
-			observe(m.requestDuration.WithLabelValues(values...), elapsed, exemplar)
+		if s.duration != nil {
+			observe(s.duration, elapsed, exemplar)
 		}
 
 		if m.requestSize != nil {
@@ -809,7 +937,7 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 			}
 
 			if size, known := requestBodySize(req.Header.ContentLength(), bodyLimit, preParsedForm, req); known {
-				observe(m.requestSize.WithLabelValues(values...), size, exemplar)
+				observe(sizeObserver(&s.requestSize, m.requestSize, s.labels), size, exemplar)
 			}
 		}
 
@@ -818,19 +946,134 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 			// however much was written. bodyless covers what fasthttp decides
 			// for itself, which it does after this runs.
 			if bodyless(method, status) || resp.SkipBody {
-				observe(m.responseSize.WithLabelValues(values...), 0, exemplar)
+				observe(sizeObserver(&s.responseSize, m.responseSize, s.labels), 0, exemplar)
 			} else if size, known := responseBodySize(resp.Header.ContentLength(), resp); known {
-				observe(m.responseSize.WithLabelValues(values...), size, exemplar)
+				observe(sizeObserver(&s.responseSize, m.responseSize, s.labels), size, exemplar)
 			}
 		}
 	}
 
-	if m.requestsByClass != nil {
-		values[0] = class
-		m.requestsByClass.WithLabelValues(values...).Inc()
+	if s.byClass != nil {
+		s.byClass.Inc()
 	}
 
 	return nil
+}
+
+// inFlightGauge returns the in-flight gauge child for a method on an app,
+// resolving it once per pair: App.Config is returned by value and is not cheap
+// to read per request.
+func (m *middleware) inFlightGauge(app *fiber.App, method string) prometheus.Gauge {
+	key := inFlightKey{app: app, method: method}
+	if gauge, ok := m.inFlightGauges.lookup(key); ok {
+		return gauge
+	}
+
+	label := inFlightMethod(app.Config().RequestMethods, method)
+	gauge := m.requestInFlight.WithLabelValues(label)
+	if label != method {
+		// Not cached: an entry per arbitrary method would reintroduce the
+		// unbounded growth the OTHER series exists to prevent.
+		return gauge
+	}
+
+	return m.inFlightGauges.insert(key, gauge)
+}
+
+// resolveSeries returns the series for this request's label set, or nil when a
+// label function panicked.
+func (m *middleware) resolveSeries(ctx fiber.Ctx, routePath, method string, status int, class string) *series {
+	// The dynamic values may alias the request buffer; they are only detached
+	// when the set is new.
+	var stack [8]string
+	var dynamic []string
+	if n := len(m.dynamicLabels); n <= len(stack) {
+		dynamic = stack[:n]
+	} else {
+		dynamic = make([]string, n)
+	}
+	if !m.resolveDynamicValues(ctx, dynamic) {
+		return nil
+	}
+
+	key := seriesKey{path: routePath, method: method, status: status}
+	if len(dynamic) > 0 {
+		key.dynamic = hashDynamic(m.seed, dynamic)
+	}
+
+	if cached, ok := m.series.lookup(key); ok {
+		if sameValues(cached.labels[3:], dynamic) {
+			return cached
+		}
+		// A hash collision: recorded without the cache.
+		return m.newSeries(dynamic, routePath, method, status, class)
+	}
+
+	created := m.newSeries(dynamic, routePath, method, status, class)
+	if !sameValues(created.labels[3:], dynamic) {
+		// A value was replaced, so its raw bytes would never match the entry
+		// again; caching it would grow the cache per distinct invalid input.
+		return created
+	}
+	return m.series.insert(key, created)
+}
+
+// sameValues reports whether a cached series' dynamic values equal values.
+func sameValues(stored, values []string) bool {
+	if len(stored) != len(values) {
+		return false
+	}
+	for i, value := range values {
+		if stored[i] != value {
+			return false
+		}
+	}
+	return true
+}
+
+// newSeries resolves the children for one label set, detaching the dynamic
+// values first.
+func (m *middleware) newSeries(dynamic []string, routePath, method string, status int, class string) *series {
+	labels := make([]string, 3+len(dynamic))
+	labels[0] = statusLabel(status)
+	labels[1] = method
+	labels[2] = routePath
+	for i, value := range dynamic {
+		labels[3+i] = detachedLabel(value)
+	}
+
+	s := &series{}
+	m.fillSeries(s, labels, class)
+	return s
+}
+
+// fillSeries resolves the eagerly observed children. labels[0] is the status
+// code, swapped for the class to resolve the last counter.
+func (m *middleware) fillSeries(s *series, labels []string, class string) {
+	s.labels = labels
+
+	if m.requestsTotal != nil {
+		s.total = m.requestsTotal.WithLabelValues(labels...)
+	}
+	if m.requestDuration != nil {
+		s.duration = m.requestDuration.WithLabelValues(labels...)
+	}
+	if m.requestsByClass != nil {
+		statusCode := labels[0]
+		labels[0] = class
+		s.byClass = m.requestsByClass.WithLabelValues(labels...)
+		labels[0] = statusCode
+	}
+}
+
+// requestStart is the timestamp fasthttp took before calling the handler, which
+// saves a clock read and puts routing and earlier middleware into the duration.
+// A context that did not come through fasthttp's server carries none.
+func requestStart(ctx fiber.Ctx) time.Time {
+	if start := ctx.RequestCtx().Time(); !start.IsZero() {
+		return start
+	}
+	return time.Now()
 }
 
 // inFlightMethod bounds the gauge's method label to the finite set of methods the
@@ -876,10 +1119,11 @@ func observe(observer prometheus.Observer, value float64, exemplar prometheus.La
 	observer.Observe(value)
 }
 
-// resolveDynamicValues fills the dynamic part of the label buffer, reporting
-// whether the request can be recorded. These run after the chain unwinds, past any
-// recover, so a panicking one drops the sample rather than killing the connection.
-func (m *middleware) resolveDynamicValues(ctx fiber.Ctx, values []string) (ok bool) {
+// resolveDynamicValues fills dst with the raw dynamic label values, reporting
+// whether the request can be recorded. These run after the chain unwinds, past
+// any recover, so a panicking one drops the sample rather than killing the
+// connection.
+func (m *middleware) resolveDynamicValues(ctx fiber.Ctx, dst []string) (ok bool) {
 	if len(m.dynamicLabels) == 0 {
 		return true
 	}
@@ -900,7 +1144,7 @@ func (m *middleware) resolveDynamicValues(ctx fiber.Ctx, values []string) (ok bo
 	}()
 
 	for i, label := range m.dynamicLabels {
-		values[3+i] = detachedLabel(label.fn(ctx))
+		dst[i] = label.fn(ctx)
 	}
 
 	return true
@@ -913,7 +1157,8 @@ const replacementRune = "�"
 // a scan and no allocation. Use it for values the middleware owns, such as a route
 // pattern; a value read off the request needs detachedLabel instead.
 func validLabel(value string) string {
-	if utf8.ValidString(value) {
+	// ASCII, the common case for a route pattern, is settled by the SIMD scan.
+	if utils.IsASCII(value) || utf8.ValidString(value) {
 		return value
 	}
 	return strings.ToValidUTF8(value, replacementRune)

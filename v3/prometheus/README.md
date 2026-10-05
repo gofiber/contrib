@@ -146,6 +146,11 @@ are two endpoints sharing one series.
 incremented before the router picks a handler, at which point the route pattern
 is not known yet.
 
+`http_request_duration_seconds` runs from the timestamp fasthttp takes before
+calling the handler until the handler chain and, if it ran, the error handler
+have returned. Routing and middleware mounted before this one are part of it;
+`DynamicLabels` functions, which run after the chain, are not.
+
 `http_request_size_bytes` and `http_response_size_bytes` record a payload only
 when its size is known — either `Content-Length` is set, or the body is buffered
 and can be measured. A stream of unannounced length, such as `c.SendStream`
@@ -245,8 +250,9 @@ incremented before routing and so cannot see them. Names must not collide with
 the reserved `status_code`, `status_class`, `method`, `path` and `le` labels or with
 `Labels`; the middleware panics at startup if they do.
 
-The middleware copies each returned value, so it is safe to return one of
-Fiber's zero-copy strings such as `c.Get(...)` or `c.Params(...)` directly.
+The middleware copies each returned value the first time it sees a label set,
+so it is safe to return one of Fiber's zero-copy strings such as `c.Get(...)` or
+`c.Params(...)` directly; a label set seen before allocates nothing.
 
 A function that panics costs its request every metric, not the request itself:
 the sample is dropped, the response is unaffected, and the drop is reported to
