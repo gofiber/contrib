@@ -116,6 +116,9 @@ func WithCustomMetricAttributes(f func(ctx fiber.Ctx) []attribute.KeyValue) Opti
 // exported after the request ends, so copy strings read from fiber.Ctx methods
 // such as Params, Get, and GetRespHeader with utils.CopyString unless
 // fiber.Config.Immutable is enabled.
+// If a response attribute callback panics, telemetry records an error with
+// error.type=response_callback_panic and omits the final HTTP status and response
+// size, which depend on outer recovery. The original panic propagates normally.
 func WithCustomResponseAttributes(f func(ctx fiber.Ctx) []attribute.KeyValue) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.CustomResponseAttributes = f
@@ -128,6 +131,7 @@ func WithCustomResponseAttributes(f func(ctx fiber.Ctx) []attribute.KeyValue) Op
 // Copy strings read from fiber.Ctx as described for WithCustomResponseAttributes,
 // and keep metric attributes low-cardinality because each distinct attribute
 // set creates a new metric series.
+// Callback panics are recorded as described for WithCustomResponseAttributes.
 func WithCustomResponseMetricAttributes(f func(ctx fiber.Ctx) []attribute.KeyValue) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.CustomResponseMetricAttributes = f

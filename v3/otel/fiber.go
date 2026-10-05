@@ -16,6 +16,7 @@ import (
 	otelcontrib "go.opentelemetry.io/contrib"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
@@ -261,8 +262,25 @@ func Middleware(opts ...Option) fiber.Handler {
 		}
 
 		responseMetricAttrs = append(responseMetricAttrs, responseAttrs...)
+		responseCallbacksCompleted := false
 
 		defer func() {
+			if !responseCallbacksCompleted {
+				// The original panic continues to the application's recovery middleware.
+				// Its error handler has not run yet, so the final status and response
+				// size are unknown. Report the callback failure without guessing them.
+				failure := semconv.ErrorTypeKey.String("response_callback_panic")
+				span.SetAttributes(semconv.HTTPRouteKey.String(c.Route().Path), failure)
+				span.SetStatus(codes.Error, "")
+				attrs := responseMetricAttrs[:0]
+				for _, attr := range responseMetricAttrs {
+					if attr.Key != semconv.HTTPResponseStatusCodeKey && attr.Key != semconv.HTTPResponseBodySizeKey && attr.Key != semconv.ErrorTypeKey {
+						attrs = append(attrs, attr)
+					}
+				}
+				responseMetricAttrs = append(attrs, failure)
+				responseSizeKnown = false
+			}
 			if !cfg.withoutMetrics {
 				httpServerActiveRequests.Add(savedCtx, -1, metric.WithAttributes(requestMetricsAttrs...))
 				httpServerDuration.Record(savedCtx, time.Since(start).Seconds(), metric.WithAttributes(responseMetricAttrs...))
@@ -286,6 +304,7 @@ func Middleware(opts ...Option) fiber.Handler {
 		if cfg.CustomResponseAttributes != nil {
 			responseAttrs = append(responseAttrs, cfg.CustomResponseAttributes(c)...)
 		}
+		responseCallbacksCompleted = true
 
 		if responseSizeKnown {
 			span.SetAttributes(append(responseAttrs, semconv.HTTPResponseBodySizeKey.Int64(responseSize))...)

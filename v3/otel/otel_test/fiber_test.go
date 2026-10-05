@@ -690,6 +690,145 @@ func TestCustomResponseAttributeCallbacksPanicCleanup(t *testing.T) {
 	}
 }
 
+func TestCustomResponseCallbackPanicTelemetry(t *testing.T) {
+	for _, callback := range []string{"span", "metric"} {
+		for _, scenario := range []struct {
+			name       string
+			panicValue error
+			status     int
+			appConfig  fiber.Config
+			panicError error
+		}{
+			{name: "default", panicValue: errors.New("callback failed"), status: http.StatusInternalServerError},
+			{name: "fiber error", panicValue: fiber.ErrForbidden, status: http.StatusForbidden},
+			{name: "custom error handler", panicValue: errors.New("callback failed"), status: http.StatusServiceUnavailable,
+				appConfig: fiber.Config{ErrorHandler: func(c fiber.Ctx, _ error) error {
+					return c.Status(http.StatusServiceUnavailable).SendString("custom response")
+				}}},
+			{name: "custom panic handler", panicValue: errors.New("callback failed"), status: http.StatusBadGateway, panicError: fiber.ErrBadGateway},
+		} {
+			t.Run(callback+"/"+scenario.name, func(t *testing.T) {
+				sr := tracetest.NewSpanRecorder()
+				tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+				reader := metric.NewManualReader()
+				meterProvider := metric.NewMeterProvider(metric.WithReader(reader))
+				var recoveredValue any
+				var callbackContext context.Context
+				options := []fiberotel.Option{
+					fiberotel.WithTracerProvider(tracerProvider),
+					fiberotel.WithMeterProvider(meterProvider),
+				}
+				panickingCallback := func(ctx fiber.Ctx) []attribute.KeyValue {
+					callbackContext = ctx.Context()
+					panic(scenario.panicValue)
+				}
+				if callback == "span" {
+					options = append(options, fiberotel.WithCustomResponseAttributes(panickingCallback))
+				} else {
+					options = append(options, fiberotel.WithCustomResponseMetricAttributes(panickingCallback))
+				}
+				app := fiber.New(scenario.appConfig)
+				app.Use(recover.New(recover.Config{PanicHandler: func(c fiber.Ctx, value any) error {
+					recoveredValue = value
+					if scenario.panicError != nil {
+						return scenario.panicError
+					}
+					return recover.DefaultPanicHandler(c, value)
+				}}))
+				app.Use(fiberotel.Middleware(options...))
+				resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/missing", nil))
+				require.NoError(t, err)
+				assert.Equal(t, scenario.status, resp.StatusCode)
+				assert.Same(t, scenario.panicValue, recoveredValue)
+				assert.ErrorIs(t, callbackContext.Err(), context.Canceled)
+
+				spans := sr.Ended()
+				require.Len(t, spans, 1)
+				assert.Equal(t, codes.Error, spans[0].Status().Code)
+				spanAttrs := attribute.NewSet(spans[0].Attributes()...)
+				assert.False(t, spanAttrs.HasValue(semconv.HTTPResponseStatusCodeKey))
+				assert.False(t, spanAttrs.HasValue(semconv.HTTPResponseBodySizeKey))
+				errorType, ok := spanAttrs.Value(semconv.ErrorTypeKey)
+				require.True(t, ok)
+				assert.Equal(t, "response_callback_panic", errorType.AsString())
+
+				var metrics metricdata.ResourceMetrics
+				require.NoError(t, reader.Collect(context.Background(), &metrics))
+				require.Len(t, metrics.ScopeMetrics, 1)
+				var durationCount, requestSizeCount uint64
+				for _, m := range metrics.ScopeMetrics[0].Metrics {
+					switch m.Name {
+					case fiberotel.MetricNameHTTPServerActiveRequests:
+						for _, point := range m.Data.(metricdata.Sum[int64]).DataPoints {
+							assert.Zero(t, point.Value)
+						}
+					case fiberotel.MetricNameHTTPServerRequestDuration:
+						for _, point := range m.Data.(metricdata.Histogram[float64]).DataPoints {
+							durationCount += point.Count
+							assert.False(t, point.Attributes.HasValue(semconv.HTTPResponseStatusCodeKey))
+							errorType, ok := point.Attributes.Value(semconv.ErrorTypeKey)
+							require.True(t, ok)
+							assert.Equal(t, "response_callback_panic", errorType.AsString())
+						}
+					case fiberotel.MetricNameHTTPServerRequestBodySize:
+						for _, point := range m.Data.(metricdata.Histogram[int64]).DataPoints {
+							requestSizeCount += point.Count
+						}
+					case fiberotel.MetricNameHTTPServerResponseBodySize:
+						t.Error("response size is unknown until the outer error handler runs")
+					}
+				}
+				assert.Equal(t, uint64(1), durationCount)
+				assert.Equal(t, uint64(1), requestSizeCount)
+			})
+		}
+	}
+}
+
+func TestCustomResponseAttributesAfterHandlerError(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	reader := metric.NewManualReader()
+	meterProvider := metric.NewMeterProvider(metric.WithReader(reader))
+	var spanStatus, metricStatus int
+	app := fiber.New()
+	app.Use(fiberotel.Middleware(
+		fiberotel.WithTracerProvider(tracerProvider),
+		fiberotel.WithMeterProvider(meterProvider),
+		fiberotel.WithCustomResponseAttributes(func(c fiber.Ctx) []attribute.KeyValue {
+			spanStatus = c.Response().StatusCode()
+			return []attribute.KeyValue{attribute.Int("app.span_status", spanStatus)}
+		}),
+		fiberotel.WithCustomResponseMetricAttributes(func(c fiber.Ctx) []attribute.KeyValue {
+			metricStatus = c.Response().StatusCode()
+			return []attribute.KeyValue{attribute.Int("app.metric_status", metricStatus)}
+		}),
+	))
+	app.Get("/forbidden", func(fiber.Ctx) error { return fiber.ErrForbidden })
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/forbidden", nil))
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Equal(t, http.StatusForbidden, spanStatus)
+	assert.Equal(t, http.StatusForbidden, metricStatus)
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+	assert.Contains(t, spans[0].Attributes(), semconv.HTTPResponseStatusCode(http.StatusForbidden))
+	assert.Contains(t, spans[0].Attributes(), attribute.Int("app.span_status", http.StatusForbidden))
+	var metrics metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &metrics))
+	require.Len(t, metrics.ScopeMetrics, 1)
+	for _, m := range metrics.ScopeMetrics[0].Metrics {
+		if m.Name == fiberotel.MetricNameHTTPServerRequestDuration {
+			points := m.Data.(metricdata.Histogram[float64]).DataPoints
+			require.Len(t, points, 1)
+			assert.Contains(t, points[0].Attributes.ToSlice(), semconv.HTTPResponseStatusCode(http.StatusForbidden))
+			assert.Contains(t, points[0].Attributes.ToSlice(), attribute.Int("app.metric_status", http.StatusForbidden))
+			return
+		}
+	}
+	t.Fatal("request duration metric not found")
+}
+
 func TestOutboundTracingPropagation(t *testing.T) {
 	sr := new(tracetest.SpanRecorder)
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))

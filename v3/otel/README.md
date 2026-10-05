@@ -58,6 +58,13 @@ methods such as `Params`, `Get`, and `GetRespHeader` with `utils.CopyString`,
 unless `fiber.Config.Immutable` is enabled. Keep metric attributes
 low-cardinality; each distinct attribute set creates a metric series.
 
+If either response attribute callback panics, the original panic propagates to
+the application's recovery middleware. The span and request metrics record
+`error.type=response_callback_panic`, and the span has error status. The final
+HTTP status and response body size are omitted because outer recovery and error
+handling have not run yet. Active-request accounting and context cleanup still
+complete.
+
 ## Usage
 
 Please refer to [example](./example)
