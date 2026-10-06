@@ -5023,11 +5023,10 @@ func TestDurationWithoutFasthttpTimestampReadsTheClock(t *testing.T) {
 		return c.SendString("ok")
 	})
 
+	// Init stamps the context since fasthttp 1.75, so fill a zero one instead.
 	var fctx fasthttp.RequestCtx
-	var req fasthttp.Request
-	req.Header.SetMethod(fiber.MethodGet)
-	req.SetRequestURI("/fast")
-	fctx.Init(&req, nil, nil)
+	fctx.Request.Header.SetMethod(fiber.MethodGet)
+	fctx.Request.SetRequestURI("/fast")
 	if !fctx.Time().IsZero() {
 		t.Fatal("expected a request context initialised outside the server to carry no timestamp")
 	}
