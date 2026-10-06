@@ -106,7 +106,8 @@ type Config struct {
 	NativeHistogramMinResetDuration time.Duration
 
 	// TrackUnmatchedRequests records requests that do not resolve to a registered
-	// Fiber route. Known limitation: a request fasthttp rejects before routing is
+	// Fiber route, timing them from this middleware rather than from fasthttp's
+	// timestamp. Known limitation: a request fasthttp rejects before routing is
 	// counted as a 200 - see the README. Optional. Default: false.
 	TrackUnmatchedRequests bool
 

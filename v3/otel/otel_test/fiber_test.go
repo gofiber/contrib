@@ -1,6 +1,7 @@
 package otel_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -8,28 +9,33 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	fiberotel "github.com/gofiber/contrib/v3/otel"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/recover"
+	"github.com/gofiber/utils/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	otelcontrib "go.opentelemetry.io/contrib"
 	b3prop "go.opentelemetry.io/contrib/propagators/b3"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/instrumentation"
 	"go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/exemplar"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
 const instrumentationName = "github.com/gofiber/contrib/v3/otel"
@@ -40,7 +46,7 @@ func TestChildSpanFromGlobalTracer(t *testing.T) {
 	otel.SetTracerProvider(provider)
 
 	app := fiber.New()
-	app.Use(fiberotel.Middleware())
+	app.Use(fiberotel.New())
 	app.Get("/user/:id", func(ctx fiber.Ctx) error {
 		return ctx.SendStatus(http.StatusNoContent)
 	})
@@ -53,13 +59,32 @@ func TestChildSpanFromGlobalTracer(t *testing.T) {
 	require.Len(t, spans, 1)
 }
 
+func TestDeprecatedMiddleware(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+
+	app := fiber.New()
+	app.Use(fiberotel.Middleware(fiberotel.WithTracerProvider(provider))) //nolint:staticcheck // the deprecated alias must keep working
+	app.Get("/user/:id", func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(http.StatusNoContent)
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/user/123", nil))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+	require.Equal(t, "GET /user/:id", spans[0].Name())
+}
+
 func TestChildSpanFromCustomTracer(t *testing.T) {
 	sr := tracetest.NewSpanRecorder()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 	otel.SetTracerProvider(provider)
 
 	app := fiber.New()
-	app.Use(fiberotel.Middleware(fiberotel.WithTracerProvider(provider)))
+	app.Use(fiberotel.New(fiberotel.WithTracerProvider(provider)))
 	app.Get("/user/:id", func(ctx fiber.Ctx) error {
 		return ctx.SendStatus(http.StatusNoContent)
 	})
@@ -78,7 +103,7 @@ func TestSkipWithNext(t *testing.T) {
 	otel.SetTracerProvider(provider)
 
 	app := fiber.New()
-	app.Use(fiberotel.Middleware(fiberotel.WithNext(func(c fiber.Ctx) bool {
+	app.Use(fiberotel.New(fiberotel.WithNext(func(c fiber.Ctx) bool {
 		return c.Path() == "/health"
 	})))
 
@@ -101,7 +126,7 @@ func TestTrace200(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(
-		fiberotel.Middleware(fiberotel.WithTracerProvider(provider)),
+		fiberotel.New(fiberotel.WithTracerProvider(provider)),
 	)
 	app.Get("/user/:id", func(ctx fiber.Ctx) error {
 		id := ctx.Params("id")
@@ -125,11 +150,178 @@ func TestTrace200(t *testing.T) {
 
 	assert.Equal(t, "GET /user/:id", span.Name())
 	assert.Equal(t, oteltrace.SpanKindServer, span.SpanKind())
+	assert.Equal(t, instrumentation.Scope{
+		Name:      instrumentationName,
+		Version:   otelcontrib.Version(),
+		SchemaURL: semconv.SchemaURL,
+	}, span.InstrumentationScope())
 	assert.Contains(t, attr, attribute.String("server.address", r.Host))
 	assert.Contains(t, attr, attribute.Int("http.response.status_code", http.StatusOK))
 	assert.Contains(t, attr, attribute.String("http.request.method", "GET"))
 	assert.Contains(t, attr, attribute.String("url.path", "/user/123"))
 	assert.Contains(t, attr, attribute.String("http.route", "/user/:id"))
+}
+
+// Reporting the Use mount path as http.route would file every 404 under "/".
+func TestRouteOnlyForMatchedRequests(t *testing.T) {
+	t.Parallel()
+
+	sr := tracetest.NewSpanRecorder()
+	reader := metric.NewManualReader()
+
+	app := fiber.New()
+	app.Use(fiberotel.New(
+		fiberotel.WithTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))),
+		fiberotel.WithMeterProvider(metric.NewMeterProvider(metric.WithReader(reader))),
+	))
+	app.Use("/public", func(c fiber.Ctx) error {
+		return c.SendString("asset")
+	})
+	api := app.Group("/api")
+	api.Get("/users/:id", func(c fiber.Ctx) error {
+		return c.SendString("user")
+	})
+
+	testCases := []struct {
+		method   string
+		path     string
+		status   int
+		spanName string
+		route    string
+	}{
+		{method: http.MethodGet, path: "/api/users/42", status: http.StatusOK, spanName: "GET /api/users/:id", route: "/api/users/:id"},
+		{method: http.MethodGet, path: "/missing", status: http.StatusNotFound, spanName: "GET"},
+		{method: http.MethodPost, path: "/api/users/42", status: http.StatusMethodNotAllowed, spanName: "POST"},
+		{method: http.MethodGet, path: "/public/app.js", status: http.StatusOK, spanName: "GET"},
+	}
+
+	for _, tc := range testCases {
+		resp, err := app.Test(httptest.NewRequest(tc.method, tc.path, nil))
+		require.NoError(t, err)
+		require.Equal(t, tc.status, resp.StatusCode, tc.path)
+	}
+
+	spans := sr.Ended()
+	require.Len(t, spans, len(testCases))
+	for i, tc := range testCases {
+		assert.Equal(t, tc.spanName, spans[i].Name(), tc.path)
+
+		attrs := attribute.NewSet(spans[i].Attributes()...)
+		route, ok := attrs.Value(semconv.HTTPRouteKey)
+		if tc.route == "" {
+			assert.False(t, ok, "%s %s has no route, got %q", tc.method, tc.path, route.AsString())
+			continue
+		}
+		require.True(t, ok, tc.path)
+		assert.Equal(t, tc.route, route.AsString())
+	}
+
+	var metrics metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &metrics))
+	require.Len(t, metrics.ScopeMetrics, 1)
+	for _, set := range metricPoints(t, metrics.ScopeMetrics[0])[fiberotel.MetricNameHTTPServerRequestDuration] {
+		route, ok := set.Value(semconv.HTTPRouteKey)
+		if !ok {
+			continue
+		}
+		assert.Equal(t, "/api/users/:id", route.AsString())
+	}
+}
+
+// Only values the request carries are recorded, and a server records no url.full.
+func TestRequestAttributes(t *testing.T) {
+	t.Parallel()
+
+	sr := tracetest.NewSpanRecorder()
+
+	app := fiber.New()
+	app.Use(fiberotel.New(
+		fiberotel.WithTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))),
+	))
+	app.All("/files/:name", func(c fiber.Ctx) error {
+		return c.SendStatus(http.StatusNoContent)
+	})
+
+	download := httptest.NewRequest(http.MethodGet, "/files/report?X-Amz-Signature=c2VjcmV0&download=1", nil)
+	// net/http fills in its own User-Agent unless the header is present.
+	download.Header["User-Agent"] = []string{""}
+	upload := httptest.NewRequest(http.MethodPost, "/files/report", strings.NewReader("hello"))
+	upload.Header.Set("User-Agent", "uploader/1.0")
+
+	for _, r := range []*http.Request{download, upload} {
+		resp, err := app.Test(r)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusNoContent, resp.StatusCode)
+	}
+
+	spans := sr.Ended()
+	require.Len(t, spans, 2)
+
+	downloadAttrs := attribute.NewSet(spans[0].Attributes()...)
+	query, ok := downloadAttrs.Value(semconv.URLQueryKey)
+	require.True(t, ok)
+	assert.Equal(t, "X-Amz-Signature=REDACTED&download=1", query.AsString())
+	assert.Contains(t, spans[0].Attributes(), semconv.URLPath("/files/report"))
+	assert.Contains(t, spans[0].Attributes(), semconv.HTTPRequestBodySize(0))
+	assert.False(t, downloadAttrs.HasValue(semconv.UserAgentOriginalKey))
+	assert.False(t, downloadAttrs.HasValue(semconv.URLFullKey))
+
+	uploadAttrs := attribute.NewSet(spans[1].Attributes()...)
+	assert.False(t, uploadAttrs.HasValue(semconv.URLQueryKey))
+	assert.Contains(t, spans[1].Attributes(), semconv.UserAgentOriginal("uploader/1.0"))
+	assert.Contains(t, spans[1].Attributes(), semconv.HTTPRequestBodySize(len("hello")))
+	assert.False(t, uploadAttrs.HasValue(semconv.URLFullKey))
+}
+
+// X-Forwarded-Proto is honored only from a trusted proxy.
+func TestSchemeFromTrustedProxy(t *testing.T) {
+	t.Parallel()
+
+	for _, trusted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("trusted=%t", trusted), func(t *testing.T) {
+			t.Parallel()
+
+			sr := tracetest.NewSpanRecorder()
+			reader := metric.NewManualReader()
+
+			config := fiber.Config{}
+			want := "http"
+			if trusted {
+				// app.Test connects from 0.0.0.0.
+				config = fiber.Config{TrustProxy: true, TrustProxyConfig: fiber.TrustProxyConfig{Proxies: []string{"0.0.0.0"}}}
+				want = "https"
+			}
+
+			app := fiber.New(config)
+			app.Use(fiberotel.New(
+				fiberotel.WithTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))),
+				fiberotel.WithMeterProvider(metric.NewMeterProvider(metric.WithReader(reader))),
+			))
+			app.Get("/", func(c fiber.Ctx) error {
+				return c.SendStatus(http.StatusOK)
+			})
+
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.Header.Set("X-Forwarded-Proto", "https")
+			resp, err := app.Test(r)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+
+			spans := sr.Ended()
+			require.Len(t, spans, 1)
+			assert.Contains(t, spans[0].Attributes(), semconv.URLScheme(want))
+
+			var metrics metricdata.ResourceMetrics
+			require.NoError(t, reader.Collect(context.Background(), &metrics))
+			require.Len(t, metrics.ScopeMetrics, 1)
+			for name, sets := range metricPoints(t, metrics.ScopeMetrics[0]) {
+				require.Len(t, sets, 1, name)
+				scheme, ok := sets[0].Value(semconv.URLSchemeKey)
+				require.True(t, ok, name)
+				assert.Equal(t, want, scheme.AsString(), name)
+			}
+		})
+	}
 }
 
 func TestError(t *testing.T) {
@@ -139,7 +331,7 @@ func TestError(t *testing.T) {
 
 	// setup
 	app := fiber.New()
-	app.Use(fiberotel.Middleware(fiberotel.WithTracerProvider(provider)))
+	app.Use(fiberotel.New(fiberotel.WithTracerProvider(provider)))
 	// configure a handler that returns an error and 5xx status code
 	app.Get("/server_err", func(ctx fiber.Ctx) error {
 		return errors.New("oh no")
@@ -163,6 +355,42 @@ func TestError(t *testing.T) {
 	assert.Equal(t, codes.Error, span.Status().Code)
 }
 
+// Codes without a reason phrase are valid: 4xx stays unset on server spans, 5xx is an error.
+func TestUnnamedStatusCodes(t *testing.T) {
+	t.Parallel()
+
+	sr := tracetest.NewSpanRecorder()
+
+	app := fiber.New()
+	app.Use(fiberotel.New(
+		fiberotel.WithTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))),
+	))
+	app.Get("/:status", func(c fiber.Ctx) error {
+		status := fiber.Params[int](c, "status")
+		return c.SendStatus(status)
+	})
+
+	for _, status := range []int{299, 499, 520} {
+		resp, err := app.Test(httptest.NewRequest(http.MethodGet, fmt.Sprintf("/%d", status), nil))
+		require.NoError(t, err)
+		require.Equal(t, status, resp.StatusCode)
+	}
+
+	spans := sr.Ended()
+	require.Len(t, spans, 3)
+
+	for _, span := range spans[:2] {
+		assert.Equal(t, codes.Unset, span.Status().Code)
+		assert.Empty(t, span.Status().Description)
+		attrs := attribute.NewSet(span.Attributes()...)
+		assert.False(t, attrs.HasValue(semconv.ErrorTypeKey))
+	}
+
+	assert.Equal(t, codes.Error, spans[2].Status().Code)
+	assert.Empty(t, spans[2].Status().Description)
+	assert.Contains(t, spans[2].Attributes(), semconv.ErrorTypeKey.String("520"))
+}
+
 func TestErrorOnlyHandledOnce(t *testing.T) {
 	timesHandlingError := 0
 	app := fiber.New(fiber.Config{
@@ -171,7 +399,7 @@ func TestErrorOnlyHandledOnce(t *testing.T) {
 			return fiber.NewError(http.StatusInternalServerError, err.Error())
 		},
 	})
-	app.Use(fiberotel.Middleware())
+	app.Use(fiberotel.New())
 	app.Get("/", func(ctx fiber.Ctx) error {
 		return errors.New("mock error")
 	})
@@ -180,6 +408,81 @@ func TestErrorOnlyHandledOnce(t *testing.T) {
 	require.NotNil(t, resp)
 
 	assert.Equal(t, 1, timesHandlingError)
+}
+
+// The middleware must run the error handler Fiber would pick for a mounted app.
+func TestErrorUsesMountedAppErrorHandler(t *testing.T) {
+	t.Parallel()
+
+	sr := tracetest.NewSpanRecorder()
+	reader := metric.NewManualReader()
+
+	sub := fiber.New(fiber.Config{
+		ErrorHandler: func(c fiber.Ctx, _ error) error {
+			return c.Status(http.StatusTeapot).SendString("handled by sub-app")
+		},
+	})
+	sub.Get("/fail", func(fiber.Ctx) error {
+		return errors.New("boom")
+	})
+
+	app := fiber.New()
+	app.Use(fiberotel.New(
+		fiberotel.WithTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))),
+		fiberotel.WithMeterProvider(metric.NewMeterProvider(metric.WithReader(reader))),
+	))
+	app.Use("/sub", sub)
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/sub/fail", nil))
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusTeapot, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, "handled by sub-app", string(body))
+
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+	assert.Contains(t, spans[0].Attributes(), semconv.HTTPResponseStatusCode(http.StatusTeapot))
+
+	var metrics metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &metrics))
+	require.Len(t, metrics.ScopeMetrics, 1)
+	for name, sets := range metricPoints(t, metrics.ScopeMetrics[0]) {
+		if name == fiberotel.MetricNameHTTPServerActiveRequests {
+			continue
+		}
+		require.Len(t, sets, 1, name)
+		status, ok := sets[0].Value(semconv.HTTPResponseStatusCodeKey)
+		require.True(t, ok, name)
+		assert.Equal(t, int64(http.StatusTeapot), status.AsInt64(), name)
+	}
+}
+
+func TestErrorHandlerFailureAnswers500(t *testing.T) {
+	t.Parallel()
+
+	sr := tracetest.NewSpanRecorder()
+
+	app := fiber.New(fiber.Config{
+		ErrorHandler: func(_ fiber.Ctx, err error) error {
+			return err
+		},
+	})
+	app.Use(fiberotel.New(
+		fiberotel.WithTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))),
+	))
+	app.Get("/", func(fiber.Ctx) error {
+		return fiber.ErrTeapot
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+	assert.Contains(t, spans[0].Attributes(), semconv.HTTPResponseStatusCode(http.StatusInternalServerError))
+	assert.Equal(t, codes.Error, spans[0].Status().Code)
 }
 
 func TestGetSpanNotInstrumented(t *testing.T) {
@@ -213,7 +516,7 @@ func TestPropagationWithGlobalPropagators(t *testing.T) {
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(r.Header))
 
 	app := fiber.New()
-	app.Use(fiberotel.Middleware(fiberotel.WithTracerProvider(provider)))
+	app.Use(fiberotel.New(fiberotel.WithTracerProvider(provider)))
 	app.Get("/user/:id", func(ctx fiber.Ctx) error {
 		return ctx.SendStatus(http.StatusNoContent)
 	})
@@ -244,7 +547,7 @@ func TestPropagationWithCustomPropagators(t *testing.T) {
 	b3.Inject(ctx, propagation.HeaderCarrier(r.Header))
 
 	app := fiber.New()
-	app.Use(fiberotel.Middleware(fiberotel.WithTracerProvider(provider), fiberotel.WithPropagators(b3)))
+	app.Use(fiberotel.New(fiberotel.WithTracerProvider(provider), fiberotel.WithPropagators(b3)))
 	app.Get("/user/:id", func(ctx fiber.Ctx) error {
 		return ctx.SendStatus(http.StatusNoContent)
 	})
@@ -305,7 +608,7 @@ func TestMetric(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(
-		fiberotel.Middleware(
+		fiberotel.New(
 			fiberotel.WithMeterProvider(provider),
 			fiberotel.WithPort(port),
 		),
@@ -325,14 +628,13 @@ func TestMetric(t *testing.T) {
 	assert.Len(t, metrics.ScopeMetrics, 1)
 
 	requestAttrs := []attribute.KeyValue{
-		semconv.NetworkProtocolName("http"),
-		semconv.NetworkProtocolVersion(fmt.Sprintf("1.%d", r.ProtoMinor)),
 		semconv.URLScheme("http"),
 		semconv.HTTPRequestMethodKey.String(http.MethodGet),
-		semconv.ServerAddress(r.Host),
 		semconv.ServerPort(port),
 	}
 	responseAttrs := []attribute.KeyValue{
+		semconv.NetworkProtocolName("http"),
+		semconv.NetworkProtocolVersion(fmt.Sprintf("1.%d", r.ProtoMinor)),
 		semconv.HTTPResponseStatusCode(200),
 		semconv.HTTPRouteKey.String(route),
 	}
@@ -353,7 +655,7 @@ func TestRequestBodySizeUsesContentLength(t *testing.T) {
 		c.Request().Header.SetContentLength(contentLength)
 		return c.Next()
 	})
-	app.Use(fiberotel.Middleware(fiberotel.WithMeterProvider(provider)))
+	app.Use(fiberotel.New(fiberotel.WithMeterProvider(provider)))
 	app.Post("/upload", func(c fiber.Ctx) error {
 		return c.SendStatus(http.StatusNoContent)
 	})
@@ -383,8 +685,9 @@ func TestRequestBodySizeUsesContentLength(t *testing.T) {
 
 func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, requestAttrs []attribute.KeyValue, responseAttrs []attribute.KeyValue) {
 	assert.Equal(t, instrumentation.Scope{
-		Name:    instrumentationName,
-		Version: otelcontrib.Version(),
+		Name:      instrumentationName,
+		Version:   otelcontrib.Version(),
+		SchemaURL: semconv.SchemaURL,
 	}, sm.Scope)
 
 	// Duration value is not predictable.
@@ -409,7 +712,7 @@ func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, 
 		Unit:        fiberotel.UnitBytes,
 		Data:        getHistogram(0, responseAttrs),
 	}
-	metricdatatest.AssertEqual(t, want, sm.Metrics[1], metricdatatest.IgnoreTimestamp())
+	metricdatatest.AssertEqual(t, want, sm.Metrics[1], metricdatatest.IgnoreTimestamp(), metricdatatest.IgnoreExemplars())
 
 	// Response size
 	want = metricdata.Metrics{
@@ -418,7 +721,7 @@ func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, 
 		Unit:        fiberotel.UnitBytes,
 		Data:        getHistogram(2, responseAttrs),
 	}
-	metricdatatest.AssertEqual(t, want, sm.Metrics[2], metricdatatest.IgnoreTimestamp())
+	metricdatatest.AssertEqual(t, want, sm.Metrics[2], metricdatatest.IgnoreTimestamp(), metricdatatest.IgnoreExemplars())
 
 	// Active requests
 	want = metricdata.Metrics{
@@ -432,7 +735,7 @@ func assertScopeMetrics(t *testing.T, sm metricdata.ScopeMetrics, route string, 
 			Temporality: metricdata.CumulativeTemporality,
 		},
 	}
-	metricdatatest.AssertEqual(t, want, sm.Metrics[3], metricdatatest.IgnoreTimestamp())
+	metricdatatest.AssertEqual(t, want, sm.Metrics[3], metricdatatest.IgnoreTimestamp(), metricdatatest.IgnoreExemplars())
 }
 
 func getHistogram(value float64, attrs []attribute.KeyValue) metricdata.Histogram[int64] {
@@ -475,7 +778,7 @@ func TestCustomAttributes(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(
-		fiberotel.Middleware(
+		fiberotel.New(
 			fiberotel.WithTracerProvider(provider),
 			fiberotel.WithCustomAttributes(func(ctx fiber.Ctx) []attribute.KeyValue {
 				return []attribute.KeyValue{
@@ -522,7 +825,7 @@ func TestCustomMetricAttributes(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(
-		fiberotel.Middleware(
+		fiberotel.New(
 			fiberotel.WithMeterProvider(provider),
 			fiberotel.WithPort(port),
 			fiberotel.WithCustomMetricAttributes(func(ctx fiber.Ctx) []attribute.KeyValue {
@@ -549,20 +852,109 @@ func TestCustomMetricAttributes(t *testing.T) {
 	assert.Len(t, metrics.ScopeMetrics, 1)
 
 	requestAttrs := []attribute.KeyValue{
-		semconv.NetworkProtocolName("http"),
-		semconv.NetworkProtocolVersion(fmt.Sprintf("1.%d", r.ProtoMinor)),
 		semconv.HTTPRequestMethodKey.String(http.MethodGet),
 		semconv.URLSchemeKey.String("http"),
-		semconv.ServerAddress(r.Host),
 		semconv.ServerPort(port),
 		semconv.URLQuery("foo=bar"),
 	}
 	responseAttrs := []attribute.KeyValue{
+		semconv.NetworkProtocolName("http"),
+		semconv.NetworkProtocolVersion(fmt.Sprintf("1.%d", r.ProtoMinor)),
 		semconv.HTTPResponseStatusCode(200),
 		semconv.HTTPRouteKey.String(route),
 	}
 
 	assertScopeMetrics(t, metrics.ScopeMetrics[0], route, requestAttrs, append(requestAttrs, responseAttrs...))
+}
+
+func metricPoints(t *testing.T, sm metricdata.ScopeMetrics) map[string][]attribute.Set {
+	t.Helper()
+
+	points := make(map[string][]attribute.Set)
+	for _, m := range sm.Metrics {
+		switch data := m.Data.(type) {
+		case metricdata.Histogram[float64]:
+			for _, point := range data.DataPoints {
+				points[m.Name] = append(points[m.Name], point.Attributes)
+			}
+		case metricdata.Histogram[int64]:
+			for _, point := range data.DataPoints {
+				points[m.Name] = append(points[m.Name], point.Attributes)
+			}
+		case metricdata.Sum[int64]:
+			for _, point := range data.DataPoints {
+				points[m.Name] = append(points[m.Name], point.Attributes)
+			}
+		default:
+			t.Fatalf("unexpected data %T for %s", m.Data, m.Name)
+		}
+	}
+
+	return points
+}
+
+// server.address comes from the client-controlled Host header, so it is opt-in on metrics.
+func TestMetricsLeaveOutServerAddress(t *testing.T) {
+	t.Parallel()
+
+	for _, optIn := range []bool{false, true} {
+		t.Run(fmt.Sprintf("optIn=%t", optIn), func(t *testing.T) {
+			t.Parallel()
+
+			sr := tracetest.NewSpanRecorder()
+			reader := metric.NewManualReader()
+			opts := []fiberotel.Option{
+				fiberotel.WithTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))),
+				fiberotel.WithMeterProvider(metric.NewMeterProvider(metric.WithReader(reader))),
+			}
+			if optIn {
+				// The documented way back, for an application that knows its hosts.
+				opts = append(opts, fiberotel.WithCustomMetricAttributes(func(c fiber.Ctx) []attribute.KeyValue {
+					return []attribute.KeyValue{semconv.ServerAddress(utils.CopyString(c.Hostname()))}
+				}))
+			}
+
+			app := fiber.New()
+			app.Use(fiberotel.New(opts...))
+			app.Get("/", func(c fiber.Ctx) error {
+				return c.SendStatus(http.StatusOK)
+			})
+
+			hosts := []string{"a.example.com", "b.example.com", "c.example.com"}
+			for _, host := range hosts {
+				r := httptest.NewRequest(http.MethodGet, "/", nil)
+				r.Host = host
+				resp, err := app.Test(r)
+				require.NoError(t, err)
+				require.Equal(t, http.StatusOK, resp.StatusCode)
+			}
+
+			spans := sr.Ended()
+			require.Len(t, spans, len(hosts))
+			for i, span := range spans {
+				assert.Contains(t, span.Attributes(), semconv.ServerAddress(hosts[i]))
+			}
+
+			var metrics metricdata.ResourceMetrics
+			require.NoError(t, reader.Collect(context.Background(), &metrics))
+			require.Len(t, metrics.ScopeMetrics, 1)
+
+			points := metricPoints(t, metrics.ScopeMetrics[0])
+			require.Len(t, points, 4)
+			for name, sets := range points {
+				if !optIn {
+					require.Len(t, sets, 1, name)
+					assert.False(t, sets[0].HasValue(semconv.ServerAddressKey), name)
+					continue
+				}
+
+				require.Len(t, sets, len(hosts), name)
+				for _, set := range sets {
+					assert.True(t, set.HasValue(semconv.ServerAddressKey), name)
+				}
+			}
+		})
+	}
 }
 
 func TestCustomResponseAttributes(t *testing.T) {
@@ -572,7 +964,7 @@ func TestCustomResponseAttributes(t *testing.T) {
 	meterProvider := metric.NewMeterProvider(metric.WithReader(reader))
 
 	app := fiber.New()
-	app.Use(fiberotel.Middleware(
+	app.Use(fiberotel.New(
 		fiberotel.WithTracerProvider(tracerProvider),
 		fiberotel.WithMeterProvider(meterProvider),
 		fiberotel.WithCustomResponseAttributes(func(ctx fiber.Ctx) []attribute.KeyValue {
@@ -608,13 +1000,12 @@ func TestCustomResponseAttributes(t *testing.T) {
 	require.NoError(t, reader.Collect(context.Background(), &metrics))
 	require.Len(t, metrics.ScopeMetrics, 1)
 	requestAttrs := []attribute.KeyValue{
-		semconv.NetworkProtocolName("http"),
-		semconv.NetworkProtocolVersion(fmt.Sprintf("1.%d", r.ProtoMinor)),
 		semconv.HTTPRequestMethodKey.String(http.MethodGet),
 		semconv.URLSchemeKey.String("http"),
-		semconv.ServerAddress(r.Host),
 	}
 	responseAttrs := []attribute.KeyValue{
+		semconv.NetworkProtocolName("http"),
+		semconv.NetworkProtocolVersion(fmt.Sprintf("1.%d", r.ProtoMinor)),
 		semconv.HTTPResponseStatusCode(http.StatusAccepted),
 		semconv.HTTPRouteKey.String("/orders/:id"),
 		attribute.String("app.metric_outcome", "accepted"),
@@ -649,7 +1040,7 @@ func TestCustomResponseAttributeCallbacksPanicCleanup(t *testing.T) {
 
 			app := fiber.New()
 			app.Use(recover.New())
-			app.Use(fiberotel.Middleware(options...))
+			app.Use(fiberotel.New(options...))
 			app.Get("/orders/:id", func(ctx fiber.Ctx) error {
 				ctx.Locals("tenant", "shopper")
 				return ctx.SendStatus(http.StatusOK)
@@ -735,7 +1126,7 @@ func TestCustomResponseCallbackPanicTelemetry(t *testing.T) {
 					}
 					return recover.DefaultPanicHandler(c, value)
 				}}))
-				app.Use(fiberotel.Middleware(options...))
+				app.Use(fiberotel.New(options...))
 				resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/missing", nil))
 				require.NoError(t, err)
 				assert.Equal(t, scenario.status, resp.StatusCode)
@@ -785,6 +1176,98 @@ func TestCustomResponseCallbackPanicTelemetry(t *testing.T) {
 	}
 }
 
+// panickingHandler is named so the recorded stack trace can be checked for it.
+func panickingHandler(fiber.Ctx) error {
+	panic("handler exploded")
+}
+
+// A handler panic still ends the telemetry and reaches the recovery middleware unchanged.
+func TestHandlerPanic(t *testing.T) {
+	t.Parallel()
+
+	sr := tracetest.NewSpanRecorder()
+	reader := metric.NewManualReader()
+
+	var recovered any
+	var handlerContext context.Context
+
+	app := fiber.New()
+	app.Use(recover.New(recover.Config{PanicHandler: func(c fiber.Ctx, value any) error {
+		recovered = value
+		return recover.DefaultPanicHandler(c, value)
+	}}))
+	app.Use(fiberotel.New(
+		fiberotel.WithTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))),
+		fiberotel.WithMeterProvider(metric.NewMeterProvider(metric.WithReader(reader))),
+	))
+	app.Post("/orders/:id", func(c fiber.Ctx) error {
+		handlerContext = c.Context()
+		return panickingHandler(c)
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodPost, "/orders/42", strings.NewReader("order")))
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	assert.Equal(t, "handler exploded", recovered)
+	require.NotNil(t, handlerContext)
+	assert.ErrorIs(t, handlerContext.Err(), context.Canceled)
+
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+	span := spans[0]
+	assert.Equal(t, "POST /orders/:id", span.Name())
+	assert.Equal(t, codes.Error, span.Status().Code)
+
+	attrs := attribute.NewSet(span.Attributes()...)
+	assert.Contains(t, span.Attributes(), semconv.ErrorTypeKey.String("panic"))
+	assert.Contains(t, span.Attributes(), semconv.HTTPRoute("/orders/:id"))
+	// The status is decided by the recovery middleware, after this one returns.
+	assert.False(t, attrs.HasValue(semconv.HTTPResponseStatusCodeKey))
+	assert.False(t, attrs.HasValue(semconv.HTTPResponseBodySizeKey))
+
+	require.Len(t, span.Events(), 1)
+	event := attribute.NewSet(span.Events()[0].Attributes...)
+	message, ok := event.Value(semconv.ExceptionMessageKey)
+	require.True(t, ok)
+	assert.Equal(t, "handler exploded", message.AsString())
+	stack, ok := event.Value(semconv.ExceptionStacktraceKey)
+	require.True(t, ok)
+	assert.Contains(t, stack.AsString(), "panickingHandler")
+
+	var metrics metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &metrics))
+	require.Len(t, metrics.ScopeMetrics, 1)
+	var durationCount, requestSizeCount uint64
+	for _, m := range metrics.ScopeMetrics[0].Metrics {
+		switch m.Name {
+		case fiberotel.MetricNameHTTPServerActiveRequests:
+			for _, point := range m.Data.(metricdata.Sum[int64]).DataPoints {
+				assert.Zero(t, point.Value)
+			}
+		case fiberotel.MetricNameHTTPServerRequestDuration:
+			for _, point := range m.Data.(metricdata.Histogram[float64]).DataPoints {
+				durationCount += point.Count
+				assert.False(t, point.Attributes.HasValue(semconv.HTTPResponseStatusCodeKey))
+				errorType, ok := point.Attributes.Value(semconv.ErrorTypeKey)
+				require.True(t, ok)
+				assert.Equal(t, "panic", errorType.AsString())
+				route, ok := point.Attributes.Value(semconv.HTTPRouteKey)
+				require.True(t, ok)
+				assert.Equal(t, "/orders/:id", route.AsString())
+			}
+		case fiberotel.MetricNameHTTPServerRequestBodySize:
+			for _, point := range m.Data.(metricdata.Histogram[int64]).DataPoints {
+				requestSizeCount += point.Count
+				assert.Equal(t, int64(len("order")), point.Sum)
+			}
+		case fiberotel.MetricNameHTTPServerResponseBodySize:
+			t.Error("the response size is unknown until the recovery middleware answers")
+		}
+	}
+	assert.Equal(t, uint64(1), durationCount)
+	assert.Equal(t, uint64(1), requestSizeCount)
+}
+
 func TestCustomResponseAttributesAfterHandlerError(t *testing.T) {
 	sr := tracetest.NewSpanRecorder()
 	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
@@ -792,7 +1275,7 @@ func TestCustomResponseAttributesAfterHandlerError(t *testing.T) {
 	meterProvider := metric.NewMeterProvider(metric.WithReader(reader))
 	var spanStatus, metricStatus int
 	app := fiber.New()
-	app.Use(fiberotel.Middleware(
+	app.Use(fiberotel.New(
 		fiberotel.WithTracerProvider(tracerProvider),
 		fiberotel.WithMeterProvider(meterProvider),
 		fiberotel.WithCustomResponseAttributes(func(c fiber.Ctx) []attribute.KeyValue {
@@ -829,12 +1312,104 @@ func TestCustomResponseAttributesAfterHandlerError(t *testing.T) {
 	t.Fatal("request duration metric not found")
 }
 
+func TestNoopTracerProviderPropagatesInboundContext(t *testing.T) {
+	t.Parallel()
+
+	const (
+		traceID     = "4bf92f3577b34da6a3ce929d0e0e4736"
+		traceparent = "00-" + traceID + "-00f067aa0ba902b7-01"
+	)
+
+	reader := metric.NewManualReader()
+
+	app := fiber.New()
+	app.Use(fiberotel.New(
+		fiberotel.WithTracerProvider(tracenoop.NewTracerProvider()),
+		fiberotel.WithMeterProvider(metric.NewMeterProvider(metric.WithReader(reader))),
+		fiberotel.WithPropagators(propagation.TraceContext{}),
+		fiberotel.WithTraceResponseHeader("X-Trace-Id"),
+	))
+	var handlerSpanContext oteltrace.SpanContext
+	app.Get("/", func(c fiber.Ctx) error {
+		handlerSpanContext = oteltrace.SpanContextFromContext(c.Context())
+		return c.SendStatus(http.StatusNoContent)
+	})
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("traceparent", traceparent)
+	resp, err := app.Test(r)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	assert.Equal(t, traceID, handlerSpanContext.TraceID().String())
+	assert.True(t, handlerSpanContext.IsRemote())
+	assert.Equal(t, traceID, resp.Header.Get("X-Trace-Id"))
+	assert.Equal(t, traceparent, resp.Header.Get("traceparent"))
+
+	// Without an inbound context there is nothing to hand on.
+	resp, err = app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+	require.NoError(t, err)
+	assert.Empty(t, resp.Header.Get("traceparent"))
+	assert.Empty(t, resp.Header.Get("X-Trace-Id"))
+
+	var metrics metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &metrics))
+	require.Len(t, metrics.ScopeMetrics, 1)
+	assert.Len(t, metrics.ScopeMetrics[0].Metrics, 4)
+}
+
+// Also with DisableHeaderNormalizing, where fasthttp keeps names as received.
+func TestPropagationHeaderNamesAreCaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	for _, disableNormalizing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("DisableHeaderNormalizing=%t", disableNormalizing), func(t *testing.T) {
+			t.Parallel()
+
+			sr := tracetest.NewSpanRecorder()
+			provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+
+			app := fiber.New(fiber.Config{DisableHeaderNormalizing: disableNormalizing})
+			app.Use(fiberotel.New(
+				fiberotel.WithTracerProvider(provider),
+				fiberotel.WithPropagators(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})),
+			))
+			var members []string
+			app.Get("/", func(c fiber.Ctx) error {
+				for _, member := range baggage.FromContext(c.Context()).Members() {
+					members = append(members, member.Key()+"="+member.Value())
+				}
+				return c.SendStatus(http.StatusNoContent)
+			})
+
+			parentCtx, parent := provider.Tracer("test").Start(context.Background(), "parent")
+			parent.End()
+
+			// Set through the map, so the names are sent as spelled.
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.Header["TRACEPARENT"] = []string{"00-" + parent.SpanContext().TraceID().String() + "-" + parent.SpanContext().SpanID().String() + "-01"}
+			r.Header["baggage"] = []string{"tenant=acme"}
+			r.Header["Baggage"] = []string{"region=eu"}
+			resp, err := app.Test(r)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+			spans := sr.Ended()
+			require.Len(t, spans, 2)
+			server := spans[1]
+			assert.Equal(t, oteltrace.SpanContextFromContext(parentCtx).TraceID(), server.SpanContext().TraceID())
+			assert.Equal(t, parent.SpanContext().SpanID(), server.Parent().SpanID())
+			assert.ElementsMatch(t, []string{"tenant=acme", "region=eu"}, members)
+		})
+	}
+}
+
 func TestOutboundTracingPropagation(t *testing.T) {
 	sr := new(tracetest.SpanRecorder)
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 
 	app := fiber.New()
-	app.Use(fiberotel.Middleware(
+	app.Use(fiberotel.New(
 		fiberotel.WithTracerProvider(provider),
 		fiberotel.WithPropagators(b3prop.New(b3prop.WithInjectEncoding(b3prop.B3MultipleHeader))),
 	))
@@ -860,7 +1435,7 @@ func TestOutboundTracingPropagationWithInboundContext(t *testing.T) {
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 
 	app := fiber.New()
-	app.Use(fiberotel.Middleware(
+	app.Use(fiberotel.New(
 		fiberotel.WithTracerProvider(provider),
 		fiberotel.WithPropagators(b3prop.New(b3prop.WithInjectEncoding(b3prop.B3MultipleHeader))),
 	))
@@ -888,7 +1463,7 @@ func TestTraceResponseHeader(t *testing.T) {
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 
 	app := fiber.New()
-	app.Use(fiberotel.Middleware(
+	app.Use(fiberotel.New(
 		fiberotel.WithTracerProvider(provider),
 		fiberotel.WithTraceResponseHeader("X-Trace-Id"),
 	))
@@ -911,7 +1486,7 @@ func TestTraceResponseHeaderDisabledByDefault(t *testing.T) {
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 
 	app := fiber.New()
-	app.Use(fiberotel.Middleware(
+	app.Use(fiberotel.New(
 		fiberotel.WithTracerProvider(provider),
 	))
 	app.Get("/foo", func(ctx fiber.Ctx) error {
@@ -936,7 +1511,7 @@ func TestTraceResponseHeaderUsesInboundTraceID(t *testing.T) {
 	propagator.Inject(ctx, propagation.HeaderCarrier(req.Header))
 
 	app := fiber.New()
-	app.Use(fiberotel.Middleware(
+	app.Use(fiberotel.New(
 		fiberotel.WithTracerProvider(provider),
 		fiberotel.WithPropagators(propagator),
 		fiberotel.WithTraceResponseHeader("X-Trace-Id"),
@@ -977,7 +1552,7 @@ func TestCollectClientIP(t *testing.T) {
 					provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 
 					app := fiber.New()
-					app.Use(fiberotel.Middleware(
+					app.Use(fiberotel.New(
 						fiberotel.WithTracerProvider(provider),
 						factory.opt(enabled),
 					))
@@ -1006,6 +1581,63 @@ func TestCollectClientIP(t *testing.T) {
 	}
 }
 
+// Handlers get a context canceled when the request ends; outer middleware gets its own back.
+func TestMiddlewareRestoresOuterContext(t *testing.T) {
+	t.Parallel()
+
+	type ctxKey struct{}
+
+	var outerBefore, outerAfter, handlerContext context.Context
+
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(c.Context(), ctxKey{}, "outer"))
+		outerBefore = c.Context()
+		err := c.Next()
+		outerAfter = c.Context()
+		return err
+	})
+	app.Use(fiberotel.New(fiberotel.WithTracerProvider(sdktrace.NewTracerProvider())))
+	app.Get("/", func(c fiber.Ctx) error {
+		handlerContext = c.Context()
+		return c.SendStatus(http.StatusNoContent)
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	assert.Same(t, outerBefore, outerAfter)
+	require.NoError(t, outerAfter.Err())
+	assert.ErrorIs(t, handlerContext.Err(), context.Canceled)
+	assert.Equal(t, "outer", handlerContext.Value(ctxKey{}))
+}
+
+// An SSE writer watching ctx.Done() runs after the middleware has returned.
+func TestStreamWriterContextOutlivesMiddleware(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	app.Use(fiberotel.New(fiberotel.WithTracerProvider(sdktrace.NewTracerProvider())))
+	app.Get("/events", func(c fiber.Ctx) error {
+		ctx := c.Context()
+		c.Set(fiber.HeaderContentType, "text/event-stream")
+		return c.SendStreamWriter(func(w *bufio.Writer) {
+			if ctx.Err() != nil {
+				_, _ = w.WriteString("data: canceled\n\n")
+				return
+			}
+			_, _ = w.WriteString("data: live\n\n")
+		})
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/events", nil))
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, "data: live\n\n", string(body))
+}
+
 func TestMiddlewarePreservesUserContext(t *testing.T) {
 	type ctxKey string
 	const requestIDKey ctxKey = "request_id"
@@ -1021,7 +1653,7 @@ func TestMiddlewarePreservesUserContext(t *testing.T) {
 		c.SetContext(ctx)
 		return c.Next()
 	})
-	app.Use(fiberotel.Middleware(fiberotel.WithTracerProvider(provider)))
+	app.Use(fiberotel.New(fiberotel.WithTracerProvider(provider)))
 	app.Get("/", func(c fiber.Ctx) error {
 		val := c.Context().Value(requestIDKey)
 		if val == nil {
@@ -1039,6 +1671,65 @@ func TestMiddlewarePreservesUserContext(t *testing.T) {
 	require.Equal(t, fmt.Sprintf("request_id from context: %d", expectedID), string(body))
 }
 
+func TestMetricExemplarsReferenceRequestSpan(t *testing.T) {
+	t.Parallel()
+
+	sr := tracetest.NewSpanRecorder()
+	reader := metric.NewManualReader()
+
+	app := fiber.New()
+	app.Use(fiberotel.New(
+		fiberotel.WithTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))),
+		fiberotel.WithMeterProvider(metric.NewMeterProvider(
+			metric.WithReader(reader),
+			metric.WithExemplarFilter(exemplar.TraceBasedFilter),
+		)),
+	))
+	app.Get("/", func(c fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+	traceID := spans[0].SpanContext().TraceID()
+	spanID := spans[0].SpanContext().SpanID()
+
+	var metrics metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &metrics))
+	require.Len(t, metrics.ScopeMetrics, 1)
+
+	checked := 0
+	for _, m := range metrics.ScopeMetrics[0].Metrics {
+		var exemplars [][2][]byte
+		switch data := m.Data.(type) {
+		case metricdata.Histogram[float64]:
+			for _, point := range data.DataPoints {
+				for _, e := range point.Exemplars {
+					exemplars = append(exemplars, [2][]byte{e.TraceID, e.SpanID})
+				}
+			}
+		case metricdata.Histogram[int64]:
+			for _, point := range data.DataPoints {
+				for _, e := range point.Exemplars {
+					exemplars = append(exemplars, [2][]byte{e.TraceID, e.SpanID})
+				}
+			}
+		default:
+			continue
+		}
+
+		require.Len(t, exemplars, 1, m.Name)
+		assert.Equal(t, traceID[:], exemplars[0][0], m.Name)
+		assert.Equal(t, spanID[:], exemplars[0][1], m.Name)
+		checked++
+	}
+	assert.Equal(t, 3, checked, "every histogram carries an exemplar")
+}
+
 func TestWithoutMetrics(t *testing.T) {
 	reader := metric.NewManualReader()
 	provider := metric.NewMeterProvider(metric.WithReader(reader))
@@ -1048,7 +1739,7 @@ func TestWithoutMetrics(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(
-		fiberotel.Middleware(
+		fiberotel.New(
 			fiberotel.WithMeterProvider(provider),
 			fiberotel.WithPort(port),
 			fiberotel.WithoutMetrics(true),
@@ -1075,7 +1766,7 @@ func TestWithoutMetricsWithStreamResponse(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(
-		fiberotel.Middleware(
+		fiberotel.New(
 			fiberotel.WithMeterProvider(provider),
 			fiberotel.WithoutMetrics(true),
 		),
@@ -1107,7 +1798,7 @@ func TestResponseBodySizeWithStream(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(
-		fiberotel.Middleware(
+		fiberotel.New(
 			fiberotel.WithMeterProvider(provider),
 		),
 	)

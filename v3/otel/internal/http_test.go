@@ -1,56 +1,46 @@
 package internal
 
 import (
+	"net/http"
+	"testing"
+
 	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/otel/codes"
 	oteltrace "go.opentelemetry.io/otel/trace"
-	"net/http"
-	"testing"
 )
 
-func TestIsCode4xxIsNotValid(t *testing.T) {
-	response := isCode4xx(http.StatusOK)
+func TestSpanStatusFromHTTPStatusCodeAndSpanKind(t *testing.T) {
+	t.Parallel()
 
-	assert.False(t, response)
-}
+	testCases := []struct {
+		name    string
+		code    int
+		kind    oteltrace.SpanKind
+		status  codes.Code
+		message string
+	}{
+		{name: "below range", code: 99, kind: oteltrace.SpanKindServer, status: codes.Error, message: "Invalid HTTP status code 99"},
+		{name: "zero", code: 0, kind: oteltrace.SpanKindServer, status: codes.Error, message: "Invalid HTTP status code 0"},
+		{name: "above range", code: 600, kind: oteltrace.SpanKindClient, status: codes.Error, message: "Invalid HTTP status code 600"},
+		{name: "informational", code: http.StatusSwitchingProtocols, kind: oteltrace.SpanKindServer, status: codes.Unset},
+		{name: "ok", code: http.StatusOK, kind: oteltrace.SpanKindClient, status: codes.Unset},
+		// Valid codes without a registered reason phrase are statuses all the same.
+		{name: "unnamed 2xx", code: 299, kind: oteltrace.SpanKindServer, status: codes.Unset},
+		{name: "unused 306", code: 306, kind: oteltrace.SpanKindClient, status: codes.Unset},
+		{name: "server 4xx", code: http.StatusBadRequest, kind: oteltrace.SpanKindServer, status: codes.Unset},
+		{name: "server unnamed 4xx", code: 499, kind: oteltrace.SpanKindServer, status: codes.Unset},
+		{name: "client 4xx", code: http.StatusNotFound, kind: oteltrace.SpanKindClient, status: codes.Error},
+		{name: "server 5xx", code: http.StatusInternalServerError, kind: oteltrace.SpanKindServer, status: codes.Error},
+		{name: "server unnamed 5xx", code: 520, kind: oteltrace.SpanKindServer, status: codes.Error},
+	}
 
-func TestIsCode4xxIsValid(t *testing.T) {
-	response := isCode4xx(http.StatusNotFound)
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	assert.True(t, response)
-}
-
-func TestStatusErrorWithMessage(t *testing.T) {
-	spanStatus, spanMessage := SpanStatusFromHTTPStatusCodeAndSpanKind(600, oteltrace.SpanKindClient)
-
-	assert.Equal(t, codes.Error, spanStatus)
-	assert.Equal(t, "Invalid HTTP status code 600", spanMessage)
-}
-
-func TestStatusErrorWithMessageForIgnoredHTTPCode(t *testing.T) {
-	spanStatus, spanMessage := SpanStatusFromHTTPStatusCodeAndSpanKind(306, oteltrace.SpanKindClient)
-
-	assert.Equal(t, codes.Error, spanStatus)
-	assert.Equal(t, "Invalid HTTP status code 306", spanMessage)
-}
-
-func TestStatusErrorWhenHTTPCode5xx(t *testing.T) {
-	spanStatus, spanMessage := SpanStatusFromHTTPStatusCodeAndSpanKind(http.StatusInternalServerError, oteltrace.SpanKindServer)
-
-	assert.Equal(t, codes.Error, spanStatus)
-	assert.Equal(t, "", spanMessage)
-}
-
-func TestStatusUnsetWhenServerSpanAndBadRequest(t *testing.T) {
-	spanStatus, spanMessage := SpanStatusFromHTTPStatusCodeAndSpanKind(http.StatusBadRequest, oteltrace.SpanKindServer)
-
-	assert.Equal(t, codes.Unset, spanStatus)
-	assert.Equal(t, "", spanMessage)
-}
-
-func TestStatusUnset(t *testing.T) {
-	spanStatus, spanMessage := SpanStatusFromHTTPStatusCodeAndSpanKind(http.StatusOK, oteltrace.SpanKindClient)
-
-	assert.Equal(t, codes.Unset, spanStatus)
-	assert.Equal(t, "", spanMessage)
+			status, message := SpanStatusFromHTTPStatusCodeAndSpanKind(tc.code, tc.kind)
+			assert.Equal(t, tc.status, status)
+			assert.Equal(t, tc.message, message)
+		})
+	}
 }

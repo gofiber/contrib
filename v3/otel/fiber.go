@@ -1,58 +1,25 @@
 package otel
 
 import (
-	"bytes"
 	"context"
-	"io"
-	"net/http"
-	"strconv"
-	"strings"
+	"encoding/hex"
+	"sync/atomic"
 	"time"
 
 	"github.com/gofiber/contrib/v3/otel/internal"
 
 	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/utils/v2"
+	"github.com/valyala/fasthttp"
 	otelcontrib "go.opentelemetry.io/contrib"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
-	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
-
-// bodyStreamSize reports stream's exact remaining length, without reading it.
-func bodyStreamSize(stream io.Reader) (int64, bool) {
-	switch reader := stream.(type) {
-	case *io.LimitedReader:
-		if reader.N >= 0 {
-			return reader.N, true
-		}
-	case *bytes.Reader:
-		return int64(reader.Len()), true
-	case *bytes.Buffer:
-		return int64(reader.Len()), true
-	case *strings.Reader:
-		return int64(reader.Len()), true
-	}
-
-	return 0, false
-}
-
-// responseBodySuppressed reports whether fasthttp will send headers only, so
-// Content-Length must not be counted as bytes sent. Mirrors its mustSkipBody.
-func responseBodySuppressed(c fiber.Ctx) bool {
-	if c.Method() == fiber.MethodHead || c.Response().SkipBody {
-		return true
-	}
-
-	// 1xx, 204 and 304 responses must not include a message body.
-	status := c.Response().StatusCode()
-
-	return (status >= 100 && status < 200) || status == fiber.StatusNoContent || status == fiber.StatusNotModified
-}
 
 const (
 	tracerKey           = "gofiber-contrib-tracer-fiber"
@@ -82,13 +49,23 @@ const (
 	UnitMilliseconds = "ms"
 )
 
-// httpServerRequestDurationBoundaries is the ExplicitBucketBoundaries advisory
-// parameter recommended by the semantic conventions for the
-// http.server.request.duration metric, expressed in seconds.
+// httpServerRequestDurationBoundaries are the buckets semconv recommends, in seconds.
 var httpServerRequestDurationBoundaries = []float64{0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10}
 
-// Middleware returns fiber handler which will trace incoming requests.
-func Middleware(opts ...Option) fiber.Handler {
+var (
+	panicErrorType         = semconv.ErrorTypeKey.String("panic")
+	callbackPanicErrorType = semconv.ErrorTypeKey.String("response_callback_panic")
+)
+
+// spanEndOptions make span.End record the stack of an in-flight panic.
+var spanEndOptions = []oteltrace.SpanEndOption{oteltrace.WithStackTrace(true)}
+
+var serverSpanKind = oteltrace.WithSpanKind(oteltrace.SpanKindServer)
+
+var newRootSpan = oteltrace.WithNewRoot()
+
+// New returns a fiber handler that traces and measures incoming requests.
+func New(opts ...Option) fiber.Handler {
 	cfg := config{
 		clientIP: true,
 	}
@@ -96,250 +73,321 @@ func Middleware(opts ...Option) fiber.Handler {
 		opt.apply(&cfg)
 	}
 
-	if cfg.TracerProvider == nil {
-		cfg.TracerProvider = otel.GetTracerProvider()
+	return newMiddleware(cfg).handle
+}
+
+// Middleware returns fiber handler which will trace incoming requests.
+//
+// Deprecated: use New.
+func Middleware(opts ...Option) fiber.Handler {
+	return New(opts...)
+}
+
+type middleware struct {
+	config
+
+	tracer oteltrace.Tracer
+	// tracing is false for an explicit no-op tracer provider.
+	tracing bool
+	metrics *serverMetrics // nil with WithoutMetrics
+
+	serverPortAttr attribute.KeyValue
+
+	requestHeaders  []capturedHeader
+	responseHeaders []capturedHeader
+
+	settings atomic.Pointer[appSettings]
+}
+
+// appSettings caches what requests need from App.Config, which copies the whole config.
+type appSettings struct {
+	app                      *fiber.App
+	disableHeaderNormalizing bool
+}
+
+func newMiddleware(cfg config) *middleware {
+	m := &middleware{config: cfg}
+
+	if m.TracerProvider == nil {
+		m.TracerProvider = otel.GetTracerProvider()
 	}
-	tracer := cfg.TracerProvider.Tracer(
+	m.tracer = m.TracerProvider.Tracer(
 		instrumentationName,
 		oteltrace.WithInstrumentationVersion(otelcontrib.Version()),
+		oteltrace.WithSchemaURL(semconv.SchemaURL),
 	)
+	switch m.TracerProvider.(type) {
+	case tracenoop.TracerProvider, *tracenoop.TracerProvider:
+	default:
+		m.tracing = true
+	}
 
-	var httpServerDuration metric.Float64Histogram
-	var httpServerRequestSize metric.Int64Histogram
-	var httpServerResponseSize metric.Int64Histogram
-	var httpServerActiveRequests metric.Int64UpDownCounter
-
-	if !cfg.withoutMetrics {
-		if cfg.MeterProvider == nil {
-			cfg.MeterProvider = otel.GetMeterProvider()
+	if !m.withoutMetrics {
+		if m.MeterProvider == nil {
+			m.MeterProvider = otel.GetMeterProvider()
 		}
-		meter := cfg.MeterProvider.Meter(
+		m.metrics = newServerMetrics(m.MeterProvider.Meter(
 			instrumentationName,
 			metric.WithInstrumentationVersion(otelcontrib.Version()),
+			metric.WithSchemaURL(semconv.SchemaURL),
+		))
+		// Without attribute callbacks the attribute sets are bounded, so they can be cached.
+		m.metrics.cacheable = m.CustomMetricAttributes == nil && m.CustomResponseMetricAttributes == nil
+	}
+
+	if m.Propagators == nil {
+		m.Propagators = otel.GetTextMapPropagator()
+	}
+	if m.ResponsePropagators == nil {
+		m.ResponsePropagators = m.Propagators
+	}
+	m.requestHeaders = capturedHeaders("http.request.header.", m.CapturedRequestHeaders)
+	m.responseHeaders = capturedHeaders("http.response.header.", m.CapturedResponseHeaders)
+	if m.SpanNameFormatter == nil {
+		m.SpanNameFormatter = defaultSpanNameFormatter
+	}
+	if m.Port != nil {
+		m.serverPortAttr = semconv.ServerPort(*m.Port)
+	}
+
+	return m
+}
+
+// requestPhase tells the deferred end what a panic interrupted.
+type requestPhase uint8
+
+const (
+	phaseChain     requestPhase = iota // handler chain and error handler
+	phaseCallbacks                     // response attribute callbacks
+	phaseDone
+)
+
+// request is the state of one request, kept on the stack.
+type request struct {
+	ctx    context.Context
+	parent context.Context // restored when the request ends
+	cancel context.CancelFunc
+	span   oteltrace.Span
+	start  time.Time
+	phase  requestPhase
+
+	requestSize       int64
+	responseSize      int64
+	requestSizeKnown  bool
+	responseSizeKnown bool
+
+	status int
+	route  string
+	naming bool // set while SpanNameFormatter runs, so one that panics is not called again
+
+	// The fields below are set only when metrics is true.
+	metrics           bool
+	method            string
+	scheme            string
+	metricAttrs       []attribute.KeyValue // for uncached attribute sets
+	activeOpts        []metric.AddOption   // nil when active_requests was not incremented
+	customMetricAttrs []attribute.KeyValue
+}
+
+func (m *middleware) handle(c fiber.Ctx) error {
+	// Don't execute middleware if Next returns true
+	if m.Next != nil && m.Next(c) {
+		return c.Next()
+	}
+
+	fiber.StoreInContext(c, tracerKey, m.tracer)
+
+	r := request{start: time.Now()}
+	// Handlers get a context canceled when the request ends; outer middleware gets its own back.
+	r.parent = c.Context()
+	base, cancel := context.WithCancel(r.parent)
+	r.cancel = cancel
+	r.requestSize, r.requestSizeKnown = requestBodySize(c)
+
+	settings := m.appSettings(c.App())
+	ctx := m.Propagators.Extract(base, requestCarrierFor(&c.Request().Header, settings))
+	if m.tracing {
+		opts := make([]oteltrace.SpanStartOption, 0, 5+len(m.SpanStartOptions))
+		opts = append(opts,
+			oteltrace.WithAttributes(m.startAttributes(c, &r, settings)...),
+			serverSpanKind,
+			oteltrace.WithTimestamp(r.start),
 		)
-
-		var err error
-		httpServerDuration, err = meter.Float64Histogram(
-			MetricNameHTTPServerRequestDuration,
-			metric.WithUnit(UnitSeconds),
-			metric.WithDescription("Duration of HTTP server requests."),
-			metric.WithExplicitBucketBoundaries(httpServerRequestDurationBoundaries...),
-		)
-		if err != nil {
-			otel.Handle(err)
+		if m.PublicEndpointFn != nil && m.PublicEndpointFn(c) {
+			// Untrusted callers get a new trace, linked to theirs.
+			opts = append(opts, newRootSpan)
+			if caller := oteltrace.SpanContextFromContext(ctx); caller.IsValid() && caller.IsRemote() {
+				opts = append(opts, oteltrace.WithLinks(oteltrace.Link{SpanContext: caller}))
+			}
 		}
-		httpServerRequestSize, err = meter.Int64Histogram(MetricNameHTTPServerRequestBodySize, metric.WithUnit(UnitBytes), metric.WithDescription("Size of HTTP server request bodies."))
-		if err != nil {
-			otel.Handle(err)
-		}
-		httpServerResponseSize, err = meter.Int64Histogram(MetricNameHTTPServerResponseBodySize, metric.WithUnit(UnitBytes), metric.WithDescription("Size of HTTP server response bodies."))
-		if err != nil {
-			otel.Handle(err)
-		}
-		httpServerActiveRequests, err = meter.Int64UpDownCounter(MetricNameHTTPServerActiveRequests, metric.WithUnit(UnitRequest), metric.WithDescription("Number of active HTTP server requests."))
-		if err != nil {
-			otel.Handle(err)
-		}
-	}
+		opts = append(opts, m.SpanStartOptions...)
 
-	if cfg.Propagators == nil {
-		cfg.Propagators = otel.GetTextMapPropagator()
-	}
-	if cfg.SpanNameFormatter == nil {
-		cfg.SpanNameFormatter = defaultSpanNameFormatter
-	}
-
-	return func(c fiber.Ctx) error {
-		// Don't execute middleware if Next returns true
-		if cfg.Next != nil && cfg.Next(c) {
-			return c.Next()
-		}
-
-		fiber.StoreInContext(c, tracerKey, tracer)
-		savedCtx, cancel := context.WithCancel(c.Context())
-
-		start := time.Now()
-
-		requestMetricsAttrs := httpServerMetricAttributesFromRequest(c, cfg)
-		if !cfg.withoutMetrics {
-			httpServerActiveRequests.Add(savedCtx, 1, metric.WithAttributes(requestMetricsAttrs...))
-		}
-
-		responseMetricAttrs := make([]attribute.KeyValue, len(requestMetricsAttrs))
-		copy(responseMetricAttrs, requestMetricsAttrs)
-
-		request := c.Request()
-		// Unmeasurable bodies are omitted rather than recorded as 0.
-		requestSize := int64(0)
-		requestSizeKnown := false
+		// Named after the method until the route is known.
+		ctx, r.span = m.tracer.Start(ctx, c.Method(), opts...)
+	} else {
+		// Hand on the caller's span context, as a no-op tracer would.
+		r.span = oteltrace.SpanFromContext(ctx)
 		switch {
-		case !c.HasBody():
-			requestSizeKnown = true
-		case request.IsBodyStream():
-			if streamSize, ok := bodyStreamSize(request.BodyStream()); ok {
-				requestSize = streamSize
-				requestSizeKnown = true
-			}
-			// Content-Length is unusable here: fasthttp pre-reads only part of a
-			// streamed body, so an over-declared length would inflate the histogram.
-		default:
-			// use Content-Length to avoid re-marshaling the multipart body, including files, into memory.
-			if contentLength := request.Header.ContentLength(); contentLength > 0 {
-				requestSize = int64(contentLength)
-			} else {
-				requestSize = int64(len(request.Body()))
-			}
-			requestSizeKnown = true
+		case r.span.IsRecording():
+			// Another component's span: wrapped so nothing here ends or annotates it.
+			ctx, r.span = m.tracer.Start(ctx, "")
+		case r.span.SpanContext().IsRemote() && m.PublicEndpointFn != nil && m.PublicEndpointFn(c):
+			ctx = oteltrace.ContextWithSpanContext(ctx, oteltrace.SpanContext{})
+			r.span = oteltrace.SpanFromContext(ctx)
 		}
+	}
+	r.ctx = ctx
+	// Deferred directly so the SDK records an in-flight panic.
+	defer r.span.End(spanEndOptions...)
 
-		reqHeader := make(http.Header)
-		for header, values := range c.GetReqHeaders() {
-			for _, value := range values {
-				reqHeader.Add(header, value)
-			}
+	// pass the span through userContext
+	c.SetContext(ctx)
+
+	// Deferred before any callback or handler runs, so a panic still ends the telemetry.
+	defer m.end(c, &r)
+
+	if m.metrics != nil && m.metrics.enabled(ctx) {
+		m.startMetrics(c, &r)
+	}
+
+	// serve the request to the next middleware
+	if err := c.Next(); err != nil {
+		r.span.RecordError(err)
+		// Run the error handler now, as Fiber's logger does, so the recorded status is the one sent.
+		if handlerErr := c.App().ErrorHandler(c, err); handlerErr != nil {
+			_ = c.SendStatus(fiber.StatusInternalServerError) //nolint:errcheck // mirrors Fiber's own fallback
 		}
+	}
+	r.phase = phaseCallbacks
 
-		ctx := cfg.Propagators.Extract(savedCtx, propagation.HeaderCarrier(reqHeader))
+	r.status = c.Response().StatusCode()
+	r.route = routePattern(c)
+	r.responseSize, r.responseSizeKnown = responseBodySize(c)
 
-		opts := []oteltrace.SpanStartOption{
-			oteltrace.WithAttributes(httpServerTraceAttributesFromRequest(c, cfg)...),
-			oteltrace.WithSpanKind(oteltrace.SpanKindServer),
+	if r.metrics && m.CustomResponseMetricAttributes != nil {
+		r.customMetricAttrs = m.CustomResponseMetricAttributes(c)
+	}
+	recording := r.span.IsRecording()
+	var (
+		customSpanAttrs []attribute.KeyValue
+		spanName        string
+	)
+	if recording {
+		if m.CustomResponseAttributes != nil {
+			customSpanAttrs = m.CustomResponseAttributes(c)
 		}
+		r.naming = true
+		spanName = m.SpanNameFormatter(c)
+		r.naming = false
+	}
+	r.phase = phaseDone
 
-		// temporary set to c.Path() first
-		// update with c.Route().Path after c.Next() is called
-		// to get pathRaw
-		spanName := utils.CopyString(c.Path())
-		ctx, span := tracer.Start(ctx, spanName, opts...)
-		defer span.End()
+	if recording {
+		spanStatus, spanMessage := internal.SpanStatusFromHTTPStatusCodeAndSpanKind(r.status, oteltrace.SpanKindServer)
 
-		// pass the span through userContext
-		c.SetContext(ctx)
-
-		// serve the request to the next middleware
-		if err := c.Next(); err != nil {
-			span.RecordError(err)
-			// invokes the registered HTTP error handler
-			// to get the correct response status code
-			_ = c.App().Config().ErrorHandler(c, err)
+		attrs := make([]attribute.KeyValue, 0, 4+len(m.responseHeaders)+len(customSpanAttrs))
+		attrs = append(attrs, semconv.HTTPResponseStatusCode(r.status))
+		if r.route != "" {
+			attrs = append(attrs, semconv.HTTPRoute(r.route))
 		}
-
-		// extract common attributes from response
-		responseAttrs := []attribute.KeyValue{
-			semconv.HTTPResponseStatusCode(c.Response().StatusCode()),
-			semconv.HTTPRouteKey.String(c.Route().Path), // no need to copy c.Route().Path: route strings should be immutable across app lifecycle
+		if spanStatus == codes.Error {
+			attrs = append(attrs, statusErrorType(r.status))
 		}
-
-		if c.Response().StatusCode() >= 500 {
-			responseAttrs = append(responseAttrs, semconv.ErrorTypeKey.String(strconv.Itoa(c.Response().StatusCode())))
+		if r.responseSizeKnown {
+			attrs = append(attrs, semconv.HTTPResponseBodySize(int(r.responseSize)))
 		}
-
-		response := c.Response()
-		contentType, _, _ := strings.Cut(c.GetRespHeader("Content-Type"), ";")
-		isSSE := utils.EqualFold(strings.TrimSpace(contentType), "text/event-stream")
-		responseSize := int64(0)
-		responseSizeKnown := false
-		isResponseBodyStream := response.IsBodyStream()
-		if responseBodySuppressed(c) {
-			responseSize = 0
-			responseSizeKnown = true
-		} else if isSSE {
-			// skip size calculation for SSE streams
-		} else if isResponseBodyStream {
-			if contentLength := response.Header.ContentLength(); contentLength >= 0 {
-				responseSize = int64(contentLength)
-				responseSizeKnown = true
-			} else if streamSize, ok := bodyStreamSize(response.BodyStream()); ok {
-				responseSize = streamSize
-				responseSizeKnown = true
-			}
-			// A chunked size is only known after fasthttp streams the body. Measuring
-			// would mean replacing the stream, and SetBodyStream closes and truncates
-			// the original reader it replaces (#1734).
-		} else {
-			responseSize = int64(len(response.Body()))
-			responseSizeKnown = true
-		}
-
-		responseMetricAttrs = append(responseMetricAttrs, responseAttrs...)
-		responseCallbacksCompleted := false
-
-		defer func() {
-			if !responseCallbacksCompleted {
-				// The original panic continues to the application's recovery middleware.
-				// Its error handler has not run yet, so the final status and response
-				// size are unknown. Report the callback failure without guessing them.
-				failure := semconv.ErrorTypeKey.String("response_callback_panic")
-				span.SetAttributes(semconv.HTTPRouteKey.String(c.Route().Path), failure)
-				span.SetStatus(codes.Error, "")
-				attrs := responseMetricAttrs[:0]
-				for _, attr := range responseMetricAttrs {
-					if attr.Key != semconv.HTTPResponseStatusCodeKey && attr.Key != semconv.HTTPResponseBodySizeKey && attr.Key != semconv.ErrorTypeKey {
-						attrs = append(attrs, attr)
-					}
-				}
-				responseMetricAttrs = append(attrs, failure)
-				responseSizeKnown = false
-			}
-			if !cfg.withoutMetrics {
-				httpServerActiveRequests.Add(savedCtx, -1, metric.WithAttributes(requestMetricsAttrs...))
-				httpServerDuration.Record(savedCtx, time.Since(start).Seconds(), metric.WithAttributes(responseMetricAttrs...))
-				if requestSizeKnown {
-					httpServerRequestSize.Record(savedCtx, requestSize, metric.WithAttributes(responseMetricAttrs...))
-				}
-				if responseSizeKnown {
-					httpServerResponseSize.Record(savedCtx, responseSize, metric.WithAttributes(responseMetricAttrs...))
-				}
-			}
-
-			c.SetContext(savedCtx)
-			cancel()
-		}()
-
-		// Run user callbacks after cleanup is deferred so a panic cannot leave
-		// http.server.active_requests incremented.
-		if cfg.CustomResponseMetricAttributes != nil {
-			responseMetricAttrs = append(responseMetricAttrs, cfg.CustomResponseMetricAttributes(c)...)
-		}
-		if cfg.CustomResponseAttributes != nil {
-			responseAttrs = append(responseAttrs, cfg.CustomResponseAttributes(c)...)
-		}
-		responseCallbacksCompleted = true
-
-		if responseSizeKnown {
-			span.SetAttributes(append(responseAttrs, semconv.HTTPResponseBodySizeKey.Int64(responseSize))...)
-		} else {
-			span.SetAttributes(responseAttrs...)
-		}
-		span.SetName(cfg.SpanNameFormatter(c))
-
-		spanStatus, spanMessage := internal.SpanStatusFromHTTPStatusCodeAndSpanKind(c.Response().StatusCode(), oteltrace.SpanKindServer)
-		span.SetStatus(spanStatus, spanMessage)
-
-		if cfg.TraceResponseHeader != "" {
-			traceID := span.SpanContext().TraceID()
-			if traceID.IsValid() {
-				c.Set(cfg.TraceResponseHeader, traceID.String())
+		for _, header := range m.responseHeaders {
+			if headerValues := responseHeaderValues(&c.Response().Header, header.name, settings.disableHeaderNormalizing); len(headerValues) > 0 {
+				attrs = append(attrs, header.key.StringSlice(headerValues))
 			}
 		}
+		r.span.SetAttributes(append(attrs, customSpanAttrs...)...)
+		r.span.SetName(spanName)
+		r.span.SetStatus(spanStatus, spanMessage)
+	}
 
-		// Propagate tracing context as headers in outbound response
-		tracingHeaders := make(propagation.HeaderCarrier)
-		cfg.Propagators.Inject(c.Context(), tracingHeaders)
-		for _, headerKey := range tracingHeaders.Keys() {
-			c.Set(headerKey, tracingHeaders.Get(headerKey))
+	if m.TraceResponseHeader != "" {
+		if traceID := r.span.SpanContext().TraceID(); traceID.IsValid() {
+			var encoded [2 * len(traceID)]byte
+			hex.Encode(encoded[:], traceID[:])
+			c.Response().Header.SetBytesV(m.TraceResponseHeader, encoded[:])
 		}
+	}
 
-		return nil
+	// Propagate tracing context as headers in outbound response
+	m.ResponsePropagators.Inject(c.Context(), (*responseCarrier)(&c.Response().Header))
+
+	return nil
+}
+
+// end finishes the request's telemetry, on a panic too, which it does not recover.
+func (m *middleware) end(c fiber.Ctx, r *request) {
+	switch r.phase {
+	case phaseChain:
+		// A handler panicked; the recovery middleware decides the status later.
+		r.route = routePattern(c)
+		if r.route != "" {
+			r.span.SetAttributes(semconv.HTTPRoute(r.route))
+		}
+		r.span.SetAttributes(panicErrorType)
+		r.span.SetStatus(codes.Error, "")
+	case phaseCallbacks:
+		if r.route != "" {
+			r.span.SetAttributes(semconv.HTTPRoute(r.route))
+		}
+		r.span.SetAttributes(callbackPanicErrorType)
+		r.span.SetStatus(codes.Error, "")
+	}
+
+	if r.metrics {
+		m.recordMetrics(c, r)
+	}
+
+	c.SetContext(r.parent)
+	// A body stream is written after return and may watch ctx.Done(), so its context is
+	// left uncanceled - unless the parent is cancelable, where that would leak.
+	if !c.Response().IsBodyStream() || r.parent.Done() != nil {
+		r.cancel()
+	}
+
+	if r.phase != phaseDone && r.span.IsRecording() {
+		// Named last: the formatter is application code and may panic.
+		format := m.SpanNameFormatter
+		if r.naming {
+			format = defaultSpanNameFormatter
+		}
+		r.span.SetName(format(c))
 	}
 }
 
-// defaultSpanNameFormatter is the default formatter for spans created with the fiber
-// integration. Returns the route pathRaw
-func defaultSpanNameFormatter(ctx fiber.Ctx) string {
-	route := ctx.Route().Path
-	if route == "" {
-		return utils.CopyString(ctx.Method())
+func requestCarrierFor(header *fasthttp.RequestHeader, settings *appSettings) propagation.TextMapCarrier {
+	if settings.disableHeaderNormalizing {
+		return (*foldingRequestCarrier)(header)
 	}
-	return utils.CopyString(ctx.Method()) + " " + route
+
+	return (*requestCarrier)(header)
+}
+
+// appSettings caches the last app's settings: a middleware usually serves one app.
+func (m *middleware) appSettings(app *fiber.App) *appSettings {
+	if settings := m.settings.Load(); settings != nil && settings.app == app {
+		return settings
+	}
+
+	settings := &appSettings{
+		app:                      app,
+		disableHeaderNormalizing: app.Config().DisableHeaderNormalizing,
+	}
+	m.settings.Store(settings)
+
+	return settings
+}
+
+// defaultSpanNameFormatter returns "{method} {route}", or "{method}" without a route.
+func defaultSpanNameFormatter(ctx fiber.Ctx) string {
+	route := routePattern(ctx)
+	if route == "" {
+		return ctx.Method()
+	}
+	return ctx.Method() + " " + route
 }

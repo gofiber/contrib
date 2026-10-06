@@ -21,7 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
-	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 )
 
 func TestMiddleware_StaticAssetsDoNotHang(t *testing.T) {
@@ -32,7 +32,7 @@ func TestMiddleware_StaticAssetsDoNotHang(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Clean(filepath.Join(dir, "repro.js")), []byte("console.log('ok');"), 0o644))
 
 	app := fiber.New()
-	app.Use(Middleware())
+	app.Use(New())
 	app.Use("/public", static.New(dir))
 
 	testCases := []struct {
@@ -74,7 +74,7 @@ func TestMiddleware_StreamedChunkedUploadIsNotRecycled(t *testing.T) {
 	)
 
 	app := fiber.New(fiber.Config{StreamRequestBody: true})
-	app.Use(Middleware())
+	app.Use(New())
 	app.Post("/upload", func(c fiber.Ctx) error {
 		defer func() {
 			if recovered := recover(); recovered != nil {
@@ -184,7 +184,7 @@ func TestMiddleware_HeadStreamedResponseReportsNoBody(t *testing.T) {
 	reader := metric.NewManualReader()
 
 	app := fiber.New()
-	app.Use(Middleware(WithMeterProvider(metric.NewMeterProvider(metric.WithReader(reader)))))
+	app.Use(New(WithMeterProvider(metric.NewMeterProvider(metric.WithReader(reader)))))
 	app.All("/stream", func(c fiber.Ctx) error {
 		return c.SendStream(bytes.NewReader(make([]byte, payloadSize)), payloadSize)
 	})
@@ -229,7 +229,7 @@ func TestMiddleware_SkipBodyResponseReportsNoBody(t *testing.T) {
 	reader := metric.NewManualReader()
 
 	app := fiber.New()
-	app.Use(Middleware(WithMeterProvider(metric.NewMeterProvider(metric.WithReader(reader)))))
+	app.Use(New(WithMeterProvider(metric.NewMeterProvider(metric.WithReader(reader)))))
 	app.Get("/stream", func(c fiber.Ctx) error {
 		if err := c.SendStream(bytes.NewReader(make([]byte, payloadSize)), payloadSize); err != nil {
 			return err
@@ -283,7 +283,7 @@ func TestMiddleware_StreamedRequestIgnoresDeclaredLength(t *testing.T) {
 	reader := metric.NewManualReader()
 
 	app := fiber.New(fiber.Config{StreamRequestBody: true, BodyLimit: bodyLimit})
-	app.Use(Middleware(WithMeterProvider(metric.NewMeterProvider(metric.WithReader(reader)))))
+	app.Use(New(WithMeterProvider(metric.NewMeterProvider(metric.WithReader(reader)))))
 	app.Post("/upload", func(c fiber.Ctx) error {
 		// Reject without draining, as an upload guard would.
 		return c.SendStatus(http.StatusRequestEntityTooLarge)
@@ -344,7 +344,7 @@ func TestMiddleware_NotFoundPathDoesNotHang(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Use(Middleware())
+	app.Use(New())
 
 	for i := 0; i < 25; i++ {
 		resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/.well-known/appspecific/com.chrome.devtools.json", nil))

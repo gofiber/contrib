@@ -12,7 +12,7 @@ import (
 
 func TestMiddleware_StoreTracerInContextWithPassLocalsToContext(t *testing.T) {
 	app := fiber.New(fiber.Config{PassLocalsToContext: true})
-	app.Use(Middleware())
+	app.Use(New())
 
 	app.Get("/", func(c fiber.Ctx) error {
 		tracerFromContext, ok := fiber.ValueFromContext[oteltrace.Tracer](c.Context(), tracerKey)
