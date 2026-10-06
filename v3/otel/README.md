@@ -162,7 +162,8 @@ app.Use(fiberotel.New(fiberotel.WithRedactedQueryParams("token", "api_key")))
 // GET /download?token=s3cr3t&page=2 → url.query="token=REDACTED&page=2"
 ```
 
-Names are matched case-sensitively, as the semantic conventions specify.
+Names are matched as Fiber decodes them, so `s%69g` counts as `sig`, and
+case-sensitively, as the semantic conventions specify.
 
 ### Captured headers
 
@@ -323,7 +324,7 @@ are recorded, the context is restored and canceled - and the span records the
 panic as an `exception` event, with the stack that raised it, an `Error`
 status and `error.type=panic`. The response status and size are left out of
 the span and the metrics, because the recovery middleware decides them after
-this one has returned.
+this one has returned. The trace headers are still set on the response.
 
 ### Response attribute callbacks
 

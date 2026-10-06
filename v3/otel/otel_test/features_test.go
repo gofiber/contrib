@@ -1,12 +1,14 @@
 package otel_test
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -426,4 +428,104 @@ func TestCallbacksRunOnlyWhenRecorded(t *testing.T) {
 
 	assert.Zero(t, spanCalls.Load(), "the span is not recording")
 	assert.Zero(t, metricCalls.Load(), "no metric records")
+}
+
+func TestCapturedResponseHeadersSeeTraceHeaders(t *testing.T) {
+	t.Parallel()
+
+	sr := tracetest.NewSpanRecorder()
+	app := fiber.New()
+	app.Use(fiberotel.New(
+		fiberotel.WithTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))),
+		fiberotel.WithoutMetrics(true),
+		fiberotel.WithPropagators(propagation.TraceContext{}),
+		fiberotel.WithTraceResponseHeader("X-Trace-Id"),
+		fiberotel.WithCapturedResponseHeaders("traceparent", "X-Trace-Id"),
+	))
+	app.Get("/", func(c fiber.Ctx) error {
+		c.Set("X-Trace-Id", "stale")
+		return c.SendStatus(fiber.StatusNoContent)
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+	attrs := attribute.NewSet(spans[0].Attributes()...)
+	for _, name := range []string{"traceparent", "x-trace-id"} {
+		value, ok := attrs.Value(attribute.Key("http.response.header." + name))
+		require.True(t, ok, name)
+		assert.Equal(t, []string{resp.Header.Get(name)}, value.AsStringSlice(), name)
+	}
+	assert.Equal(t, spans[0].SpanContext().TraceID().String(), resp.Header.Get("X-Trace-Id"))
+}
+
+func TestUnixSocketPeer(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name   string
+		client string
+	}{
+		{name: "named", client: "client.sock"},
+		{name: "unnamed"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			sr := tracetest.NewSpanRecorder()
+			app := fiber.New()
+			app.Use(fiberotel.New(
+				fiberotel.WithTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))),
+				fiberotel.WithoutMetrics(true),
+			))
+			app.Get("/", func(c fiber.Ctx) error {
+				return c.SendStatus(fiber.StatusNoContent)
+			})
+
+			server := &net.UnixAddr{Name: filepath.Join(dir, "server.sock"), Net: "unix"}
+			listener, err := net.ListenUnix("unix", server)
+			require.NoError(t, err)
+			served := make(chan error, 1)
+			go func() {
+				served <- app.Listener(listener, fiber.ListenConfig{DisableStartupMessage: true})
+			}()
+			t.Cleanup(func() {
+				require.NoError(t, app.Shutdown())
+				<-served
+			})
+
+			var local *net.UnixAddr
+			if tc.client != "" {
+				local = &net.UnixAddr{Name: filepath.Join(dir, tc.client), Net: "unix"}
+			}
+			conn, err := net.DialUnix("unix", local, server)
+			require.NoError(t, err)
+			defer conn.Close()
+			_, err = io.WriteString(conn, "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+			require.NoError(t, err)
+			resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+			require.NoError(t, err)
+			require.NoError(t, resp.Body.Close())
+			require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+			spans := sr.Ended()
+			require.Len(t, spans, 1)
+			attrs := attribute.NewSet(spans[0].Attributes()...)
+			assert.Contains(t, spans[0].Attributes(), semconv.NetworkTransportUnix)
+			assert.False(t, attrs.HasValue(semconv.NetworkPeerPortKey))
+			if local == nil {
+				assert.False(t, attrs.HasValue(semconv.NetworkPeerAddressKey))
+				assert.False(t, attrs.HasValue(semconv.ClientAddressKey))
+				return
+			}
+			assert.Contains(t, spans[0].Attributes(), semconv.NetworkPeerAddress(local.Name))
+			assert.Contains(t, spans[0].Attributes(), semconv.ClientAddress(local.Name))
+		})
+	}
 }

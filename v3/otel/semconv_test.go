@@ -12,6 +12,7 @@ func TestAppendRedactedQuery(t *testing.T) {
 	testCases := []struct {
 		name  string
 		query string
+		extra []string
 		want  string
 	}{
 		{name: "plain", query: "q=otel&page=2", want: "q=otel&page=2"},
@@ -31,15 +32,19 @@ func TestAppendRedactedQuery(t *testing.T) {
 		{name: "value holding equals", query: "sig=a=b&q=1", want: "sig=REDACTED&q=1"},
 		{name: "empty pairs kept", query: "&&sig=a&", want: "&&sig=REDACTED&"},
 		{name: "key as value", query: "q=sig", want: "q=sig"},
+		{name: "encoded name", query: "s%69g=abc&q=1", want: "s%69g=REDACTED&q=1"},
+		{name: "invalid escape kept", query: "s%zzg=abc", want: "s%zzg=abc"},
+		{name: "extra name", query: "token=abc&q=1", extra: []string{"token"}, want: "token=REDACTED&q=1"},
+		{name: "encoded extra name", query: "to%6Ben=abc", extra: []string{"token"}, want: "to%6Ben=REDACTED"},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			require.Equal(t, tc.want, string(appendRedactedQuery(nil, []byte(tc.query), nil)))
+			require.Equal(t, tc.want, string(appendRedactedQuery(nil, []byte(tc.query), tc.extra)))
 			// Appending to a buffer keeps what was already there.
-			require.Equal(t, "x"+tc.want, string(appendRedactedQuery([]byte("x"), []byte(tc.query), nil)))
+			require.Equal(t, "x"+tc.want, string(appendRedactedQuery([]byte("x"), []byte(tc.query), tc.extra)))
 		})
 	}
 }

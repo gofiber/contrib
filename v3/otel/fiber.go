@@ -281,6 +281,7 @@ func (m *middleware) handle(c fiber.Ctx) error {
 		r.naming = false
 	}
 	r.phase = phaseDone
+	m.setTraceHeaders(c, c.Context(), &r)
 
 	if recording {
 		spanStatus, spanMessage := internal.SpanStatusFromHTTPStatusCodeAndSpanKind(r.status, oteltrace.SpanKindServer)
@@ -306,6 +307,11 @@ func (m *middleware) handle(c fiber.Ctx) error {
 		r.span.SetStatus(spanStatus, spanMessage)
 	}
 
+	return nil
+}
+
+// setTraceHeaders writes the trace ID header and the response propagators' fields.
+func (m *middleware) setTraceHeaders(c fiber.Ctx, ctx context.Context, r *request) {
 	if m.TraceResponseHeader != "" {
 		if traceID := r.span.SpanContext().TraceID(); traceID.IsValid() {
 			var encoded [2 * len(traceID)]byte
@@ -315,9 +321,7 @@ func (m *middleware) handle(c fiber.Ctx) error {
 	}
 
 	// Propagate tracing context as headers in outbound response
-	m.ResponsePropagators.Inject(c.Context(), (*responseCarrier)(&c.Response().Header))
-
-	return nil
+	m.ResponsePropagators.Inject(ctx, (*responseCarrier)(&c.Response().Header))
 }
 
 // end finishes the request's telemetry, on a panic too, which it does not recover.
@@ -343,6 +347,10 @@ func (m *middleware) end(c fiber.Ctx, r *request) {
 		m.recordMetrics(c, r)
 	}
 
+	var ctx context.Context
+	if r.phase != phaseDone {
+		ctx = c.Context()
+	}
 	c.SetContext(r.parent)
 	// A body stream is written after return and may watch ctx.Done(), so its context is
 	// left uncanceled - unless the parent is cancelable, where that would leak.
@@ -350,13 +358,16 @@ func (m *middleware) end(c fiber.Ctx, r *request) {
 		r.cancel()
 	}
 
-	if r.phase != phaseDone && r.span.IsRecording() {
-		// Named last: the formatter is application code and may panic.
-		format := m.SpanNameFormatter
-		if r.naming {
-			format = defaultSpanNameFormatter
+	if r.phase != phaseDone {
+		// Last: the propagators and the formatter are application code and may panic.
+		m.setTraceHeaders(c, ctx, r)
+		if r.span.IsRecording() {
+			format := m.SpanNameFormatter
+			if r.naming {
+				format = defaultSpanNameFormatter
+			}
+			r.span.SetName(format(c))
 		}
-		r.span.SetName(format(c))
 	}
 }
 

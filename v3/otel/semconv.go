@@ -43,6 +43,7 @@ func (m *middleware) startAttributes(c fiber.Ctx, r *request, settings *appSetti
 	var (
 		transport attribute.KeyValue
 		peerIP    net.IP
+		peerName  string
 		peerPort  int
 	)
 	switch addr := c.RequestCtx().RemoteAddr().(type) {
@@ -51,6 +52,10 @@ func (m *middleware) startAttributes(c fiber.Ctx, r *request, settings *appSetti
 		peerIP, peerPort = addr.IP, addr.Port
 	case *net.UnixAddr:
 		transport = semconv.NetworkTransportUnix
+		// An unnamed peer reads as "@" on Linux.
+		if addr.Name != "@" {
+			peerName = addr.Name
+		}
 	}
 
 	size := len(host) + len(path) + len(rawUserAgent)
@@ -62,7 +67,7 @@ func (m *middleware) startAttributes(c fiber.Ctx, r *request, settings *appSetti
 	var proxiedIP string
 	proxied := false
 	if m.clientIP {
-		size += maxIPLength
+		size += maxIPLength + len(peerName)
 		if proxied = c.IsProxyTrusted(); proxied {
 			proxiedIP = c.IP()
 			size += len(proxiedIP)
@@ -78,8 +83,11 @@ func (m *middleware) startAttributes(c fiber.Ctx, r *request, settings *appSetti
 	queryEnd := len(buf)
 	buf = append(buf, rawUserAgent...)
 	userAgentEnd := len(buf)
-	if m.clientIP && peerIP != nil {
-		buf = appendIP(buf, peerIP)
+	if m.clientIP {
+		if peerIP != nil {
+			buf = appendIP(buf, peerIP)
+		}
+		buf = append(buf, peerName...)
 	}
 	peerEnd := len(buf)
 	buf = append(buf, proxiedIP...)
@@ -384,8 +392,12 @@ func appendRedactedQuery(dst, query []byte, extra []string) []byte {
 	}
 }
 
-// isSensitiveQueryParam matches case-sensitively, as semconv specifies.
+// isSensitiveQueryParam matches the name as Fiber decodes it, case-sensitively, as semconv specifies.
 func isSensitiveQueryParam(key []byte, extra []string) bool {
+	if bytes.ContainsAny(key, "%+") {
+		var decoded [64]byte
+		key = fasthttp.AppendUnquotedArg(decoded[:0], key)
+	}
 	for _, sensitive := range sensitiveQueryParams {
 		if string(key) == sensitive {
 			return true

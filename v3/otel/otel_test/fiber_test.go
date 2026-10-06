@@ -1268,6 +1268,54 @@ func TestHandlerPanic(t *testing.T) {
 	assert.Equal(t, uint64(1), requestSizeCount)
 }
 
+func TestTraceHeadersOnPanic(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name    string
+		handler fiber.Handler
+		opts    []fiberotel.Option
+	}{
+		{name: "handler", handler: panickingHandler},
+		{
+			name: "response callback",
+			handler: func(c fiber.Ctx) error {
+				return c.SendStatus(fiber.StatusOK)
+			},
+			opts: []fiberotel.Option{fiberotel.WithCustomResponseAttributes(func(fiber.Ctx) []attribute.KeyValue {
+				panic("callback exploded")
+			})},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sr := tracetest.NewSpanRecorder()
+			app := fiber.New()
+			app.Use(recover.New())
+			app.Use(fiberotel.New(append([]fiberotel.Option{
+				fiberotel.WithTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))),
+				fiberotel.WithoutMetrics(true),
+				fiberotel.WithPropagators(propagation.TraceContext{}),
+				fiberotel.WithTraceResponseHeader("X-Trace-Id"),
+			}, tc.opts...)...))
+			app.Get("/", tc.handler)
+
+			resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+			require.NoError(t, err)
+			require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+
+			spans := sr.Ended()
+			require.Len(t, spans, 1)
+			traceID := spans[0].SpanContext().TraceID().String()
+			assert.Equal(t, traceID, resp.Header.Get("X-Trace-Id"))
+			assert.Contains(t, resp.Header.Get("Traceparent"), traceID)
+		})
+	}
+}
+
 func TestCustomResponseAttributesAfterHandlerError(t *testing.T) {
 	sr := tracetest.NewSpanRecorder()
 	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))

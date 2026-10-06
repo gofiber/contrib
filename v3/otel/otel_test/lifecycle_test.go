@@ -188,15 +188,15 @@ func TestStreamedResponseContextWithCancelableParent(t *testing.T) {
 				fiberotel.WithTracerProvider(sdktrace.NewTracerProvider()),
 				fiberotel.WithoutMetrics(true),
 			))
-			var handlerContexts []context.Context
+			handlerContexts := make(chan context.Context, 2)
 			app.Get("/events", func(c fiber.Ctx) error {
-				handlerContexts = append(handlerContexts, c.Context())
+				handlerContexts <- c.Context()
 				return c.SendStreamWriter(func(w *bufio.Writer) {
 					_, _ = w.WriteString("data: event\n\n")
 				})
 			})
 			app.Get("/file", func(c fiber.Ctx) error {
-				handlerContexts = append(handlerContexts, c.Context())
+				handlerContexts <- c.Context()
 				return c.SendFile(filepath.Join(dir, "asset.txt"))
 			})
 
@@ -224,8 +224,8 @@ func TestStreamedResponseContextWithCancelableParent(t *testing.T) {
 			}
 
 			require.Len(t, handlerContexts, 2)
-			for _, ctx := range handlerContexts {
-				assert.ErrorIs(t, ctx.Err(), context.Canceled)
+			for range 2 {
+				assert.ErrorIs(t, (<-handlerContexts).Err(), context.Canceled)
 			}
 		})
 	}
