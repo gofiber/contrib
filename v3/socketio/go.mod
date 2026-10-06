@@ -9,7 +9,7 @@ require (
 	github.com/gofiber/utils/v2 v2.6.1
 	github.com/google/uuid v1.6.0
 	github.com/stretchr/testify v1.12.1
-	github.com/valyala/fasthttp v1.74.0
+	github.com/valyala/fasthttp v1.75.0
 )
 
 require (
