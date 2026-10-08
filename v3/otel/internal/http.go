@@ -10,20 +10,15 @@ import (
 
 // SpanStatusFromHTTPStatusCodeAndSpanKind generates a status code and a message
 // as specified by the OpenTelemetry specification for a span.
-// Exclude 4xx for SERVER to set the appropriate status.
+// Any code in [100, 600) is valid; 4xx is not an error on SERVER spans.
 func SpanStatusFromHTTPStatusCodeAndSpanKind(code int, spanKind trace.SpanKind) (codes.Code, string) {
-	// This code block ignores the HTTP 306 status code. The 306 status code is no longer in use.
-	if http.StatusText(code) == "" {
+	if code < http.StatusContinue || code >= 600 {
 		return codes.Error, fmt.Sprintf("Invalid HTTP status code %d", code)
 	}
 
-	if (code >= http.StatusContinue && code < http.StatusBadRequest) ||
-		(spanKind == trace.SpanKindServer && isCode4xx(code)) {
-		return codes.Unset, ""
+	if code >= http.StatusInternalServerError || (code >= http.StatusBadRequest && spanKind != trace.SpanKindServer) {
+		return codes.Error, ""
 	}
-	return codes.Error, ""
-}
 
-func isCode4xx(code int) bool {
-	return code >= http.StatusBadRequest && code <= http.StatusUnavailableForLegalReasons
+	return codes.Unset, ""
 }

@@ -848,8 +848,13 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 
 	// Only the duration histogram needs the clock.
 	var start time.Time
+	var upstream time.Duration
 	if m.requestDuration != nil {
 		start = requestStart(ctx)
+		// Requests fasthttp rejects before routing carry a stale stamp, so unmatched ones start here.
+		if m.recordUnmatched {
+			upstream = time.Since(start)
+		}
 	}
 
 	chainErr := ctx.Next()
@@ -862,11 +867,14 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		chainTime = time.Since(start)
 	}
 
-	routePath, ok := m.pathLabel(ctx)
+	routePath, matched, ok := m.pathLabel(ctx)
 	if !ok {
 		// Nothing will be recorded, so there is no status code to buy by taking over the
 		// error handler - and the two paths above that also stand aside return it too.
 		return chainErr
+	}
+	if !matched {
+		chainTime -= upstream
 	}
 
 	// Fiber runs the application error handler only after the chain unwinds, so the
@@ -1068,7 +1076,7 @@ func (m *middleware) fillSeries(s *series, labels []string, class string) {
 
 // requestStart is the timestamp fasthttp took before calling the handler, which
 // saves a clock read and puts routing and earlier middleware into the duration.
-// A context that did not come through fasthttp's server carries none.
+// A context nothing stamped carries none.
 func requestStart(ctx fiber.Ctx) time.Time {
 	if start := ctx.RequestCtx().Time(); !start.IsZero() {
 		return start
@@ -1283,10 +1291,10 @@ func (m *middleware) skipped(routePath string) bool {
 	return false
 }
 
-// pathLabel returns the path label and whether the request should be recorded.
+// pathLabel returns the path label, whether a route matched, and whether to record the request.
 // Owning both filters is what keeps the two namespaces apart: SkipURIs holds route
 // patterns and never reaches the unmatched label, which is a value.
-func (m *middleware) pathLabel(ctx fiber.Ctx) (string, bool) {
+func (m *middleware) pathLabel(ctx fiber.Ctx) (label string, matched, record bool) {
 	if ctx.Matched() {
 		// A registered route always carries a handler. DefaultCtx substitutes a synthetic
 		// Route holding the raw path, and a custom Ctx may return nil - taking either at
@@ -1295,12 +1303,12 @@ func (m *middleware) pathLabel(ctx fiber.Ctx) (string, bool) {
 			// Registration-time data, so no copy is needed - but a pattern built from
 			// external config can still hold raw bytes, and the resulting panic would
 			// land on the connection goroutine and take the process with it.
-			label := validLabel(normalizePath(route.Path))
-			return label, !m.skipped(label)
+			label = validLabel(normalizePath(route.Path))
+			return label, true, !m.skipped(label)
 		}
 	}
 
-	return m.unmatchedLabel, m.recordUnmatched
+	return m.unmatchedLabel, false, m.recordUnmatched
 }
 
 // statusClass maps a status code onto its "Nxx" class label.

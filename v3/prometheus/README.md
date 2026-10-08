@@ -149,7 +149,9 @@ is not known yet.
 `http_request_duration_seconds` runs from the timestamp fasthttp takes before
 calling the handler until the handler chain and, if it ran, the error handler
 have returned. Routing and middleware mounted before this one are part of it;
-`DynamicLabels` functions, which run after the chain, are not.
+`DynamicLabels` functions, which run after the chain, are not. Requests recorded
+under `UnmatchedRouteLabel` are the exception, timed from when this middleware
+runs — see below.
 
 `http_request_size_bytes` and `http_response_size_bytes` record a payload only
 when its size is known — either `Content-Length` is set, or the body is buffered
@@ -190,8 +192,17 @@ Requests that miss every registered route are not recorded unless
 rejects before routing — a body over `BodyLimit`, oversized headers, a read
 timeout — is counted as a `200`. Fiber answers those through its server error
 handler, which replays the `Use` chain with non-`Use` routes skipped and writes
-the real status only afterwards, and Fiber v3.4.0 offers no way to tell that
+the real status only afterwards, and Fiber v3.5.0 offers no way to tell that
 replay apart from an ordinary request answered by `Use` handlers.
+
+fasthttp does not stamp such a request either. On a keep-alive connection it
+still carries the previous request's timestamp, and timing it from there would
+add however long the connection sat idle — a duration the client chooses. So
+with the flag on, unmatched requests are timed from when this middleware runs,
+and middleware mounted before it is not part of their duration. Matched requests
+keep fasthttp's timestamp, which is always fresh for them; the flag still costs
+them a clock read, because whether a request matched is only known once the
+chain has returned.
 
 A request answered entirely by `app.Use` handlers counts as unmatched too:
 `static.New`, or a `Use`-mounted guard returning 401, never matches a non-`Use`

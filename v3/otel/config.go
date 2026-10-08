@@ -21,6 +21,12 @@ type config struct {
 	CustomMetricAttributes         func(fiber.Ctx) []attribute.KeyValue
 	CustomResponseAttributes       func(fiber.Ctx) []attribute.KeyValue
 	CustomResponseMetricAttributes func(fiber.Ctx) []attribute.KeyValue
+	PublicEndpointFn               func(fiber.Ctx) bool
+	ResponsePropagators            propagation.TextMapPropagator
+	SpanStartOptions               []oteltrace.SpanStartOption
+	CapturedRequestHeaders         []string
+	CapturedResponseHeaders        []string
+	RedactedQueryParams            []string
 	clientIP                       bool
 	withoutMetrics                 bool
 }
@@ -62,7 +68,7 @@ func WithTraceResponseHeader(header string) Option {
 }
 
 // WithTracerProvider specifies a tracer provider to use for creating a tracer.
-// If none is specified, the global provider is used.
+// If none is specified, the global provider is used. A noop provider starts no spans.
 func WithTracerProvider(provider oteltrace.TracerProvider) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.TracerProvider = provider
@@ -77,17 +83,16 @@ func WithMeterProvider(provider otelmetric.MeterProvider) Option {
 	})
 }
 
-// WithSpanNameFormatter takes a function that will be called on every
-// request and the returned string will become the Span Name
+// WithSpanNameFormatter takes a function that names recording spans once the route is known.
+// The default is "{method} {route}", or "{method}" without a route.
 func WithSpanNameFormatter(f func(ctx fiber.Ctx) string) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.SpanNameFormatter = f
 	})
 }
 
-// WithPort specifies the value to use when setting the `server.port`
-// attribute on metrics/spans. Attribute is "Conditionally Required: If not
-// default (`80` for `http`, `443` for `https`).
+// WithPort sets server.port on spans and metrics. Without it, spans use the Host header's
+// port and metrics carry none, as server.port is opt-in on metrics.
 func WithPort(port int) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.Port = &port
@@ -138,15 +143,67 @@ func WithCustomResponseMetricAttributes(f func(ctx fiber.Ctx) []attribute.KeyVal
 	})
 }
 
-// WithClientIP specifies whether to collect the client's IP address
-// from the request. This is enabled by default.
+// WithPublicEndpoint starts a new trace for every request, linked to the caller's, so
+// untrusted clients cannot choose the trace or its sampling.
+func WithPublicEndpoint() Option {
+	return WithPublicEndpointFn(func(fiber.Ctx) bool { return true })
+}
+
+// WithPublicEndpointFn applies WithPublicEndpoint to the requests f returns true for.
+func WithPublicEndpointFn(f func(ctx fiber.Ctx) bool) Option {
+	return optionFunc(func(cfg *config) {
+		cfg.PublicEndpointFn = f
+	})
+}
+
+// WithSpanStartOptions adds options to every server span, applied after the middleware's own.
+func WithSpanStartOptions(opts ...oteltrace.SpanStartOption) Option {
+	return optionFunc(func(cfg *config) {
+		cfg.SpanStartOptions = append(cfg.SpanStartOptions, opts...)
+	})
+}
+
+// WithResponsePropagators sets the propagators that inject the trace context into responses.
+// They default to the extraction propagators.
+func WithResponsePropagators(propagators propagation.TextMapPropagator) Option {
+	return optionFunc(func(cfg *config) {
+		cfg.ResponsePropagators = propagators
+	})
+}
+
+// WithCapturedRequestHeaders records the named request headers as http.request.header.<name>
+// span attributes. Names are matched case-insensitively.
+func WithCapturedRequestHeaders(headers ...string) Option {
+	return optionFunc(func(cfg *config) {
+		cfg.CapturedRequestHeaders = append(cfg.CapturedRequestHeaders, headers...)
+	})
+}
+
+// WithCapturedResponseHeaders records the named response headers as http.response.header.<name>.
+func WithCapturedResponseHeaders(headers ...string) Option {
+	return optionFunc(func(cfg *config) {
+		cfg.CapturedResponseHeaders = append(cfg.CapturedResponseHeaders, headers...)
+	})
+}
+
+// WithRedactedQueryParams redacts these query parameters in url.query, in addition to the
+// ones semconv names. Names are matched case-sensitively.
+func WithRedactedQueryParams(params ...string) Option {
+	return optionFunc(func(cfg *config) {
+		cfg.RedactedQueryParams = append(cfg.RedactedQueryParams, params...)
+	})
+}
+
+// WithClientIP specifies whether to record client.address and the peer's address and port.
+// This is enabled by default.
 func WithClientIP(collect bool) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.clientIP = collect
 	})
 }
 
-// WithCollectClientIP is deprecated and kept for backwards compatibility.
+// WithCollectClientIP is kept for backwards compatibility.
+//
 // Deprecated: use WithClientIP instead.
 func WithCollectClientIP(collect bool) Option {
 	return WithClientIP(collect)

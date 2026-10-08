@@ -1,6 +1,7 @@
 package prometheus
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -30,6 +31,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/model"
 	"github.com/valyala/fasthttp"
+	"github.com/valyala/fasthttp/fasthttputil"
 	"go.opentelemetry.io/otel"
 	tracesdk "go.opentelemetry.io/otel/sdk/trace"
 )
@@ -4989,22 +4991,30 @@ func TestInvalidUTF8DynamicValueIsNotCached(t *testing.T) {
 func TestDurationStartsWhereFasthttpHandsOver(t *testing.T) {
 	const upstreamCost = 80 * time.Millisecond
 
-	app := fiber.New()
-	app.Use(func(c fiber.Ctx) error {
-		time.Sleep(upstreamCost)
-		return c.Next()
-	})
-	app.Use(New(Config{DisableGoCollector: true, DisableProcessCollector: true}))
-	app.Get("/fast", func(c fiber.Ctx) error {
-		return c.SendString("ok")
-	})
+	for _, track := range []bool{false, true} {
+		t.Run(fmt.Sprintf("TrackUnmatchedRequests=%t", track), func(t *testing.T) {
+			app := fiber.New()
+			app.Use(func(c fiber.Ctx) error {
+				time.Sleep(upstreamCost)
+				return c.Next()
+			})
+			app.Use(New(Config{
+				DisableGoCollector:      true,
+				DisableProcessCollector: true,
+				TrackUnmatchedRequests:  track,
+			}))
+			app.Get("/fast", func(c fiber.Ctx) error {
+				return c.SendString("ok")
+			})
 
-	get(t, app, "/fast")
+			get(t, app, "/fast")
 
-	metrics := getMetrics(t, app, "")
-	series := `http_request_duration_seconds_sum{method="GET",path="/fast",status_code="200"}`
-	if seconds := gaugeValue(t, metrics, series); seconds < upstreamCost.Seconds() {
-		t.Fatalf("expected the upstream middleware's %s to be part of the duration, got %vs", upstreamCost, seconds)
+			metrics := getMetrics(t, app, "")
+			series := `http_request_duration_seconds_sum{method="GET",path="/fast",status_code="200"}`
+			if seconds := gaugeValue(t, metrics, series); seconds < upstreamCost.Seconds() {
+				t.Fatalf("expected the upstream middleware's %s to be part of the duration, got %vs", upstreamCost, seconds)
+			}
+		})
 	}
 }
 
@@ -5041,5 +5051,93 @@ func TestDurationWithoutFasthttpTimestampReadsTheClock(t *testing.T) {
 	}
 	if seconds := histogram.GetSampleSum(); seconds < 0 || seconds > 1 {
 		t.Fatalf("expected a duration measured from the middleware's own clock read, got %vs", seconds)
+	}
+}
+
+// A request rejected before routing must not be charged the keep-alive idle time.
+func TestRejectedRequestDurationExcludesKeepAliveIdle(t *testing.T) {
+	const idle = 300 * time.Millisecond
+
+	registry := prometheus.NewRegistry()
+	app := fiber.New(fiber.Config{BodyLimit: 16})
+	app.Use(New(Config{
+		Registerer:              registry,
+		Gatherer:                registry,
+		DisableGoCollector:      true,
+		DisableProcessCollector: true,
+		TrackUnmatchedRequests:  true,
+	}))
+	app.Post("/upload", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusNoContent)
+	})
+
+	ln := fasthttputil.NewInmemoryListener()
+	served := make(chan error, 1)
+	go func() {
+		served <- app.Listener(ln, fiber.ListenConfig{DisableStartupMessage: true})
+	}()
+	t.Cleanup(func() {
+		if err := app.Shutdown(); err != nil {
+			t.Errorf("shutting down: %v", err)
+		}
+		<-served
+	})
+
+	conn, err := ln.Dial()
+	if err != nil {
+		t.Fatalf("dialing: %v", err)
+	}
+	defer conn.Close()
+	reader := bufio.NewReader(conn)
+
+	post := func(body string) int {
+		t.Helper()
+
+		if _, err := fmt.Fprintf(conn, "POST /upload HTTP/1.1\r\nHost: example.com\r\nContent-Length: %d\r\n\r\n%s", len(body), body); err != nil {
+			t.Fatalf("writing the request: %v", err)
+		}
+		resp, err := http.ReadResponse(reader, nil)
+		if err != nil {
+			t.Fatalf("reading the response: %v", err)
+		}
+		if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+			t.Fatalf("reading the response body: %v", err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			t.Fatalf("closing the response body: %v", err)
+		}
+		return resp.StatusCode
+	}
+
+	if status := post("ok"); status != fiber.StatusNoContent {
+		t.Fatalf("expected 204, got %d", status)
+	}
+	time.Sleep(idle)
+	if status := post(strings.Repeat("x", 64)); status != fiber.StatusRequestEntityTooLarge {
+		t.Fatalf("expected the body over BodyLimit to be rejected with 413, got %d", status)
+	}
+
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("gathering metrics: %v", err)
+	}
+	var rejected *dto.Histogram
+	for _, family := range families {
+		if family.GetName() != "http_request_duration_seconds" {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			for _, label := range metric.GetLabel() {
+				if label.GetName() == "path" && label.GetValue() == "/__unmatched__" {
+					rejected = metric.GetHistogram()
+				}
+			}
+		}
+	}
+	if rejected.GetSampleCount() != 1 {
+		t.Fatalf("expected the rejected request to be recorded once as unmatched, got %d", rejected.GetSampleCount())
+	}
+	if seconds := rejected.GetSampleSum(); seconds >= (idle / 2).Seconds() {
+		t.Fatalf("expected the duration to exclude the %s the connection sat idle, got %vs", idle, seconds)
 	}
 }
