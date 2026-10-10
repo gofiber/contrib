@@ -42,7 +42,7 @@ jwtware.New(config ...jwtware.Config) func(*fiber.Ctx) error
 | ErrorHandler       | `fiber.ErrorHandler`                 | Handler executed when token validation fails. Allows customization of JWT error responses. Optional.                                                                                                                                                                   | `401 Invalid or expired JWT` |
 | SigningKey         | `SigningKey`                         | Primary key used to validate tokens. Used as a fallback if SigningKeys is empty. At least one of KeyFunc, JWKSetURLs, SigningKeys, or SigningKey is required.                                                                                                          | `nil`                        |
 | SigningKeys        | `map[string]SigningKey`              | Map of keys used to validate tokens with the "kid" field. At least one of KeyFunc, JWKSetURLs, SigningKeys, or SigningKey is required.                                                                                                                                 | `nil`                        |
-| ContextKey         | `string`                             | Key used to store user information in the context. Optional.                                                                                                                                                                                                           | `"user"`                     |
+| ContextKey         | `any`                                | Key used to store user information in the context. Optional.                                                                                                                                                                                                           | `"user"`                     |
 | Claims             | `jwt.Claims`                         | Defines the structure of token claims. Extendable for custom claims data. Optional.                                                                                                                                                                                    | `jwt.MapClaims{}`            |
 | TokenLookup        | `string`                             | Specifies how to extract the token from the request. Format: `"<source>:<name>"` (e.g., `"header:Authorization"`, `"query:token"`, `"param:token"`, `"cookie:token"`). Optional.                                                                                                 | `"header:Authorization"`     |
 | TokenProcessorFunc | `func(token string) (string, error)` | Processes the token extracted using `TokenLookup`. Optional.                                                                                                                                                                                                           | `nil`                        |
@@ -305,5 +305,38 @@ func customKeyFunc() jwt.Keyfunc {
 
   return []byte(signingKey), nil
  }
+}
+```
+
+## Custom Context Key Example
+
+Using a custom struct as a context key is recommended in Go to avoid context key collisions:
+
+```go
+package main
+
+import (
+	"github.com/gofiber/fiber/v2"
+	jwtware "github.com/gofiber/contrib/jwt"
+	"github.com/golang-jwt/jwt/v5"
+)
+
+type userCtxKey struct{}
+
+func main() {
+	app := fiber.New()
+
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{Key: []byte("secret")},
+		ContextKey: userCtxKey{},
+	}))
+
+	app.Get("/protected", func(c *fiber.Ctx) error {
+		user := c.Locals(userCtxKey{}).(*jwt.Token)
+		claims := user.Claims.(jwt.MapClaims)
+		return c.SendString("Welcome " + claims["name"].(string))
+	})
+
+	app.Listen(":3000")
 }
 ```

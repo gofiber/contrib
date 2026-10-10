@@ -43,7 +43,7 @@ type Config struct {
 
 	// ContextKey specifies the key used to store user information in the context.
 	// Optional. Default: "user".
-	ContextKey string
+	ContextKey any
 
 	// Claims defines the structure of token claims.
 	// Optional. Default: jwt.MapClaims
@@ -118,7 +118,7 @@ func makeCfg(config []Config) (cfg Config) {
 	if cfg.SigningKey.Key == nil && len(cfg.SigningKeys) == 0 && len(cfg.JWKSetURLs) == 0 && cfg.KeyFunc == nil {
 		panic("Fiber: JWT middleware configuration: At least one of the following is required: KeyFunc, JWKSetURLs, SigningKeys, or SigningKey.")
 	}
-	if cfg.ContextKey == "" {
+	if cfg.ContextKey == nil || cfg.ContextKey == "" {
 		cfg.ContextKey = "user"
 	}
 	if cfg.Claims == nil {

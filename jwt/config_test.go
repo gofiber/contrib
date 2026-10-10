@@ -109,3 +109,45 @@ func TestCustomTokenLookup(t *testing.T) {
 		t.Fatalf("AuthScheme should be %s", scheme)
 	}
 }
+
+func TestContextKeyConfiguration(t *testing.T) {
+	t.Parallel()
+
+	// Default when nil
+	cfgNil := makeCfg([]Config{{
+		SigningKey: SigningKey{Key: []byte("")},
+	}})
+	if cfgNil.ContextKey != "user" {
+		t.Fatalf("Expected ContextKey to be 'user' when nil, got %v", cfgNil.ContextKey)
+	}
+
+	// Default when empty string
+	cfgEmpty := makeCfg([]Config{{
+		SigningKey: SigningKey{Key: []byte("")},
+		ContextKey: "",
+	}})
+	if cfgEmpty.ContextKey != "user" {
+		t.Fatalf("Expected ContextKey to be 'user' when empty string, got %v", cfgEmpty.ContextKey)
+	}
+
+	// Custom string
+	cfgCustomStr := makeCfg([]Config{{
+		SigningKey: SigningKey{Key: []byte("")},
+		ContextKey: "custom-token",
+	}})
+	if cfgCustomStr.ContextKey != "custom-token" {
+		t.Fatalf("Expected ContextKey to be 'custom-token', got %v", cfgCustomStr.ContextKey)
+	}
+
+	// Custom struct
+	type testKey struct{}
+	key := testKey{}
+	cfgStruct := makeCfg([]Config{{
+		SigningKey: SigningKey{Key: []byte("")},
+		ContextKey: key,
+	}})
+	if cfgStruct.ContextKey != key {
+		t.Fatalf("Expected ContextKey to be struct key %v, got %v", key, cfgStruct.ContextKey)
+	}
+}
+

@@ -3,6 +3,7 @@ package jwtware_test
 import (
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,12 +17,16 @@ import (
 	jwtware "github.com/gofiber/contrib/jwt"
 )
 
+type customCtxKeyType struct{}
+
 type TestToken struct {
 	SigningMethod string
 	Token         string
 }
 
 var (
+	ctxKeyUser = customCtxKeyType{}
+
 	hamac = []TestToken{
 		{
 			SigningMethod: jwtware.HS256,
@@ -502,3 +507,38 @@ func customKeyfunc() jwt.Keyfunc {
 		return []byte(defaultSigningKey), nil
 	}
 }
+
+func TestCustomStructContextKey(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{Key: []byte(defaultSigningKey)},
+		ContextKey: ctxKeyUser,
+	}))
+
+	app.Get("/", func(c *fiber.Ctx) error {
+		token, ok := c.Locals(ctxKeyUser).(*jwt.Token)
+		if !ok || token == nil {
+			return c.SendStatus(fiber.StatusInternalServerError)
+		}
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if !ok {
+			return c.SendStatus(fiber.StatusInternalServerError)
+		}
+		return c.SendString(claims["name"].(string))
+	})
+
+	req := httptest.NewRequest(fiber.MethodGet, "/", nil)
+	req.Header.Set(fiber.HeaderAuthorization, "Bearer "+hamac[0].Token)
+
+	resp, err := app.Test(req)
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, fiber.StatusOK, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, "John Doe", string(body))
+}
+
