@@ -896,8 +896,9 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	elapsed := chainTime.Seconds()
 
 	// Fiber's timeout middleware answers through TimeoutErrorWithCode, which parks the
-	// 408 and copies it over the live response only after the chain unwinds - so
-	// ctx.Response() still holds the default 200 the timed-out handler left.
+	// timeout response (503 by default) and copies it over the live response only
+	// after the chain unwinds - so ctx.Response() still holds the default 200 the
+	// timed-out handler left.
 	resp := ctx.Response()
 	if timedOut := ctx.RequestCtx().LastTimeoutErrorResponse(); timedOut != nil {
 		resp = timedOut

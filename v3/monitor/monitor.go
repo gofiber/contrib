@@ -107,7 +107,7 @@ func (m *middleware) instrument(c fiber.Ctx) error {
 
 	// Fiber's timeout middleware parks its response separately because the timed
 	// out handler can still own the live response buffer. Read that response when
-	// present so a client-visible 408 is not classified as a 200.
+	// present so a client-visible timeout status (503 by default) is not classified as a 200.
 	response := c.Response()
 	if timedOut := c.RequestCtx().LastTimeoutErrorResponse(); timedOut != nil {
 		response = timedOut

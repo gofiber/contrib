@@ -218,9 +218,10 @@ func TestFiberTimeoutIsRecordedAsTimeout(t *testing.T) {
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/slow", nil))
 	require.NoError(t, err)
 	assert.NoError(t, resp.Body.Close())
-	assert.Equal(t, fiber.StatusRequestTimeout, resp.StatusCode)
-	assert.Equal(t, uint64(1), m.status4.Load())
+	assert.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
+	assert.Equal(t, uint64(1), m.status5.Load())
 	assert.Zero(t, m.status2.Load())
+	assert.Zero(t, m.status4.Load())
 }
 
 func TestRecoveredPanicDoesNotLeakInFlight(t *testing.T) {

@@ -4400,7 +4400,7 @@ func TestExtendedGoCollectorIsTolerated(t *testing.T) {
 }
 
 // TestFiberTimeoutIsRecordedAsTimeout covers Fiber's timeout middleware, which
-// parks its 408 and copies it over the live response only after the chain unwinds
+// parks its 503 and copies it over the live response only after the chain unwinds
 // - so reading ctx.Response() would report every production timeout as a success.
 func TestFiberTimeoutIsRecordedAsTimeout(t *testing.T) {
 	app := newAppWithMiddleware(Config{}, "")
@@ -4417,13 +4417,13 @@ func TestFiberTimeoutIsRecordedAsTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected request error: %v", err)
 	}
-	if resp.StatusCode != fiber.StatusRequestTimeout {
-		t.Fatalf("expected the client to receive 408, got %d", resp.StatusCode)
+	if resp.StatusCode != fiber.StatusServiceUnavailable {
+		t.Fatalf("expected the client to receive 503, got %d", resp.StatusCode)
 	}
 
 	metrics := getMetrics(t, app, "")
-	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/slow",status_code="408"} 1`) {
-		t.Fatalf("expected the timeout to be recorded as 408, got %q", metrics)
+	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/slow",status_code="503"} 1`) {
+		t.Fatalf("expected the timeout to be recorded as 503, got %q", metrics)
 	}
 	if strings.Contains(metrics, `path="/slow",status_code="200"`) {
 		t.Fatalf("expected no 200 series for the timed-out request, got %q", metrics)
