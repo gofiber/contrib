@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/v3/i18n
 go 1.26.0
 
 require (
-	github.com/gofiber/fiber/v3 v3.5.0
+	github.com/gofiber/fiber/v3 v3.6.0
 	github.com/gofiber/utils/v2 v2.6.1
 	github.com/nicksnyder/go-i18n/v2 v2.6.1
 	github.com/stretchr/testify v1.12.1
