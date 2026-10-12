@@ -8,7 +8,7 @@ id: websocket
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Test%20websocket/badge.svg)
 
-Based on [Fasthttp WebSocket](https://github.com/fasthttp/websocket) for [Fiber](https://github.com/gofiber/fiber) with available `fiber.Ctx` methods like [Locals](http://docs.gofiber.io/ctx#locals), [Params](http://docs.gofiber.io/ctx#params), [Query](http://docs.gofiber.io/ctx#query) and [Cookies](http://docs.gofiber.io/ctx#cookies).
+Based on [Fasthttp WebSocket](https://github.com/fasthttp/websocket) for [Fiber](https://github.com/gofiber/fiber) with available `fiber.Ctx` methods like [Locals](https://docs.gofiber.io/api/ctx#locals), [Params](https://docs.gofiber.io/api/ctx#params), [Query](https://docs.gofiber.io/api/ctx#query) and [Cookies](https://docs.gofiber.io/api/ctx#cookies).
 
 For a plain WebSocket event-bus helper, use the [`event`](./event/README.md) subpackage. It keeps ordinary WebSocket wire compatibility and is separate from the Socket.IO protocol implementation in `github.com/gofiber/contrib/v3/socketio`.
 
