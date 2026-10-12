@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/felixge/fgprof v0.9.5
-	github.com/gofiber/fiber/v3 v3.5.0
+	github.com/gofiber/fiber/v3 v3.6.0
 	github.com/stretchr/testify v1.12.1
 )
 
