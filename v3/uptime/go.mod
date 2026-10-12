@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/v3/uptime
 go 1.26.0
 
 require (
-	github.com/gofiber/fiber/v3 v3.5.0
+	github.com/gofiber/fiber/v3 v3.6.0
 	github.com/gofiber/storage/redis/v3 v3.6.1
 	github.com/gofiber/utils/v2 v2.6.1
 	github.com/redis/go-redis/v9 v9.23.0
