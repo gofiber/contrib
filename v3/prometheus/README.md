@@ -436,8 +436,9 @@ That applies only to requests it records. When the middleware stands aside —
 `SkipURIs` pattern — there is no status code to be gained, so the error is
 returned unchanged and surfaces where it would without the middleware mounted.
 
-A request answered by Fiber's `timeout` middleware is recorded with the `408` the
-client receives. That middleware answers through fasthttp's
+A request answered by Fiber's `timeout` middleware is recorded with the status the
+client receives (`503` by default since Fiber v3.6.0, or whatever `OnTimeout`
+returns). That middleware answers through fasthttp's
 `RequestCtx.TimeoutErrorWithCode`, which parks the response and installs it only
 after the whole chain has unwound, so the live response still reads `200` at the
 point metrics are taken; the middleware reads the parked one instead.
