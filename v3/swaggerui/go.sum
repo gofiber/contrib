@@ -1,12 +1,12 @@
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
-github.com/fxamacker/cbor/v2 v2.9.4 h1:xwjVlxEMR3S605oUlgBjKLTTeGFciYPGYCtF/35LKGo=
-github.com/fxamacker/cbor/v2 v2.9.4/go.mod h1:vM4b+DJCtHn+zz7h3FFp/hDAI9WNWCsZj23V5ytsSxQ=
+github.com/fxamacker/cbor/v2 v2.9.6 h1:NHZPxuUjJXQjX9itA785y/5NKSlI4HQ+S7noZsmI7hs=
+github.com/fxamacker/cbor/v2 v2.9.6/go.mod h1:4EaZp6ClVunETjQ4GHmGNzysDK91Lr+r6Yz6tJqzVCw=
 github.com/go-openapi/runtime/server-middleware v0.33.3 h1:Td5UBla/J/KCjlsD0tmZYWQWxnT4gHpfXbueLQv9Umw=
 github.com/go-openapi/runtime/server-middleware v0.33.3/go.mod h1:dopwrwqIqXe4xWtovDZkkXJzYqKw+Ybmy7G/hIDUWKY=
 github.com/go-openapi/testify/v2 v2.8.0 h1:19QDx5b57p8KjO2E4sgs/woL4Akp+FGLRlVm2xn0Rho=
 github.com/go-openapi/testify/v2 v2.8.0/go.mod h1:4gUN8jC+RqOE2qjW/vDmfyTvl5BCht4qL7oca0odrak=
-github.com/gofiber/fiber/v3 v3.5.0 h1:dk7TOUH6DXJGtOLsN2XEG+0ZML7cznzHILTVozbNEK8=
-github.com/gofiber/fiber/v3 v3.5.0/go.mod h1:GOVDTW+gjJvfe0iJyVujbQ1Lnx+JUjFySJRI/9/xX/w=
+github.com/gofiber/fiber/v3 v3.6.0 h1:dmu6zB1SSXINf1flhgMRVaIOQ08vaZaN8JYVSBJI3fI=
+github.com/gofiber/fiber/v3 v3.6.0/go.mod h1:ce/ZWPbiMom+nAEkPv4+NPBEx8b9+MH3g2VV6nvEpgo=
 github.com/gofiber/schema v1.8.8 h1:md5t65+Z9LttOuj7FdMcQ63D2+6GniT2ganLXwvTJM4=
 github.com/gofiber/schema v1.8.8/go.mod h1:Hzf0L/fTPP1IwOAwKipKflm9C2722aebnSKJCMOgb1I=
 github.com/gofiber/utils/v2 v2.6.1 h1:x3zsS/oUQz0ia2Zx8XXtG/7naR5a+/95FRO8mwQ5QQ4=
