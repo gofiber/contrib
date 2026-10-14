@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/v3/testcontainers
 go 1.26.0
 
 require (
-	github.com/gofiber/fiber/v3 v3.6.0
+	github.com/gofiber/fiber/v3 v3.6.1
 	github.com/testcontainers/testcontainers-go v0.44.0
 )
 
