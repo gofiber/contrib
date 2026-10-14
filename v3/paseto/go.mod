@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/v3/paseto
 go 1.26.0
 
 require (
-	github.com/gofiber/fiber/v3 v3.6.0
+	github.com/gofiber/fiber/v3 v3.6.1
 	github.com/google/uuid v1.6.0
 	github.com/o1egl/paseto v1.0.0
 	github.com/stretchr/testify v1.12.1
