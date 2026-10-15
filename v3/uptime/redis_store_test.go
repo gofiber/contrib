@@ -42,6 +42,9 @@ func TestNewRedisStoreValidation(t *testing.T) {
 			if tc.cfg.Store == nil && !errors.Is(err, uptime.ErrMissingStore) {
 				t.Fatalf("error = %v, want ErrMissingStore", err)
 			}
+			if tc.want == "overflow" && !errors.Is(err, uptime.ErrRetentionDaysOverflow) {
+				t.Fatalf("error = %v, want ErrRetentionDaysOverflow", err)
+			}
 		})
 	}
 }

@@ -33,6 +33,8 @@ var (
 	ErrMissingServiceID = errors.New("uptime: service id or endpoint is required")
 	// ErrMissingStore is returned when neither Config.Store nor Config.Storage is set.
 	ErrMissingStore = errors.New("uptime: storage is required")
+	// ErrRetentionDaysOverflow is returned when RetentionDays would overflow the Redis state TTL.
+	ErrRetentionDaysOverflow = errors.New("uptime: retention days overflow Redis state TTL")
 	// ErrConflictingStorage is returned when Config.Store and Config.Storage are both set.
 	ErrConflictingStorage = errors.New("uptime: Store and Storage are mutually exclusive")
 	// ErrMissingApp is returned when Config.App is not set.
@@ -251,7 +253,7 @@ func normalizeRetentionDays(days int) (int, error) {
 	}
 	// Validate before adding the extra day or converting to time.Duration.
 	if days > int((1<<63-1)/(24*time.Hour))-1 {
-		return 0, errors.New("uptime: retention days overflow Redis state TTL")
+		return 0, ErrRetentionDaysOverflow
 	}
 	return days, nil
 }

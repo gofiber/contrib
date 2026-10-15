@@ -127,7 +127,8 @@ func TestConfigValidation(t *testing.T) {
 			},
 		},
 		{
-			name: "retention days overflow",
+			name:    "retention days overflow",
+			wantErr: ErrRetentionDaysOverflow,
 			config: Config{
 				ServiceID:     "api",
 				RetentionDays: 106751,
