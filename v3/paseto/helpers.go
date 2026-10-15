@@ -24,7 +24,7 @@ var (
 
 // PayloadValidator Function that receives the decrypted payload and returns an interface and an error
 // that's a result of validation logic
-type PayloadValidator func(decrypted []byte) (interface{}, error)
+type PayloadValidator func(decrypted []byte) (any, error)
 
 // PayloadCreator Signature of a function that generates a payload token
 type PayloadCreator func(key []byte, dataInfo string, duration time.Duration, purpose TokenPurpose) (string, error)

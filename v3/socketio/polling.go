@@ -392,10 +392,10 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 		}
 		cookiesSnap[string(k)] = string(v)
 	}
-	var localsSnap map[string]interface{}
-	c.RequestCtx().VisitUserValues(func(k []byte, v interface{}) {
+	var localsSnap map[string]any
+	c.RequestCtx().VisitUserValues(func(k []byte, v any) {
 		if localsSnap == nil {
-			localsSnap = make(map[string]interface{})
+			localsSnap = make(map[string]any)
 		}
 		localsSnap[string(k)] = v
 	})
@@ -411,7 +411,7 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 			return ""
 		}
 	}
-	kws.Locals = func(key string) interface{} { return localsSnap[key] }
+	kws.Locals = func(key string) any { return localsSnap[key] }
 	kws.Params = newLookupFunc(paramsSnap)
 	kws.Query = newLookupFunc(queriesSnap)
 	kws.Cookies = newLookupFunc(cookiesSnap)

@@ -179,7 +179,7 @@ func (l *LoggerConfig) SetLevel(lv fiberlog.Level) {
 	l.logger = zap.New(core, l.ZapOptions...)
 }
 
-func (l *LoggerConfig) Logf(level fiberlog.Level, format string, kvs ...interface{}) {
+func (l *LoggerConfig) Logf(level fiberlog.Level, format string, kvs ...any) {
 	logger := l.logger.Sugar()
 	switch level {
 	case fiberlog.LevelTrace, fiberlog.LevelDebug:
@@ -197,91 +197,91 @@ func (l *LoggerConfig) Logf(level fiberlog.Level, format string, kvs ...interfac
 	}
 }
 
-func (l *LoggerConfig) Trace(v ...interface{}) {
+func (l *LoggerConfig) Trace(v ...any) {
 	l.Log(fiberlog.LevelTrace, v...)
 }
 
-func (l *LoggerConfig) Debug(v ...interface{}) {
+func (l *LoggerConfig) Debug(v ...any) {
 	l.Log(fiberlog.LevelDebug, v...)
 }
 
-func (l *LoggerConfig) Info(v ...interface{}) {
+func (l *LoggerConfig) Info(v ...any) {
 	l.Log(fiberlog.LevelInfo, v...)
 }
 
-func (l *LoggerConfig) Warn(v ...interface{}) {
+func (l *LoggerConfig) Warn(v ...any) {
 	l.Log(fiberlog.LevelWarn, v...)
 }
 
-func (l *LoggerConfig) Error(v ...interface{}) {
+func (l *LoggerConfig) Error(v ...any) {
 	l.Log(fiberlog.LevelError, v...)
 }
 
-func (l *LoggerConfig) Fatal(v ...interface{}) {
+func (l *LoggerConfig) Fatal(v ...any) {
 	l.Log(fiberlog.LevelFatal, v...)
 }
 
-func (l *LoggerConfig) Panic(v ...interface{}) {
+func (l *LoggerConfig) Panic(v ...any) {
 	l.Log(fiberlog.LevelPanic, v...)
 }
 
-func (l *LoggerConfig) Tracef(format string, v ...interface{}) {
+func (l *LoggerConfig) Tracef(format string, v ...any) {
 	l.Logf(fiberlog.LevelTrace, format, v...)
 }
 
-func (l *LoggerConfig) Debugf(format string, v ...interface{}) {
+func (l *LoggerConfig) Debugf(format string, v ...any) {
 	l.Logf(fiberlog.LevelDebug, format, v...)
 }
 
-func (l *LoggerConfig) Infof(format string, v ...interface{}) {
+func (l *LoggerConfig) Infof(format string, v ...any) {
 	l.Logf(fiberlog.LevelInfo, format, v...)
 }
 
-func (l *LoggerConfig) Warnf(format string, v ...interface{}) {
+func (l *LoggerConfig) Warnf(format string, v ...any) {
 	l.Logf(fiberlog.LevelWarn, format, v...)
 }
 
-func (l *LoggerConfig) Errorf(format string, v ...interface{}) {
+func (l *LoggerConfig) Errorf(format string, v ...any) {
 	l.Logf(fiberlog.LevelError, format, v...)
 }
 
-func (l *LoggerConfig) Fatalf(format string, v ...interface{}) {
+func (l *LoggerConfig) Fatalf(format string, v ...any) {
 	l.Logf(fiberlog.LevelFatal, format, v...)
 }
 
-func (l *LoggerConfig) Panicf(format string, v ...interface{}) {
+func (l *LoggerConfig) Panicf(format string, v ...any) {
 	l.Logf(fiberlog.LevelPanic, format, v...)
 }
 
-func (l *LoggerConfig) Tracew(msg string, keysAndValues ...interface{}) {
+func (l *LoggerConfig) Tracew(msg string, keysAndValues ...any) {
 	l.Logw(fiberlog.LevelTrace, msg, keysAndValues...)
 }
 
-func (l *LoggerConfig) Debugw(msg string, keysAndValues ...interface{}) {
+func (l *LoggerConfig) Debugw(msg string, keysAndValues ...any) {
 	l.Logw(fiberlog.LevelDebug, msg, keysAndValues...)
 }
 
-func (l *LoggerConfig) Infow(msg string, keysAndValues ...interface{}) {
+func (l *LoggerConfig) Infow(msg string, keysAndValues ...any) {
 	l.Logw(fiberlog.LevelInfo, msg, keysAndValues...)
 }
 
-func (l *LoggerConfig) Warnw(msg string, keysAndValues ...interface{}) {
+func (l *LoggerConfig) Warnw(msg string, keysAndValues ...any) {
 	l.Logw(fiberlog.LevelWarn, msg, keysAndValues...)
 }
 
-func (l *LoggerConfig) Errorw(msg string, keysAndValues ...interface{}) {
+func (l *LoggerConfig) Errorw(msg string, keysAndValues ...any) {
 	l.Logw(fiberlog.LevelError, msg, keysAndValues...)
 }
 
-func (l *LoggerConfig) Fatalw(msg string, keysAndValues ...interface{}) {
+func (l *LoggerConfig) Fatalw(msg string, keysAndValues ...any) {
 	l.Logw(fiberlog.LevelFatal, msg, keysAndValues...)
 }
 
-func (l *LoggerConfig) Panicw(msg string, keysAndValues ...interface{}) {
+func (l *LoggerConfig) Panicw(msg string, keysAndValues ...any) {
 	l.Logw(fiberlog.LevelPanic, msg, keysAndValues...)
 }
 
-func (l *LoggerConfig) Log(level fiberlog.Level, kvs ...interface{}) {
+func (l *LoggerConfig) Log(level fiberlog.Level, kvs ...any) {
 	sugar := l.logger.Sugar()
 	switch level {
 	case fiberlog.LevelTrace, fiberlog.LevelDebug:
@@ -301,7 +301,7 @@ func (l *LoggerConfig) Log(level fiberlog.Level, kvs ...interface{}) {
 	}
 }
 
-func (l *LoggerConfig) Logw(level fiberlog.Level, msg string, keyvals ...interface{}) {
+func (l *LoggerConfig) Logw(level fiberlog.Level, msg string, keyvals ...any) {
 	keylen := len(keyvals)
 	if keylen == 0 || keylen%2 != 0 {
 		l.Logger().Warn(fmt.Sprint("Keyvalues must appear in pairs: ", keyvals))

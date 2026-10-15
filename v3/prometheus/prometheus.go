@@ -1401,8 +1401,7 @@ func validateBuckets(field string, buckets []float64) {
 // the AlreadyRegistered error so callers can opt-in without coordination.
 func registerCollector(registry prometheus.Registerer, collector prometheus.Collector, errorLog promhttp.Logger) {
 	if err := registry.Register(collector); err != nil {
-		var alreadyRegistered prometheus.AlreadyRegisteredError
-		if errors.As(err, &alreadyRegistered) {
+		if _, ok := errors.AsType[prometheus.AlreadyRegisteredError](err); ok {
 			return
 		}
 

@@ -342,13 +342,13 @@ func claimsFactory(configured jwt.Claims) func() jwt.Claims {
 	if claimsType.Kind() == reflect.Pointer {
 		claimsType = claimsType.Elem()
 	}
-	if _, ok := reflect.New(claimsType).Interface().(jwt.Claims); !ok {
+	if _, ok := reflect.TypeAssert[jwt.Claims](reflect.New(claimsType)); !ok {
 		panic("Fiber: JWT middleware configuration: Claims type does not implement jwt.Claims")
 	}
 
 	return func() jwt.Claims {
 		// The assertion held for this type when the middleware was built.
-		claims, _ := reflect.New(claimsType).Interface().(jwt.Claims)
+		claims, _ := reflect.TypeAssert[jwt.Claims](reflect.New(claimsType))
 		return claims
 	}
 }

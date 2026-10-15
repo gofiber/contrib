@@ -1,5 +1,7 @@
 package uptime
 
+import "slices"
+
 // summarizeService consumes normalized days in oldest-to-newest order.
 // It reuses DayStatus slot and downtime semantics without consulting storage or time.
 func summarizeService(days []DayStatus, historyTruncated bool) ServiceSummary {
@@ -22,8 +24,8 @@ func summarizeService(days []DayStatus, historyTruncated bool) ServiceSummary {
 	summary.HasData = true
 	summary.AvailabilityRate = float64(upSlots) / float64(expectedSlots)
 
-	for i := len(days) - 1; i >= 0; i-- {
-		day := days[i]
+	for i, day := range slices.Backward(days) {
+
 		if !day.HasData || day.ExpectedSlots <= 0 {
 			// Only skip unknown days at the newest edge (e.g. just after midnight).
 			if summary.StableStreakDays == 0 {

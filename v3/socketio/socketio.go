@@ -487,7 +487,7 @@ func (ep *EventPayload) Ack(args ...[]byte) error {
 // recovered panic value (nil on clean return). Used by both the
 // WebSocket and polling open paths so a single recover discipline
 // applies regardless of transport.
-func runUserCallback(callback func(*Websocket), kws *Websocket) (recovered interface{}) {
+func runUserCallback(callback func(*Websocket), kws *Websocket) (recovered any) {
 	defer func() { recovered = recover() }()
 	callback(kws)
 	return nil
@@ -500,8 +500,8 @@ type ws interface {
 	IsAlive() bool
 	GetUUID() string
 	SetUUID(uuid string) error
-	SetAttribute(key string, attribute interface{})
-	GetAttribute(key string) interface{}
+	SetAttribute(key string, attribute any)
+	GetAttribute(key string) any
 	GetIntAttribute(key string) int
 	GetStringAttribute(key string) string
 	EmitToList(uuids []string, message []byte, mType ...int)
@@ -611,13 +611,13 @@ type Websocket struct {
 	outboundAcks   map[uint64]*pendingAck
 	outboundAcksMu sync.Mutex
 	// Attributes map collection for the connection
-	attributes map[string]interface{}
+	attributes map[string]any
 	// UUID is the unique identifier assigned to this connection and used as
 	// its key in the active connections pool.
 	UUID string
 	// Locals wraps the Fiber Locals lookup so listener callbacks can reach
 	// values stored on the originating request context.
-	Locals func(key string) interface{}
+	Locals func(key string) any
 	// Params wraps the Fiber Params lookup so listener callbacks can read
 	// route parameters from the originating request.
 	Params func(key string, defaultValue ...string) string
@@ -671,10 +671,7 @@ type Websocket struct {
 // attributes and outboundAcks are lazy-initialised on first SetAttribute /
 // EmitWithAck* call; most idle connections never touch them.
 func newWebsocket() *Websocket {
-	queueSize := SendQueueSize
-	if queueSize < 1 {
-		queueSize = 1
-	}
+	queueSize := max(SendQueueSize, 1)
 	kws := &Websocket{
 		queue:        make(chan message, queueSize),
 		done:         make(chan struct{}),
@@ -884,7 +881,7 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 		kws.Conn = c
 		// The middleware allocates c per upgrade and never reuses it, so
 		// closures over it stay valid for the life of the session.
-		kws.Locals = func(key string) interface{} {
+		kws.Locals = func(key string) any {
 			return c.Locals(key)
 		}
 		kws.Params = func(key string, defaultValue ...string) string {
@@ -1156,18 +1153,18 @@ func (kws *Websocket) SetUUID(uuid string) error {
 
 // SetAttribute stores a per-connection key/value pair. Concurrency-safe.
 // Listeners receive a defensive snapshot via EventPayload.SocketAttributes.
-func (kws *Websocket) SetAttribute(key string, attribute interface{}) {
+func (kws *Websocket) SetAttribute(key string, attribute any) {
 	kws.mu.Lock()
 	defer kws.mu.Unlock()
 	if kws.attributes == nil {
-		kws.attributes = make(map[string]interface{})
+		kws.attributes = make(map[string]any)
 	}
 	kws.attributes[key] = attribute
 }
 
 // GetAttribute returns the per-connection attribute previously stored under
 // key, or nil if no such attribute exists. Concurrency-safe.
-func (kws *Websocket) GetAttribute(key string) interface{} {
+func (kws *Websocket) GetAttribute(key string) any {
 	kws.mu.RLock()
 	defer kws.mu.RUnlock()
 	value, ok := kws.attributes[key]

@@ -1,16 +1,13 @@
 package casbin
 
+import "slices"
+
 func containsString(s []string, v string) bool {
-	for _, vv := range s {
-		if vv == v {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s, v)
 }
 
-func stringSliceToInterfaceSlice(s []string) []interface{} {
-	res := make([]interface{}, len(s))
+func stringSliceToInterfaceSlice(s []string) []any {
+	res := make([]any, len(s))
 	for i, v := range s {
 		res[i] = v
 	}

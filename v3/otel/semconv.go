@@ -427,11 +427,11 @@ func HasBasicAuth(auth string) (string, bool) {
 
 	// Check if the decoded credentials are in the correct form
 	// which is "username:password".
-	index := bytes.IndexByte(raw, ':')
-	if index == -1 {
+	before, _, ok := bytes.Cut(raw, []byte{':'})
+	if !ok {
 		return "", false
 	}
 
 	// Get the username
-	return string(raw[:index]), true
+	return string(before), true
 }

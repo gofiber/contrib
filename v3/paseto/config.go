@@ -76,7 +76,7 @@ func defaultErrorHandler(c fiber.Ctx, err error) error {
 	return c.Status(errorStatus).SendString(err.Error())
 }
 
-func defaultValidateFunc(data []byte) (interface{}, error) {
+func defaultValidateFunc(data []byte) (any, error) {
 	var payload paseto.JSONToken
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return nil, ErrDataUnmarshal

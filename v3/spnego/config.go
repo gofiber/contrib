@@ -404,10 +404,8 @@ func (c *keytabFileCache) load() (*keytab.Keytab, error) {
 func NewKeytabFileLookupFunc(keytabFiles ...string) (KeytabLookupFunc, error) {
 	// An empty path is what an unset environment variable expands to; refusing
 	// it here fails at startup rather than on every request.
-	for _, keytabFile := range keytabFiles {
-		if keytabFile == "" {
-			return nil, ErrConfigInvalidOfAtLeastOneKeytabFileRequired
-		}
+	if slices.Contains(keytabFiles, "") {
+		return nil, ErrConfigInvalidOfAtLeastOneKeytabFileRequired
 	}
 	if len(keytabFiles) == 0 {
 		return nil, ErrConfigInvalidOfAtLeastOneKeytabFileRequired

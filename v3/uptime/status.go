@@ -323,10 +323,7 @@ func makeDayStatus(day string, upSlots, expectedSlots int, finalized, hasData bo
 	}
 
 	rate := uptimeRate(upSlots, expectedSlots)
-	downSlots := expectedSlots - upSlots
-	if downSlots < 0 {
-		downSlots = 0
-	}
+	downSlots := max(expectedSlots-upSlots, 0)
 	return DayStatus{
 		Day:                      day,
 		UptimeRate:               rate,
@@ -477,10 +474,7 @@ func expectedSlotsForWindow(day string, createdAt, endAt time.Time, interval tim
 		return 0
 	}
 
-	firstSlot := int(slotOf(start, interval, loc))
-	if firstSlot < 0 {
-		firstSlot = 0
-	}
+	firstSlot := max(int(slotOf(start, interval, loc)), 0)
 	if firstSlot >= slotsInDay {
 		return 0
 	}

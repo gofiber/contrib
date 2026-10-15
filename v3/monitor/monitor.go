@@ -114,10 +114,7 @@ func (m *middleware) instrument(c fiber.Ctx) error {
 	}
 	m.recordStatus(response.StatusCode())
 
-	elapsed := time.Since(started)
-	if elapsed < 0 {
-		elapsed = 0
-	}
+	elapsed := max(time.Since(started), 0)
 	m.latency.observeSharded(uint64(elapsed.Nanoseconds()), sequence)
 	return nil
 }

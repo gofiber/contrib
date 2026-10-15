@@ -2,6 +2,7 @@ package zap
 
 import (
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -196,13 +197,7 @@ func New(config ...Config) fiber.Handler {
 }
 
 func contains(needle string, slice []string) bool {
-	for _, e := range slice {
-		if e == needle {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(slice, needle)
 }
 
 var sensitiveRequestHeaders = map[string]struct{}{

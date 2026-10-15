@@ -424,12 +424,9 @@ func (u *runtime) loop() {
 
 	var wg sync.WaitGroup
 	for _, target := range u.targets {
-		target := target
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			u.recordLoop(target)
-		}()
+		})
 	}
 
 	<-u.ctx.Done()

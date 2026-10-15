@@ -71,10 +71,7 @@ func (c *CPULoadCriteria) startSampler() {
 
 			// Calculate how long to sleep before the next sample.
 			elapsed := time.Since(start)
-			sleep := interval - elapsed
-			if sleep < minSamplerSleep {
-				sleep = minSamplerSleep
-			}
+			sleep := max(interval-elapsed, minSamplerSleep)
 
 			// Safe to Reset: the channel was drained either by the initial
 			// stop+drain above or by the previous <-timer.C in the select.

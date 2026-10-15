@@ -94,20 +94,20 @@ type RedisStore struct {
 
 type redisClient interface {
 	Ping(ctx context.Context) *redis.StatusCmd
-	SAdd(ctx context.Context, key string, members ...interface{}) *redis.IntCmd
-	SRem(ctx context.Context, key string, members ...interface{}) *redis.IntCmd
+	SAdd(ctx context.Context, key string, members ...any) *redis.IntCmd
+	SRem(ctx context.Context, key string, members ...any) *redis.IntCmd
 	SMembers(ctx context.Context, key string) *redis.StringSliceCmd
 	SCard(ctx context.Context, key string) *redis.IntCmd
-	HSet(ctx context.Context, key string, values ...interface{}) *redis.IntCmd
-	HSetNX(ctx context.Context, key, field string, value interface{}) *redis.BoolCmd
+	HSet(ctx context.Context, key string, values ...any) *redis.IntCmd
+	HSetNX(ctx context.Context, key, field string, value any) *redis.BoolCmd
 	HGet(ctx context.Context, key, field string) *redis.StringCmd
 	HGetAll(ctx context.Context, key string) *redis.MapStringStringCmd
 	ZAdd(ctx context.Context, key string, members ...redis.Z) *redis.IntCmd
 	ZRangeByScore(ctx context.Context, key string, opt *redis.ZRangeBy) *redis.StringSliceCmd
-	ZRem(ctx context.Context, key string, members ...interface{}) *redis.IntCmd
+	ZRem(ctx context.Context, key string, members ...any) *redis.IntCmd
 	Del(ctx context.Context, keys ...string) *redis.IntCmd
 	Expire(ctx context.Context, key string, expiration time.Duration) *redis.BoolCmd
-	Eval(ctx context.Context, script string, keys []string, args ...interface{}) *redis.Cmd
+	Eval(ctx context.Context, script string, keys []string, args ...any) *redis.Cmd
 	Pipelined(ctx context.Context, fn func(redis.Pipeliner) error) ([]redis.Cmder, error)
 }
 

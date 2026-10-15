@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	runtimemetrics "runtime/metrics"
+	"slices"
 	"strings"
 	"time"
 
@@ -93,10 +94,7 @@ func newCollector(now time.Time, enableGCPauseMetrics bool) collector {
 	if err != nil {
 		proc = nil
 	}
-	numCPU := runtime.NumCPU()
-	if numCPU < 1 {
-		numCPU = 1
-	}
+	numCPU := max(runtime.NumCPU(), 1)
 	current := collector{
 		proc:                  proc,
 		numCPU:                numCPU,
@@ -135,10 +133,7 @@ func (c *collector) collect(m *middleware, now time.Time) snapshot {
 }
 
 func (c *collector) collectProcess(now time.Time) (processStats, []string) {
-	uptime := now.Sub(c.startedAt)
-	if uptime < 0 {
-		uptime = 0
-	}
+	uptime := max(now.Sub(c.startedAt), 0)
 	stats := processStats{UptimeSeconds: uint64(uptime / time.Second)}
 	if c.proc == nil {
 		return stats, []string{"process.cpu", "process.memory", "process.threads", "process.descriptors", "process.tcp_connections"}
@@ -149,7 +144,7 @@ func (c *collector) collectProcess(now time.Time) (processStats, []string) {
 		currentCPUTime := times.User + times.System
 		if c.processCPUSeen {
 			if value, ok := processCPUPercent(c.processCPUTime, currentCPUTime, now.Sub(c.processCPUAt), c.numCPU); ok {
-				stats.CPUPercent = valuePointer(value)
+				stats.CPUPercent = new(value)
 			}
 		}
 		c.processCPUSeen = true
@@ -159,22 +154,22 @@ func (c *collector) collectProcess(now time.Time) (processStats, []string) {
 		errors = append(errors, "process.cpu")
 	}
 	if info, err := c.proc.MemoryInfo(); err == nil && info != nil {
-		stats.RSSBytes = valuePointer(info.RSS)
+		stats.RSSBytes = new(info.RSS)
 	} else {
 		errors = append(errors, "process.memory")
 	}
 	if threads, err := c.proc.NumThreads(); err == nil {
-		stats.Threads = valuePointer(threads)
+		stats.Threads = new(threads)
 	} else {
 		errors = append(errors, "process.threads")
 	}
 	if descriptors, err := c.proc.NumFDs(); err == nil {
-		stats.OpenDescriptors = valuePointer(descriptors)
+		stats.OpenDescriptors = new(descriptors)
 	} else {
 		errors = append(errors, "process.descriptors")
 	}
 	if connections, err := c.processTCPConnections("tcp", c.proc.Pid); err == nil {
-		stats.TCPConnections = valuePointer(len(connections))
+		stats.TCPConnections = new(len(connections))
 	} else {
 		errors = append(errors, "process.tcp_connections")
 	}
@@ -263,11 +258,11 @@ func runtimeStatsFromMetricValues(values runtimeMetricValues) runtimeStats {
 
 func applyGCPauseMetrics(stats *runtimeStats, memory runtime.MemStats, pauseSeen bool, previousPauseTotal uint64) {
 	if memory.NumGC > 0 {
-		stats.GCPauseLastNS = valuePointer(lastGCPauseNS(memory))
+		stats.GCPauseLastNS = new(lastGCPauseNS(memory))
 	}
-	stats.GCPauseTotalNS = valuePointer(memory.PauseTotalNs)
+	stats.GCPauseTotalNS = new(memory.PauseTotalNs)
 	if pauseSeen && memory.PauseTotalNs >= previousPauseTotal {
-		stats.GCPauseWindowNS = valuePointer(memory.PauseTotalNs - previousPauseTotal)
+		stats.GCPauseWindowNS = new(memory.PauseTotalNs - previousPauseTotal)
 	}
 }
 
@@ -301,7 +296,7 @@ func (c *collector) collectSystem(now time.Time) (systemStats, []string) {
 		current := values[0]
 		if c.systemCPUSeen {
 			if value, ok := systemCPUPercent(c.systemCPUTimes, current); ok {
-				stats.CPUPercent = valuePointer(value)
+				stats.CPUPercent = new(value)
 			}
 		}
 		c.systemCPUSeen = true
@@ -310,19 +305,19 @@ func (c *collector) collectSystem(now time.Time) (systemStats, []string) {
 		errors = append(errors, "system.cpu")
 	}
 	if memory, err := mem.VirtualMemory(); err == nil && memory != nil {
-		stats.MemoryUsedPercent = valuePointer(memory.UsedPercent)
-		stats.MemoryUsedBytes = valuePointer(memory.Used)
-		stats.MemoryTotalBytes = valuePointer(memory.Total)
-		stats.MemoryAvailableBytes = valuePointer(memory.Available)
+		stats.MemoryUsedPercent = new(memory.UsedPercent)
+		stats.MemoryUsedBytes = new(memory.Used)
+		stats.MemoryTotalBytes = new(memory.Total)
+		stats.MemoryAvailableBytes = new(memory.Available)
 	} else {
 		errors = append(errors, "system.memory")
 	}
 	if workingDirectory, err := os.Getwd(); err == nil {
 		if usage, usageErr := disk.Usage(workingDirectory); usageErr == nil && usage != nil {
-			stats.DiskUsedPercent = valuePointer(usage.UsedPercent)
-			stats.DiskUsedBytes = valuePointer(usage.Used)
-			stats.DiskTotalBytes = valuePointer(usage.Total)
-			stats.DiskFreeBytes = valuePointer(usage.Free)
+			stats.DiskUsedPercent = new(usage.UsedPercent)
+			stats.DiskUsedBytes = new(usage.Used)
+			stats.DiskTotalBytes = new(usage.Total)
+			stats.DiskFreeBytes = new(usage.Free)
 			filesystemType := usage.Fstype
 			if filesystemType == "" {
 				// Some platforms return usable partitions together with non-fatal
@@ -332,7 +327,7 @@ func (c *collector) collectSystem(now time.Time) (systemStats, []string) {
 				filesystemType = filesystemTypeForPath(workingDirectory, partitions)
 			}
 			if filesystemType != "" {
-				stats.DiskFSType = valuePointer(filesystemType)
+				stats.DiskFSType = new(filesystemType)
 			}
 		} else {
 			errors = append(errors, "system.disk")
@@ -345,9 +340,9 @@ func (c *collector) collectSystem(now time.Time) (systemStats, []string) {
 	// rather than silently changing the middleware lifecycle.
 	if runtime.GOOS != "windows" {
 		if average, err := load.Avg(); err == nil && average != nil {
-			stats.Load1 = valuePointer(average.Load1)
-			stats.Load5 = valuePointer(average.Load5)
-			stats.Load15 = valuePointer(average.Load15)
+			stats.Load1 = new(average.Load1)
+			stats.Load5 = new(average.Load5)
+			stats.Load15 = new(average.Load15)
 		} else {
 			errors = append(errors, "system.load")
 		}
@@ -371,7 +366,7 @@ func (c *collector) collectSystem(now time.Time) (systemStats, []string) {
 		errors = append(errors, "system.network")
 	}
 	if connections, err := c.systemTCPConnections("tcp"); err == nil {
-		stats.TCPConnections = valuePointer(len(connections))
+		stats.TCPConnections = new(len(connections))
 	} else {
 		errors = append(errors, "system.tcp_connections")
 	}
@@ -428,23 +423,23 @@ func (c *collector) collectHTTP(m *middleware, now time.Time) httpStats {
 		elapsed := now.Sub(c.httpAt)
 		if elapsed > 0 {
 			rps := float64(counterDelta(requests, c.lastRequests)) / elapsed.Seconds()
-			stats.RPS = valuePointer(rps)
+			stats.RPS = new(rps)
 		}
 		completedDelta := counterDelta(completed, c.lastCompleted)
 		if completedDelta > 0 {
 			status4xxRate := float64(counterDelta(status.Status4xx, c.lastStatus4xx)) / float64(completedDelta)
 			status5xxRate := float64(counterDelta(status.Status5xx, c.lastStatus5xx)) / float64(completedDelta)
-			stats.Rates.Status4xx = valuePointer(status4xxRate)
-			stats.Rates.Status5xx = valuePointer(status5xxRate)
+			stats.Rates.Status4xx = new(status4xxRate)
+			stats.Rates.Status5xx = new(status5xxRate)
 		}
 		if p50, ok := window.percentile(50); ok {
-			stats.Latency.P50NS = valuePointer(p50)
+			stats.Latency.P50NS = new(p50)
 		}
 		if p95, ok := window.percentile(95); ok {
-			stats.Latency.P95NS = valuePointer(p95)
+			stats.Latency.P95NS = new(p95)
 		}
 		if p99, ok := window.percentile(99); ok {
-			stats.Latency.P99NS = valuePointer(p99)
+			stats.Latency.P99NS = new(p99)
 		}
 	}
 
@@ -462,13 +457,7 @@ func appendCollectionErrors(existing []string, values ...string) []string {
 		if value == "" {
 			continue
 		}
-		seen := false
-		for _, current := range existing {
-			if current == value {
-				seen = true
-				break
-			}
-		}
+		seen := slices.Contains(existing, value)
 		if !seen {
 			existing = append(existing, value)
 		}
@@ -509,7 +498,7 @@ func networkRates(previousReceived, previousSent, currentReceived, currentSent u
 	}
 	receive := float64(currentReceived-previousReceived) / elapsed.Seconds()
 	send := float64(currentSent-previousSent) / elapsed.Seconds()
-	return valuePointer(receive), valuePointer(send)
+	return new(receive), new(send)
 }
 
 func counterDelta(current, previous uint64) uint64 {

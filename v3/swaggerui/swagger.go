@@ -121,9 +121,9 @@ func New(config ...Config) fiber.Handler {
 	}
 
 	// Validate we have valid JSON or YAML
-	var jsonData map[string]interface{}
+	var jsonData map[string]any
 	errJSON := json.Unmarshal(rawSpec, &jsonData)
-	var yamlData map[string]interface{}
+	var yamlData map[string]any
 	errYAML := yaml.Unmarshal(rawSpec, &yamlData)
 
 	if errJSON != nil && errYAML != nil {
@@ -193,7 +193,7 @@ func New(config ...Config) fiber.Handler {
 		}
 
 		// Only respond to requests to SwaggerUI and SpecURL (swagger.json)
-                if c.Path() != swaggerUIPath && c.Path() != specURL {
+		if c.Path() != swaggerUIPath && c.Path() != specURL {
 			return c.Next()
 		}
 

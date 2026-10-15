@@ -227,8 +227,8 @@ type ws interface {
 	IsAlive() bool
 	GetUUID() string
 	SetUUID(uuid string) error
-	SetAttribute(key string, attribute interface{})
-	GetAttribute(key string) interface{}
+	SetAttribute(key string, attribute any)
+	GetAttribute(key string) any
 	GetIntAttribute(key string) int
 	GetStringAttribute(key string) string
 	EmitToList(uuids []string, message []byte, mType ...int)
@@ -266,7 +266,7 @@ type Websocket struct {
 	// doneOnce closes done exactly once.
 	doneOnce sync.Once
 	// attributes stores optional connection-scoped values.
-	attributes map[string]interface{}
+	attributes map[string]any
 	// localListeners holds listeners registered for this connection only via
 	// the On method. They fire in addition to the process-global listeners and
 	// are discarded when the connection disconnects.
@@ -274,7 +274,7 @@ type Websocket struct {
 	// UUID is the unique connection identifier.
 	UUID string
 	// Locals wraps Fiber Locals.
-	Locals func(key string) interface{}
+	Locals func(key string) any
 	// Params wraps Fiber Params.
 	Params func(key string, defaultValue ...string) string
 	// Query wraps Fiber Query.
@@ -406,7 +406,7 @@ func NewWithConfig(callback func(kws *Websocket), eventCfg Config, wsConfig ...w
 		kws := &Websocket{
 			Conn:     c,
 			settings: s,
-			Locals: func(key string) interface{} {
+			Locals: func(key string) any {
 				return c.Locals(key)
 			},
 			Params: func(key string, defaultValue ...string) string {
@@ -420,7 +420,7 @@ func NewWithConfig(callback func(kws *Websocket), eventCfg Config, wsConfig ...w
 			},
 			queue:      make(chan message, s.sendQueueSize),
 			done:       make(chan struct{}),
-			attributes: make(map[string]interface{}),
+			attributes: make(map[string]any),
 			isAlive:    true,
 		}
 
@@ -490,14 +490,14 @@ func (kws *Websocket) SetUUID(uuid string) error {
 }
 
 // SetAttribute sets an attribute for the connection.
-func (kws *Websocket) SetAttribute(key string, attribute interface{}) {
+func (kws *Websocket) SetAttribute(key string, attribute any) {
 	kws.mu.Lock()
 	defer kws.mu.Unlock()
 	kws.attributes[key] = attribute
 }
 
 // GetAttribute returns an attribute from the connection.
-func (kws *Websocket) GetAttribute(key string) interface{} {
+func (kws *Websocket) GetAttribute(key string) any {
 	kws.mu.RLock()
 	defer kws.mu.RUnlock()
 	value, ok := kws.attributes[key]

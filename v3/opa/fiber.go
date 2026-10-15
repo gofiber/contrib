@@ -10,7 +10,7 @@ import (
 	"github.com/open-policy-agent/opa/v1/rego"
 )
 
-type InputCreationFunc func(c fiber.Ctx) (map[string]interface{}, error)
+type InputCreationFunc func(c fiber.Ctx) (map[string]any, error)
 
 type Config struct {
 	RegoPolicy            io.Reader
@@ -97,8 +97,8 @@ func (c *Config) fillAndValidate() error {
 	return nil
 }
 
-func defaultInput(ctx fiber.Ctx) (map[string]interface{}, error) {
-	input := map[string]interface{}{
+func defaultInput(ctx fiber.Ctx) (map[string]any, error) {
+	input := map[string]any{
 		"method": ctx.Method(),
 		"path":   ctx.Path(),
 	}

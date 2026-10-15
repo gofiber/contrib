@@ -175,10 +175,6 @@ func (m *middleware) collectSnapshot(now time.Time) snapshot {
 	return m.collector.collect(m, now)
 }
 
-func valuePointer[T any](value T) *T {
-	return &value
-}
-
 func valueOrZero[T any](value *T) (zero T) {
 	if value != nil {
 		return *value

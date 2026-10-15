@@ -190,7 +190,7 @@ type FilterConfig struct {
 	Expression string
 }
 
-func (fc FilterConfig) Value() interface{} {
+func (fc FilterConfig) Value() any {
 	if fc.Expression != "" {
 		return fc.Expression
 	}
@@ -207,7 +207,7 @@ type SyntaxHighlightConfig struct {
 	Theme string `json:"theme,omitempty"`
 }
 
-func (shc SyntaxHighlightConfig) Value() interface{} {
+func (shc SyntaxHighlightConfig) Value() any {
 	if shc.Activate {
 		return shc
 	}

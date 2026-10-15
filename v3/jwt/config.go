@@ -119,7 +119,7 @@ type SigningKey struct {
 	JWTAlg string
 	// Key is the cryptographic key used to sign JWTs. For supported types, please see
 	// https://github.com/golang-jwt/jwt.
-	Key interface{}
+	Key any
 }
 
 // makeCfg function will check correctness of supplied configuration
@@ -302,7 +302,7 @@ func keyfuncOptions(givenKeys map[string]keyfunc.GivenKey) keyfunc.Options {
 // ErrJWTAlg so callers can match on it; this is the check RFC 8725 Section 3.1
 // asks for, and validAlgorithms hoists it into the parser where it can.
 func signingKeyFunc(key SigningKey) jwt.Keyfunc {
-	return func(token *jwt.Token) (interface{}, error) {
+	return func(token *jwt.Token) (any, error) {
 		if key.JWTAlg != "" {
 			alg, ok := token.Header["alg"].(string)
 			if !ok {

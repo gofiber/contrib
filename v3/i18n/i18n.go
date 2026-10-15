@@ -91,7 +91,7 @@ MustLocalize get the i18n message without error handling
 				},
 		})
 */
-func (i *I18n) MustLocalize(ctx fiber.Ctx, params interface{}) string {
+func (i *I18n) MustLocalize(ctx fiber.Ctx, params any) string {
 	message, err := i.Localize(ctx, params)
 	if err != nil {
 		panic(err)
@@ -112,7 +112,7 @@ Localize get the i18n message
 				},
 		})
 */
-func (i *I18n) Localize(ctx fiber.Ctx, params interface{}) (string, error) {
+func (i *I18n) Localize(ctx fiber.Ctx, params any) (string, error) {
 	if i == nil || i.cfg == nil {
 		return "", fmt.Errorf("i18n.Localize error: %v", "translator is nil")
 	}

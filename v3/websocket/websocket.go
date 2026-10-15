@@ -219,7 +219,7 @@ func rejectHandshake(c fiber.Ctx, status int) error {
 // Conn https://godoc.org/github.com/gorilla/websocket#pkg-index
 type Conn struct {
 	*websocket.Conn
-	locals  map[string]interface{}
+	locals  map[string]any
 	params  map[string]string
 	cookies map[string]string
 	headers map[string]string
@@ -235,7 +235,7 @@ type Conn struct {
 // capture copies the request's locals, query arguments, cookies and headers
 // into the Conn before fasthttp recycles the RequestCtx.
 func (conn *Conn) capture(fctx *fasthttp.RequestCtx) {
-	fctx.VisitUserValues(func(key []byte, value interface{}) {
+	fctx.VisitUserValues(func(key []byte, value any) {
 		setEntry(&conn.locals, string(key), value)
 	})
 	// No size hint: Args.Len counts repeated keys that collapse into one entry.
@@ -265,7 +265,7 @@ func setEntry[V any](m *map[string]V, key string, value V) {
 
 // Locals makes it possible to pass interface{} values under string keys scoped to the request
 // and therefore available to all following routes that match the request.
-func (conn *Conn) Locals(key string, value ...interface{}) interface{} {
+func (conn *Conn) Locals(key string, value ...any) any {
 	if len(value) == 0 {
 		return conn.locals[key]
 	}

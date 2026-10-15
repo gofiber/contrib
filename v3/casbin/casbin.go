@@ -15,7 +15,7 @@ type Middleware struct {
 
 	// enforce and getRolesForUser are set by New to call the enforcer without
 	// exposing the concrete Casbin type to the request handlers.
-	enforce         func(rvals ...interface{}) (bool, error)
+	enforce         func(rvals ...any) (bool, error)
 	getRolesForUser func(name string, domain ...string) ([]string, error)
 }
 

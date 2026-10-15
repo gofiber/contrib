@@ -4,3 +4,7 @@ run:
   go: "1.26"
   timeout: 5m
   tests: false
+
+linters:
+  enable:
+    - modernize
