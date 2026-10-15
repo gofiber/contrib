@@ -148,9 +148,8 @@ distinct service IDs, endpoint IDs, or storage prefixes.
 
 `NewRedisStore` returns the public
 `github.com/gofiber/contrib/v3/uptime/storage.Store`, initialized and ready for
-concurrent queries and writes. It uses the existing Redis backend and pings Redis
-with the supplied context. Missing storage, invalid retention, cancellation, and
-initialization failures return an error and a nil store.
+concurrent queries and writes without middleware. Initialization uses the supplied
+context; invalid configuration or initialization failure returns a nil store and an error.
 
 ```go
 package main
@@ -192,25 +191,20 @@ func main() {
 ```
 
 An empty `KeyPrefix` defaults to `fiber:uptime`. Prefix normalization matches the
-built-in backend, including trimming leading/trailing colons. Zero `RetentionDays`
-defaults to 90; negative values or an overflowing TTL are rejected. Writes use the
-middleware's `(RetentionDays + 1) * 24 hours` state expiry backstop and 24-hour
-instance expiry. The factory starts no monitoring workers, HTTP service, or
-automatic maintenance. `RollupDaily` and `Cleanup` run only when called, using the
-caller-supplied calendar-day boundaries. The store can also be passed to
-`Config.Storage`; its prefix and retention remain those supplied to the factory.
+built-in backend, trimming leading/trailing colons. Zero `RetentionDays` defaults
+to 90; negative values or an overflowing TTL are rejected. State expiry follows
+[Key expiry](#key-expiry); instance metadata expires after 24 hours. The factory starts
+no workers, HTTP service, or automatic maintenance. The store can also be passed
+to `Config.Storage`; match its retention setting to the factory's.
 
 > [!WARNING]
-> This is a full Store, not a read-only history API. `UpsertService`,
-> `UpsertInstance`, `WriteHeartbeat`, `RollupDaily`, and `Cleanup` directly modify
-> monitoring data. Avoid modifying records used by an active monitor without
-> coordination. Use the correct Redis database, key prefix, and retention for
-> the data being accessed. Multiple queries do not form a transactionally
-> consistent snapshot.
+> `UpsertService`, `UpsertInstance`, `WriteHeartbeat`, `RollupDaily`, and `Cleanup`
+> modify monitoring data. Coordinate changes to records used by an active monitor,
+> and use its Redis database, key prefix, and retention settings. Multiple queries
+> do not form a transactionally consistent snapshot.
 
 The caller owns the Fiber Redis storage and any separately borrowed client.
-The factory never closes them, including on failure. Close them only after all
-store users (including any middleware runtime) have stopped.
+The factory never closes them, even on failure. Close them after all users have stopped.
 
 ### Key expiry
 
@@ -435,14 +429,3 @@ not be public. The middleware does not log request bodies, response bodies,
 authorization headers, cookies, or query strings. Endpoint probe response bodies
 are closed without being read. Avoid putting secrets in endpoint URLs because
 URLs may still appear in upstream infrastructure logs outside this middleware.
-
-## Testing the public Redis store
-
-The public API's validation and initialization-failure tests run without Redis.
-Its integration tests use real Redis when `UPTIME_TEST_REDIS_URL` is set; otherwise
-they skip. Use a disposable test database. Tests use unique namespaces or service
-IDs and remove only their own data; they do not flush Redis. From this module:
-
-```sh
-UPTIME_TEST_REDIS_URL=redis://127.0.0.1:6379/15 go test -race ./... -run '^TestNewRedisStore' -count=1
-```

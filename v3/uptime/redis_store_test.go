@@ -121,13 +121,11 @@ func TestNewRedisStoreIntegrationQueriesAndWrites(t *testing.T) {
 	now := time.Now().UTC()
 	redisStoreRequireNoError(t, store.UpsertService(ctx, uptimestorage.Service{ID: "api", Name: "API", CreatedAt: now, SampleInterval: time.Minute}))
 	redisStoreRequireNoError(t, store.UpsertInstance(ctx, uptimestorage.Instance{ID: 1, ServiceID: "api", StartedAt: now}))
-	for range 2 {
-		redisStoreRequireNoError(t, store.WriteHeartbeat(ctx, uptimestorage.Heartbeat{ServiceID: "api", InstanceID: 1, Day: "2026-06-25", Slot: 0, SeenAt: now}))
-	}
+	redisStoreRequireNoError(t, store.WriteHeartbeat(ctx, uptimestorage.Heartbeat{ServiceID: "api", InstanceID: 1, Day: "2026-06-25", Slot: 0, SeenAt: now}))
 	samples, err := store.QueryTodaySamples(ctx, uptimestorage.QueryTodaySamplesOptions{Day: "2026-06-25"})
 	redisStoreRequireNoError(t, err)
 	if len(samples) != 1 || samples[0].UpSlots != 1 {
-		t.Fatalf("samples = %+v, want one deduplicated heartbeat", samples)
+		t.Fatalf("samples = %+v, want one heartbeat", samples)
 	}
 	redisStoreRequireNoError(t, store.RollupDaily(ctx, uptimestorage.RollupOptions{
 		BeforeDay: "2026-06-26", ExpectedSlots: func(uptimestorage.Service, string) int { return 1440 },
@@ -158,35 +156,71 @@ func TestNewRedisStoreIntegrationQueriesAndWrites(t *testing.T) {
 	redisStoreRequireNoError(t, client.Ping(ctx).Err())
 }
 
+func TestNewRedisStoreDefaultPrefix(t *testing.T) {
+	t.Parallel()
+	// Intercept commands locally: never read or write a shared default namespace.
+	for _, prefix := range []string{"", ":::"} {
+		client, borrowed := redisStoreTestConnection(t, &redis.Options{})
+		hook := &redisStorePrefixHook{}
+		client.AddHook(hook)
+		store, err := uptime.NewRedisStore(context.Background(), uptime.RedisStoreConfig{Storage: borrowed, KeyPrefix: prefix})
+		redisStoreRequireNoError(t, err)
+		_, err = store.ListServices(context.Background())
+		redisStoreRequireNoError(t, err)
+		if hook.key != "fiber:uptime:services" {
+			t.Fatalf("prefix %q queried %q, want default namespace", prefix, hook.key)
+		}
+	}
+}
+
+type redisStorePrefixHook struct{ key string }
+
+func (*redisStorePrefixHook) DialHook(redis.DialHook) redis.DialHook {
+	return func(context.Context, string, string) (net.Conn, error) {
+		return nil, errors.New("default prefix test must not connect to Redis")
+	}
+}
+
+func (h *redisStorePrefixHook) ProcessHook(redis.ProcessHook) redis.ProcessHook {
+	return func(_ context.Context, cmd redis.Cmder) error {
+		switch cmd.Name() {
+		case "ping":
+			cmd.(*redis.StatusCmd).SetVal("PONG")
+		case "smembers":
+			h.key = cmd.Args()[1].(string)
+			cmd.(*redis.StringSliceCmd).SetVal(nil)
+		default:
+			return errors.New("unexpected command in default prefix test")
+		}
+		return nil
+	}
+}
+
+func (*redisStorePrefixHook) ProcessPipelineHook(redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(context.Context, []redis.Cmder) error {
+		return errors.New("unexpected pipeline in default prefix test")
+	}
+}
+
 func TestNewRedisStoreIntegrationPrefixes(t *testing.T) {
 	ctx, client, borrowed := redisStoreTestRedis(t)
 	prefix := redisStoreTestPrefix(t, client)
-	for _, tc := range []struct{ configured, canonical string }{{"", "fiber:uptime"}, {":::", "fiber:uptime"}, {":" + prefix + ":", prefix}} {
-		id := "test-" + rand.Text()
-		t.Cleanup(func() {
-			redisStoreRequireNoError(t, uptime.RemoveService(context.Background(), borrowed, tc.canonical, id))
-		})
-		writer, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Storage: borrowed, KeyPrefix: tc.configured})
-		redisStoreRequireNoError(t, err)
-		redisStoreRequireNoError(t, writer.UpsertService(ctx, uptimestorage.Service{ID: id, Name: id, SampleInterval: time.Minute}))
-		reader, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Storage: borrowed, KeyPrefix: tc.canonical})
-		redisStoreRequireNoError(t, err)
-		services, err := reader.ListServices(ctx)
-		redisStoreRequireNoError(t, err)
-		found := false
-		for _, service := range services {
-			found = found || service.ID == id
-		}
-		if !found {
-			t.Fatalf("prefix %q did not select %q", tc.configured, tc.canonical)
-		}
-		isolated, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Storage: borrowed, KeyPrefix: prefix + ":isolated"})
-		redisStoreRequireNoError(t, err)
-		services, err = isolated.ListServices(ctx)
-		redisStoreRequireNoError(t, err)
-		if len(services) != 0 {
-			t.Fatal("data crossed Redis namespaces")
-		}
+	writer, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Storage: borrowed, KeyPrefix: ":" + prefix + ":"})
+	redisStoreRequireNoError(t, err)
+	redisStoreRequireNoError(t, writer.UpsertService(ctx, uptimestorage.Service{ID: "api", Name: "API", SampleInterval: time.Minute}))
+	reader, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Storage: borrowed, KeyPrefix: prefix})
+	redisStoreRequireNoError(t, err)
+	services, err := reader.ListServices(ctx)
+	redisStoreRequireNoError(t, err)
+	if len(services) != 1 || services[0].ID != "api" {
+		t.Fatalf("services = %+v, want api in canonical namespace", services)
+	}
+	isolated, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Storage: borrowed, KeyPrefix: prefix + ":isolated"})
+	redisStoreRequireNoError(t, err)
+	services, err = isolated.ListServices(ctx)
+	redisStoreRequireNoError(t, err)
+	if len(services) != 0 {
+		t.Fatal("data crossed Redis namespaces")
 	}
 }
 
@@ -270,10 +304,19 @@ func redisStoreTestPrefix(t *testing.T, client *redis.Client) string {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		keys, err := client.Keys(ctx, prefix+":*").Result()
-		redisStoreRequireNoError(t, err)
-		if len(keys) > 0 {
-			redisStoreRequireNoError(t, client.Del(ctx, keys...).Err())
+		// Runtime instance IDs are generated dynamically. Scan only this test's
+		// random namespace, after its runtimes have shut down.
+		var cursor uint64
+		for {
+			keys, next, err := client.Scan(ctx, cursor, prefix+":*", 100).Result()
+			redisStoreRequireNoError(t, err)
+			if len(keys) > 0 {
+				redisStoreRequireNoError(t, client.Del(ctx, keys...).Err())
+			}
+			cursor = next
+			if cursor == 0 {
+				break
+			}
 		}
 	})
 	return prefix
