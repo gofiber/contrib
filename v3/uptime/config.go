@@ -187,11 +187,9 @@ func (c Config) normalized() (Config, error) {
 		return Config{}, err
 	}
 	c.Endpoints = endpoints
-	if c.RetentionDays == 0 {
-		c.RetentionDays = defaultRetentionDays
-	}
-	if c.RetentionDays < 1 {
-		return Config{}, errors.New("uptime: retention days must be positive")
+	c.RetentionDays, err = normalizeRetentionDays(c.RetentionDays)
+	if err != nil {
+		return Config{}, err
 	}
 	if c.DaysToShow == 0 {
 		c.DaysToShow = defaultDaysToShow
@@ -242,6 +240,16 @@ func (c Config) normalized() (Config, error) {
 		c.StorageKeyPrefix = defaultStorageKeyPrefix
 	}
 	return c, nil
+}
+
+func normalizeRetentionDays(days int) (int, error) {
+	if days == 0 {
+		return defaultRetentionDays, nil
+	}
+	if days < 1 {
+		return 0, errors.New("uptime: retention days must be positive")
+	}
+	return days, nil
 }
 
 func normalizeFaviconURL(rawURL string) (string, error) {
