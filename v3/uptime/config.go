@@ -31,7 +31,7 @@ const (
 var (
 	// ErrMissingServiceID is returned when neither Config.ServiceID nor Config.Endpoints is set.
 	ErrMissingServiceID = errors.New("uptime: service id or endpoint is required")
-	// ErrMissingStore is returned when neither Config.Store nor Config.Storage is set.
+	// ErrMissingStore is returned when no storage is provided to New, NewRedisStore, or RemoveService.
 	ErrMissingStore = errors.New("uptime: storage is required")
 	// ErrRetentionDaysOverflow is returned when RetentionDays would overflow the Redis state TTL.
 	ErrRetentionDaysOverflow = errors.New("uptime: retention days overflow Redis state TTL")
@@ -66,6 +66,9 @@ type Config struct {
 	// SampleInterval is the heartbeat interval and uptime slot size.
 	SampleInterval time.Duration
 	// RetentionDays controls how many days of heartbeat data are kept.
+	// Zero defaults to 90; negative values are invalid. Redis requires at most
+	// 106750 days so its expiry backstop fits in time.Duration. Custom Storage
+	// backends are not subject to this Redis-specific limit.
 	RetentionDays int
 	// DaysToShow controls how many days are returned by the API and dashboard.
 	DaysToShow int
@@ -250,10 +253,6 @@ func normalizeRetentionDays(days int) (int, error) {
 	}
 	if days < 1 {
 		return 0, errors.New("uptime: retention days must be positive")
-	}
-	// Validate before adding the extra day or converting to time.Duration.
-	if days > int((1<<63-1)/(24*time.Hour))-1 {
-		return 0, ErrRetentionDaysOverflow
 	}
 	return days, nil
 }

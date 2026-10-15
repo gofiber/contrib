@@ -106,20 +106,29 @@ func configuredStore(cfg Config) (storage.Store, error) {
 	case cfg.Storage != nil:
 		return storage.NewExternalStore(cfg.Storage), nil
 	case cfg.Store != nil:
-		return storage.NewRedisStore(newRedisStoreConfig(cfg)), nil
+		redisConfig, err := newRedisStoreConfig(cfg)
+		if err != nil {
+			return nil, err
+		}
+		return storage.NewRedisStore(redisConfig), nil
 	default:
 		return nil, ErrMissingStore
 	}
 }
 
-func newRedisStoreConfig(cfg Config) storage.RedisConfig {
+func newRedisStoreConfig(cfg Config) (storage.RedisConfig, error) {
+	const day = 24 * time.Hour
+	// Validate before adding the extra day or converting to time.Duration.
+	if cfg.RetentionDays > int((1<<63-1)/day)-1 {
+		return storage.RedisConfig{}, ErrRetentionDaysOverflow
+	}
 	return storage.RedisConfig{
 		Storage:   cfg.Store,
 		KeyPrefix: cfg.StorageKeyPrefix,
 		// One day past retention, so cleanup always wins in a live process and
 		// the TTL only matters once nothing is left to run it.
-		StateTTL: time.Duration(cfg.RetentionDays+1) * 24 * time.Hour,
-	}
+		StateTTL: time.Duration(cfg.RetentionDays+1) * day,
+	}, nil
 }
 
 // RemoveService deletes all Redis-backed uptime state for serviceID,
@@ -127,8 +136,8 @@ func newRedisStoreConfig(cfg Config) storage.RedisConfig {
 // window is refreshed, so call this after retiring or renaming a service or an
 // endpoint ID. Otherwise the old ID keeps its dashboard row and reports down.
 //
-// keyPrefix must match Config.StorageKeyPrefix used with Config.Store;
-// empty uses the default.
+// This also removes data written through NewRedisStore. keyPrefix must match
+// the StorageKeyPrefix used by the middleware or factory; empty uses the default.
 func RemoveService(ctx context.Context, store *fiberredis.Storage, keyPrefix, serviceID string) error {
 	if store == nil {
 		return ErrMissingStore

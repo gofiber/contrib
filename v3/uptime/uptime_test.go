@@ -127,14 +127,6 @@ func TestConfigValidation(t *testing.T) {
 			},
 		},
 		{
-			name:    "retention days overflow",
-			wantErr: ErrRetentionDaysOverflow,
-			config: Config{
-				ServiceID:     "api",
-				RetentionDays: 106751,
-			},
-		},
-		{
 			name: "days to show invalid",
 			config: Config{
 				ServiceID:  "api",
@@ -273,11 +265,35 @@ func TestConfigValidation(t *testing.T) {
 	}
 }
 
-func TestConfigRetentionDaysUpperBound(t *testing.T) {
+func TestRedisRetentionDays(t *testing.T) {
 	t.Parallel()
 
-	cfg := normalizedTestConfig(t, Config{ServiceID: "api", RetentionDays: 106750})
-	requireEqual(t, 106750, cfg.RetentionDays)
+	for _, days := range []int{0, 1, 90, 106750} {
+		cfg := normalizedTestConfig(t, Config{ServiceID: "api", Store: new(fiberredis.Storage), RetentionDays: days})
+		redisConfig, err := newRedisStoreConfig(cfg)
+		requireNoError(t, err)
+		requireEqual(t, time.Duration(cfg.RetentionDays+1)*24*time.Hour, redisConfig.StateTTL)
+		_, err = configuredStore(cfg)
+		requireNoError(t, err)
+	}
+	_, err := newRuntime(Config{App: fiber.New(), ServiceID: "api", Store: new(fiberredis.Storage), RetentionDays: 106751})
+	if !errors.Is(err, ErrRetentionDaysOverflow) {
+		t.Fatalf("error = %v, want ErrRetentionDaysOverflow", err)
+	}
+}
+
+func TestCustomStoreRetentionDays(t *testing.T) {
+	t.Parallel()
+
+	for _, days := range []int{0, 106751, 200000, 1<<31 - 1} {
+		u, err := newRuntime(Config{App: fiber.New(), ServiceID: "api", Storage: newSnapshotStore(), RetentionDays: days})
+		requireNoError(t, err)
+		requireNoError(t, u.close())
+		if days == 0 {
+			days = defaultRetentionDays
+		}
+		requireEqual(t, days, u.config.RetentionDays)
+	}
 }
 
 func TestConfigClampsDaysToShow(t *testing.T) {

@@ -2,6 +2,7 @@ package uptime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/gofiber/contrib/v3/uptime/internal/storage"
@@ -24,10 +25,12 @@ type RedisStoreConfig struct {
 }
 
 // NewRedisStore returns an initialized Redis-backed storage.Store, ready for
-// concurrent queries and writes. Initialization pings Redis using ctx and returns
-// an error if Store is missing, configuration is invalid, or initialization
-// fails. Context cancellation and initialization errors can be inspected with
-// errors.Is. No partially initialized store is returned on failure.
+// concurrent queries and writes. Initialization passes ctx to Redis, but network
+// timeouts depend on the caller's client configuration, including go-redis's
+// ContextTimeoutEnabled option. Cancellation may not immediately interrupt I/O.
+// Missing storage, invalid configuration, or initialization failure returns a nil
+// store and an error. Initialization errors preserve both the underlying error
+// and ctx.Err(), when non-nil, for errors.Is.
 //
 // WARNING: The returned Store exposes operations that directly modify monitoring
 // data, including UpsertService, WriteHeartbeat, RollupDaily, and Cleanup. Do not
@@ -56,10 +59,17 @@ func NewRedisStore(ctx context.Context, cfg RedisStoreConfig) (uptimestorage.Sto
 	if cfg.StorageKeyPrefix == "" {
 		cfg.StorageKeyPrefix = defaultStorageKeyPrefix
 	}
-	store := storage.NewRedisStore(newRedisStoreConfig(Config{
+	redisConfig, err := newRedisStoreConfig(Config{
 		Store: cfg.Store, StorageKeyPrefix: cfg.StorageKeyPrefix, RetentionDays: days,
-	}))
+	})
+	if err != nil {
+		return nil, err
+	}
+	store := storage.NewRedisStore(redisConfig)
 	if err := store.Init(ctx); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil && !errors.Is(err, ctxErr) {
+			err = errors.Join(err, ctxErr)
+		}
 		return nil, fmt.Errorf("uptime: initialize Redis store: %w", err)
 	}
 	return store, nil

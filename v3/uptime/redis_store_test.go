@@ -7,7 +7,6 @@ import (
 	"errors"
 	"net"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	fiberredis "github.com/gofiber/storage/redis/v3"
 	"github.com/redis/go-redis/v9"
+	rediscontainer "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
 var _ func(context.Context, uptime.RedisStoreConfig) (uptimestorage.Store, error) = uptime.NewRedisStore
@@ -91,23 +91,58 @@ func TestNewRedisStoreInitializationFailure(t *testing.T) {
 
 func TestNewRedisStoreCancellationDuringInit(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	_, borrowed := redisStoreTestConnection(t, &redis.Options{
-		MaxRetries: -1,
-		Dialer: func(context.Context, string, string) (net.Conn, error) {
-			cancel()
-			return nil, ctx.Err()
-		},
-	})
-	store, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Store: borrowed})
-	if store != nil || !errors.Is(err, context.Canceled) {
-		t.Fatalf("store = %v, error = %v, want context.Canceled", store, err)
+	for _, deadline := range []bool{false, true} {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		t.Cleanup(cancel)
+		ioErr := errors.New("test I/O failure")
+		client, borrowed := redisStoreTestConnection(t, &redis.Options{})
+		// Model a client that returns an I/O error after the context expires.
+		client.AddHook(&redisStoreInitErrorHook{
+			fail: func() error {
+				if !deadline {
+					cancel()
+				}
+				<-ctx.Done()
+				return ioErr
+			},
+		})
+		store, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Store: borrowed})
+		if store != nil || !errors.Is(err, ctx.Err()) || !errors.Is(err, ioErr) {
+			t.Fatalf("store = %v, error = %v, want both %v and %v", store, err, ctx.Err(), ioErr)
+		}
 	}
 }
 
-func TestNewRedisStoreIntegrationQueriesAndWrites(t *testing.T) {
-	ctx, client, borrowed := redisStoreTestRedis(t)
+type redisStoreInitErrorHook struct {
+	redisStorePrefixHook
+	fail func() error
+}
+
+func (h redisStoreInitErrorHook) ProcessHook(redis.ProcessHook) redis.ProcessHook {
+	return func(context.Context, redis.Cmder) error { return h.fail() }
+}
+
+func TestNewRedisStoreIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	container, err := rediscontainer.Run(ctx, "redis:8.2.1-alpine")
+	if container != nil {
+		t.Cleanup(func() {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cleanupCancel()
+			redisStoreRequireNoError(t, container.Terminate(cleanupCtx))
+		})
+	}
+	redisStoreRequireNoError(t, err)
+	url, err := container.ConnectionString(ctx)
+	redisStoreRequireNoError(t, err)
+	t.Run("queries and writes", func(t *testing.T) { testRedisStoreQueriesAndWrites(t, url) })
+	t.Run("prefixes", func(t *testing.T) { testRedisStorePrefixes(t, url) })
+	t.Run("runtime and TTL", func(t *testing.T) { testRedisStoreRuntimeAndTTL(t, url) })
+}
+
+func testRedisStoreQueriesAndWrites(t *testing.T, url string) {
+	ctx, client, borrowed := redisStoreTestRedis(t, url)
 	prefix := redisStoreTestPrefix(t, client)
 	store, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Store: borrowed, StorageKeyPrefix: prefix})
 	redisStoreRequireNoError(t, err)
@@ -216,8 +251,8 @@ func (*redisStorePrefixHook) ProcessPipelineHook(redis.ProcessPipelineHook) redi
 	}
 }
 
-func TestNewRedisStoreIntegrationPrefixes(t *testing.T) {
-	ctx, client, borrowed := redisStoreTestRedis(t)
+func testRedisStorePrefixes(t *testing.T, url string) {
+	ctx, client, borrowed := redisStoreTestRedis(t, url)
 	prefix := redisStoreTestPrefix(t, client)
 	writer, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Store: borrowed, StorageKeyPrefix: ":" + prefix + ":"})
 	redisStoreRequireNoError(t, err)
@@ -238,8 +273,8 @@ func TestNewRedisStoreIntegrationPrefixes(t *testing.T) {
 	}
 }
 
-func TestNewRedisStoreIntegrationRuntimeAndTTL(t *testing.T) {
-	ctx, client, borrowed := redisStoreTestRedis(t)
+func testRedisStoreRuntimeAndTTL(t *testing.T, url string) {
+	ctx, client, borrowed := redisStoreTestRedis(t, url)
 	for _, tc := range []struct {
 		name string
 		days int
@@ -295,16 +330,10 @@ func redisStoreTestConnection(t *testing.T, options *redis.Options) (*redis.Clie
 	return client, borrowed
 }
 
-func redisStoreTestRedis(t *testing.T) (context.Context, *redis.Client, *fiberredis.Storage) {
+func redisStoreTestRedis(t *testing.T, url string) (context.Context, *redis.Client, *fiberredis.Storage) {
 	t.Helper()
-	url := os.Getenv("UPTIME_TEST_REDIS_URL")
-	if url == "" {
-		t.Skip("set UPTIME_TEST_REDIS_URL to run against a disposable Redis database")
-	}
 	options, err := redis.ParseURL(url)
-	if err != nil {
-		t.Fatal("invalid UPTIME_TEST_REDIS_URL")
-	}
+	redisStoreRequireNoError(t, err)
 	options.ContextTimeoutEnabled = true
 	client, borrowed := redisStoreTestConnection(t, options)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

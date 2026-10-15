@@ -148,8 +148,8 @@ distinct service IDs, endpoint IDs, or storage prefixes.
 
 `NewRedisStore` returns the public
 `github.com/gofiber/contrib/v3/uptime/storage.Store`, initialized and ready for
-concurrent queries and writes without middleware. Initialization uses the supplied
-context; invalid configuration or initialization failure returns a nil store and an error.
+concurrent queries and writes without middleware. Invalid configuration or
+initialization failure returns a nil store and an error.
 
 ```go
 package main
@@ -162,13 +162,16 @@ import (
 
 	"github.com/gofiber/contrib/v3/uptime"
 	fiberredis "github.com/gofiber/storage/redis/v3"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
-	redisStorage := fiberredis.New(fiberredis.Config{
-		Addrs:    []string{"127.0.0.1:6379"},
-		Database: 0,
+	client := redis.NewClient(&redis.Options{
+		Addr:                  "127.0.0.1:6379",
+		ContextTimeoutEnabled: true,
 	})
+	defer client.Close()
+	redisStorage := fiberredis.NewFromConnection(client)
 	defer redisStorage.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -190,6 +193,12 @@ func main() {
 }
 ```
 
+Initialization passes the context to Redis; network timeouts still depend on the
+client configuration. `ContextTimeoutEnabled`, used above with
+`fiberredis.NewFromConnection`, enables go-redis to apply context deadlines to I/O.
+Cancellation does not guarantee an immediate return. On initialization failure,
+`errors.Is` can inspect both the underlying error and any `ctx.Err()`.
+
 An empty `StorageKeyPrefix` defaults to `fiber:uptime`. Prefix normalization matches the
 built-in backend, trimming leading/trailing colons. Zero `RetentionDays` defaults
 to 90; negative values or an overflowing TTL are rejected. State expiry follows
@@ -197,11 +206,12 @@ to 90; negative values or an overflowing TTL are rejected. State expiry follows
 no workers, HTTP service, or automatic maintenance. The store can also be passed
 to `Config.Storage`; match its retention setting to the factory's.
 
-> [!WARNING]
-> `UpsertService`, `UpsertInstance`, `WriteHeartbeat`, `RollupDaily`, and `Cleanup`
-> modify monitoring data. Coordinate changes to records used by an active monitor,
-> and use its Redis database, key prefix, and retention settings. Multiple queries
-> do not form a transactionally consistent snapshot.
+:::caution
+`UpsertService`, `UpsertInstance`, `WriteHeartbeat`, `RollupDaily`, and `Cleanup`
+modify monitoring data. Coordinate changes to records used by an active monitor,
+and use its Redis database, key prefix, and retention settings. Multiple queries
+do not form a transactionally consistent snapshot.
+:::
 
 The caller owns the Fiber Redis storage and any separately borrowed client.
 The factory never closes them, even on failure. Close them after all users have stopped.
@@ -215,9 +225,8 @@ cleanup: a decommissioned service, a changed key prefix, an app that never
 comes back. Without it those keys would stay in Redis forever.
 
 The `services` registry set is shared by all instances under a prefix and is
-never expired. A service that has never recorded a successful heartbeat also
-keeps its (small) service hash without a TTL. Use `RemoveService` to clear
-either.
+never expired. Service hashes receive a TTL when registered, even before their
+first heartbeat. Use `RemoveService` to clear a service and its registry entry.
 
 ### Removing a service
 
@@ -232,7 +241,7 @@ Delete it explicitly:
 err := uptime.RemoveService(context.Background(), store, "fiber:uptime", "old-endpoint-id")
 ```
 
-Pass the same `StorageKeyPrefix` the middleware uses, or `""` for the default.
+Pass the same `StorageKeyPrefix` the middleware or `NewRedisStore` uses, or `""` for the default.
 This removes the service, its history and its raw samples.
 
 Remove the service from your config and restart before calling it. Calling it
@@ -240,8 +249,8 @@ while the service is still being recorded takes it off the dashboard for good,
 but in-flight heartbeats will recreate partial keys; those carry the TTL above
 and expire on their own.
 
-`RemoveService` applies to the built-in Redis path. Custom storage backends may
-expose their own removal operation.
+`RemoveService` applies to the built-in Redis path and data written through
+`NewRedisStore`. Other custom storage backends may expose their own removal operation.
 
 ## Custom storage
 
@@ -359,7 +368,7 @@ remote host, so a same-origin URL is preferred for private deployments.
 | ServiceDescription | `string` | Display description. | `""` |
 | Endpoints | `[]uptime.EndpointConfig` | Optional HTTP endpoints to probe as tracked services. | `nil` |
 | SampleInterval | `time.Duration` | Heartbeat interval. | `3 * time.Second` |
-| RetentionDays | `int` | Number of days to retain daily history. Also sets the key expiry backstop. | `90` |
+| RetentionDays | `int` | Days to retain daily history; zero uses the default, negative values are invalid. Redis requires at most `106750` days to fit its expiry backstop in `time.Duration`; custom `Storage` has no Redis-specific limit. | `90` |
 | DaysToShow | `int` | Number of days shown in snapshots and dashboard. | `30` |
 | Timezone | `*time.Location` | Timezone for day and slot boundaries. | `time.Local` |
 | NodeID | `int64` | Optional node value used for generated instance IDs. | `0` |
