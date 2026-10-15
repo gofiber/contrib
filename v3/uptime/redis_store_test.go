@@ -29,17 +29,17 @@ func TestNewRedisStoreValidation(t *testing.T) {
 		want string
 	}{
 		{"missing storage", uptime.RedisStoreConfig{}, "storage is required"},
-		{"missing connection", uptime.RedisStoreConfig{Storage: new(fiberredis.Storage)}, "client is required"},
-		{"negative retention", uptime.RedisStoreConfig{Storage: new(fiberredis.Storage), RetentionDays: -1}, "retention days must be positive"},
-		{"TTL overflow", uptime.RedisStoreConfig{Storage: new(fiberredis.Storage), RetentionDays: int((1<<63 - 1) / (24 * time.Hour))}, "overflow"},
-		{"integer overflow", uptime.RedisStoreConfig{Storage: new(fiberredis.Storage), RetentionDays: int(^uint(0) >> 1)}, "overflow"},
+		{"missing connection", uptime.RedisStoreConfig{Store: new(fiberredis.Storage)}, "client is required"},
+		{"negative retention", uptime.RedisStoreConfig{Store: new(fiberredis.Storage), RetentionDays: -1}, "retention days must be positive"},
+		{"TTL overflow", uptime.RedisStoreConfig{Store: new(fiberredis.Storage), RetentionDays: 106751}, "overflow"},
+		{"integer overflow", uptime.RedisStoreConfig{Store: new(fiberredis.Storage), RetentionDays: int(^uint(0) >> 1)}, "overflow"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store, err := uptime.NewRedisStore(context.Background(), tc.cfg)
 			if store != nil || err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("store = %v, error = %v, want nil store and %q", store, err, tc.want)
 			}
-			if tc.cfg.Storage == nil && !errors.Is(err, uptime.ErrMissingStore) {
+			if tc.cfg.Store == nil && !errors.Is(err, uptime.ErrMissingStore) {
 				t.Fatalf("error = %v, want ErrMissingStore", err)
 			}
 		})
@@ -53,7 +53,7 @@ func TestNewRedisStoreCanceledContext(t *testing.T) {
 	expired, cancelDeadline := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancelDeadline()
 	for _, ctx := range []context.Context{canceled, expired} {
-		store, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Storage: new(fiberredis.Storage)})
+		store, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Store: new(fiberredis.Storage)})
 		if store != nil || !errors.Is(err, ctx.Err()) {
 			t.Fatalf("store = %v, error = %v, want %v", store, err, ctx.Err())
 		}
@@ -69,7 +69,7 @@ func TestNewRedisStoreInitializationFailure(t *testing.T) {
 			return nil, dialErr
 		},
 	})
-	store, err := uptime.NewRedisStore(context.Background(), uptime.RedisStoreConfig{Storage: borrowed})
+	store, err := uptime.NewRedisStore(context.Background(), uptime.RedisStoreConfig{Store: borrowed})
 	if store != nil || !errors.Is(err, dialErr) {
 		t.Fatalf("store = %v, error = %v, want dial failure", store, err)
 	}
@@ -80,7 +80,7 @@ func TestNewRedisStoreInitializationFailure(t *testing.T) {
 	if err := client.Close(); err != nil {
 		t.Fatal(err)
 	}
-	store, err = uptime.NewRedisStore(context.Background(), uptime.RedisStoreConfig{Storage: borrowed})
+	store, err = uptime.NewRedisStore(context.Background(), uptime.RedisStoreConfig{Store: borrowed})
 	if store != nil || !errors.Is(err, redis.ErrClosed) {
 		t.Fatalf("store = %v, error = %v, want closed connection", store, err)
 	}
@@ -97,7 +97,7 @@ func TestNewRedisStoreCancellationDuringInit(t *testing.T) {
 			return nil, ctx.Err()
 		},
 	})
-	store, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Storage: borrowed})
+	store, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Store: borrowed})
 	if store != nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("store = %v, error = %v, want context.Canceled", store, err)
 	}
@@ -106,7 +106,7 @@ func TestNewRedisStoreCancellationDuringInit(t *testing.T) {
 func TestNewRedisStoreIntegrationQueriesAndWrites(t *testing.T) {
 	ctx, client, borrowed := redisStoreTestRedis(t)
 	prefix := redisStoreTestPrefix(t, client)
-	store, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Storage: borrowed, KeyPrefix: prefix})
+	store, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Store: borrowed, StorageKeyPrefix: prefix})
 	redisStoreRequireNoError(t, err)
 	services, err := store.ListServices(ctx)
 	redisStoreRequireNoError(t, err)
@@ -131,7 +131,7 @@ func TestNewRedisStoreIntegrationQueriesAndWrites(t *testing.T) {
 		BeforeDay: "2026-06-26", ExpectedSlots: func(uptimestorage.Service, string) int { return 1440 },
 	}))
 	// A second factory must neither clear data nor run retention maintenance.
-	reader, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Storage: borrowed, KeyPrefix: prefix, RetentionDays: 1})
+	reader, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Store: borrowed, StorageKeyPrefix: prefix, RetentionDays: 1})
 	redisStoreRequireNoError(t, err)
 	daily, err := reader.QueryDaily(ctx, uptimestorage.QueryDailyOptions{})
 	redisStoreRequireNoError(t, err)
@@ -156,19 +156,30 @@ func TestNewRedisStoreIntegrationQueriesAndWrites(t *testing.T) {
 	redisStoreRequireNoError(t, client.Ping(ctx).Err())
 }
 
-func TestNewRedisStoreDefaultPrefix(t *testing.T) {
+func TestNewRedisStoreDefaultsAndRetention(t *testing.T) {
 	t.Parallel()
 	// Intercept commands locally: never read or write a shared default namespace.
-	for _, prefix := range []string{"", ":::"} {
+	for _, tc := range []struct {
+		prefix string
+		days   int
+	}{
+		{"", 0},
+		{":::", 0},
+		{"", 1},
+		{"", 90},
+		{"", 106750},
+	} {
 		client, borrowed := redisStoreTestConnection(t, &redis.Options{})
 		hook := &redisStorePrefixHook{}
 		client.AddHook(hook)
-		store, err := uptime.NewRedisStore(context.Background(), uptime.RedisStoreConfig{Storage: borrowed, KeyPrefix: prefix})
+		store, err := uptime.NewRedisStore(context.Background(), uptime.RedisStoreConfig{
+			Store: borrowed, StorageKeyPrefix: tc.prefix, RetentionDays: tc.days,
+		})
 		redisStoreRequireNoError(t, err)
 		_, err = store.ListServices(context.Background())
 		redisStoreRequireNoError(t, err)
 		if hook.key != "fiber:uptime:services" {
-			t.Fatalf("prefix %q queried %q, want default namespace", prefix, hook.key)
+			t.Fatalf("prefix %q queried %q, want default namespace", tc.prefix, hook.key)
 		}
 	}
 }
@@ -205,17 +216,17 @@ func (*redisStorePrefixHook) ProcessPipelineHook(redis.ProcessPipelineHook) redi
 func TestNewRedisStoreIntegrationPrefixes(t *testing.T) {
 	ctx, client, borrowed := redisStoreTestRedis(t)
 	prefix := redisStoreTestPrefix(t, client)
-	writer, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Storage: borrowed, KeyPrefix: ":" + prefix + ":"})
+	writer, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Store: borrowed, StorageKeyPrefix: ":" + prefix + ":"})
 	redisStoreRequireNoError(t, err)
 	redisStoreRequireNoError(t, writer.UpsertService(ctx, uptimestorage.Service{ID: "api", Name: "API", SampleInterval: time.Minute}))
-	reader, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Storage: borrowed, KeyPrefix: prefix})
+	reader, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Store: borrowed, StorageKeyPrefix: prefix})
 	redisStoreRequireNoError(t, err)
 	services, err := reader.ListServices(ctx)
 	redisStoreRequireNoError(t, err)
 	if len(services) != 1 || services[0].ID != "api" {
 		t.Fatalf("services = %+v, want api in canonical namespace", services)
 	}
-	isolated, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Storage: borrowed, KeyPrefix: prefix + ":isolated"})
+	isolated, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Store: borrowed, StorageKeyPrefix: prefix + ":isolated"})
 	redisStoreRequireNoError(t, err)
 	services, err = isolated.ListServices(ctx)
 	redisStoreRequireNoError(t, err)
@@ -233,7 +244,7 @@ func TestNewRedisStoreIntegrationRuntimeAndTTL(t *testing.T) {
 	}{{"default", 0, 91 * 24 * time.Hour}, {"one day", 1, 2 * 24 * time.Hour}, {"custom", 7, 8 * 24 * time.Hour}} {
 		t.Run(tc.name, func(t *testing.T) {
 			prefix := redisStoreTestPrefix(t, client)
-			store, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Storage: borrowed, KeyPrefix: prefix, RetentionDays: tc.days})
+			store, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Store: borrowed, StorageKeyPrefix: prefix, RetentionDays: tc.days})
 			redisStoreRequireNoError(t, err)
 			// Exercise both existing middleware entry points with the public reader.
 			for _, custom := range []bool{false, true} {

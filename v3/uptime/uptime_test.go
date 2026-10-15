@@ -127,6 +127,13 @@ func TestConfigValidation(t *testing.T) {
 			},
 		},
 		{
+			name: "retention days overflow",
+			config: Config{
+				ServiceID:     "api",
+				RetentionDays: 106751,
+			},
+		},
+		{
 			name: "days to show invalid",
 			config: Config{
 				ServiceID:  "api",
@@ -263,6 +270,13 @@ func TestConfigValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConfigRetentionDaysUpperBound(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizedTestConfig(t, Config{ServiceID: "api", RetentionDays: 106750})
+	requireEqual(t, 106750, cfg.RetentionDays)
 }
 
 func TestConfigClampsDaysToShow(t *testing.T) {

@@ -173,9 +173,9 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	store, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{
-		Storage:       redisStorage,
-		KeyPrefix:     "fiber:uptime",
-		RetentionDays: 90,
+		Store:            redisStorage,
+		StorageKeyPrefix: "fiber:uptime",
+		RetentionDays:    90,
 	})
 	if err != nil {
 		log.Print(err)
@@ -190,7 +190,7 @@ func main() {
 }
 ```
 
-An empty `KeyPrefix` defaults to `fiber:uptime`. Prefix normalization matches the
+An empty `StorageKeyPrefix` defaults to `fiber:uptime`. Prefix normalization matches the
 built-in backend, trimming leading/trailing colons. Zero `RetentionDays` defaults
 to 90; negative values or an overflowing TTL are rejected. State expiry follows
 [Key expiry](#key-expiry); instance metadata expires after 24 hours. The factory starts

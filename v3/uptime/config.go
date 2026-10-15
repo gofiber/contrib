@@ -249,6 +249,10 @@ func normalizeRetentionDays(days int) (int, error) {
 	if days < 1 {
 		return 0, errors.New("uptime: retention days must be positive")
 	}
+	// Validate before adding the extra day or converting to time.Duration.
+	if days > int((1<<63-1)/(24*time.Hour))-1 {
+		return 0, errors.New("uptime: retention days overflow Redis state TTL")
+	}
 	return days, nil
 }
 
