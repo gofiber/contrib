@@ -32,8 +32,10 @@ const (
 var (
 	// ErrMissingServiceID is returned when neither Config.ServiceID nor Config.Endpoints is set.
 	ErrMissingServiceID = errors.New("uptime: service id or endpoint is required")
-	// ErrMissingStore is returned when neither Config.Store nor Config.Storage is set.
+	// ErrMissingStore is returned when no storage is provided to New, NewRedisStore, or RemoveService.
 	ErrMissingStore = errors.New("uptime: storage is required")
+	// ErrRetentionDaysOverflow is returned when RetentionDays would overflow the Redis state TTL.
+	ErrRetentionDaysOverflow = errors.New("uptime: retention days overflow Redis state TTL")
 	// ErrConflictingStorage is returned when Config.Store and Config.Storage are both set.
 	ErrConflictingStorage = errors.New("uptime: Store and Storage are mutually exclusive")
 	// ErrMissingApp is returned when Config.App is not set.
@@ -65,6 +67,9 @@ type Config struct {
 	// SampleInterval is the heartbeat interval and uptime slot size.
 	SampleInterval time.Duration
 	// RetentionDays controls how many days of heartbeat data are kept.
+	// Zero defaults to 90; negative values are invalid. Redis requires at most
+	// 106750 days so its expiry backstop fits in time.Duration. Custom Storage
+	// backends are not subject to this Redis-specific limit.
 	RetentionDays int
 	// DaysToShow controls how many days are returned by the API and dashboard.
 	DaysToShow int
@@ -188,11 +193,9 @@ func (c Config) normalized() (Config, error) {
 		return Config{}, err
 	}
 	c.Endpoints = endpoints
-	if c.RetentionDays == 0 {
-		c.RetentionDays = defaultRetentionDays
-	}
-	if c.RetentionDays < 1 {
-		return Config{}, errors.New("uptime: retention days must be positive")
+	c.RetentionDays, err = normalizeRetentionDays(c.RetentionDays)
+	if err != nil {
+		return Config{}, err
 	}
 	if c.DaysToShow == 0 {
 		c.DaysToShow = defaultDaysToShow
@@ -243,6 +246,16 @@ func (c Config) normalized() (Config, error) {
 		c.StorageKeyPrefix = defaultStorageKeyPrefix
 	}
 	return c, nil
+}
+
+func normalizeRetentionDays(days int) (int, error) {
+	if days == 0 {
+		return defaultRetentionDays, nil
+	}
+	if days < 1 {
+		return 0, errors.New("uptime: retention days must be positive")
+	}
+	return days, nil
 }
 
 func normalizeFaviconURL(rawURL string) (string, error) {
