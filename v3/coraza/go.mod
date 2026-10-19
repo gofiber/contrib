@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	github.com/corazawaf/coraza/v3 v3.8.1
 	github.com/gofiber/fiber/v3 v3.6.1
-	github.com/valyala/fasthttp v1.75.0
+	github.com/valyala/fasthttp v1.76.0
 )
 
 require (

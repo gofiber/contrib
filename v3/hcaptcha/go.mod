@@ -6,7 +6,7 @@ require (
 	github.com/gofiber/fiber/v3 v3.6.1
 	github.com/gofiber/utils/v2 v2.6.2
 	github.com/stretchr/testify v1.12.1
-	github.com/valyala/fasthttp v1.75.0
+	github.com/valyala/fasthttp v1.76.0
 )
 
 require (
