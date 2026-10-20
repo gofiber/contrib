@@ -85,7 +85,7 @@ func Test_Vercel_MatchesNetHTTPHandler(t *testing.T) {
 func Test_Vercel_Deps(t *testing.T) {
 	t.Parallel()
 
-	handler := pydanticai.Vercel(userAgent(t), pydanticai.VercelConfig[userDeps]{
+	handler := pydanticai.Vercel(userAgent(), pydanticai.VercelConfig[userDeps]{
 		Deps: func(c fiber.Ctx) (userDeps, error) {
 			return userDeps{User: c.Query("user")}, nil
 		},
@@ -105,7 +105,7 @@ func Test_Vercel_Deps(t *testing.T) {
 
 	t.Run("zero value without Deps", func(t *testing.T) {
 		t.Parallel()
-		_, body := post(t, vercelApp(pydanticai.Vercel(userAgent(t))), "/chat", vercelBody)
+		_, body := post(t, vercelApp(pydanticai.Vercel(userAgent())), "/chat", vercelBody)
 		chunks, _ := vercelChunks(t, body)
 		require.Equal(t, "user=", vercelText(chunks))
 	})
@@ -144,7 +144,7 @@ func Test_Vercel_RunOptionsAndContext(t *testing.T) {
 		c.SetContext(context.WithValue(c.Context(), ctxKey{}, "trace-1"))
 		return c.Next()
 	})
-	app.Post("/chat", pydanticai.Vercel(ai.NewAgent[struct{}, string](echoModel(t)), pydanticai.VercelConfig[struct{}]{
+	app.Post("/chat", pydanticai.Vercel(ai.NewAgent[struct{}, string](echoModel()), pydanticai.VercelConfig[struct{}]{
 		RunOptions: func(c fiber.Ctx) ([]ai.RunOption, error) {
 			if c.Query("deny") != "" {
 				return nil, fiber.ErrForbidden
@@ -254,7 +254,7 @@ func Test_Vercel_AgentError(t *testing.T) {
 
 		closed := make(chan error, 1)
 		handler := pydanticai.Vercel(ai.NewAgent[struct{}, string](failingModel(secret)), pydanticai.VercelConfig[struct{}]{
-			OnClose: func(_ fiber.Ctx, err error) { closed <- err },
+			OnClose: func(_ struct{}, err error) { closed <- err },
 		})
 
 		resp, body := post(t, vercelApp(handler), "/chat", vercelBody)
@@ -272,7 +272,7 @@ func Test_Vercel_AgentError(t *testing.T) {
 		closed := make(chan error, 1)
 		handler := pydanticai.Vercel(ai.NewAgent[struct{}, string](failingModel(secret)), pydanticai.VercelConfig[struct{}]{
 			ErrorMessage: func(error) string { return "the model failed" },
-			OnClose:      func(_ fiber.Ctx, err error) { closed <- err },
+			OnClose:      func(_ struct{}, err error) { closed <- err },
 		})
 
 		_, body := post(t, vercelApp(handler), "/chat", vercelBody)
@@ -293,7 +293,7 @@ func Test_Vercel_ChunkThatCannotBeEncoded(t *testing.T) {
 
 		closed := make(chan error, 1)
 		handler := pydanticai.Vercel(progressAgent(), pydanticai.VercelConfig[struct{}]{
-			OnClose: func(_ fiber.Ctx, err error) { closed <- err },
+			OnClose: func(_ struct{}, err error) { closed <- err },
 		})
 
 		resp, body := post(t, vercelApp(handler), "/chat", vercelBody)
@@ -326,11 +326,28 @@ func Test_Vercel_OnCloseWithoutError(t *testing.T) {
 
 	closed := make(chan error, 1)
 	handler := pydanticai.Vercel(ai.NewAgent[struct{}, string](fakes.NewTestModel()), pydanticai.VercelConfig[struct{}]{
-		OnClose: func(_ fiber.Ctx, err error) { closed <- err },
+		OnClose: func(_ struct{}, err error) { closed <- err },
 	})
 
 	post(t, vercelApp(handler), "/chat", vercelBody)
 	require.NoError(t, receive(t, closed, "OnClose"))
+}
+
+func Test_Vercel_OnCloseReceivesTheDeps(t *testing.T) {
+	t.Parallel()
+
+	closed := make(chan closeEvent, 1)
+	handler := pydanticai.Vercel(userAgent(), pydanticai.VercelConfig[userDeps]{
+		Deps: func(c fiber.Ctx) (userDeps, error) {
+			return userDeps{User: c.Query("user")}, nil
+		},
+		OnClose: func(deps userDeps, err error) { closed <- closeEvent{deps: deps, err: err} },
+	})
+
+	post(t, vercelApp(handler), "/chat?user=alice", vercelBody)
+	event := receive(t, closed, "OnClose")
+	require.NoError(t, event.err)
+	require.Equal(t, userDeps{User: "alice"}, event.deps)
 }
 
 func Test_Vercel_ClientDisconnectCancelsRun(t *testing.T) {
@@ -340,7 +357,7 @@ func Test_Vercel_ClientDisconnectCancelsRun(t *testing.T) {
 	closed := make(chan error, 1)
 	handler := pydanticai.Vercel(ai.NewAgent[struct{}, string](model), pydanticai.VercelConfig[struct{}]{
 		HeartbeatInterval: 20 * time.Millisecond,
-		OnClose:           func(_ fiber.Ctx, err error) { closed <- err },
+		OnClose:           func(_ struct{}, err error) { closed <- err },
 	})
 
 	// The client reads the start of the stream and goes away while the model works.
@@ -359,7 +376,7 @@ func Test_Vercel_Timeout(t *testing.T) {
 	closed := make(chan error, 1)
 	handler := pydanticai.Vercel(ai.NewAgent[struct{}, string](model), pydanticai.VercelConfig[struct{}]{
 		Timeout: 100 * time.Millisecond,
-		OnClose: func(_ fiber.Ctx, err error) { closed <- err },
+		OnClose: func(_ struct{}, err error) { closed <- err },
 	})
 
 	resp, body := post(t, vercelApp(handler), "/chat", vercelBody)

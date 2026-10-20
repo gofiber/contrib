@@ -131,7 +131,21 @@ func main() {
 
 An error from `Deps` aborts the request before the stream starts. Fiber's error handler turns it into the response, here a `401`. `Deps` runs before the body of the request is parsed, so a caller that is turned away costs next to nothing.
 
-The stream outlives the handler. Copy what the dependencies need out of `c` and do not keep `c` itself. The context passed to the tools is `c.Context()` extended with the cancellation described below, so values that a middleware stored with `c.SetContext`, such as the span of the [otel](../otel/README.md) middleware, reach the agent and its spans become children of the span of the request.
+The context passed to the tools is `c.Context()` extended with the cancellation described below, so values that a middleware stored with `c.SetContext`, such as the span of the [otel](../otel/README.md) middleware, reach the agent and its spans become children of the span of the request.
+
+### Copy the strings you take from the request
+
+The run outlives the handler, so do not keep `c` in the dependencies, and copy the strings you take from it. `c.Get`, `c.Query`, `c.Params` and the like return strings that point into the buffer of the request, and fasthttp reuses that buffer once it has finished with the connection. When a client leaves while a tool that does not watch its context is still running, the tool reads the data of a different request from such a string, for example the user of someone else's request.
+
+```go
+app.Post("/users/:user/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[Deps]{
+    Deps: func(c fiber.Ctx) (Deps, error) {
+        return Deps{UserID: strings.Clone(c.Params("user"))}, nil
+    },
+}))
+```
+
+`strings.Clone` fixes it, and so does `Immutable: true` in the `fiber.Config` of the app. Values that a middleware stored in `c.Locals` are not affected, unless the middleware stored such a string itself. `Run` is not affected either, as it answers from the handler.
 
 ## Run options
 
@@ -182,15 +196,15 @@ Once the stream has started, the status is `200` and a failed run is reported in
 ```go
 app.Post("/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[Deps]{
     ErrorMessage: func(err error) string { return "The assistant is not available." },
-    OnClose: func(c fiber.Ctx, err error) {
+    OnClose: func(deps Deps, err error) {
         if err != nil {
-            log.Printf("chat stream ended: %v", err)
+            log.Printf("chat stream of %s ended: %v", deps.UserID, err)
         }
     },
 }))
 ```
 
-`OnClose` gets `nil` when the run completed, the error of the agent when it failed, and the write error when the client left. It runs on the goroutine of the stream, so do not use `c` after it returns.
+`OnClose` gets the dependencies of the run and `nil` when the run completed, the error of the agent when it failed, and the write error when the client left. It does not get the `fiber.Ctx`: it runs when the response ends, and by then fasthttp may have reused the request of a client that left.
 
 ### Errors of `Run`
 
@@ -283,7 +297,7 @@ See the [AG-UI](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/ag-ui.md
 | Deps              | `func(fiber.Ctx) (Deps, error)`               | Resolves the dependencies of the agent for one request. An error aborts the request before the stream starts.                                               | zero value of `Deps`   |
 | RunOptions        | `func(fiber.Ctx) ([]ai.RunOption, error)`     | Returns extra run options for one request.                                                                                                                   | `nil`                  |
 | ErrorMessage      | `func(error) string`                          | Maps the error of a failed run to the message in the `RUN_ERROR` event.                                                                                      | `err.Error()`          |
-| OnClose           | `func(fiber.Ctx, error)`                      | Called once when the stream has ended. The error is `nil` when the run completed.                                                                            | `nil`                  |
+| OnClose           | `func(Deps, error)`                           | Called once when the stream has ended, with the dependencies of the run. The error is `nil` when the run completed.                                          | `nil`                  |
 | Adapter           | `agui.Config`                                 | Protocol version, sanitization of client history and request limits (`MaxRequestBytes`, `AllowedContentTypes`, `DisableContentTypeCheck`).                    | `agui.Config{}`        |
 | Timeout           | `time.Duration`                               | Bounds the duration of one run.                                                                                                                              | `0` (no timeout)       |
 | HeartbeatInterval | `time.Duration`                               | Interval of the heartbeat comments. A value of zero or less uses the default.                                                                                | `15 * time.Second`     |
@@ -297,7 +311,7 @@ See the [AG-UI](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/ag-ui.md
 | Deps              | `func(fiber.Ctx) (Deps, error)`               | Resolves the dependencies of the agent for one request. An error aborts the request before the stream starts.                                               | zero value of `Deps`   |
 | RunOptions        | `func(fiber.Ctx) ([]ai.RunOption, error)`     | Returns extra run options for one request.                                                                                                                   | `nil`                  |
 | ErrorMessage      | `func(error) string`                          | Maps the error of a failed run to the message in the `error` chunk.                                                                                          | `err.Error()`          |
-| OnClose           | `func(fiber.Ctx, error)`                      | Called once when the stream has ended. The error is `nil` when the run completed.                                                                            | `nil`                  |
+| OnClose           | `func(Deps, error)`                           | Called once when the stream has ended, with the dependencies of the run. The error is `nil` when the run completed.                                          | `nil`                  |
 | Adapter           | `vercel.Config`                               | AI SDK version, sanitization of client history and request limits (`MaxRequestBytes`, `AllowedContentTypes`, `DisableContentTypeCheck`).                      | `vercel.Config{}`      |
 | Timeout           | `time.Duration`                               | Bounds the duration of one run.                                                                                                                              | `0` (no timeout)       |
 | HeartbeatInterval | `time.Duration`                               | Interval of the heartbeat comments. A value of zero or less uses the default.                                                                                | `15 * time.Second`     |

@@ -37,6 +37,12 @@ type userDeps struct {
 
 type ctxKey struct{}
 
+// closeEvent is what an OnClose callback received.
+type closeEvent struct {
+	deps userDeps
+	err  error
+}
+
 // unencodable is a payload that fails to encode as JSON.
 type unencodable struct{}
 
@@ -52,14 +58,12 @@ func progressAgent() *ai.Agent[struct{}, string] {
 }
 
 // lastRequest returns the newest request in the history a model receives.
-func lastRequest(t *testing.T, messages []ai.ModelMessage) ai.ModelRequest {
-	t.Helper()
+func lastRequest(messages []ai.ModelMessage) ai.ModelRequest {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if request, ok := messages[i].(ai.ModelRequest); ok {
 			return request
 		}
 	}
-	t.Fatal("no model request in history")
 	return ai.ModelRequest{}
 }
 
@@ -71,12 +75,11 @@ func textResponse(text string) *ai.ModelResponse {
 // echoModel answers with the instructions of the request, which shows what the
 // agent was configured with for this request, and with the value stored under
 // ctxKey in the context of the request.
-func echoModel(t *testing.T) *fakes.FunctionModel {
-	t.Helper()
+func echoModel() *fakes.FunctionModel {
 	return fakes.NewFunctionModel(func(
 		ctx context.Context, messages []ai.ModelMessage, _ ai.ModelRequestParams,
 	) (*ai.ModelResponse, error) {
-		text := lastRequest(t, messages).Instructions
+		text := lastRequest(messages).Instructions
 		if value, ok := ctx.Value(ctxKey{}).(string); ok {
 			text += "|" + value
 		}
@@ -85,9 +88,8 @@ func echoModel(t *testing.T) *fakes.FunctionModel {
 }
 
 // userAgent is an agent whose instructions name the user in its dependencies.
-func userAgent(t *testing.T) *ai.Agent[userDeps, string] {
-	t.Helper()
-	agent := ai.NewAgent[userDeps, string](echoModel(t))
+func userAgent() *ai.Agent[userDeps, string] {
+	agent := ai.NewAgent[userDeps, string](echoModel())
 	agent.AddInstructionsFunc(func(_ context.Context, rc *ai.RunContext[userDeps]) (string, error) {
 		return "user=" + rc.Deps.User, nil
 	})

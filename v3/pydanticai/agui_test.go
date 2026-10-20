@@ -103,7 +103,7 @@ func Test_AGUI_MatchesNetHTTPHandler(t *testing.T) {
 func Test_AGUI_Deps(t *testing.T) {
 	t.Parallel()
 
-	handler := pydanticai.AGUI(userAgent(t), pydanticai.AGUIConfig[userDeps]{
+	handler := pydanticai.AGUI(userAgent(), pydanticai.AGUIConfig[userDeps]{
 		Deps: func(c fiber.Ctx) (userDeps, error) {
 			return userDeps{User: c.Query("user")}, nil
 		},
@@ -117,7 +117,7 @@ func Test_AGUI_Deps(t *testing.T) {
 
 	t.Run("zero value without Deps", func(t *testing.T) {
 		t.Parallel()
-		_, body := post(t, aguiApp(pydanticai.AGUI(userAgent(t))), "/agui", aguiBody)
+		_, body := post(t, aguiApp(pydanticai.AGUI(userAgent())), "/agui", aguiBody)
 		require.Equal(t, "user=", aguiText(aguiEvents(t, body)))
 	})
 }
@@ -125,7 +125,7 @@ func Test_AGUI_Deps(t *testing.T) {
 func Test_AGUI_DepsAreNotShared(t *testing.T) {
 	t.Parallel()
 
-	handler := pydanticai.AGUI(userAgent(t), pydanticai.AGUIConfig[userDeps]{
+	handler := pydanticai.AGUI(userAgent(), pydanticai.AGUIConfig[userDeps]{
 		Deps: func(c fiber.Ctx) (userDeps, error) {
 			return userDeps{User: c.Query("user")}, nil
 		},
@@ -164,7 +164,7 @@ func Test_AGUI_DepsError(t *testing.T) {
 func Test_AGUI_RunOptions(t *testing.T) {
 	t.Parallel()
 
-	handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](echoModel(t)), pydanticai.AGUIConfig[struct{}]{
+	handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](echoModel()), pydanticai.AGUIConfig[struct{}]{
 		RunOptions: func(c fiber.Ctx) ([]ai.RunOption, error) {
 			if c.Query("deny") != "" {
 				return nil, fiber.ErrForbidden
@@ -189,7 +189,7 @@ func Test_AGUI_PropagatesRequestContext(t *testing.T) {
 		c.SetContext(context.WithValue(c.Context(), ctxKey{}, "trace-1"))
 		return c.Next()
 	})
-	app.Post("/agui", pydanticai.AGUI(ai.NewAgent[struct{}, string](echoModel(t))))
+	app.Post("/agui", pydanticai.AGUI(ai.NewAgent[struct{}, string](echoModel())))
 
 	_, body := post(t, app, "/agui", aguiBody)
 	require.Equal(t, "|trace-1", aguiText(aguiEvents(t, body)))
@@ -294,7 +294,7 @@ func Test_AGUI_AgentError(t *testing.T) {
 
 		closed := make(chan error, 1)
 		handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](failingModel(secret)), pydanticai.AGUIConfig[struct{}]{
-			OnClose: func(_ fiber.Ctx, err error) { closed <- err },
+			OnClose: func(_ struct{}, err error) { closed <- err },
 		})
 
 		resp, body := post(t, aguiApp(handler), "/agui", aguiBody)
@@ -312,7 +312,7 @@ func Test_AGUI_AgentError(t *testing.T) {
 		closed := make(chan error, 1)
 		handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](failingModel(secret)), pydanticai.AGUIConfig[struct{}]{
 			ErrorMessage: func(error) string { return "the model failed" },
-			OnClose:      func(_ fiber.Ctx, err error) { closed <- err },
+			OnClose:      func(_ struct{}, err error) { closed <- err },
 		})
 
 		_, body := post(t, aguiApp(handler), "/agui", aguiBody)
@@ -333,7 +333,7 @@ func Test_AGUI_EventThatCannotBeEncoded(t *testing.T) {
 
 		closed := make(chan error, 1)
 		handler := pydanticai.AGUI(progressAgent(), pydanticai.AGUIConfig[struct{}]{
-			OnClose: func(_ fiber.Ctx, err error) { closed <- err },
+			OnClose: func(_ struct{}, err error) { closed <- err },
 		})
 
 		resp, body := post(t, aguiApp(handler), "/agui", aguiBody)
@@ -365,11 +365,28 @@ func Test_AGUI_OnCloseWithoutError(t *testing.T) {
 
 	closed := make(chan error, 1)
 	handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](fakes.NewTestModel()), pydanticai.AGUIConfig[struct{}]{
-		OnClose: func(_ fiber.Ctx, err error) { closed <- err },
+		OnClose: func(_ struct{}, err error) { closed <- err },
 	})
 
 	post(t, aguiApp(handler), "/agui", aguiBody)
 	require.NoError(t, receive(t, closed, "OnClose"))
+}
+
+func Test_AGUI_OnCloseReceivesTheDeps(t *testing.T) {
+	t.Parallel()
+
+	closed := make(chan closeEvent, 1)
+	handler := pydanticai.AGUI(userAgent(), pydanticai.AGUIConfig[userDeps]{
+		Deps: func(c fiber.Ctx) (userDeps, error) {
+			return userDeps{User: c.Query("user")}, nil
+		},
+		OnClose: func(deps userDeps, err error) { closed <- closeEvent{deps: deps, err: err} },
+	})
+
+	post(t, aguiApp(handler), "/agui?user=alice", aguiBody)
+	event := receive(t, closed, "OnClose")
+	require.NoError(t, event.err)
+	require.Equal(t, userDeps{User: "alice"}, event.deps)
 }
 
 func Test_AGUI_ClientDisconnectCancelsRun(t *testing.T) {
@@ -379,7 +396,7 @@ func Test_AGUI_ClientDisconnectCancelsRun(t *testing.T) {
 	closed := make(chan error, 1)
 	handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](model), pydanticai.AGUIConfig[struct{}]{
 		HeartbeatInterval: 20 * time.Millisecond,
-		OnClose:           func(_ fiber.Ctx, err error) { closed <- err },
+		OnClose:           func(_ struct{}, err error) { closed <- err },
 	})
 
 	// The client reads the start of the stream and goes away while the model works.
@@ -432,7 +449,7 @@ func Test_AGUI_Timeout(t *testing.T) {
 	closed := make(chan error, 1)
 	handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](model), pydanticai.AGUIConfig[struct{}]{
 		Timeout: 100 * time.Millisecond,
-		OnClose: func(_ fiber.Ctx, err error) { closed <- err },
+		OnClose: func(_ struct{}, err error) { closed <- err },
 	})
 
 	resp, body := post(t, aguiApp(handler), "/agui", aguiBody)
