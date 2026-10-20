@@ -11,7 +11,7 @@ require (
 require (
 	github.com/gofiber/schema v1.8.8 // indirect
 	github.com/molecule-man/go-brrr v1.3.0 // indirect
-	github.com/philhofer/fwd v1.2.0 // indirect
+	github.com/philhofer/fwd v1.2.1 // indirect
 	github.com/tinylib/msgp v1.6.5 // indirect
 	github.com/valyala/fasthttp v1.76.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
