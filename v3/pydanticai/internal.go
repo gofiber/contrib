@@ -97,29 +97,42 @@ func resolve[Deps any](
 	return value, extra, nil
 }
 
+// onClose binds the OnClose callback of a config to the dependencies of one
+// request. It returns nil when the config has no callback.
+func onClose[Deps any](callback func(Deps, error), deps Deps) func(error) {
+	if callback == nil {
+		return nil
+	}
+	return func(err error) { callback(deps, err) }
+}
+
 // streamOptions are the response settings shared by the streaming handlers.
 type streamOptions struct {
-	onClose          func(c fiber.Ctx, err error)
 	timeout          time.Duration
 	heartbeat        time.Duration
 	disableHeartbeat bool
 }
 
-// serveStream sends what run writes as a server-sent events response.
+// serveStream sends what run writes as a server-sent events response and calls
+// onClose, which may be nil, once the stream has ended.
 //
 // The context passed to run is canceled when a write to the client fails, when
 // a heartbeat detects that the client went away, and when the stream ends.
 // fasthttp does not cancel the request context for a disconnected client, so
 // this is the only signal that stops a run nobody is listening to anymore.
+//
+// run and onClose execute on the goroutine that fasthttp starts for the body
+// of the response. When the client goes away fasthttp reuses the request while
+// that goroutine is still winding down, so neither of them may use c.
 func serveStream(
 	c fiber.Ctx,
 	opts streamOptions,
+	onClose func(err error),
 	run func(ctx context.Context, send func(data []byte) error) error,
 ) error {
-	return sse.New(sse.Config{
+	config := sse.Config{
 		HeartbeatInterval: opts.heartbeat,
 		DisableHeartbeat:  opts.disableHeartbeat,
-		OnClose:           opts.onClose,
 		Handler: func(_ fiber.Ctx, stream *sse.Stream) error {
 			ctx := stream.Context()
 			if opts.timeout > 0 {
@@ -131,5 +144,9 @@ func serveStream(
 				return stream.Event(sse.Event{Data: data})
 			})
 		},
-	})(c)
+	}
+	if onClose != nil {
+		config.OnClose = func(_ fiber.Ctx, err error) { onClose(err) }
+	}
+	return sse.New(config)(c)
 }

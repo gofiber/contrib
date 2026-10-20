@@ -102,7 +102,7 @@ func Test_Run_DepsOptionsAndContext(t *testing.T) {
 		c.SetContext(context.WithValue(c.Context(), ctxKey{}, "trace-1"))
 		return c.Next()
 	})
-	app.Post("/ask", pydanticai.Run(userAgent(t), pydanticai.RunConfig[userDeps, string]{
+	app.Post("/ask", pydanticai.Run(userAgent(), pydanticai.RunConfig[userDeps, string]{
 		Deps: func(c fiber.Ctx) (userDeps, error) {
 			if c.Query("user") == "" {
 				return userDeps{}, fiber.ErrUnauthorized
@@ -197,7 +197,7 @@ func Test_Run_CustomPrompt(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](echoModel(t)), pydanticai.RunConfig[struct{}, string]{
+	app.Get("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](echoModel()), pydanticai.RunConfig[struct{}, string]{
 		Prompt: func(c fiber.Ctx) (string, error) {
 			if c.Query("q") == "" {
 				return "", fiber.NewError(fiber.StatusBadRequest, "q is required")
@@ -322,7 +322,9 @@ func Test_Run_DeferredToolCallsAreNotImplemented(t *testing.T) {
 		app := runApp(pydanticai.Run(agent, pydanticai.RunConfig[struct{}, string]{
 			Respond: func(c fiber.Ctx, result *ai.RunResult[string]) error {
 				deferred := result.Deferred()
-				require.NotNil(t, deferred)
+				if deferred == nil {
+					return errors.New("the run did not defer its tool call")
+				}
 				return c.Status(http.StatusAccepted).JSON(fiber.Map{"approvals": len(deferred.Approvals)})
 			},
 		}))

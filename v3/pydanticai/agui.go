@@ -24,8 +24,11 @@ type AGUIConfig[Deps any] struct {
 	// Fiber error handler, so return fiber.ErrUnauthorized to turn away an
 	// anonymous caller.
 	//
-	// The stream outlives the handler, so copy what the dependencies need out
-	// of c instead of keeping c.
+	// The run outlives the handler, so do not keep c in the dependencies. The
+	// strings that c returns, such as the ones of c.Get and c.Query, can point
+	// into the buffer of the request, which fasthttp reuses once the client has
+	// gone away. Copy them with strings.Clone, or enable Immutable in the
+	// config of the app.
 	//
 	// Optional. Default: the zero value of Deps
 	Deps func(c fiber.Ctx) (Deps, error)
@@ -45,14 +48,17 @@ type AGUIConfig[Deps any] struct {
 	// Optional. Default: err.Error()
 	ErrorMessage func(err error) string
 
-	// OnClose is called once when the stream has ended. err is nil when the run
-	// completed, the agent error when the run failed, and the write error when
-	// the client went away.
+	// OnClose is called once when the stream has ended, with the dependencies of
+	// the run. err is nil when the run completed, the agent error when the run
+	// failed, and the write error when the client went away.
 	//
-	// The stream outlives the handler, so do not use c after OnClose returns.
+	// It does not receive the fiber.Ctx. OnClose runs when the response ends,
+	// and fasthttp reuses the request of a client that went away while the run
+	// is still winding down, so the context may belong to another request by
+	// then. Read what the log line needs in Deps and keep it in the dependencies.
 	//
 	// Optional. Default: nil
-	OnClose func(c fiber.Ctx, err error)
+	OnClose func(deps Deps, err error)
 
 	// Adapter configures the AG-UI adapter: the protocol version, how untrusted
 	// client history is sanitized and the request limits (MaxRequestBytes,
@@ -100,7 +106,6 @@ func AGUI[Deps, Output any](agent *ai.Agent[Deps, Output], config ...AGUIConfig[
 		cfg.Adapter.MaxRequestBytes, cfg.Adapter.AllowedContentTypes, cfg.Adapter.DisableContentTypeCheck,
 	)
 	stream := streamOptions{
-		onClose:          cfg.OnClose,
 		timeout:          cfg.Timeout,
 		heartbeat:        cfg.HeartbeatInterval,
 		disableHeartbeat: cfg.DisableHeartbeat,
@@ -126,7 +131,7 @@ func AGUI[Deps, Output any](agent *ai.Agent[Deps, Output], config ...AGUIConfig[
 			return err
 		}
 
-		return serveStream(c, stream, func(ctx context.Context, send func([]byte) error) error {
+		return serveStream(c, stream, onClose(cfg.OnClose, deps), func(ctx context.Context, send func([]byte) error) error {
 			for event, runErr := range adapter.RunStream(ctx, input, deps, options...) {
 				if runErr != nil && cfg.ErrorMessage != nil && event.Type == agui.EventRunError {
 					event.Message = cfg.ErrorMessage(runErr)

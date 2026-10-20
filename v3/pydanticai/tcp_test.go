@@ -121,7 +121,7 @@ func Test_AGUI_ClosedSocketCancelsRun(t *testing.T) {
 	closed := make(chan error, 1)
 	app := aguiApp(pydanticai.AGUI(ai.NewAgent[struct{}, string](model), pydanticai.AGUIConfig[struct{}]{
 		HeartbeatInterval: 20 * time.Millisecond,
-		OnClose:           func(_ fiber.Ctx, err error) { closed <- err },
+		OnClose:           func(_ struct{}, err error) { closed <- err },
 	}))
 	url := listen(t, app) + "/agui"
 
@@ -144,7 +144,7 @@ func Test_Vercel_ClosedSocketCancelsRun(t *testing.T) {
 	closed := make(chan error, 1)
 	app := vercelApp(pydanticai.Vercel(ai.NewAgent[struct{}, string](model), pydanticai.VercelConfig[struct{}]{
 		HeartbeatInterval: 20 * time.Millisecond,
-		OnClose:           func(_ fiber.Ctx, err error) { closed <- err },
+		OnClose:           func(_ struct{}, err error) { closed <- err },
 	}))
 	url := listen(t, app) + "/chat"
 
