@@ -10,7 +10,7 @@ require (
 require (
 	github.com/bmatcuk/doublestar/v4 v4.10.3 // indirect
 	github.com/casbin/govaluate v1.10.0 // indirect
-	github.com/gofiber/schema v1.8.8 // indirect
+	github.com/gofiber/schema v1.9.0 // indirect
 	github.com/gofiber/utils/v2 v2.6.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.20.3 // indirect
