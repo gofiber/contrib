@@ -131,7 +131,7 @@ func main() {
 
 An error from `Deps` aborts the request before the stream starts. Fiber's error handler turns it into the response, here a `401`. `Deps` runs before the body of the request is parsed, so a caller that is turned away costs next to nothing.
 
-The context passed to the tools is `c.Context()` extended with the cancellation described below, so values that a middleware stored with `c.SetContext`, such as the span of the [otel](../otel/README.md) middleware, reach the agent and its spans become children of the span of the request.
+The context passed to the tools is `c.Context()` extended with the cancellation described below, so values that a middleware stored with `c.SetContext`, such as the span of the [otel](https://github.com/gofiber/contrib/tree/main/v3/otel) middleware, reach the agent and its spans become children of the span of the request.
 
 ### Copy the strings you take from the request
 
