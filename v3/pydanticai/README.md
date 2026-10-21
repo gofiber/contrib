@@ -86,7 +86,7 @@ model := openai.NewModel("gpt-5-mini", openai.WithAPIKey(apiKey)) // from your c
 agent := ai.NewAgent[struct{}, string](model)
 ```
 
-The key belongs to the model, not to the handler. The model packages of pydantic-ai-go take their own options, such as `anthropic.WithAPIKey` and `google.WithAPIKey`.
+The key belongs to the model, not to the handler. [Model providers](#model-providers) lists every provider and how to set its credentials.
 
 Point the frontend at the route (AI SDK 5):
 
@@ -269,6 +269,80 @@ func TestChat(t *testing.T) {
     require.Equal(t, "v1", resp.Header.Get("x-vercel-ai-ui-message-stream"))
 }
 ```
+
+## Model providers
+
+The handlers work with any model of pydantic-ai-go; the provider is chosen by the model that you pass to `ai.NewAgent`. Each provider is a package under `github.com/Kludex/pydantic-ai-go/ai/models/`. A model reads its credentials from the environment by default, and the options of its package set them in code.
+
+| Provider | Constructor | Environment variables | Credentials in code |
+|:---------|:------------|:----------------------|:--------------------|
+| OpenAI Chat Completions | `openai.NewModel("gpt-5-mini")` | `OPENAI_API_KEY`, `OPENAI_BASE_URL` | `openai.WithAPIKey(key)` |
+| OpenAI Responses | `openai.NewResponsesModel("gpt-5-mini")` | `OPENAI_API_KEY`, `OPENAI_BASE_URL` | `openai.WithAPIKey(key)` |
+| OpenAI Codex subscription | `openaicodex.NewModel("gpt-5.6-luna")` † | the login of the Codex CLI (`CODEX_HOME`) | `openaicodex.WithCredentials(...)` or `openaicodex.WithCredentialSource(...)` |
+| OpenAI Decisions | `openaidecisions.NewModel("gpt-6-luna")` | `OPENAI_API_KEY`, `OPENAI_BASE_URL` | `openaidecisions.WithAPIKey(key)` |
+| Azure OpenAI | `azure.NewModel("deployment", azure.Config{})` † | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `OPENAI_API_VERSION` | `APIKey` or `TokenProvider` of `azure.Config` |
+| Amazon Bedrock | `bedrock.NewModel("us.amazon.nova-lite-v1:0")` | the standard AWS SDK configuration | `bedrock.WithAWSConfig(cfg)` |
+| Amazon Bedrock Mantle | `bedrockmantle.NewModel("openai.gpt-5.6-luna")` | `AWS_BEARER_TOKEN_BEDROCK`, or the standard AWS SDK configuration | `bedrockmantle.WithAPIKey(token)` or `bedrockmantle.WithAWSConfig(cfg)` |
+| Anthropic | `anthropic.NewModel("claude-sonnet-4-5")` | `ANTHROPIC_API_KEY` | `anthropic.WithAPIKey(key)` |
+| Google Gemini | `google.NewModel("gemini-2.5-flash")` | `GOOGLE_API_KEY` or `GEMINI_API_KEY` | `google.WithAPIKey(key)` |
+| Google Vertex AI | `google.NewVertexModel("gemini-2.5-flash", google.VertexConfig{})` † | `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, `GOOGLE_APPLICATION_CREDENTIALS` | `APIKey` or `TokenProvider` of `google.VertexConfig` |
+| DeepSeek Chat Completions | `deepseek.NewModel("deepseek-chat")` | `DEEPSEEK_API_KEY` | `deepseek.WithAPIKey(key)` |
+| DeepSeek Responses | `deepseek.NewResponsesModel("deepseek-v4-flash")` | `DEEPSEEK_API_KEY` | `deepseek.WithAPIKey(key)` |
+| GitHub Copilot | `githubcopilot.NewModel("claude-haiku-4.5")` † | `GITHUB_COPILOT_API_KEY` | `githubcopilot.WithAPIKey(key)` |
+| Cohere | `cohere.NewModel("command-r7b-12-2024")` | `CO_API_KEY` | `cohere.WithAPIKey(key)` |
+| Crusoe | `crusoe.NewModel("openai/gpt-oss-120b")` | `CRUSOE_API_KEY` | `crusoe.WithAPIKey(key)` |
+| Cerebras | `cerebras.NewModel("gpt-oss-120b")` | `CEREBRAS_API_KEY` | `cerebras.WithAPIKey(key)` |
+| Groq | `groq.NewModel("openai/gpt-oss-20b")` | `GROQ_API_KEY` | `groq.WithAPIKey(key)` |
+| Hugging Face | `huggingface.NewModel("Qwen/Qwen3-32B")` | `HF_TOKEN` | `huggingface.WithToken(token)` |
+| Meta Muse | `meta.NewModel("muse-spark-1.3")` | `META_API_KEY` | `meta.WithAPIKey(key)` |
+| Mistral | `mistral.NewModel("mistral-large-latest")` | `MISTRAL_API_KEY` | `mistral.WithAPIKey(key)` |
+| Ollama | `ollama.NewModel("qwen3")` | `OLLAMA_BASE_URL`, `OLLAMA_API_KEY` | `ollama.WithAPIKey(key)` |
+| OpenRouter | `openrouter.NewModel("anthropic/claude-sonnet-4.6")` | `OPENROUTER_API_KEY` | `openrouter.WithAPIKey(key)` |
+| Snowflake Cortex | `snowflake.NewModel("claude-sonnet-4-6")` | `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_TOKEN` | `snowflake.WithAccount(account)` and `snowflake.WithToken(token)` |
+| Together AI | `together.NewModel("Qwen/Qwen3-32B")` | `TOGETHER_API_KEY` | `together.WithAPIKey(key)` |
+| System One decision models | `systemone.NewModel("clm-latest")` † | `SYSTEM_ONE_BASE_URL`, `SYSTEM_ONE_API_KEY` (optional) | `systemone.WithAPIKey(key)` |
+| TypeSafe Jev | `typesafe.NewModel("jev-latest")` | `TYPESAFE_API_KEY` | `typesafe.WithAPIKey(key)` |
+| vLLM | `vllm.NewModel("Qwen/Qwen3-32B")` † | `VLLM_BASE_URL`, `VLLM_API_KEY` | `vllm.WithAPIKey(key)` |
+| xAI | `xai.NewModel("grok-4.3")` | `XAI_API_KEY` | `xai.WithAPIKey(key)` |
+| Z.AI | `zai.NewModel("glm-5.3-flash")` | `ZAI_API_KEY` | `zai.WithAPIKey(key)` |
+
+† The constructor returns an error as well as the model. The model names are examples; use the name of the model that you want.
+
+Most packages also take `WithBaseURL`, to point the model at a proxy or a compatible endpoint, and `WithHTTPClient`. See [Provider configuration](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/providers.md) in the documentation of pydantic-ai-go, and the pages on [Amazon Bedrock](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/bedrock.md) and the [OpenAI Codex subscription](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/openai-codex.md).
+
+```go
+// The credentials are options of the model.
+claude := anthropic.NewModel("claude-sonnet-4-5", anthropic.WithAPIKey(apiKey))
+
+// A local vLLM server.
+local, err := vllm.NewModel("Qwen/Qwen3-32B", vllm.WithBaseURL("http://localhost:8000/v1"))
+if err != nil {
+    log.Fatal(err)
+}
+
+// Azure OpenAI takes its settings in a config.
+azureModel, err := azure.NewModel("my-deployment", azure.Config{
+    Endpoint: "https://my-resource.openai.azure.com",
+    APIKey:   apiKey,
+})
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Choosing the provider from configuration
+
+`infer.Model` (package `github.com/Kludex/pydantic-ai-go/ai/models/infer`) creates a model from a name with a provider prefix, so the provider can come from configuration. The model reads its credentials from the environment:
+
+```go
+model, err := infer.Model(os.Getenv("MODEL")) // for example MODEL=anthropic:claude-sonnet-4-5
+if err != nil {
+    log.Fatal(err)
+}
+agent := ai.NewAgent[struct{}, string](model)
+```
+
+The prefixes are `openai`, `openai-responses`, `openai-codex`, `openai-decisions`, `anthropic`, `google`, `github-copilot`, `bedrock`, `bedrock-mantle`, `cerebras`, `cohere`, `crusoe`, `deepseek`, `deepseek-responses`, `groq`, `huggingface`, `meta`, `mistral`, `ollama`, `openrouter`, `snowflake`, `system-one`, `together`, `typesafe`, `vllm`, `xai` and `zai`. Azure OpenAI and Vertex AI need a config and have no prefix. The package imports the provider packages behind these prefixes, so a binary that uses it links all of them.
 
 ## Requests
 
