@@ -3,6 +3,7 @@ package pydanticai_test
 import (
 	"bufio"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -186,6 +187,11 @@ func checkEncodedBodies(t *testing.T, app *fiber.App, path, body string, resolve
 	for _, encoding := range []string{"gzip", "br", "deflate", "zstd", "unknown", "identity, gzip"} {
 		require.Equal(t, fiber.StatusUnsupportedMediaType, status(encoding), encoding)
 	}
+	// The encodings can be listed over several lines of the header.
+	request := newRequest(fiber.MethodPost, path, fiber.MIMEApplicationJSON, body)
+	request.Header[fiber.HeaderContentEncoding] = []string{fiber.StrIdentity, "gzip"}
+	resp, _ := send(t, app, request)
+	require.Equal(t, fiber.StatusUnsupportedMediaType, resp.StatusCode, "identity and gzip on two lines")
 	require.Zero(t, resolved.Load(), "Deps must not run for a body that is not read")
 
 	// The identity encoding is no encoding.
@@ -405,4 +411,27 @@ func Test_AGUI_ReleasesTheBufferOfLargeBodies(t *testing.T) {
 	large := aguiBody[:len(aguiBody)-len(`"Hello"}]}`)] + `"` + strings.Repeat("x", 100<<10) + `"}]}`
 	require.Greater(t, len(large), 100<<10)
 	require.Zero(t, bodyLength(large))
+}
+
+// The limit is checked against the body plus one byte, which must not wrap
+// around for the largest limit.
+func Test_MaxRequestBytesOfMaxInt64(t *testing.T) {
+	t.Parallel()
+
+	agent := ai.NewAgent[struct{}, string](fakes.NewTestModel())
+	for _, streamed := range []bool{false, true} {
+		config := fiber.Config{StreamRequestBody: streamed}
+
+		app := newApp("/agui", pydanticai.AGUI(agent, pydanticai.AGUIConfig[struct{}]{
+			Adapter: agui.Config{MaxRequestBytes: math.MaxInt64},
+		}), config)
+		resp, _ := post(t, app, "/agui", aguiBody)
+		require.Equal(t, fiber.StatusOK, resp.StatusCode, "AGUI, StreamRequestBody: %v", streamed)
+
+		app = newApp("/ask", pydanticai.Run(agent, pydanticai.RunConfig[struct{}, string]{
+			MaxRequestBytes: math.MaxInt64,
+		}), config)
+		resp, _ = post(t, app, "/ask", runBody)
+		require.Equal(t, fiber.StatusOK, resp.StatusCode, "Run, StreamRequestBody: %v", streamed)
+	}
 }

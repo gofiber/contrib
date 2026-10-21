@@ -126,7 +126,7 @@ func failingModel(err error) *fakes.FunctionModel {
 	})
 }
 
-// unreachableModel fails the test when it is called. It reports whether it was.
+// unreachableModel is a model that must not be called. It reports whether it was.
 func unreachableModel() (model *fakes.FunctionModel, called *atomic.Bool) {
 	called = new(atomic.Bool)
 	model = fakes.NewFunctionModel(func(

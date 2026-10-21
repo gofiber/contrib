@@ -53,6 +53,8 @@ func Test_Reader(t *testing.T) {
 		"data: a\n\n" +
 		"event: custom\ndata: b1\ndata: b2\n\n" +
 		"retry: 100\n\n" +
+		"data:c1\ndata\ndata:  c2\nData: ignored\n\n" + // the space after the colon is optional
+		"data: d\r\n\r\n" +
 		"data: cut off"
 	reader := pydanticaitest.NewReader(strings.NewReader(stream))
 
@@ -69,6 +71,14 @@ func Test_Reader(t *testing.T) {
 	require.Equal(t, pydanticaitest.Record{Data: "b1\nb2"}, record, "the data lines of a record are joined")
 
 	data, ok := reader.NextData()
+	require.True(t, ok)
+	require.Equal(t, "c1\n\n c2", data, "a field without a value, and one space after the colon, are as in the format")
+
+	data, ok = reader.NextData()
+	require.True(t, ok)
+	require.Equal(t, "d", data, "lines can end with CRLF")
+
+	data, ok = reader.NextData()
 	require.False(t, ok, "heartbeats are skipped, and the record that was cut off is dropped")
 	require.Empty(t, data)
 	require.NoError(t, reader.Err())
@@ -77,7 +87,7 @@ func Test_Reader(t *testing.T) {
 func Test_Reader_LongRecords(t *testing.T) {
 	t.Parallel()
 
-	long := strings.Repeat("x", 200<<10) // above the default limit of a line of bufio.Scanner
+	long := strings.Repeat("x", 5<<20) // one event is one line, however large it is
 	reader := pydanticaitest.NewReader(strings.NewReader("data: " + long + "\n\n"))
 
 	data, ok := reader.NextData()
@@ -156,6 +166,10 @@ data: [DONE]
 	require.Len(t, chunks, 4)
 	require.Equal(t, vercel.ChunkStart, chunks[0].Type)
 	require.Equal(t, "Hello", pydanticaitest.VercelText(chunks))
+
+	chunks, done = pydanticaitest.VercelChunks(t, strings.NewReader("data:"+`{"type":"start"}`+"\n\ndata:[DONE]\n\n"))
+	require.True(t, done, "the space after the colon is optional")
+	require.Len(t, chunks, 1)
 
 	chunks, done = pydanticaitest.VercelChunks(t, strings.NewReader(`data: {"type":"abort"}`+"\n\n"))
 	require.False(t, done, "a stream without [DONE] is reported")

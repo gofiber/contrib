@@ -3,6 +3,7 @@ package pydanticai_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -206,6 +207,49 @@ func Test_Vercel_APanicInTheRunEndsTheStreamWithAnError(t *testing.T) {
 	require.Contains(t, logs.String(), "panic in the run: kaboom")
 }
 
+// The model is called on the goroutine of the stream, outside of any tool call,
+// so the handler recovers its panic, and not the run.
+func Test_APanicInTheModelEndsTheStreamWithAnError(t *testing.T) {
+	logs := captureLog(t)
+
+	agent := ai.NewAgent[struct{}, string](fakes.NewFunctionModel(func(
+		context.Context, []ai.ModelMessage, ai.ModelRequestParams,
+	) (*ai.ModelResponse, error) {
+		panic("model kaboom")
+	}))
+
+	t.Run("AG-UI", func(t *testing.T) {
+		closed := make(chan error, 1)
+		handler := pydanticai.AGUI(agent, pydanticai.AGUIConfig[struct{}]{
+			OnClose: func(_ struct{}, err error) { closed <- err },
+		})
+
+		resp, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
+		require.Equal(t, fiber.StatusOK, resp.StatusCode)
+		require.Equal(t, "internal error", aguiFailure(t, body))
+		require.NotContains(t, body, "kaboom", "the value of the panic stays on the server")
+		require.ErrorContains(t, receive(t, closed, "OnClose"), "panic in the run: model kaboom")
+	})
+
+	t.Run("Vercel", func(t *testing.T) {
+		closed := make(chan error, 1)
+		handler := pydanticai.Vercel(agent, pydanticai.VercelConfig[struct{}]{
+			OnClose: func(_ struct{}, err error) { closed <- err },
+		})
+
+		resp, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
+		require.Equal(t, fiber.StatusOK, resp.StatusCode)
+		_, done := vercelChunks(t, body)
+		require.True(t, done, "the stream still ends with [DONE]")
+		require.Equal(t, "internal error", vercelFailure(t, body))
+		require.NotContains(t, body, "kaboom", "the value of the panic stays on the server")
+		require.ErrorContains(t, receive(t, closed, "OnClose"), "panic in the run: model kaboom")
+	})
+
+	require.Contains(t, logs.String(), "panic in the run: model kaboom")
+	require.Contains(t, logs.String(), "goroutine ", "the stack of the panic")
+}
+
 func Test_AGUI_RunOutlivesAMiddlewareThatCancelsTheRequestContext(t *testing.T) {
 	t.Parallel()
 
@@ -259,4 +303,106 @@ func Test_AGUI_RunOutlivesAMiddlewareThatCancelsTheRequestContext(t *testing.T) 
 			require.NoError(t, receive(t, closed, "OnClose"))
 		})
 	}
+}
+
+func Test_ARequestThatATimeoutMiddlewareGaveUpOnStartsNoRun(t *testing.T) {
+	t.Parallel()
+
+	// slowDeps outlasts the timeout middleware.
+	slowDeps := func(c fiber.Ctx) (struct{}, error) {
+		<-c.Context().Done()
+		return struct{}{}, nil
+	}
+	tests := []struct {
+		name   string
+		path   string
+		body   string
+		handle func(agent *ai.Agent[struct{}, string]) fiber.Handler
+	}{
+		{
+			name: "AG-UI", path: "/agui", body: aguiBody,
+			handle: func(agent *ai.Agent[struct{}, string]) fiber.Handler {
+				return pydanticai.AGUI(agent, pydanticai.AGUIConfig[struct{}]{Deps: slowDeps})
+			},
+		},
+		{
+			name: "Vercel", path: "/chat", body: vercelBody,
+			handle: func(agent *ai.Agent[struct{}, string]) fiber.Handler {
+				return pydanticai.Vercel(agent, pydanticai.VercelConfig[struct{}]{Deps: slowDeps})
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			model, called := unreachableModel()
+			handler := test.handle(ai.NewAgent[struct{}, string](model))
+			returned := make(chan error, 1)
+			app := newApp(test.path, timeout.New(func(c fiber.Ctx) error {
+				err := handler(c)
+				returned <- err
+				return err
+			}, timeout.Config{Timeout: 10 * time.Millisecond}))
+
+			// The middleware answers for the handler, and fasthttp never writes
+			// the response of the handler, so a run would never end.
+			resp, _ := post(t, app, test.path, test.body)
+			require.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
+			require.ErrorIs(t, receive(t, returned, "the handler"), context.DeadlineExceeded)
+			require.False(t, called.Load(), "the agent ran for a request nobody waits for")
+		})
+	}
+}
+
+func Test_APanicInErrorMessageEndsTheStreamWithAnError(t *testing.T) {
+	logs := captureLog(t)
+
+	secret := errors.New("provider rejected the key sk-secret")
+	errorMessage := func(error) string { panic("bug in ErrorMessage") }
+	// Each way in which a stream ends with an error, and what OnClose receives for it.
+	tests := map[string]struct {
+		agent  func() *ai.Agent[struct{}, string]
+		closed func(t *testing.T, err error)
+	}{
+		"a failed run": {
+			agent:  func() *ai.Agent[struct{}, string] { return ai.NewAgent[struct{}, string](failingModel(secret)) },
+			closed: func(t *testing.T, err error) { require.ErrorIs(t, err, secret) },
+		},
+		"a panic in the run": {
+			agent:  panicAgent,
+			closed: func(t *testing.T, err error) { require.ErrorContains(t, err, "panic in the run: kaboom") },
+		},
+		"an event that cannot be encoded": {
+			agent:  progressAgent,
+			closed: func(t *testing.T, err error) { require.ErrorContains(t, err, "cannot encode the payload") },
+		},
+	}
+	for name, test := range tests {
+		t.Run("AG-UI: "+name, func(t *testing.T) {
+			closed := make(chan error, 1)
+			handler := pydanticai.AGUI(test.agent(), pydanticai.AGUIConfig[struct{}]{
+				ErrorMessage: errorMessage,
+				OnClose:      func(_ struct{}, err error) { closed <- err },
+			})
+
+			_, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
+			require.Equal(t, "internal error", aguiFailure(t, body))
+			require.NotContains(t, body, "sk-secret", "the client is not told what ErrorMessage hides")
+			test.closed(t, receive(t, closed, "OnClose"))
+		})
+		t.Run("Vercel: "+name, func(t *testing.T) {
+			closed := make(chan error, 1)
+			handler := pydanticai.Vercel(test.agent(), pydanticai.VercelConfig[struct{}]{
+				ErrorMessage: errorMessage,
+				OnClose:      func(_ struct{}, err error) { closed <- err },
+			})
+
+			_, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
+			require.Equal(t, "internal error", vercelFailure(t, body))
+			require.NotContains(t, body, "sk-secret", "the client is not told what ErrorMessage hides")
+			test.closed(t, receive(t, closed, "OnClose"))
+		})
+	}
+	require.Contains(t, logs.String(), "panic in ErrorMessage: bug in ErrorMessage")
 }
