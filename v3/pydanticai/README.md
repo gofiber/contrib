@@ -15,6 +15,7 @@ id: pydanticai
 - `OnRunEnd` reports what every run consumed, including runs that failed or lost their client.
 - Rejected requests and failed `Run` calls go through the error handler of the app.
 - A panic in a tool ends the stream with an error event, also when the tool runs concurrently with other tool calls.
+- Agents use [MCP](#mcp) servers as tools, with the credentials of the caller.
 
 **Compatible with Fiber v3.**
 
@@ -398,6 +399,163 @@ agent := ai.NewAgent[struct{}, string](model)
 ```
 
 The prefixes are `openai`, `openai-responses`, `openai-codex`, `openai-decisions`, `anthropic`, `google`, `github-copilot`, `bedrock`, `bedrock-mantle`, `cerebras`, `cohere`, `crusoe`, `deepseek`, `deepseek-responses`, `groq`, `huggingface`, `meta`, `mistral`, `ollama`, `openrouter`, `snowflake`, `system-one`, `together`, `typesafe`, `vllm`, `xai` and `zai`. Azure OpenAI and Vertex AI need a config and have no prefix. The package imports the provider packages behind these prefixes, so a binary that uses it links all of them.
+
+## MCP
+
+[MCP](https://modelcontextprotocol.io) servers give an agent tools. pydantic-ai-go connects to them with `github.com/Kludex/pydantic-ai-go/ai/mcp` (`aimcp` below), and the handlers serve such an agent like any other: a call of an MCP tool is streamed as a tool call, with the result of the server. The recipes here are the parts that depend on Fiber: whose credentials the server sees, when its session closes, and what reaches the frontend.
+
+### Tools from an MCP server
+
+```go
+agent := ai.NewAgent[Deps, string](openai.NewModel("gpt-5-mini"))
+agent.AddToolset(aimcp.NewHTTPToolset[Deps](
+    aimcp.HTTPToolsetConfig{URL: "https://mcp.example.com/mcp"},
+    aimcp.WithID("catalog"),
+))
+
+app.Post("/chat", pydanticai.Vercel(agent))
+```
+
+Each run opens a session of its own and closes it when the run ends, however it ends, so concurrent requests share neither state nor credentials. A URL that ends with `/sse` uses the legacy SSE transport; any other URL uses Streamable HTTP. Tools that the server marks as for apps only (`_meta.ui.visibility` without `model`) are not offered to the model.
+
+`aimcp.NewCommandToolset` starts a subprocess for each run. That suits a tool that is cheap to start, not a server that handles many requests: share one session instead, see below.
+
+### Tools on behalf of the user
+
+The headers of a toolset are fixed when it is created. To send the credentials of the caller, create the toolset for the request in `RunOptions` and attach it to the run:
+
+```go
+app.Post("/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[Deps]{
+    Deps: depsOfUser,
+    RunOptions: func(c fiber.Ctx) ([]ai.RunOption, error) {
+        token, ok := c.Locals("mcp-token").(string) // set by your authentication middleware
+        if !ok {
+            return nil, fiber.ErrUnauthorized
+        }
+        catalog := aimcp.NewHTTPToolset[Deps](aimcp.HTTPToolsetConfig{
+            URL:     "https://mcp.example.com/mcp",
+            Headers: map[string]string{"Authorization": "Bearer " + token},
+        }, aimcp.WithID("catalog"))
+        return []ai.RunOption{ai.WithRunToolsets(catalog)}, nil
+    },
+}))
+```
+
+Creating a toolset is cheap: it connects when the run starts. The headers go to the server of the URL only, and a redirect to another origin does not get them.
+
+### A session that all requests share
+
+Share one session when connecting is expensive or the server keeps state, for example a subprocess that speaks over standard input and output (`mcpsdk.CommandTransport`). The session is yours to close, and only after the last run that uses it has ended. `CancelOnShutdown` makes a shutdown stop the runs first, and `OnPostShutdown` runs once the server is down:
+
+```go
+session, err := aimcp.Connect(context.Background(),
+    &mcpsdk.StreamableClientTransport{Endpoint: "https://mcp.example.com/mcp"},
+    aimcp.WithID("catalog"),
+)
+if err != nil {
+    log.Fatal(err)
+}
+agent.AddToolset(aimcp.NewSessionToolset[Deps](session))
+
+app.Hooks().OnPostShutdown(func(error) error { return session.Close() })
+app.Post("/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[Deps]{CancelOnShutdown: true}))
+```
+
+`mcpsdk` is `github.com/modelcontextprotocol/go-sdk/mcp`. Runs on a shared session are not isolated from each other, so use it for servers that hold nothing of a user, or keep a session for each user.
+
+### Provider-hosted MCP servers
+
+Some providers run MCP servers themselves, for example the OpenAI Responses API. One capability lets the provider do it where it can, and connects from your application where it cannot:
+
+```go
+capability := aimcp.NewHTTPServerCapability[Deps](aimcp.HTTPServerCapabilityConfig{
+    Native: ai.MCPServerTool{
+        ID:                 "catalog",
+        URL:                "https://mcp.example.com/mcp",
+        AuthorizationToken: os.Getenv("MCP_TOKEN"),
+        AllowedTools:       []string{"search"},
+    },
+})
+agent := ai.NewAgent[Deps, string](openai.NewResponsesModel("gpt-5"), ai.WithCapabilities(capability))
+```
+
+The URL, the credentials and `AllowedTools` apply to both paths. Use `ai.NewDynamicMCPServerCapability` when they depend on the request.
+
+### Servers from a configuration file
+
+`aimcp.LoadToolsets` reads the `mcpServers` format of Claude Desktop and Cursor. The name of each server becomes its toolset ID and the prefix of its tool names, and `${NAME}` in a value is replaced by the environment variable:
+
+```go
+toolsets, err := aimcp.LoadToolsets[Deps](".mcp.json")
+if err != nil {
+    log.Fatal(err)
+}
+for _, toolset := range toolsets {
+    agent.AddToolset(toolset)
+}
+```
+
+Treat the file as trusted input: an entry with a `command` runs a local program.
+
+### MCP Apps
+
+A tool that names an HTML page in `_meta.ui.resourceUri` is an [MCP App](https://modelcontextprotocol.io/extensions/apps/overview). After its result, the AG-UI stream carries an `ACTIVITY_SNAPSHOT` event with the `activityType` `mcp-apps`, and the Vercel AI stream a `data-mcp-apps` chunk whose `id` is the ID of the tool call. Both hold the `resourceUri`, the `toolInput`, the `result` and the `serverId` (the ID of the toolset). The model never sees them.
+
+The page runs in the browser and cannot reach the MCP server, so the application relays what it asks for on a session that it keeps. How the requests get to these routes depends on the frontend that hosts the page:
+
+```go
+app.Get("/mcp-app/resource", func(c fiber.Ctx) error {
+    uri := c.Query("uri")
+    if !strings.HasPrefix(uri, "ui://") { // a page may read the pages of apps, not every resource
+        return fiber.ErrForbidden
+    }
+    result, err := session.ReadResource(c.Context(), uri)
+    if err != nil {
+        return err
+    }
+    return c.JSON(result)
+})
+
+app.Post("/mcp-app/tools/call", func(c fiber.Ctx) error {
+    var call struct {
+        Name      string         `json:"name"`
+        Arguments map[string]any `json:"arguments"`
+    }
+    if err := c.Bind().JSON(&call); err != nil {
+        return err
+    }
+    result, err := session.CallToolForApp(c.Context(), call.Name, call.Arguments) // only tools that apps may call
+    if err != nil {
+        return fiber.NewError(fiber.StatusBadRequest, err.Error())
+    }
+    return c.JSON(result)
+})
+```
+
+Authenticate these routes like the chat route. The server does not say which resources a page may read, so check the URI before `ReadResource`.
+
+### Testing an agent with MCP tools
+
+A server in memory needs no network. `mcpsdk.NewInMemoryTransports` connects the client of a run to it:
+
+```go
+server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "catalog", Version: "1.0.0"}, nil)
+mcpsdk.AddTool(server, &mcpsdk.Tool{Name: "search", Description: "Search the catalog"},
+    func(_ context.Context, _ *mcpsdk.CallToolRequest, in SearchInput) (*mcpsdk.CallToolResult, SearchOutput, error) {
+        return nil, SearchOutput{Hits: []string{"guide for " + in.Query}}, nil
+    })
+
+agent := ai.NewAgent[struct{}, string](fakes.NewTestModel())
+agent.AddToolset(aimcp.NewToolset(func(ctx context.Context, _ *ai.RunContext[struct{}]) (mcpsdk.Transport, error) {
+    clientTransport, serverTransport := mcpsdk.NewInMemoryTransports()
+    if _, err := server.Connect(ctx, serverTransport, nil); err != nil {
+        return nil, err
+    }
+    return clientTransport, nil
+}, aimcp.WithID("catalog")))
+```
+
+`fakes.NewTestModel` calls every tool once, so the stream of a request holds the call of `search` and its result, which `pydanticaitest.AGUIEvents` decodes.
 
 ## Graceful shutdown
 
