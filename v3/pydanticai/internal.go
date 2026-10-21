@@ -48,12 +48,6 @@ var (
 
 	errBodyTooLarge = fiber.NewError(fiber.StatusRequestEntityTooLarge, "request body too large")
 
-	// errShutdown is why a run was canceled when the server started shutting
-	// down. It wraps ai.ErrRunCancelled, which the agent treats as a request to
-	// stop: the run ends with the messages and the usage it has, and the stream
-	// ends like one that timed out instead of with an error.
-	errShutdown = fmt.Errorf("pydanticai: the server is shutting down: %w", ai.ErrRunCancelled)
-
 	// errStreamFailed cancels a run whose events can no longer be sent. It wraps
 	// ai.ErrRunCancelled as well, so the agent stops at its next step.
 	errStreamFailed = fmt.Errorf("pydanticai: the stream failed: %w", ai.ErrRunCancelled)
@@ -385,18 +379,6 @@ func relay[E any](
 	}
 }
 
-// serverDone returns the channel that fasthttp closes when the server of ctx
-// starts shutting down, or nil when ctx has no server, as a RequestCtx that a
-// test or a benchmark builds itself: Done of fasthttp dereferences the server.
-func serverDone(ctx *fasthttp.RequestCtx) (done <-chan struct{}) {
-	defer func() {
-		if recover() != nil {
-			done = nil
-		}
-	}()
-	return ctx.Done()
-}
-
 // serveStream sends what run writes as a server-sent events response.
 //
 // The context passed to run is canceled when a write to the client fails, when
@@ -456,11 +438,11 @@ func serveStream[Deps any](
 	// fasthttp closes this channel when the server starts shutting down, which
 	// is before it waits for the connections to finish.
 	if opts.cancelOnShutdown {
-		if shutdown := serverDone(c.RequestCtx()); shutdown != nil {
+		if shutdown := agentrun.ServerDone(c.RequestCtx()); shutdown != nil {
 			go func() {
 				select {
 				case <-shutdown:
-					abort(errShutdown)
+					abort(agentrun.ErrShutdown)
 					hold.expire()
 				case <-runCtx.Done():
 				}

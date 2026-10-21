@@ -15,7 +15,7 @@ id: pydanticai
 - `OnRunEnd` reports what every run consumed, including runs that failed or lost their client.
 - Rejected requests and failed `Run` calls go through the error handler of the app.
 - A panic in a tool ends the stream with an error event, also when the tool runs concurrently with other tool calls.
-- Agents use [MCP](#mcp) servers as tools, with the credentials of the caller.
+- Agents use [MCP](#mcp) servers as tools, with the credentials of the caller, and `pydanticaimcp` serves an agent as an MCP server.
 
 **Compatible with Fiber v3.**
 
@@ -557,6 +557,38 @@ agent.AddToolset(aimcp.NewToolset(func(ctx context.Context, _ *ai.RunContext[str
 
 `fakes.NewTestModel` calls every tool once, so the stream of a request holds the call of `search` and its result, which `pydanticaitest.AGUIEvents` decodes.
 
+### Serving an agent as an MCP server
+
+`pydanticaimcp.New` serves an agent to MCP clients, such as desktop assistants or other agents, over Streamable HTTP. `pydanticaimcp` is `github.com/gofiber/contrib/v3/pydanticai/pydanticaimcp`, a package of its own, so that an application that does not serve MCP does not build the MCP SDK:
+
+```go
+app.Use("/mcp", authenticate) // your authentication middleware, which stores the user in c.Locals
+app.Post("/mcp", pydanticaimcp.New(agent, pydanticaimcp.Config[Deps]{
+    Deps: func(c fiber.Ctx) (Deps, error) {
+        return Deps{UserID: fiber.Locals[string](c, "user")}, nil
+    },
+    Description: "Ask the support agent about orders and refunds.",
+    Timeout:     2 * time.Minute,
+}))
+```
+
+The client sees one tool, `ask`, with the argument `question`. Its result is the output of the agent: text as it is, and any other output as JSON in the text and as structured content. `Tool` and `Description` name the tool and say what it is for, which the model of the client reads when it chooses a tool.
+
+- **Authenticate first.** Derive `Deps` from the authenticated request, never from the arguments of the tool, which a caller can set to anything. `Deps` is called for every message of the client, including those that set up the connection and list the tool, so keep it cheap.
+- **Errors.** A failed run is an error of the tool, which the model of the client reads and can react to. `ErrorMessage` replaces its text, as for the other handlers, and a panic is reported as `internal error`.
+- **No sessions, no streams.** Every message is a request with a JSON response, so the server holds no state, and a shutdown never waits for an idle connection. The server cannot send progress, sampling or elicitation requests to the client. A server that needs them mounts `mcpsdk.NewStreamableHTTPHandler` with the `adaptor` middleware instead.
+- **Timeouts.** A client that went away is not noticed before the response is written, so set a `Timeout`. `CancelOnShutdown` ends the calls when the server shuts down, and the client reads an error that says so.
+- **Middleware.** Clients of the 2026-07-28 protocol send the method and the tool name in the headers `Mcp-Method` and `Mcp-Name`, so a middleware can authorize or limit `tools/call` without reading the body. A browser client also sends `Mcp-Protocol-Version`: allow these headers in the `cors` middleware.
+
+Another agent uses the server as a toolset:
+
+```go
+agent.AddToolset(aimcp.NewHTTPToolset[Deps](aimcp.HTTPToolsetConfig{
+    URL:     "https://support.example.com/mcp",
+    Headers: map[string]string{"Authorization": "Bearer " + token},
+}, aimcp.WithID("support")))
+```
+
 ## Graceful shutdown
 
 A stream that is still running keeps a shutdown waiting: `app.ShutdownWithTimeout` returns when the run ends on its own, or fails with `context deadline exceeded` when its timeout elapses first. `CancelOnShutdown` cancels the runs of the handler as soon as the server starts shutting down. The streams end like one that timed out, with the end-of-stream event of their protocol, `OnRunEnd` and `OnClose` get an error that wraps `ai.ErrRunCancelled`, and the shutdown does not wait for them. The connection of a client that stopped reading is closed once a write to it stayed blocked for 5 seconds:
@@ -715,6 +747,20 @@ The two streaming handlers take the same settings. They differ in the event that
 | MaxRequestBytes | `int64`                                           | Bounds the body that the default `Prompt` reads. The `BodyLimit` of the app applies as well, unless `StreamRequestBody` is enabled, see [Requests](#requests). | `10 MiB`                                  |
 | Timeout         | `time.Duration`                                   | Bounds the duration of one run. A run that exceeds it fails with `504`.                              | `0` (no timeout)                          |
 
+### pydanticaimcp.Config
+
+| Property         | Type                                      | Description                                                                                                                                  | Default                                  |
+|:-----------------|:------------------------------------------|:---------------------------------------------------------------------------------------------------------------------------------------------|:-----------------------------------------|
+| Next             | `func(fiber.Ctx) bool`                    | Skips the handler when it returns `true`.                                                                                                    | `nil`                                    |
+| Deps             | `func(fiber.Ctx) (Deps, error)`           | Resolves the dependencies of the agent for one request. An error is returned from the handler as it is, before the message is read. Called for every message. | zero value of `Deps`           |
+| RunOptions       | `func(fiber.Ctx) ([]ai.RunOption, error)` | Returns extra run options for one request.                                                                                                   | `nil`                                    |
+| Name, Version    | `string`                                  | Identify the server to its clients.                                                                                                          | the name of the agent or `pydantic-ai-go`, and `1.0.0` |
+| Tool, Description | `string`                                 | The name of the tool that runs the agent, 1 to 128 characters of `A-Z`, `a-z`, `0-9`, `_`, `.` and `-`, and what it is for.                  | `ask`, `Ask the agent a question`        |
+| ErrorMessage     | `func(error) string`                      | Maps the error of a failed run to the text that the client reads. Also applies to an output that cannot be encoded. A panic is reported with the error `internal error`. | `err.Error()`            |
+| OnRunEnd         | `func(Deps, *ai.RunInfo, error)`          | Called once the agent has run, with what the run consumed and the error that ended it, also when the run panicked. The run is `nil` when the agent did not start. | `nil`                        |
+| Timeout          | `time.Duration`                           | Bounds the duration of one run.                                                                                                              | `0` (no timeout)                         |
+| CancelOnShutdown | `bool`                                    | Cancels the runs when the server starts shutting down, instead of waiting for them.                                                          | `false`                                  |
+
 ## See also
 
-pydantic-ai-go also serves agents as [A2A](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/a2a.md) agents and [MCP](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/mcp-server.md) servers. Those transports are `net/http` handlers. Mount them with the [`adaptor`](https://docs.gofiber.io/next/middleware/adaptor) middleware of Fiber, keeping in mind that they do not receive the `fiber.Ctx` of the request.
+pydantic-ai-go also serves agents as [A2A](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/a2a.md) agents. That transport is a `net/http` handler. Mount it with the [`adaptor`](https://docs.gofiber.io/next/middleware/adaptor) middleware of Fiber, keeping in mind that it does not receive the `fiber.Ctx` of the request. [MCP servers](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/mcp-server.md) are served by `pydanticaimcp`, see [above](#serving-an-agent-as-an-mcp-server).
