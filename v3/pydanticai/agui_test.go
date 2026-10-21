@@ -12,6 +12,7 @@ import (
 	"github.com/Kludex/pydantic-ai-go/ai/models/fakes"
 	"github.com/Kludex/pydantic-ai-go/ai/ui/agui"
 	"github.com/gofiber/contrib/v3/pydanticai"
+	"github.com/gofiber/contrib/v3/pydanticai/pydanticaitest"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
 )
@@ -50,7 +51,7 @@ func Test_AGUI_StreamsRun(t *testing.T) {
 	}, types)
 	require.Equal(t, "thread-1", events[0].ThreadID)
 	require.Equal(t, "run-1", events[0].RunID)
-	require.Equal(t, "success (no tool calls)", aguiText(events))
+	require.Equal(t, "success (no tool calls)", pydanticaitest.AGUIText(events))
 }
 
 func Test_AGUI_MatchesNetHTTPHandler(t *testing.T) {
@@ -88,13 +89,13 @@ func Test_AGUI_Deps(t *testing.T) {
 
 	for _, user := range []string{"alice", "bob"} {
 		_, body := post(t, app, "/agui?user="+user, aguiBody)
-		require.Equal(t, "user="+user, aguiText(aguiEvents(t, body)))
+		require.Equal(t, "user="+user, pydanticaitest.AGUIText(aguiEvents(t, body)))
 	}
 
 	t.Run("zero value without Deps", func(t *testing.T) {
 		t.Parallel()
 		_, body := post(t, newApp("/agui", pydanticai.AGUI(userAgent())), "/agui", aguiBody)
-		require.Equal(t, "user=", aguiText(aguiEvents(t, body)))
+		require.Equal(t, "user=", pydanticaitest.AGUIText(aguiEvents(t, body)))
 	})
 }
 
@@ -106,7 +107,7 @@ func Test_AGUI_DepsAreNotShared(t *testing.T) {
 	})
 
 	for i, body := range concurrently(t, newApp("/agui", handler), "/agui", aguiBody) {
-		require.Equal(t, fmt.Sprintf("user=user-%d", i), aguiText(aguiEvents(t, body)))
+		require.Equal(t, fmt.Sprintf("user=user-%d", i), pydanticaitest.AGUIText(aguiEvents(t, body)))
 	}
 }
 
@@ -144,7 +145,7 @@ func Test_AGUI_RunOptions(t *testing.T) {
 	app := newApp("/agui", handler)
 
 	_, body := post(t, app, "/agui", aguiBody)
-	require.Equal(t, "from-options", aguiText(aguiEvents(t, body)))
+	require.Equal(t, "from-options", pydanticaitest.AGUIText(aguiEvents(t, body)))
 
 	resp, _ := post(t, app, "/agui?deny=1", aguiBody)
 	require.Equal(t, fiber.StatusForbidden, resp.StatusCode)
@@ -161,7 +162,7 @@ func Test_AGUI_PropagatesRequestContext(t *testing.T) {
 	app.Post("/agui", pydanticai.AGUI(ai.NewAgent[struct{}, string](echoModel())))
 
 	_, body := post(t, app, "/agui", aguiBody)
-	require.Equal(t, "|trace-1", aguiText(aguiEvents(t, body)))
+	require.Equal(t, "|trace-1", pydanticaitest.AGUIText(aguiEvents(t, body)))
 }
 
 func Test_AGUI_AgentError(t *testing.T) {
@@ -269,7 +270,7 @@ func Test_AGUI_ToolsSeeTheRequestContextAndItsCancellation(t *testing.T) {
 
 	// The client leaves while the tool is the one that is busy.
 	response, closeConnection := openStream(t, listen(t, app)+"/agui", aguiBody)
-	_, ok := nextData(newScanner(response.Body))
+	_, ok := pydanticaitest.NewReader(response.Body).NextData()
 	require.True(t, ok)
 	receive(t, started, "the tool call")
 	closeConnection()
@@ -307,7 +308,7 @@ func Test_AGUI_Heartbeat(t *testing.T) {
 	_, body := post(t, newApp("/agui", pydanticai.AGUI(slowAgent(), config)), "/agui", aguiBody)
 	data, heartbeats := parseSSE(body)
 	require.Positive(t, heartbeats, "an idle stream should carry heartbeat comments")
-	require.Equal(t, "done", aguiText(aguiEvents(t, body)))
+	require.Equal(t, "done", pydanticaitest.AGUIText(aguiEvents(t, body)))
 	require.Len(t, data, 5)
 
 	config.DisableHeartbeat = true

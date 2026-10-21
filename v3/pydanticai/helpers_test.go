@@ -1,9 +1,7 @@
 package pydanticai_test
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +18,7 @@ import (
 	"github.com/Kludex/pydantic-ai-go/ai/models/fakes"
 	"github.com/Kludex/pydantic-ai-go/ai/ui/agui"
 	"github.com/Kludex/pydantic-ai-go/ai/ui/vercel"
+	"github.com/gofiber/contrib/v3/pydanticai/pydanticaitest"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
 )
@@ -277,85 +276,31 @@ func concurrently(t *testing.T, app *fiber.App, target, body string) []string {
 	return bodies
 }
 
-// sseRecord is one record of a server-sent events stream.
-type sseRecord struct {
-	// data holds the data lines of the record, joined by a newline.
-	data string
-	// comment is true for a record without data, which is a heartbeat.
-	comment bool
-}
-
-// newScanner reads the lines of a server-sent events stream.
-func newScanner(stream io.Reader) *bufio.Scanner {
-	scanner := bufio.NewScanner(stream)
-	scanner.Buffer(make([]byte, 0, 64<<10), 4<<20)
-	return scanner
-}
-
-// nextRecord reads the next record of a stream. It returns false when the stream
-// has ended. A record that the stream was cut off in is dropped.
-func nextRecord(scanner *bufio.Scanner) (sseRecord, bool) {
-	var (
-		data  []string
-		lines int
-	)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			if lines == 0 {
-				continue
-			}
-			return sseRecord{data: strings.Join(data, "\n"), comment: len(data) == 0}, true
-		}
-		lines++
-		if value, ok := strings.CutPrefix(line, "data: "); ok {
-			data = append(data, value)
-		}
-	}
-	return sseRecord{}, false
-}
-
-// nextData reads the next record with data and skips heartbeats.
-func nextData(scanner *bufio.Scanner) (string, bool) {
-	for {
-		record, ok := nextRecord(scanner)
-		if !ok {
-			return "", false
-		}
-		if !record.comment {
-			return record.data, true
-		}
-	}
-}
-
-// parseSSE splits a server-sent events body into the payload of its data
-// records and the number of heartbeats.
+// parseSSE splits a server-sent events body into the data of its records and
+// the number of heartbeats.
 func parseSSE(body string) (data []string, heartbeats int) {
-	scanner := newScanner(strings.NewReader(body))
-	for {
-		record, ok := nextRecord(scanner)
-		if !ok {
-			return data, heartbeats
-		}
-		if record.comment {
+	reader := pydanticaitest.NewReader(strings.NewReader(body))
+	for record, ok := reader.Next(); ok; record, ok = reader.Next() {
+		if record.Heartbeat {
 			heartbeats++
 			continue
 		}
-		data = append(data, record.data)
+		data = append(data, record.Data)
 	}
+	return data, heartbeats
 }
 
 // aguiEvents decodes the AG-UI events of a response body.
 func aguiEvents(t *testing.T, body string) []agui.Event {
 	t.Helper()
-	data, _ := parseSSE(body)
-	events := make([]agui.Event, 0, len(data))
-	for _, record := range data {
-		var event agui.Event
-		require.NoError(t, json.Unmarshal([]byte(record), &event), record)
-		events = append(events, event)
-	}
-	return events
+	return pydanticaitest.AGUIEvents(t, strings.NewReader(body))
+}
+
+// vercelChunks decodes the chunks of a response body and reports whether the
+// stream ended with the [DONE] record.
+func vercelChunks(t *testing.T, body string) ([]vercel.Chunk, bool) {
+	t.Helper()
+	return pydanticaitest.VercelChunks(t, strings.NewReader(body))
 }
 
 // aguiFailure returns the message of the RUN_ERROR event that ends the stream.
@@ -376,47 +321,6 @@ func vercelFailure(t *testing.T, body string) string {
 	last := chunks[len(chunks)-1]
 	require.Equal(t, vercel.ChunkError, last.Type)
 	return last.ErrorText
-}
-
-// vercelChunks decodes the chunks of a response body and reports whether the
-// stream ended with the [DONE] record.
-func vercelChunks(t *testing.T, body string) (chunks []vercel.Chunk, done bool) {
-	t.Helper()
-	data, _ := parseSSE(body)
-	for _, record := range data {
-		if record == "[DONE]" {
-			done = true
-			continue
-		}
-		require.False(t, done, "chunk after [DONE]: %s", record)
-		var chunk vercel.Chunk
-		require.NoError(t, json.Unmarshal([]byte(record), &chunk), record)
-		chunks = append(chunks, chunk)
-	}
-	return chunks, done
-}
-
-// aguiText joins the text deltas of AG-UI events.
-func aguiText(events []agui.Event) string {
-	var text strings.Builder
-	for _, event := range events {
-		if event.Type == agui.EventTextMessageContent {
-			delta, _ := event.Delta.(string)
-			text.WriteString(delta)
-		}
-	}
-	return text.String()
-}
-
-// vercelText joins the text deltas of Vercel AI chunks.
-func vercelText(chunks []vercel.Chunk) string {
-	var text strings.Builder
-	for _, chunk := range chunks {
-		if chunk.Type == vercel.ChunkTextDelta {
-			text.WriteString(chunk.Delta)
-		}
-	}
-	return text.String()
 }
 
 // receive waits for a value from channel or fails the test.
