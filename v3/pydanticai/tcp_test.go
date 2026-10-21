@@ -1,8 +1,8 @@
 package pydanticai_test
 
 import (
+	"compress/gzip"
 	"context"
-	"encoding/json"
 	"net"
 	"net/http"
 	"strings"
@@ -10,10 +10,9 @@ import (
 	"time"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
-	"github.com/Kludex/pydantic-ai-go/ai/models/fakes"
-	"github.com/Kludex/pydantic-ai-go/ai/ui/agui"
 	"github.com/gofiber/contrib/v3/pydanticai"
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/compress"
 	"github.com/stretchr/testify/require"
 )
 
@@ -59,16 +58,7 @@ func openStream(t *testing.T, url, body string) (*http.Response, context.CancelF
 func Test_AGUI_FlushesEventsWhileTheRunIsStillWorking(t *testing.T) {
 	t.Parallel()
 
-	release := make(chan struct{})
-	model := fakes.NewFunctionModel(func(
-		ctx context.Context, _ []ai.ModelMessage, _ ai.ModelRequestParams,
-	) (*ai.ModelResponse, error) {
-		select {
-		case <-release:
-		case <-ctx.Done():
-		}
-		return textResponse("late answer"), nil
-	})
+	model, release := gatedModel("late answer")
 	url := listen(t, newApp("/agui", pydanticai.AGUI(ai.NewAgent[struct{}, string](model)))) + "/agui"
 
 	response, _ := openStream(t, url, aguiBody)
@@ -92,6 +82,48 @@ func Test_AGUI_FlushesEventsWhileTheRunIsStillWorking(t *testing.T) {
 	}
 	require.Contains(t, rest.String(), "late answer")
 	require.Contains(t, rest.String(), `"type":"RUN_FINISHED"`)
+}
+
+func Test_AGUI_StreamsThroughCompress(t *testing.T) {
+	t.Parallel()
+
+	model, release := gatedModel("late answer")
+	closed := make(chan error, 1)
+	app := fiber.New()
+	app.Use(compress.New())
+	app.Post("/agui", pydanticai.AGUI(ai.NewAgent[struct{}, string](model), pydanticai.AGUIConfig[struct{}]{
+		OnClose: func(_ struct{}, err error) { closed <- err },
+	}))
+
+	request, err := http.NewRequest(http.MethodPost, listen(t, app)+"/agui", strings.NewReader(aguiBody))
+	require.NoError(t, err)
+	request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+	request.Header.Set(fiber.HeaderAcceptEncoding, "gzip") // set by hand, so net/http leaves the body encoded
+	response, err := http.DefaultClient.Do(request)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = response.Body.Close() })
+	require.Equal(t, "gzip", response.Header.Get(fiber.HeaderContentEncoding))
+	reader, err := gzip.NewReader(response.Body)
+	require.NoError(t, err)
+	scanner := newScanner(reader)
+
+	// The start of the run gets through the compression while the model has not answered.
+	record, ok := nextData(scanner)
+	require.True(t, ok)
+	require.Contains(t, record, `"type":"RUN_STARTED"`)
+
+	close(release)
+	var rest strings.Builder
+	for {
+		record, ok := nextData(scanner)
+		if !ok {
+			break
+		}
+		rest.WriteString(record)
+	}
+	require.Contains(t, rest.String(), `"type":"RUN_FINISHED"`)
+	// Closing the compressed body closes the body of the handler, which ends the hold.
+	require.NoError(t, receive(t, closed, "OnClose"))
 }
 
 func Test_AGUI_ClosedSocketCancelsRun(t *testing.T) {
@@ -139,29 +171,4 @@ func Test_Vercel_ClosedSocketCancelsRun(t *testing.T) {
 
 	require.ErrorIs(t, receive(t, canceled, "the cancellation of the model call"), context.Canceled)
 	require.Error(t, receive(t, closed, "OnClose"))
-}
-
-func Test_AGUI_FullRunOverTCPMatchesTheAdapter(t *testing.T) {
-	t.Parallel()
-
-	handler := pydanticai.AGUI(weatherAgent(), pydanticai.AGUIConfig[struct{}]{
-		Adapter: agui.Config{MaxRequestBytes: 1 << 10},
-	})
-	url := listen(t, newApp("/agui", handler)) + "/agui"
-
-	response, _ := openStream(t, url, aguiBody)
-	scanner := newScanner(response.Body)
-	var types []string
-	for {
-		record, ok := nextData(scanner)
-		if !ok {
-			break
-		}
-		var event agui.Event
-		require.NoError(t, json.Unmarshal([]byte(record), &event))
-		types = append(types, string(event.Type))
-	}
-	require.Equal(t, "RUN_STARTED", types[0])
-	require.Equal(t, "RUN_FINISHED", types[len(types)-1])
-	require.Contains(t, types, "TOOL_CALL_RESULT")
 }

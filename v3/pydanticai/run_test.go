@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -168,32 +167,14 @@ func Test_Run_RejectsInvalidRequests(t *testing.T) {
 func Test_Run_RejectsEncodedBodiesBeforeResolvingDeps(t *testing.T) {
 	t.Parallel()
 
-	model, called := unreachableModel()
-	var resolved int
-	app := newApp("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](model), pydanticai.RunConfig[struct{}, string]{
+	var resolved atomic.Int32
+	app := newApp("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](fakes.NewTestModel()), pydanticai.RunConfig[struct{}, string]{
 		Deps: func(fiber.Ctx) (struct{}, error) {
-			resolved++
+			resolved.Add(1)
 			return struct{}{}, nil
 		},
 	}))
-
-	for _, encoding := range []string{"gzip", "br", "deflate", "zstd", "unknown", "identity, gzip"} {
-		request := httptest.NewRequest(fiber.MethodPost, "/ask", strings.NewReader(runBody))
-		request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
-		request.Header.Set(fiber.HeaderContentEncoding, encoding)
-		resp, _ := send(t, app, request)
-		require.Equal(t, fiber.StatusUnsupportedMediaType, resp.StatusCode, encoding)
-	}
-	require.Zero(t, resolved, "Deps must not run for a body that is not read")
-	require.False(t, called.Load())
-
-	// The identity encoding is no encoding.
-	request := httptest.NewRequest(fiber.MethodPost, "/ask", strings.NewReader(runBody))
-	request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
-	request.Header.Set(fiber.HeaderContentEncoding, "identity")
-	resp, _ := send(t, app, request)
-	require.Equal(t, fiber.StatusOK, resp.StatusCode)
-	require.Equal(t, 1, resolved)
+	checkEncodedBodies(t, app, "/ask", runBody, &resolved)
 }
 
 func Test_Run_MaxRequestBytes(t *testing.T) {
@@ -213,24 +194,6 @@ func Test_Run_MaxRequestBytes(t *testing.T) {
 	require.Panics(t, func() {
 		pydanticai.Run(agent, pydanticai.RunConfig[struct{}, string]{MaxRequestBytes: -1})
 	})
-}
-
-func Test_Run_Next(t *testing.T) {
-	t.Parallel()
-
-	app := fiber.New()
-	app.Post("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](fakes.NewTestModel()),
-		pydanticai.RunConfig[struct{}, string]{
-			Next: func(c fiber.Ctx) bool { return c.Query("skip") == "1" },
-		}), func(c fiber.Ctx) error {
-		return c.SendString("skipped")
-	})
-
-	_, body := post(t, app, "/ask?skip=1", runBody)
-	require.Equal(t, "skipped", body)
-
-	_, body = post(t, app, "/ask", runBody)
-	require.Contains(t, body, `"output"`)
 }
 
 func Test_Run_CustomPrompt(t *testing.T) {

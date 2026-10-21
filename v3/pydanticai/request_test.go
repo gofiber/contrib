@@ -37,11 +37,7 @@ type requestCase struct {
 
 // request builds the request of the case.
 func (c requestCase) request() *http.Request {
-	request := httptest.NewRequest(c.method, "/", strings.NewReader(c.body))
-	if c.contentType != "" {
-		request.Header.Set(fiber.HeaderContentType, c.contentType)
-	}
-	return request
+	return newRequest(c.method, "/", c.contentType, c.body)
 }
 
 // requestCases are the requests that the checks in front of a streaming handler
@@ -180,22 +176,22 @@ func Test_Vercel_RequestChecksMatchTheNetHTTPHandler(t *testing.T) {
 func checkEncodedBodies(t *testing.T, app *fiber.App, path, body string, resolved *atomic.Int32) {
 	t.Helper()
 
-	for _, encoding := range []string{"gzip", "br", "deflate", "zstd", "unknown", "identity, gzip"} {
-		request := httptest.NewRequest(fiber.MethodPost, path, strings.NewReader(body))
-		request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+	status := func(encoding string) int {
+		request := newRequest(fiber.MethodPost, path, fiber.MIMEApplicationJSON, body)
 		request.Header.Set(fiber.HeaderContentEncoding, encoding)
 		resp, _ := send(t, app, request)
-		require.Equal(t, fiber.StatusUnsupportedMediaType, resp.StatusCode, encoding)
+		return resp.StatusCode
+	}
+	for _, encoding := range []string{"gzip", "br", "deflate", "zstd", "unknown", "identity, gzip"} {
+		require.Equal(t, fiber.StatusUnsupportedMediaType, status(encoding), encoding)
 	}
 	require.Zero(t, resolved.Load(), "Deps must not run for a body that is not read")
 
 	// The identity encoding is no encoding.
-	request := httptest.NewRequest(fiber.MethodPost, path, strings.NewReader(body))
-	request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
-	request.Header.Set(fiber.HeaderContentEncoding, "Identity")
-	resp, _ := send(t, app, request)
-	require.Equal(t, fiber.StatusOK, resp.StatusCode)
-	require.EqualValues(t, 1, resolved.Load())
+	for _, encoding := range []string{"identity", "Identity"} {
+		require.Equal(t, fiber.StatusOK, status(encoding), encoding)
+	}
+	require.EqualValues(t, 2, resolved.Load())
 }
 
 func Test_AGUI_RejectsEncodedBodiesBeforeResolvingDeps(t *testing.T) {
@@ -222,6 +218,35 @@ func Test_Vercel_RejectsEncodedBodiesBeforeResolvingDeps(t *testing.T) {
 		},
 	}))
 	checkEncodedBodies(t, app, "/chat", vercelBody, &resolved)
+}
+
+func Test_Next(t *testing.T) {
+	t.Parallel()
+
+	skip := func(c fiber.Ctx) bool { return c.Query("skip") == "1" }
+	agent := ai.NewAgent[struct{}, string](fakes.NewTestModel())
+	tests := []struct {
+		name    string
+		handler fiber.Handler
+		body    string
+		served  string // what the handler writes when it does not skip
+	}{
+		{"AGUI", pydanticai.AGUI(agent, pydanticai.AGUIConfig[struct{}]{Next: skip}), aguiBody, "RUN_FINISHED"},
+		{"Vercel", pydanticai.Vercel(agent, pydanticai.VercelConfig[struct{}]{Next: skip}), vercelBody, "[DONE]"},
+		{"Run", pydanticai.Run(agent, pydanticai.RunConfig[struct{}, string]{Next: skip}), runBody, `"output"`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			app := fiber.New()
+			app.Post("/", test.handler, func(c fiber.Ctx) error { return c.SendString("skipped") })
+
+			_, body := post(t, app, "/?skip=1", test.body)
+			require.Equal(t, "skipped", body)
+
+			_, body = post(t, app, "/", test.body)
+			require.Contains(t, body, test.served)
+		})
+	}
 }
 
 // statusLine sends request to addr without closing the connection and returns

@@ -130,7 +130,7 @@ func main() {
 }
 ```
 
-An error from `Deps` aborts the request before the stream starts. Fiber's error handler turns it into the response, here a `401`. `Deps` runs after the headers of the request are checked and before its body is read, so a caller that is turned away costs next to nothing.
+An error from `Deps` aborts the request before the stream starts. Fiber's error handler turns it into the response, here a `401`. `Deps` runs after the headers of the request are checked and before its body is read, so a caller that is turned away does not get its payload parsed.
 
 The context passed to the tools is `c.Context()`, so the values that a middleware stored with `c.SetContext`, such as the span of the [otel](https://github.com/gofiber/contrib/tree/main/v3/otel) middleware, reach the agent and its spans become children of the span of the request. The cancellation and the deadline of that context do not apply to a streaming run: the handler returns before the run is over, and a middleware that cancels the context of the request at that point, such as the `timeout` middleware of Fiber, would otherwise abort every stream. Use `Timeout` to bound a run.
 
@@ -175,7 +175,7 @@ During a silent phase, such as a long tool call, the heartbeat does the work. Th
 
 Heartbeat comments are valid server-sent events that every compliant parser skips. Set `DisableHeartbeat` if a client cannot cope with them. Without heartbeats a client that leaves during a long run can go unnoticed until a write to it fails, which can be after the run has ended.
 
-`fiber.Config.WriteTimeout` is armed once for a whole response, so it cuts every stream that is longer than it, however many heartbeats it carries. Leave it at zero, or set it above the longest run you accept. Compression middleware such as `compress` works with these streams, as they are flushed event by event.
+`fiber.Config.WriteTimeout` is armed once for a whole response, so it cuts every stream that is longer than it, however many heartbeats it carries. Leave it at zero, or set it above the longest run you accept. The `compress` middleware works in front of these handlers, and each event still reaches the client as it is written.
 
 `Run` is a plain request and response, and fasthttp cannot tell it that the client left. Set `Timeout` so that a run nobody waits for is bounded.
 
@@ -190,7 +190,7 @@ Problems with the request are returned as `*fiber.Error` before the stream start
 | `413`  | the body is larger than `MaxRequestBytes` of the adapter config (10 MiB)                       |
 | `400`  | the body is not a valid request of the protocol, or the Vercel request has no chat `id`        |
 
-Like the adapters of pydantic-ai-go, the handlers read the bytes of the body as they come. A body with a `Content-Encoding` other than `identity` is turned away with `415` instead of being inflated, which would let a small request expand to a large allocation before anything can reject the caller. Fiber's own `BodyLimit` (4 MiB by default) applies on top of `MaxRequestBytes`. Raise it in `fiber.Config` to accept larger bodies, for example inline images. With `StreamRequestBody` enabled, no more than `MaxRequestBytes` plus one byte of a body is ever read. A decoded body larger than 64 KiB is released, so that it does not stay in memory for as long as the run takes, and a middleware that reads the body after the handler sees it empty.
+Like the adapters of pydantic-ai-go, the handlers decode the bytes of the body as they arrive and do not inflate them. A body with a `Content-Encoding` other than `identity` is therefore turned away with `415`, instead of failing the JSON decoder with a `400` that blames the content. Fiber's own `BodyLimit` (4 MiB by default) applies on top of `MaxRequestBytes`. Raise it in `fiber.Config` to accept larger bodies, for example inline images. With `StreamRequestBody` enabled, no more than `MaxRequestBytes` plus one byte of a body is ever read. A decoded body larger than 64 KiB is released, so that it does not stay in memory for as long as the run takes, and a middleware that reads the body after the handler sees it empty.
 
 The content type check protects the route from cross-site form posts. `DisableContentTypeCheck` in the adapter config turns it off, which is only safe when another CSRF control protects the route.
 
@@ -296,33 +296,21 @@ See the [AG-UI](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/ag-ui.md
 
 ## Config
 
-### AGUIConfig
+### AGUIConfig and VercelConfig
 
-| Property          | Type                                          | Description                                                                                                                                                  | Default                |
-|:------------------|:----------------------------------------------|:-------------------------------------------------------------------------------------------------------------------------------------------------------------|:-----------------------|
-| Next              | `func(fiber.Ctx) bool`                        | Skips the handler when it returns `true`.                                                                                                                    | `nil`                  |
-| Deps              | `func(fiber.Ctx) (Deps, error)`               | Resolves the dependencies of the agent for one request. An error aborts the request before the body is read and the stream starts.                          | zero value of `Deps`   |
-| RunOptions        | `func(fiber.Ctx) ([]ai.RunOption, error)`     | Returns extra run options for one request.                                                                                                                   | `nil`                  |
-| ErrorMessage      | `func(error) string`                          | Maps the error of a failed run to the message in the `RUN_ERROR` event. Also applies to a panic and to an event that cannot be encoded.                      | `err.Error()`          |
-| OnClose           | `func(Deps, error)`                           | Called once when the stream is over, with the dependencies of the run. The error is `nil` when the stream ended normally. The end of the response waits for it. | `nil`                  |
-| Adapter           | `agui.Config`                                 | Protocol version, sanitization of client history and request limits (`MaxRequestBytes`, `AllowedContentTypes`, `DisableContentTypeCheck`).                    | `agui.Config{}`        |
-| Timeout           | `time.Duration`                               | Bounds the duration of one run.                                                                                                                              | `0` (no timeout)       |
-| HeartbeatInterval | `time.Duration`                               | Interval of the heartbeat comments. A client that left is noticed by the second or third one. A value of zero or less uses the default.                      | `5 * time.Second`      |
-| DisableHeartbeat  | `bool`                                        | Turns the heartbeat off.                                                                                                                                     | `false`                |
+The two streaming handlers take the same settings. They differ in the event that carries an error message and in the adapter config.
 
-### VercelConfig
-
-| Property          | Type                                          | Description                                                                                                                                                  | Default                |
-|:------------------|:----------------------------------------------|:-------------------------------------------------------------------------------------------------------------------------------------------------------------|:-----------------------|
-| Next              | `func(fiber.Ctx) bool`                        | Skips the handler when it returns `true`.                                                                                                                    | `nil`                  |
-| Deps              | `func(fiber.Ctx) (Deps, error)`               | Resolves the dependencies of the agent for one request. An error aborts the request before the body is read and the stream starts.                          | zero value of `Deps`   |
-| RunOptions        | `func(fiber.Ctx) ([]ai.RunOption, error)`     | Returns extra run options for one request.                                                                                                                   | `nil`                  |
-| ErrorMessage      | `func(error) string`                          | Maps the error of a failed run to the message in the `error` chunk. Also applies to a panic and to a chunk that cannot be encoded.                           | `err.Error()`          |
-| OnClose           | `func(Deps, error)`                           | Called once when the stream is over, with the dependencies of the run. The error is `nil` when the stream ended normally. The end of the response waits for it. | `nil`                  |
-| Adapter           | `vercel.Config`                               | AI SDK version, sanitization of client history and request limits (`MaxRequestBytes`, `AllowedContentTypes`, `DisableContentTypeCheck`).                      | `vercel.Config{}`      |
-| Timeout           | `time.Duration`                               | Bounds the duration of one run.                                                                                                                              | `0` (no timeout)       |
-| HeartbeatInterval | `time.Duration`                               | Interval of the heartbeat comments. A client that left is noticed by the second or third one. A value of zero or less uses the default.                      | `5 * time.Second`      |
-| DisableHeartbeat  | `bool`                                        | Turns the heartbeat off.                                                                                                                                     | `false`                |
+| Property          | Type                                          | Description                                                                                                                                                                               | Default                |
+|:------------------|:----------------------------------------------|:------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|:-----------------------|
+| Next              | `func(fiber.Ctx) bool`                        | Skips the handler when it returns `true`.                                                                                                                                                 | `nil`                  |
+| Deps              | `func(fiber.Ctx) (Deps, error)`               | Resolves the dependencies of the agent for one request. An error aborts the request before the body is read and the stream starts.                                                       | zero value of `Deps`   |
+| RunOptions        | `func(fiber.Ctx) ([]ai.RunOption, error)`     | Returns extra run options for one request.                                                                                                                                                | `nil`                  |
+| ErrorMessage      | `func(error) string`                          | Maps the error of a failed run to the message that the client receives, in the `RUN_ERROR` event (AG-UI) or the `error` chunk (Vercel AI). Also applies to a panic and to an event that cannot be encoded. | `err.Error()`          |
+| OnClose           | `func(Deps, error)`                           | Called once when the stream is over, with the dependencies of the run. The error is `nil` when the stream ended normally. The end of the response waits for it.                           | `nil`                  |
+| Adapter           | `agui.Config` or `vercel.Config`              | Protocol version (`Version` for AG-UI, `SDKVersion` for Vercel AI), sanitization of client history and request limits (`MaxRequestBytes`, `AllowedContentTypes`, `DisableContentTypeCheck`). | the zero value         |
+| Timeout           | `time.Duration`                               | Bounds the duration of one run.                                                                                                                                                           | `0` (no timeout)       |
+| HeartbeatInterval | `time.Duration`                               | Interval of the heartbeat comments. A client that left is noticed by the second or third one. A value of zero or less uses the default.                                                   | `5 * time.Second`      |
+| DisableHeartbeat  | `bool`                                        | Turns the heartbeat off.                                                                                                                                                                  | `false`                |
 
 ### RunConfig
 
