@@ -6,4 +6,6 @@
 // JSON endpoint. All three resolve the agent dependencies for each request from
 // the Fiber context, and the streaming handlers cancel the agent run when the
 // client goes away.
+//
+// The pydanticaitest package decodes the streams of AGUI and Vercel in tests.
 package pydanticai
