@@ -149,11 +149,7 @@ func Vercel[Deps, Output any](agent *ai.Agent[Deps, Output], config ...VercelCon
 		cfg = config[0]
 	}
 	adapter := vercel.NewAdapter(agent, cfg.Adapter)
-	limits := requestLimits{
-		contentTypes:         cfg.Adapter.AllowedContentTypes,
-		maxBytes:             cfg.Adapter.MaxRequestBytes,
-		skipContentTypeCheck: cfg.Adapter.DisableContentTypeCheck,
-	}
+	limits := newRequestLimits(cfg.Adapter.AllowedContentTypes, cfg.Adapter.MaxRequestBytes, cfg.Adapter.DisableContentTypeCheck)
 	stream := streamOptions[Deps]{
 		onClose:          cfg.OnClose,
 		onRunEnd:         cfg.OnRunEnd,
