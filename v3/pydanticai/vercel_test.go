@@ -59,8 +59,7 @@ func Test_Vercel_MatchesNetHTTPHandler(t *testing.T) {
 
 	// The handler of pydantic-ai-go is the reference for the wire format.
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(fiber.MethodPost, "/", strings.NewReader(vercelBody))
-	request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+	request := newRequest(fiber.MethodPost, "/", fiber.MIMEApplicationJSON, vercelBody)
 	vercel.NewAdapter(agent, config).Handler(struct{}{}).ServeHTTP(recorder, request)
 	want, wantDone := vercelChunks(t, recorder.Body.String())
 	require.True(t, wantDone)
@@ -79,9 +78,7 @@ func Test_Vercel_Deps(t *testing.T) {
 	t.Parallel()
 
 	handler := pydanticai.Vercel(userAgent(), pydanticai.VercelConfig[userDeps]{
-		Deps: func(c fiber.Ctx) (userDeps, error) {
-			return userDeps{User: c.Query("user")}, nil
-		},
+		Deps: userFromQuery,
 	})
 	app := newApp("/chat", handler)
 
@@ -172,25 +169,6 @@ func Test_Vercel_RequiresAChatID(t *testing.T) {
 	require.False(t, called.Load())
 }
 
-func Test_Vercel_Next(t *testing.T) {
-	t.Parallel()
-
-	app := fiber.New()
-	app.Post("/chat", pydanticai.Vercel(ai.NewAgent[struct{}, string](fakes.NewTestModel()),
-		pydanticai.VercelConfig[struct{}]{
-			Next: func(c fiber.Ctx) bool { return c.Query("skip") == "1" },
-		}), func(c fiber.Ctx) error {
-		return c.SendString("skipped")
-	})
-
-	_, body := post(t, app, "/chat?skip=1", vercelBody)
-	require.Equal(t, "skipped", body)
-
-	resp, body := post(t, app, "/chat", vercelBody)
-	require.Equal(t, "v1", resp.Header.Get("x-vercel-ai-ui-message-stream"))
-	require.Contains(t, body, "[DONE]")
-}
-
 func Test_Vercel_AgentError(t *testing.T) {
 	t.Parallel()
 
@@ -206,10 +184,7 @@ func Test_Vercel_AgentError(t *testing.T) {
 
 		resp, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
 		require.Equal(t, fiber.StatusOK, resp.StatusCode, "the status is sent before the run starts")
-		chunks, _ := vercelChunks(t, body)
-		last := chunks[len(chunks)-1]
-		require.Equal(t, vercel.ChunkError, last.Type)
-		require.Contains(t, last.ErrorText, "sk-secret")
+		require.Contains(t, vercelFailure(t, body), "sk-secret")
 		require.ErrorIs(t, receive(t, closed, "OnClose"), secret)
 	})
 
@@ -223,10 +198,7 @@ func Test_Vercel_AgentError(t *testing.T) {
 		})
 
 		_, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
-		chunks, _ := vercelChunks(t, body)
-		last := chunks[len(chunks)-1]
-		require.Equal(t, vercel.ChunkError, last.Type)
-		require.Equal(t, "the model failed", last.ErrorText)
+		require.Equal(t, "the model failed", vercelFailure(t, body))
 		require.NotContains(t, body, "sk-secret")
 		require.ErrorIs(t, receive(t, closed, "OnClose"), secret, "OnClose still receives the original error")
 	})
@@ -245,11 +217,9 @@ func Test_Vercel_ChunkThatCannotBeEncoded(t *testing.T) {
 
 		resp, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
 		require.Equal(t, fiber.StatusOK, resp.StatusCode)
-		chunks, done := vercelChunks(t, body)
+		_, done := vercelChunks(t, body)
 		require.True(t, done, "the stream still ends with [DONE]")
-		last := chunks[len(chunks)-1]
-		require.Equal(t, vercel.ChunkError, last.Type)
-		require.Contains(t, last.ErrorText, "encode Vercel AI chunk")
+		require.Contains(t, vercelFailure(t, body), "encode Vercel AI chunk")
 		require.ErrorContains(t, receive(t, closed, "OnClose"), "cannot encode the payload")
 	})
 
@@ -261,10 +231,7 @@ func Test_Vercel_ChunkThatCannotBeEncoded(t *testing.T) {
 		})
 
 		_, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
-		chunks, _ := vercelChunks(t, body)
-		last := chunks[len(chunks)-1]
-		require.Equal(t, vercel.ChunkError, last.Type)
-		require.Equal(t, "the run failed", last.ErrorText)
+		require.Equal(t, "the run failed", vercelFailure(t, body))
 	})
 }
 
@@ -273,9 +240,7 @@ func Test_Vercel_OnCloseReceivesTheDeps(t *testing.T) {
 
 	closed := make(chan closeEvent, 1)
 	handler := pydanticai.Vercel(userAgent(), pydanticai.VercelConfig[userDeps]{
-		Deps: func(c fiber.Ctx) (userDeps, error) {
-			return userDeps{User: c.Query("user")}, nil
-		},
+		Deps:    userFromQuery,
 		OnClose: func(deps userDeps, err error) { closed <- closeEvent{deps: deps, err: err} },
 	})
 

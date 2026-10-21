@@ -33,12 +33,14 @@ const (
 	observeTimeout = 5 * time.Second
 )
 
-// abandon is the test config of a client that walks away while the stream is open.
-var abandon = fiber.TestConfig{Timeout: 300 * time.Millisecond, FailOnTimeout: false}
-
 // userDeps are the dependencies of the agents that see a per-request user.
 type userDeps struct {
 	User string
+}
+
+// userFromQuery resolves the dependencies from the user query parameter.
+func userFromQuery(c fiber.Ctx) (userDeps, error) {
+	return userDeps{User: c.Query("user")}, nil
 }
 
 type ctxKey struct{}
@@ -75,10 +77,8 @@ func panicAgent() *ai.Agent[struct{}, string] {
 // weatherAgent has a tool, so its runs contain the tool call events as well.
 func weatherAgent() *ai.Agent[struct{}, string] {
 	agent := ai.NewAgent[struct{}, string](fakes.NewTestModel())
-	agent.AddRawTool(ai.ToolDefinition{
-		Name: "weather", Schema: map[string]any{"type": "object", "properties": map[string]any{}},
-	}, func(context.Context, json.RawMessage) (any, error) {
-		return map[string]any{"temperature": 20}, nil
+	ai.AddSimpleTool(agent, "weather", func(context.Context, struct{}) (map[string]int, error) {
+		return map[string]int{"temperature": 20}, nil
 	})
 	return agent
 }
@@ -155,6 +155,21 @@ func blockingModel() (model *fakes.FunctionModel, started <-chan struct{}, cance
 	return model, startedCh, canceledCh
 }
 
+// gatedModel answers once release is closed, or when its context is canceled.
+func gatedModel(answer string) (model *fakes.FunctionModel, release chan<- struct{}) {
+	gate := make(chan struct{})
+	model = fakes.NewFunctionModel(func(
+		ctx context.Context, _ []ai.ModelMessage, _ ai.ModelRequestParams,
+	) (*ai.ModelResponse, error) {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+		}
+		return textResponse(answer), nil
+	})
+	return model, gate
+}
+
 // slowAgent needs longer to answer than the heartbeat intervals of the tests.
 func slowAgent() *ai.Agent[struct{}, string] {
 	return ai.NewAgent[struct{}, string](fakes.NewFunctionModel(func(
@@ -205,11 +220,17 @@ func send(t *testing.T, app *fiber.App, request *http.Request, config ...fiber.T
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = response.Body.Close() })
 	content, err := io.ReadAll(response.Body)
-	if err != nil {
-		// A stream that the test abandons ends without its terminating chunk.
-		require.ErrorIs(t, err, io.ErrUnexpectedEOF)
-	}
+	require.NoError(t, err)
 	return response, string(content)
+}
+
+// newRequest builds a request. It has no content type when contentType is empty.
+func newRequest(method, target, contentType, body string) *http.Request {
+	request := httptest.NewRequest(method, target, strings.NewReader(body))
+	if contentType != "" {
+		request.Header.Set(fiber.HeaderContentType, contentType)
+	}
+	return request
 }
 
 // do sends a request to app and returns the response with its body.
@@ -217,11 +238,7 @@ func do(
 	t *testing.T, app *fiber.App, method, target, contentType, body string, config ...fiber.TestConfig,
 ) (*http.Response, string) {
 	t.Helper()
-	request := httptest.NewRequest(method, target, strings.NewReader(body))
-	if contentType != "" {
-		request.Header.Set(fiber.HeaderContentType, contentType)
-	}
-	return send(t, app, request, config...)
+	return send(t, app, newRequest(method, target, contentType, body), config...)
 }
 
 // post sends a JSON body to app.
@@ -242,8 +259,7 @@ func concurrently(t *testing.T, app *fiber.App, target, body string) []string {
 	)
 	for i := range requests {
 		group.Go(func() {
-			request := httptest.NewRequest(fiber.MethodPost, fmt.Sprintf("%s?user=user-%d", target, i), strings.NewReader(body))
-			request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+			request := newRequest(fiber.MethodPost, fmt.Sprintf("%s?user=user-%d", target, i), fiber.MIMEApplicationJSON, body)
 			response, err := app.Test(request)
 			if err != nil {
 				errs[i] = err
@@ -340,6 +356,26 @@ func aguiEvents(t *testing.T, body string) []agui.Event {
 		events = append(events, event)
 	}
 	return events
+}
+
+// aguiFailure returns the message of the RUN_ERROR event that ends the stream.
+func aguiFailure(t *testing.T, body string) string {
+	t.Helper()
+	events := aguiEvents(t, body)
+	require.NotEmpty(t, events)
+	last := events[len(events)-1]
+	require.Equal(t, agui.EventRunError, last.Type)
+	return last.Message
+}
+
+// vercelFailure returns the message of the error chunk that ends the stream.
+func vercelFailure(t *testing.T, body string) string {
+	t.Helper()
+	chunks, _ := vercelChunks(t, body)
+	require.NotEmpty(t, chunks)
+	last := chunks[len(chunks)-1]
+	require.Equal(t, vercel.ChunkError, last.Type)
+	return last.ErrorText
 }
 
 // vercelChunks decodes the chunks of a response body and reports whether the

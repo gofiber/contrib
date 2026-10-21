@@ -79,11 +79,10 @@ func (l requestLimits) check(c fiber.Ctx) error {
 			return fiber.NewError(fiber.StatusUnsupportedMediaType, "unsupported content type")
 		}
 	}
-	// The bytes are decoded as they come, like the adapters do. Fiber would
-	// inflate a compressed body, up to its BodyLimit, before anything else
-	// could turn the caller away, and a small request could expand to a large
-	// allocation.
-	if encoding := c.Get(fiber.HeaderContentEncoding); encoding != "" && !strings.EqualFold(encoding, "identity") {
+	// The handlers decode the bytes as they arrive and never inflate them. A
+	// compressed body would fail the JSON decoder with a 400 that blames the
+	// content, so say what is wrong with the request instead.
+	if encoding := c.Get(fiber.HeaderContentEncoding); encoding != "" && !strings.EqualFold(encoding, fiber.StrIdentity) {
 		return fiber.NewError(fiber.StatusUnsupportedMediaType, "unsupported content encoding")
 	}
 	return nil
@@ -93,38 +92,25 @@ func (l requestLimits) check(c fiber.Ctx) error {
 // larger than the limit.
 func (l requestLimits) read(c fiber.Ctx) ([]byte, error) {
 	maxBytes := cmp.Or(l.maxBytes, defaultMaxRequestBytes)
-	request := c.Request()
-	if stream := request.BodyStream(); stream != nil {
+	var body []byte
+	if stream := c.BodyStream(); stream != nil {
 		// With StreamRequestBody fasthttp leaves a body above its limit unread.
 		// The adapters never read more than one byte beyond theirs, so neither
 		// do these handlers, which keeps a huge body out of memory.
-		if int64(request.Header.ContentLength()) > maxBytes {
+		if int64(c.ContentLength()) > maxBytes {
 			return nil, errBodyTooLarge
 		}
-		body, err := io.ReadAll(io.LimitReader(stream, maxBytes+1))
-		if err != nil {
+		var err error
+		if body, err = io.ReadAll(io.LimitReader(stream, maxBytes+1)); err != nil {
 			return nil, fiber.NewError(fiber.StatusBadRequest, "read request body")
 		}
-		if int64(len(body)) > maxBytes {
-			return nil, errBodyTooLarge
-		}
-		return body, nil
+	} else {
+		body = c.BodyRaw()
 	}
-	body := c.BodyRaw()
 	if int64(len(body)) > maxBytes {
 		return nil, errBodyTooLarge
 	}
 	return body, nil
-}
-
-// decodeJSON decodes the body of a request into target. It uses encoding/json
-// instead of the JSONDecoder of the app because the protocol types are
-// specified against the standard library.
-func decodeJSON(body []byte, target any, protocol string) error {
-	if err := json.Unmarshal(body, target); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid "+protocol+" request")
-	}
-	return nil
 }
 
 // resolve runs the per-request callbacks of a handler. Both are optional: the
@@ -164,21 +150,23 @@ func admit[Deps, In any](
 	protocol string,
 	deps func(fiber.Ctx) (Deps, error),
 	options func(fiber.Ctx) ([]ai.RunOption, error),
-) (admission[Deps, In], error) {
-	var request admission[Deps, In]
+) (*admission[Deps, In], error) {
 	if err := limits.check(c); err != nil {
-		return request, err
+		return nil, err
 	}
+	request := new(admission[Deps, In])
 	var err error
 	if request.deps, request.options, err = resolve(c, deps, options); err != nil {
-		return request, err
+		return nil, err
 	}
 	body, err := limits.read(c)
 	if err != nil {
-		return request, err
+		return nil, err
 	}
-	if err := decodeJSON(body, &request.input, protocol); err != nil {
-		return request, err
+	// encoding/json, not the JSONDecoder of the app: the protocol types are
+	// specified against the standard library.
+	if err := json.Unmarshal(body, &request.input); err != nil {
+		return nil, fiber.NewError(fiber.StatusBadRequest, "invalid "+protocol+" request")
 	}
 	if len(body) > releaseBodySize {
 		// Fiber keeps the request for as long as the response is written, and a
@@ -221,7 +209,7 @@ type streamOptions[Deps any] struct {
 // response and when the stream ends. fasthttp does not cancel the request
 // context for a disconnected client, so these are the signals that stop a run
 // nobody is listening to anymore. The cancellation of the context of the
-// request is not among them, see below.
+// request is not among them, see requestHold.
 //
 // fail ends the stream with the error event of the protocol. It is called when
 // run panics.
@@ -234,37 +222,32 @@ func serveStream[Deps any](
 	fail func(send func(data []byte) error, err error),
 	run func(ctx context.Context, send func(data []byte) error) error,
 ) error {
-	gone, abort := context.WithCancel(context.Background())
+	// The run outlives the handler, but a middleware can scope the context of
+	// the request to the handler and cancel it when the handler returns, as the
+	// timeout middleware of Fiber does. That must not cancel the run, which has
+	// only just started. The values of the context are kept.
+	runCtx, abort := context.WithCancel(context.WithoutCancel(c.Context()))
+
+	// ended receives how the stream ended, once the run has returned.
+	ended := make(chan error, 1)
 	hold := &requestHold{
-		Ctx:      c,
-		abort:    abort,
-		finished: make(chan struct{}),
-		closed: func(err error) {
-			if opts.onClose == nil {
-				return
-			}
-			// OnClose runs on the goroutine of the connection, which no
-			// recover middleware guards.
-			defer func() {
-				if recovered := recover(); recovered != nil {
-					log.Errorf("pydanticai: panic in OnClose: %v\n%s", recovered, debug.Stack())
-				}
-			}()
-			opts.onClose(deps, err)
-		},
+		Ctx: c,
+		ctx: runCtx,
+		release: sync.OnceFunc(func() {
+			abort()
+			callOnClose(opts.onClose, deps, <-ended)
+		}),
 	}
 
 	config := sse.Config{
 		HeartbeatInterval: heartbeatInterval(opts.heartbeat),
 		DisableHeartbeat:  opts.disableHeartbeat,
 		Handler: func(_ fiber.Ctx, stream *sse.Stream) (err error) {
-			ctx, cancel := context.WithCancel(stream.Context())
-			defer cancel()
-			defer context.AfterFunc(gone, cancel)()
+			ctx := stream.Context()
 			if opts.timeout > 0 {
-				var cancelTimeout context.CancelFunc
-				ctx, cancelTimeout = context.WithTimeout(ctx, opts.timeout)
-				defer cancelTimeout()
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, opts.timeout)
+				defer cancel()
 			}
 			send := func(data []byte) error {
 				return stream.Event(sse.Event{Data: data})
@@ -280,24 +263,29 @@ func serveStream[Deps any](
 			}()
 			return run(ctx, send)
 		},
-		OnClose: func(_ fiber.Ctx, err error) {
-			hold.err = err
-			close(hold.finished)
-		},
+		OnClose: func(_ fiber.Ctx, err error) { ended <- err },
 	}
-
-	// The run outlives the handler, but a middleware can scope the context of
-	// the request to the handler and cancel it when the handler returns, as the
-	// timeout middleware of Fiber does. That must not cancel the run, which has
-	// only just started. The values of the context are kept.
-	parent := c.Context()
-	c.SetContext(context.WithoutCancel(parent))
-	defer c.SetContext(parent)
 	return sse.New(config)(hold)
 }
 
+// callOnClose calls onClose, if there is one.
+func callOnClose[Deps any](onClose func(Deps, error), deps Deps, err error) {
+	if onClose == nil {
+		return
+	}
+	// OnClose runs on the goroutine of the connection, which no recover
+	// middleware guards.
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Errorf("pydanticai: panic in OnClose: %v\n%s", recovered, debug.Stack())
+		}
+	}()
+	onClose(deps, err)
+}
+
 // requestHold is the fiber.Ctx that sse writes its response to. It ties the
-// lifetime of the request to the end of the run.
+// lifetime of the request to the end of the run, and gives the run a context
+// of its own.
 //
 // fasthttp starts the goroutine that writes the response as soon as the handler
 // sets it, and reuses the request when the connection is done with it, which
@@ -311,27 +299,28 @@ func serveStream[Deps any](
 type requestHold struct {
 	fiber.Ctx
 
-	// abort cancels the run, once fasthttp has given up on the response.
-	abort context.CancelFunc
-	// finished is closed when the stream function has returned, after err is set.
-	finished chan struct{}
-	// err is how the stream ended.
-	err error
-	// closed reports err, once, to the OnClose callback.
-	closed func(err error)
-	once   sync.Once
+	// ctx is the context of the run, see Context.
+	ctx context.Context
+	// release cancels the run, waits for it and reports the end of the stream
+	// to OnClose. It does that once, however often it is called.
+	release func()
 }
+
+// Context is what sse derives the context of the stream from. It carries the
+// values of the request, and is canceled by release rather than by a
+// middleware that scoped the context of the request to the handler.
+func (h *requestHold) Context() context.Context { return h.ctx }
 
 // SendStreamWriter sets the body of the response like fiber.Ctx does, with a
 // body stream that holds the request.
 func (h *requestHold) SendStreamWriter(write func(*bufio.Writer)) error {
-	return h.SendStream(&holdingBody{ReadCloser: fasthttp.NewStreamReader(write), hold: h}, -1)
+	return h.SendStream(&holdingBody{ReadCloser: fasthttp.NewStreamReader(write), release: h.release})
 }
 
 // holdingBody is the body stream of a response that holds its request.
 type holdingBody struct {
 	io.ReadCloser
-	hold *requestHold
+	release func()
 }
 
 // Close ends the response. It does not return before the run has ended.
@@ -339,8 +328,6 @@ func (b *holdingBody) Close() error {
 	err := b.ReadCloser.Close()
 	// fasthttp calls Close once the response is complete, and when it cannot
 	// write the response any more, which means that the client went away.
-	b.hold.abort()
-	<-b.hold.finished
-	b.hold.once.Do(func() { b.hold.closed(b.hold.err) })
+	b.release()
 	return err
 }

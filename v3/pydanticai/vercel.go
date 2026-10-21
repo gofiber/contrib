@@ -11,12 +11,6 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-const (
-	// vercelStreamHeader marks the response as an AI SDK UI message stream.
-	vercelStreamHeader = "x-vercel-ai-ui-message-stream"
-	vercelStreamValue  = "v1"
-)
-
 // doneRecord is the record that ends an AI SDK UI message stream.
 var doneRecord = []byte("[DONE]")
 
@@ -32,7 +26,7 @@ type VercelConfig[Deps any] struct {
 	// error aborts the request before the stream starts and goes through the
 	// Fiber error handler, so return fiber.ErrUnauthorized to turn away an
 	// anonymous caller. Deps runs before the body of the request is read, so a
-	// caller that is turned away costs next to nothing.
+	// caller that is turned away does not get its payload parsed.
 	//
 	// The request stays alive until the run has ended, so the strings that c
 	// returns remain valid for the whole run. Do not keep c, or those strings,
@@ -132,8 +126,15 @@ func Vercel[Deps, Output any](agent *ai.Agent[Deps, Output], config ...VercelCon
 		heartbeat:        cfg.HeartbeatInterval,
 		disableHeartbeat: cfg.DisableHeartbeat,
 	}
+	// fail ends the stream with an error chunk and the [DONE] record for a
+	// failure that the adapter did not report itself. Best effort: the stream
+	// ends either way.
 	fail := func(send func([]byte) error, err error) {
-		failVercel(send, cfg.ErrorMessage, err)
+		chunk := vercel.Chunk{Type: vercel.ChunkError, ErrorText: errorText(cfg.ErrorMessage, err)}
+		if encoded, marshalErr := json.Marshal(chunk); marshalErr == nil {
+			_ = send(encoded)
+			_ = send(doneRecord)
+		}
 	}
 
 	return func(c fiber.Ctx) error {
@@ -151,7 +152,7 @@ func Vercel[Deps, Output any](agent *ai.Agent[Deps, Output], config ...VercelCon
 			return fiber.NewError(fiber.StatusBadRequest, "invalid Vercel AI request")
 		}
 
-		c.Set(vercelStreamHeader, vercelStreamValue)
+		c.Set("x-vercel-ai-ui-message-stream", "v1") // marks the response as an AI SDK UI message stream
 		return serveStream(c, stream, request.deps, fail, func(ctx context.Context, send func([]byte) error) error {
 			for chunk, runErr := range adapter.RunStream(ctx, request.input, request.deps, request.options...) {
 				if runErr != nil && cfg.ErrorMessage != nil && chunk.Type == vercel.ChunkError {
@@ -183,14 +184,4 @@ func encodeChunk(chunk vercel.Chunk) ([]byte, error) {
 		return doneRecord, nil
 	}
 	return json.Marshal(chunk)
-}
-
-// failVercel ends the stream with an error chunk and the [DONE] record for a
-// failure that the adapter did not report itself.
-func failVercel(send func([]byte) error, message func(error) string, err error) {
-	// Best effort: the stream ends either way.
-	if encoded, marshalErr := json.Marshal(vercel.Chunk{Type: vercel.ChunkError, ErrorText: errorText(message, err)}); marshalErr == nil {
-		_ = send(encoded)
-		_ = send(doneRecord)
-	}
 }

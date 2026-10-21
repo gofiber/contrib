@@ -19,8 +19,8 @@ type RunConfig[Deps, Output any] struct {
 	// example from the user that an earlier middleware stored in c.Locals. An
 	// error is returned from the handler as it is, so return
 	// fiber.ErrUnauthorized to turn away an anonymous caller. Deps runs before
-	// the body of the request is read, so a caller that is turned away costs
-	// next to nothing.
+	// the body of the request is read, so a caller that is turned away does not
+	// get its payload parsed.
 	//
 	// Optional. Default: the zero value of Deps
 	Deps func(c fiber.Ctx) (Deps, error)

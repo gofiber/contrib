@@ -23,7 +23,7 @@ type AGUIConfig[Deps any] struct {
 	// error aborts the request before the stream starts and goes through the
 	// Fiber error handler, so return fiber.ErrUnauthorized to turn away an
 	// anonymous caller. Deps runs before the body of the request is read, so a
-	// caller that is turned away costs next to nothing.
+	// caller that is turned away does not get its payload parsed.
 	//
 	// The request stays alive until the run has ended, so the strings that c
 	// returns remain valid for the whole run. Do not keep c, or those strings,
@@ -121,8 +121,13 @@ func AGUI[Deps, Output any](agent *ai.Agent[Deps, Output], config ...AGUIConfig[
 		heartbeat:        cfg.HeartbeatInterval,
 		disableHeartbeat: cfg.DisableHeartbeat,
 	}
+	// fail ends the stream with a RUN_ERROR event for a failure that the
+	// adapter did not report itself. Best effort: the stream ends either way.
 	fail := func(send func([]byte) error, err error) {
-		failAGUI(send, cfg.ErrorMessage, err)
+		event := agui.Event{Type: agui.EventRunError, Message: errorText(cfg.ErrorMessage, err)}
+		if encoded, marshalErr := json.Marshal(event); marshalErr == nil {
+			_ = send(encoded)
+		}
 	}
 
 	return func(c fiber.Ctx) error {
@@ -157,14 +162,5 @@ func AGUI[Deps, Output any](agent *ai.Agent[Deps, Output], config ...AGUIConfig[
 			// was canceled.
 			return ctx.Err()
 		})
-	}
-}
-
-// failAGUI ends the stream with a RUN_ERROR event for a failure that the
-// adapter did not report itself.
-func failAGUI(send func([]byte) error, message func(error) string, err error) {
-	// Best effort: the stream ends either way.
-	if encoded, marshalErr := json.Marshal(agui.Event{Type: agui.EventRunError, Message: errorText(message, err)}); marshalErr == nil {
-		_ = send(encoded)
 	}
 }
