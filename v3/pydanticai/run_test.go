@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,12 +20,6 @@ import (
 type weather struct {
 	City  string `json:"city"`
 	TempC int    `json:"temp_c"`
-}
-
-func runApp(handler fiber.Handler, config ...fiber.Config) *fiber.App {
-	app := fiber.New(config...)
-	app.Post("/ask", handler)
-	return app
 }
 
 // weatherOutputAgent answers with a structured output.
@@ -45,7 +40,7 @@ func decodeObject(t *testing.T, body string) map[string]any {
 func Test_Run_ReturnsOutput(t *testing.T) {
 	t.Parallel()
 
-	app := runApp(pydanticai.Run(ai.NewAgent[struct{}, string](fakes.NewTestModel())))
+	app := newApp("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](fakes.NewTestModel())))
 
 	resp, body := post(t, app, "/ask", runBody)
 	require.Equal(t, fiber.StatusOK, resp.StatusCode)
@@ -62,30 +57,25 @@ func Test_Run_ReturnsOutput(t *testing.T) {
 func Test_Run_StructuredOutput(t *testing.T) {
 	t.Parallel()
 
-	app := runApp(pydanticai.Run(weatherOutputAgent()))
+	app := newApp("/ask", pydanticai.Run(weatherOutputAgent()))
 
 	_, body := post(t, app, "/ask", runBody)
-	require.JSONEq(t, `{"city":"Paris","temp_c":21}`, mustMarshal(t, decodeObject(t, body)["output"]))
-}
-
-func mustMarshal(t *testing.T, value any) string {
-	t.Helper()
-	encoded, err := json.Marshal(value)
+	output, err := json.Marshal(decodeObject(t, body)["output"])
 	require.NoError(t, err)
-	return string(encoded)
+	require.JSONEq(t, `{"city":"Paris","temp_c":21}`, string(output))
 }
 
 func Test_Run_ConversationID(t *testing.T) {
 	t.Parallel()
 
 	agent := ai.NewAgent[struct{}, string](fakes.NewTestModel())
-	app := runApp(pydanticai.Run(agent))
+	app := newApp("/ask", pydanticai.Run(agent))
 
 	_, body := post(t, app, "/ask", `{"prompt":"Hello","conversation_id":"conversation-1"}`)
 	require.Equal(t, "conversation-1", decodeObject(t, body)["conversation_id"])
 
 	// Options chosen by the server win over what the client sent.
-	app = runApp(pydanticai.Run(agent, pydanticai.RunConfig[struct{}, string]{
+	app = newApp("/ask", pydanticai.Run(agent, pydanticai.RunConfig[struct{}, string]{
 		RunOptions: func(fiber.Ctx) ([]ai.RunOption, error) {
 			return []ai.RunOption{ai.WithConversationID("server-chosen")}, nil
 		},
@@ -132,7 +122,7 @@ func Test_Run_DepsOptionsAndContext(t *testing.T) {
 func Test_Run_RunOptionsError(t *testing.T) {
 	t.Parallel()
 
-	app := runApp(pydanticai.Run(ai.NewAgent[struct{}, string](fakes.NewTestModel()), pydanticai.RunConfig[struct{}, string]{
+	app := newApp("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](fakes.NewTestModel()), pydanticai.RunConfig[struct{}, string]{
 		RunOptions: func(fiber.Ctx) ([]ai.RunOption, error) { return nil, fiber.ErrForbidden },
 	}))
 
@@ -173,6 +163,56 @@ func Test_Run_RejectsInvalidRequests(t *testing.T) {
 			}
 		})
 	}
+}
+
+func Test_Run_RejectsEncodedBodiesBeforeResolvingDeps(t *testing.T) {
+	t.Parallel()
+
+	model, called := unreachableModel()
+	var resolved int
+	app := newApp("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](model), pydanticai.RunConfig[struct{}, string]{
+		Deps: func(fiber.Ctx) (struct{}, error) {
+			resolved++
+			return struct{}{}, nil
+		},
+	}))
+
+	for _, encoding := range []string{"gzip", "br", "deflate", "zstd", "unknown", "identity, gzip"} {
+		request := httptest.NewRequest(fiber.MethodPost, "/ask", strings.NewReader(runBody))
+		request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+		request.Header.Set(fiber.HeaderContentEncoding, encoding)
+		resp, _ := send(t, app, request)
+		require.Equal(t, fiber.StatusUnsupportedMediaType, resp.StatusCode, encoding)
+	}
+	require.Zero(t, resolved, "Deps must not run for a body that is not read")
+	require.False(t, called.Load())
+
+	// The identity encoding is no encoding.
+	request := httptest.NewRequest(fiber.MethodPost, "/ask", strings.NewReader(runBody))
+	request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+	request.Header.Set(fiber.HeaderContentEncoding, "identity")
+	resp, _ := send(t, app, request)
+	require.Equal(t, fiber.StatusOK, resp.StatusCode)
+	require.Equal(t, 1, resolved)
+}
+
+func Test_Run_MaxRequestBytes(t *testing.T) {
+	t.Parallel()
+
+	agent := ai.NewAgent[struct{}, string](fakes.NewTestModel())
+	app := newApp("/ask", pydanticai.Run(agent, pydanticai.RunConfig[struct{}, string]{
+		MaxRequestBytes: int64(len(runBody)),
+	}))
+
+	resp, _ := post(t, app, "/ask", runBody)
+	require.Equal(t, fiber.StatusOK, resp.StatusCode, "a body at the limit is accepted")
+
+	resp, _ = post(t, app, "/ask", runBody+" ")
+	require.Equal(t, fiber.StatusRequestEntityTooLarge, resp.StatusCode, "a body one byte above the limit is not")
+
+	require.Panics(t, func() {
+		pydanticai.Run(agent, pydanticai.RunConfig[struct{}, string]{MaxRequestBytes: -1})
+	})
 }
 
 func Test_Run_Next(t *testing.T) {
@@ -218,10 +258,44 @@ func Test_Run_CustomPrompt(t *testing.T) {
 	require.Equal(t, "q is required", body)
 }
 
+func Test_Run_CustomPromptResolvesDepsFirst(t *testing.T) {
+	t.Parallel()
+
+	model, called := unreachableModel()
+	var prompted atomic.Bool
+	app := newApp("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](model), pydanticai.RunConfig[struct{}, string]{
+		Deps: func(fiber.Ctx) (struct{}, error) { return struct{}{}, fiber.ErrUnauthorized },
+		Prompt: func(fiber.Ctx) (string, error) {
+			prompted.Store(true)
+			return "Hello", nil
+		},
+	}))
+
+	resp, _ := post(t, app, "/ask", runBody)
+	require.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
+	require.False(t, prompted.Load(), "a caller that is turned away does not get its request read")
+	require.False(t, called.Load())
+}
+
+func Test_Run_CustomPromptOwnsTheRequest(t *testing.T) {
+	t.Parallel()
+
+	// A Prompt function replaces every request check of the default path, as documented.
+	app := fiber.New()
+	app.All("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](fakes.NewTestModel()), pydanticai.RunConfig[struct{}, string]{
+		Prompt: func(c fiber.Ctx) (string, error) { return string(c.Body()), nil },
+	}))
+
+	for _, method := range []string{fiber.MethodPost, fiber.MethodPut, fiber.MethodDelete} {
+		resp, _ := do(t, app, method, "/ask", fiber.MIMETextPlain, "Hello")
+		require.Equal(t, fiber.StatusOK, resp.StatusCode, method)
+	}
+}
+
 func Test_Run_CustomRespond(t *testing.T) {
 	t.Parallel()
 
-	app := runApp(pydanticai.Run(weatherOutputAgent(), pydanticai.RunConfig[struct{}, weather]{
+	app := newApp("/ask", pydanticai.Run(weatherOutputAgent(), pydanticai.RunConfig[struct{}, weather]{
 		Respond: func(c fiber.Ctx, result *ai.RunResult[weather]) error {
 			return c.JSON(fiber.Map{"city": result.Output.City, "requests": result.Usage().Requests})
 		},
@@ -236,26 +310,22 @@ func Test_Run_AgentErrorsAreMappedAndHidden(t *testing.T) {
 
 	secret := errors.New("provider rejected the key sk-secret")
 
-	var captured error
-	app := runApp(pydanticai.Run(ai.NewAgent[struct{}, string](failingModel(secret))), fiber.Config{
-		ErrorHandler: func(c fiber.Ctx, err error) error {
-			captured = err
-			return fiber.DefaultErrorHandler(c, err)
-		},
-	})
+	var log errorLog
+	app := newApp("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](failingModel(secret))), log.config())
 
 	resp, body := post(t, app, "/ask", runBody)
 	require.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
 	require.Equal(t, "Internal Server Error", body, "the error of the provider must not reach the client")
 
 	// The cause stays available to the error handler.
-	var runErr *pydanticai.Error
-	require.ErrorAs(t, captured, &runErr)
+	runErr, ok := errors.AsType[*pydanticai.Error](log.err())
+	require.True(t, ok)
 	require.Equal(t, fiber.StatusInternalServerError, runErr.Code)
+	require.Equal(t, pydanticai.StatusCode(runErr.Err), runErr.Code, "Code is what StatusCode derives from Err")
 	require.ErrorIs(t, runErr.Err, secret)
-	require.ErrorIs(t, captured, secret)
-	var fiberErr *fiber.Error
-	require.ErrorAs(t, captured, &fiberErr)
+	require.ErrorIs(t, log.err(), secret)
+	fiberErr, ok := errors.AsType[*fiber.Error](log.err())
+	require.True(t, ok)
 	require.Equal(t, fiber.StatusInternalServerError, fiberErr.Code)
 }
 
@@ -263,22 +333,25 @@ func Test_Run_UsageLimitIsTooManyRequests(t *testing.T) {
 	t.Parallel()
 
 	// The tool makes the run need a second model request.
-	app := runApp(pydanticai.Run(weatherAgent(), pydanticai.RunConfig[struct{}, string]{
+	var log errorLog
+	app := newApp("/ask", pydanticai.Run(weatherAgent(), pydanticai.RunConfig[struct{}, string]{
 		RunOptions: func(fiber.Ctx) ([]ai.RunOption, error) {
 			return []ai.RunOption{ai.WithRunUsageLimits(ai.UsageLimits{RequestLimit: 1})}, nil
 		},
-	}))
+	}), log.config())
 
 	resp, body := post(t, app, "/ask", runBody)
 	require.Equal(t, fiber.StatusTooManyRequests, resp.StatusCode)
 	require.Equal(t, "Too Many Requests", body)
+	require.ErrorIs(t, log.err(), fiber.ErrTooManyRequests, "errors.Is matches the status of a Fiber error")
+	require.ErrorIs(t, log.err(), ai.ErrUsageLimitExceeded)
 }
 
 func Test_Run_Timeout(t *testing.T) {
 	t.Parallel()
 
 	model, _, canceled := blockingModel()
-	app := runApp(pydanticai.Run(ai.NewAgent[struct{}, string](model), pydanticai.RunConfig[struct{}, string]{
+	app := newApp("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](model), pydanticai.RunConfig[struct{}, string]{
 		Timeout: 100 * time.Millisecond,
 	}))
 
@@ -299,33 +372,29 @@ func Test_Run_DeferredToolCallsAreNotImplemented(t *testing.T) {
 	t.Run("default response", func(t *testing.T) {
 		t.Parallel()
 
-		var captured error
-		app := runApp(pydanticai.Run(agent), fiber.Config{
-			ErrorHandler: func(c fiber.Ctx, err error) error {
-				captured = err
-				return fiber.DefaultErrorHandler(c, err)
-			},
-		})
+		var log errorLog
+		app := newApp("/ask", pydanticai.Run(agent), log.config())
 
 		resp, body := post(t, app, "/ask", runBody)
 		require.Equal(t, fiber.StatusNotImplemented, resp.StatusCode)
 		require.Equal(t, "Not Implemented", body)
-		require.ErrorContains(t, captured, "Not Implemented")
-		var runErr *pydanticai.Error
-		require.ErrorAs(t, captured, &runErr)
+		require.ErrorContains(t, log.err(), "Not Implemented")
+		runErr, ok := errors.AsType[*pydanticai.Error](log.err())
+		require.True(t, ok)
 		require.ErrorContains(t, runErr.Err, "AGUI or Vercel")
+		require.Equal(t, pydanticai.StatusCode(runErr.Err), runErr.Code, "Code is what StatusCode derives from Err")
 	})
 
 	t.Run("Respond receives the deferred run", func(t *testing.T) {
 		t.Parallel()
 
-		app := runApp(pydanticai.Run(agent, pydanticai.RunConfig[struct{}, string]{
+		app := newApp("/ask", pydanticai.Run(agent, pydanticai.RunConfig[struct{}, string]{
 			Respond: func(c fiber.Ctx, result *ai.RunResult[string]) error {
 				deferred := result.Deferred()
 				if deferred == nil {
 					return errors.New("the run did not defer its tool call")
 				}
-				return c.Status(http.StatusAccepted).JSON(fiber.Map{"approvals": len(deferred.Approvals)})
+				return c.Status(fiber.StatusAccepted).JSON(fiber.Map{"approvals": len(deferred.Approvals)})
 			},
 		}))
 

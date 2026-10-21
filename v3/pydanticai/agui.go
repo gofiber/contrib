@@ -22,13 +22,12 @@ type AGUIConfig[Deps any] struct {
 	// example from the user that an earlier middleware stored in c.Locals. An
 	// error aborts the request before the stream starts and goes through the
 	// Fiber error handler, so return fiber.ErrUnauthorized to turn away an
-	// anonymous caller.
+	// anonymous caller. Deps runs before the body of the request is read, so a
+	// caller that is turned away costs next to nothing.
 	//
-	// The run outlives the handler, so do not keep c in the dependencies. The
-	// strings that c returns, such as the ones of c.Get and c.Query, can point
-	// into the buffer of the request, which fasthttp reuses once the client has
-	// gone away. Copy them with strings.Clone, or enable Immutable in the
-	// config of the app.
+	// The request stays alive until the run has ended, so the strings that c
+	// returns remain valid for the whole run. Do not keep c, or those strings,
+	// for work that outlives the run.
 	//
 	// Optional. Default: the zero value of Deps
 	Deps func(c fiber.Ctx) (Deps, error)
@@ -43,19 +42,23 @@ type AGUIConfig[Deps any] struct {
 	// ErrorMessage maps the error that failed a run to the message that the
 	// client receives in the RUN_ERROR event. Use it to keep provider error
 	// details, which can carry request IDs or parts of credentials, away from
-	// the browser.
+	// the browser. It also applies when the run panics or an event cannot be
+	// encoded.
 	//
 	// Optional. Default: err.Error()
 	ErrorMessage func(err error) string
 
-	// OnClose is called once when the stream has ended, with the dependencies of
-	// the run. err is nil when the run completed, the agent error when the run
-	// failed, and the write error when the client went away.
+	// OnClose is called once when the stream is over, with the dependencies of
+	// the run. err is nil when the stream ended normally, which includes a run
+	// that a tool canceled. Otherwise it is the agent error when the run
+	// failed, the context error when Timeout elapsed, and the write error when
+	// the client went away.
 	//
-	// It does not receive the fiber.Ctx. OnClose runs when the response ends,
-	// and fasthttp reuses the request of a client that went away while the run
-	// is still winding down, so the context may belong to another request by
-	// then. Read what the log line needs in Deps and keep it in the dependencies.
+	// It runs once the run has ended and the events are written, while the
+	// request is still alive. The client has every event by then, but the end of
+	// the response and the next request on the connection wait for OnClose, so
+	// keep it short, or hand the work to a goroutine and copy what that needs. A
+	// panic in OnClose is logged and recovered.
 	//
 	// Optional. Default: nil
 	OnClose func(deps Deps, err error)
@@ -69,15 +72,20 @@ type AGUIConfig[Deps any] struct {
 
 	// Timeout bounds the duration of one run. When it elapses the run is
 	// canceled and the stream ends, as it does when the client goes away.
+	// Neither the cancellation nor the deadline of the context of the request
+	// apply to the run, as the handler has returned by the time the run
+	// starts. Timeout does.
 	//
 	// Optional. Default: 0 (no timeout)
 	Timeout time.Duration
 
 	// HeartbeatInterval is the interval of the comment lines that keep an idle
 	// stream open and let the handler notice a client that went away while the
-	// agent is busy. A value less than or equal to zero uses the default.
+	// agent is busy. A client that left is noticed by the second or third
+	// heartbeat after it did, so a run that nobody waits for is canceled after
+	// a few intervals. A value less than or equal to zero uses the default.
 	//
-	// Optional. Default: 15 * time.Second
+	// Optional. Default: 5 * time.Second
 	HeartbeatInterval time.Duration
 
 	// DisableHeartbeat turns the heartbeat off. A client that goes away while
@@ -102,13 +110,19 @@ func AGUI[Deps, Output any](agent *ai.Agent[Deps, Output], config ...AGUIConfig[
 		cfg = config[0]
 	}
 	adapter := agui.NewAdapter(agent, cfg.Adapter)
-	limits := newRequestLimits(
-		cfg.Adapter.MaxRequestBytes, cfg.Adapter.AllowedContentTypes, cfg.Adapter.DisableContentTypeCheck,
-	)
-	stream := streamOptions{
+	limits := requestLimits{
+		contentTypes:         cfg.Adapter.AllowedContentTypes,
+		maxBytes:             cfg.Adapter.MaxRequestBytes,
+		skipContentTypeCheck: cfg.Adapter.DisableContentTypeCheck,
+	}
+	stream := streamOptions[Deps]{
+		onClose:          cfg.OnClose,
 		timeout:          cfg.Timeout,
 		heartbeat:        cfg.HeartbeatInterval,
 		disableHeartbeat: cfg.DisableHeartbeat,
+	}
+	fail := func(send func([]byte) error, err error) {
+		failAGUI(send, cfg.ErrorMessage, err)
 	}
 
 	return func(c fiber.Ctx) error {
@@ -116,29 +130,21 @@ func AGUI[Deps, Output any](agent *ai.Agent[Deps, Output], config ...AGUIConfig[
 			return c.Next()
 		}
 
-		body, err := limits.body(c)
+		request, err := admit[Deps, agui.RunAgentInput](c, limits, "AG-UI", cfg.Deps, cfg.RunOptions)
 		if err != nil {
-			return err
-		}
-		// Resolving the dependencies comes first, so that a caller that is
-		// turned away does not get its payload parsed.
-		deps, options, err := resolve(c, cfg.Deps, cfg.RunOptions)
-		if err != nil {
-			return err
-		}
-		var input agui.RunAgentInput
-		if err := decodeJSON(body, &input, "AG-UI"); err != nil {
 			return err
 		}
 
-		return serveStream(c, stream, onClose(cfg.OnClose, deps), func(ctx context.Context, send func([]byte) error) error {
-			for event, runErr := range adapter.RunStream(ctx, input, deps, options...) {
+		return serveStream(c, stream, request.deps, fail, func(ctx context.Context, send func([]byte) error) error {
+			for event, runErr := range adapter.RunStream(ctx, request.input, request.deps, request.options...) {
 				if runErr != nil && cfg.ErrorMessage != nil && event.Type == agui.EventRunError {
 					event.Message = cfg.ErrorMessage(runErr)
 				}
 				encoded, err := json.Marshal(event)
 				if err != nil {
-					return failAGUI(send, cfg.ErrorMessage, fmt.Errorf("pydanticai: encode AG-UI event: %w", err))
+					err = fmt.Errorf("pydanticai: encode AG-UI event: %w", err)
+					fail(send, err)
+					return err
 				}
 				if err := send(encoded); err != nil {
 					return err
@@ -154,16 +160,11 @@ func AGUI[Deps, Output any](agent *ai.Agent[Deps, Output], config ...AGUIConfig[
 	}
 }
 
-// failAGUI ends the stream with a RUN_ERROR event for an event that could not
-// be encoded. It returns err for OnClose.
-func failAGUI(send func([]byte) error, message func(error) string, err error) error {
-	text := err.Error()
-	if message != nil {
-		text = message(err)
-	}
+// failAGUI ends the stream with a RUN_ERROR event for a failure that the
+// adapter did not report itself.
+func failAGUI(send func([]byte) error, message func(error) string, err error) {
 	// Best effort: the stream ends either way.
-	if encoded, marshalErr := json.Marshal(agui.Event{Type: agui.EventRunError, Message: text}); marshalErr == nil {
+	if encoded, marshalErr := json.Marshal(agui.Event{Type: agui.EventRunError, Message: errorText(message, err)}); marshalErr == nil {
 		_ = send(encoded)
 	}
-	return err
 }

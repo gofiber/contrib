@@ -1,6 +1,7 @@
 package pydanticai_test
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,8 +9,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,6 +32,9 @@ const (
 	// observeTimeout bounds how long a test waits for something to happen in the background.
 	observeTimeout = 5 * time.Second
 )
+
+// abandon is the test config of a client that walks away while the stream is open.
+var abandon = fiber.TestConfig{Timeout: 300 * time.Millisecond, FailOnTimeout: false}
 
 // userDeps are the dependencies of the agents that see a per-request user.
 type userDeps struct {
@@ -57,14 +63,24 @@ func progressAgent() *ai.Agent[struct{}, string] {
 	return agent
 }
 
-// lastRequest returns the newest request in the history a model receives.
-func lastRequest(messages []ai.ModelMessage) ai.ModelRequest {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if request, ok := messages[i].(ai.ModelRequest); ok {
-			return request
-		}
-	}
-	return ai.ModelRequest{}
+// panicAgent has a tool that panics.
+func panicAgent() *ai.Agent[struct{}, string] {
+	agent := ai.NewAgent[struct{}, string](fakes.NewTestModel())
+	ai.AddSimpleTool(agent, "explode", func(context.Context, struct{}) (string, error) {
+		panic("kaboom")
+	})
+	return agent
+}
+
+// weatherAgent has a tool, so its runs contain the tool call events as well.
+func weatherAgent() *ai.Agent[struct{}, string] {
+	agent := ai.NewAgent[struct{}, string](fakes.NewTestModel())
+	agent.AddRawTool(ai.ToolDefinition{
+		Name: "weather", Schema: map[string]any{"type": "object", "properties": map[string]any{}},
+	}, func(context.Context, json.RawMessage) (any, error) {
+		return map[string]any{"temperature": 20}, nil
+	})
+	return agent
 }
 
 // textResponse is a model response that only contains text.
@@ -79,7 +95,13 @@ func echoModel() *fakes.FunctionModel {
 	return fakes.NewFunctionModel(func(
 		ctx context.Context, messages []ai.ModelMessage, _ ai.ModelRequestParams,
 	) (*ai.ModelResponse, error) {
-		text := lastRequest(messages).Instructions
+		var text string
+		for _, message := range slices.Backward(messages) {
+			if request, ok := message.(ai.ModelRequest); ok {
+				text = request.Instructions
+				break
+			}
+		}
 		if value, ok := ctx.Value(ctxKey{}).(string); ok {
 			text += "|" + value
 		}
@@ -105,6 +127,18 @@ func failingModel(err error) *fakes.FunctionModel {
 	})
 }
 
+// unreachableModel fails the test when it is called. It reports whether it was.
+func unreachableModel() (model *fakes.FunctionModel, called *atomic.Bool) {
+	called = new(atomic.Bool)
+	model = fakes.NewFunctionModel(func(
+		context.Context, []ai.ModelMessage, ai.ModelRequestParams,
+	) (*ai.ModelResponse, error) {
+		called.Store(true)
+		return textResponse("unreachable"), nil
+	})
+	return model, called
+}
+
 // blockingModel waits until its context is canceled. started is closed when the
 // model is called and canceled receives the cause of the cancellation.
 func blockingModel() (model *fakes.FunctionModel, started <-chan struct{}, canceled <-chan error) {
@@ -121,15 +155,52 @@ func blockingModel() (model *fakes.FunctionModel, started <-chan struct{}, cance
 	return model, startedCh, canceledCh
 }
 
-// do sends a request to app and returns the response with its body.
-func do(
-	t *testing.T, app *fiber.App, method, target, contentType, body string, config ...fiber.TestConfig,
-) (*http.Response, string) {
+// slowAgent needs longer to answer than the heartbeat intervals of the tests.
+func slowAgent() *ai.Agent[struct{}, string] {
+	return ai.NewAgent[struct{}, string](fakes.NewFunctionModel(func(
+		ctx context.Context, _ []ai.ModelMessage, _ ai.ModelRequestParams,
+	) (*ai.ModelResponse, error) {
+		select {
+		case <-time.After(250 * time.Millisecond):
+		case <-ctx.Done():
+		}
+		return textResponse("done"), nil
+	}))
+}
+
+// errorLog records the errors that reach the error handler of an app.
+type errorLog struct {
+	mu   sync.Mutex
+	last error
+}
+
+// config is a fiber.Config with the default error handler, wrapped to record the error.
+func (l *errorLog) config() fiber.Config {
+	return fiber.Config{ErrorHandler: func(c fiber.Ctx, err error) error {
+		l.mu.Lock()
+		l.last = err
+		l.mu.Unlock()
+		return fiber.DefaultErrorHandler(c, err)
+	}}
+}
+
+// err returns the error that was recorded last.
+func (l *errorLog) err() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.last
+}
+
+// newApp serves handler for POST requests to path.
+func newApp(path string, handler fiber.Handler, config ...fiber.Config) *fiber.App {
+	app := fiber.New(config...)
+	app.Post(path, handler)
+	return app
+}
+
+// send sends a prepared request to app and returns the response with its body.
+func send(t *testing.T, app *fiber.App, request *http.Request, config ...fiber.TestConfig) (*http.Response, string) {
 	t.Helper()
-	request := httptest.NewRequest(method, target, strings.NewReader(body))
-	if contentType != "" {
-		request.Header.Set(fiber.HeaderContentType, contentType)
-	}
 	response, err := app.Test(request, config...)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = response.Body.Close() })
@@ -141,67 +212,121 @@ func do(
 	return response, string(content)
 }
 
+// do sends a request to app and returns the response with its body.
+func do(
+	t *testing.T, app *fiber.App, method, target, contentType, body string, config ...fiber.TestConfig,
+) (*http.Response, string) {
+	t.Helper()
+	request := httptest.NewRequest(method, target, strings.NewReader(body))
+	if contentType != "" {
+		request.Header.Set(fiber.HeaderContentType, contentType)
+	}
+	return send(t, app, request, config...)
+}
+
 // post sends a JSON body to app.
 func post(t *testing.T, app *fiber.App, target, body string) (*http.Response, string) {
 	t.Helper()
 	return do(t, app, fiber.MethodPost, target, fiber.MIMEApplicationJSON, body)
 }
 
-// postRaw sends a JSON body to app. Unlike post it never touches a *testing.T,
-// so it can run in a goroutine other than the one of the test.
-func postRaw(app *fiber.App, target, body string) (string, error) {
-	request := httptest.NewRequest(fiber.MethodPost, target, strings.NewReader(body))
-	request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
-	response, err := app.Test(request)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = response.Body.Close() }()
-	content, err := io.ReadAll(response.Body)
-	return string(content), err
-}
-
-// concurrently posts body to target?user=user-N from n goroutines and returns
-// the response bodies by N.
-func concurrently(t *testing.T, app *fiber.App, target, body string, n int) []string {
+// concurrently posts body to target?user=user-N from 16 goroutines and returns
+// the response bodies by N. It does not touch the *testing.T from the goroutines.
+func concurrently(t *testing.T, app *fiber.App, target, body string) []string {
 	t.Helper()
+	const requests = 16
 	var (
 		group  sync.WaitGroup
-		bodies = make([]string, n)
-		errs   = make([]error, n)
+		bodies = make([]string, requests)
+		errs   = make([]error, requests)
 	)
-	for i := range n {
+	for i := range requests {
 		group.Go(func() {
-			bodies[i], errs[i] = postRaw(app, fmt.Sprintf("%s?user=user-%d", target, i), body)
+			request := httptest.NewRequest(fiber.MethodPost, fmt.Sprintf("%s?user=user-%d", target, i), strings.NewReader(body))
+			request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+			response, err := app.Test(request)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			defer func() { _ = response.Body.Close() }()
+			content, err := io.ReadAll(response.Body)
+			bodies[i], errs[i] = string(content), err
 		})
 	}
 	group.Wait()
-	for i := range n {
+	for i := range requests {
 		require.NoError(t, errs[i])
 	}
 	return bodies
 }
 
-// parseSSE splits a server-sent events body into the payload of its data
-// records and the number of comment-only records, which are heartbeats.
-func parseSSE(body string) (data []string, comments int) {
-	for record := range strings.SplitSeq(body, "\n\n") {
-		if record == "" {
-			continue
-		}
-		var payload []string
-		for line := range strings.SplitSeq(record, "\n") {
-			if value, ok := strings.CutPrefix(line, "data: "); ok {
-				payload = append(payload, value)
+// sseRecord is one record of a server-sent events stream.
+type sseRecord struct {
+	// data holds the data lines of the record, joined by a newline.
+	data string
+	// comment is true for a record without data, which is a heartbeat.
+	comment bool
+}
+
+// newScanner reads the lines of a server-sent events stream.
+func newScanner(stream io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(stream)
+	scanner.Buffer(make([]byte, 0, 64<<10), 4<<20)
+	return scanner
+}
+
+// nextRecord reads the next record of a stream. It returns false when the stream
+// has ended. A record that the stream was cut off in is dropped.
+func nextRecord(scanner *bufio.Scanner) (sseRecord, bool) {
+	var (
+		data  []string
+		lines int
+	)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			if lines == 0 {
+				continue
 			}
+			return sseRecord{data: strings.Join(data, "\n"), comment: len(data) == 0}, true
 		}
-		if len(payload) == 0 {
-			comments++
+		lines++
+		if value, ok := strings.CutPrefix(line, "data: "); ok {
+			data = append(data, value)
+		}
+	}
+	return sseRecord{}, false
+}
+
+// nextData reads the next record with data and skips heartbeats.
+func nextData(scanner *bufio.Scanner) (string, bool) {
+	for {
+		record, ok := nextRecord(scanner)
+		if !ok {
+			return "", false
+		}
+		if !record.comment {
+			return record.data, true
+		}
+	}
+}
+
+// parseSSE splits a server-sent events body into the payload of its data
+// records and the number of heartbeats.
+func parseSSE(body string) (data []string, heartbeats int) {
+	scanner := newScanner(strings.NewReader(body))
+	for {
+		record, ok := nextRecord(scanner)
+		if !ok {
+			return data, heartbeats
+		}
+		if record.comment {
+			heartbeats++
 			continue
 		}
-		data = append(data, strings.Join(payload, "\n"))
+		data = append(data, record.data)
 	}
-	return data, comments
 }
 
 // aguiEvents decodes the AG-UI events of a response body.
@@ -268,14 +393,4 @@ func receive[T any](t *testing.T, channel <-chan T, what string) T {
 		t.Fatalf("timed out waiting for %s", what)
 		panic("unreachable")
 	}
-}
-
-// abandon is the test config of a client that walks away while the stream is open.
-func abandon(after time.Duration) fiber.TestConfig {
-	return fiber.TestConfig{Timeout: after, FailOnTimeout: false}
-}
-
-// jsonUnmarshal decodes a JSON record.
-func jsonUnmarshal(record string, target any) error {
-	return json.Unmarshal([]byte(record), target)
 }

@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,23 +17,6 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
 )
-
-func aguiApp(handler fiber.Handler) *fiber.App {
-	app := fiber.New()
-	app.Post("/agui", handler)
-	return app
-}
-
-// weatherAgent has a tool, so its runs contain the tool call events as well.
-func weatherAgent() *ai.Agent[struct{}, string] {
-	agent := ai.NewAgent[struct{}, string](fakes.NewTestModel())
-	agent.AddRawTool(ai.ToolDefinition{
-		Name: "weather", Schema: map[string]any{"type": "object", "properties": map[string]any{}},
-	}, func(context.Context, json.RawMessage) (any, error) {
-		return map[string]any{"temperature": 20}, nil
-	})
-	return agent
-}
 
 // withoutTimestamps clears the only field of an event that differs between runs.
 func withoutTimestamps(events []agui.Event) []agui.Event {
@@ -48,11 +29,11 @@ func withoutTimestamps(events []agui.Event) []agui.Event {
 func Test_AGUI_StreamsRun(t *testing.T) {
 	t.Parallel()
 
-	app := aguiApp(pydanticai.AGUI(ai.NewAgent[struct{}, string](fakes.NewTestModel())))
+	app := newApp("/agui", pydanticai.AGUI(ai.NewAgent[struct{}, string](fakes.NewTestModel())))
 
 	resp, body := post(t, app, "/agui", aguiBody)
 	require.Equal(t, fiber.StatusOK, resp.StatusCode)
-	require.Equal(t, "text/event-stream", resp.Header.Get(fiber.HeaderContentType))
+	require.Equal(t, fiber.MIMETextEventStream, resp.Header.Get(fiber.HeaderContentType))
 	require.Equal(t, "no-cache", resp.Header.Get(fiber.HeaderCacheControl))
 	require.Equal(t, "no", resp.Header.Get("X-Accel-Buffering"))
 	require.Empty(t, resp.Header.Get("x-vercel-ai-ui-message-stream"))
@@ -87,7 +68,7 @@ func Test_AGUI_MatchesNetHTTPHandler(t *testing.T) {
 	want := withoutTimestamps(aguiEvents(t, recorder.Body.String()))
 	require.Greater(t, len(want), 5)
 
-	_, body := post(t, aguiApp(pydanticai.AGUI(agent)), "/agui", aguiBody)
+	_, body := post(t, newApp("/agui", pydanticai.AGUI(agent)), "/agui", aguiBody)
 	got := withoutTimestamps(aguiEvents(t, body))
 
 	require.Equal(t, want, got)
@@ -108,7 +89,7 @@ func Test_AGUI_Deps(t *testing.T) {
 			return userDeps{User: c.Query("user")}, nil
 		},
 	})
-	app := aguiApp(handler)
+	app := newApp("/agui", handler)
 
 	for _, user := range []string{"alice", "bob"} {
 		_, body := post(t, app, "/agui?user="+user, aguiBody)
@@ -117,7 +98,7 @@ func Test_AGUI_Deps(t *testing.T) {
 
 	t.Run("zero value without Deps", func(t *testing.T) {
 		t.Parallel()
-		_, body := post(t, aguiApp(pydanticai.AGUI(userAgent())), "/agui", aguiBody)
+		_, body := post(t, newApp("/agui", pydanticai.AGUI(userAgent())), "/agui", aguiBody)
 		require.Equal(t, "user=", aguiText(aguiEvents(t, body)))
 	})
 }
@@ -131,7 +112,7 @@ func Test_AGUI_DepsAreNotShared(t *testing.T) {
 		},
 	})
 
-	for i, body := range concurrently(t, aguiApp(handler), "/agui", aguiBody, 16) {
+	for i, body := range concurrently(t, newApp("/agui", handler), "/agui", aguiBody) {
 		require.Equal(t, fmt.Sprintf("user=user-%d", i), aguiText(aguiEvents(t, body)))
 	}
 }
@@ -139,25 +120,20 @@ func Test_AGUI_DepsAreNotShared(t *testing.T) {
 func Test_AGUI_DepsError(t *testing.T) {
 	t.Parallel()
 
-	var called atomic.Bool
-	model := fakes.NewFunctionModel(func(
-		context.Context, []ai.ModelMessage, ai.ModelRequestParams,
-	) (*ai.ModelResponse, error) {
-		called.Store(true)
-		return textResponse("unreachable"), nil
-	})
+	model, called := unreachableModel()
 	handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](model), pydanticai.AGUIConfig[struct{}]{
 		Deps: func(fiber.Ctx) (struct{}, error) { return struct{}{}, fiber.ErrUnauthorized },
 	})
+	app := newApp("/agui", handler)
 
-	resp, body := post(t, aguiApp(handler), "/agui", aguiBody)
+	resp, body := post(t, app, "/agui", aguiBody)
 	require.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
 	require.NotContains(t, resp.Header.Get(fiber.HeaderContentType), "event-stream")
 	require.Equal(t, "Unauthorized", body)
 	require.False(t, called.Load(), "the agent must not run for a rejected request")
 
 	// A caller that is turned away does not get its payload parsed.
-	resp, _ = post(t, aguiApp(handler), "/agui", "{")
+	resp, _ = post(t, app, "/agui", "{")
 	require.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
 }
 
@@ -172,7 +148,7 @@ func Test_AGUI_RunOptions(t *testing.T) {
 			return []ai.RunOption{ai.WithRunInstructions("from-options")}, nil
 		},
 	})
-	app := aguiApp(handler)
+	app := newApp("/agui", handler)
 
 	_, body := post(t, app, "/agui", aguiBody)
 	require.Equal(t, "from-options", aguiText(aguiEvents(t, body)))
@@ -195,76 +171,6 @@ func Test_AGUI_PropagatesRequestContext(t *testing.T) {
 	require.Equal(t, "|trace-1", aguiText(aguiEvents(t, body)))
 }
 
-func Test_AGUI_RejectsInvalidRequests(t *testing.T) {
-	t.Parallel()
-
-	agent := ai.NewAgent[struct{}, string](fakes.NewTestModel())
-
-	tests := []struct {
-		name        string
-		config      pydanticai.AGUIConfig[struct{}]
-		method      string
-		contentType string
-		body        string
-		status      int
-	}{
-		{
-			name: "wrong content type", method: fiber.MethodPost,
-			contentType: fiber.MIMETextPlain, body: aguiBody, status: fiber.StatusUnsupportedMediaType,
-		},
-		{
-			name: "missing content type", method: fiber.MethodPost,
-			body: aguiBody, status: fiber.StatusUnsupportedMediaType,
-		},
-		{
-			name: "invalid json", method: fiber.MethodPost,
-			contentType: fiber.MIMEApplicationJSON, body: "{", status: fiber.StatusBadRequest,
-		},
-		{
-			name:   "body above the adapter limit",
-			config: pydanticai.AGUIConfig[struct{}]{Adapter: agui.Config{MaxRequestBytes: 16}},
-			method: fiber.MethodPost, contentType: fiber.MIMEApplicationJSON, body: aguiBody,
-			status: fiber.StatusRequestEntityTooLarge,
-		},
-		{
-			name:   "content type check disabled",
-			config: pydanticai.AGUIConfig[struct{}]{Adapter: agui.Config{DisableContentTypeCheck: true}},
-			method: fiber.MethodPost, contentType: fiber.MIMETextPlain, body: aguiBody,
-			status: fiber.StatusOK,
-		},
-		{
-			name:   "allowed content type",
-			config: pydanticai.AGUIConfig[struct{}]{Adapter: agui.Config{AllowedContentTypes: []string{"application/x-json"}}},
-			method: fiber.MethodPost, contentType: "application/x-json; charset=utf-8", body: aguiBody,
-			status: fiber.StatusOK,
-		},
-		{
-			name:   "content type missing from the allowed ones",
-			config: pydanticai.AGUIConfig[struct{}]{Adapter: agui.Config{AllowedContentTypes: []string{"application/x-json"}}},
-			method: fiber.MethodPost, contentType: fiber.MIMEApplicationJSON, body: aguiBody,
-			status: fiber.StatusUnsupportedMediaType,
-		},
-		{
-			name: "method not allowed", method: fiber.MethodGet,
-			contentType: fiber.MIMEApplicationJSON, status: fiber.StatusMethodNotAllowed,
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-
-			app := fiber.New()
-			app.All("/agui", pydanticai.AGUI(agent, test.config))
-
-			resp, _ := do(t, app, test.method, "/agui", test.contentType, test.body)
-			require.Equal(t, test.status, resp.StatusCode)
-			if test.status == fiber.StatusMethodNotAllowed {
-				require.Equal(t, fiber.MethodPost, resp.Header.Get(fiber.HeaderAllow))
-			}
-		})
-	}
-}
-
 func Test_AGUI_Next(t *testing.T) {
 	t.Parallel()
 
@@ -280,7 +186,7 @@ func Test_AGUI_Next(t *testing.T) {
 	require.Equal(t, "skipped", body)
 
 	resp, body := post(t, app, "/agui", aguiBody)
-	require.Equal(t, "text/event-stream", resp.Header.Get(fiber.HeaderContentType))
+	require.Equal(t, fiber.MIMETextEventStream, resp.Header.Get(fiber.HeaderContentType))
 	require.Contains(t, body, "RUN_FINISHED")
 }
 
@@ -297,7 +203,7 @@ func Test_AGUI_AgentError(t *testing.T) {
 			OnClose: func(_ struct{}, err error) { closed <- err },
 		})
 
-		resp, body := post(t, aguiApp(handler), "/agui", aguiBody)
+		resp, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
 		require.Equal(t, fiber.StatusOK, resp.StatusCode, "the status is sent before the run starts")
 		events := aguiEvents(t, body)
 		last := events[len(events)-1]
@@ -315,7 +221,7 @@ func Test_AGUI_AgentError(t *testing.T) {
 			OnClose:      func(_ struct{}, err error) { closed <- err },
 		})
 
-		_, body := post(t, aguiApp(handler), "/agui", aguiBody)
+		_, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
 		events := aguiEvents(t, body)
 		last := events[len(events)-1]
 		require.Equal(t, agui.EventRunError, last.Type)
@@ -336,7 +242,7 @@ func Test_AGUI_EventThatCannotBeEncoded(t *testing.T) {
 			OnClose: func(_ struct{}, err error) { closed <- err },
 		})
 
-		resp, body := post(t, aguiApp(handler), "/agui", aguiBody)
+		resp, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
 		require.Equal(t, fiber.StatusOK, resp.StatusCode)
 		events := aguiEvents(t, body)
 		last := events[len(events)-1]
@@ -352,24 +258,12 @@ func Test_AGUI_EventThatCannotBeEncoded(t *testing.T) {
 			ErrorMessage: func(error) string { return "the run failed" },
 		})
 
-		_, body := post(t, aguiApp(handler), "/agui", aguiBody)
+		_, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
 		events := aguiEvents(t, body)
 		last := events[len(events)-1]
 		require.Equal(t, agui.EventRunError, last.Type)
 		require.Equal(t, "the run failed", last.Message)
 	})
-}
-
-func Test_AGUI_OnCloseWithoutError(t *testing.T) {
-	t.Parallel()
-
-	closed := make(chan error, 1)
-	handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](fakes.NewTestModel()), pydanticai.AGUIConfig[struct{}]{
-		OnClose: func(_ struct{}, err error) { closed <- err },
-	})
-
-	post(t, aguiApp(handler), "/agui", aguiBody)
-	require.NoError(t, receive(t, closed, "OnClose"))
 }
 
 func Test_AGUI_OnCloseReceivesTheDeps(t *testing.T) {
@@ -383,29 +277,10 @@ func Test_AGUI_OnCloseReceivesTheDeps(t *testing.T) {
 		OnClose: func(deps userDeps, err error) { closed <- closeEvent{deps: deps, err: err} },
 	})
 
-	post(t, aguiApp(handler), "/agui?user=alice", aguiBody)
+	post(t, newApp("/agui", handler), "/agui?user=alice", aguiBody)
 	event := receive(t, closed, "OnClose")
 	require.NoError(t, event.err)
 	require.Equal(t, userDeps{User: "alice"}, event.deps)
-}
-
-func Test_AGUI_ClientDisconnectCancelsRun(t *testing.T) {
-	t.Parallel()
-
-	model, started, canceled := blockingModel()
-	closed := make(chan error, 1)
-	handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](model), pydanticai.AGUIConfig[struct{}]{
-		HeartbeatInterval: 20 * time.Millisecond,
-		OnClose:           func(_ struct{}, err error) { closed <- err },
-	})
-
-	// The client reads the start of the stream and goes away while the model works.
-	_, body := do(t, aguiApp(handler), fiber.MethodPost, "/agui", fiber.MIMEApplicationJSON, aguiBody, abandon(300*time.Millisecond))
-	require.Contains(t, body, "RUN_STARTED")
-	receive(t, started, "the model call")
-
-	require.ErrorIs(t, receive(t, canceled, "the cancellation of the model call"), context.Canceled)
-	require.Error(t, receive(t, closed, "OnClose"))
 }
 
 func Test_AGUI_ToolsSeeTheRequestContextAndItsCancellation(t *testing.T) {
@@ -435,7 +310,7 @@ func Test_AGUI_ToolsSeeTheRequestContextAndItsCancellation(t *testing.T) {
 	}))
 
 	// The client leaves while the tool is the one that is busy.
-	do(t, app, fiber.MethodPost, "/agui", fiber.MIMEApplicationJSON, aguiBody, abandon(300*time.Millisecond))
+	do(t, app, fiber.MethodPost, "/agui", fiber.MIMEApplicationJSON, aguiBody, abandon)
 
 	require.Equal(t, "trace-1", receive(t, seen, "the context value in the tool"))
 	receive(t, started, "the tool call")
@@ -452,7 +327,7 @@ func Test_AGUI_Timeout(t *testing.T) {
 		OnClose: func(_ struct{}, err error) { closed <- err },
 	})
 
-	resp, body := post(t, aguiApp(handler), "/agui", aguiBody)
+	resp, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
 	require.Equal(t, fiber.StatusOK, resp.StatusCode)
 	events := aguiEvents(t, body)
 	last := events[len(events)-1]
@@ -466,29 +341,18 @@ func Test_AGUI_Heartbeat(t *testing.T) {
 	t.Parallel()
 
 	// The model needs longer than the heartbeat interval to answer.
-	slow := func() *ai.Agent[struct{}, string] {
-		return ai.NewAgent[struct{}, string](fakes.NewFunctionModel(func(
-			ctx context.Context, _ []ai.ModelMessage, _ ai.ModelRequestParams,
-		) (*ai.ModelResponse, error) {
-			select {
-			case <-time.After(250 * time.Millisecond):
-			case <-ctx.Done():
-			}
-			return textResponse("done"), nil
-		}))
-	}
 	config := pydanticai.AGUIConfig[struct{}]{HeartbeatInterval: 30 * time.Millisecond}
 
-	_, body := post(t, aguiApp(pydanticai.AGUI(slow(), config)), "/agui", aguiBody)
-	data, comments := parseSSE(body)
-	require.Positive(t, comments, "an idle stream should carry heartbeat comments")
+	_, body := post(t, newApp("/agui", pydanticai.AGUI(slowAgent(), config)), "/agui", aguiBody)
+	data, heartbeats := parseSSE(body)
+	require.Positive(t, heartbeats, "an idle stream should carry heartbeat comments")
 	require.Equal(t, "done", aguiText(aguiEvents(t, body)))
 	require.Len(t, data, 5)
 
 	config.DisableHeartbeat = true
-	_, body = post(t, aguiApp(pydanticai.AGUI(slow(), config)), "/agui", aguiBody)
-	_, comments = parseSSE(body)
-	require.Zero(t, comments)
+	_, body = post(t, newApp("/agui", pydanticai.AGUI(slowAgent(), config)), "/agui", aguiBody)
+	_, heartbeats = parseSSE(body)
+	require.Zero(t, heartbeats)
 }
 
 func Test_AGUI_Panics(t *testing.T) {
@@ -512,11 +376,10 @@ func Test_AGUI_UsesTheAppErrorHandler(t *testing.T) {
 
 	app := fiber.New(fiber.Config{
 		ErrorHandler: func(c fiber.Ctx, err error) error {
-			var fiberErr *fiber.Error
-			if errors.As(err, &fiberErr) {
+			if fiberErr, ok := errors.AsType[*fiber.Error](err); ok {
 				return c.Status(fiberErr.Code).JSON(fiber.Map{"error": fiberErr.Message})
 			}
-			return c.SendStatus(http.StatusInternalServerError)
+			return c.SendStatus(fiber.StatusInternalServerError)
 		},
 	})
 	app.Post("/agui", pydanticai.AGUI(ai.NewAgent[struct{}, string](fakes.NewTestModel())))
