@@ -12,11 +12,31 @@ import (
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
 	"github.com/gofiber/fiber/v3/log"
+	"github.com/valyala/fasthttp"
 )
 
 // ErrPanicked is what a client is told when the run panics. The panic itself
 // goes to the log and to the callbacks of the application.
 var ErrPanicked = errors.New("internal error")
+
+// ErrShutdown is why a run was canceled when the server started shutting down.
+// It wraps ai.ErrRunCancelled, which the agent treats as a request to stop: a
+// streamed run ends with the messages and the usage it has, and a run that is
+// not streamed ends with an error that matches ai.ErrRunCancelled.
+var ErrShutdown = fmt.Errorf("pydanticai: the server is shutting down: %w", ai.ErrRunCancelled)
+
+// ServerDone returns the channel that fasthttp closes when the server of ctx
+// starts shutting down, which is before it waits for the connections to finish,
+// or nil when ctx has no server, as a RequestCtx that a test or a benchmark
+// builds itself: Done of fasthttp dereferences the server.
+func ServerDone(ctx *fasthttp.RequestCtx) (done <-chan struct{}) {
+	defer func() {
+		if recover() != nil {
+			done = nil
+		}
+	}()
+	return ctx.Done()
+}
 
 // PanicError returns the error that reports a panic in the run, for the logs
 // and the callbacks of the application.
