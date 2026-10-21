@@ -8,13 +8,12 @@ id: pydanticai
 [![Discord](https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7)](https://gofiber.io/discord)
 ![Test](https://github.com/gofiber/contrib/workflows/Test%20pydanticai/badge.svg)
 
-[pydantic-ai-go](https://github.com/Kludex/pydantic-ai-go) support for Fiber. It serves an agent to a chat frontend over the [AG-UI](https://docs.ag-ui.com) and the [Vercel AI SDK](https://ai-sdk.dev) protocols, or as a plain JSON endpoint.
+[pydantic-ai-go](https://github.com/Kludex/pydantic-ai-go) support for Fiber. The handlers serve an agent to a chat frontend over the [AG-UI](https://docs.ag-ui.com) or the [Vercel AI SDK](https://ai-sdk.dev) protocol, or answer a JSON request with the output of one run.
 
-- **Per-request dependencies.** The dependencies of the agent are built from the `fiber.Ctx` of each request, so tools see the authenticated user and nothing is shared between requests.
-- **Runs stop when the client goes away.** fasthttp does not cancel the context of a disconnected client. The streaming handlers detect a failed write or heartbeat and cancel the run, so a run is not carried on for an answer nobody reads.
-- **A request that outlives its handler.** fasthttp reuses the memory of a request as soon as the response is done, which for a client that left is while the run is still winding down. The streaming handlers hold the request until the run has ended, so the strings and the context values that tools take from it stay valid.
-- **Fiber-native errors.** A rejected request goes through the error handler of your app instead of being written as plain text, and a panic in a tool ends the stream with an error instead of cutting it off.
-- **Same protocol behavior as pydantic-ai-go.** The streams carry the same events and chunks as the `net/http` handlers of pydantic-ai-go, and the same request limits and the same history sanitization apply.
+- The dependencies and run options of the agent are built from the `fiber.Ctx` of each request, so tools can act on behalf of the authenticated user.
+- A run is canceled when its client disconnects or its `Timeout` elapses.
+- Rejected requests and failed `Run` calls go through the error handler of the app.
+- A panic in a tool ends the stream with an error event.
 
 **Compatible with Fiber v3.**
 
@@ -39,17 +38,21 @@ pydanticai.Run[Deps, Output any](agent *ai.Agent[Deps, Output], config ...pydant
 pydanticai.StatusCode(err error) int
 ```
 
-`ai` is `github.com/Kludex/pydantic-ai-go/ai`. The type parameters are inferred from the agent, so `pydanticai.AGUI(agent)` needs no instantiation. A config does: `pydanticai.AGUIConfig[MyDeps]{...}`.
+`ai` is `github.com/Kludex/pydantic-ai-go/ai`. The type arguments of a handler are inferred from the agent, so `pydanticai.AGUI(agent)` needs none. A config does: `pydanticai.AGUIConfig[MyDeps]{...}`.
 
-| Handler  | Protocol                                                       | Use it for                                                     |
-|:---------|:---------------------------------------------------------------|:---------------------------------------------------------------|
-| `AGUI`   | [AG-UI](https://docs.ag-ui.com) events over server-sent events | AG-UI frontends such as CopilotKit                             |
-| `Vercel` | Vercel AI SDK UI message stream (AI SDK 5 to 7)                 | the `useChat` hook of the AI SDK                               |
-| `Run`    | JSON request and response                                      | server-to-server calls and typed, structured output            |
+| Handler  | Protocol                                                        | Use it for                                      |
+|:---------|:----------------------------------------------------------------|:------------------------------------------------|
+| `AGUI`   | [AG-UI](https://docs.ag-ui.com) events as server-sent events    | AG-UI frontends such as CopilotKit              |
+| `Vercel` | Vercel AI SDK UI message stream (AI SDK 5 to 7)                 | the `useChat` hook of the AI SDK                |
+| `Run`    | JSON request and response                                       | server-to-server calls and structured output    |
 
-## Quick start
+All three handlers accept `POST` requests only.
 
-An agent that answers a chat made with the `useChat` hook of the AI SDK:
+## Examples
+
+### Quick start
+
+Serve an agent to the `useChat` hook of the AI SDK:
 
 ```go
 package main
@@ -84,11 +87,11 @@ const { messages, sendMessage } = useChat({
 });
 ```
 
-Serve the same agent to an AG-UI frontend with `app.Post("/agui", pydanticai.AGUI(agent))`. The Vercel handler speaks the AI SDK 5 protocol by default. Set `Adapter: vercel.Config{SDKVersion: 6}` (or `7`) for a newer AI SDK. It needs the `id` of the chat in the body of the request, which `useChat` always sends.
+The Vercel handler speaks AI SDK 5 by default. Set `Adapter: vercel.Config{SDKVersion: 6}` (or `7`) for a newer SDK. The request body must carry the `id` of the chat, which `useChat` always sends. To serve an AG-UI frontend, mount `pydanticai.AGUI(agent)` on a route in the same way.
 
-## Dependencies for each request
+### Authenticated users and tools
 
-`Deps` receives the `fiber.Ctx` of the request and returns the dependencies that the tools and the instructions of the agent see. Put the authentication of the caller here, or in a middleware in front of the handler, as the handlers do not authenticate requests.
+`Deps` is called with the `fiber.Ctx` of each request and returns the dependencies that the tools and the instructions of the agent receive as `rc.Deps`. Returning an error rejects the request before the stream starts, and the error handler of the app turns it into the response, here a `401`. The handlers do not authenticate requests: do that in a middleware in front of them, or in `Deps`.
 
 ```go
 package main
@@ -103,16 +106,30 @@ import (
     "github.com/gofiber/fiber/v3"
 )
 
+// OrderStore is whatever your application uses to look up orders.
+type OrderStore interface {
+    Status(ctx context.Context, userID, orderID string) (string, error)
+}
+
+// Deps is what the tools of the agent receive for one request.
 type Deps struct {
     UserID string
+    Orders OrderStore
+}
+
+type OrderStatusArgs struct {
+    OrderID string `json:"order_id"`
 }
 
 func main() {
+    var orders OrderStore // your implementation
+
     agent := ai.NewAgent[Deps, string](openai.NewModel("gpt-5-mini"))
-    ai.AddTool(agent, "my_orders", func(
-        ctx context.Context, rc *ai.RunContext[Deps], _ struct{},
+    ai.AddTool(agent, "order_status", func(
+        ctx context.Context, rc *ai.RunContext[Deps], args OrderStatusArgs,
     ) (string, error) {
-        return "orders of " + rc.Deps.UserID, nil // query your database with rc.Deps.UserID
+        // ctx ends with the run, so the lookup stops when the client disconnects.
+        return rc.Deps.Orders.Status(ctx, rc.Deps.UserID, args.OrderID)
     })
 
     app := fiber.New()
@@ -122,7 +139,7 @@ func main() {
             if !ok {
                 return Deps{}, fiber.ErrUnauthorized
             }
-            return Deps{UserID: user}, nil
+            return Deps{UserID: user, Orders: orders}, nil
         },
     }))
 
@@ -130,20 +147,16 @@ func main() {
 }
 ```
 
-An error from `Deps` aborts the request before the stream starts. Fiber's error handler turns it into the response, here a `401`. `Deps` runs after the headers of the request are checked and before its body is read, so a caller that is turned away does not get its payload parsed.
+`Deps` runs after the headers of the request are checked and before its body is read, so a caller that is turned away does not get its payload parsed.
 
-The context passed to the tools is `c.Context()`, so the values that a middleware stored with `c.SetContext`, such as the span of the [otel](https://github.com/gofiber/contrib/tree/main/v3/otel) middleware, reach the agent and its spans become children of the span of the request. The cancellation and the deadline of that context do not apply to a streaming run: the handler returns before the run is over, and a middleware that cancels the context of the request at that point, such as the `timeout` middleware of Fiber, would otherwise abort every stream. Use `Timeout` to bound a run.
+What a tool can rely on:
 
-### The request outlives the handler
+- **`rc.Deps`** is the value that `Deps` returned for this request. Nothing is shared between requests.
+- **`ctx`** carries the values of `c.Context()`, for example the span of the [otel](https://github.com/gofiber/contrib/tree/main/v3/otel) middleware, so spans that a tool starts become children of the span of the request. It is canceled when the client disconnects, when `Timeout` elapses and when the stream ends. Pass it to database and HTTP calls so that they stop with the run.
+- **Request data stays valid.** Strings that `Deps` reads from `c`, and values that tools read from `ctx`, remain valid for the whole run, including after the client has disconnected. Do not use `c` once the run has ended, and copy what a goroutine that outlives the run needs.
+- **A tool that ignores `ctx`** keeps running after the client has left, and the request stays allocated until the tool returns. Watch `ctx.Done()` in tools that take long.
 
-A streamed response is written after the handler has returned. fasthttp reuses the memory of a request as soon as it is done with it, which for a client that left is while the run is still winding down. The strings that `c.Get`, `c.Query` or `requestid.FromContext` return point into that memory, so a tool that outlived its client could read the data of another request through them.
-
-The streaming handlers prevent that by holding the request until the run has ended. When the client leaves, the run is canceled, and fasthttp does not get the request back before the run and `OnClose` have returned. Strings from `c` stay valid for the whole run without `strings.Clone`, and values that middleware stored in `c.Locals` or in the context are safe to use. Two things follow:
-
-- A tool that ignores the cancellation of its context keeps the connection of a client that is gone, and its request, until it returns. Watch `ctx` in tools that take long.
-- Work that outlives the run, such as a goroutine that a tool starts, has to copy what it keeps, as in any Fiber handler.
-
-## Run options
+### Run options
 
 `RunOptions` returns extra `ai.RunOption` values for each request, for example usage limits per caller:
 
@@ -158,43 +171,11 @@ app.Post("/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[Deps]{
 }))
 ```
 
-The AG-UI and the Vercel adapter set the message history and the conversation ID of the run themselves, whatever `RunOptions` returns.
+The adapters set the message history and the conversation ID of a run themselves, whatever `RunOptions` returns.
 
-## Client disconnects, timeouts and heartbeats
+### Hiding error details and logging
 
-A request context that is canceled when the client leaves is what Go servers rely on to stop work nobody waits for, and fasthttp does not provide one. The streaming handlers use the stream of Fiber's [`sse`](https://docs.gofiber.io/next/middleware/sse) middleware instead: a failed write cancels the run, and so does a failed heartbeat, or fasthttp giving up on the response. While events flow, a client that left is noticed within a few events.
-
-During a silent phase, such as a long tool call, the heartbeat does the work. The comment line `:` that the stream writes every `HeartbeatInterval` (5 seconds by default) also keeps idle connections open. The first write after a client closed its socket is accepted by the kernel, and the next one by a buffer in fasthttp, so a client that left is noticed by the second or third heartbeat after it did. With the default interval, a run that nobody waits for is canceled within 15 seconds.
-
-| Situation                     | AG-UI                                          | Vercel AI                              |
-|:------------------------------|:-----------------------------------------------|:---------------------------------------|
-| The client closes the stream  | the run is canceled, `OnClose` gets the error  | same                                   |
-| `Timeout` elapses             | `RUN_FINISHED` without an outcome              | `abort` chunk, then `[DONE]`           |
-| The run fails                 | `RUN_ERROR`                                    | `error` chunk                          |
-| The run panics                | `RUN_ERROR` with `internal error`              | `error` chunk, then `[DONE]`           |
-
-Heartbeat comments are valid server-sent events that every compliant parser skips. Set `DisableHeartbeat` if a client cannot cope with them. Without heartbeats a client that leaves during a long run can go unnoticed until a write to it fails, which can be after the run has ended.
-
-`fiber.Config.WriteTimeout` is armed once for a whole response, so it cuts every stream that is longer than it, however many heartbeats it carries. Leave it at zero, or set it above the longest run you accept. The `compress` middleware works in front of these handlers, and each event still reaches the client as it is written.
-
-`Run` is a plain request and response, and fasthttp cannot tell it that the client left. Set `Timeout` so that a run nobody waits for is bounded.
-
-## Errors
-
-Problems with the request are returned as `*fiber.Error` before the stream starts:
-
-| Status | Reason                                                                                         |
-|:-------|:-----------------------------------------------------------------------------------------------|
-| `405`  | the method is not `POST` (the response carries `Allow: POST`)                                  |
-| `415`  | the content type is not allowed, `application/json` unless configured, or the body is encoded  |
-| `413`  | the body is larger than `MaxRequestBytes` of the adapter config (10 MiB)                       |
-| `400`  | the body is not a valid request of the protocol, or the Vercel request has no chat `id`        |
-
-Like the adapters of pydantic-ai-go, the handlers decode the bytes of the body as they arrive and do not inflate them. A body with a `Content-Encoding` other than `identity` is therefore turned away with `415`, instead of failing the JSON decoder with a `400` that blames the content. Fiber's own `BodyLimit` (4 MiB by default) applies on top of `MaxRequestBytes`. Raise it in `fiber.Config` to accept larger bodies, for example inline images. With `StreamRequestBody` enabled, no more than `MaxRequestBytes` plus one byte of a body is ever read. A decoded body larger than 64 KiB is released, so that it does not stay in memory for as long as the run takes, and a middleware that reads the body after the handler sees it empty.
-
-The content type check protects the route from cross-site form posts. `DisableContentTypeCheck` in the adapter config turns it off, which is only safe when another CSRF control protects the route.
-
-Once the stream has started, the status is `200` and a failed run is reported in the protocol, with the message of the error. The pydantic-ai-go adapters send `err.Error()` to the client, and provider errors can carry request IDs or parts of credentials. `ErrorMessage` replaces the message the client sees, and `OnClose` still receives the original error for your logs:
+A run that fails after the stream has started is reported to the client inside the stream, with `err.Error()` as the message. Provider errors can contain request IDs or parts of credentials. `ErrorMessage` replaces the message that the client receives, and `OnClose` still gets the original error for your logs:
 
 ```go
 app.Post("/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[Deps]{
@@ -207,37 +188,16 @@ app.Post("/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[Deps]{
 }))
 ```
 
-A panic in a tool, in the model or in a callback ends the stream with an error event too, instead of cutting it off. The client sees `internal error` (or what `ErrorMessage` makes of it), and the panic with its stack goes to the log of Fiber and to `OnClose`.
+`OnClose` is called once when the stream is over, with the dependencies of the run and the way the stream ended:
 
-`OnClose` gets the dependencies of the run and `nil` when the stream ended normally, which includes a run that a tool canceled. Otherwise it gets the error of the agent when the run failed, the error of the context when `Timeout` elapsed, and the write error when the client left. It runs once the run has ended and the events are written, while the request is still alive. The client has every event by then, but the end of the response and the next request on the connection wait for `OnClose`, so keep it short, or hand the work to a goroutine and copy what that needs. A panic in `OnClose` is logged and recovered.
+- `nil` when it ended normally, which includes a run that a tool canceled.
+- The error of the agent when the run failed.
+- The context error when `Timeout` elapsed.
+- The write error when the client disconnected.
 
-### Errors of `Run`
+The end of the response waits for `OnClose`, so keep it short, or start a goroutine and copy what it needs. A panic in `OnClose` is logged and recovered.
 
-`Run` returns a `*pydanticai.Error` when the agent fails. Its message is the reason phrase of the status code, so the default Fiber error handler never sends provider details to the client, and encoding it as JSON leaves the cause out. The agent error stays available for `errors.Is`, `errors.As` and your logs. The status code is found by `errors.As` with a `*fiber.Error`, which is what Fiber's error handlers look for, and `errors.Is` matches the errors of Fiber, such as `fiber.ErrTooManyRequests`, by status code.
-
-`StatusCode` picks the status. A `*fiber.Error` in the chain wins when it is a client or server error with a reason phrase, so an error that chose its status keeps it:
-
-| Error                                                                              | Status                      |
-|:-----------------------------------------------------------------------------------|:----------------------------|
-| `ai.ErrUsageLimitExceeded`                                                         | `429 Too Many Requests`     |
-| `context.DeadlineExceeded`, including `Timeout`                                    | `504 Gateway Timeout`       |
-| `ai.ErrRunCancelled`, `context.Canceled`                                           | `503 Service Unavailable`   |
-| `*ai.ContentFilterError`                                                           | `422 Unprocessable Entity`  |
-| `*ai.UnexpectedModelBehaviorError`, `ai.ErrMaxRetriesExceeded`, `ai.ModelAPIError` | `502 Bad Gateway`           |
-| anything else                                                                      | `500 Internal Server Error` |
-
-```go
-app := fiber.New(fiber.Config{
-    ErrorHandler: func(c fiber.Ctx, err error) error {
-        if runErr, ok := errors.AsType[*pydanticai.Error](err); ok {
-            log.Printf("agent failed: %v", runErr.Err) // the cause, never sent to the client
-        }
-        return fiber.DefaultErrorHandler(c, err)
-    },
-})
-```
-
-## Run
+### JSON endpoint
 
 `Run` answers one request with the output of one run:
 
@@ -260,7 +220,7 @@ $ curl localhost:3000/weather -H 'Content-Type: application/json' \
 {"output":{"city":"Paris","temp_c":21},"run_id":"52bdcf0873a4f6b3","conversation_id":"41407e02ee266cb2"}
 ```
 
-The history of the conversation, the usage and the cost of the run stay on the server. Use `Respond` to send more, `Prompt` to read the prompt from somewhere else than the JSON body, and `RunOptions` with `ai.WithMessageHistory` to continue a conversation that you keep yourself:
+The history of the conversation, the usage and the cost of the run stay on the server. `Respond` writes a different response, `Prompt` reads the prompt from somewhere other than the JSON body, and `RunOptions` with `ai.WithMessageHistory` continues a conversation that you store yourself:
 
 ```go
 app.Get("/weather", pydanticai.Run(agent, pydanticai.RunConfig[struct{}, Weather]{
@@ -276,13 +236,102 @@ app.Get("/weather", pydanticai.Run(agent, pydanticai.RunConfig[struct{}, Weather
 }))
 ```
 
-The default request must be a `POST` with `application/json`, and the body is limited by `MaxRequestBytes` (10 MiB) and by the `BodyLimit` of the app. With a `Prompt` function none of these checks applies: the function owns the request. The content type check keeps cross-site form posts from starting runs, so a route that reads the body itself needs its own protection.
+The default request is a `POST` with an `application/json` body of at most `MaxRequestBytes`. A `Prompt` function owns the request instead: none of these checks applies to it, so a route that reads the body itself needs its own protection against cross-site form posts.
 
-A run that ends with deferred tool calls, which are tools that need approval or an external result, cannot be resumed by a single request and response. The default `Respond` answers `501 Not Implemented` for it. Serve such an agent with `AGUI` or `Vercel`, which resume deferred calls, or handle `result.Deferred()` in your own `Respond`.
+A run that ends with deferred tool calls, which are tools that need approval or an external result, cannot be completed by one request and response. The default `Respond` answers `501 Not Implemented` for it. Serve such an agent with `AGUI` or `Vercel`, which resume deferred calls, or handle `result.Deferred()` in your own `Respond`.
+
+### Testing without a provider
+
+pydantic-ai-go ships fake models, so the handlers can be tested without a network or an API key:
+
+```go
+func TestChat(t *testing.T) {
+    agent := ai.NewAgent[struct{}, string](fakes.NewTestModel()) // github.com/Kludex/pydantic-ai-go/ai/models/fakes
+
+    app := fiber.New()
+    app.Post("/chat", pydanticai.Vercel(agent))
+
+    body := `{"trigger":"submit-message","id":"chat-1","messages":[{"id":"1","role":"user","parts":[{"type":"text","text":"Hello"}]}]}`
+    req := httptest.NewRequest(fiber.MethodPost, "/chat", strings.NewReader(body))
+    req.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+
+    resp, err := app.Test(req)
+    require.NoError(t, err)
+    require.Equal(t, "v1", resp.Header.Get("x-vercel-ai-ui-message-stream"))
+}
+```
+
+## Requests
+
+A request is checked before the agent runs. A rejected request is returned as a `*fiber.Error` and handled by the error handler of the app:
+
+| Status | Reason                                                                                                   |
+|:-------|:---------------------------------------------------------------------------------------------------------|
+| `405`  | The method is not `POST`. The response carries `Allow: POST`.                                            |
+| `415`  | The content type is not allowed (`application/json` unless configured), or the body has a `Content-Encoding` other than `identity`. Request bodies are not decompressed. |
+| `413`  | The body is larger than `MaxRequestBytes`.                                                               |
+| `400`  | The body is not a valid request of the protocol, the Vercel request has no chat `id`, or the `Run` request has no `prompt`. |
+
+The body is limited by `MaxRequestBytes` of the adapter config (10 MiB by default) and by Fiber's `BodyLimit` (4 MiB by default). Raise `BodyLimit` in `fiber.Config` to accept larger bodies, such as inline images. With `StreamRequestBody` enabled only `MaxRequestBytes` applies, and the handlers read no more than that plus one byte.
+
+A request body larger than 64 KiB is released once it has been decoded, so that it is not kept for the length of the run. Middleware that runs after the handler sees an empty body.
+
+The content type check keeps cross-site form posts from reaching the agent. `DisableContentTypeCheck` of the adapter config turns it off, which is only safe when another CSRF protection covers the route.
+
+## Disconnects, timeouts and heartbeats
+
+While a response is open, the streaming handlers write a comment line (`:`) every `HeartbeatInterval`, 5 seconds by default. A failed write cancels the run. Writes keep succeeding for a moment after a client has closed its connection, so a disconnect is noticed by the second or third heartbeat: with the default interval, a run that nobody waits for is canceled within 15 seconds. A failed write of an event cancels the run as well. A client that vanishes without closing its connection, for example because it lost its network, is only noticed when TCP gives up on the connection, so set `Timeout` to bound such a run.
+
+Heartbeat comments are ignored by server-sent events parsers. `DisableHeartbeat` turns them off. A client that leaves during a long silent phase, such as a tool call, is then only noticed by the next write to it, which can be after the run has ended.
+
+`Timeout` bounds the duration of a run for all three handlers. The cancellation and the deadline of the request context do not apply to a streaming run, so a middleware that cancels that context when the handler returns, such as the `timeout` middleware of Fiber, does not stop the stream. `Run` writes no heartbeat and cannot tell that the client left, so `Timeout` is what bounds a run that nobody waits for.
+
+`fiber.Config.WriteTimeout` applies to a whole response, so it cuts every stream that is longer than it, however many heartbeats it carries. Leave it at zero, or set it above the longest run you accept. The `compress` middleware can be mounted in front of the handlers, and each event still reaches the client as it is written.
+
+## How a stream ends
+
+| Event                       | AG-UI                                | Vercel AI                      |
+|:----------------------------|:-------------------------------------|:-------------------------------|
+| The run completes           | `RUN_FINISHED`                       | `finish` chunk, then `[DONE]`  |
+| `Timeout` elapses           | `RUN_FINISHED` without an outcome    | `abort` chunk, then `[DONE]`   |
+| The run fails               | `RUN_ERROR`                          | `error` chunk                  |
+| The run panics              | `RUN_ERROR` with `internal error`    | `error` chunk, then `[DONE]`   |
+
+The status of the response is `200` in all of these cases, because it is sent before the run starts. When the client disconnects, the run is canceled, nothing more is sent and `OnClose` receives the error.
+
+A panic in a tool, in the model or in a callback ends the stream with an error event too. The client sees `internal error`, or what `ErrorMessage` returns, and the panic with its stack goes to the logger of Fiber and to `OnClose`.
+
+## Errors of `Run`
+
+`Run` returns a `*pydanticai.Error` when the agent fails. Its message is the reason phrase of the status code, so the default error handler of Fiber does not send provider details to the client, and it encodes as JSON as `{"code":502}`, for example. The error of the agent is in `Err` and is found by `errors.Is` and `errors.As`. `errors.As` also finds a `*fiber.Error` with the status code, and `errors.Is` matches the errors of Fiber, such as `fiber.ErrTooManyRequests`, by status code.
+
+`StatusCode` picks the status. A `*fiber.Error` in the chain wins when it is a client or server error with a reason phrase, so an error that chose its own status keeps it:
+
+| Error                                                                              | Status                      |
+|:-----------------------------------------------------------------------------------|:----------------------------|
+| `ai.ErrUsageLimitExceeded`                                                         | `429 Too Many Requests`     |
+| `context.DeadlineExceeded`, including `Timeout`                                    | `504 Gateway Timeout`       |
+| `ai.ErrRunCancelled`, `context.Canceled`                                           | `503 Service Unavailable`   |
+| `*ai.ContentFilterError`                                                           | `422 Unprocessable Entity`  |
+| `*ai.UnexpectedModelBehaviorError`, `ai.ErrMaxRetriesExceeded`, `ai.ModelAPIError` | `502 Bad Gateway`           |
+| anything else                                                                      | `500 Internal Server Error` |
+
+Log the cause in the error handler of the app:
+
+```go
+app := fiber.New(fiber.Config{
+    ErrorHandler: func(c fiber.Ctx, err error) error {
+        if runErr, ok := errors.AsType[*pydanticai.Error](err); ok {
+            log.Printf("agent failed: %v", runErr.Err) // the cause, never sent to the client
+        }
+        return fiber.DefaultErrorHandler(c, err)
+    },
+})
+```
 
 ## Client-held history
 
-A chat frontend sends the whole conversation with every request, so the history is untrusted input. Both adapters sanitize it before the run: system prompts, provider-hosted file references, unsafe download settings and unresolved trailing tool calls from the client are removed. The zero value of `Adapter.Sanitization` is the secure one. Relax it only when your application has a reason to trust the client:
+A chat frontend sends the whole conversation with each request, so the history is untrusted input. Both adapters sanitize it before the run, for example by removing system prompts, provider-hosted file references and unresolved trailing tool calls. The zero value of `Adapter.Sanitization` is the secure setting. Relax it only when your application has a reason to trust the client:
 
 ```go
 app.Post("/chat", pydanticai.AGUI(agent, pydanticai.AGUIConfig[Deps]{
@@ -314,37 +363,16 @@ The two streaming handlers take the same settings. They differ in the event that
 
 ### RunConfig
 
-| Property        | Type                                              | Description                                                                                                                                  | Default                                  |
-|:----------------|:--------------------------------------------------|:---------------------------------------------------------------------------------------------------------------------------------------------|:-----------------------------------------|
-| Next            | `func(fiber.Ctx) bool`                            | Skips the handler when it returns `true`.                                                                                                    | `nil`                                    |
-| Deps            | `func(fiber.Ctx) (Deps, error)`                   | Resolves the dependencies of the agent for one request. An error is returned from the handler as it is.                                      | zero value of `Deps`                     |
-| RunOptions      | `func(fiber.Ctx) ([]ai.RunOption, error)`         | Returns extra run options for one request. They take precedence over the conversation ID of the body.                                         | `nil`                                    |
-| Prompt          | `func(fiber.Ctx) (string, error)`                 | Reads the user prompt from the request. None of the request checks of the default applies.                                                   | the `prompt` field of the JSON body      |
-| Respond         | `func(fiber.Ctx, *ai.RunResult[Output]) error`    | Writes the response for a completed run.                                                                                                     | `{"output", "run_id", "conversation_id"}` |
-| MaxRequestBytes | `int64`                                           | Bounds the body that the default `Prompt` reads. The `BodyLimit` of the app applies as well.                                                 | `10 MiB`                                 |
-| Timeout         | `time.Duration`                                   | Bounds the duration of one run. A run that exceeds it fails with `504`.                                                                       | `0` (no timeout)                         |
+| Property        | Type                                              | Description                                                                                          | Default                                   |
+|:----------------|:--------------------------------------------------|:-----------------------------------------------------------------------------------------------------|:------------------------------------------|
+| Next            | `func(fiber.Ctx) bool`                            | Skips the handler when it returns `true`.                                                            | `nil`                                     |
+| Deps            | `func(fiber.Ctx) (Deps, error)`                   | Resolves the dependencies of the agent for one request. An error is returned from the handler as it is. | zero value of `Deps`                   |
+| RunOptions      | `func(fiber.Ctx) ([]ai.RunOption, error)`         | Returns extra run options for one request. They take precedence over the conversation ID of the body. | `nil`                                   |
+| Prompt          | `func(fiber.Ctx) (string, error)`                 | Reads the user prompt from the request. None of the request checks of the default applies.           | the `prompt` field of the JSON body       |
+| Respond         | `func(fiber.Ctx, *ai.RunResult[Output]) error`    | Writes the response for a completed run.                                                             | `{"output", "run_id", "conversation_id"}` |
+| MaxRequestBytes | `int64`                                           | Bounds the body that the default `Prompt` reads. The `BodyLimit` of the app applies as well.         | `10 MiB`                                  |
+| Timeout         | `time.Duration`                                   | Bounds the duration of one run. A run that exceeds it fails with `504`.                              | `0` (no timeout)                          |
 
-## Testing without a provider
+## See also
 
-pydantic-ai-go ships fake models, so the handlers can be tested without a network or an API key:
-
-```go
-func TestChat(t *testing.T) {
-    agent := ai.NewAgent[struct{}, string](fakes.NewTestModel()) // github.com/Kludex/pydantic-ai-go/ai/models/fakes
-
-    app := fiber.New()
-    app.Post("/chat", pydanticai.Vercel(agent))
-
-    body := `{"trigger":"submit-message","id":"chat-1","messages":[{"id":"1","role":"user","parts":[{"type":"text","text":"Hello"}]}]}`
-    req := httptest.NewRequest(fiber.MethodPost, "/chat", strings.NewReader(body))
-    req.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
-
-    resp, err := app.Test(req)
-    require.NoError(t, err)
-    require.Equal(t, "v1", resp.Header.Get("x-vercel-ai-ui-message-stream"))
-}
-```
-
-## Other pydantic-ai-go integrations
-
-pydantic-ai-go also serves agents as [A2A](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/a2a.md) agents and [MCP](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/mcp-server.md) servers. Their transports are `net/http` handlers, and Fiber's [`adaptor`](https://docs.gofiber.io/next/middleware/adaptor) middleware converts those into Fiber handlers. A converted handler does not see the `fiber.Ctx`, so it cannot build dependencies for each request the way the handlers of this module do.
+pydantic-ai-go also serves agents as [A2A](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/a2a.md) agents and [MCP](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/mcp-server.md) servers. Those transports are `net/http` handlers. Mount them with the [`adaptor`](https://docs.gofiber.io/next/middleware/adaptor) middleware of Fiber, keeping in mind that they do not receive the `fiber.Ctx` of the request.
