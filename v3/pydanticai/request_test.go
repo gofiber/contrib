@@ -184,7 +184,7 @@ func checkEncodedBodies(t *testing.T, app *fiber.App, path, body string, resolve
 		resp, _ := send(t, app, request)
 		return resp.StatusCode
 	}
-	for _, encoding := range []string{"gzip", "br", "deflate", "zstd", "unknown", "identity, gzip"} {
+	for _, encoding := range []string{"gzip", "br", "deflate", "zstd", "unknown", "identity, gzip", "identitz", "identit"} {
 		require.Equal(t, fiber.StatusUnsupportedMediaType, status(encoding), encoding)
 	}
 	// The encodings can be listed over several lines of the header.
@@ -195,10 +195,10 @@ func checkEncodedBodies(t *testing.T, app *fiber.App, path, body string, resolve
 	require.Zero(t, resolved.Load(), "Deps must not run for a body that is not read")
 
 	// The identity encoding is no encoding.
-	for _, encoding := range []string{"identity", "Identity"} {
+	for _, encoding := range []string{"identity", "Identity", "IDENTITY", "idENTITy"} {
 		require.Equal(t, fiber.StatusOK, status(encoding), encoding)
 	}
-	require.EqualValues(t, 2, resolved.Load())
+	require.EqualValues(t, 4, resolved.Load())
 }
 
 func Test_AGUI_RejectsEncodedBodiesBeforeResolvingDeps(t *testing.T) {

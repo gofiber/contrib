@@ -144,11 +144,7 @@ func AGUI[Deps, Output any](agent *ai.Agent[Deps, Output], config ...AGUIConfig[
 		cfg = config[0]
 	}
 	adapter := agui.NewAdapter(agent, cfg.Adapter)
-	limits := requestLimits{
-		contentTypes:         cfg.Adapter.AllowedContentTypes,
-		maxBytes:             cfg.Adapter.MaxRequestBytes,
-		skipContentTypeCheck: cfg.Adapter.DisableContentTypeCheck,
-	}
+	limits := newRequestLimits(cfg.Adapter.AllowedContentTypes, cfg.Adapter.MaxRequestBytes, cfg.Adapter.DisableContentTypeCheck)
 	stream := streamOptions[Deps]{
 		onClose:          cfg.OnClose,
 		onRunEnd:         cfg.OnRunEnd,

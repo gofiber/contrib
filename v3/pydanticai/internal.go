@@ -70,14 +70,74 @@ var (
 // requestLimits holds the HTTP checks that the net/http handlers of
 // pydantic-ai-go apply before they decode a request. Those handlers are not
 // used here, so the same checks run in front of the Fiber handlers. The zero
-// value applies the defaults of the adapters.
+// value applies the defaults of the adapters; newRequestLimits also prepares
+// the media types for the checks.
 type requestLimits struct {
 	// contentTypes are the accepted media types. nil accepts application/json.
 	contentTypes []string
+	// plain are the contentTypes that are a bare media type: valid, without
+	// parameters, and in the form that mime.ParseMediaType returns up to case.
+	// A header that spells one of them is accepted without parsing it.
+	plain []string
 	// maxBytes bounds the body. Zero means defaultMaxRequestBytes.
 	maxBytes int64
 	// skipContentTypeCheck accepts any media type.
 	skipContentTypeCheck bool
+}
+
+// newRequestLimits returns the limits for the accepted media types, where nil
+// accepts application/json, the largest body, where zero means
+// defaultMaxRequestBytes, and whether to accept any media type.
+func newRequestLimits(contentTypes []string, maxBytes int64, skipContentTypeCheck bool) requestLimits {
+	if contentTypes == nil {
+		contentTypes = defaultContentTypes
+	}
+	limits := requestLimits{
+		contentTypes:         make([]string, len(contentTypes)),
+		maxBytes:             maxBytes,
+		skipContentTypeCheck: skipContentTypeCheck,
+	}
+	for i, contentType := range contentTypes {
+		contentType = strings.TrimSpace(contentType)
+		limits.contentTypes[i] = contentType
+		// Only a type that mime.ParseMediaType returns as it is, up to case, is
+		// compared with the header as it is. The others, with a parameter or a
+		// trailing semicolon, or that it rejects, are compared with the parsed
+		// header, as they always were.
+		if mediaType, _, err := mime.ParseMediaType(contentType); err == nil && mediaType == strings.ToLower(contentType) {
+			limits.plain = append(limits.plain, contentType)
+		}
+	}
+	return limits
+}
+
+// allowsContentType reports whether contentType, the Content-Type header of a
+// request, names an accepted media type.
+func (l requestLimits) allowsContentType(contentType string) bool {
+	// Nearly every request sends an accepted media type, alone or with the
+	// charset. Those are told apart by comparing, which mime.ParseMediaType
+	// does not allow: it builds the parameters as a map first. Every other
+	// header is parsed, so the verdict is that of mime.ParseMediaType.
+	for _, plain := range l.plain {
+		if !utils.HasPrefixFold(contentType, plain) {
+			continue
+		}
+		rest := contentType[len(plain):]
+		if rest == "" || utils.EqualFold(rest, "; charset=utf-8") || utils.EqualFold(rest, ";charset=utf-8") {
+			return true
+		}
+	}
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return false
+	}
+	allowed := l.contentTypes
+	if allowed == nil {
+		allowed = defaultContentTypes
+	}
+	return slices.ContainsFunc(allowed, func(candidate string) bool {
+		return strings.EqualFold(candidate, mediaType)
+	})
 }
 
 // check validates the method, the media type and the encoding of a request. It
@@ -87,24 +147,15 @@ func (l requestLimits) check(c fiber.Ctx) error {
 		c.Set(fiber.HeaderAllow, fiber.MethodPost)
 		return fiber.ErrMethodNotAllowed
 	}
-	if !l.skipContentTypeCheck {
-		allowed := l.contentTypes
-		if allowed == nil {
-			allowed = defaultContentTypes
-		}
-		mediaType, _, err := mime.ParseMediaType(c.Get(fiber.HeaderContentType))
-		if err != nil || !slices.ContainsFunc(allowed, func(candidate string) bool {
-			return strings.EqualFold(strings.TrimSpace(candidate), mediaType)
-		}) {
-			return fiber.NewError(fiber.StatusUnsupportedMediaType, "unsupported content type")
-		}
+	if !l.skipContentTypeCheck && !l.allowsContentType(c.Get(fiber.HeaderContentType)) {
+		return fiber.NewError(fiber.StatusUnsupportedMediaType, "unsupported content type")
 	}
 	// The handlers decode the bytes as they arrive and never inflate them. A
 	// compressed body would fail the JSON decoder with a 400 that blames the
 	// content, so say what is wrong with the request instead. Every line of the
 	// header counts, as the encodings of a body can be listed over several.
 	for _, encoding := range c.Request().Header.PeekAll(fiber.HeaderContentEncoding) {
-		if len(encoding) > 0 && !strings.EqualFold(utils.UnsafeString(encoding), fiber.StrIdentity) {
+		if len(encoding) > 0 && !utils.EqualFold(utils.UnsafeString(encoding), fiber.StrIdentity) {
 			return fiber.NewError(fiber.StatusUnsupportedMediaType, "unsupported content encoding")
 		}
 	}
@@ -534,7 +585,10 @@ func serveStream[Deps any](
 				})()
 			}
 			send := func(data []byte) error {
-				return stream.Event(sse.Event{Data: data})
+				// sse copies a []byte into a string before it writes it, and
+				// writes a string as it is. The event is written when Event
+				// returns, and nothing changes data until then.
+				return stream.Event(sse.Event{Data: utils.UnsafeString(data)})
 			}
 			// A panic in a tool or in a callback would end the stream without a
 			// word, as sse recovers it for OnClose only.

@@ -126,7 +126,7 @@ func Run[Deps, Output any](agent *ai.Agent[Deps, Output], config ...RunConfig[De
 	if cfg.MaxRequestBytes < 0 {
 		panic("pydanticai: maximum request bytes must not be negative")
 	}
-	limits := requestLimits{maxBytes: cfg.MaxRequestBytes}
+	limits := newRequestLimits(nil, cfg.MaxRequestBytes, false)
 
 	return func(c fiber.Ctx) error {
 		if cfg.Next != nil && cfg.Next(c) {
