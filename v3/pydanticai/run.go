@@ -2,6 +2,7 @@ package pydanticai
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
@@ -26,8 +27,12 @@ type RunConfig[Deps, Output any] struct {
 	Deps func(c fiber.Ctx) (Deps, error)
 
 	// RunOptions returns additional agent run options for one request, such as
-	// ai.WithRunUsageLimits, ai.WithRunMetadata or ai.WithMessageHistory. They
-	// take precedence over the conversation ID of the request body.
+	// ai.WithRunUsageLimits, ai.WithRunMetadata or ai.WithMessageHistory. The
+	// conversation ID of the request body is passed ahead of them as
+	// ai.WithConversationID, so an ai.WithConversationID that they return
+	// takes precedence over it. ai.WithConversation cannot be combined with
+	// it: pydantic-ai-go rejects the run, and the handler answers 500, when
+	// the body carries a conversation ID.
 	//
 	// Optional. Default: nil
 	RunOptions func(c fiber.Ctx) ([]ai.RunOption, error)
@@ -38,8 +43,10 @@ type RunConfig[Deps, Output any] struct {
 	// With a Prompt function the handler applies none of its request checks,
 	// neither the method, nor the content type and the encoding, nor the size.
 	// The function owns the request. The content type check keeps cross-site
-	// form posts from starting runs, so a route that reads the body itself needs
-	// its own protection.
+	// form posts from starting runs, so the route needs its own protection
+	// against cross-site requests. Register it for POST: Fiber also serves a
+	// GET route for HEAD, and browsers, crawlers and link previews send GET
+	// requests on their own, each of which would run the agent.
 	//
 	// Optional. Default: the "prompt" field of the JSON request body, which has
 	// to be sent with POST and application/json. The optional "conversation_id"
@@ -56,18 +63,21 @@ type RunConfig[Deps, Output any] struct {
 
 	// OnRunEnd is called once the agent has run, with the dependencies of the
 	// run, what the run consumed and the error that ended it, which is nil when
-	// the run completed. It is called for a run that failed as well, which makes
-	// it the place to record token usage. run gives the usage, the messages and
-	// the IDs of the run, see ai.RunInfo, and is nil when the agent did not
-	// start. It is not called for a request that was rejected before the agent
-	// ran. A panic in OnRunEnd is logged and recovered.
+	// the run completed. It is called for a run that failed or panicked as
+	// well, which makes it the place to record token usage; a panic goes on to
+	// the recover middleware of the app afterwards. run gives the usage, the
+	// messages and the IDs of the run, see ai.RunInfo, and is nil when the
+	// agent did not start the run, or when a run wrapper of the agent answered
+	// without starting it. It is not called for a request that was rejected
+	// before the agent ran. A panic in OnRunEnd is logged and recovered.
 	//
 	// Optional. Default: nil
 	OnRunEnd func(deps Deps, run *ai.RunInfo, err error)
 
 	// MaxRequestBytes bounds the body of the request that the default Prompt
 	// reads. The BodyLimit of the app applies as well, 4 MiB by default, and
-	// the smaller of the two wins.
+	// the smaller of the two wins, unless the app enables StreamRequestBody:
+	// then only MaxRequestBytes applies.
 	//
 	// Optional. Default: 10 MiB
 	MaxRequestBytes int64
@@ -157,7 +167,26 @@ func Run[Deps, Output any](agent *ai.Agent[Deps, Output], config ...RunConfig[De
 			defer cancel()
 		}
 		options, tracker := trackRun(options, cfg.OnRunEnd != nil)
-		result, err := agent.Run(ctx, prompt, deps, options...)
+		options, tools := guardTools(options)
+		result, err := func() (*ai.RunResult[Output], error) {
+			if cfg.OnRunEnd != nil {
+				// A panic goes on to the recover middleware of the app, but the
+				// run consumed tokens all the same.
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						runErr := fmt.Errorf("pydanticai: panic in the run: %v", recovered)
+						safely("OnRunEnd", func() { cfg.OnRunEnd(deps, tracker.run(), runErr) })
+						panic(recovered)
+					}
+				}()
+			}
+			return agent.Run(ctx, prompt, deps, options...)
+		}()
+		if panicErr := tools.err(); panicErr != nil && err != nil {
+			// The error of the run carries the value of the panic, or the error
+			// of a tool that the panic canceled.
+			err = panicErr
+		}
 		if cfg.OnRunEnd != nil {
 			safely("OnRunEnd", func() { cfg.OnRunEnd(deps, tracker.run(), err) })
 		}

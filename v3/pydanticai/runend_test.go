@@ -4,14 +4,18 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
 	"github.com/Kludex/pydantic-ai-go/ai/models/fakes"
+	"github.com/Kludex/pydantic-ai-go/ai/ui/agui"
+	"github.com/Kludex/pydantic-ai-go/ai/ui/vercel"
 	"github.com/gofiber/contrib/v3/pydanticai"
 	"github.com/gofiber/contrib/v3/pydanticai/pydanticaitest"
 	"github.com/gofiber/fiber/v3"
+	recoverer "github.com/gofiber/fiber/v3/middleware/recover"
 	"github.com/stretchr/testify/require"
 )
 
@@ -184,6 +188,27 @@ func Test_Run_OnRunEnd(t *testing.T) {
 		require.NotNil(t, end.run)
 	})
 
+	t.Run("a run that panics", func(t *testing.T) {
+		t.Parallel()
+
+		ends := make(chan runEnd, 1)
+		app := fiber.New()
+		app.Use(recoverer.New())
+		app.Post("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](fakes.NewFunctionModel(func(
+			context.Context, []ai.ModelMessage, ai.ModelRequestParams,
+		) (*ai.ModelResponse, error) {
+			panic("model kaboom")
+		})), pydanticai.RunConfig[struct{}, string]{
+			OnRunEnd: func(_ struct{}, run *ai.RunInfo, err error) { ends <- runEnd{run: run, err: err} },
+		}))
+
+		resp, _ := post(t, app, "/ask", runBody)
+		require.Equal(t, fiber.StatusInternalServerError, resp.StatusCode, "the panic goes on to the recover middleware")
+		end := receive(t, ends, "OnRunEnd")
+		require.ErrorContains(t, end.err, "panic in the run: model kaboom")
+		require.NotNil(t, end.run)
+	})
+
 	t.Run("a request that never reached the agent", func(t *testing.T) {
 		t.Parallel()
 
@@ -239,4 +264,115 @@ func Test_OnRunEnd_APanicIsRecovered(t *testing.T) {
 	require.Equal(t, fiber.StatusOK, resp.StatusCode)
 	require.True(t, strings.Contains(body, `"output"`))
 	require.Contains(t, logs.String(), "panic in OnRunEnd: bug in OnRunEnd of Run")
+}
+
+// The agent is the one that stops these runs, before its model is called. They
+// were started all the same, and have a RunID.
+func Test_OnRunEnd_ARunThatACapabilityOfTheAgentFailed(t *testing.T) {
+	t.Parallel()
+
+	blocked := errors.New("blocked by a capability")
+	// guarded returns an agent whose capability fails every run, and stores its RunID in seen.
+	guarded := func(seen *atomic.Value) *ai.Agent[userDeps, string] {
+		return ai.NewAgent[userDeps, string](fakes.NewTestModel(), ai.WithCapabilities(ai.BeforeRunFunc(
+			func(_ context.Context, run *ai.RunInfo) error {
+				seen.Store(run.RunID)
+				return blocked
+			},
+		)))
+	}
+
+	for _, protocol := range streamProtocols() {
+		t.Run(protocol.name, func(t *testing.T) {
+			t.Parallel()
+
+			var seen atomic.Value
+			ends := make(chan runEnd, 1)
+			handler := protocol.build(guarded(&seen), func(deps userDeps, run *ai.RunInfo, err error) {
+				ends <- runEnd{deps: deps, run: run, err: err}
+			}, nil, 0)
+			post(t, newApp(protocol.path, handler), protocol.path, protocol.body)
+
+			end := receive(t, ends, "OnRunEnd")
+			require.ErrorIs(t, end.err, blocked)
+			require.NotNil(t, end.run, "the run was started")
+			require.Equal(t, seen.Load(), end.run.RunID)
+		})
+	}
+
+	t.Run("Run", func(t *testing.T) {
+		t.Parallel()
+
+		var seen atomic.Value
+		ends := make(chan runEnd, 1)
+		app := newApp("/ask", pydanticai.Run(guarded(&seen), pydanticai.RunConfig[userDeps, string]{
+			OnRunEnd: func(deps userDeps, run *ai.RunInfo, err error) { ends <- runEnd{deps: deps, run: run, err: err} },
+		}))
+		post(t, app, "/ask", runBody)
+
+		end := receive(t, ends, "OnRunEnd")
+		require.ErrorIs(t, end.err, blocked)
+		require.NotNil(t, end.run, "the run was started")
+		require.Equal(t, seen.Load(), end.run.RunID)
+	})
+}
+
+// lingeringModel answers at once, and releases what it holds for the run only
+// once the context of the run is done. While the run closes, nothing but
+// Timeout or a shutdown can end that context, so they come after the result of
+// the run is final.
+type lingeringModel struct {
+	*fakes.FunctionModel
+	closing chan struct{}
+}
+
+func newLingeringModel() lingeringModel {
+	return lingeringModel{FunctionModel: answering("done"), closing: make(chan struct{}, 1)}
+}
+
+// OpenModel implements ai.ModelOpener.
+func (m lingeringModel) OpenModel(ctx context.Context) (ai.ModelCloseFunc, error) {
+	return func(context.Context) error {
+		select {
+		case m.closing <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		return nil
+	}, nil
+}
+
+func Test_ATimeoutAfterTheRunCompletedDoesNotFailIt(t *testing.T) {
+	t.Parallel()
+
+	for _, protocol := range []string{"AG-UI", "Vercel"} {
+		t.Run(protocol, func(t *testing.T) {
+			t.Parallel()
+
+			agent := ai.NewAgent[struct{}, string](newLingeringModel())
+			ends, closed := make(chan error, 1), make(chan error, 1)
+			onRunEnd := func(_ struct{}, _ *ai.RunInfo, err error) { ends <- err }
+			onClose := func(_ struct{}, err error) { closed <- err }
+			if protocol == "AG-UI" {
+				handler := pydanticai.AGUI(agent, pydanticai.AGUIConfig[struct{}]{
+					Timeout: 100 * time.Millisecond, OnRunEnd: onRunEnd, OnClose: onClose,
+				})
+				_, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
+				events := aguiEvents(t, body)
+				last := events[len(events)-1]
+				require.Equal(t, agui.EventRunFinished, last.Type)
+				require.NotNil(t, last.Outcome, "the client was told that the run completed")
+			} else {
+				handler := pydanticai.Vercel(agent, pydanticai.VercelConfig[struct{}]{
+					Timeout: 100 * time.Millisecond, OnRunEnd: onRunEnd, OnClose: onClose,
+				})
+				_, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
+				chunks, done := vercelChunks(t, body)
+				require.True(t, done)
+				require.Equal(t, vercel.ChunkFinish, chunks[len(chunks)-1].Type, "the client was told that the run completed")
+			}
+			require.NoError(t, receive(t, ends, "OnRunEnd"))
+			require.NoError(t, receive(t, closed, "OnClose"))
+		})
+	}
 }

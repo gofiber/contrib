@@ -153,6 +153,8 @@ func Test_Vercel_RequiresAChatID(t *testing.T) {
 	// The adapter takes the id as the conversation ID, which panics when it is empty.
 	model, called := unreachableModel()
 	app := newApp("/chat", pydanticai.Vercel(ai.NewAgent[struct{}, string](model)))
+	// A cleanup runs once the parallel subtests are done, unlike the rest of this function.
+	t.Cleanup(func() { require.False(t, called.Load(), "the agent must not run for a rejected request") })
 
 	const message = `[{"id":"user-1","role":"user","parts":[{"type":"text","text":"Hello"}]}]`
 	for name, body := range map[string]string{
@@ -167,7 +169,6 @@ func Test_Vercel_RequiresAChatID(t *testing.T) {
 			require.Empty(t, resp.Header.Get("x-vercel-ai-ui-message-stream"), "no stream was started")
 		})
 	}
-	require.False(t, called.Load())
 }
 
 func Test_Vercel_AgentError(t *testing.T) {
