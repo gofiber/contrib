@@ -2,6 +2,7 @@ package pydanticai_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -31,6 +32,13 @@ func Test_StatusCode(t *testing.T) {
 		{"no model", ai.ErrNoModel, fiber.StatusInternalServerError},
 		{"fiber error", fiber.ErrTeapot, fiber.StatusTeapot},
 		{"wrapped fiber error", fmt.Errorf("tool: %w", fiber.ErrForbidden), fiber.StatusForbidden},
+		{"fiber error beats agent errors", errors.Join(fiber.ErrForbidden, ai.ErrUsageLimitExceeded), fiber.StatusForbidden},
+		{"typed nil fiber error", (*fiber.Error)(nil), fiber.StatusInternalServerError},
+		{"wrapped typed nil fiber error", fmt.Errorf("tool: %w", (*fiber.Error)(nil)), fiber.StatusInternalServerError},
+		{"fiber error without a reason phrase", fiber.NewError(499), fiber.StatusInternalServerError},
+		{"fiber error with code zero", fiber.NewError(0), fiber.StatusInternalServerError},
+		{"fiber error above 599", fiber.NewError(1000), fiber.StatusInternalServerError},
+		{"fiber redirect is no error status", fiber.NewError(fiber.StatusFound), fiber.StatusInternalServerError},
 		{"usage limit", fmt.Errorf("%w: too many requests", ai.ErrUsageLimitExceeded), fiber.StatusTooManyRequests},
 		{"deadline", context.DeadlineExceeded, fiber.StatusGatewayTimeout},
 		{"canceled", context.Canceled, fiber.StatusServiceUnavailable},
@@ -69,20 +77,34 @@ func Test_Error(t *testing.T) {
 	require.Equal(t, "Bad Gateway", err.Error(), "the message must not repeat the cause")
 	require.ErrorIs(t, err, cause)
 
-	var fiberErr *fiber.Error
-	require.ErrorAs(t, err, &fiberErr)
+	fiberErr, ok := errors.AsType[*fiber.Error](err)
+	require.True(t, ok)
 	require.Equal(t, fiber.StatusBadGateway, fiberErr.Code)
 
-	var runErr *pydanticai.Error
-	require.ErrorAs(t, fmt.Errorf("handler: %w", err), &runErr)
+	runErr, ok := errors.AsType[*pydanticai.Error](fmt.Errorf("handler: %w", err))
+	require.True(t, ok)
 	require.Equal(t, cause, runErr.Err)
+
+	t.Run("matches the errors of Fiber by status code", func(t *testing.T) {
+		t.Parallel()
+		require.ErrorIs(t, err, fiber.ErrBadGateway)
+		require.NotErrorIs(t, err, fiber.ErrNotFound)
+		require.NotErrorIs(t, err, errors.New("other"))
+	})
+
+	t.Run("does not encode the cause", func(t *testing.T) {
+		t.Parallel()
+		encoded, err := json.Marshal(&pydanticai.Error{Code: fiber.StatusBadGateway, Err: cause})
+		require.NoError(t, err)
+		require.JSONEq(t, `{"code":502}`, string(encoded))
+	})
 
 	t.Run("without a cause", func(t *testing.T) {
 		t.Parallel()
 		err := error(&pydanticai.Error{Code: fiber.StatusNotImplemented})
 		require.Equal(t, "Not Implemented", err.Error())
-		var fiberErr *fiber.Error
-		require.ErrorAs(t, err, &fiberErr)
+		fiberErr, ok := errors.AsType[*fiber.Error](err)
+		require.True(t, ok)
 		require.Equal(t, fiber.StatusNotImplemented, fiberErr.Code)
 	})
 }

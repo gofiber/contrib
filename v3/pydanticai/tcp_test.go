@@ -1,8 +1,8 @@
 package pydanticai_test
 
 import (
-	"bufio"
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"strings"
@@ -56,25 +56,6 @@ func openStream(t *testing.T, url, body string) (*http.Response, context.CancelF
 	return response, cancel
 }
 
-// nextRecord reads the next server-sent events record that carries data and
-// skips heartbeat comments. It returns false when the stream has ended.
-func nextRecord(t *testing.T, scanner *bufio.Scanner) (string, bool) {
-	t.Helper()
-
-	var data []string
-	for scanner.Scan() {
-		line := scanner.Text()
-		switch {
-		case line == "" && len(data) > 0:
-			return strings.Join(data, "\n"), true
-		case strings.HasPrefix(line, "data: "):
-			data = append(data, strings.TrimPrefix(line, "data: "))
-		}
-	}
-	require.NoError(t, scanner.Err())
-	return "", false
-}
-
 func Test_AGUI_FlushesEventsWhileTheRunIsStillWorking(t *testing.T) {
 	t.Parallel()
 
@@ -88,23 +69,22 @@ func Test_AGUI_FlushesEventsWhileTheRunIsStillWorking(t *testing.T) {
 		}
 		return textResponse("late answer"), nil
 	})
-	app := aguiApp(pydanticai.AGUI(ai.NewAgent[struct{}, string](model)))
-	url := listen(t, app) + "/agui"
+	url := listen(t, newApp("/agui", pydanticai.AGUI(ai.NewAgent[struct{}, string](model)))) + "/agui"
 
 	response, _ := openStream(t, url, aguiBody)
 	require.Equal(t, fiber.StatusOK, response.StatusCode)
 	require.Contains(t, response.TransferEncoding, "chunked")
-	scanner := bufio.NewScanner(response.Body)
+	scanner := newScanner(response.Body)
 
 	// The start of the run reaches the client while the model has not answered.
-	record, ok := nextRecord(t, scanner)
+	record, ok := nextData(scanner)
 	require.True(t, ok)
 	require.Contains(t, record, `"type":"RUN_STARTED"`)
 
 	close(release)
 	var rest strings.Builder
 	for {
-		record, ok := nextRecord(t, scanner)
+		record, ok := nextData(scanner)
 		if !ok {
 			break
 		}
@@ -119,14 +99,14 @@ func Test_AGUI_ClosedSocketCancelsRun(t *testing.T) {
 
 	model, started, canceled := blockingModel()
 	closed := make(chan error, 1)
-	app := aguiApp(pydanticai.AGUI(ai.NewAgent[struct{}, string](model), pydanticai.AGUIConfig[struct{}]{
+	handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](model), pydanticai.AGUIConfig[struct{}]{
 		HeartbeatInterval: 20 * time.Millisecond,
 		OnClose:           func(_ struct{}, err error) { closed <- err },
-	}))
-	url := listen(t, app) + "/agui"
+	})
+	url := listen(t, newApp("/agui", handler)) + "/agui"
 
 	response, closeConnection := openStream(t, url, aguiBody)
-	record, ok := nextRecord(t, bufio.NewScanner(response.Body))
+	record, ok := nextData(newScanner(response.Body))
 	require.True(t, ok)
 	require.Contains(t, record, `"type":"RUN_STARTED"`)
 	receive(t, started, "the model call")
@@ -142,15 +122,15 @@ func Test_Vercel_ClosedSocketCancelsRun(t *testing.T) {
 
 	model, started, canceled := blockingModel()
 	closed := make(chan error, 1)
-	app := vercelApp(pydanticai.Vercel(ai.NewAgent[struct{}, string](model), pydanticai.VercelConfig[struct{}]{
+	handler := pydanticai.Vercel(ai.NewAgent[struct{}, string](model), pydanticai.VercelConfig[struct{}]{
 		HeartbeatInterval: 20 * time.Millisecond,
 		OnClose:           func(_ struct{}, err error) { closed <- err },
-	}))
-	url := listen(t, app) + "/chat"
+	})
+	url := listen(t, newApp("/chat", handler)) + "/chat"
 
 	response, closeConnection := openStream(t, url, vercelBody)
 	require.Equal(t, "v1", response.Header.Get("x-vercel-ai-ui-message-stream"))
-	record, ok := nextRecord(t, bufio.NewScanner(response.Body))
+	record, ok := nextData(newScanner(response.Body))
 	require.True(t, ok)
 	require.Contains(t, record, `"type":"start"`)
 	receive(t, started, "the model call")
@@ -164,21 +144,21 @@ func Test_Vercel_ClosedSocketCancelsRun(t *testing.T) {
 func Test_AGUI_FullRunOverTCPMatchesTheAdapter(t *testing.T) {
 	t.Parallel()
 
-	app := aguiApp(pydanticai.AGUI(weatherAgent(), pydanticai.AGUIConfig[struct{}]{
+	handler := pydanticai.AGUI(weatherAgent(), pydanticai.AGUIConfig[struct{}]{
 		Adapter: agui.Config{MaxRequestBytes: 1 << 10},
-	}))
-	url := listen(t, app) + "/agui"
+	})
+	url := listen(t, newApp("/agui", handler)) + "/agui"
 
 	response, _ := openStream(t, url, aguiBody)
-	scanner := bufio.NewScanner(response.Body)
+	scanner := newScanner(response.Body)
 	var types []string
 	for {
-		record, ok := nextRecord(t, scanner)
+		record, ok := nextData(scanner)
 		if !ok {
 			break
 		}
 		var event agui.Event
-		require.NoError(t, jsonUnmarshal(record, &event))
+		require.NoError(t, json.Unmarshal([]byte(record), &event))
 		types = append(types, string(event.Type))
 	}
 	require.Equal(t, "RUN_STARTED", types[0])
