@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
@@ -45,6 +46,12 @@ var (
 	// errRunPanicked is what a client is told when the run panics. The panic
 	// itself goes to the log and to OnClose.
 	errRunPanicked = errors.New("internal error")
+
+	// errShutdown is why a run was canceled when the server started shutting
+	// down. It wraps ai.ErrRunCancelled, which the agent treats as a request to
+	// stop: the run ends with the messages and the usage it has, and the stream
+	// ends like one that timed out instead of with an error.
+	errShutdown = fmt.Errorf("pydanticai: the server is shutting down: %w", ai.ErrRunCancelled)
 )
 
 // requestLimits holds the HTTP checks that the net/http handlers of
@@ -197,9 +204,44 @@ func heartbeatInterval(interval time.Duration) time.Duration {
 // streamOptions are the response settings shared by the streaming handlers.
 type streamOptions[Deps any] struct {
 	onClose          func(deps Deps, err error)
+	onRunEnd         func(deps Deps, run *ai.RunInfo, err error)
 	timeout          time.Duration
 	heartbeat        time.Duration
 	disableHeartbeat bool
+	cancelOnShutdown bool
+}
+
+// runTracker records the ai.RunInfo of a run for OnRunEnd. Only capabilities
+// are given the RunInfo, so the tracker is one that starts with the run.
+type runTracker struct{ info atomic.Pointer[ai.RunInfo] }
+
+// trackRun adds the run option that records the run to options when wanted.
+// The returned tracker is nil otherwise, and nothing asks it for the run.
+func trackRun(options []ai.RunOption, wanted bool) ([]ai.RunOption, *runTracker) {
+	if !wanted {
+		return options, nil
+	}
+	tracker := new(runTracker)
+	record := ai.BeforeRunFunc(func(_ context.Context, run *ai.RunInfo) error {
+		tracker.info.Store(run)
+		return nil
+	})
+	// A new slice, so that the slice that RunOptions returned is not written to.
+	return append([]ai.RunOption{ai.WithRunCapabilities(record)}, options...), tracker
+}
+
+// run returns the recorded run, or nil when the agent did not start.
+func (t *runTracker) run() *ai.RunInfo { return t.info.Load() }
+
+// safely calls fn, which runs on the goroutine of the connection, where no
+// recover middleware guards it. A panic is logged instead of ending the process.
+func safely(name string, fn func()) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Errorf("pydanticai: panic in %s: %v\n%s", name, recovered, debug.Stack())
+		}
+	}()
+	fn()
 }
 
 // serveStream sends what run writes as a server-sent events response.
@@ -214,11 +256,13 @@ type streamOptions[Deps any] struct {
 // fail ends the stream with the error event of the protocol. It is called when
 // run panics.
 //
-// onClose is called after the response is over and the run has ended.
+// onRunEnd and then onClose are called after the response is over and the run
+// has ended. tracker is the one that recorded the run, if onRunEnd is set.
 func serveStream[Deps any](
 	c fiber.Ctx,
 	opts streamOptions[Deps],
 	deps Deps,
+	tracker *runTracker,
 	fail func(send func(data []byte) error, err error),
 	run func(ctx context.Context, send func(data []byte) error) error,
 ) error {
@@ -226,7 +270,19 @@ func serveStream[Deps any](
 	// the request to the handler and cancel it when the handler returns, as the
 	// timeout middleware of Fiber does. That must not cancel the run, which has
 	// only just started. The values of the context are kept.
-	runCtx, abort := context.WithCancel(context.WithoutCancel(c.Context()))
+	runCtx, abort := context.WithCancelCause(context.WithoutCancel(c.Context()))
+
+	// fasthttp closes this channel when the server starts shutting down, which
+	// is before it waits for the connections to finish.
+	if shutdown := c.RequestCtx().Done(); opts.cancelOnShutdown && shutdown != nil {
+		go func() {
+			select {
+			case <-shutdown:
+				abort(errShutdown)
+			case <-runCtx.Done():
+			}
+		}()
+	}
 
 	// ended receives how the stream ended, once the run has returned.
 	ended := make(chan error, 1)
@@ -234,8 +290,14 @@ func serveStream[Deps any](
 		Ctx: c,
 		ctx: runCtx,
 		release: sync.OnceFunc(func() {
-			abort()
-			callOnClose(opts.onClose, deps, <-ended)
+			abort(nil)
+			err := <-ended
+			if opts.onRunEnd != nil {
+				safely("OnRunEnd", func() { opts.onRunEnd(deps, tracker.run(), err) })
+			}
+			if opts.onClose != nil {
+				safely("OnClose", func() { opts.onClose(deps, err) })
+			}
 		}),
 	}
 
@@ -268,21 +330,6 @@ func serveStream[Deps any](
 	return sse.New(config)(hold)
 }
 
-// callOnClose calls onClose, if there is one.
-func callOnClose[Deps any](onClose func(Deps, error), deps Deps, err error) {
-	if onClose == nil {
-		return
-	}
-	// OnClose runs on the goroutine of the connection, which no recover
-	// middleware guards.
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			log.Errorf("pydanticai: panic in OnClose: %v\n%s", recovered, debug.Stack())
-		}
-	}()
-	onClose(deps, err)
-}
-
 // requestHold is the fiber.Ctx that sse writes its response to. It ties the
 // lifetime of the request to the end of the run, and gives the run a context
 // of its own.
@@ -302,7 +349,7 @@ type requestHold struct {
 	// ctx is the context of the run, see Context.
 	ctx context.Context
 	// release cancels the run, waits for it and reports the end of the stream
-	// to OnClose. It does that once, however often it is called.
+	// to OnRunEnd and OnClose. It does that once, however often it is called.
 	release func()
 }
 

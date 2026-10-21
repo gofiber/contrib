@@ -19,6 +19,7 @@ import (
 	"github.com/Kludex/pydantic-ai-go/ai/models/fakes"
 	"github.com/Kludex/pydantic-ai-go/ai/ui/agui"
 	"github.com/gofiber/contrib/v3/pydanticai"
+	"github.com/gofiber/contrib/v3/pydanticai/pydanticaitest"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/log"
 	"github.com/gofiber/fiber/v3/middleware/requestid"
@@ -105,7 +106,7 @@ func Test_AGUI_StringsFromTheRequestSurviveAClientThatLeft(t *testing.T) {
 		"Content-Type: application/json\r\nX-Request-ID: request-A-0000000001\r\nContent-Length: %d\r\n\r\n%s",
 		len(aguiBody), aguiBody)
 	require.NoError(t, err)
-	_, ok := nextData(newScanner(conn))
+	_, ok := pydanticaitest.NewReader(conn).NextData()
 	require.True(t, ok)
 	receive(t, started, "the tool call")
 	require.NoError(t, conn.Close())
@@ -254,7 +255,7 @@ func Test_AGUI_RunOutlivesAMiddlewareThatCancelsTheRequestContext(t *testing.T) 
 			require.Equal(t, agui.EventRunFinished, last.Type, body)
 			require.NotNil(t, last.Outcome)
 			require.Equal(t, "success", last.Outcome.Type)
-			require.Equal(t, "done", aguiText(events))
+			require.Equal(t, "done", pydanticaitest.AGUIText(events))
 			require.NoError(t, receive(t, closed, "OnClose"))
 		})
 	}

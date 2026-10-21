@@ -13,6 +13,7 @@ import (
 	"github.com/Kludex/pydantic-ai-go/ai/models/fakes"
 	"github.com/Kludex/pydantic-ai-go/ai/ui/vercel"
 	"github.com/gofiber/contrib/v3/pydanticai"
+	"github.com/gofiber/contrib/v3/pydanticai/pydanticaitest"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
 )
@@ -47,7 +48,7 @@ func Test_Vercel_StreamsRun(t *testing.T) {
 		vercel.ChunkFinishStep,
 		vercel.ChunkFinish,
 	}, chunkTypes(chunks))
-	require.Equal(t, "success (no tool calls)", vercelText(chunks))
+	require.Equal(t, "success (no tool calls)", pydanticaitest.VercelText(chunks))
 	require.True(t, strings.HasSuffix(body, "data: [DONE]\n\n"))
 }
 
@@ -85,19 +86,19 @@ func Test_Vercel_Deps(t *testing.T) {
 	for _, user := range []string{"alice", "bob"} {
 		_, body := post(t, app, "/chat?user="+user, vercelBody)
 		chunks, _ := vercelChunks(t, body)
-		require.Equal(t, "user="+user, vercelText(chunks))
+		require.Equal(t, "user="+user, pydanticaitest.VercelText(chunks))
 	}
 
 	for i, body := range concurrently(t, app, "/chat", vercelBody) {
 		chunks, _ := vercelChunks(t, body)
-		require.Equal(t, fmt.Sprintf("user=user-%d", i), vercelText(chunks))
+		require.Equal(t, fmt.Sprintf("user=user-%d", i), pydanticaitest.VercelText(chunks))
 	}
 
 	t.Run("zero value without Deps", func(t *testing.T) {
 		t.Parallel()
 		_, body := post(t, newApp("/chat", pydanticai.Vercel(userAgent())), "/chat", vercelBody)
 		chunks, _ := vercelChunks(t, body)
-		require.Equal(t, "user=", vercelText(chunks))
+		require.Equal(t, "user=", pydanticaitest.VercelText(chunks))
 	})
 }
 
@@ -140,7 +141,7 @@ func Test_Vercel_RunOptionsAndContext(t *testing.T) {
 
 	_, body := post(t, app, "/chat", vercelBody)
 	chunks, _ := vercelChunks(t, body)
-	require.Equal(t, "from-options|trace-1", vercelText(chunks))
+	require.Equal(t, "from-options|trace-1", pydanticaitest.VercelText(chunks))
 
 	resp, _ := post(t, app, "/chat?deny=1", vercelBody)
 	require.Equal(t, fiber.StatusForbidden, resp.StatusCode)
@@ -279,7 +280,7 @@ func Test_Vercel_Heartbeat(t *testing.T) {
 	require.Positive(t, heartbeats, "an idle stream should carry heartbeat comments")
 	chunks, done := vercelChunks(t, body)
 	require.True(t, done)
-	require.Equal(t, "done", vercelText(chunks))
+	require.Equal(t, "done", pydanticaitest.VercelText(chunks))
 
 	config.DisableHeartbeat = true
 	_, body = post(t, newApp("/chat", pydanticai.Vercel(slowAgent(), config)), "/chat", vercelBody)

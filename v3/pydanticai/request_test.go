@@ -17,6 +17,7 @@ import (
 	"github.com/Kludex/pydantic-ai-go/ai/ui/agui"
 	"github.com/Kludex/pydantic-ai-go/ai/ui/vercel"
 	"github.com/gofiber/contrib/v3/pydanticai"
+	"github.com/gofiber/contrib/v3/pydanticai/pydanticaitest"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
 )
@@ -315,7 +316,7 @@ func Test_AGUI_StreamedBodiesAreReadUpToTheLimitOnly(t *testing.T) {
 			fiber.Config{StreamRequestBody: true, BodyLimit: 64})
 		response, _ := openStream(t, listen(t, app)+"/agui", aguiBody)
 		require.Equal(t, fiber.StatusOK, response.StatusCode)
-		record, ok := nextData(newScanner(response.Body))
+		record, ok := pydanticaitest.NewReader(response.Body).NextData()
 		require.True(t, ok)
 		require.Contains(t, record, `"type":"RUN_STARTED"`)
 	})

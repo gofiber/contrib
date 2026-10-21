@@ -54,6 +54,17 @@ type RunConfig[Deps, Output any] struct {
 	// calls, because the response cannot carry the decision that resumes them.
 	Respond func(c fiber.Ctx, result *ai.RunResult[Output]) error
 
+	// OnRunEnd is called once the agent has run, with the dependencies of the
+	// run, what the run consumed and the error that ended it, which is nil when
+	// the run completed. It is called for a run that failed as well, which makes
+	// it the place to record token usage. run gives the usage, the messages and
+	// the IDs of the run, see ai.RunInfo, and is nil when the agent did not
+	// start. It is not called for a request that was rejected before the agent
+	// ran. A panic in OnRunEnd is logged and recovered.
+	//
+	// Optional. Default: nil
+	OnRunEnd func(deps Deps, run *ai.RunInfo, err error)
+
 	// MaxRequestBytes bounds the body of the request that the default Prompt
 	// reads. The BodyLimit of the app applies as well, 4 MiB by default, and
 	// the smaller of the two wins.
@@ -145,7 +156,11 @@ func Run[Deps, Output any](agent *ai.Agent[Deps, Output], config ...RunConfig[De
 			ctx, cancel = context.WithTimeout(ctx, cfg.Timeout)
 			defer cancel()
 		}
+		options, tracker := trackRun(options, cfg.OnRunEnd != nil)
 		result, err := agent.Run(ctx, prompt, deps, options...)
+		if cfg.OnRunEnd != nil {
+			safely("OnRunEnd", func() { cfg.OnRunEnd(deps, tracker.run(), err) })
+		}
 		if err != nil {
 			return newError(err)
 		}

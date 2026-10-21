@@ -66,6 +66,22 @@ type VercelConfig[Deps any] struct {
 	// Optional. Default: nil
 	OnClose func(deps Deps, err error)
 
+	// OnRunEnd is called once when the run has ended, with the dependencies of
+	// the run, what the run consumed and how it ended. It is called for every
+	// run that the handler started, whether it completed, failed, panicked,
+	// timed out or lost its client, which makes it the place to record token
+	// usage. err is what OnClose receives. run gives the usage, the messages
+	// and the IDs of the run, see ai.RunInfo, and is nil when the agent did not
+	// start, for example because the adapter rejected the request history.
+	//
+	// It runs before OnClose, under the same conditions: the events are
+	// written and the request is still alive, and the end of the response
+	// waits for it, so keep it short, or hand the work to a goroutine and copy
+	// what that needs. A panic in OnRunEnd is logged and recovered.
+	//
+	// Optional. Default: nil
+	OnRunEnd func(deps Deps, run *ai.RunInfo, err error)
+
 	// Adapter configures the Vercel AI adapter: the AI SDK version, how
 	// untrusted client history is sanitized and the request limits
 	// (MaxRequestBytes, AllowedContentTypes and DisableContentTypeCheck).
@@ -97,6 +113,15 @@ type VercelConfig[Deps any] struct {
 	//
 	// Optional. Default: false
 	DisableHeartbeat bool
+
+	// CancelOnShutdown cancels the run when the server starts shutting down.
+	// The stream then ends like one that timed out, with the end-of-stream event
+	// of its protocol, and OnClose receives an error that wraps
+	// ai.ErrRunCancelled. Without it a shutdown waits for the run to end on its
+	// own, until the timeout of the shutdown elapses.
+	//
+	// Optional. Default: false
+	CancelOnShutdown bool
 }
 
 // Vercel returns a handler that serves agent over the Vercel AI SDK UI message
@@ -122,9 +147,11 @@ func Vercel[Deps, Output any](agent *ai.Agent[Deps, Output], config ...VercelCon
 	}
 	stream := streamOptions[Deps]{
 		onClose:          cfg.OnClose,
+		onRunEnd:         cfg.OnRunEnd,
 		timeout:          cfg.Timeout,
 		heartbeat:        cfg.HeartbeatInterval,
 		disableHeartbeat: cfg.DisableHeartbeat,
+		cancelOnShutdown: cfg.CancelOnShutdown,
 	}
 	// fail ends the stream with an error chunk and the [DONE] record for a
 	// failure that the adapter did not report itself. Best effort: the stream
@@ -153,8 +180,9 @@ func Vercel[Deps, Output any](agent *ai.Agent[Deps, Output], config ...VercelCon
 		}
 
 		c.Set("x-vercel-ai-ui-message-stream", "v1") // marks the response as an AI SDK UI message stream
-		return serveStream(c, stream, request.deps, fail, func(ctx context.Context, send func([]byte) error) error {
-			for chunk, runErr := range adapter.RunStream(ctx, request.input, request.deps, request.options...) {
+		options, tracker := trackRun(request.options, cfg.OnRunEnd != nil)
+		return serveStream(c, stream, request.deps, tracker, fail, func(ctx context.Context, send func([]byte) error) error {
+			for chunk, runErr := range adapter.RunStream(ctx, request.input, request.deps, options...) {
 				if runErr != nil && cfg.ErrorMessage != nil && chunk.Type == vercel.ChunkError {
 					chunk.ErrorText = cfg.ErrorMessage(runErr)
 				}
@@ -173,7 +201,7 @@ func Vercel[Deps, Output any](agent *ai.Agent[Deps, Output], config ...VercelCon
 			}
 			// A canceled run ends the stream without an error, so report why it
 			// was canceled.
-			return ctx.Err()
+			return context.Cause(ctx)
 		})
 	}
 }

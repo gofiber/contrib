@@ -11,6 +11,7 @@ import (
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
 	"github.com/gofiber/contrib/v3/pydanticai"
+	"github.com/gofiber/contrib/v3/pydanticai/pydanticaitest"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/compress"
 	"github.com/stretchr/testify/require"
@@ -64,17 +65,17 @@ func Test_AGUI_FlushesEventsWhileTheRunIsStillWorking(t *testing.T) {
 	response, _ := openStream(t, url, aguiBody)
 	require.Equal(t, fiber.StatusOK, response.StatusCode)
 	require.Contains(t, response.TransferEncoding, "chunked")
-	scanner := newScanner(response.Body)
+	scanner := pydanticaitest.NewReader(response.Body)
 
 	// The start of the run reaches the client while the model has not answered.
-	record, ok := nextData(scanner)
+	record, ok := scanner.NextData()
 	require.True(t, ok)
 	require.Contains(t, record, `"type":"RUN_STARTED"`)
 
 	close(release)
 	var rest strings.Builder
 	for {
-		record, ok := nextData(scanner)
+		record, ok := scanner.NextData()
 		if !ok {
 			break
 		}
@@ -105,17 +106,17 @@ func Test_AGUI_StreamsThroughCompress(t *testing.T) {
 	require.Equal(t, "gzip", response.Header.Get(fiber.HeaderContentEncoding))
 	reader, err := gzip.NewReader(response.Body)
 	require.NoError(t, err)
-	scanner := newScanner(reader)
+	scanner := pydanticaitest.NewReader(reader)
 
 	// The start of the run gets through the compression while the model has not answered.
-	record, ok := nextData(scanner)
+	record, ok := scanner.NextData()
 	require.True(t, ok)
 	require.Contains(t, record, `"type":"RUN_STARTED"`)
 
 	close(release)
 	var rest strings.Builder
 	for {
-		record, ok := nextData(scanner)
+		record, ok := scanner.NextData()
 		if !ok {
 			break
 		}
@@ -138,7 +139,7 @@ func Test_AGUI_ClosedSocketCancelsRun(t *testing.T) {
 	url := listen(t, newApp("/agui", handler)) + "/agui"
 
 	response, closeConnection := openStream(t, url, aguiBody)
-	record, ok := nextData(newScanner(response.Body))
+	record, ok := pydanticaitest.NewReader(response.Body).NextData()
 	require.True(t, ok)
 	require.Contains(t, record, `"type":"RUN_STARTED"`)
 	receive(t, started, "the model call")
@@ -162,7 +163,7 @@ func Test_Vercel_ClosedSocketCancelsRun(t *testing.T) {
 
 	response, closeConnection := openStream(t, url, vercelBody)
 	require.Equal(t, "v1", response.Header.Get("x-vercel-ai-ui-message-stream"))
-	record, ok := nextData(newScanner(response.Body))
+	record, ok := pydanticaitest.NewReader(response.Body).NextData()
 	require.True(t, ok)
 	require.Contains(t, record, `"type":"start"`)
 	receive(t, started, "the model call")

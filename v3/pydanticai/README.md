@@ -11,7 +11,8 @@ id: pydanticai
 [pydantic-ai-go](https://github.com/Kludex/pydantic-ai-go) support for Fiber. The handlers serve an agent to a chat frontend over the [AG-UI](https://docs.ag-ui.com) or the [Vercel AI SDK](https://ai-sdk.dev) protocol, or answer a JSON request with the output of one run.
 
 - The dependencies and run options of the agent are built from the `fiber.Ctx` of each request, so tools can act on behalf of the authenticated user.
-- A run is canceled when its client disconnects or its `Timeout` elapses.
+- A run is canceled when its client disconnects or its `Timeout` elapses, and optionally when the server shuts down.
+- `OnRunEnd` reports what every run consumed, including runs that failed or lost their client.
 - Rejected requests and failed `Run` calls go through the error handler of the app.
 - A panic in a tool ends the stream with an error event.
 
@@ -182,6 +183,23 @@ app.Post("/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[Deps]{
 
 The adapters set the message history and the conversation ID of a run themselves, whatever `RunOptions` returns.
 
+### Choosing the model per request
+
+`ai.WithRunModel` replaces the model of the agent for one run, so the model, or the API key of the model, can depend on the request, for example on the plan of the user:
+
+```go
+app.Post("/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[Deps]{
+    RunOptions: func(c fiber.Ctx) ([]ai.RunOption, error) {
+        if fiber.Locals[string](c, "plan") == "pro" {
+            return []ai.RunOption{ai.WithRunModel(openai.NewModel("gpt-5"))}, nil
+        }
+        return nil, nil // the model of the agent
+    },
+}))
+```
+
+A user who brings their own key gets a model with that key: `ai.WithRunModel(openai.NewModel("gpt-5-mini", openai.WithAPIKey(key)))`, with `key` read from the request in `RunOptions`.
+
 ### Hiding error details and logging
 
 A run that fails after the stream has started is reported to the client inside the stream, with `err.Error()` as the message. Provider errors can contain request IDs or parts of credentials. `ErrorMessage` replaces the message that the client receives, and `OnClose` still gets the original error for your logs:
@@ -205,6 +223,26 @@ app.Post("/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[Deps]{
 - The write error when the client disconnected.
 
 The end of the response waits for `OnClose`, so keep it short, or start a goroutine and copy what it needs. A panic in `OnClose` is logged and recovered.
+
+### Recording usage
+
+`OnRunEnd` is called once for every run that the handler started, with the dependencies of the run, the run itself and the error that ended it. Unlike `ai.AfterRunFunc` of the agent, which is only called for runs that complete, it also reports runs that failed, timed out or lost their client, and those still cost tokens:
+
+```go
+app.Post("/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[Deps]{
+    OnRunEnd: func(deps Deps, run *ai.RunInfo, err error) {
+        if run == nil {
+            return // the agent did not start
+        }
+        usage := run.Usage()
+        // Record it in your accounting.
+        log.Printf("run %s of %s used %d input and %d output tokens (%v)",
+            run.RunID, deps.UserID, usage.InputTokens, usage.OutputTokens, err)
+    },
+}))
+```
+
+`run` is an `ai.RunInfo`: besides the usage it gives the messages of the conversation, the IDs of the run and its metadata. It is nil when the agent did not start, for example because the adapter rejected the history of the request. `OnRunEnd` runs before `OnClose` and under the same conditions, so keep it short as well. `RunConfig` has an `OnRunEnd` too, which is called once the agent has run.
 
 ### JSON endpoint
 
@@ -251,7 +289,7 @@ A run that ends with deferred tool calls, which are tools that need approval or 
 
 ### Testing without a provider
 
-pydantic-ai-go ships fake models, so the handlers can be tested without a network or an API key:
+pydantic-ai-go ships fake models, so the handlers can be tested without a network or an API key. The `pydanticaitest` package decodes the streams that `AGUI` and `Vercel` write, so that a test can assert on the text and the events of a run:
 
 ```go
 func TestChat(t *testing.T) {
@@ -266,9 +304,22 @@ func TestChat(t *testing.T) {
 
     resp, err := app.Test(req)
     require.NoError(t, err)
-    require.Equal(t, "v1", resp.Header.Get("x-vercel-ai-ui-message-stream"))
+
+    chunks, done := pydanticaitest.VercelChunks(t, resp.Body) // github.com/gofiber/contrib/v3/pydanticai/pydanticaitest
+    require.True(t, done)
+    require.Equal(t, "success (no tool calls)", pydanticaitest.VercelText(chunks))
 }
 ```
+
+`fakes.NewTestModel` answers `success (no tool calls)`. Use `fakes.NewFunctionModel` for a model that answers what the test needs.
+
+| Function                                  | Reads                                                                                              |
+|:------------------------------------------|:---------------------------------------------------------------------------------------------------|
+| `AGUIEvents(t, body)` and `AGUIText`      | The events of an AG-UI response, and the text of its messages.                                     |
+| `VercelChunks(t, body)` and `VercelText`  | The chunks of a Vercel AI response, whether it ended with `[DONE]`, and the text of its messages.  |
+| `NewReader(stream)`                       | The records of a stream one at a time, with `Next` and `NextData`, while the handler still writes it. A test that talks to a real server uses it to look at the first events of a run before it ends. |
+
+The functions fail the test when the body cannot be read or decoded.
 
 ## Model providers
 
@@ -344,6 +395,49 @@ agent := ai.NewAgent[struct{}, string](model)
 
 The prefixes are `openai`, `openai-responses`, `openai-codex`, `openai-decisions`, `anthropic`, `google`, `github-copilot`, `bedrock`, `bedrock-mantle`, `cerebras`, `cohere`, `crusoe`, `deepseek`, `deepseek-responses`, `groq`, `huggingface`, `meta`, `mistral`, `ollama`, `openrouter`, `snowflake`, `system-one`, `together`, `typesafe`, `vllm`, `xai` and `zai`. Azure OpenAI and Vertex AI need a config and have no prefix. The package imports the provider packages behind these prefixes, so a binary that uses it links all of them.
 
+## Graceful shutdown
+
+A stream that is still running keeps a shutdown waiting: `app.ShutdownWithTimeout` returns when the run ends on its own, or fails with `context deadline exceeded` when its timeout elapses first. `CancelOnShutdown` cancels the runs of the handler as soon as the server starts shutting down. The streams end like one that timed out, with the end-of-stream event of their protocol, `OnRunEnd` and `OnClose` get an error that wraps `ai.ErrRunCancelled`, and the shutdown does not wait for them:
+
+```go
+app.Post("/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[Deps]{CancelOnShutdown: true}))
+
+go func() {
+    if err := app.Listen(":3000"); err != nil {
+        log.Fatal(err)
+    }
+}()
+
+ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+defer stop()
+<-ctx.Done()
+if err := app.ShutdownWithTimeout(30 * time.Second); err != nil {
+    log.Print(err)
+}
+```
+
+The option is off by default, because some applications prefer to let a short run finish. `Run` has no such option, because it is a plain request: set its `Timeout`.
+
+## Middleware in front of the handlers
+
+The handlers neither authenticate nor limit requests, and they do not answer cross-origin requests. Fiber's middleware cover that. Put the middleware that identifies the caller before the one that limits the caller:
+
+```go
+app.Use(cors.New(cors.Config{ // when the frontend is served from another origin
+    AllowOrigins: []string{"https://app.example.com"},
+    AllowHeaders: []string{"Authorization", "Content-Type"},
+}))
+app.Use(authenticate) // your authentication middleware, which stores the user in c.Locals
+app.Use(limiter.New(limiter.Config{
+    Max:          20,
+    Expiration:   time.Minute,
+    KeyGenerator: func(c fiber.Ctx) string { return fiber.Locals[string](c, "user") },
+}))
+app.Post("/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[Deps]{Deps: depsOfUser}))
+```
+
+`cors` comes first, because preflight requests carry no credentials. The limiter counts the requests of each user, not of each address. The `timeout` middleware does not stop a stream, and `compress` works, see [Disconnects, timeouts and heartbeats](#disconnects-timeouts-and-heartbeats).
+
 ## Requests
 
 A request is checked before the agent runs. A rejected request is returned as a `*fiber.Error` and handled by the error handler of the app:
@@ -376,7 +470,7 @@ Heartbeat comments are ignored by server-sent events parsers. `DisableHeartbeat`
 | Event                       | AG-UI                                | Vercel AI                      |
 |:----------------------------|:-------------------------------------|:-------------------------------|
 | The run completes           | `RUN_FINISHED`                       | `finish` chunk, then `[DONE]`  |
-| `Timeout` elapses           | `RUN_FINISHED` without an outcome    | `abort` chunk, then `[DONE]`   |
+| `Timeout` elapses, or the server shuts down with `CancelOnShutdown` | `RUN_FINISHED` without an outcome | `abort` chunk, then `[DONE]` |
 | The run fails               | `RUN_ERROR`                          | `error` chunk                  |
 | The run panics              | `RUN_ERROR` with `internal error`    | `error` chunk, then `[DONE]`   |
 
@@ -439,10 +533,12 @@ The two streaming handlers take the same settings. They differ in the event that
 | RunOptions        | `func(fiber.Ctx) ([]ai.RunOption, error)`     | Returns extra run options for one request.                                                                                                                                                | `nil`                  |
 | ErrorMessage      | `func(error) string`                          | Maps the error of a failed run to the message that the client receives, in the `RUN_ERROR` event (AG-UI) or the `error` chunk (Vercel AI). Also applies to a panic and to an event that cannot be encoded. | `err.Error()`          |
 | OnClose           | `func(Deps, error)`                           | Called once when the stream is over, with the dependencies of the run. The error is `nil` when the stream ended normally. The end of the response waits for it.                           | `nil`                  |
+| OnRunEnd          | `func(Deps, *ai.RunInfo, error)`              | Called once when the run has ended, before `OnClose`, with what the run consumed and how it ended. The run is `nil` when the agent did not start. The end of the response waits for it.   | `nil`                  |
 | Adapter           | `agui.Config` or `vercel.Config`              | Protocol version (`Version` for AG-UI, `SDKVersion` for Vercel AI), sanitization of client history and request limits (`MaxRequestBytes`, `AllowedContentTypes`, `DisableContentTypeCheck`). | the zero value         |
 | Timeout           | `time.Duration`                               | Bounds the duration of one run.                                                                                                                                                           | `0` (no timeout)       |
 | HeartbeatInterval | `time.Duration`                               | Interval of the heartbeat comments. A client that left is noticed by the second or third one. A value of zero or less uses the default.                                                   | `5 * time.Second`      |
 | DisableHeartbeat  | `bool`                                        | Turns the heartbeat off.                                                                                                                                                                  | `false`                |
+| CancelOnShutdown  | `bool`                                        | Cancels the run when the server starts shutting down, instead of waiting for it.                                                                                                          | `false`                |
 
 ### RunConfig
 
@@ -453,6 +549,7 @@ The two streaming handlers take the same settings. They differ in the event that
 | RunOptions      | `func(fiber.Ctx) ([]ai.RunOption, error)`         | Returns extra run options for one request. They take precedence over the conversation ID of the body. | `nil`                                   |
 | Prompt          | `func(fiber.Ctx) (string, error)`                 | Reads the user prompt from the request. None of the request checks of the default applies.           | the `prompt` field of the JSON body       |
 | Respond         | `func(fiber.Ctx, *ai.RunResult[Output]) error`    | Writes the response for a completed run.                                                             | `{"output", "run_id", "conversation_id"}` |
+| OnRunEnd        | `func(Deps, *ai.RunInfo, error)`                  | Called once the agent has run, with what the run consumed and the error that ended it. The run is `nil` when the agent did not start. | `nil`                                   |
 | MaxRequestBytes | `int64`                                           | Bounds the body that the default `Prompt` reads. The `BodyLimit` of the app applies as well.         | `10 MiB`                                  |
 | Timeout         | `time.Duration`                                   | Bounds the duration of one run. A run that exceeds it fails with `504`.                              | `0` (no timeout)                          |
 
