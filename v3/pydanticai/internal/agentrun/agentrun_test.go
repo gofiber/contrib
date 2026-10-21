@@ -9,12 +9,15 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
 	"github.com/Kludex/pydantic-ai-go/ai/models/fakes"
 	"github.com/gofiber/contrib/v3/pydanticai/internal/agentrun"
 	"github.com/gofiber/fiber/v3/log"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
+	"github.com/valyala/fasthttp/fasthttputil"
 )
 
 // syncBuffer is a log destination that the goroutines of a run can write to.
@@ -177,4 +180,57 @@ func Test_GuardTools_NoPanic(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "done", strings.TrimSpace(result.Output))
 	require.NoError(t, guard.Err())
+}
+
+func Test_ServerDone(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a RequestCtx that no server serves", func(t *testing.T) {
+		t.Parallel()
+
+		require.NotPanics(t, func() { require.Nil(t, agentrun.ServerDone(new(fasthttp.RequestCtx))) })
+	})
+
+	t.Run("closed when the server starts to shut down", func(t *testing.T) {
+		t.Parallel()
+
+		done := make(chan (<-chan struct{}), 1)
+		server := &fasthttp.Server{Handler: func(ctx *fasthttp.RequestCtx) { done <- agentrun.ServerDone(ctx) }}
+		listener := fasthttputil.NewInmemoryListener()
+		served := make(chan error, 1)
+		go func() { served <- server.Serve(listener) }()
+
+		conn, err := listener.Dial()
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = conn.Close() })
+		_, err = conn.Write([]byte("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"))
+		require.NoError(t, err)
+
+		var shutdown <-chan struct{}
+		select {
+		case shutdown = <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the handler was not called")
+		}
+		require.NotNil(t, shutdown)
+		select {
+		case <-shutdown:
+			t.Fatal("the server is not shutting down")
+		default:
+		}
+
+		go func() { _ = server.Shutdown() }()
+		select {
+		case <-shutdown:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the channel was not closed")
+		}
+		require.NoError(t, <-served)
+	})
+
+	t.Run("the error of a run canceled by the shutdown", func(t *testing.T) {
+		t.Parallel()
+
+		require.ErrorIs(t, agentrun.ErrShutdown, ai.ErrRunCancelled)
+	})
 }
