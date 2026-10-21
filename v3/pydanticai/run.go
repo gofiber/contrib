@@ -2,10 +2,10 @@ package pydanticai
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
+	"github.com/gofiber/contrib/v3/pydanticai/internal/agentrun"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -166,29 +166,29 @@ func Run[Deps, Output any](agent *ai.Agent[Deps, Output], config ...RunConfig[De
 			ctx, cancel = context.WithTimeout(ctx, cfg.Timeout)
 			defer cancel()
 		}
-		options, tracker := trackRun(options, cfg.OnRunEnd != nil)
-		options, tools := guardTools(options)
+		options, tracker := agentrun.Track(options, cfg.OnRunEnd != nil)
+		options, tools := agentrun.GuardTools(options)
 		result, err := func() (*ai.RunResult[Output], error) {
 			if cfg.OnRunEnd != nil {
 				// A panic goes on to the recover middleware of the app, but the
 				// run consumed tokens all the same.
 				defer func() {
 					if recovered := recover(); recovered != nil {
-						runErr := fmt.Errorf("pydanticai: panic in the run: %v", recovered)
-						safely("OnRunEnd", func() { cfg.OnRunEnd(deps, tracker.run(), runErr) })
+						runErr := agentrun.PanicError(recovered)
+						agentrun.Safely("OnRunEnd", func() { cfg.OnRunEnd(deps, tracker.Run(), runErr) })
 						panic(recovered)
 					}
 				}()
 			}
 			return agent.Run(ctx, prompt, deps, options...)
 		}()
-		if panicErr := tools.err(); panicErr != nil && err != nil {
+		if panicErr := tools.Err(); panicErr != nil && err != nil {
 			// The error of the run carries the value of the panic, or the error
 			// of a tool that the panic canceled.
 			err = panicErr
 		}
 		if cfg.OnRunEnd != nil {
-			safely("OnRunEnd", func() { cfg.OnRunEnd(deps, tracker.run(), err) })
+			agentrun.Safely("OnRunEnd", func() { cfg.OnRunEnd(deps, tracker.Run(), err) })
 		}
 		if err != nil {
 			return newError(err)
