@@ -8,6 +8,7 @@ import (
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
 	"github.com/Kludex/pydantic-ai-go/ai/ui/agui"
+	"github.com/gofiber/contrib/v3/pydanticai/internal/agentrun"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -156,7 +157,7 @@ func AGUI[Deps, Output any](agent *ai.Agent[Deps, Output], config ...AGUIConfig[
 	// fail ends the stream with a RUN_ERROR event for a failure that the
 	// adapter did not report itself. Best effort: the stream ends either way.
 	fail := func(send func([]byte) error, err error) {
-		event := agui.Event{Type: agui.EventRunError, Message: errorText(cfg.ErrorMessage, err)}
+		event := agui.Event{Type: agui.EventRunError, Message: agentrun.Text(cfg.ErrorMessage, err)}
 		if encoded, marshalErr := json.Marshal(event); marshalErr == nil {
 			_ = send(encoded)
 		}
@@ -172,7 +173,7 @@ func AGUI[Deps, Output any](agent *ai.Agent[Deps, Output], config ...AGUIConfig[
 			return err
 		}
 
-		options, tracker := trackRun(request.options, cfg.OnRunEnd != nil)
+		options, tracker := agentrun.Track(request.options, cfg.OnRunEnd != nil)
 		run := func(ctx context.Context, options ...ai.RunOption) iter.Seq2[agui.Event, error] {
 			return adapter.RunStream(ctx, request.input, request.deps, options...)
 		}

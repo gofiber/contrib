@@ -20,6 +20,7 @@ import (
 	"time"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
+	"github.com/gofiber/contrib/v3/pydanticai/internal/agentrun"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/log"
 	"github.com/gofiber/fiber/v3/middleware/sse"
@@ -46,10 +47,6 @@ var (
 	defaultContentTypes = []string{fiber.MIMEApplicationJSON}
 
 	errBodyTooLarge = fiber.NewError(fiber.StatusRequestEntityTooLarge, "request body too large")
-
-	// errRunPanicked is what a client is told when the run panics. The panic
-	// itself goes to the log and to OnClose.
-	errRunPanicked = errors.New("internal error")
 
 	// errShutdown is why a run was canceled when the server started shutting
 	// down. It wraps ai.ErrRunCancelled, which the agent treats as a request to
@@ -254,18 +251,6 @@ func admit[Deps, In any](
 	return request, nil
 }
 
-// errorText is the message that a client receives for err. A panic in message
-// is logged and recovered, and the client is then told what it is told for a
-// panic in the run: not err.Error(), which message is there to keep from it.
-func errorText(message func(error) string, err error) string {
-	if message == nil {
-		return err.Error()
-	}
-	text := errRunPanicked.Error()
-	safely("ErrorMessage", func() { text = message(err) })
-	return text
-}
-
 // heartbeatInterval returns the interval to use for the configured one.
 func heartbeatInterval(interval time.Duration) time.Duration {
 	if interval <= 0 {
@@ -282,79 +267,6 @@ type streamOptions[Deps any] struct {
 	heartbeat        time.Duration
 	disableHeartbeat bool
 	cancelOnShutdown bool
-}
-
-// runTracker records the ai.RunInfo of a run for OnRunEnd. Only capabilities
-// are given the RunInfo, so the tracker is a capability that starts with the
-// run. It wraps the run, so it is given the run before any BeforeRun hook can
-// fail it.
-type runTracker struct{ info atomic.Pointer[ai.RunInfo] }
-
-// Setup implements ai.Capability.
-func (*runTracker) Setup(*ai.CapabilityRegistry) error { return nil }
-
-// WrapRun implements ai.RunWrapper. It records the run and runs it.
-func (t *runTracker) WrapRun(ctx context.Context, run *ai.RunInfo, next ai.RunFunc) (ai.RunOutcome, error) {
-	t.info.Store(run)
-	return next(ctx)
-}
-
-// trackRun adds the run capability that records the run to options when
-// wanted. The returned tracker is nil otherwise, and nothing asks it for the run.
-func trackRun(options []ai.RunOption, wanted bool) ([]ai.RunOption, *runTracker) {
-	if !wanted {
-		return options, nil
-	}
-	tracker := new(runTracker)
-	// A new slice, so that the slice that RunOptions returned is not written to.
-	return append([]ai.RunOption{ai.WithRunCapabilities(tracker)}, options...), tracker
-}
-
-// run returns the recorded run, or nil when the agent did not start.
-func (t *runTracker) run() *ai.RunInfo { return t.info.Load() }
-
-// toolGuard recovers a panic in a tool. pydantic-ai-go runs the tool calls of a
-// model response concurrently, each on a goroutine of its own, where neither
-// the handler nor a recover middleware can catch a panic. The guard turns the
-// panic into an error that fails the run, and keeps it, so that the handler
-// reports the run as one that panicked.
-type toolGuard struct{ panicked atomic.Pointer[error] }
-
-// guardTools adds a toolGuard to options, ahead of the other run capabilities.
-// The returned slice is a new one.
-func guardTools(options []ai.RunOption) ([]ai.RunOption, *toolGuard) {
-	guard := new(toolGuard)
-	return append([]ai.RunOption{ai.WithRunCapabilities(guard)}, options...), guard
-}
-
-// Setup implements ai.Capability.
-func (*toolGuard) Setup(*ai.CapabilityRegistry) error { return nil }
-
-// WrapToolCall implements ai.ToolCallWrapper. It runs on the goroutine of the
-// tool. The error that it returns for a panic is neither a retry nor a tool
-// failure, so the run fails with it.
-func (g *toolGuard) WrapToolCall(
-	ctx context.Context, _ *ai.RunInfo, call ai.ToolCallPart, next ai.ToolCallFunc,
-) (result any, err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			// %v and not %w: an error that the tool panicked with must not turn
-			// the panic into a retry or a tool failure.
-			panicErr := fmt.Errorf("pydanticai: panic in the run: %v", recovered)
-			log.Errorf("%v\n%s", panicErr, debug.Stack())
-			g.panicked.CompareAndSwap(nil, &panicErr)
-			result, err = nil, panicErr
-		}
-	}()
-	return next(ctx, call)
-}
-
-// err returns the error of the first panic that the guard recovered, or nil.
-func (g *toolGuard) err() error {
-	if err := g.panicked.Load(); err != nil {
-		return *err
-	}
-	return nil
 }
 
 // streamGuard keeps the events of a run flowing after its consumer stopped
@@ -421,7 +333,7 @@ func relay[E any](
 ) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	options, tools := guardTools(options)
+	options, tools := agentrun.GuardTools(options)
 	options = append([]ai.RunOption{ai.WithRunCapabilities(streamGuard{cancel: cancel})}, options...)
 
 	var (
@@ -433,15 +345,15 @@ func relay[E any](
 			continue
 		}
 		if runErr != nil {
-			if panicErr := tools.err(); panicErr != nil {
+			if panicErr := tools.Err(); panicErr != nil {
 				// A tool panicked. The error of the run carries the value of the
 				// panic, or the error of a tool that the panic canceled.
 				failed = panicErr
-				fail(send, errRunPanicked)
+				fail(send, agentrun.ErrPanicked)
 				continue
 			}
 			if errorMessage != nil && p.failed(event) {
-				event = p.withMessage(event, errorText(errorMessage, runErr))
+				event = p.withMessage(event, agentrun.Text(errorMessage, runErr))
 			}
 		}
 		if encoded, err := p.encode(event); err != nil {
@@ -471,17 +383,6 @@ func relay[E any](
 		// canceled.
 		return context.Cause(ctx)
 	}
-}
-
-// safely calls fn, a callback of the application, on a goroutine where no
-// recover middleware guards it. A panic is logged instead of ending the process.
-func safely(name string, fn func()) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			log.Errorf("pydanticai: panic in %s: %v\n%s", name, recovered, debug.Stack())
-		}
-	}()
-	fn()
 }
 
 // serverDone returns the channel that fasthttp closes when the server of ctx
@@ -514,7 +415,7 @@ func serveStream[Deps any](
 	c fiber.Ctx,
 	opts streamOptions[Deps],
 	deps Deps,
-	tracker *runTracker,
+	tracker *agentrun.Tracker,
 	fail func(send func(data []byte) error, err error),
 	run func(ctx context.Context, send func(data []byte) error) error,
 ) error {
@@ -544,10 +445,10 @@ func serveStream[Deps any](
 			abort(nil)
 			err := <-ended
 			if opts.onRunEnd != nil {
-				safely("OnRunEnd", func() { opts.onRunEnd(deps, tracker.run(), err) })
+				agentrun.Safely("OnRunEnd", func() { opts.onRunEnd(deps, tracker.Run(), err) })
 			}
 			if opts.onClose != nil {
-				safely("OnClose", func() { opts.onClose(deps, err) })
+				agentrun.Safely("OnClose", func() { opts.onClose(deps, err) })
 			}
 		}),
 	}
@@ -594,9 +495,9 @@ func serveStream[Deps any](
 			// word, as sse recovers it for OnClose only.
 			defer func() {
 				if recovered := recover(); recovered != nil {
-					err = fmt.Errorf("pydanticai: panic in the run: %v", recovered)
+					err = agentrun.PanicError(recovered)
 					log.Errorf("%v\n%s", err, debug.Stack())
-					fail(send, errRunPanicked)
+					fail(send, agentrun.ErrPanicked)
 				}
 			}()
 			return run(ctx, send)

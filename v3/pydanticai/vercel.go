@@ -8,6 +8,7 @@ import (
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
 	"github.com/Kludex/pydantic-ai-go/ai/ui/vercel"
+	"github.com/gofiber/contrib/v3/pydanticai/internal/agentrun"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -162,7 +163,7 @@ func Vercel[Deps, Output any](agent *ai.Agent[Deps, Output], config ...VercelCon
 	// failure that the adapter did not report itself. Best effort: the stream
 	// ends either way.
 	fail := func(send func([]byte) error, err error) {
-		chunk := vercel.Chunk{Type: vercel.ChunkError, ErrorText: errorText(cfg.ErrorMessage, err)}
+		chunk := vercel.Chunk{Type: vercel.ChunkError, ErrorText: agentrun.Text(cfg.ErrorMessage, err)}
 		if encoded, marshalErr := json.Marshal(chunk); marshalErr == nil {
 			_ = send(encoded)
 			_ = send(doneRecord)
@@ -185,7 +186,7 @@ func Vercel[Deps, Output any](agent *ai.Agent[Deps, Output], config ...VercelCon
 		}
 
 		c.Set("x-vercel-ai-ui-message-stream", "v1") // marks the response as an AI SDK UI message stream
-		options, tracker := trackRun(request.options, cfg.OnRunEnd != nil)
+		options, tracker := agentrun.Track(request.options, cfg.OnRunEnd != nil)
 		run := func(ctx context.Context, options ...ai.RunOption) iter.Seq2[vercel.Chunk, error] {
 			return adapter.RunStream(ctx, request.input, request.deps, options...)
 		}
