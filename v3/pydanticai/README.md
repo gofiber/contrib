@@ -79,7 +79,16 @@ func main() {
 }
 ```
 
-Set `OPENAI_API_KEY` and point the frontend at the route (AI SDK 5):
+The OpenAI model reads its API key from the `OPENAI_API_KEY` environment variable. To set the key in code instead, pass it as an option of the model:
+
+```go
+model := openai.NewModel("gpt-5-mini", openai.WithAPIKey(apiKey)) // from your configuration or secret store
+agent := ai.NewAgent[struct{}, string](model)
+```
+
+The key belongs to the model, not to the handler. The model packages of pydantic-ai-go take their own options, such as `anthropic.WithAPIKey` and `google.WithAPIKey`.
+
+Point the frontend at the route (AI SDK 5):
 
 ```ts
 const { messages, sendMessage } = useChat({
