@@ -8,7 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
+	"math"
 	"mime"
+	"net"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -20,6 +23,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/log"
 	"github.com/gofiber/fiber/v3/middleware/sse"
+	"github.com/gofiber/utils/v2"
 	"github.com/valyala/fasthttp"
 )
 
@@ -52,6 +56,15 @@ var (
 	// stop: the run ends with the messages and the usage it has, and the stream
 	// ends like one that timed out instead of with an error.
 	errShutdown = fmt.Errorf("pydanticai: the server is shutting down: %w", ai.ErrRunCancelled)
+
+	// errStreamFailed cancels a run whose events can no longer be sent. It wraps
+	// ai.ErrRunCancelled as well, so the agent stops at its next step.
+	errStreamFailed = fmt.Errorf("pydanticai: the stream failed: %w", ai.ErrRunCancelled)
+
+	// streamEndGrace is how long a write to the client may block once Timeout
+	// elapsed or the server started shutting down. A client that takes nothing
+	// for that long stopped reading, and its connection is closed.
+	streamEndGrace = 5 * time.Second
 )
 
 // requestLimits holds the HTTP checks that the net/http handlers of
@@ -88,9 +101,12 @@ func (l requestLimits) check(c fiber.Ctx) error {
 	}
 	// The handlers decode the bytes as they arrive and never inflate them. A
 	// compressed body would fail the JSON decoder with a 400 that blames the
-	// content, so say what is wrong with the request instead.
-	if encoding := c.Get(fiber.HeaderContentEncoding); encoding != "" && !strings.EqualFold(encoding, fiber.StrIdentity) {
-		return fiber.NewError(fiber.StatusUnsupportedMediaType, "unsupported content encoding")
+	// content, so say what is wrong with the request instead. Every line of the
+	// header counts, as the encodings of a body can be listed over several.
+	for _, encoding := range c.Request().Header.PeekAll(fiber.HeaderContentEncoding) {
+		if len(encoding) > 0 && !strings.EqualFold(utils.UnsafeString(encoding), fiber.StrIdentity) {
+			return fiber.NewError(fiber.StatusUnsupportedMediaType, "unsupported content encoding")
+		}
 	}
 	return nil
 }
@@ -107,8 +123,10 @@ func (l requestLimits) read(c fiber.Ctx) ([]byte, error) {
 		if int64(c.ContentLength()) > maxBytes {
 			return nil, errBodyTooLarge
 		}
+		// The byte beyond the limit is not added to a limit of math.MaxInt64,
+		// which would wrap around and read nothing.
 		var err error
-		if body, err = io.ReadAll(io.LimitReader(stream, maxBytes+1)); err != nil {
+		if body, err = io.ReadAll(io.LimitReader(stream, min(maxBytes, math.MaxInt64-1)+1)); err != nil {
 			return nil, fiber.NewError(fiber.StatusBadRequest, "read request body")
 		}
 	} else {
@@ -185,12 +203,16 @@ func admit[Deps, In any](
 	return request, nil
 }
 
-// errorText is the message that a client receives for err.
+// errorText is the message that a client receives for err. A panic in message
+// is logged and recovered, and the client is then told what it is told for a
+// panic in the run: not err.Error(), which message is there to keep from it.
 func errorText(message func(error) string, err error) string {
-	if message != nil {
-		return message(err)
+	if message == nil {
+		return err.Error()
 	}
-	return err.Error()
+	text := errRunPanicked.Error()
+	safely("ErrorMessage", func() { text = message(err) })
+	return text
 }
 
 // heartbeatInterval returns the interval to use for the configured one.
@@ -212,28 +234,195 @@ type streamOptions[Deps any] struct {
 }
 
 // runTracker records the ai.RunInfo of a run for OnRunEnd. Only capabilities
-// are given the RunInfo, so the tracker is one that starts with the run.
+// are given the RunInfo, so the tracker is a capability that starts with the
+// run. It wraps the run, so it is given the run before any BeforeRun hook can
+// fail it.
 type runTracker struct{ info atomic.Pointer[ai.RunInfo] }
 
-// trackRun adds the run option that records the run to options when wanted.
-// The returned tracker is nil otherwise, and nothing asks it for the run.
+// Setup implements ai.Capability.
+func (*runTracker) Setup(*ai.CapabilityRegistry) error { return nil }
+
+// WrapRun implements ai.RunWrapper. It records the run and runs it.
+func (t *runTracker) WrapRun(ctx context.Context, run *ai.RunInfo, next ai.RunFunc) (ai.RunOutcome, error) {
+	t.info.Store(run)
+	return next(ctx)
+}
+
+// trackRun adds the run capability that records the run to options when
+// wanted. The returned tracker is nil otherwise, and nothing asks it for the run.
 func trackRun(options []ai.RunOption, wanted bool) ([]ai.RunOption, *runTracker) {
 	if !wanted {
 		return options, nil
 	}
 	tracker := new(runTracker)
-	record := ai.BeforeRunFunc(func(_ context.Context, run *ai.RunInfo) error {
-		tracker.info.Store(run)
-		return nil
-	})
 	// A new slice, so that the slice that RunOptions returned is not written to.
-	return append([]ai.RunOption{ai.WithRunCapabilities(record)}, options...), tracker
+	return append([]ai.RunOption{ai.WithRunCapabilities(tracker)}, options...), tracker
 }
 
 // run returns the recorded run, or nil when the agent did not start.
 func (t *runTracker) run() *ai.RunInfo { return t.info.Load() }
 
-// safely calls fn, which runs on the goroutine of the connection, where no
+// toolGuard recovers a panic in a tool. pydantic-ai-go runs the tool calls of a
+// model response concurrently, each on a goroutine of its own, where neither
+// the handler nor a recover middleware can catch a panic. The guard turns the
+// panic into an error that fails the run, and keeps it, so that the handler
+// reports the run as one that panicked.
+type toolGuard struct{ panicked atomic.Pointer[error] }
+
+// guardTools adds a toolGuard to options, ahead of the other run capabilities.
+// The returned slice is a new one.
+func guardTools(options []ai.RunOption) ([]ai.RunOption, *toolGuard) {
+	guard := new(toolGuard)
+	return append([]ai.RunOption{ai.WithRunCapabilities(guard)}, options...), guard
+}
+
+// Setup implements ai.Capability.
+func (*toolGuard) Setup(*ai.CapabilityRegistry) error { return nil }
+
+// WrapToolCall implements ai.ToolCallWrapper. It runs on the goroutine of the
+// tool. The error that it returns for a panic is neither a retry nor a tool
+// failure, so the run fails with it.
+func (g *toolGuard) WrapToolCall(
+	ctx context.Context, _ *ai.RunInfo, call ai.ToolCallPart, next ai.ToolCallFunc,
+) (result any, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			// %v and not %w: an error that the tool panicked with must not turn
+			// the panic into a retry or a tool failure.
+			panicErr := fmt.Errorf("pydanticai: panic in the run: %v", recovered)
+			log.Errorf("%v\n%s", panicErr, debug.Stack())
+			g.panicked.CompareAndSwap(nil, &panicErr)
+			result, err = nil, panicErr
+		}
+	}()
+	return next(ctx, call)
+}
+
+// err returns the error of the first panic that the guard recovered, or nil.
+func (g *toolGuard) err() error {
+	if err := g.panicked.Load(); err != nil {
+		return *err
+	}
+	return nil
+}
+
+// streamGuard keeps the events of a run flowing after its consumer stopped
+// taking them, as the adapters do after an event that they cannot convert.
+// pydantic-ai-go goes on emitting the events of tool calls that run
+// concurrently, and an iterator that is resumed after its consumer stopped
+// panics on the goroutine of the tool, where nothing recovers. The guard
+// cancels the run instead, and drops the rest of its events.
+type streamGuard struct{ cancel context.CancelCauseFunc }
+
+// Setup implements ai.Capability.
+func (streamGuard) Setup(*ai.CapabilityRegistry) error { return nil }
+
+// WrapRunEventStream implements ai.RunEventStreamWrapper.
+func (g streamGuard) WrapRunEventStream(_ context.Context, _ *ai.RunInfo, stream ai.EventStream) ai.EventStream {
+	return func(yield func(ai.StreamEvent, error) bool) {
+		stopped := false
+		for event, err := range stream {
+			if stopped {
+				continue
+			}
+			if !yield(event, err) {
+				stopped = true
+				g.cancel(errStreamFailed)
+			}
+		}
+	}
+}
+
+// protocol describes the events of a streaming protocol for relay.
+type protocol[E any] struct {
+	// what names an event of the protocol in errors.
+	what string
+	// encode returns the data of the server-sent event that carries event.
+	encode func(event E) ([]byte, error)
+	// failed reports whether event is the event that reports a failed run, and
+	// withMessage returns it with message as the text for the client. Only the
+	// message changes: the adapter can have set other fields of the event.
+	failed      func(event E) bool
+	withMessage func(event E, message string) E
+	// completed reports whether event ends a run that completed. A run that was
+	// canceled ends with an event of its own.
+	completed func(event E) bool
+}
+
+// relay sends the events of a run to the client, and returns the error that
+// ended the stream: nil when the run completed, and otherwise the error of the
+// run, the error of the stream or why the run was canceled. run starts the run
+// with the options it is given.
+//
+// relay does not stop taking events before the run ends. pydantic-ai-go emits
+// the events of tool calls that run concurrently from their goroutines, and an
+// iterator that is resumed after its loop stopped panics there, where nothing
+// recovers. When the stream fails, relay cancels the run and drops the events
+// that follow.
+func relay[E any](
+	ctx context.Context,
+	p protocol[E],
+	run func(ctx context.Context, options ...ai.RunOption) iter.Seq2[E, error],
+	options []ai.RunOption,
+	errorMessage func(error) string,
+	send func(data []byte) error,
+	fail func(send func(data []byte) error, err error),
+) error {
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	options, tools := guardTools(options)
+	options = append([]ai.RunOption{ai.WithRunCapabilities(streamGuard{cancel: cancel})}, options...)
+
+	var (
+		failed    error // why the stream ended before the run
+		completed bool  // whether the run completed
+	)
+	for event, runErr := range run(ctx, options...) {
+		if failed != nil {
+			continue
+		}
+		if runErr != nil {
+			if panicErr := tools.err(); panicErr != nil {
+				// A tool panicked. The error of the run carries the value of the
+				// panic, or the error of a tool that the panic canceled.
+				failed = panicErr
+				fail(send, errRunPanicked)
+				continue
+			}
+			if errorMessage != nil && p.failed(event) {
+				event = p.withMessage(event, errorText(errorMessage, runErr))
+			}
+		}
+		if encoded, err := p.encode(event); err != nil {
+			failed = fmt.Errorf("pydanticai: encode %s: %w", p.what, err)
+			fail(send, failed)
+		} else if err := send(encoded); err != nil {
+			failed = err
+		} else if runErr != nil {
+			// The adapters end the stream after the event of an error.
+			failed = runErr
+		} else if p.completed(event) {
+			completed = true
+		}
+		if failed != nil {
+			cancel(errStreamFailed)
+		}
+	}
+	switch {
+	case failed != nil:
+		return failed
+	case completed:
+		// A deadline or a shutdown that comes once the run has completed does
+		// not fail it.
+		return nil
+	default:
+		// A canceled run ends the stream without an error, so report why it was
+		// canceled.
+		return context.Cause(ctx)
+	}
+}
+
+// safely calls fn, a callback of the application, on a goroutine where no
 // recover middleware guards it. A panic is logged instead of ending the process.
 func safely(name string, fn func()) {
 	defer func() {
@@ -242,6 +431,18 @@ func safely(name string, fn func()) {
 		}
 	}()
 	fn()
+}
+
+// serverDone returns the channel that fasthttp closes when the server of ctx
+// starts shutting down, or nil when ctx has no server, as a RequestCtx that a
+// test or a benchmark builds itself: Done of fasthttp dereferences the server.
+func serverDone(ctx *fasthttp.RequestCtx) (done <-chan struct{}) {
+	defer func() {
+		if recover() != nil {
+			done = nil
+		}
+	}()
+	return ctx.Done()
 }
 
 // serveStream sends what run writes as a server-sent events response.
@@ -266,29 +467,28 @@ func serveStream[Deps any](
 	fail func(send func(data []byte) error, err error),
 	run func(ctx context.Context, send func(data []byte) error) error,
 ) error {
+	// The context of the request is only done before the handler returns when
+	// a middleware gave up on the request, as the timeout middleware of Fiber
+	// does when its deadline passes while Deps or RunOptions run. It answered
+	// for the handler, and fasthttp never writes the response that the stream
+	// would be sent with, so the run would never end.
+	if err := context.Cause(c.Context()); err != nil {
+		return err
+	}
+
 	// The run outlives the handler, but a middleware can scope the context of
 	// the request to the handler and cancel it when the handler returns, as the
 	// timeout middleware of Fiber does. That must not cancel the run, which has
 	// only just started. The values of the context are kept.
 	runCtx, abort := context.WithCancelCause(context.WithoutCancel(c.Context()))
 
-	// fasthttp closes this channel when the server starts shutting down, which
-	// is before it waits for the connections to finish.
-	if shutdown := c.RequestCtx().Done(); opts.cancelOnShutdown && shutdown != nil {
-		go func() {
-			select {
-			case <-shutdown:
-				abort(errShutdown)
-			case <-runCtx.Done():
-			}
-		}()
-	}
-
 	// ended receives how the stream ended, once the run has returned.
 	ended := make(chan error, 1)
 	hold := &requestHold{
-		Ctx: c,
-		ctx: runCtx,
+		Ctx:   c,
+		ctx:   runCtx,
+		conn:  c.RequestCtx().Conn(),
+		grace: streamEndGrace,
 		release: sync.OnceFunc(func() {
 			abort(nil)
 			err := <-ended
@@ -301,6 +501,21 @@ func serveStream[Deps any](
 		}),
 	}
 
+	// fasthttp closes this channel when the server starts shutting down, which
+	// is before it waits for the connections to finish.
+	if opts.cancelOnShutdown {
+		if shutdown := serverDone(c.RequestCtx()); shutdown != nil {
+			go func() {
+				select {
+				case <-shutdown:
+					abort(errShutdown)
+					hold.expire()
+				case <-runCtx.Done():
+				}
+			}()
+		}
+	}
+
 	config := sse.Config{
 		HeartbeatInterval: heartbeatInterval(opts.heartbeat),
 		DisableHeartbeat:  opts.disableHeartbeat,
@@ -310,6 +525,13 @@ func serveStream[Deps any](
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithTimeout(ctx, opts.timeout)
 				defer cancel()
+				// The run ends when its deadline passes, unless it is stuck in a
+				// write to a client that stopped reading.
+				defer context.AfterFunc(ctx, func() {
+					if errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
+						hold.expire()
+					}
+				})()
 			}
 			send := func(data []byte) error {
 				return stream.Event(sse.Event{Data: data})
@@ -351,6 +573,67 @@ type requestHold struct {
 	// release cancels the run, waits for it and reports the end of the stream
 	// to OnRunEnd and OnClose. It does that once, however often it is called.
 	release func()
+
+	// conn is the connection of the request, taken while the handler runs.
+	conn net.Conn
+	// writing is when fasthttp started the write to the client that it is in,
+	// in Unix nanoseconds, or 0 while it waits for the run.
+	writing atomic.Int64
+
+	// grace is how long a write may block once the run was told to end, see
+	// streamEndGrace. It is taken when the stream starts.
+	grace time.Duration
+
+	mu sync.Mutex
+	// done is set once fasthttp is done with the body: from then on the
+	// connection can serve another request, and is left alone.
+	done bool
+	// check looks for a write that blocks, once the run was told to end.
+	check *time.Timer
+}
+
+// expire starts to look for a client that stopped reading, once Timeout elapsed
+// or the server started shutting down. The run, OnRunEnd, OnClose and the
+// shutdown would otherwise wait for a write to the client that only fails when
+// TCP gives up on the connection, which a client that keeps its receive window
+// closed can delay forever.
+func (h *requestHold) expire() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.done || h.conn == nil || h.check != nil {
+		return
+	}
+	h.check = time.AfterFunc(h.grace, h.cut)
+}
+
+// cut closes the connection when a write to it has been blocked for the grace.
+// The write then fails, which ends the response and the run.
+func (h *requestHold) cut() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.done {
+		return
+	}
+	next := h.grace
+	if since := h.writing.Load(); since != 0 {
+		blocked := time.Since(time.Unix(0, since))
+		if blocked >= h.grace {
+			_ = h.conn.Close()
+			return
+		}
+		next -= blocked
+	}
+	h.check.Reset(next)
+}
+
+// finish records that fasthttp is done with the body.
+func (h *requestHold) finish() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.done = true
+	if h.check != nil {
+		h.check.Stop()
+	}
 }
 
 // Context is what sse derives the context of the stream from. It carries the
@@ -361,20 +644,31 @@ func (h *requestHold) Context() context.Context { return h.ctx }
 // SendStreamWriter sets the body of the response like fiber.Ctx does, with a
 // body stream that holds the request.
 func (h *requestHold) SendStreamWriter(write func(*bufio.Writer)) error {
-	return h.SendStream(&holdingBody{ReadCloser: fasthttp.NewStreamReader(write), release: h.release})
+	return h.SendStream(&holdingBody{ReadCloser: fasthttp.NewStreamReader(write), hold: h})
 }
 
 // holdingBody is the body stream of a response that holds its request.
 type holdingBody struct {
 	io.ReadCloser
-	release func()
+	hold *requestHold
+}
+
+// Read is called by fasthttp between its writes to the client.
+func (b *holdingBody) Read(p []byte) (int, error) {
+	b.hold.writing.Store(0)
+	n, err := b.ReadCloser.Read(p)
+	if n > 0 {
+		b.hold.writing.Store(time.Now().UnixNano())
+	}
+	return n, err
 }
 
 // Close ends the response. It does not return before the run has ended.
 func (b *holdingBody) Close() error {
+	b.hold.finish()
 	err := b.ReadCloser.Close()
 	// fasthttp calls Close once the response is complete, and when it cannot
 	// write the response any more, which means that the client went away.
-	b.release()
+	b.hold.release()
 	return err
 }

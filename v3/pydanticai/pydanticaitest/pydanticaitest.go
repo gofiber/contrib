@@ -15,6 +15,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"math"
 	"strings"
 	"testing"
 
@@ -36,10 +37,11 @@ type Record struct {
 // test can use it to look at a stream while the handler is still writing it.
 type Reader struct{ scanner *bufio.Scanner }
 
-// NewReader returns a Reader for stream.
+// NewReader returns a Reader for stream. A line of the stream can be of any
+// length, as one event is one line.
 func NewReader(stream io.Reader) *Reader {
 	scanner := bufio.NewScanner(stream)
-	scanner.Buffer(make([]byte, 0, 64<<10), 4<<20)
+	scanner.Buffer(make([]byte, 0, 64<<10), math.MaxInt)
 	return &Reader{scanner: scanner}
 }
 
@@ -60,8 +62,12 @@ func (r *Reader) Next() (Record, bool) {
 			return Record{Data: strings.Join(data, "\n"), Heartbeat: len(data) == 0}, true
 		}
 		lines++
-		if value, ok := strings.CutPrefix(line, "data: "); ok {
-			data = append(data, value)
+		// As in the server-sent events format: the name of a field is what
+		// precedes the first colon, a line without a colon is a field with an
+		// empty value, a line that starts with a colon is a comment, and one
+		// space after the colon is not part of the value.
+		if name, value, _ := strings.Cut(line, ":"); name == "data" {
+			data = append(data, strings.TrimPrefix(value, " "))
 		}
 	}
 	return Record{}, false

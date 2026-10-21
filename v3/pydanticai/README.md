@@ -14,7 +14,7 @@ id: pydanticai
 - A run is canceled when its client disconnects or its `Timeout` elapses, and optionally when the server shuts down.
 - `OnRunEnd` reports what every run consumed, including runs that failed or lost their client.
 - Rejected requests and failed `Run` calls go through the error handler of the app.
-- A panic in a tool ends the stream with an error event.
+- A panic in a tool ends the stream with an error event, also when the tool runs concurrently with other tool calls.
 
 **Compatible with Fiber v3.**
 
@@ -181,7 +181,7 @@ app.Post("/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[Deps]{
 }))
 ```
 
-The adapters set the message history and the conversation ID of a run themselves, whatever `RunOptions` returns.
+The adapters set the message history and the conversation ID of a run themselves, whatever `RunOptions` returns. A run therefore fails when `RunOptions` returns `ai.WithConversation`, which pydantic-ai-go does not combine with either.
 
 ### Choosing the model per request
 
@@ -242,7 +242,7 @@ app.Post("/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[Deps]{
 }))
 ```
 
-`run` is an `ai.RunInfo`: besides the usage it gives the messages of the conversation, the IDs of the run and its metadata. It is nil when the agent did not start, for example because the adapter rejected the history of the request. `OnRunEnd` runs before `OnClose` and under the same conditions, so keep it short as well. `RunConfig` has an `OnRunEnd` too, which is called once the agent has run.
+`run` is an `ai.RunInfo`: besides the usage it gives the messages of the conversation, the IDs of the run and its metadata. It is nil when the agent did not start the run: when the adapter rejected the history of the request, or when a run wrapper of the agent answered without starting it. Such a run used no tokens. `OnRunEnd` runs before `OnClose` and under the same conditions, so keep it short as well. `RunConfig` has an `OnRunEnd` too, which is called once the agent has run, also when the run panicked.
 
 ### JSON endpoint
 
@@ -263,14 +263,16 @@ app.Post("/weather", pydanticai.Run(agent, pydanticai.RunConfig[struct{}, Weathe
 
 ```console
 $ curl localhost:3000/weather -H 'Content-Type: application/json' \
-    -d '{"prompt": "What is the weather in Paris?", "conversation_id": "optional"}'
-{"output":{"city":"Paris","temp_c":21},"run_id":"52bdcf0873a4f6b3","conversation_id":"41407e02ee266cb2"}
+    -d '{"prompt": "What is the weather in Paris?", "conversation_id": "trip-planning"}'
+{"output":{"city":"Paris","temp_c":21},"run_id":"52bdcf0873a4f6b3","conversation_id":"trip-planning"}
 ```
+
+`conversation_id` is optional. Without it, the agent generates the ID of a new conversation.
 
 The history of the conversation, the usage and the cost of the run stay on the server. `Respond` writes a different response, `Prompt` reads the prompt from somewhere other than the JSON body, and `RunOptions` with `ai.WithMessageHistory` continues a conversation that you store yourself:
 
 ```go
-app.Get("/weather", pydanticai.Run(agent, pydanticai.RunConfig[struct{}, Weather]{
+app.Post("/weather-of-city", pydanticai.Run(agent, pydanticai.RunConfig[struct{}, Weather]{
     Prompt: func(c fiber.Ctx) (string, error) {
         return "What is the weather in " + c.Query("city") + "?", nil
     },
@@ -283,7 +285,9 @@ app.Get("/weather", pydanticai.Run(agent, pydanticai.RunConfig[struct{}, Weather
 }))
 ```
 
-The default request is a `POST` with an `application/json` body of at most `MaxRequestBytes`. A `Prompt` function owns the request instead: none of these checks applies to it, so a route that reads the body itself needs its own protection against cross-site form posts.
+The `conversation_id` of the default request body is passed to the run ahead of the options of `RunOptions`, so an `ai.WithConversationID` that they return wins over it. `ai.WithConversation` cannot be combined with it: pydantic-ai-go rejects the run, and the handler answers `500`, when the body carries a `conversation_id`.
+
+The default request is a `POST` with an `application/json` body of at most `MaxRequestBytes`. A `Prompt` function owns the request instead: none of these checks applies to it, so the route needs its own protection against cross-site requests. Register it with `app.Post` as well: Fiber answers `HEAD` on every `GET` route with the same handler, and browsers, crawlers and link previews send `GET` requests on their own, each of which would run the agent.
 
 A run that ends with deferred tool calls, which are tools that need approval or an external result, cannot be completed by one request and response. The default `Respond` answers `501 Not Implemented` for it. Serve such an agent with `AGUI` or `Vercel`, which resume deferred calls, or handle `result.Deferred()` in your own `Respond`.
 
@@ -397,7 +401,7 @@ The prefixes are `openai`, `openai-responses`, `openai-codex`, `openai-decisions
 
 ## Graceful shutdown
 
-A stream that is still running keeps a shutdown waiting: `app.ShutdownWithTimeout` returns when the run ends on its own, or fails with `context deadline exceeded` when its timeout elapses first. `CancelOnShutdown` cancels the runs of the handler as soon as the server starts shutting down. The streams end like one that timed out, with the end-of-stream event of their protocol, `OnRunEnd` and `OnClose` get an error that wraps `ai.ErrRunCancelled`, and the shutdown does not wait for them:
+A stream that is still running keeps a shutdown waiting: `app.ShutdownWithTimeout` returns when the run ends on its own, or fails with `context deadline exceeded` when its timeout elapses first. `CancelOnShutdown` cancels the runs of the handler as soon as the server starts shutting down. The streams end like one that timed out, with the end-of-stream event of their protocol, `OnRunEnd` and `OnClose` get an error that wraps `ai.ErrRunCancelled`, and the shutdown does not wait for them. The connection of a client that stopped reading is closed once a write to it stayed blocked for 5 seconds:
 
 ```go
 app.Post("/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[Deps]{CancelOnShutdown: true}))
@@ -436,7 +440,7 @@ app.Use(limiter.New(limiter.Config{
 app.Post("/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[Deps]{Deps: depsOfUser}))
 ```
 
-`cors` comes first, because preflight requests carry no credentials. The limiter counts the requests of each user, not of each address. The `timeout` middleware does not stop a stream, and `compress` works, see [Disconnects, timeouts and heartbeats](#disconnects-timeouts-and-heartbeats).
+`cors` comes first, because preflight requests carry no credentials. The limiter counts the requests of each user, not of each address. The `timeout` middleware does not stop a stream, and a request that it gave up on before the stream started, for example while `Deps` ran, is not run. `compress` works, see [Disconnects, timeouts and heartbeats](#disconnects-timeouts-and-heartbeats).
 
 ## Requests
 
@@ -457,7 +461,7 @@ The content type check keeps cross-site form posts from reaching the agent. `Dis
 
 ## Disconnects, timeouts and heartbeats
 
-While a response is open, the streaming handlers write a comment line (`:`) every `HeartbeatInterval`, 5 seconds by default. A failed write cancels the run. Writes keep succeeding for a moment after a client has closed its connection, so a disconnect is noticed by the second or third heartbeat: with the default interval, a run that nobody waits for is canceled within 15 seconds. A failed write of an event cancels the run as well. A client that vanishes without closing its connection, for example because it lost its network, is only noticed when TCP gives up on the connection, so set `Timeout` to bound such a run.
+While a response is open, the streaming handlers write a comment line (`:`) every `HeartbeatInterval`, 5 seconds by default. A failed write cancels the run. Writes keep succeeding for a moment after a client has closed its connection, so a disconnect is noticed by the second or third heartbeat: with the default interval, a run that nobody waits for is canceled within 15 seconds. A failed write of an event cancels the run as well. A client that vanishes without closing its connection, for example because it lost its network, is only noticed when TCP gives up on the connection, so set `Timeout` to bound such a run. Once `Timeout` elapsed, a write to a client that stopped reading may stay blocked for 5 seconds before its connection is closed, and `OnClose` then receives the write error.
 
 Heartbeat comments are ignored by server-sent events parsers. `DisableHeartbeat` turns them off. A client that leaves during a long silent phase, such as a tool call, is then only noticed by the next write to it, which can be after the run has ended.
 
@@ -476,7 +480,7 @@ Heartbeat comments are ignored by server-sent events parsers. `DisableHeartbeat`
 
 The status of the response is `200` in all of these cases, because it is sent before the run starts. When the client disconnects, the run is canceled, nothing more is sent and `OnClose` receives the error.
 
-A panic in a tool, in the model or in a callback ends the stream with an error event too. The client sees `internal error`, or what `ErrorMessage` returns, and the panic with its stack goes to the logger of Fiber and to `OnClose`.
+A panic in a tool, in the model or in a callback of the handler ends the stream with an error event too. The client sees `internal error`, or what `ErrorMessage` returns, and the panic with its stack goes to the logger of Fiber and to `OnClose`. This covers tool calls that run concurrently on goroutines of their own. Other code that pydantic-ai-go runs on those goroutines, such as the event listeners of the agent, is not covered: recover the panics of such code yourself.
 
 ## Errors of `Run`
 
@@ -531,11 +535,11 @@ The two streaming handlers take the same settings. They differ in the event that
 | Next              | `func(fiber.Ctx) bool`                        | Skips the handler when it returns `true`.                                                                                                                                                 | `nil`                  |
 | Deps              | `func(fiber.Ctx) (Deps, error)`               | Resolves the dependencies of the agent for one request. An error aborts the request before the body is read and the stream starts.                                                       | zero value of `Deps`   |
 | RunOptions        | `func(fiber.Ctx) ([]ai.RunOption, error)`     | Returns extra run options for one request.                                                                                                                                                | `nil`                  |
-| ErrorMessage      | `func(error) string`                          | Maps the error of a failed run to the message that the client receives, in the `RUN_ERROR` event (AG-UI) or the `error` chunk (Vercel AI). Also applies to a panic and to an event that cannot be encoded. | `err.Error()`          |
+| ErrorMessage      | `func(error) string`                          | Maps the error of a failed run to the message that the client receives, in the `RUN_ERROR` event (AG-UI) or the `error` chunk (Vercel AI). Also applies to a panic and to an event that cannot be encoded. A panic in it is logged, and the client receives `internal error`. | `err.Error()`          |
 | OnClose           | `func(Deps, error)`                           | Called once when the stream is over, with the dependencies of the run. The error is `nil` when the stream ended normally. The end of the response waits for it.                           | `nil`                  |
 | OnRunEnd          | `func(Deps, *ai.RunInfo, error)`              | Called once when the run has ended, before `OnClose`, with what the run consumed and how it ended. The run is `nil` when the agent did not start. The end of the response waits for it.   | `nil`                  |
 | Adapter           | `agui.Config` or `vercel.Config`              | Protocol version (`Version` for AG-UI, `SDKVersion` for Vercel AI), sanitization of client history and request limits (`MaxRequestBytes`, `AllowedContentTypes`, `DisableContentTypeCheck`). | the zero value         |
-| Timeout           | `time.Duration`                               | Bounds the duration of one run.                                                                                                                                                           | `0` (no timeout)       |
+| Timeout           | `time.Duration`                               | Bounds the duration of one run. A client that stopped reading has its connection closed when a write to it stays blocked for 5 seconds after that.                                      | `0` (no timeout)       |
 | HeartbeatInterval | `time.Duration`                               | Interval of the heartbeat comments. A client that left is noticed by the second or third one. A value of zero or less uses the default.                                                   | `5 * time.Second`      |
 | DisableHeartbeat  | `bool`                                        | Turns the heartbeat off.                                                                                                                                                                  | `false`                |
 | CancelOnShutdown  | `bool`                                        | Cancels the run when the server starts shutting down, instead of waiting for it.                                                                                                          | `false`                |
@@ -546,11 +550,11 @@ The two streaming handlers take the same settings. They differ in the event that
 |:----------------|:--------------------------------------------------|:-----------------------------------------------------------------------------------------------------|:------------------------------------------|
 | Next            | `func(fiber.Ctx) bool`                            | Skips the handler when it returns `true`.                                                            | `nil`                                     |
 | Deps            | `func(fiber.Ctx) (Deps, error)`                   | Resolves the dependencies of the agent for one request. An error is returned from the handler as it is. | zero value of `Deps`                   |
-| RunOptions      | `func(fiber.Ctx) ([]ai.RunOption, error)`         | Returns extra run options for one request. They take precedence over the conversation ID of the body. | `nil`                                   |
+| RunOptions      | `func(fiber.Ctx) ([]ai.RunOption, error)`         | Returns extra run options for one request. An `ai.WithConversationID` among them takes precedence over the conversation ID of the body; `ai.WithConversation` cannot be combined with one. | `nil`                                   |
 | Prompt          | `func(fiber.Ctx) (string, error)`                 | Reads the user prompt from the request. None of the request checks of the default applies.           | the `prompt` field of the JSON body       |
 | Respond         | `func(fiber.Ctx, *ai.RunResult[Output]) error`    | Writes the response for a completed run.                                                             | `{"output", "run_id", "conversation_id"}` |
-| OnRunEnd        | `func(Deps, *ai.RunInfo, error)`                  | Called once the agent has run, with what the run consumed and the error that ended it. The run is `nil` when the agent did not start. | `nil`                                   |
-| MaxRequestBytes | `int64`                                           | Bounds the body that the default `Prompt` reads. The `BodyLimit` of the app applies as well.         | `10 MiB`                                  |
+| OnRunEnd        | `func(Deps, *ai.RunInfo, error)`                  | Called once the agent has run, with what the run consumed and the error that ended it, also when the run panicked. The run is `nil` when the agent did not start. | `nil`                                   |
+| MaxRequestBytes | `int64`                                           | Bounds the body that the default `Prompt` reads. The `BodyLimit` of the app applies as well, unless `StreamRequestBody` is enabled, see [Requests](#requests). | `10 MiB`                                  |
 | Timeout         | `time.Duration`                                   | Bounds the duration of one run. A run that exceeds it fails with `504`.                              | `0` (no timeout)                          |
 
 ## See also

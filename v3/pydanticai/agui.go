@@ -3,7 +3,7 @@ package pydanticai
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"iter"
 	"time"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
@@ -34,7 +34,9 @@ type AGUIConfig[Deps any] struct {
 
 	// RunOptions returns additional agent run options for one request, such as
 	// ai.WithRunUsageLimits or ai.WithRunMetadata. The adapter sets the message
-	// history and the conversation ID itself, whatever the options say.
+	// history and the conversation ID itself, whatever the options say, so a
+	// run fails when they contain ai.WithConversation, which pydantic-ai-go
+	// does not combine with either.
 	//
 	// Optional. Default: nil
 	RunOptions func(c fiber.Ctx) ([]ai.RunOption, error)
@@ -43,7 +45,8 @@ type AGUIConfig[Deps any] struct {
 	// client receives in the RUN_ERROR event. Use it to keep provider error
 	// details, which can carry request IDs or parts of credentials, away from
 	// the browser. It also applies when the run panics or an event cannot be
-	// encoded.
+	// encoded. A panic in ErrorMessage is logged and recovered, and the client
+	// then receives "internal error".
 	//
 	// Optional. Default: err.Error()
 	ErrorMessage func(err error) string
@@ -69,7 +72,8 @@ type AGUIConfig[Deps any] struct {
 	// timed out or lost its client, which makes it the place to record token
 	// usage. err is what OnClose receives. run gives the usage, the messages
 	// and the IDs of the run, see ai.RunInfo, and is nil when the agent did not
-	// start, for example because the adapter rejected the request history.
+	// start the run, because the adapter rejected the request history or a run
+	// wrapper of the agent answered without starting it.
 	//
 	// It runs before OnClose, under the same conditions: the events are
 	// written and the request is still alive, and the end of the response
@@ -87,10 +91,13 @@ type AGUIConfig[Deps any] struct {
 	Adapter agui.Config
 
 	// Timeout bounds the duration of one run. When it elapses the run is
-	// canceled and the stream ends, as it does when the client goes away.
-	// Neither the cancellation nor the deadline of the context of the request
-	// apply to the run, as the handler has returned by the time the run
-	// starts. Timeout does.
+	// canceled and the stream ends, as it does when the client goes away. A
+	// client that stopped reading has its connection closed when a write to it
+	// stays blocked for 5 seconds after that. Neither the cancellation nor the
+	// deadline of the context of the request apply to the run, as the handler
+	// has returned by the time the run starts. Timeout does. A request whose
+	// context is already done when the stream would start, because a timeout
+	// middleware gave up on it while Deps or RunOptions ran, is not run.
 	//
 	// Optional. Default: 0 (no timeout)
 	Timeout time.Duration
@@ -114,8 +121,10 @@ type AGUIConfig[Deps any] struct {
 	// CancelOnShutdown cancels the run when the server starts shutting down.
 	// The stream then ends like one that timed out, with the end-of-stream event
 	// of its protocol, and OnClose receives an error that wraps
-	// ai.ErrRunCancelled. Without it a shutdown waits for the run to end on its
-	// own, until the timeout of the shutdown elapses.
+	// ai.ErrRunCancelled, or the write error for a client that stopped reading
+	// and whose connection is closed after 5 seconds. Without it a shutdown
+	// waits for the run to end on its own, until the timeout of the shutdown
+	// elapses.
 	//
 	// Optional. Default: false
 	CancelOnShutdown bool
@@ -168,27 +177,24 @@ func AGUI[Deps, Output any](agent *ai.Agent[Deps, Output], config ...AGUIConfig[
 		}
 
 		options, tracker := trackRun(request.options, cfg.OnRunEnd != nil)
+		run := func(ctx context.Context, options ...ai.RunOption) iter.Seq2[agui.Event, error] {
+			return adapter.RunStream(ctx, request.input, request.deps, options...)
+		}
 		return serveStream(c, stream, request.deps, tracker, fail, func(ctx context.Context, send func([]byte) error) error {
-			for event, runErr := range adapter.RunStream(ctx, request.input, request.deps, options...) {
-				if runErr != nil && cfg.ErrorMessage != nil && event.Type == agui.EventRunError {
-					event.Message = cfg.ErrorMessage(runErr)
-				}
-				encoded, err := json.Marshal(event)
-				if err != nil {
-					err = fmt.Errorf("pydanticai: encode AG-UI event: %w", err)
-					fail(send, err)
-					return err
-				}
-				if err := send(encoded); err != nil {
-					return err
-				}
-				if runErr != nil {
-					return runErr
-				}
-			}
-			// A canceled run ends the stream without an error, so report why it
-			// was canceled.
-			return context.Cause(ctx)
+			return relay(ctx, aguiProtocol, run, options, cfg.ErrorMessage, send, fail)
 		})
 	}
+}
+
+// aguiProtocol describes the AG-UI events for relay.
+var aguiProtocol = protocol[agui.Event]{
+	what:   "AG-UI event",
+	encode: func(event agui.Event) ([]byte, error) { return json.Marshal(event) },
+	failed: func(event agui.Event) bool { return event.Type == agui.EventRunError },
+	withMessage: func(event agui.Event, message string) agui.Event {
+		event.Message = message
+		return event
+	},
+	// A canceled run ends with RUN_FINISHED as well, but without an outcome.
+	completed: func(event agui.Event) bool { return event.Type == agui.EventRunFinished && event.Outcome != nil },
 }
