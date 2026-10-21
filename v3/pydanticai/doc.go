@@ -4,6 +4,6 @@
 // AGUI and Vercel serve an agent to a chat frontend over the AG-UI and the
 // Vercel AI SDK UI message stream protocols. Run serves an agent as a plain
 // JSON endpoint. All three resolve the agent dependencies for each request from
-// the Fiber context, and the streaming handlers stop the agent run as soon as
-// the client goes away.
+// the Fiber context, and the streaming handlers cancel the agent run when the
+// client goes away.
 package pydanticai

@@ -18,7 +18,9 @@ type RunConfig[Deps, Output any] struct {
 	// Deps resolves the dependencies passed to the agent for one request, for
 	// example from the user that an earlier middleware stored in c.Locals. An
 	// error is returned from the handler as it is, so return
-	// fiber.ErrUnauthorized to turn away an anonymous caller.
+	// fiber.ErrUnauthorized to turn away an anonymous caller. Deps runs before
+	// the body of the request is read, so a caller that is turned away costs
+	// next to nothing.
 	//
 	// Optional. Default: the zero value of Deps
 	Deps func(c fiber.Ctx) (Deps, error)
@@ -33,9 +35,15 @@ type RunConfig[Deps, Output any] struct {
 	// Prompt reads the user prompt from the request. An error is returned from
 	// the handler as it is.
 	//
-	// Optional. Default: the "prompt" field of the JSON request body, which
-	// must be sent as application/json and be at most 10 MiB. The optional
-	// "conversation_id" field becomes the conversation ID of the run.
+	// With a Prompt function the handler applies none of its request checks,
+	// neither the method, nor the content type and the encoding, nor the size.
+	// The function owns the request. The content type check keeps cross-site
+	// form posts from starting runs, so a route that reads the body itself needs
+	// its own protection.
+	//
+	// Optional. Default: the "prompt" field of the JSON request body, which has
+	// to be sent with POST and application/json. The optional "conversation_id"
+	// field becomes the conversation ID of the run.
 	Prompt func(c fiber.Ctx) (string, error)
 
 	// Respond writes the response for a completed run. It also receives runs
@@ -45,6 +53,13 @@ type RunConfig[Deps, Output any] struct {
 	// It answers 501 Not Implemented for a run that ended with deferred tool
 	// calls, because the response cannot carry the decision that resumes them.
 	Respond func(c fiber.Ctx, result *ai.RunResult[Output]) error
+
+	// MaxRequestBytes bounds the body of the request that the default Prompt
+	// reads. The BodyLimit of the app applies as well, 4 MiB by default, and
+	// the smaller of the two wins.
+	//
+	// Optional. Default: 10 MiB
+	MaxRequestBytes int64
 
 	// Timeout bounds the duration of one run. A run that exceeds it fails with
 	// 504 Gateway Timeout. Unlike the streaming handlers, Run cannot notice a
@@ -78,7 +93,7 @@ type runResponse[Output any] struct {
 // code StatusCode derived from the agent error, and the Fiber error handler
 // turns it into the response.
 //
-// It panics when agent is nil.
+// It panics when agent is nil or the config is invalid.
 func Run[Deps, Output any](agent *ai.Agent[Deps, Output], config ...RunConfig[Deps, Output]) fiber.Handler {
 	if agent == nil {
 		panic("pydanticai: agent must not be nil")
@@ -87,50 +102,42 @@ func Run[Deps, Output any](agent *ai.Agent[Deps, Output], config ...RunConfig[De
 	if len(config) > 0 {
 		cfg = config[0]
 	}
-	limits := newRequestLimits(0, nil, false)
+	if cfg.MaxRequestBytes < 0 {
+		panic("pydanticai: maximum request bytes must not be negative")
+	}
+	limits := requestLimits{maxBytes: cfg.MaxRequestBytes}
 
 	return func(c fiber.Ctx) error {
 		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
 		}
 
-		// Without a Prompt function the prompt comes from the JSON body.
-		var body []byte
-		if cfg.Prompt == nil {
-			var err error
-			if body, err = limits.body(c); err != nil {
-				return err
-			}
-		}
-		// Resolving the dependencies comes first, so that a caller that is
-		// turned away does not get its payload parsed.
-		deps, extra, err := resolve(c, cfg.Deps, cfg.RunOptions)
-		if err != nil {
-			return err
-		}
-
 		var (
 			prompt  string
+			deps    Deps
 			options []ai.RunOption
 		)
 		if cfg.Prompt != nil {
+			var err error
+			if deps, options, err = resolve(c, cfg.Deps, cfg.RunOptions); err != nil {
+				return err
+			}
 			if prompt, err = cfg.Prompt(c); err != nil {
 				return err
 			}
 		} else {
-			var request runRequest
-			if err := decodeJSON(body, &request, "run"); err != nil {
+			request, err := admit[Deps, runRequest](c, limits, "run", cfg.Deps, cfg.RunOptions)
+			if err != nil {
 				return err
 			}
-			if request.Prompt == "" {
+			if request.input.Prompt == "" {
 				return fiber.NewError(fiber.StatusBadRequest, "prompt is required")
 			}
-			prompt = request.Prompt
-			if request.ConversationID != "" {
-				options = append(options, ai.WithConversationID(request.ConversationID))
+			prompt, deps, options = request.input.Prompt, request.deps, request.options
+			if id := request.input.ConversationID; id != "" {
+				options = append([]ai.RunOption{ai.WithConversationID(id)}, options...)
 			}
 		}
-		options = append(options, extra...)
 
 		ctx := c.Context()
 		if cfg.Timeout > 0 {
@@ -140,7 +147,7 @@ func Run[Deps, Output any](agent *ai.Agent[Deps, Output], config ...RunConfig[De
 		}
 		result, err := agent.Run(ctx, prompt, deps, options...)
 		if err != nil {
-			return &Error{Err: err, Code: StatusCode(err)}
+			return newError(err)
 		}
 		if cfg.Respond != nil {
 			return cfg.Respond(c, result)
@@ -152,7 +159,7 @@ func Run[Deps, Output any](agent *ai.Agent[Deps, Output], config ...RunConfig[De
 // respondJSON is the default Respond of Run.
 func respondJSON[Output any](c fiber.Ctx, result *ai.RunResult[Output]) error {
 	if result.Deferred() != nil {
-		return &Error{Err: errDeferred, Code: fiber.StatusNotImplemented}
+		return newError(errDeferred)
 	}
 	return c.JSON(runResponse[Output]{
 		Output:         result.Output,

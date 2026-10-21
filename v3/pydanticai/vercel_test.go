@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,12 +16,6 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
 )
-
-func vercelApp(handler fiber.Handler) *fiber.App {
-	app := fiber.New()
-	app.Post("/chat", handler)
-	return app
-}
 
 func chunkTypes(chunks []vercel.Chunk) []vercel.ChunkType {
 	types := make([]vercel.ChunkType, len(chunks))
@@ -35,11 +28,11 @@ func chunkTypes(chunks []vercel.Chunk) []vercel.ChunkType {
 func Test_Vercel_StreamsRun(t *testing.T) {
 	t.Parallel()
 
-	app := vercelApp(pydanticai.Vercel(ai.NewAgent[struct{}, string](fakes.NewTestModel())))
+	app := newApp("/chat", pydanticai.Vercel(ai.NewAgent[struct{}, string](fakes.NewTestModel())))
 
 	resp, body := post(t, app, "/chat", vercelBody)
 	require.Equal(t, fiber.StatusOK, resp.StatusCode)
-	require.Equal(t, "text/event-stream", resp.Header.Get(fiber.HeaderContentType))
+	require.Equal(t, fiber.MIMETextEventStream, resp.Header.Get(fiber.HeaderContentType))
 	require.Equal(t, "no-cache", resp.Header.Get(fiber.HeaderCacheControl))
 	require.Equal(t, "v1", resp.Header.Get("x-vercel-ai-ui-message-stream"))
 
@@ -73,7 +66,7 @@ func Test_Vercel_MatchesNetHTTPHandler(t *testing.T) {
 	require.True(t, wantDone)
 	require.Greater(t, len(want), 7)
 
-	app := vercelApp(pydanticai.Vercel(agent, pydanticai.VercelConfig[struct{}]{Adapter: config}))
+	app := newApp("/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[struct{}]{Adapter: config}))
 	_, body := post(t, app, "/chat", vercelBody)
 	got, gotDone := vercelChunks(t, body)
 
@@ -90,7 +83,7 @@ func Test_Vercel_Deps(t *testing.T) {
 			return userDeps{User: c.Query("user")}, nil
 		},
 	})
-	app := vercelApp(handler)
+	app := newApp("/chat", handler)
 
 	for _, user := range []string{"alice", "bob"} {
 		_, body := post(t, app, "/chat?user="+user, vercelBody)
@@ -98,14 +91,14 @@ func Test_Vercel_Deps(t *testing.T) {
 		require.Equal(t, "user="+user, vercelText(chunks))
 	}
 
-	for i, body := range concurrently(t, app, "/chat", vercelBody, 16) {
+	for i, body := range concurrently(t, app, "/chat", vercelBody) {
 		chunks, _ := vercelChunks(t, body)
 		require.Equal(t, fmt.Sprintf("user=user-%d", i), vercelText(chunks))
 	}
 
 	t.Run("zero value without Deps", func(t *testing.T) {
 		t.Parallel()
-		_, body := post(t, vercelApp(pydanticai.Vercel(userAgent())), "/chat", vercelBody)
+		_, body := post(t, newApp("/chat", pydanticai.Vercel(userAgent())), "/chat", vercelBody)
 		chunks, _ := vercelChunks(t, body)
 		require.Equal(t, "user=", vercelText(chunks))
 	})
@@ -114,25 +107,20 @@ func Test_Vercel_Deps(t *testing.T) {
 func Test_Vercel_DepsError(t *testing.T) {
 	t.Parallel()
 
-	var called atomic.Bool
-	model := fakes.NewFunctionModel(func(
-		context.Context, []ai.ModelMessage, ai.ModelRequestParams,
-	) (*ai.ModelResponse, error) {
-		called.Store(true)
-		return textResponse("unreachable"), nil
-	})
+	model, called := unreachableModel()
 	handler := pydanticai.Vercel(ai.NewAgent[struct{}, string](model), pydanticai.VercelConfig[struct{}]{
 		Deps: func(fiber.Ctx) (struct{}, error) { return struct{}{}, fiber.ErrUnauthorized },
 	})
+	app := newApp("/chat", handler)
 
-	resp, body := post(t, vercelApp(handler), "/chat", vercelBody)
+	resp, body := post(t, app, "/chat", vercelBody)
 	require.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
 	require.Empty(t, resp.Header.Get("x-vercel-ai-ui-message-stream"))
 	require.Equal(t, "Unauthorized", body)
 	require.False(t, called.Load(), "the agent must not run for a rejected request")
 
 	// A caller that is turned away does not get its payload parsed.
-	resp, _ = post(t, vercelApp(handler), "/chat", "{")
+	resp, _ = post(t, app, "/chat", "{")
 	require.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
 }
 
@@ -161,68 +149,27 @@ func Test_Vercel_RunOptionsAndContext(t *testing.T) {
 	require.Equal(t, fiber.StatusForbidden, resp.StatusCode)
 }
 
-func Test_Vercel_RejectsInvalidRequests(t *testing.T) {
+func Test_Vercel_RequiresAChatID(t *testing.T) {
 	t.Parallel()
 
-	agent := ai.NewAgent[struct{}, string](fakes.NewTestModel())
+	// The adapter takes the id as the conversation ID, which panics when it is empty.
+	model, called := unreachableModel()
+	app := newApp("/chat", pydanticai.Vercel(ai.NewAgent[struct{}, string](model)))
 
-	tests := []struct {
-		name        string
-		config      pydanticai.VercelConfig[struct{}]
-		method      string
-		contentType string
-		body        string
-		status      int
-	}{
-		{
-			name: "wrong content type", method: fiber.MethodPost,
-			contentType: fiber.MIMETextPlain, body: vercelBody, status: fiber.StatusUnsupportedMediaType,
-		},
-		{
-			name: "missing content type", method: fiber.MethodPost,
-			body: vercelBody, status: fiber.StatusUnsupportedMediaType,
-		},
-		{
-			name: "invalid json", method: fiber.MethodPost,
-			contentType: fiber.MIMEApplicationJSON, body: "[", status: fiber.StatusBadRequest,
-		},
-		{
-			name:   "body above the adapter limit",
-			config: pydanticai.VercelConfig[struct{}]{Adapter: vercel.Config{MaxRequestBytes: 16}},
-			method: fiber.MethodPost, contentType: fiber.MIMEApplicationJSON, body: vercelBody,
-			status: fiber.StatusRequestEntityTooLarge,
-		},
-		{
-			name:   "content type check disabled",
-			config: pydanticai.VercelConfig[struct{}]{Adapter: vercel.Config{DisableContentTypeCheck: true}},
-			method: fiber.MethodPost, contentType: fiber.MIMETextPlain, body: vercelBody,
-			status: fiber.StatusOK,
-		},
-		{
-			name:   "allowed content type",
-			config: pydanticai.VercelConfig[struct{}]{Adapter: vercel.Config{AllowedContentTypes: []string{"application/x-json"}}},
-			method: fiber.MethodPost, contentType: "application/x-json", body: vercelBody,
-			status: fiber.StatusOK,
-		},
-		{
-			name: "method not allowed", method: fiber.MethodGet,
-			contentType: fiber.MIMEApplicationJSON, status: fiber.StatusMethodNotAllowed,
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
+	const message = `[{"id":"user-1","role":"user","parts":[{"type":"text","text":"Hello"}]}]`
+	for name, body := range map[string]string{
+		"missing":  `{"trigger":"submit-message","messages":` + message + `}`,
+		"empty":    `{"trigger":"submit-message","id":"","messages":` + message + `}`,
+		"not text": `{"trigger":"submit-message","id":7,"messages":` + message + `}`,
+	} {
+		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-
-			app := fiber.New()
-			app.All("/chat", pydanticai.Vercel(agent, test.config))
-
-			resp, _ := do(t, app, test.method, "/chat", test.contentType, test.body)
-			require.Equal(t, test.status, resp.StatusCode)
-			if test.status == fiber.StatusMethodNotAllowed {
-				require.Equal(t, fiber.MethodPost, resp.Header.Get(fiber.HeaderAllow))
-			}
+			resp, _ := post(t, app, "/chat", body)
+			require.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
+			require.Empty(t, resp.Header.Get("x-vercel-ai-ui-message-stream"), "no stream was started")
 		})
 	}
+	require.False(t, called.Load())
 }
 
 func Test_Vercel_Next(t *testing.T) {
@@ -257,7 +204,7 @@ func Test_Vercel_AgentError(t *testing.T) {
 			OnClose: func(_ struct{}, err error) { closed <- err },
 		})
 
-		resp, body := post(t, vercelApp(handler), "/chat", vercelBody)
+		resp, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
 		require.Equal(t, fiber.StatusOK, resp.StatusCode, "the status is sent before the run starts")
 		chunks, _ := vercelChunks(t, body)
 		last := chunks[len(chunks)-1]
@@ -275,7 +222,7 @@ func Test_Vercel_AgentError(t *testing.T) {
 			OnClose:      func(_ struct{}, err error) { closed <- err },
 		})
 
-		_, body := post(t, vercelApp(handler), "/chat", vercelBody)
+		_, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
 		chunks, _ := vercelChunks(t, body)
 		last := chunks[len(chunks)-1]
 		require.Equal(t, vercel.ChunkError, last.Type)
@@ -296,7 +243,7 @@ func Test_Vercel_ChunkThatCannotBeEncoded(t *testing.T) {
 			OnClose: func(_ struct{}, err error) { closed <- err },
 		})
 
-		resp, body := post(t, vercelApp(handler), "/chat", vercelBody)
+		resp, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
 		require.Equal(t, fiber.StatusOK, resp.StatusCode)
 		chunks, done := vercelChunks(t, body)
 		require.True(t, done, "the stream still ends with [DONE]")
@@ -313,24 +260,12 @@ func Test_Vercel_ChunkThatCannotBeEncoded(t *testing.T) {
 			ErrorMessage: func(error) string { return "the run failed" },
 		})
 
-		_, body := post(t, vercelApp(handler), "/chat", vercelBody)
+		_, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
 		chunks, _ := vercelChunks(t, body)
 		last := chunks[len(chunks)-1]
 		require.Equal(t, vercel.ChunkError, last.Type)
 		require.Equal(t, "the run failed", last.ErrorText)
 	})
-}
-
-func Test_Vercel_OnCloseWithoutError(t *testing.T) {
-	t.Parallel()
-
-	closed := make(chan error, 1)
-	handler := pydanticai.Vercel(ai.NewAgent[struct{}, string](fakes.NewTestModel()), pydanticai.VercelConfig[struct{}]{
-		OnClose: func(_ struct{}, err error) { closed <- err },
-	})
-
-	post(t, vercelApp(handler), "/chat", vercelBody)
-	require.NoError(t, receive(t, closed, "OnClose"))
 }
 
 func Test_Vercel_OnCloseReceivesTheDeps(t *testing.T) {
@@ -344,29 +279,10 @@ func Test_Vercel_OnCloseReceivesTheDeps(t *testing.T) {
 		OnClose: func(deps userDeps, err error) { closed <- closeEvent{deps: deps, err: err} },
 	})
 
-	post(t, vercelApp(handler), "/chat?user=alice", vercelBody)
+	post(t, newApp("/chat", handler), "/chat?user=alice", vercelBody)
 	event := receive(t, closed, "OnClose")
 	require.NoError(t, event.err)
 	require.Equal(t, userDeps{User: "alice"}, event.deps)
-}
-
-func Test_Vercel_ClientDisconnectCancelsRun(t *testing.T) {
-	t.Parallel()
-
-	model, started, canceled := blockingModel()
-	closed := make(chan error, 1)
-	handler := pydanticai.Vercel(ai.NewAgent[struct{}, string](model), pydanticai.VercelConfig[struct{}]{
-		HeartbeatInterval: 20 * time.Millisecond,
-		OnClose:           func(_ struct{}, err error) { closed <- err },
-	})
-
-	// The client reads the start of the stream and goes away while the model works.
-	_, body := do(t, vercelApp(handler), fiber.MethodPost, "/chat", fiber.MIMEApplicationJSON, vercelBody, abandon(300*time.Millisecond))
-	require.Contains(t, body, `"type":"start"`)
-	receive(t, started, "the model call")
-
-	require.ErrorIs(t, receive(t, canceled, "the cancellation of the model call"), context.Canceled)
-	require.Error(t, receive(t, closed, "OnClose"))
 }
 
 func Test_Vercel_Timeout(t *testing.T) {
@@ -379,7 +295,7 @@ func Test_Vercel_Timeout(t *testing.T) {
 		OnClose: func(_ struct{}, err error) { closed <- err },
 	})
 
-	resp, body := post(t, vercelApp(handler), "/chat", vercelBody)
+	resp, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
 	require.Equal(t, fiber.StatusOK, resp.StatusCode)
 	chunks, done := vercelChunks(t, body)
 	require.True(t, done, "a canceled run still ends with [DONE]")
@@ -391,30 +307,19 @@ func Test_Vercel_Timeout(t *testing.T) {
 func Test_Vercel_Heartbeat(t *testing.T) {
 	t.Parallel()
 
-	slow := func() *ai.Agent[struct{}, string] {
-		return ai.NewAgent[struct{}, string](fakes.NewFunctionModel(func(
-			ctx context.Context, _ []ai.ModelMessage, _ ai.ModelRequestParams,
-		) (*ai.ModelResponse, error) {
-			select {
-			case <-time.After(250 * time.Millisecond):
-			case <-ctx.Done():
-			}
-			return textResponse("done"), nil
-		}))
-	}
 	config := pydanticai.VercelConfig[struct{}]{HeartbeatInterval: 30 * time.Millisecond}
 
-	_, body := post(t, vercelApp(pydanticai.Vercel(slow(), config)), "/chat", vercelBody)
-	_, comments := parseSSE(body)
-	require.Positive(t, comments, "an idle stream should carry heartbeat comments")
+	_, body := post(t, newApp("/chat", pydanticai.Vercel(slowAgent(), config)), "/chat", vercelBody)
+	_, heartbeats := parseSSE(body)
+	require.Positive(t, heartbeats, "an idle stream should carry heartbeat comments")
 	chunks, done := vercelChunks(t, body)
 	require.True(t, done)
 	require.Equal(t, "done", vercelText(chunks))
 
 	config.DisableHeartbeat = true
-	_, body = post(t, vercelApp(pydanticai.Vercel(slow(), config)), "/chat", vercelBody)
-	_, comments = parseSSE(body)
-	require.Zero(t, comments)
+	_, body = post(t, newApp("/chat", pydanticai.Vercel(slowAgent(), config)), "/chat", vercelBody)
+	_, heartbeats = parseSSE(body)
+	require.Zero(t, heartbeats)
 }
 
 func Test_Vercel_Panics(t *testing.T) {

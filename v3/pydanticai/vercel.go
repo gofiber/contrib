@@ -15,9 +15,10 @@ const (
 	// vercelStreamHeader marks the response as an AI SDK UI message stream.
 	vercelStreamHeader = "x-vercel-ai-ui-message-stream"
 	vercelStreamValue  = "v1"
-	// vercelDone is the record that ends an AI SDK UI message stream.
-	vercelDone = "[DONE]"
 )
+
+// doneRecord is the record that ends an AI SDK UI message stream.
+var doneRecord = []byte("[DONE]")
 
 // VercelConfig defines the config for the Vercel handler.
 type VercelConfig[Deps any] struct {
@@ -30,13 +31,12 @@ type VercelConfig[Deps any] struct {
 	// example from the user that an earlier middleware stored in c.Locals. An
 	// error aborts the request before the stream starts and goes through the
 	// Fiber error handler, so return fiber.ErrUnauthorized to turn away an
-	// anonymous caller.
+	// anonymous caller. Deps runs before the body of the request is read, so a
+	// caller that is turned away costs next to nothing.
 	//
-	// The run outlives the handler, so do not keep c in the dependencies. The
-	// strings that c returns, such as the ones of c.Get and c.Query, can point
-	// into the buffer of the request, which fasthttp reuses once the client has
-	// gone away. Copy them with strings.Clone, or enable Immutable in the
-	// config of the app.
+	// The request stays alive until the run has ended, so the strings that c
+	// returns remain valid for the whole run. Do not keep c, or those strings,
+	// for work that outlives the run.
 	//
 	// Optional. Default: the zero value of Deps
 	Deps func(c fiber.Ctx) (Deps, error)
@@ -51,19 +51,23 @@ type VercelConfig[Deps any] struct {
 	// ErrorMessage maps the error that failed a run to the message that the
 	// client receives in the error chunk. Use it to keep provider error
 	// details, which can carry request IDs or parts of credentials, away from
-	// the browser.
+	// the browser. It also applies when the run panics or a chunk cannot be
+	// encoded.
 	//
 	// Optional. Default: err.Error()
 	ErrorMessage func(err error) string
 
-	// OnClose is called once when the stream has ended, with the dependencies of
-	// the run. err is nil when the run completed, the agent error when the run
-	// failed, and the write error when the client went away.
+	// OnClose is called once when the stream is over, with the dependencies of
+	// the run. err is nil when the stream ended normally, which includes a run
+	// that a tool canceled. Otherwise it is the agent error when the run
+	// failed, the context error when Timeout elapsed, and the write error when
+	// the client went away.
 	//
-	// It does not receive the fiber.Ctx. OnClose runs when the response ends,
-	// and fasthttp reuses the request of a client that went away while the run
-	// is still winding down, so the context may belong to another request by
-	// then. Read what the log line needs in Deps and keep it in the dependencies.
+	// It runs once the run has ended and the events are written, while the
+	// request is still alive. The client has every event by then, but the end of
+	// the response and the next request on the connection wait for OnClose, so
+	// keep it short, or hand the work to a goroutine and copy what that needs. A
+	// panic in OnClose is logged and recovered.
 	//
 	// Optional. Default: nil
 	OnClose func(deps Deps, err error)
@@ -77,15 +81,20 @@ type VercelConfig[Deps any] struct {
 
 	// Timeout bounds the duration of one run. When it elapses the run is
 	// canceled and the stream ends, as it does when the client goes away.
+	// Neither the cancellation nor the deadline of the context of the request
+	// apply to the run, as the handler has returned by the time the run
+	// starts. Timeout does.
 	//
 	// Optional. Default: 0 (no timeout)
 	Timeout time.Duration
 
 	// HeartbeatInterval is the interval of the comment lines that keep an idle
 	// stream open and let the handler notice a client that went away while the
-	// agent is busy. A value less than or equal to zero uses the default.
+	// agent is busy. A client that left is noticed by the second or third
+	// heartbeat after it did, so a run that nobody waits for is canceled after
+	// a few intervals. A value less than or equal to zero uses the default.
 	//
-	// Optional. Default: 15 * time.Second
+	// Optional. Default: 5 * time.Second
 	HeartbeatInterval time.Duration
 
 	// DisableHeartbeat turns the heartbeat off. A client that goes away while
@@ -100,7 +109,8 @@ type VercelConfig[Deps any] struct {
 // stream protocol, which is what the useChat hook of the AI SDK consumes.
 //
 // The handler accepts a POST request with the JSON body that useChat sends and
-// answers with the chunks of the run as server-sent events.
+// answers with the chunks of the run as server-sent events. The body must carry
+// the id of the chat.
 //
 //	app.Post("/chat", pydanticai.Vercel(agent))
 //
@@ -111,13 +121,19 @@ func Vercel[Deps, Output any](agent *ai.Agent[Deps, Output], config ...VercelCon
 		cfg = config[0]
 	}
 	adapter := vercel.NewAdapter(agent, cfg.Adapter)
-	limits := newRequestLimits(
-		cfg.Adapter.MaxRequestBytes, cfg.Adapter.AllowedContentTypes, cfg.Adapter.DisableContentTypeCheck,
-	)
-	stream := streamOptions{
+	limits := requestLimits{
+		contentTypes:         cfg.Adapter.AllowedContentTypes,
+		maxBytes:             cfg.Adapter.MaxRequestBytes,
+		skipContentTypeCheck: cfg.Adapter.DisableContentTypeCheck,
+	}
+	stream := streamOptions[Deps]{
+		onClose:          cfg.OnClose,
 		timeout:          cfg.Timeout,
 		heartbeat:        cfg.HeartbeatInterval,
 		disableHeartbeat: cfg.DisableHeartbeat,
+	}
+	fail := func(send func([]byte) error, err error) {
+		failVercel(send, cfg.ErrorMessage, err)
 	}
 
 	return func(c fiber.Ctx) error {
@@ -125,33 +141,27 @@ func Vercel[Deps, Output any](agent *ai.Agent[Deps, Output], config ...VercelCon
 			return c.Next()
 		}
 
-		body, err := limits.body(c)
+		request, err := admit[Deps, vercel.RequestData](c, limits, "Vercel AI", cfg.Deps, cfg.RunOptions)
 		if err != nil {
 			return err
 		}
-		// Resolving the dependencies comes first, so that a caller that is
-		// turned away does not get its payload parsed.
-		deps, options, err := resolve(c, cfg.Deps, cfg.RunOptions)
-		if err != nil {
-			return err
-		}
-		var input vercel.RequestData
-		if err := decodeJSON(body, &input, "Vercel AI"); err != nil {
-			return err
+		// The adapter takes the id as the conversation ID of the run, which
+		// panics when it is empty.
+		if request.input.ID == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid Vercel AI request")
 		}
 
 		c.Set(vercelStreamHeader, vercelStreamValue)
-		return serveStream(c, stream, onClose(cfg.OnClose, deps), func(ctx context.Context, send func([]byte) error) error {
-			for chunk, runErr := range adapter.RunStream(ctx, input, deps, options...) {
+		return serveStream(c, stream, request.deps, fail, func(ctx context.Context, send func([]byte) error) error {
+			for chunk, runErr := range adapter.RunStream(ctx, request.input, request.deps, request.options...) {
 				if runErr != nil && cfg.ErrorMessage != nil && chunk.Type == vercel.ChunkError {
 					chunk.ErrorText = cfg.ErrorMessage(runErr)
 				}
-				encoded := []byte(vercelDone)
-				if chunk.Type != vercel.ChunkDone {
-					var err error
-					if encoded, err = json.Marshal(chunk); err != nil {
-						return failVercel(send, cfg.ErrorMessage, fmt.Errorf("pydanticai: encode Vercel AI chunk: %w", err))
-					}
+				encoded, err := encodeChunk(chunk)
+				if err != nil {
+					err = fmt.Errorf("pydanticai: encode Vercel AI chunk: %w", err)
+					fail(send, err)
+					return err
 				}
 				if err := send(encoded); err != nil {
 					return err
@@ -167,17 +177,20 @@ func Vercel[Deps, Output any](agent *ai.Agent[Deps, Output], config ...VercelCon
 	}
 }
 
+// encodeChunk encodes a chunk as the data of a server-sent event.
+func encodeChunk(chunk vercel.Chunk) ([]byte, error) {
+	if chunk.Type == vercel.ChunkDone {
+		return doneRecord, nil
+	}
+	return json.Marshal(chunk)
+}
+
 // failVercel ends the stream with an error chunk and the [DONE] record for a
-// chunk that could not be encoded. It returns err for OnClose.
-func failVercel(send func([]byte) error, message func(error) string, err error) error {
-	text := err.Error()
-	if message != nil {
-		text = message(err)
-	}
+// failure that the adapter did not report itself.
+func failVercel(send func([]byte) error, message func(error) string, err error) {
 	// Best effort: the stream ends either way.
-	if encoded, marshalErr := json.Marshal(vercel.Chunk{Type: vercel.ChunkError, ErrorText: text}); marshalErr == nil {
+	if encoded, marshalErr := json.Marshal(vercel.Chunk{Type: vercel.ChunkError, ErrorText: errorText(message, err)}); marshalErr == nil {
 		_ = send(encoded)
-		_ = send([]byte(vercelDone))
+		_ = send(doneRecord)
 	}
-	return err
 }
