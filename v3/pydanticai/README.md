@@ -596,10 +596,11 @@ The client sees one tool, `ask`, with the argument `question`. Its result is the
 
 - **Authenticate first.** Derive `Deps` from the authenticated request, never from the arguments of the tool, which a caller can set to anything. `Deps` is called for every message of the client, including those that set up the connection and list the tool, so keep it cheap.
 - **Errors.** A failed run is an error of the tool, which the model of the client reads and can react to. `ErrorMessage` replaces its text, as for the other handlers, and a panic is reported as `internal error`.
-- **No sessions, no streams.** Every message is a request with a JSON response, so the server holds no state, and a shutdown never waits for an idle connection. The server cannot send progress, sampling or elicitation requests to the client. A server that needs them mounts `mcpsdk.NewStreamableHTTPHandler` with the `adaptor` middleware instead.
+- **No sessions, no streams.** Every message is a request with a JSON response, so the server holds no state, and a shutdown never waits for an idle connection. The server cannot send progress, sampling or elicitation requests to the client. A server that needs them mounts `mcpsdk.NewStreamableHTTPHandler` with the `adaptor` middleware instead. A `GET` is answered with `405`, by Fiber when the route is mounted with `app.Post` as above, which tells a client that the server offers no stream.
 - **Timeouts.** A client that went away is not noticed before the response is written, so a call ends after `Timeout`: 5 minutes by default, and a negative value turns the bound off. `CancelOnShutdown` ends the calls when the server shuts down, and the client reads an error that says so.
 - **Context.** As for the other handlers, the `ctx` of a tool carries the values of `c.Context()`, for example the span of the [otel](https://github.com/gofiber/contrib/tree/main/v3/otel) middleware.
-- **Middleware.** Clients of the 2026-07-28 protocol send the method and the tool name in the headers `Mcp-Method` and `Mcp-Name`, so a middleware can authorize or limit `tools/call` without reading the body. A browser client also sends `Mcp-Protocol-Version`: allow these headers in the `cors` middleware.
+- **Origins.** A request with an `Origin` header is answered with `403` unless `AllowedOrigins` lists it, as the MCP specification has a server validate the origin of its callers. That keeps a page of another site, or one that reaches the server by DNS rebinding and so looks like its own, from calling the tool in the browser of a user. A client that is not a browser sends no `Origin`. A page that you serve yourself has to be listed too, for example `AllowedOrigins: []string{"https://app.example.com"}`.
+- **Middleware.** Clients of the 2026-07-28 protocol send the method and the tool name in the headers `Mcp-Method` and `Mcp-Name`, so a middleware can authorize or limit `tools/call` without reading the body. A browser client also sends `Mcp-Protocol-Version`: allow these headers in the `cors` middleware, for the origins that `AllowedOrigins` lists.
 
 Another agent uses the server as a toolset:
 
@@ -686,7 +687,7 @@ Heartbeat comments are ignored by server-sent events parsers. `DisableHeartbeat`
 |:----------------------------|:-------------------------------------|:-------------------------------|
 | The run completes           | `RUN_FINISHED`                       | `finish` chunk, then `[DONE]`  |
 | `Timeout` elapses, or the server shuts down with `CancelOnShutdown` | `RUN_FINISHED` without an outcome | `abort` chunk, then `[DONE]` |
-| The run fails               | `RUN_ERROR`                          | `error` chunk                  |
+| The run fails               | `RUN_ERROR`                          | `error` chunk, then `[DONE]`   |
 | The run panics              | `RUN_ERROR` with `internal error`    | `error` chunk, then `[DONE]`   |
 
 The status of the response is `200` in all of these cases, because it is sent before the run starts. When the client disconnects, the run is canceled, nothing more is sent and `OnClose` receives the error.
@@ -777,6 +778,7 @@ The two streaming handlers take the same settings: `AGUIConfig` and `VercelConfi
 | Next             | `func(fiber.Ctx) bool`                    | Skips the handler when it returns `true`.                                                                                                    | `nil`                                    |
 | Deps             | `func(fiber.Ctx) (Deps, error)`           | Resolves the dependencies of the agent for one request. An error is returned from the handler as it is, before the message is read. Called for every message. | zero value of `Deps`           |
 | RunOptions       | `func(fiber.Ctx) ([]ai.RunOption, error)` | Returns extra run options for one request.                                                                                                   | `nil`                                    |
+| AllowedOrigins   | `[]string`                                | The origins of the browser pages that may call the handler, for example `https://app.example.com`. A request with another `Origin` header gets `403`, as the MCP specification requires. A client that is not a browser sends none. It panics when an origin is not a scheme, a host and an optional port. | `nil` (no page)                          |
 | Name, Version    | `string`                                  | Identify the server to its clients.                                                                                                          | the name of the agent or `pydantic-ai-go`, and `1.0.0` |
 | Tool, Description | `string`                                 | The name of the tool that runs the agent, 1 to 128 characters of `A-Z`, `a-z`, `0-9`, `_`, `.` and `-`, and what it is for.                  | `ask`, `Ask the agent a question`        |
 | ErrorMessage     | `func(error) string`                      | Maps the error of a failed run to the text that the client reads. Also applies to an output that cannot be encoded. A panic is reported with the error `internal error`. | `err.Error()`            |
