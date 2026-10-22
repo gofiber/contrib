@@ -1,7 +1,7 @@
-// Package agentrun holds what the handlers of pydanticai and pydanticaimcp do
-// around one agent run: they resolve what the run needs from the request, and
-// see to it that a panic in the run, in a tool or in a callback of the
-// application neither takes the process down nor reaches a client.
+// Package agentrun holds what the handlers of pydanticai do around one agent
+// run: they resolve what the run needs from the request, and see to it that a
+// panic in the run, in a tool or in a callback of the application neither
+// takes the process down nor reaches a client.
 package agentrun
 
 import (

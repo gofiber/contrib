@@ -1,11 +1,11 @@
-package pydanticaimcp_test
+package pydanticai_test
 
 import (
 	"testing"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
+	"github.com/gofiber/contrib/v3/pydanticai"
 	"github.com/gofiber/contrib/v3/pydanticai/internal/agenttest"
-	"github.com/gofiber/contrib/v3/pydanticai/pydanticaimcp"
 	"github.com/gofiber/fiber/v3"
 	"github.com/valyala/fasthttp"
 )
@@ -17,9 +17,9 @@ const (
 	callMessage     = `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"_meta":{"io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"c","version":"1"},"io.modelcontextprotocol/protocolVersion":"2026-07-28"},"name":"ask","arguments":{"question":"Hello"}}}`
 )
 
-func Benchmark_New(b *testing.B) {
+func Benchmark_MCP(b *testing.B) {
 	app := fiber.New()
-	app.Post("/mcp", pydanticaimcp.New(ai.NewAgent[struct{}, string](agenttest.Answering("ok"))))
+	app.Post("/mcp", pydanticai.MCP(ai.NewAgent[struct{}, string](agenttest.Answering("ok"))))
 	handler := app.Handler()
 
 	// The headers tell which method a message calls, without parsing the body.
