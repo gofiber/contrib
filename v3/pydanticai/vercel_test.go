@@ -13,6 +13,7 @@ import (
 	"github.com/Kludex/pydantic-ai-go/ai/models/fakes"
 	"github.com/Kludex/pydantic-ai-go/ai/ui/vercel"
 	"github.com/gofiber/contrib/v3/pydanticai"
+	"github.com/gofiber/contrib/v3/pydanticai/internal/agenttest"
 	"github.com/gofiber/contrib/v3/pydanticai/pydanticaitest"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
@@ -187,7 +188,7 @@ func Test_Vercel_AgentError(t *testing.T) {
 		resp, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
 		require.Equal(t, fiber.StatusOK, resp.StatusCode, "the status is sent before the run starts")
 		require.Contains(t, vercelFailure(t, body), "sk-secret")
-		require.ErrorIs(t, receive(t, closed, "OnClose"), secret)
+		require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), secret)
 	})
 
 	t.Run("ErrorMessage replaces the message", func(t *testing.T) {
@@ -202,7 +203,7 @@ func Test_Vercel_AgentError(t *testing.T) {
 		_, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
 		require.Equal(t, "the model failed", vercelFailure(t, body))
 		require.NotContains(t, body, "sk-secret")
-		require.ErrorIs(t, receive(t, closed, "OnClose"), secret, "OnClose still receives the original error")
+		require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), secret, "OnClose still receives the original error")
 	})
 }
 
@@ -222,7 +223,7 @@ func Test_Vercel_ChunkThatCannotBeEncoded(t *testing.T) {
 		_, done := vercelChunks(t, body)
 		require.True(t, done, "the stream still ends with [DONE]")
 		require.Contains(t, vercelFailure(t, body), "encode Vercel AI chunk")
-		require.ErrorContains(t, receive(t, closed, "OnClose"), "cannot encode the payload")
+		require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "cannot encode the payload")
 	})
 
 	t.Run("ErrorMessage replaces the message", func(t *testing.T) {
@@ -247,7 +248,7 @@ func Test_Vercel_OnCloseReceivesTheDeps(t *testing.T) {
 	})
 
 	post(t, newApp("/chat", handler), "/chat?user=alice", vercelBody)
-	event := receive(t, closed, "OnClose")
+	event := agenttest.Receive(t, closed, "OnClose")
 	require.NoError(t, event.err)
 	require.Equal(t, userDeps{User: "alice"}, event.deps)
 }
@@ -267,8 +268,8 @@ func Test_Vercel_Timeout(t *testing.T) {
 	chunks, done := vercelChunks(t, body)
 	require.True(t, done, "a canceled run still ends with [DONE]")
 	require.Equal(t, vercel.ChunkAbort, chunks[len(chunks)-1].Type)
-	require.ErrorIs(t, receive(t, canceled, "the cancellation of the model call"), context.DeadlineExceeded)
-	require.ErrorIs(t, receive(t, closed, "OnClose"), context.DeadlineExceeded)
+	require.ErrorIs(t, agenttest.Receive(t, canceled, "the cancellation of the model call"), context.DeadlineExceeded)
+	require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), context.DeadlineExceeded)
 }
 
 func Test_Vercel_Heartbeat(t *testing.T) {

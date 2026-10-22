@@ -18,6 +18,7 @@ import (
 	"github.com/Kludex/pydantic-ai-go/ai/models/fakes"
 	"github.com/Kludex/pydantic-ai-go/ai/ui/agui"
 	"github.com/Kludex/pydantic-ai-go/ai/ui/vercel"
+	"github.com/gofiber/contrib/v3/pydanticai/internal/agenttest"
 	"github.com/gofiber/contrib/v3/pydanticai/pydanticaitest"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
@@ -29,7 +30,7 @@ const (
 	runBody    = `{"prompt":"Hello"}`
 
 	// observeTimeout bounds how long a test waits for something to happen in the background.
-	observeTimeout = 5 * time.Second
+	observeTimeout = agenttest.ObserveTimeout
 )
 
 // userDeps are the dependencies of the agents that see a per-request user.
@@ -321,18 +322,6 @@ func vercelFailure(t *testing.T, body string) string {
 	last := chunks[len(chunks)-1]
 	require.Equal(t, vercel.ChunkError, last.Type)
 	return last.ErrorText
-}
-
-// receive waits for a value from channel or fails the test.
-func receive[T any](t *testing.T, channel <-chan T, what string) T {
-	t.Helper()
-	select {
-	case value := <-channel:
-		return value
-	case <-time.After(observeTimeout):
-		t.Fatalf("timed out waiting for %s", what)
-		panic("unreachable")
-	}
 }
 
 // drain reads the data of the records that remain in the stream.

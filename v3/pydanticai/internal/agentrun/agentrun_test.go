@@ -30,6 +30,18 @@ func Test_PanicError(t *testing.T) {
 	require.NotErrorIs(t, agentrun.PanicError(cause), cause)
 }
 
+func Test_Timeout(t *testing.T) {
+	t.Parallel()
+
+	// The default is part of the documentation of the handlers: five minutes.
+	require.Equal(t, 5*time.Minute, agentrun.Timeout(0))
+	require.Equal(t, 5*time.Minute, agentrun.DefaultTimeout)
+	require.Zero(t, agentrun.Timeout(-1), "a negative value turns the bound off")
+	require.Zero(t, agentrun.Timeout(-time.Hour))
+	require.Equal(t, time.Nanosecond, agentrun.Timeout(time.Nanosecond))
+	require.Equal(t, 2*time.Hour, agentrun.Timeout(2*time.Hour), "a longer timeout is used as it is")
+}
+
 func Test_Safely(t *testing.T) {
 	// Not parallel: the log is global, and CaptureLog replaces it.
 	logs := agenttest.CaptureLog(t)

@@ -78,9 +78,9 @@ func Test_AGUI_StringsFromTheRequestSurviveAClientThatLeft(t *testing.T) {
 	require.NoError(t, err)
 	_, ok := pydanticaitest.NewReader(conn).NextData()
 	require.True(t, ok)
-	receive(t, started, "the tool call")
+	agenttest.Receive(t, started, "the tool call")
 	require.NoError(t, conn.Close())
-	receive(t, canceled, "the cancellation of the run") // the heartbeats fail and fasthttp gives up on the response
+	agenttest.Receive(t, canceled, "the cancellation of the run") // the heartbeats fail and fasthttp gives up on the response
 
 	// Other clients make fasthttp reuse what it can.
 	for range 8 {
@@ -94,7 +94,7 @@ func Test_AGUI_StringsFromTheRequestSurviveAClientThatLeft(t *testing.T) {
 	}
 
 	close(release)
-	got := receive(t, late, "the tool")
+	got := agenttest.Receive(t, late, "the tool")
 	require.Equal(t, "AAAAAAAAAAAA", got.user, "the dependencies of the run")
 	require.Equal(t, "request-A-0000000001", got.requestID, "the value of the middleware in the context of the run")
 	require.Equal(t, "tenant-A", got.tenant, "the Locals of the request")
@@ -117,7 +117,7 @@ func Test_AGUI_APanicInOnCloseIsRecovered(t *testing.T) {
 	for range 2 {
 		resp, _ := post(t, app, "/agui", aguiBody)
 		require.Equal(t, fiber.StatusOK, resp.StatusCode)
-		receive(t, called, "OnClose")
+		agenttest.Receive(t, called, "OnClose")
 	}
 	require.Eventually(t, func() bool {
 		return strings.Count(logs.String(), "panic in OnClose: bug in OnClose") == 2
@@ -139,7 +139,7 @@ func Test_AGUI_APanicInTheRunEndsTheStreamWithAnError(t *testing.T) {
 		require.Equal(t, fiber.StatusOK, resp.StatusCode)
 		require.Equal(t, "internal error", aguiFailure(t, body))
 		require.NotContains(t, body, "kaboom", "the value of the panic stays on the server")
-		require.ErrorContains(t, receive(t, closed, "OnClose"), "panic in the run: kaboom")
+		require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "panic in the run: kaboom")
 	})
 
 	t.Run("ErrorMessage applies", func(t *testing.T) {
@@ -176,7 +176,7 @@ func Test_Vercel_APanicInTheRunEndsTheStreamWithAnError(t *testing.T) {
 	require.True(t, done, "the stream still ends with [DONE]")
 	require.Equal(t, "internal error", vercelFailure(t, body))
 	require.NotContains(t, body, "kaboom", "the value of the panic stays on the server")
-	require.ErrorContains(t, receive(t, closed, "OnClose"), "panic in the run: kaboom")
+	require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "panic in the run: kaboom")
 	require.Contains(t, logs.String(), "panic in the run: kaboom")
 }
 
@@ -203,7 +203,7 @@ func Test_APanicInTheModelEndsTheStreamWithAnError(t *testing.T) {
 		require.Equal(t, fiber.StatusOK, resp.StatusCode)
 		require.Equal(t, "internal error", aguiFailure(t, body))
 		require.NotContains(t, body, "kaboom", "the value of the panic stays on the server")
-		require.ErrorContains(t, receive(t, closed, "OnClose"), "panic in the run: model kaboom")
+		require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "panic in the run: model kaboom")
 	})
 
 	t.Run("Vercel", func(t *testing.T) {
@@ -218,7 +218,7 @@ func Test_APanicInTheModelEndsTheStreamWithAnError(t *testing.T) {
 		require.True(t, done, "the stream still ends with [DONE]")
 		require.Equal(t, "internal error", vercelFailure(t, body))
 		require.NotContains(t, body, "kaboom", "the value of the panic stays on the server")
-		require.ErrorContains(t, receive(t, closed, "OnClose"), "panic in the run: model kaboom")
+		require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "panic in the run: model kaboom")
 	})
 
 	require.Contains(t, logs.String(), "panic in the run: model kaboom")
@@ -275,7 +275,7 @@ func Test_AGUI_RunOutlivesAMiddlewareThatCancelsTheRequestContext(t *testing.T) 
 			require.NotNil(t, last.Outcome)
 			require.Equal(t, "success", last.Outcome.Type)
 			require.Equal(t, "done", pydanticaitest.AGUIText(events))
-			require.NoError(t, receive(t, closed, "OnClose"))
+			require.NoError(t, agenttest.Receive(t, closed, "OnClose"))
 		})
 	}
 }
@@ -324,7 +324,7 @@ func Test_ARequestThatATimeoutMiddlewareGaveUpOnStartsNoRun(t *testing.T) {
 			// the response of the handler, so a run would never end.
 			resp, _ := post(t, app, test.path, test.body)
 			require.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
-			require.ErrorIs(t, receive(t, returned, "the handler"), context.DeadlineExceeded)
+			require.ErrorIs(t, agenttest.Receive(t, returned, "the handler"), context.DeadlineExceeded)
 			require.False(t, called.Load(), "the agent ran for a request nobody waits for")
 		})
 	}
@@ -366,7 +366,7 @@ func Test_APanicInErrorMessageEndsTheStreamWithAnError(t *testing.T) {
 			_, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
 			require.Equal(t, "internal error", aguiFailure(t, body))
 			require.NotContains(t, body, "sk-secret", "the client is not told what ErrorMessage hides")
-			test.closed(t, receive(t, closed, "OnClose"))
+			test.closed(t, agenttest.Receive(t, closed, "OnClose"))
 		})
 		t.Run("Vercel: "+name, func(t *testing.T) {
 			closed := make(chan error, 1)
@@ -378,7 +378,7 @@ func Test_APanicInErrorMessageEndsTheStreamWithAnError(t *testing.T) {
 			_, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
 			require.Equal(t, "internal error", vercelFailure(t, body))
 			require.NotContains(t, body, "sk-secret", "the client is not told what ErrorMessage hides")
-			test.closed(t, receive(t, closed, "OnClose"))
+			test.closed(t, agenttest.Receive(t, closed, "OnClose"))
 		})
 	}
 	require.Contains(t, logs.String(), "panic in ErrorMessage: bug in ErrorMessage")

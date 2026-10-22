@@ -12,6 +12,7 @@ import (
 	"github.com/Kludex/pydantic-ai-go/ai/models/fakes"
 	"github.com/Kludex/pydantic-ai-go/ai/ui/agui"
 	"github.com/gofiber/contrib/v3/pydanticai"
+	"github.com/gofiber/contrib/v3/pydanticai/internal/agenttest"
 	"github.com/gofiber/contrib/v3/pydanticai/pydanticaitest"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
@@ -181,7 +182,7 @@ func Test_AGUI_AgentError(t *testing.T) {
 		resp, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
 		require.Equal(t, fiber.StatusOK, resp.StatusCode, "the status is sent before the run starts")
 		require.Contains(t, aguiFailure(t, body), "sk-secret")
-		require.ErrorIs(t, receive(t, closed, "OnClose"), secret)
+		require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), secret)
 	})
 
 	t.Run("ErrorMessage replaces the message", func(t *testing.T) {
@@ -196,7 +197,7 @@ func Test_AGUI_AgentError(t *testing.T) {
 		_, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
 		require.Equal(t, "the model failed", aguiFailure(t, body))
 		require.NotContains(t, body, "sk-secret")
-		require.ErrorIs(t, receive(t, closed, "OnClose"), secret, "OnClose still receives the original error")
+		require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), secret, "OnClose still receives the original error")
 	})
 }
 
@@ -214,7 +215,7 @@ func Test_AGUI_EventThatCannotBeEncoded(t *testing.T) {
 		resp, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
 		require.Equal(t, fiber.StatusOK, resp.StatusCode)
 		require.Contains(t, aguiFailure(t, body), "encode AG-UI event")
-		require.ErrorContains(t, receive(t, closed, "OnClose"), "cannot encode the payload")
+		require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "cannot encode the payload")
 	})
 
 	t.Run("ErrorMessage replaces the message", func(t *testing.T) {
@@ -239,7 +240,7 @@ func Test_AGUI_OnCloseReceivesTheDeps(t *testing.T) {
 	})
 
 	post(t, newApp("/agui", handler), "/agui?user=alice", aguiBody)
-	event := receive(t, closed, "OnClose")
+	event := agenttest.Receive(t, closed, "OnClose")
 	require.NoError(t, event.err)
 	require.Equal(t, userDeps{User: "alice"}, event.deps)
 }
@@ -272,11 +273,11 @@ func Test_AGUI_ToolsSeeTheRequestContextAndItsCancellation(t *testing.T) {
 	response, closeConnection := openStream(t, listen(t, app)+"/agui", aguiBody)
 	_, ok := pydanticaitest.NewReader(response.Body).NextData()
 	require.True(t, ok)
-	receive(t, started, "the tool call")
+	agenttest.Receive(t, started, "the tool call")
 	closeConnection()
 
-	require.Equal(t, "trace-1", receive(t, seen, "the context value in the tool"))
-	require.ErrorIs(t, receive(t, canceled, "the cancellation of the tool call"), context.Canceled)
+	require.Equal(t, "trace-1", agenttest.Receive(t, seen, "the context value in the tool"))
+	require.ErrorIs(t, agenttest.Receive(t, canceled, "the cancellation of the tool call"), context.Canceled)
 }
 
 func Test_AGUI_Timeout(t *testing.T) {
@@ -295,8 +296,8 @@ func Test_AGUI_Timeout(t *testing.T) {
 	last := events[len(events)-1]
 	require.Equal(t, agui.EventRunFinished, last.Type)
 	require.Nil(t, last.Outcome, "a canceled run has no outcome")
-	require.ErrorIs(t, receive(t, canceled, "the cancellation of the model call"), context.DeadlineExceeded)
-	require.ErrorIs(t, receive(t, closed, "OnClose"), context.DeadlineExceeded)
+	require.ErrorIs(t, agenttest.Receive(t, canceled, "the cancellation of the model call"), context.DeadlineExceeded)
+	require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), context.DeadlineExceeded)
 }
 
 func Test_AGUI_Heartbeat(t *testing.T) {

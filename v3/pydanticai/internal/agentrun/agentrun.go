@@ -11,6 +11,7 @@ import (
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
 	"github.com/gofiber/fiber/v3"
@@ -47,6 +48,24 @@ func Resolve[Deps any](
 		}
 	}
 	return value, extra, nil
+}
+
+// DefaultTimeout bounds a run of the handlers that cannot notice that their
+// client left, Run and the MCP handler, unless they are configured otherwise.
+const DefaultTimeout = 5 * time.Minute
+
+// Timeout returns how long a run may last for the configured Timeout of such a
+// handler: zero is DefaultTimeout, and a negative value turns the bound off,
+// which is a returned zero.
+func Timeout(configured time.Duration) time.Duration {
+	switch {
+	case configured == 0:
+		return DefaultTimeout
+	case configured < 0:
+		return 0
+	default:
+		return configured
+	}
 }
 
 // ServerDone returns the channel that fasthttp closes when the server of ctx

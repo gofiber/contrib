@@ -17,6 +17,28 @@ import (
 	"github.com/gofiber/fiber/v3/log"
 )
 
+// ObserveTimeout bounds how long a test waits for something to happen in the
+// background.
+const ObserveTimeout = 5 * time.Second
+
+// Receive waits for a value from channel or fails the test.
+func Receive[T any](t testing.TB, channel <-chan T, what string) T {
+	t.Helper()
+	return receive(t, channel, what, ObserveTimeout)
+}
+
+func receive[T any](t testing.TB, channel <-chan T, what string, timeout time.Duration) T {
+	t.Helper()
+	select {
+	case value := <-channel:
+		return value
+	case <-time.After(timeout):
+	}
+	t.Fatalf("timed out waiting for %s", what)
+	var zero T
+	return zero
+}
+
 // SyncBuffer is a log destination that can be read while it is written.
 type SyncBuffer struct {
 	mu  sync.Mutex
@@ -53,6 +75,41 @@ func Answering(text string) *fakes.FunctionModel {
 	return fakes.NewFunctionModel(func(context.Context, []ai.ModelMessage, ai.ModelRequestParams) (*ai.ModelResponse, error) {
 		return &ai.ModelResponse{Parts: []ai.ResponsePart{ai.TextPart{Content: text}}}, nil
 	})
+}
+
+// Deadline is the time left until the deadline of the context of a model call,
+// or Set false when the context had none.
+type Deadline struct {
+	Left time.Duration
+	Set  bool
+}
+
+// Require fails the test unless the deadline is the given time away, up to the
+// time that the model call took to start. Zero means no deadline at all.
+func (d Deadline) Require(t testing.TB, want time.Duration) {
+	t.Helper()
+	switch {
+	case want == 0 && d.Set:
+		t.Fatalf("the context has a deadline in %v, want none", d.Left)
+	case want != 0 && !d.Set:
+		t.Fatalf("the context has no deadline, want one in %v", want)
+	case want != 0 && (d.Left > want || d.Left <= want-ObserveTimeout):
+		t.Fatalf("the deadline is in %v, want about %v", d.Left, want)
+	}
+}
+
+// DeadlineProbe is a model that answers "ok" and sends what its context had of
+// a deadline to the returned channel.
+func DeadlineProbe() (model *fakes.FunctionModel, deadlines <-chan Deadline) {
+	seen := make(chan Deadline, 1)
+	model = fakes.NewFunctionModel(func(
+		ctx context.Context, _ []ai.ModelMessage, _ ai.ModelRequestParams,
+	) (*ai.ModelResponse, error) {
+		deadline, set := ctx.Deadline()
+		seen <- Deadline{Left: time.Until(deadline), Set: set}
+		return &ai.ModelResponse{Parts: []ai.ResponsePart{ai.TextPart{Content: "ok"}}}, nil
+	})
+	return model, seen
 }
 
 // ToolCalls is a model that asks for one call of each named tool in its first

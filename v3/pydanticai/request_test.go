@@ -18,6 +18,7 @@ import (
 	"github.com/Kludex/pydantic-ai-go/ai/ui/agui"
 	"github.com/Kludex/pydantic-ai-go/ai/ui/vercel"
 	"github.com/gofiber/contrib/v3/pydanticai"
+	"github.com/gofiber/contrib/v3/pydanticai/internal/agenttest"
 	"github.com/gofiber/contrib/v3/pydanticai/pydanticaitest"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
@@ -383,7 +384,7 @@ func Test_AGUI_AStreamedBodyThatDoesNotArriveIsABadRequest(t *testing.T) {
 			}
 
 			var failure *fiber.Error
-			require.ErrorAs(t, receive(t, failed, "the error handler"), &failure)
+			require.ErrorAs(t, agenttest.Receive(t, failed, "the error handler"), &failure)
 			require.Equal(t, fiber.StatusBadRequest, failure.Code)
 			require.Equal(t, test.message, failure.Message)
 		})

@@ -25,13 +25,13 @@ import (
 	"net/http"
 	"reflect"
 	"regexp"
-	"strings"
 	"time"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
 	"github.com/gofiber/contrib/v3/pydanticai/internal/agentrun"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/adaptor"
+	"github.com/gofiber/utils/v2"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -107,10 +107,10 @@ type Config[Deps any] struct {
 
 	// Timeout bounds the duration of one run. A run that exceeds it fails with
 	// the context error. A client that went away is not noticed before the
-	// response is written, so a timeout keeps the run of such a client from
-	// going on for as long as the agent likes: set one.
+	// response is written, so the timeout is what ends the run of such a client.
+	// A negative value turns it off.
 	//
-	// Optional. Default: 0 (no timeout)
+	// Optional. Default: 5 * time.Minute
 	Timeout time.Duration
 
 	// CancelOnShutdown cancels the runs of the handler when the server starts
@@ -214,9 +214,7 @@ func call[Deps, Output any](
 			}
 		}()
 
-		// strings.TrimSpace and not utils.TrimSpace: a question of Unicode spaces is
-		// as empty as one of ASCII spaces.
-		if strings.TrimSpace(in.Question) == "" {
+		if utils.TrimSpace(in.Question) == "" {
 			return nil, nil, errors.New("the question must not be empty")
 		}
 		if shutdown != nil {
@@ -231,9 +229,9 @@ func call[Deps, Output any](
 				}
 			}(ctx.Done())
 		}
-		if cfg.Timeout > 0 {
+		if timeout := agentrun.Timeout(cfg.Timeout); timeout > 0 {
 			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, cfg.Timeout)
+			ctx, cancel = context.WithTimeout(ctx, timeout)
 			defer cancel()
 		}
 

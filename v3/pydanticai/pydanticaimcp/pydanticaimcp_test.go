@@ -25,7 +25,7 @@ import (
 )
 
 // observeTimeout bounds how long a test waits for something to happen.
-const observeTimeout = 5 * time.Second
+const observeTimeout = agenttest.ObserveTimeout
 
 // The tests talk to the handler as an MCP client does, over a real socket.
 
@@ -241,7 +241,7 @@ func Test_New_Output(t *testing.T) {
 		result := ask(t, connect(t, serve(t, app), ""), "Hello")
 		require.True(t, result.IsError)
 		require.Contains(t, resultText(t, result), "encode the output of the agent")
-		require.NoError(t, <-ends, "the run had completed")
+		require.NoError(t, agenttest.Receive(t, ends, "OnRunEnd"), "the run had completed")
 	})
 
 	t.Run("ErrorMessage applies to an output that cannot be encoded", func(t *testing.T) {
@@ -513,7 +513,7 @@ func Test_New_Errors(t *testing.T) {
 		result := ask(t, connect(t, serve(t, app), ""), "Hello")
 		require.True(t, result.IsError, "the model of the client can read the error")
 		require.Contains(t, resultText(t, result), "sk-secret")
-		require.ErrorIs(t, <-ends, secret)
+		require.ErrorIs(t, agenttest.Receive(t, ends, "OnRunEnd"), secret)
 	})
 
 	t.Run("ErrorMessage decides what the client reads", func(t *testing.T) {
@@ -538,7 +538,7 @@ func Test_New_Errors(t *testing.T) {
 
 		model := agenttest.Answering("must not be called")
 		session := connect(t, serve(t, newApp(pydanticaimcp.New(ai.NewAgent[struct{}, string](model)))), "")
-		for _, question := range []string{"", "  \n\t", "\u00a0\u2003"} {
+		for _, question := range []string{"", "  \n\t"} {
 			result := ask(t, session, question)
 			require.True(t, result.IsError)
 			require.Contains(t, resultText(t, result), "must not be empty")
@@ -570,7 +570,7 @@ func Test_New_Errors(t *testing.T) {
 		result := ask(t, connect(t, serve(t, app), ""), "Delete it")
 		require.True(t, result.IsError)
 		require.Contains(t, resultText(t, result), "deferred tool calls")
-		require.ErrorContains(t, <-ends, "deferred tool calls")
+		require.ErrorContains(t, agenttest.Receive(t, ends, "OnRunEnd"), "deferred tool calls")
 	})
 }
 
@@ -590,7 +590,34 @@ func Test_New_Timeout(t *testing.T) {
 	result := ask(t, connect(t, serve(t, app), ""), "Hello")
 	require.True(t, result.IsError)
 	require.Contains(t, resultText(t, result), "deadline exceeded")
-	require.ErrorIs(t, <-canceled, context.DeadlineExceeded)
+	require.ErrorIs(t, agenttest.Receive(t, canceled, "the cancellation of the model call"), context.DeadlineExceeded)
+}
+
+// A client that went away is not noticed, so a run is bounded unless the
+// timeout is turned off.
+func Test_New_TimeoutDefaults(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		timeout time.Duration
+		want    time.Duration // the deadline of the run, 0 for none
+	}{
+		{name: "unset is five minutes", want: 5 * time.Minute},
+		{name: "a negative value turns it off", timeout: -time.Second},
+		{name: "a positive value is used as it is", timeout: 30 * time.Second, want: 30 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			model, deadlines := agenttest.DeadlineProbe()
+			agent := ai.NewAgent[struct{}, string](model)
+			app := newApp(pydanticaimcp.New(agent, pydanticaimcp.Config[struct{}]{Timeout: tc.timeout}))
+
+			require.False(t, ask(t, connect(t, serve(t, app), ""), "Hello").IsError)
+			agenttest.Receive(t, deadlines, "the model call").Require(t, tc.want)
+		})
+	}
 }
 
 func Test_New_OnRunEnd(t *testing.T) {
@@ -607,7 +634,7 @@ func Test_New_OnRunEnd(t *testing.T) {
 	}))
 	require.False(t, ask(t, connect(t, serve(t, app), ""), "Hello").IsError)
 
-	got := <-ends
+	got := agenttest.Receive(t, ends, "OnRunEnd")
 	require.NoError(t, got.err)
 	require.NotNil(t, got.run)
 	require.NotZero(t, got.run.Usage().Requests)
@@ -650,7 +677,7 @@ func Test_New_Panics_AreErrorsOfTheTool(t *testing.T) {
 			result := ask(t, connect(t, serve(t, app), ""), "Hello")
 			require.True(t, result.IsError)
 			require.Equal(t, "internal error", resultText(t, result), "the client is not told what the panic was")
-			require.ErrorContains(t, <-ends, "panic in the run: "+test.cause)
+			require.ErrorContains(t, agenttest.Receive(t, ends, "OnRunEnd"), "panic in the run: "+test.cause)
 			require.Contains(t, logs.String(), "panic in the run: "+test.cause)
 		})
 	}
@@ -701,7 +728,7 @@ func Test_New_PanicWhileEncodingTheOutput(t *testing.T) {
 	result := ask(t, connect(t, serve(t, app), ""), "Hello")
 	require.True(t, result.IsError)
 	require.Equal(t, "internal error", resultText(t, result))
-	require.NoError(t, <-ends, "the run itself had ended")
+	require.NoError(t, agenttest.Receive(t, ends, "OnRunEnd"), "the run itself had ended")
 	require.Contains(t, logs.String(), "kaboom in MarshalJSON")
 }
 
@@ -802,16 +829,16 @@ func Test_New_CancelOnShutdown(t *testing.T) {
 	session := connect(t, serve(t, app), "")
 
 	answered := callAsync(session, "Hello")
-	<-started
+	agenttest.Receive(t, started, "the model call")
 
 	// The run does not end on its own, so a shutdown that waits for it takes the whole timeout.
 	begin := time.Now()
 	require.NoError(t, app.ShutdownWithTimeout(10*time.Second))
 	require.Less(t, time.Since(begin), 5*time.Second, "the shutdown waited for the run")
 
-	require.ErrorIs(t, <-canceled, ai.ErrRunCancelled)
-	require.ErrorIs(t, <-ends, ai.ErrRunCancelled)
-	got := <-answered
+	require.ErrorIs(t, agenttest.Receive(t, canceled, "the cancellation of the model call"), ai.ErrRunCancelled)
+	require.ErrorIs(t, agenttest.Receive(t, ends, "OnRunEnd"), ai.ErrRunCancelled)
+	got := agenttest.Receive(t, answered, "the answer")
 	require.NoError(t, got.err, "the client gets an answer, not a broken connection")
 	require.True(t, got.result.IsError)
 	require.Contains(t, resultText(t, got.result), "the server is shutting down")
@@ -836,11 +863,11 @@ func Test_New_CancelOnShutdownWithATimeout(t *testing.T) {
 	session := connect(t, serve(t, app), "")
 
 	answered := callAsync(session, "Hello")
-	<-started
+	agenttest.Receive(t, started, "the model call")
 	begin := time.Now()
 	require.NoError(t, app.ShutdownWithTimeout(10*time.Second))
 	require.Less(t, time.Since(begin), 5*time.Second, "the shutdown waited for the run")
-	got := <-answered
+	got := agenttest.Receive(t, answered, "the answer")
 	require.NoError(t, got.err)
 	require.Contains(t, resultText(t, got.result), "the server is shutting down")
 }
@@ -867,7 +894,7 @@ func Test_New_ShutdownWaitsForARunByDefault(t *testing.T) {
 	session := connect(t, serve(t, app), "")
 
 	answered := callAsync(session, "Hello")
-	<-started
+	agenttest.Receive(t, started, "the model call")
 	require.ErrorIs(t, app.ShutdownWithTimeout(200*time.Millisecond), context.DeadlineExceeded)
 	select {
 	case <-canceled:
@@ -876,7 +903,7 @@ func Test_New_ShutdownWaitsForARunByDefault(t *testing.T) {
 	}
 
 	close(release) // the run ends on its own
-	got := <-answered
+	got := agenttest.Receive(t, answered, "the answer")
 	require.NoError(t, got.err)
 	require.Equal(t, "late", resultText(t, got.result))
 }

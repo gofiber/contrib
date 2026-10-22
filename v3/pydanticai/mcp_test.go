@@ -19,6 +19,7 @@ import (
 	"github.com/Kludex/pydantic-ai-go/ai/ui/agui"
 	"github.com/Kludex/pydantic-ai-go/ai/ui/vercel"
 	"github.com/gofiber/contrib/v3/pydanticai"
+	"github.com/gofiber/contrib/v3/pydanticai/internal/agenttest"
 	"github.com/gofiber/contrib/v3/pydanticai/pydanticaitest"
 	"github.com/gofiber/fiber/v3"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -327,12 +328,12 @@ func Test_MCP_ASessionThatAllRequestsShare(t *testing.T) {
 	response, _ := openStream(t, listen(t, app)+"/agui", aguiBody)
 	_, ok := pydanticaitest.NewReader(response.Body).NextData()
 	require.True(t, ok)
-	receive(t, catalog.searching, "the tool call")
+	agenttest.Receive(t, catalog.searching, "the tool call")
 
 	begin := time.Now()
 	require.NoError(t, app.ShutdownWithTimeout(10*time.Second))
 	require.Less(t, time.Since(begin), 5*time.Second, "the shutdown waited for the run")
-	require.ErrorIs(t, receive(t, closed, "OnClose"), ai.ErrRunCancelled)
+	require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), ai.ErrRunCancelled)
 
 	mu.Lock()
 	defer mu.Unlock()

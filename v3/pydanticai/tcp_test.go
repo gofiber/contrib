@@ -15,6 +15,7 @@ import (
 	"github.com/Kludex/pydantic-ai-go/ai/models/fakes"
 	"github.com/Kludex/pydantic-ai-go/ai/ui/agui"
 	"github.com/gofiber/contrib/v3/pydanticai"
+	"github.com/gofiber/contrib/v3/pydanticai/internal/agenttest"
 	"github.com/gofiber/contrib/v3/pydanticai/pydanticaitest"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/compress"
@@ -113,7 +114,7 @@ func Test_AGUI_StreamsThroughCompress(t *testing.T) {
 	close(release)
 	require.Contains(t, strings.Join(drain(scanner), ""), `"type":"RUN_FINISHED"`)
 	// Closing the compressed body closes the body of the handler, which ends the hold.
-	require.NoError(t, receive(t, closed, "OnClose"))
+	require.NoError(t, agenttest.Receive(t, closed, "OnClose"))
 }
 
 func Test_AGUI_ClosedSocketCancelsRun(t *testing.T) {
@@ -131,12 +132,12 @@ func Test_AGUI_ClosedSocketCancelsRun(t *testing.T) {
 	record, ok := pydanticaitest.NewReader(response.Body).NextData()
 	require.True(t, ok)
 	require.Contains(t, record, `"type":"RUN_STARTED"`)
-	receive(t, started, "the model call")
+	agenttest.Receive(t, started, "the model call")
 
 	closeConnection()
 
-	require.ErrorIs(t, receive(t, canceled, "the cancellation of the model call"), context.Canceled)
-	require.Error(t, receive(t, closed, "OnClose"))
+	require.ErrorIs(t, agenttest.Receive(t, canceled, "the cancellation of the model call"), context.Canceled)
+	require.Error(t, agenttest.Receive(t, closed, "OnClose"))
 }
 
 func Test_Vercel_ClosedSocketCancelsRun(t *testing.T) {
@@ -155,12 +156,12 @@ func Test_Vercel_ClosedSocketCancelsRun(t *testing.T) {
 	record, ok := pydanticaitest.NewReader(response.Body).NextData()
 	require.True(t, ok)
 	require.Contains(t, record, `"type":"start"`)
-	receive(t, started, "the model call")
+	agenttest.Receive(t, started, "the model call")
 
 	closeConnection()
 
-	require.ErrorIs(t, receive(t, canceled, "the cancellation of the model call"), context.Canceled)
-	require.Error(t, receive(t, closed, "OnClose"))
+	require.ErrorIs(t, agenttest.Receive(t, canceled, "the cancellation of the model call"), context.Canceled)
+	require.Error(t, agenttest.Receive(t, closed, "OnClose"))
 }
 
 // smallBuffers is a listener whose connections have small send buffers, so that
@@ -222,8 +223,8 @@ func Test_TimeoutEndsAStreamWhoseClientStoppedReading(t *testing.T) {
 	// The run is stuck in a write to the client, where its context does not
 	// reach it. Its connection is closed once the write blocked for the grace.
 	postAndStopReading(t, app, "/agui", aguiBody)
-	require.Error(t, receive(t, ends, "OnRunEnd"))
-	require.Error(t, receive(t, closed, "OnClose"))
+	require.Error(t, agenttest.Receive(t, ends, "OnRunEnd"))
+	require.Error(t, agenttest.Receive(t, closed, "OnClose"))
 }
 
 func Test_TimeoutLeavesTheClientOfARunThatIsSlowToEnd(t *testing.T) {
@@ -247,7 +248,7 @@ func Test_TimeoutLeavesTheClientOfARunThatIsSlowToEnd(t *testing.T) {
 	last := events[len(events)-1]
 	require.Equal(t, agui.EventRunFinished, last.Type)
 	require.Nil(t, last.Outcome, "the run timed out")
-	require.ErrorIs(t, receive(t, closed, "OnClose"), context.DeadlineExceeded)
+	require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), context.DeadlineExceeded)
 }
 
 func Test_AConnectionServesTheNextRequestAfterAStreamThatTimedOut(t *testing.T) {

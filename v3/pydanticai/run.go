@@ -87,9 +87,9 @@ type RunConfig[Deps, Output any] struct {
 	// Timeout bounds the duration of one run. A run that exceeds it fails with
 	// 504 Gateway Timeout. Unlike the streaming handlers, Run cannot notice a
 	// client that went away, so the timeout is what ends a run nobody waits
-	// for: set one.
+	// for. A negative value turns it off.
 	//
-	// Optional. Default: 0 (no timeout)
+	// Optional. Default: 5 * time.Minute
 	Timeout time.Duration
 }
 
@@ -163,9 +163,9 @@ func Run[Deps, Output any](agent *ai.Agent[Deps, Output], config ...RunConfig[De
 		}
 
 		ctx := c.Context()
-		if cfg.Timeout > 0 {
+		if timeout := agentrun.Timeout(cfg.Timeout); timeout > 0 {
 			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, cfg.Timeout)
+			ctx, cancel = context.WithTimeout(ctx, timeout)
 			defer cancel()
 		}
 		guard, options := agentrun.NewGuard(options, deps, cfg.OnRunEnd)

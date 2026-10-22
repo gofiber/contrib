@@ -12,6 +12,7 @@ import (
 	ai "github.com/Kludex/pydantic-ai-go/ai"
 	"github.com/Kludex/pydantic-ai-go/ai/models/fakes"
 	"github.com/gofiber/contrib/v3/pydanticai"
+	"github.com/gofiber/contrib/v3/pydanticai/internal/agenttest"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
 )
@@ -321,7 +322,36 @@ func Test_Run_Timeout(t *testing.T) {
 	resp, body := post(t, app, "/ask", runBody)
 	require.Equal(t, fiber.StatusGatewayTimeout, resp.StatusCode)
 	require.Equal(t, "Gateway Timeout", body)
-	require.ErrorIs(t, receive(t, canceled, "the cancellation of the model call"), context.DeadlineExceeded)
+	require.ErrorIs(t, agenttest.Receive(t, canceled, "the cancellation of the model call"), context.DeadlineExceeded)
+}
+
+// Run cannot tell that its client left, so a run is bounded unless the
+// timeout is turned off.
+func Test_Run_TimeoutDefaults(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		timeout time.Duration
+		want    time.Duration // the deadline of the run, 0 for none
+	}{
+		{name: "unset is five minutes", want: 5 * time.Minute},
+		{name: "a negative value turns it off", timeout: -time.Second},
+		{name: "a positive value is used as it is", timeout: 30 * time.Second, want: 30 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			model, deadlines := agenttest.DeadlineProbe()
+			app := newApp("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](model), pydanticai.RunConfig[struct{}, string]{
+				Timeout: tc.timeout,
+			}))
+
+			resp, _ := post(t, app, "/ask", runBody)
+			require.Equal(t, fiber.StatusOK, resp.StatusCode)
+			agenttest.Receive(t, deadlines, "the model call").Require(t, tc.want)
+		})
+	}
 }
 
 func Test_Run_DeferredToolCallsAreNotImplemented(t *testing.T) {
