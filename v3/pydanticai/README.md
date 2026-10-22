@@ -11,7 +11,7 @@ id: pydanticai
 [pydantic-ai-go](https://github.com/Kludex/pydantic-ai-go) support for Fiber. The handlers serve an agent to a chat frontend over the [AG-UI](https://docs.ag-ui.com) or the [Vercel AI SDK](https://ai-sdk.dev) protocol, or answer a JSON request with the output of one run.
 
 - The dependencies and run options of the agent are built from the `fiber.Ctx` of each request, so tools can act on behalf of the authenticated user.
-- A run is canceled when its client disconnects or its `Timeout` elapses, and optionally when the server shuts down.
+- A streamed run is canceled when its client disconnects or its `Timeout` elapses, and optionally when the server shuts down.
 - `OnRunEnd` reports what every run consumed, including runs that failed or lost their client.
 - Rejected requests and failed `Run` calls go through the error handler of the app.
 - A panic in a tool ends the stream with an error event, also when the tool runs concurrently with other tool calls.
@@ -48,7 +48,7 @@ pydanticai.StatusCode(err error) int
 | `Vercel` | Vercel AI SDK UI message stream (AI SDK 5 to 7)                 | the `useChat` hook of the AI SDK                |
 | `Run`    | JSON request and response                                       | server-to-server calls and structured output    |
 
-All three handlers accept `POST` requests only.
+All three handlers accept `POST` requests only, except `Run` with a `Prompt` function, which owns its request.
 
 ## Examples
 
@@ -578,6 +578,7 @@ The client sees one tool, `ask`, with the argument `question`. Its result is the
 - **Errors.** A failed run is an error of the tool, which the model of the client reads and can react to. `ErrorMessage` replaces its text, as for the other handlers, and a panic is reported as `internal error`.
 - **No sessions, no streams.** Every message is a request with a JSON response, so the server holds no state, and a shutdown never waits for an idle connection. The server cannot send progress, sampling or elicitation requests to the client. A server that needs them mounts `mcpsdk.NewStreamableHTTPHandler` with the `adaptor` middleware instead.
 - **Timeouts.** A client that went away is not noticed before the response is written, so set a `Timeout`. `CancelOnShutdown` ends the calls when the server shuts down, and the client reads an error that says so.
+- **Context.** As for the other handlers, the `ctx` of a tool carries the values of `c.Context()`, for example the span of the [otel](https://github.com/gofiber/contrib/tree/main/v3/otel) middleware.
 - **Middleware.** Clients of the 2026-07-28 protocol send the method and the tool name in the headers `Mcp-Method` and `Mcp-Name`, so a middleware can authorize or limit `tools/call` without reading the body. A browser client also sends `Mcp-Protocol-Version`: allow these headers in the `cors` middleware.
 
 Another agent uses the server as a toolset:
