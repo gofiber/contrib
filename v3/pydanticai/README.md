@@ -11,11 +11,11 @@ id: pydanticai
 [pydantic-ai-go](https://github.com/Kludex/pydantic-ai-go) support for Fiber. The handlers serve an agent to a chat frontend over the [AG-UI](https://docs.ag-ui.com) or the [Vercel AI SDK](https://ai-sdk.dev) protocol, or answer a JSON request with the output of one run.
 
 - The dependencies and run options of the agent are built from the `fiber.Ctx` of each request, so tools can act on behalf of the authenticated user.
-- A streamed run is canceled when its client disconnects or its `Timeout` elapses, and optionally when the server shuts down. `Run` and `pydanticaimcp` cannot notice a client that left, so they end a run after `Timeout`, 5 minutes by default.
+- A streamed run is canceled when its client disconnects or its `Timeout` elapses, and optionally when the server shuts down. `Run` and `MCP` cannot notice a client that left, so they end a run after `Timeout`, 5 minutes by default.
 - `OnRunEnd` reports what every run consumed, including runs that failed or lost their client.
 - Rejected requests and failed `Run` calls go through the error handler of the app.
 - A panic in a tool ends the stream with an error event, also when the tool runs concurrently with other tool calls.
-- Agents use [MCP](#mcp) servers as tools, with the credentials of the caller, and `pydanticaimcp` serves an agent as an MCP server.
+- Agents use [MCP](#mcp) servers as tools, with the credentials of the caller, and `MCP` serves an agent as an MCP server.
 
 **Compatible with Fiber v3.**
 
@@ -37,6 +37,7 @@ go get -u github.com/Kludex/pydantic-ai-go/ai
 pydanticai.AGUI[Deps, Output any](agent *ai.Agent[Deps, Output], config ...pydanticai.AGUIConfig[Deps]) fiber.Handler
 pydanticai.Vercel[Deps, Output any](agent *ai.Agent[Deps, Output], config ...pydanticai.VercelConfig[Deps]) fiber.Handler
 pydanticai.Run[Deps, Output any](agent *ai.Agent[Deps, Output], config ...pydanticai.RunConfig[Deps, Output]) fiber.Handler
+pydanticai.MCP[Deps, Output any](agent *ai.Agent[Deps, Output], config ...pydanticai.MCPConfig[Deps]) fiber.Handler
 pydanticai.StatusCode(err error) int
 
 type AGUIConfig[Deps any] = pydanticai.StreamConfig[Deps, agui.Config]
@@ -50,8 +51,9 @@ type VercelConfig[Deps any] = pydanticai.StreamConfig[Deps, vercel.Config]
 | `AGUI`   | [AG-UI](https://docs.ag-ui.com) events as server-sent events    | AG-UI frontends such as CopilotKit              |
 | `Vercel` | Vercel AI SDK UI message stream (AI SDK 5 to 7)                 | the `useChat` hook of the AI SDK                |
 | `Run`    | JSON request and response                                       | server-to-server calls and structured output    |
+| `MCP`    | [MCP](https://modelcontextprotocol.io) over Streamable HTTP, answered with JSON | MCP clients, such as desktop assistants or other agents |
 
-All three handlers accept `POST` requests only, except `Run` with a `Prompt` function, which owns its request.
+All four handlers accept `POST` requests only, except `Run` with a `Prompt` function, which owns its request.
 
 ## Examples
 
@@ -577,11 +579,11 @@ agent.AddToolset(aimcp.NewToolset(func(ctx context.Context, _ *ai.RunContext[str
 
 ### Serving an agent as an MCP server
 
-`pydanticaimcp.New` serves an agent to MCP clients, such as desktop assistants or other agents, over Streamable HTTP. `pydanticaimcp` is `github.com/gofiber/contrib/v3/pydanticai/pydanticaimcp`, a package of its own, so that an application that does not serve MCP does not build the MCP SDK:
+`pydanticai.MCP` serves an agent to MCP clients, such as desktop assistants or other agents, over Streamable HTTP:
 
 ```go
 app.Use("/mcp", authenticate) // your authentication middleware, which stores the user in c.Locals
-app.Post("/mcp", pydanticaimcp.New(agent, pydanticaimcp.Config[Deps]{
+app.Post("/mcp", pydanticai.MCP(agent, pydanticai.MCPConfig[Deps]{
     Deps: func(c fiber.Ctx) (Deps, error) {
         return Deps{UserID: fiber.Locals[string](c, "user")}, nil
     },
@@ -674,7 +676,7 @@ While a response is open, the streaming handlers write a comment line (`:`) ever
 
 Heartbeat comments are ignored by server-sent events parsers. `DisableHeartbeat` turns them off. A client that leaves during a long silent phase, such as a tool call, is then only noticed by the next write to it, which can be after the run has ended.
 
-`Timeout` bounds the duration of a run for all three handlers. The cancellation and the deadline of the request context do not apply to a streaming run, so a middleware that cancels that context when the handler returns, such as the `timeout` middleware of Fiber, does not stop the stream. `Run` writes no heartbeat and cannot tell that the client left, and neither can the MCP handler, so they end a run after `Timeout`: 5 minutes by default, and a negative value turns the bound off. The streaming handlers have no default, because they notice a client that left.
+`Timeout` bounds the duration of a run for every handler. The cancellation and the deadline of the request context do not apply to a streaming run, so a middleware that cancels that context when the handler returns, such as the `timeout` middleware of Fiber, does not stop the stream. `Run` and `MCP` write no heartbeat and cannot tell that the client left, so they end a run after `Timeout`: 5 minutes by default, and a negative value turns the bound off. The streaming handlers have no default, because they notice a client that left.
 
 `fiber.Config.WriteTimeout` applies to a whole response, so it cuts every stream that is longer than it, however many heartbeats it carries. Leave it at zero, or set it above the longest run you accept. The `compress` middleware can be mounted in front of the handlers, and each event still reaches the client as it is written.
 
@@ -768,7 +770,7 @@ The two streaming handlers take the same settings: `AGUIConfig` and `VercelConfi
 | MaxRequestBytes | `int64`                                           | Bounds the body that the default `Prompt` reads. The `BodyLimit` of the app applies as well, unless `StreamRequestBody` is enabled, see [Requests](#requests). | `10 MiB`                                  |
 | Timeout         | `time.Duration`                                   | Bounds the duration of one run. A run that exceeds it fails with `504`. `Run` cannot notice a client that left, so the timeout is what ends such a run. A negative value turns it off. | `5 * time.Minute`                         |
 
-### pydanticaimcp.Config
+### MCPConfig
 
 | Property         | Type                                      | Description                                                                                                                                  | Default                                  |
 |:-----------------|:------------------------------------------|:---------------------------------------------------------------------------------------------------------------------------------------------|:-----------------------------------------|
@@ -784,4 +786,4 @@ The two streaming handlers take the same settings: `AGUIConfig` and `VercelConfi
 
 ## See also
 
-pydantic-ai-go also serves agents as [A2A](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/a2a.md) agents. That transport is a `net/http` handler. Mount it with the [`adaptor`](https://docs.gofiber.io/next/middleware/adaptor) middleware of Fiber, keeping in mind that it does not receive the `fiber.Ctx` of the request. [MCP servers](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/mcp-server.md) are served by `pydanticaimcp`, see [above](#serving-an-agent-as-an-mcp-server).
+pydantic-ai-go also serves agents as [A2A](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/a2a.md) agents. That transport is a `net/http` handler. Mount it with the [`adaptor`](https://docs.gofiber.io/next/middleware/adaptor) middleware of Fiber, keeping in mind that it does not receive the `fiber.Ctx` of the request. [MCP servers](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/mcp-server.md) are served by `MCP`, see [above](#serving-an-agent-as-an-mcp-server).
