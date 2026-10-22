@@ -1,4 +1,4 @@
-package pydanticaimcp_test
+package pydanticai_test
 
 import (
 	"log"
@@ -6,16 +6,16 @@ import (
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
 	"github.com/Kludex/pydantic-ai-go/ai/models/openai"
-	"github.com/gofiber/contrib/v3/pydanticai/pydanticaimcp"
+	"github.com/gofiber/contrib/v3/pydanticai"
 	"github.com/gofiber/fiber/v3"
 )
 
 type supportDeps struct{ UserID string }
 
-// New serves an agent to MCP clients at one route. The route is authenticated
+// MCP serves an agent to MCP clients at one route. The route is authenticated
 // by the middleware in front of it, and the dependencies of the agent are those
 // of the authenticated user.
-func ExampleNew() {
+func ExampleMCP() {
 	agent := ai.NewAgent[supportDeps, string](openai.NewModel("gpt-5-mini"))
 
 	app := fiber.New()
@@ -23,7 +23,7 @@ func ExampleNew() {
 		c.Locals("user", c.Get("X-User"))
 		return c.Next()
 	})
-	app.Post("/mcp", pydanticaimcp.New(agent, pydanticaimcp.Config[supportDeps]{
+	app.Post("/mcp", pydanticai.MCP(agent, pydanticai.MCPConfig[supportDeps]{
 		Deps: func(c fiber.Ctx) (supportDeps, error) {
 			return supportDeps{UserID: fiber.Locals[string](c, "user")}, nil
 		},
