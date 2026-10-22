@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"reflect"
 	"regexp"
+	"strings"
 	"time"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
@@ -57,6 +59,23 @@ type MCPConfig[Deps any] struct {
 	//
 	// Optional. Default: nil
 	RunOptions func(c fiber.Ctx) ([]ai.RunOption, error)
+
+	// AllowedOrigins lists the origins of the browser pages that may call the
+	// handler, as the browsers send them: a scheme, a host and a port that is not
+	// the default of the scheme, for example "https://app.example.com". A request
+	// with an Origin header that is not listed is answered with 403 Forbidden
+	// before anything else happens, as the MCP specification has a server
+	// validate the origin of its callers: that keeps a page of another site, or
+	// one that reaches the server by DNS rebinding and so looks like its own,
+	// from calling the tool in the browser of a user. A client that is not a
+	// browser sends no Origin header and is not affected. The cors middleware
+	// answers the preflight request of a browser, and has to allow the same
+	// origins.
+	//
+	// It panics when an origin is not a scheme, a host and an optional port.
+	//
+	// Optional. Default: nil (no browser page may call the handler)
+	AllowedOrigins []string
 
 	// Name and Version identify the server to its clients.
 	//
@@ -128,7 +147,11 @@ type mcpAskInput struct {
 // connection. A client that wants notifications from the server gets none,
 // because nothing in this server changes.
 //
-// It panics when agent is nil or the name of the tool is not valid.
+// A request that carries an Origin header is answered with 403 unless
+// MCPConfig.AllowedOrigins lists it.
+//
+// It panics when agent is nil, the name of the tool is not valid or an allowed
+// origin is not an origin.
 func MCP[Deps, Output any](agent *ai.Agent[Deps, Output], config ...MCPConfig[Deps]) fiber.Handler {
 	if agent == nil {
 		panic("pydanticai: agent must not be nil")
@@ -144,6 +167,7 @@ func MCP[Deps, Output any](agent *ai.Agent[Deps, Output], config ...MCPConfig[De
 	if !mcpToolName.MatchString(tool.Name) {
 		panic(fmt.Sprintf("pydanticai: invalid MCP tool name %q", tool.Name))
 	}
+	origins := mcpOrigins(cfg.AllowedOrigins)
 	implementation := &mcpsdk.Implementation{
 		Name:    cmp.Or(cfg.Name, agent.Name(), defaultMCPName),
 		Version: cmp.Or(cfg.Version, defaultMCPVersion),
@@ -159,6 +183,9 @@ func MCP[Deps, Output any](agent *ai.Agent[Deps, Output], config ...MCPConfig[De
 	return func(c fiber.Ctx) error {
 		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
+		}
+		if origin := c.Get(fiber.HeaderOrigin); origin != "" && !mcpOriginAllowed(origins, origin) {
+			return fiber.NewError(fiber.StatusForbidden, "forbidden origin")
 		}
 
 		deps, options, err := agentrun.Resolve(c, cfg.Deps, cfg.RunOptions)
@@ -190,6 +217,38 @@ func MCP[Deps, Output any](agent *ai.Agent[Deps, Output], config ...MCPConfig[De
 			handler.ServeHTTP(w, r.WithContext(values))
 		}))(c)
 	}
+}
+
+// mcpOrigins returns the form of the allowed origins that a browser sends: the
+// scheme and the host in lower case, and no port when it is the default of the
+// scheme. It panics when one of them is not an origin, which no browser would
+// send, so that it would allow nobody.
+func mcpOrigins(allowed []string) []string {
+	origins := make([]string, len(allowed))
+	for i, origin := range allowed {
+		parsed, err := url.Parse(origin)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" ||
+			parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
+			panic(fmt.Sprintf("pydanticai: invalid MCP origin %q, want a scheme, a host and a port", origin))
+		}
+		host := parsed.Host
+		if port := parsed.Port(); (parsed.Scheme == "http" && port == "80") || (parsed.Scheme == "https" && port == "443") {
+			host = strings.TrimSuffix(host, ":"+port)
+		}
+		origins[i] = strings.ToLower(parsed.Scheme + "://" + host)
+	}
+	return origins
+}
+
+// mcpOriginAllowed reports whether origin, the Origin header of a request, is
+// one of the allowed origins.
+func mcpOriginAllowed(allowed []string, origin string) bool {
+	for _, candidate := range allowed {
+		if utils.EqualFold(candidate, origin) {
+			return true
+		}
+	}
+	return false
 }
 
 // mcpTool returns the handler of the tool. It runs on a goroutine of the MCP

@@ -314,10 +314,12 @@ func aguiFailure(t *testing.T, body string) string {
 	return last.Message
 }
 
-// vercelFailure returns the message of the error chunk that ends the stream.
+// vercelFailure returns the message of the error chunk that ends the stream,
+// which [DONE] follows.
 func vercelFailure(t *testing.T, body string) string {
 	t.Helper()
-	chunks, _ := vercelChunks(t, body)
+	chunks, done := vercelChunks(t, body)
+	require.True(t, done, "the error chunk is followed by [DONE]")
 	require.NotEmpty(t, chunks)
 	last := chunks[len(chunks)-1]
 	require.Equal(t, vercel.ChunkError, last.Type)
