@@ -331,7 +331,7 @@ The functions fail the test when the body cannot be read or decoded.
 
 ## Model providers
 
-The handlers work with any model of pydantic-ai-go; the provider is chosen by the model that you pass to `ai.NewAgent`. Each provider is a package under `github.com/Kludex/pydantic-ai-go/ai/models/`. A model reads its credentials from the environment by default, which [Provider configuration](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/providers.md) in the documentation of pydantic-ai-go lists variable by variable, and the options of its package set them in code.
+The handlers work with any model of pydantic-ai-go; the provider is chosen by the model that you pass to `ai.NewAgent`. Each provider is a package under `github.com/Kludex/pydantic-ai-go/ai/models/`. A model reads its credentials from the environment by default (the variables are listed in [Provider configuration](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/providers.md) in the documentation of pydantic-ai-go), and the options of its package set them in code.
 
 | Provider | Constructor | Credentials in code |
 |:---------|:------------|:--------------------|
@@ -629,7 +629,7 @@ if err := app.ShutdownWithTimeout(30 * time.Second); err != nil {
 }
 ```
 
-The option is off by default, because some applications prefer to let a short run finish. `Run` has no such option, because it is a plain request: its `Timeout` ends a run that nobody waits for.
+The option is off by default, because some applications prefer to let a short run finish. `Run` has no such option, because it is a plain request: a shutdown waits for it, at most as long as its `Timeout`, 5 minutes by default.
 
 ## Middleware in front of the handlers
 
