@@ -11,7 +11,7 @@ id: pydanticai
 [pydantic-ai-go](https://github.com/Kludex/pydantic-ai-go) support for Fiber. The handlers serve an agent to a chat frontend over the [AG-UI](https://docs.ag-ui.com) or the [Vercel AI SDK](https://ai-sdk.dev) protocol, or answer a JSON request with the output of one run.
 
 - The dependencies and run options of the agent are built from the `fiber.Ctx` of each request, so tools can act on behalf of the authenticated user.
-- A streamed run is canceled when its client disconnects or its `Timeout` elapses, and optionally when the server shuts down.
+- A streamed run is canceled when its client disconnects or its `Timeout` elapses, and optionally when the server shuts down. `Run` and `pydanticaimcp` cannot notice a client that left, so they end a run after `Timeout`, 5 minutes by default.
 - `OnRunEnd` reports what every run consumed, including runs that failed or lost their client.
 - Rejected requests and failed `Run` calls go through the error handler of the app.
 - A panic in a tool ends the stream with an error event, also when the tool runs concurrently with other tool calls.
@@ -331,47 +331,47 @@ The functions fail the test when the body cannot be read or decoded.
 
 ## Model providers
 
-The handlers work with any model of pydantic-ai-go; the provider is chosen by the model that you pass to `ai.NewAgent`. Each provider is a package under `github.com/Kludex/pydantic-ai-go/ai/models/`. A model reads its credentials from the environment by default, and the options of its package set them in code.
+The handlers work with any model of pydantic-ai-go; the provider is chosen by the model that you pass to `ai.NewAgent`. Each provider is a package under `github.com/Kludex/pydantic-ai-go/ai/models/`. A model reads its credentials from the environment by default, which [Provider configuration](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/providers.md) in the documentation of pydantic-ai-go lists variable by variable, and the options of its package set them in code.
 
-| Provider | Constructor | Environment variables | Credentials in code |
-|:---------|:------------|:----------------------|:--------------------|
-| OpenAI Chat Completions | `openai.NewModel("gpt-5-mini")` | `OPENAI_API_KEY`, `OPENAI_BASE_URL` | `openai.WithAPIKey(key)` |
-| OpenAI Responses | `openai.NewResponsesModel("gpt-5-mini")` | `OPENAI_API_KEY`, `OPENAI_BASE_URL` | `openai.WithAPIKey(key)` |
-| OpenAI Codex subscription | `openaicodex.NewModel("gpt-5.6-luna")` † | the login of the Codex CLI (`CODEX_HOME`) | `openaicodex.WithCredentials(...)` or `openaicodex.WithCredentialSource(...)` |
-| OpenAI Decisions | `openaidecisions.NewModel("gpt-6-luna")` | `OPENAI_API_KEY`, `OPENAI_BASE_URL` | `openaidecisions.WithAPIKey(key)` |
-| Azure OpenAI | `azure.NewModel("deployment", azure.Config{})` † | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `OPENAI_API_VERSION` | `APIKey` or `TokenProvider` of `azure.Config` |
-| Amazon Bedrock | `bedrock.NewModel("us.amazon.nova-lite-v1:0")` | the standard AWS SDK configuration | `bedrock.WithAWSConfig(cfg)` |
-| Amazon Bedrock Mantle | `bedrockmantle.NewModel("openai.gpt-5.6-luna")` | `AWS_BEARER_TOKEN_BEDROCK`, or the standard AWS SDK configuration | `bedrockmantle.WithAPIKey(token)` or `bedrockmantle.WithAWSConfig(cfg)` |
-| Anthropic | `anthropic.NewModel("claude-sonnet-4-5")` | `ANTHROPIC_API_KEY` | `anthropic.WithAPIKey(key)` |
-| Google Gemini | `google.NewModel("gemini-2.5-flash")` | `GOOGLE_API_KEY` or `GEMINI_API_KEY` | `google.WithAPIKey(key)` |
-| Google Vertex AI | `google.NewVertexModel("gemini-2.5-flash", google.VertexConfig{})` † | `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, `GOOGLE_APPLICATION_CREDENTIALS` | `APIKey` or `TokenProvider` of `google.VertexConfig` |
-| DeepSeek Chat Completions | `deepseek.NewModel("deepseek-chat")` | `DEEPSEEK_API_KEY` | `deepseek.WithAPIKey(key)` |
-| DeepSeek Responses | `deepseek.NewResponsesModel("deepseek-v4-flash")` | `DEEPSEEK_API_KEY` | `deepseek.WithAPIKey(key)` |
-| GitHub Copilot | `githubcopilot.NewModel("claude-haiku-4.5")` † | `GITHUB_COPILOT_API_KEY` | `githubcopilot.WithAPIKey(key)` |
-| Cohere | `cohere.NewModel("command-r7b-12-2024")` | `CO_API_KEY` | `cohere.WithAPIKey(key)` |
-| Crusoe | `crusoe.NewModel("openai/gpt-oss-120b")` | `CRUSOE_API_KEY` | `crusoe.WithAPIKey(key)` |
-| Cerebras | `cerebras.NewModel("gpt-oss-120b")` | `CEREBRAS_API_KEY` | `cerebras.WithAPIKey(key)` |
-| Groq | `groq.NewModel("openai/gpt-oss-20b")` | `GROQ_API_KEY` | `groq.WithAPIKey(key)` |
-| Hugging Face | `huggingface.NewModel("Qwen/Qwen3-32B")` | `HF_TOKEN` | `huggingface.WithToken(token)` |
-| Meta Muse | `meta.NewModel("muse-spark-1.3")` | `META_API_KEY` | `meta.WithAPIKey(key)` |
-| Mistral | `mistral.NewModel("mistral-large-latest")` | `MISTRAL_API_KEY` | `mistral.WithAPIKey(key)` |
-| Ollama | `ollama.NewModel("qwen3")` | `OLLAMA_BASE_URL`, `OLLAMA_API_KEY` | `ollama.WithAPIKey(key)` |
-| OpenRouter | `openrouter.NewModel("anthropic/claude-sonnet-4.6")` | `OPENROUTER_API_KEY` | `openrouter.WithAPIKey(key)` |
-| Snowflake Cortex | `snowflake.NewModel("claude-sonnet-4-6")` | `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_TOKEN` | `snowflake.WithAccount(account)` and `snowflake.WithToken(token)` |
-| Together AI | `together.NewModel("Qwen/Qwen3-32B")` | `TOGETHER_API_KEY` | `together.WithAPIKey(key)` |
-| System One decision models | `systemone.NewModel("clm-latest")` † | `SYSTEM_ONE_BASE_URL`, `SYSTEM_ONE_API_KEY` (optional) | `systemone.WithAPIKey(key)` |
-| TypeSafe Jev | `typesafe.NewModel("jev-latest")` | `TYPESAFE_API_KEY` | `typesafe.WithAPIKey(key)` |
-| vLLM | `vllm.NewModel("Qwen/Qwen3-32B")` † | `VLLM_BASE_URL`, `VLLM_API_KEY` | `vllm.WithAPIKey(key)` |
-| xAI | `xai.NewModel("grok-4.3")` | `XAI_API_KEY` | `xai.WithAPIKey(key)` |
-| Z.AI | `zai.NewModel("glm-5.3-flash")` | `ZAI_API_KEY` | `zai.WithAPIKey(key)` |
+| Provider | Constructor | Credentials in code |
+|:---------|:------------|:--------------------|
+| OpenAI Chat Completions | `openai.NewModel(name)` | `openai.WithAPIKey(key)` |
+| OpenAI Responses | `openai.NewResponsesModel(name)` | `openai.WithAPIKey(key)` |
+| OpenAI Codex subscription | `openaicodex.NewModel(name)` † | `openaicodex.WithCredentials(...)` or `openaicodex.WithCredentialSource(...)` |
+| OpenAI Decisions | `openaidecisions.NewModel(name)` | `openaidecisions.WithAPIKey(key)` |
+| Azure OpenAI | `azure.NewModel(deployment, azure.Config{})` † | `APIKey` or `TokenProvider` of `azure.Config` |
+| Amazon Bedrock | `bedrock.NewModel(name)` | `bedrock.WithAWSConfig(cfg)` |
+| Amazon Bedrock Mantle | `bedrockmantle.NewModel(name)` | `bedrockmantle.WithAPIKey(token)` or `bedrockmantle.WithAWSConfig(cfg)` |
+| Anthropic | `anthropic.NewModel(name)` | `anthropic.WithAPIKey(key)` |
+| Google Gemini | `google.NewModel(name)` | `google.WithAPIKey(key)` |
+| Google Vertex AI | `google.NewVertexModel(name, google.VertexConfig{})` † | `APIKey` or `TokenProvider` of `google.VertexConfig` |
+| DeepSeek Chat Completions | `deepseek.NewModel(name)` | `deepseek.WithAPIKey(key)` |
+| DeepSeek Responses | `deepseek.NewResponsesModel(name)` | `deepseek.WithAPIKey(key)` |
+| GitHub Copilot | `githubcopilot.NewModel(name)` † | `githubcopilot.WithAPIKey(key)` |
+| Cohere | `cohere.NewModel(name)` | `cohere.WithAPIKey(key)` |
+| Crusoe | `crusoe.NewModel(name)` | `crusoe.WithAPIKey(key)` |
+| Cerebras | `cerebras.NewModel(name)` | `cerebras.WithAPIKey(key)` |
+| Groq | `groq.NewModel(name)` | `groq.WithAPIKey(key)` |
+| Hugging Face | `huggingface.NewModel(name)` | `huggingface.WithToken(token)` |
+| Meta Muse | `meta.NewModel(name)` | `meta.WithAPIKey(key)` |
+| Mistral | `mistral.NewModel(name)` | `mistral.WithAPIKey(key)` |
+| Ollama | `ollama.NewModel(name)` | `ollama.WithAPIKey(key)` |
+| OpenRouter | `openrouter.NewModel(name)` | `openrouter.WithAPIKey(key)` |
+| Snowflake Cortex | `snowflake.NewModel(name)` | `snowflake.WithAccount(account)` and `snowflake.WithToken(token)` |
+| Together AI | `together.NewModel(name)` | `together.WithAPIKey(key)` |
+| System One decision models | `systemone.NewModel(name)` † | `systemone.WithAPIKey(key)` |
+| TypeSafe Jev | `typesafe.NewModel(name)` | `typesafe.WithAPIKey(key)` |
+| vLLM | `vllm.NewModel(name)` † | `vllm.WithAPIKey(key)` |
+| xAI | `xai.NewModel(name)` | `xai.WithAPIKey(key)` |
+| Z.AI | `zai.NewModel(name)` | `zai.WithAPIKey(key)` |
 
-† The constructor returns an error as well as the model. The model names are examples; use the name of the model that you want.
+† The constructor returns an error as well as the model. `name` is the name of the model at the provider.
 
-Most packages also take `WithBaseURL`, to point the model at a proxy or a compatible endpoint, and `WithHTTPClient`. The OpenAI models take `WithProvider` for any other OpenAI-compatible service. See [Provider configuration](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/providers.md) in the documentation of pydantic-ai-go, and the pages on [Amazon Bedrock](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/bedrock.md) and the [OpenAI Codex subscription](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/openai-codex.md).
+Most packages also take `WithBaseURL`, to point the model at a proxy or a compatible endpoint, and `WithHTTPClient`. The OpenAI models take `WithProvider` for any other OpenAI-compatible service. See also the pages on [Amazon Bedrock](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/bedrock.md) and the [OpenAI Codex subscription](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/openai-codex.md).
 
 ```go
-// The credentials are options of the model.
-claude := anthropic.NewModel("claude-sonnet-4-5", anthropic.WithAPIKey(apiKey))
+// The credentials are options of the model. name is the name of the model at the provider.
+hosted := anthropic.NewModel(name, anthropic.WithAPIKey(apiKey))
 
 // Any other OpenAI-compatible service. Name is stored in the message history, so keep it stable.
 gateway := openai.NewModel("my-model", openai.WithProvider(openai.ProviderConfig{
@@ -401,7 +401,7 @@ if err != nil {
 `infer.Model` (package `github.com/Kludex/pydantic-ai-go/ai/models/infer`) creates a model from a name with a provider prefix, so the provider can come from configuration. The model reads its credentials from the environment:
 
 ```go
-model, err := infer.Model(os.Getenv("MODEL")) // for example MODEL=anthropic:claude-sonnet-4-5
+model, err := infer.Model(os.Getenv("MODEL")) // for example MODEL=openai:gpt-5-mini
 if err != nil {
     log.Fatal(err)
 }
@@ -595,7 +595,7 @@ The client sees one tool, `ask`, with the argument `question`. Its result is the
 - **Authenticate first.** Derive `Deps` from the authenticated request, never from the arguments of the tool, which a caller can set to anything. `Deps` is called for every message of the client, including those that set up the connection and list the tool, so keep it cheap.
 - **Errors.** A failed run is an error of the tool, which the model of the client reads and can react to. `ErrorMessage` replaces its text, as for the other handlers, and a panic is reported as `internal error`.
 - **No sessions, no streams.** Every message is a request with a JSON response, so the server holds no state, and a shutdown never waits for an idle connection. The server cannot send progress, sampling or elicitation requests to the client. A server that needs them mounts `mcpsdk.NewStreamableHTTPHandler` with the `adaptor` middleware instead.
-- **Timeouts.** A client that went away is not noticed before the response is written, so set a `Timeout`. `CancelOnShutdown` ends the calls when the server shuts down, and the client reads an error that says so.
+- **Timeouts.** A client that went away is not noticed before the response is written, so a call ends after `Timeout`: 5 minutes by default, and a negative value turns the bound off. `CancelOnShutdown` ends the calls when the server shuts down, and the client reads an error that says so.
 - **Context.** As for the other handlers, the `ctx` of a tool carries the values of `c.Context()`, for example the span of the [otel](https://github.com/gofiber/contrib/tree/main/v3/otel) middleware.
 - **Middleware.** Clients of the 2026-07-28 protocol send the method and the tool name in the headers `Mcp-Method` and `Mcp-Name`, so a middleware can authorize or limit `tools/call` without reading the body. A browser client also sends `Mcp-Protocol-Version`: allow these headers in the `cors` middleware.
 
@@ -629,7 +629,7 @@ if err := app.ShutdownWithTimeout(30 * time.Second); err != nil {
 }
 ```
 
-The option is off by default, because some applications prefer to let a short run finish. `Run` has no such option, because it is a plain request: set its `Timeout`.
+The option is off by default, because some applications prefer to let a short run finish. `Run` has no such option, because it is a plain request: its `Timeout` ends a run that nobody waits for.
 
 ## Middleware in front of the handlers
 
@@ -674,7 +674,7 @@ While a response is open, the streaming handlers write a comment line (`:`) ever
 
 Heartbeat comments are ignored by server-sent events parsers. `DisableHeartbeat` turns them off. A client that leaves during a long silent phase, such as a tool call, is then only noticed by the next write to it, which can be after the run has ended.
 
-`Timeout` bounds the duration of a run for all three handlers. The cancellation and the deadline of the request context do not apply to a streaming run, so a middleware that cancels that context when the handler returns, such as the `timeout` middleware of Fiber, does not stop the stream. `Run` writes no heartbeat and cannot tell that the client left, so `Timeout` is what bounds a run that nobody waits for.
+`Timeout` bounds the duration of a run for all three handlers. The cancellation and the deadline of the request context do not apply to a streaming run, so a middleware that cancels that context when the handler returns, such as the `timeout` middleware of Fiber, does not stop the stream. `Run` writes no heartbeat and cannot tell that the client left, and neither can the MCP handler, so they end a run after `Timeout`: 5 minutes by default, and a negative value turns the bound off. The streaming handlers have no default, because they notice a client that left.
 
 `fiber.Config.WriteTimeout` applies to a whole response, so it cuts every stream that is longer than it, however many heartbeats it carries. Leave it at zero, or set it above the longest run you accept. The `compress` middleware can be mounted in front of the handlers, and each event still reaches the client as it is written.
 
@@ -766,7 +766,7 @@ The two streaming handlers take the same settings: `AGUIConfig` and `VercelConfi
 | Respond         | `func(fiber.Ctx, *ai.RunResult[Output]) error`    | Writes the response for a completed run.                                                             | `{"output", "run_id", "conversation_id"}` |
 | OnRunEnd        | `func(Deps, *ai.RunInfo, error)`                  | Called once the agent has run, with what the run consumed and the error that ended it, also when the run panicked. The run is `nil` when the agent did not start. | `nil`                                   |
 | MaxRequestBytes | `int64`                                           | Bounds the body that the default `Prompt` reads. The `BodyLimit` of the app applies as well, unless `StreamRequestBody` is enabled, see [Requests](#requests). | `10 MiB`                                  |
-| Timeout         | `time.Duration`                                   | Bounds the duration of one run. A run that exceeds it fails with `504`. Set one: `Run` cannot notice a client that left. | `0` (no timeout)                          |
+| Timeout         | `time.Duration`                                   | Bounds the duration of one run. A run that exceeds it fails with `504`. `Run` cannot notice a client that left, so the timeout is what ends such a run. A negative value turns it off. | `5 * time.Minute`                         |
 
 ### pydanticaimcp.Config
 
@@ -779,7 +779,7 @@ The two streaming handlers take the same settings: `AGUIConfig` and `VercelConfi
 | Tool, Description | `string`                                 | The name of the tool that runs the agent, 1 to 128 characters of `A-Z`, `a-z`, `0-9`, `_`, `.` and `-`, and what it is for.                  | `ask`, `Ask the agent a question`        |
 | ErrorMessage     | `func(error) string`                      | Maps the error of a failed run to the text that the client reads. Also applies to an output that cannot be encoded. A panic is reported with the error `internal error`. | `err.Error()`            |
 | OnRunEnd         | `func(Deps, *ai.RunInfo, error)`          | Called once the agent has run, with what the run consumed and the error that ended it, also when the run panicked. The run is `nil` when the agent did not start. | `nil`                        |
-| Timeout          | `time.Duration`                           | Bounds the duration of one run. Set one: a client that left is not noticed before the response is written.                                   | `0` (no timeout)                         |
+| Timeout          | `time.Duration`                           | Bounds the duration of one run. A client that left is not noticed before the response is written, so the timeout is what ends such a run. A negative value turns it off. | `5 * time.Minute`                        |
 | CancelOnShutdown | `bool`                                    | Cancels the runs when the server starts shutting down, instead of waiting for them.                                                          | `false`                                  |
 
 ## See also
