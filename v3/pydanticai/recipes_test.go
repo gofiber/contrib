@@ -1,30 +1,22 @@
 package pydanticai_test
 
 import (
-	"context"
 	"testing"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
-	"github.com/Kludex/pydantic-ai-go/ai/models/fakes"
 	"github.com/gofiber/contrib/v3/pydanticai"
+	"github.com/gofiber/contrib/v3/pydanticai/internal/agenttest"
 	"github.com/gofiber/contrib/v3/pydanticai/pydanticaitest"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
 )
 
-// answering is a model that always gives the same answer.
-func answering(text string) *fakes.FunctionModel {
-	return fakes.NewFunctionModel(func(context.Context, []ai.ModelMessage, ai.ModelRequestParams) (*ai.ModelResponse, error) {
-		return textResponse(text), nil
-	})
-}
-
 // The README shows how RunOptions choose the model of a run per request.
 func Test_RunOptions_ChooseTheModelPerRequest(t *testing.T) {
 	t.Parallel()
 
-	agent := ai.NewAgent[struct{}, string](answering("the model of the agent"))
-	pro := ai.WithRunModel(answering("the model of the plan"))
+	agent := ai.NewAgent[struct{}, string](agenttest.Answering("the model of the agent"))
+	pro := ai.WithRunModel(agenttest.Answering("the model of the plan"))
 	choose := func(c fiber.Ctx) ([]ai.RunOption, error) {
 		if c.Get("X-Plan") == "pro" {
 			return []ai.RunOption{pro}, nil

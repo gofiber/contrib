@@ -81,16 +81,9 @@ func Test_AGUI_FlushesEventsWhileTheRunIsStillWorking(t *testing.T) {
 	require.Contains(t, record, `"type":"RUN_STARTED"`)
 
 	close(release)
-	var rest strings.Builder
-	for {
-		record, ok := scanner.NextData()
-		if !ok {
-			break
-		}
-		rest.WriteString(record)
-	}
-	require.Contains(t, rest.String(), "late answer")
-	require.Contains(t, rest.String(), `"type":"RUN_FINISHED"`)
+	rest := strings.Join(drain(scanner), "")
+	require.Contains(t, rest, "late answer")
+	require.Contains(t, rest, `"type":"RUN_FINISHED"`)
 }
 
 func Test_AGUI_StreamsThroughCompress(t *testing.T) {
@@ -118,15 +111,7 @@ func Test_AGUI_StreamsThroughCompress(t *testing.T) {
 	require.Contains(t, record, `"type":"RUN_STARTED"`)
 
 	close(release)
-	var rest strings.Builder
-	for {
-		record, ok := scanner.NextData()
-		if !ok {
-			break
-		}
-		rest.WriteString(record)
-	}
-	require.Contains(t, rest.String(), `"type":"RUN_FINISHED"`)
+	require.Contains(t, strings.Join(drain(scanner), ""), `"type":"RUN_FINISHED"`)
 	// Closing the compressed body closes the body of the handler, which ends the hold.
 	require.NoError(t, receive(t, closed, "OnClose"))
 }

@@ -1,6 +1,7 @@
 // Package agentrun holds what the handlers of pydanticai and pydanticaimcp do
-// around one agent run, so that a panic in the run, in a tool or in a callback
-// of the application neither takes the process down nor reaches a client.
+// around one agent run: they resolve what the run needs from the request, and
+// see to it that a panic in the run, in a tool or in a callback of the
+// application neither takes the process down nor reaches a client.
 package agentrun
 
 import (
@@ -11,6 +12,7 @@ import (
 	"sync/atomic"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
+	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/log"
 	"github.com/valyala/fasthttp"
 )
@@ -24,6 +26,27 @@ var ErrPanicked = errors.New("internal error")
 // streamed run ends with the messages and the usage it has, and a run that is
 // not streamed ends with an error that matches ai.ErrRunCancelled.
 var ErrShutdown = fmt.Errorf("pydanticai: the server is shutting down: %w", ai.ErrRunCancelled)
+
+// Resolve runs the per-request callbacks of a handler, Deps and then
+// RunOptions. Both are optional: the dependencies default to the zero value of
+// Deps and there are no extra options.
+func Resolve[Deps any](
+	c fiber.Ctx,
+	deps func(fiber.Ctx) (Deps, error),
+	options func(fiber.Ctx) ([]ai.RunOption, error),
+) (value Deps, extra []ai.RunOption, err error) {
+	if deps != nil {
+		if value, err = deps(c); err != nil {
+			return value, nil, err
+		}
+	}
+	if options != nil {
+		if extra, err = options(c); err != nil {
+			return value, nil, err
+		}
+	}
+	return value, extra, nil
+}
 
 // ServerDone returns the channel that fasthttp closes when the server of ctx
 // starts shutting down, which is before it waits for the connections to finish,

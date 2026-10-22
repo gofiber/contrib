@@ -4,9 +4,11 @@
 // without sessions, and offers one tool that runs the agent with the question
 // of the caller:
 //
-//	app.Use("/mcp", authenticate)
-//	app.All("/mcp", pydanticaimcp.New(agent, pydanticaimcp.Config[Deps]{
-//		Deps: func(c fiber.Ctx) (Deps, error) { return Deps{UserID: c.Locals("user").(string)}, nil },
+//	app.Use("/mcp", authenticate) // stores the user in c.Locals
+//	app.Post("/mcp", pydanticaimcp.New(agent, pydanticaimcp.Config[Deps]{
+//		Deps: func(c fiber.Ctx) (Deps, error) {
+//			return Deps{UserID: fiber.Locals[string](c, "user")}, nil
+//		},
 //	}))
 //
 // The handler lives in a package of its own, so that an application that does
@@ -168,20 +170,9 @@ func New[Deps, Output any](agent *ai.Agent[Deps, Output], config ...Config[Deps]
 			return c.Next()
 		}
 
-		var (
-			deps    Deps
-			options []ai.RunOption
-			err     error
-		)
-		if cfg.Deps != nil {
-			if deps, err = cfg.Deps(c); err != nil {
-				return err
-			}
-		}
-		if cfg.RunOptions != nil {
-			if options, err = cfg.RunOptions(c); err != nil {
-				return err
-			}
+		deps, options, err := agentrun.Resolve(c, cfg.Deps, cfg.RunOptions)
+		if err != nil {
+			return err
 		}
 
 		var shutdown <-chan struct{}
@@ -189,18 +180,23 @@ func New[Deps, Output any](agent *ai.Agent[Deps, Output], config ...Config[Deps]
 			shutdown = agentrun.ServerDone(c.RequestCtx())
 		}
 
+		// A call is served with the values of the context of the request, such as
+		// a trace, and without its cancellation. The context that the SDK would
+		// get otherwise is the pooled RequestCtx of fasthttp. A tool that reads it
+		// after the call would see the values of another request, and fasthttp
+		// closes its done channel when the server starts shutting down, which the
+		// handler of MCP takes for a client that went away and answers with
+		// nothing. A call that is still running is answered as usual, and
+		// CancelOnShutdown decides whether it is stopped.
+		values := context.WithoutCancel(c.Context())
+
 		// The tool is made for the request, as it runs the agent with the
 		// dependencies of the request.
 		server := mcpsdk.NewServer(implementation, serverOptions)
-		mcpsdk.AddTool(server, tool, call(agent, cfg, deps, options, c.Context(), shutdown))
+		mcpsdk.AddTool(server, tool, call(agent, cfg, deps, options, shutdown))
 		handler := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return server }, httpOptions)
 		return adaptor.HTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// fasthttp closes the done channel of the context of a request when
-			// the server starts shutting down. The handler of MCP takes that for a
-			// client that went away, and answers with nothing. A call that is
-			// still running is answered as usual, and CancelOnShutdown decides
-			// whether it is stopped.
-			handler.ServeHTTP(w, r.WithContext(context.WithoutCancel(r.Context())))
+			handler.ServeHTTP(w, r.WithContext(values))
 		}))(c)
 	}
 }
@@ -209,8 +205,7 @@ func New[Deps, Output any](agent *ai.Agent[Deps, Output], config ...Config[Deps]
 // server, where no recover middleware guards it, so a panic ends the call and
 // not the process.
 func call[Deps, Output any](
-	agent *ai.Agent[Deps, Output], cfg Config[Deps], deps Deps, options []ai.RunOption,
-	requestContext context.Context, shutdown <-chan struct{},
+	agent *ai.Agent[Deps, Output], cfg Config[Deps], deps Deps, options []ai.RunOption, shutdown <-chan struct{},
 ) mcpsdk.ToolHandlerFor[askInput, any] {
 	return func(ctx context.Context, _ *mcpsdk.CallToolRequest, in askInput) (result *mcpsdk.CallToolResult, out any, err error) {
 		options, tracker := agentrun.Track(options, cfg.OnRunEnd != nil)
@@ -236,9 +231,6 @@ func call[Deps, Output any](
 		if strings.TrimSpace(in.Question) == "" {
 			return nil, nil, errors.New("the question must not be empty")
 		}
-		// The values of the request, such as a trace, go with the call. The
-		// cancellation of the call is the one of MCP.
-		ctx = withValuesOf(ctx, requestContext)
 		if shutdown != nil {
 			var cancel context.CancelCauseFunc
 			ctx, cancel = context.WithCancelCause(ctx)
@@ -306,23 +298,4 @@ func output[Output any](value Output) (*mcpsdk.CallToolResult, any, error) {
 
 func text(content string) *mcpsdk.CallToolResult {
 	return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: content}}}
-}
-
-// withValuesOf returns a context that is canceled like parent and holds the
-// values of parent, and of values where parent has none.
-func withValuesOf(parent, values context.Context) context.Context {
-	return valuesContext{Context: parent, values: values}
-}
-
-type valuesContext struct {
-	context.Context
-	values context.Context
-}
-
-// Value implements context.Context.
-func (c valuesContext) Value(key any) any {
-	if value := c.Context.Value(key); value != nil {
-		return value
-	}
-	return c.values.Value(key)
 }
