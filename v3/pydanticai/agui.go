@@ -186,7 +186,7 @@ func AGUI[Deps, Output any](agent *ai.Agent[Deps, Output], config ...AGUIConfig[
 // aguiProtocol describes the AG-UI events for relay.
 var aguiProtocol = protocol[agui.Event]{
 	what:   "AG-UI event",
-	encode: func(event agui.Event) ([]byte, error) { return json.Marshal(event) },
+	encode: func(event *agui.Event) ([]byte, error) { return json.Marshal(event) },
 	failed: func(event agui.Event) bool { return event.Type == agui.EventRunError },
 	withMessage: func(event agui.Event, message string) agui.Event {
 		event.Message = message

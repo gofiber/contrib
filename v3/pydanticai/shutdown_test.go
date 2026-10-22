@@ -61,15 +61,9 @@ func Test_CancelOnShutdown(t *testing.T) {
 			require.ErrorIs(t, receive(t, closed, "OnClose"), ai.ErrRunCancelled)
 
 			// The client gets the end of the stream, not a broken connection.
-			var last string
-			for {
-				record, ok := scanner.NextData()
-				if !ok {
-					break
-				}
-				last = record
-			}
-			require.Contains(t, last, test.ends)
+			records := drain(scanner)
+			require.NotEmpty(t, records)
+			require.Contains(t, records[len(records)-1], test.ends)
 		})
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
+	"github.com/gofiber/contrib/v3/pydanticai/internal/agenttest"
 	"github.com/gofiber/contrib/v3/pydanticai/pydanticaimcp"
 	"github.com/gofiber/fiber/v3"
 	"github.com/valyala/fasthttp"
@@ -18,7 +19,7 @@ const (
 
 func Benchmark_New(b *testing.B) {
 	app := fiber.New()
-	app.Post("/mcp", pydanticaimcp.New(ai.NewAgent[struct{}, string](answering("ok"))))
+	app.Post("/mcp", pydanticaimcp.New(ai.NewAgent[struct{}, string](agenttest.Answering("ok"))))
 	handler := app.Handler()
 
 	// The headers tell which method a message calls, without parsing the body.

@@ -13,6 +13,7 @@ import (
 	"github.com/Kludex/pydantic-ai-go/ai/ui/agui"
 	"github.com/Kludex/pydantic-ai-go/ai/ui/vercel"
 	"github.com/gofiber/contrib/v3/pydanticai"
+	"github.com/gofiber/contrib/v3/pydanticai/internal/agenttest"
 	"github.com/gofiber/contrib/v3/pydanticai/pydanticaitest"
 	"github.com/gofiber/fiber/v3"
 	recoverer "github.com/gofiber/fiber/v3/middleware/recover"
@@ -224,7 +225,7 @@ func Test_Run_OnRunEnd(t *testing.T) {
 }
 
 func Test_OnRunEnd_ARunThatPanics(t *testing.T) {
-	captureLog(t) // the stack of the panic goes to the log
+	agenttest.CaptureLog(t) // the stack of the panic goes to the log
 
 	panicking := ai.NewAgent[userDeps, string](fakes.NewTestModel())
 	ai.AddSimpleTool(panicking, "explode", func(context.Context, struct{}) (string, error) { panic("kaboom") })
@@ -243,7 +244,7 @@ func Test_OnRunEnd_ARunThatPanics(t *testing.T) {
 }
 
 func Test_OnRunEnd_APanicIsRecovered(t *testing.T) {
-	logs := captureLog(t)
+	logs := agenttest.CaptureLog(t)
 
 	closed := make(chan error, 1)
 	handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](fakes.NewTestModel()), pydanticai.AGUIConfig[struct{}]{
@@ -327,7 +328,7 @@ type lingeringModel struct {
 }
 
 func newLingeringModel() lingeringModel {
-	return lingeringModel{FunctionModel: answering("done"), closing: make(chan struct{}, 1)}
+	return lingeringModel{FunctionModel: agenttest.Answering("done"), closing: make(chan struct{}, 1)}
 }
 
 // OpenModel implements ai.ModelOpener.

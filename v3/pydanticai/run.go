@@ -140,7 +140,7 @@ func Run[Deps, Output any](agent *ai.Agent[Deps, Output], config ...RunConfig[De
 		)
 		if cfg.Prompt != nil {
 			var err error
-			if deps, options, err = resolve(c, cfg.Deps, cfg.RunOptions); err != nil {
+			if deps, options, err = agentrun.Resolve(c, cfg.Deps, cfg.RunOptions); err != nil {
 				return err
 			}
 			if prompt, err = cfg.Prompt(c); err != nil {

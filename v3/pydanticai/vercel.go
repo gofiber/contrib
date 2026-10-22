@@ -197,7 +197,7 @@ func Vercel[Deps, Output any](agent *ai.Agent[Deps, Output], config ...VercelCon
 }
 
 // encodeChunk encodes a chunk as the data of a server-sent event.
-func encodeChunk(chunk vercel.Chunk) ([]byte, error) {
+func encodeChunk(chunk *vercel.Chunk) ([]byte, error) {
 	if chunk.Type == vercel.ChunkDone {
 		return doneRecord, nil
 	}

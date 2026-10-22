@@ -1,17 +1,14 @@
 package pydanticai_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"runtime"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,41 +17,13 @@ import (
 	"github.com/Kludex/pydantic-ai-go/ai/models/fakes"
 	"github.com/Kludex/pydantic-ai-go/ai/ui/agui"
 	"github.com/gofiber/contrib/v3/pydanticai"
+	"github.com/gofiber/contrib/v3/pydanticai/internal/agenttest"
 	"github.com/gofiber/contrib/v3/pydanticai/pydanticaitest"
 	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/fiber/v3/log"
 	"github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/gofiber/fiber/v3/middleware/timeout"
 	"github.com/stretchr/testify/require"
 )
-
-// syncBuffer is a log destination that can be read while it is written.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-// captureLog sends the log of Fiber to the returned buffer until the test ends.
-// The logger is global, so the test must not run in parallel with others.
-func captureLog(t *testing.T) *syncBuffer {
-	t.Helper()
-	logs := new(syncBuffer)
-	log.SetOutput(logs)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-	return logs
-}
 
 func Test_AGUI_StringsFromTheRequestSurviveAClientThatLeft(t *testing.T) {
 	// Not parallel: with a single P, fasthttp hands the request of the client
@@ -132,7 +101,7 @@ func Test_AGUI_StringsFromTheRequestSurviveAClientThatLeft(t *testing.T) {
 }
 
 func Test_AGUI_APanicInOnCloseIsRecovered(t *testing.T) {
-	logs := captureLog(t)
+	logs := agenttest.CaptureLog(t)
 
 	called := make(chan struct{}, 2)
 	handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](fakes.NewTestModel()), pydanticai.AGUIConfig[struct{}]{
@@ -155,7 +124,7 @@ func Test_AGUI_APanicInOnCloseIsRecovered(t *testing.T) {
 }
 
 func Test_AGUI_APanicInTheRunEndsTheStreamWithAnError(t *testing.T) {
-	logs := captureLog(t)
+	logs := agenttest.CaptureLog(t)
 
 	t.Run("the client is told", func(t *testing.T) {
 		closed := make(chan error, 1)
@@ -190,7 +159,7 @@ func Test_AGUI_APanicInTheRunEndsTheStreamWithAnError(t *testing.T) {
 }
 
 func Test_Vercel_APanicInTheRunEndsTheStreamWithAnError(t *testing.T) {
-	logs := captureLog(t)
+	logs := agenttest.CaptureLog(t)
 
 	closed := make(chan error, 1)
 	handler := pydanticai.Vercel(panicAgent(), pydanticai.VercelConfig[struct{}]{
@@ -210,7 +179,7 @@ func Test_Vercel_APanicInTheRunEndsTheStreamWithAnError(t *testing.T) {
 // The model is called on the goroutine of the stream, outside of any tool call,
 // so the handler recovers its panic, and not the run.
 func Test_APanicInTheModelEndsTheStreamWithAnError(t *testing.T) {
-	logs := captureLog(t)
+	logs := agenttest.CaptureLog(t)
 
 	agent := ai.NewAgent[struct{}, string](fakes.NewFunctionModel(func(
 		context.Context, []ai.ModelMessage, ai.ModelRequestParams,
@@ -356,7 +325,7 @@ func Test_ARequestThatATimeoutMiddlewareGaveUpOnStartsNoRun(t *testing.T) {
 }
 
 func Test_APanicInErrorMessageEndsTheStreamWithAnError(t *testing.T) {
-	logs := captureLog(t)
+	logs := agenttest.CaptureLog(t)
 
 	secret := errors.New("provider rejected the key sk-secret")
 	errorMessage := func(error) string { panic("bug in ErrorMessage") }
