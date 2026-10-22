@@ -244,6 +244,8 @@ func Test_Next(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
 			app := fiber.New()
 			app.Post("/", test.handler, func(c fiber.Ctx) error { return c.SendString("skipped") })
 
@@ -369,6 +371,7 @@ func Test_AGUI_AStreamedBodyThatDoesNotArriveIsABadRequest(t *testing.T) {
 		{"the client stalls", false, "read request body"},
 	}
 	for _, test := range tests {
+		// Not parallel: both requests report to the same error handler.
 		t.Run(test.name, func(t *testing.T) {
 			conn, err := net.Dial("tcp", addr)
 			require.NoError(t, err)

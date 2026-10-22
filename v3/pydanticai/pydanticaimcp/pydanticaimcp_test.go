@@ -538,7 +538,7 @@ func Test_New_Errors(t *testing.T) {
 
 		model := agenttest.Answering("must not be called")
 		session := connect(t, serve(t, newApp(pydanticaimcp.New(ai.NewAgent[struct{}, string](model)))), "")
-		for _, question := range []string{"", "  \n\t"} {
+		for _, question := range []string{"", "  \n\t", "\u00a0\u2003"} {
 			result := ask(t, session, question)
 			require.True(t, result.IsError)
 			require.Contains(t, resultText(t, result), "must not be empty")
@@ -614,6 +614,8 @@ func Test_New_OnRunEnd(t *testing.T) {
 }
 
 func Test_New_Panics_AreErrorsOfTheTool(t *testing.T) {
+	// Not parallel: the log is global, and CaptureLog replaces it. Neither are the
+	// subtests, as the log is read after them.
 	logs := agenttest.CaptureLog(t)
 
 	boom := func(tools ...string) *ai.Agent[struct{}, string] {
@@ -669,6 +671,7 @@ func Test_New_Panics_AreErrorsOfTheTool(t *testing.T) {
 }
 
 func Test_New_PanicsInCallbacksAreLogged(t *testing.T) {
+	// Not parallel: the log is global, and CaptureLog replaces it.
 	logs := agenttest.CaptureLog(t)
 
 	agent := ai.NewAgent[struct{}, string](agenttest.Answering("ok"))
@@ -687,6 +690,7 @@ type explosive struct{}
 func (explosive) MarshalJSON() ([]byte, error) { panic("kaboom in MarshalJSON") }
 
 func Test_New_PanicWhileEncodingTheOutput(t *testing.T) {
+	// Not parallel: the log is global, and CaptureLog replaces it.
 	logs := agenttest.CaptureLog(t)
 
 	ends := make(chan error, 1)

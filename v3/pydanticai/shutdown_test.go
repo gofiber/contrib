@@ -109,14 +109,14 @@ func Test_ShutdownWaitsForARunByDefault(t *testing.T) {
 }
 
 func Test_CancelOnShutdownDoesNotWaitForAClientThatStoppedReading(t *testing.T) {
-	pydanticai.SetStreamEndGrace(t, 100*time.Millisecond) // not parallel: the grace is global
+	t.Parallel()
 
 	closed := make(chan error, 1)
 	app := fiber.New()
-	app.Post("/agui", pydanticai.AGUI(talkativeAgent(), pydanticai.AGUIConfig[struct{}]{
+	app.Post("/agui", pydanticai.AGUI(talkativeAgent(), pydanticai.WithStreamEndGrace(pydanticai.AGUIConfig[struct{}]{
 		CancelOnShutdown: true,
 		OnClose:          func(_ struct{}, err error) { closed <- err },
-	}))
+	}, 100*time.Millisecond)))
 
 	postAndStopReading(t, app, "/agui", aguiBody)
 	time.Sleep(300 * time.Millisecond) // the writes to the client block

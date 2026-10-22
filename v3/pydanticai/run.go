@@ -64,12 +64,14 @@ type RunConfig[Deps, Output any] struct {
 	// OnRunEnd is called once the agent has run, with the dependencies of the
 	// run, what the run consumed and the error that ended it, which is nil when
 	// the run completed. It is called for a run that failed or panicked as
-	// well, which makes it the place to record token usage; a panic goes on to
-	// the recover middleware of the app afterwards. run gives the usage, the
-	// messages and the IDs of the run, see ai.RunInfo, and is nil when the
-	// agent did not start the run, or when a run wrapper of the agent answered
-	// without starting it. It is not called for a request that was rejected
-	// before the agent ran. A panic in OnRunEnd is logged and recovered.
+	// well, which makes it the place to record token usage. A panic in the
+	// model or in a callback goes on to the recover middleware of the app
+	// afterwards. A panic in a tool call is recovered and fails the run with
+	// 500. run gives the usage, the messages and the IDs of the run, see
+	// ai.RunInfo, and is nil when the agent did not start the run, or when a
+	// run wrapper of the agent answered without starting it. It is not called
+	// for a request that was rejected before the agent ran. A panic in
+	// OnRunEnd is logged and recovered.
 	//
 	// Optional. Default: nil
 	OnRunEnd func(deps Deps, run *ai.RunInfo, err error)
@@ -85,7 +87,7 @@ type RunConfig[Deps, Output any] struct {
 	// Timeout bounds the duration of one run. A run that exceeds it fails with
 	// 504 Gateway Timeout. Unlike the streaming handlers, Run cannot notice a
 	// client that went away, so the timeout is what ends a run nobody waits
-	// for.
+	// for: set one.
 	//
 	// Optional. Default: 0 (no timeout)
 	Timeout time.Duration
@@ -166,30 +168,26 @@ func Run[Deps, Output any](agent *ai.Agent[Deps, Output], config ...RunConfig[De
 			ctx, cancel = context.WithTimeout(ctx, cfg.Timeout)
 			defer cancel()
 		}
-		options, tracker := agentrun.Track(options, cfg.OnRunEnd != nil)
-		options, tools := agentrun.GuardTools(options)
+		guard, options := agentrun.NewGuard(options, deps, cfg.OnRunEnd)
 		result, err := func() (*ai.RunResult[Output], error) {
 			if cfg.OnRunEnd != nil {
 				// A panic goes on to the recover middleware of the app, but the
 				// run consumed tokens all the same.
 				defer func() {
 					if recovered := recover(); recovered != nil {
-						runErr := agentrun.PanicError(recovered)
-						agentrun.Safely("OnRunEnd", func() { cfg.OnRunEnd(deps, tracker.Run(), runErr) })
+						guard.End(agentrun.PanicError(recovered))
 						panic(recovered)
 					}
 				}()
 			}
 			return agent.Run(ctx, prompt, deps, options...)
 		}()
-		if panicErr := tools.Err(); panicErr != nil && err != nil {
+		if panicErr := guard.Err(); panicErr != nil && err != nil {
 			// The error of the run carries the value of the panic, or the error
 			// of a tool that the panic canceled.
 			err = panicErr
 		}
-		if cfg.OnRunEnd != nil {
-			agentrun.Safely("OnRunEnd", func() { cfg.OnRunEnd(deps, tracker.Run(), err) })
-		}
+		guard.End(err)
 		if err != nil {
 			return newError(err)
 		}

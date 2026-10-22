@@ -21,6 +21,8 @@ import (
 // sure that what happens on those goroutines cannot end the process.
 
 func Test_APanicInAConcurrentToolCallEndsTheRunWithAnError(t *testing.T) {
+	// Not parallel: the log is global, and CaptureLog replaces it. Neither are the
+	// subtests, as the log is read after them.
 	logs := agenttest.CaptureLog(t) // the panic and its stack go to the log
 
 	// "waiting" comes first: the panic cancels it, and its error is the first
@@ -68,9 +70,12 @@ func Test_APanicInAConcurrentToolCallEndsTheRunWithAnError(t *testing.T) {
 		})
 
 		t.Run("Run: "+name, func(t *testing.T) {
-			ends := make(chan runEnd, 1)
+			ends, recovered := make(chan runEnd, 1), make(chan any, 1)
 			app := fiber.New()
-			app.Use(recoverer.New())
+			app.Use(recoverer.New(recoverer.Config{PanicHandler: func(_ fiber.Ctx, r any) error {
+				recovered <- r
+				return fiber.ErrInternalServerError
+			}}))
 			app.Post("/ask", pydanticai.Run(agent, pydanticai.RunConfig[struct{}, string]{
 				OnRunEnd: func(_ struct{}, run *ai.RunInfo, err error) { ends <- runEnd{run: run, err: err} },
 			}))
@@ -81,6 +86,9 @@ func Test_APanicInAConcurrentToolCallEndsTheRunWithAnError(t *testing.T) {
 			end := receive(t, ends, "OnRunEnd")
 			require.ErrorContains(t, end.err, "panic in the run: kaboom")
 			require.NotNil(t, end.run)
+			// The tool ran on a goroutine that no middleware reaches: Run recovered
+			// the panic and failed the run, so the recover middleware saw nothing.
+			require.Empty(t, recovered)
 		})
 	}
 	require.Contains(t, logs.String(), "panic in the run: kaboom")

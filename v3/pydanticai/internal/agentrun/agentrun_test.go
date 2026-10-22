@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +31,7 @@ func Test_PanicError(t *testing.T) {
 }
 
 func Test_Safely(t *testing.T) {
+	// Not parallel: the log is global, and CaptureLog replaces it.
 	logs := agenttest.CaptureLog(t)
 
 	called := false
@@ -43,6 +45,7 @@ func Test_Safely(t *testing.T) {
 }
 
 func Test_Text(t *testing.T) {
+	// Not parallel: the log is global, and CaptureLog replaces it.
 	logs := agenttest.CaptureLog(t)
 
 	failure := errors.New("provider rejected the key sk-secret")
@@ -124,68 +127,95 @@ func Test_Resolve(t *testing.T) {
 	})
 }
 
-func Test_Track(t *testing.T) {
-	t.Parallel()
-
-	t.Run("not wanted", func(t *testing.T) {
-		t.Parallel()
-
-		options := []ai.RunOption{ai.WithRunMetadata(map[string]any{"k": "v"})}
-		tracked, tracker := agentrun.Track(options, false)
-		require.Nil(t, tracker)
-		require.Equal(t, len(options), len(tracked))
-	})
-
-	t.Run("wanted", func(t *testing.T) {
-		t.Parallel()
-
-		// A slice with room to spare, which an append would write into.
-		options := make([]ai.RunOption, 1, 8)
-		options[0] = ai.WithRunMetadata(map[string]any{"k": "v"})
-		tracked, tracker := agentrun.Track(options, true)
-		require.Len(t, tracked, 2)
-		require.Nil(t, options[:2][1], "the slice of the caller is not written to")
-		require.Nil(t, tracker.Run(), "no run has started")
-
-		agent := ai.NewAgent[struct{}, string](agenttest.Answering("done"))
-		result, err := agent.Run(context.Background(), "Hello", struct{}{}, tracked...)
-		require.NoError(t, err)
-		run := tracker.Run()
-		require.NotNil(t, run)
-		require.Equal(t, result.RunID(), run.RunID)
-	})
-}
-
-func Test_GuardTools(t *testing.T) {
+func Test_Recovered(t *testing.T) {
+	// Not parallel: the log is global, and CaptureLog replaces it.
 	logs := agenttest.CaptureLog(t)
 
-	agent := agenttest.ConcurrentAgent("explode", "waiting")
-
-	options := []ai.RunOption{ai.WithRunMetadata(map[string]any{"k": "v"})}
-	guarded, guard := agentrun.GuardTools(options)
-	require.Len(t, guarded, 2)
-	require.Len(t, options, 1, "the slice of the caller is not written to")
-	require.NoError(t, guard.Err(), "nothing has panicked")
-
-	// The two tools run on goroutines of their own: without the guard the
-	// panic would end the process.
-	_, err := agent.Run(context.Background(), "Hello", struct{}{}, guarded...)
-	require.Error(t, err)
-	require.ErrorContains(t, guard.Err(), "panic in the run: kaboom")
+	var err error
+	func() {
+		defer func() { err = agentrun.Recovered(recover()) }()
+		panic("kaboom")
+	}()
+	require.EqualError(t, err, "pydanticai: panic in the run: kaboom")
 	require.Contains(t, logs.String(), "panic in the run: kaboom")
 	require.Contains(t, logs.String(), "goroutine ", "the stack of the panic")
 }
 
-func Test_GuardTools_NoPanic(t *testing.T) {
-	t.Parallel()
+func Test_Guard(t *testing.T) {
+	t.Run("a panic in a tool", func(t *testing.T) {
+		// Not parallel: the log is global, and CaptureLog replaces it.
+		logs := agenttest.CaptureLog(t)
 
-	agent := agenttest.ConcurrentAgent("fine")
+		agent := agenttest.ConcurrentAgent("explode", "waiting")
+		options := make([]ai.RunOption, 1, 8) // room to spare, which an append would write into
+		options[0] = ai.WithRunMetadata(map[string]any{"k": "v"})
+		var (
+			mu   sync.Mutex
+			ends []error
+			runs []*ai.RunInfo
+		)
+		guard, guarded := agentrun.NewGuard(options, struct{}{}, func(_ struct{}, run *ai.RunInfo, err error) {
+			mu.Lock()
+			defer mu.Unlock()
+			ends, runs = append(ends, err), append(runs, run)
+		})
+		require.Len(t, guarded, 2)
+		require.Nil(t, options[:2][1], "the slice of the caller is not written to")
+		require.NoError(t, guard.Err(), "nothing has panicked")
 
-	guarded, guard := agentrun.GuardTools(nil)
-	result, err := agent.Run(context.Background(), "Hello", struct{}{}, guarded...)
-	require.NoError(t, err)
-	require.Equal(t, "done", strings.TrimSpace(result.Output))
-	require.NoError(t, guard.Err())
+		// The two tools run on goroutines of their own: without the guard the
+		// panic would end the process.
+		_, err := agent.Run(context.Background(), "Hello", struct{}{}, guarded...)
+		require.Error(t, err)
+		require.ErrorContains(t, guard.Err(), "panic in the run: kaboom")
+		require.Contains(t, logs.String(), "panic in the run: kaboom")
+
+		// The end of the run is reported once, with the run that the guard recorded.
+		guard.End(err)
+		guard.End(nil)
+		mu.Lock()
+		defer mu.Unlock()
+		require.Equal(t, []error{err}, ends)
+		require.Len(t, runs, 1)
+		require.NotNil(t, runs[0])
+	})
+
+	t.Run("a run that completes", func(t *testing.T) {
+		t.Parallel()
+
+		agent := agenttest.ConcurrentAgent("fine")
+		var run *ai.RunInfo
+		guard, guarded := agentrun.NewGuard(nil, struct{}{}, func(_ struct{}, info *ai.RunInfo, _ error) { run = info })
+		require.Nil(t, run, "no run has started")
+		result, err := agent.Run(context.Background(), "Hello", struct{}{}, guarded...)
+		require.NoError(t, err)
+		require.Equal(t, "done", strings.TrimSpace(result.Output))
+		require.NoError(t, guard.Err())
+
+		guard.End(nil)
+		require.NotNil(t, run)
+		require.Equal(t, result.RunID(), run.RunID)
+	})
+
+	t.Run("a run that did not start", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			called bool
+			run    *ai.RunInfo
+		)
+		guard, _ := agentrun.NewGuard(nil, struct{}{}, func(_ struct{}, info *ai.RunInfo, _ error) { called, run = true, info })
+		guard.End(errors.New("rejected"))
+		require.True(t, called)
+		require.Nil(t, run)
+	})
+
+	t.Run("without a callback", func(t *testing.T) {
+		t.Parallel()
+
+		guard, _ := agentrun.NewGuard[struct{}](nil, struct{}{}, nil)
+		require.NotPanics(t, func() { guard.End(nil) })
+	})
 }
 
 func Test_ServerDone(t *testing.T) {

@@ -101,6 +101,7 @@ func Test_AGUI_StringsFromTheRequestSurviveAClientThatLeft(t *testing.T) {
 }
 
 func Test_AGUI_APanicInOnCloseIsRecovered(t *testing.T) {
+	// Not parallel: the log is global, and CaptureLog replaces it.
 	logs := agenttest.CaptureLog(t)
 
 	called := make(chan struct{}, 2)
@@ -124,6 +125,8 @@ func Test_AGUI_APanicInOnCloseIsRecovered(t *testing.T) {
 }
 
 func Test_AGUI_APanicInTheRunEndsTheStreamWithAnError(t *testing.T) {
+	// Not parallel: the log is global, and CaptureLog replaces it. Neither are the
+	// subtests, as the log is read after them.
 	logs := agenttest.CaptureLog(t)
 
 	t.Run("the client is told", func(t *testing.T) {
@@ -159,6 +162,7 @@ func Test_AGUI_APanicInTheRunEndsTheStreamWithAnError(t *testing.T) {
 }
 
 func Test_Vercel_APanicInTheRunEndsTheStreamWithAnError(t *testing.T) {
+	// Not parallel: the log is global, and CaptureLog replaces it.
 	logs := agenttest.CaptureLog(t)
 
 	closed := make(chan error, 1)
@@ -179,6 +183,8 @@ func Test_Vercel_APanicInTheRunEndsTheStreamWithAnError(t *testing.T) {
 // The model is called on the goroutine of the stream, outside of any tool call,
 // so the handler recovers its panic, and not the run.
 func Test_APanicInTheModelEndsTheStreamWithAnError(t *testing.T) {
+	// Not parallel: the log is global, and CaptureLog replaces it. Neither are the
+	// subtests, as the log is read after them.
 	logs := agenttest.CaptureLog(t)
 
 	agent := ai.NewAgent[struct{}, string](fakes.NewFunctionModel(func(
@@ -325,6 +331,8 @@ func Test_ARequestThatATimeoutMiddlewareGaveUpOnStartsNoRun(t *testing.T) {
 }
 
 func Test_APanicInErrorMessageEndsTheStreamWithAnError(t *testing.T) {
+	// Not parallel: the log is global, and CaptureLog replaces it. Neither are the
+	// subtests, as the log is read after them.
 	logs := agenttest.CaptureLog(t)
 
 	secret := errors.New("provider rejected the key sk-secret")

@@ -1,16 +1,10 @@
 package pydanticai
 
-import (
-	"testing"
-	"time"
-)
+import "time"
 
-// SetStreamEndGrace sets how long a write to a client that stopped reading may
-// block before its connection is closed, until the test ends. The test must not
-// run in parallel with others.
-func SetStreamEndGrace(t testing.TB, grace time.Duration) {
-	t.Helper()
-	previous := streamEndGrace
-	streamEndGrace = grace
-	t.Cleanup(func() { streamEndGrace = previous })
+// WithStreamEndGrace returns cfg with the time that a write to a client that
+// stopped reading may block, once the run was told to end, set to grace.
+func WithStreamEndGrace[Deps, A any](cfg StreamConfig[Deps, A], grace time.Duration) StreamConfig[Deps, A] {
+	cfg.grace = grace
+	return cfg
 }
