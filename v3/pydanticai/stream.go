@@ -206,6 +206,10 @@ type protocol[E any] struct {
 	// failure that the adapter did not report itself. Best effort: the stream
 	// ends either way.
 	fail func(send func(data []byte) error, message string)
+	// end closes the stream after the event of a failure that the adapter
+	// reported itself, which is the last event it yields. Best effort, and nil
+	// when that event closes the stream.
+	end func(send func(data []byte) error)
 }
 
 // stream serves an admitted request: it starts the run with run, and sends its
@@ -290,6 +294,9 @@ func relay[E, Deps any](
 		} else if runErr != nil {
 			// The adapters end the stream after the event of an error.
 			failed = runErr
+			if p.end != nil {
+				p.end(send)
+			}
 		} else if p.completed(event) {
 			completed = true
 		}

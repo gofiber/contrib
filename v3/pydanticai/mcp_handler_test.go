@@ -732,10 +732,96 @@ func Test_MCPHandler_PanicWhileEncodingTheOutput(t *testing.T) {
 func Test_MCPHandler_Methods(t *testing.T) {
 	t.Parallel()
 
-	endpoint := mcpServe(t, mcpApp(pydanticai.MCP(ai.NewAgent[struct{}, string](agenttest.Answering("ok")))))
-	for _, method := range []string{http.MethodGet, http.MethodDelete} {
-		response, _ := mcpSend(t, method, endpoint, "", nil)
-		require.Equal(t, fiber.StatusMethodNotAllowed, response.StatusCode, method+": there are no sessions and no stream")
+	// The MCP specification has the endpoint answer 405 to a GET when it offers
+	// no stream. Mounted for POST only, as the documentation does, Fiber answers
+	// it before the handler is reached.
+	handler := pydanticai.MCP(ai.NewAgent[struct{}, string](agenttest.Answering("ok")))
+	postOnly := fiber.New()
+	postOnly.Post("/mcp", handler)
+	for name, app := range map[string]*fiber.App{"mounted with All": mcpApp(handler), "mounted with Post": postOnly} {
+		endpoint := mcpServe(t, app)
+		for _, method := range []string{http.MethodGet, http.MethodDelete} {
+			response, _ := mcpSend(t, method, endpoint, "", nil)
+			require.Equal(t, fiber.StatusMethodNotAllowed, response.StatusCode, name+", "+method+": there are no sessions and no stream")
+		}
+	}
+	response, _ := mcpSend(t, http.MethodGet, mcpServe(t, postOnly), "", nil)
+	require.Equal(t, fiber.MethodPost, response.Header.Get(fiber.HeaderAllow))
+}
+
+// The MCP specification has a server validate the Origin header and answer an
+// invalid one with 403. That keeps a page of another site, and a page that
+// reaches the server by DNS rebinding and so looks like its own, from calling
+// the tool in the browser of the user. A client that is not a browser sends no
+// Origin.
+func Test_MCPHandler_Origin(t *testing.T) {
+	t.Parallel()
+
+	const page = "https://app.example.com"
+	for _, test := range []struct {
+		name    string
+		allowed []string
+		origin  string // the Origin header, none when empty
+		status  int
+	}{
+		{name: "a client that is not a browser", status: fiber.StatusOK},
+		{name: "a client that is not a browser, pages are allowed", allowed: []string{page}, status: fiber.StatusOK},
+		{name: "a page, no page is allowed", origin: page, status: fiber.StatusForbidden},
+		{name: "the page that is allowed", allowed: []string{page}, origin: page, status: fiber.StatusOK},
+		{name: "one of the pages that are allowed", allowed: []string{"https://other.example", page}, origin: page, status: fiber.StatusOK},
+		{name: "the spelling of the list", allowed: []string{"HTTPS://App.Example.com"}, origin: page, status: fiber.StatusOK},
+		{name: "the spelling of the header", allowed: []string{page}, origin: "HTTPS://APP.EXAMPLE.COM", status: fiber.StatusOK},
+		{name: "the default port in the list", allowed: []string{"https://app.example.com:443"}, origin: page, status: fiber.StatusOK},
+		{name: "another port", allowed: []string{page}, origin: page + ":8443", status: fiber.StatusForbidden},
+		{name: "another scheme", allowed: []string{page}, origin: "http://app.example.com", status: fiber.StatusForbidden},
+		{name: "another page", allowed: []string{page}, origin: "https://evil.example", status: fiber.StatusForbidden},
+		{name: "a page of an opaque origin", allowed: []string{page}, origin: "null", status: fiber.StatusForbidden},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			var resolved atomic.Int32
+			handler := pydanticai.MCP(ai.NewAgent[struct{}, string](agenttest.Answering("ok")), pydanticai.MCPConfig[struct{}]{
+				AllowedOrigins: test.allowed,
+				Deps: func(fiber.Ctx) (struct{}, error) {
+					resolved.Add(1)
+					return struct{}{}, nil
+				},
+			})
+			headers := map[string]string{"Mcp-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": "ask"}
+			if test.origin != "" {
+				headers["Origin"] = test.origin
+			}
+
+			response, body := mcpPost(t, mcpServe(t, mcpApp(handler)), callMessage, headers)
+			require.Equal(t, test.status, response.StatusCode, body)
+			if test.status == fiber.StatusOK {
+				require.Contains(t, body, `"result"`)
+				require.EqualValues(t, 1, resolved.Load())
+				return
+			}
+			require.EqualValues(t, 0, resolved.Load(), "nothing is resolved for a page that is not allowed")
+		})
+	}
+}
+
+// An origin that no browser sends would silently allow nobody.
+func Test_MCPHandler_AllowedOriginsMustBeOrigins(t *testing.T) {
+	t.Parallel()
+
+	agent := ai.NewAgent[struct{}, string](agenttest.Answering("ok"))
+	for _, origin := range []string{
+		"", "*", "app.example.com", "https://", "ftp://app.example.com", "https://app.example.com/",
+		"https://app.example.com/path", "https://app.example.com?x=1", "https://user@app.example.com",
+	} {
+		require.Panics(t, func() {
+			pydanticai.MCP(agent, pydanticai.MCPConfig[struct{}]{AllowedOrigins: []string{"https://ok.example", origin}})
+		}, "%q", origin)
+	}
+	for _, origin := range []string{"https://app.example.com", "http://localhost:3000", "https://[::1]:8443", "http://app.example.com:80"} {
+		require.NotPanics(t, func() {
+			pydanticai.MCP(agent, pydanticai.MCPConfig[struct{}]{AllowedOrigins: []string{origin}})
+		}, "%q", origin)
 	}
 }
 
