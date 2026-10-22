@@ -43,8 +43,8 @@ func Test_APanicInAConcurrentToolCallEndsTheRunWithAnError(t *testing.T) {
 			require.Equal(t, fiber.StatusOK, resp.StatusCode)
 			require.Equal(t, "internal error", aguiFailure(t, body))
 			require.NotContains(t, body, "kaboom", "the value of the panic stays on the server")
-			require.ErrorContains(t, receive(t, closed, "OnClose"), "panic in the run: kaboom")
-			end := receive(t, ends, "OnRunEnd")
+			require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "panic in the run: kaboom")
+			end := agenttest.Receive(t, ends, "OnRunEnd")
 			require.ErrorContains(t, end.err, "panic in the run: kaboom")
 			require.NotNil(t, end.run)
 		})
@@ -65,7 +65,7 @@ func Test_APanicInAConcurrentToolCallEndsTheRunWithAnError(t *testing.T) {
 			_, done := vercelChunks(t, body)
 			require.True(t, done, "the stream still ends with [DONE]")
 			require.Equal(t, "the run failed", vercelFailure(t, body))
-			require.ErrorContains(t, receive(t, closed, "OnClose"), "panic in the run: kaboom")
+			require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "panic in the run: kaboom")
 			require.Equal(t, "internal error", seen, "ErrorMessage is not given the value of the panic")
 		})
 
@@ -83,7 +83,7 @@ func Test_APanicInAConcurrentToolCallEndsTheRunWithAnError(t *testing.T) {
 			resp, body := post(t, app, "/ask", runBody)
 			require.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
 			require.NotContains(t, body, "kaboom", "the value of the panic stays on the server")
-			end := receive(t, ends, "OnRunEnd")
+			end := agenttest.Receive(t, ends, "OnRunEnd")
 			require.ErrorContains(t, end.err, "panic in the run: kaboom")
 			require.NotNil(t, end.run)
 			// The tool ran on a goroutine that no middleware reaches: Run recovered
@@ -142,13 +142,13 @@ func Test_AClientThatLeavesWhileToolsRunConcurrently(t *testing.T) {
 			response, closeConnection := openStream(t, listen(t, app)+test.path, test.body)
 			_, ok := pydanticaitest.NewReader(response.Body).NextData()
 			require.True(t, ok)
-			receive(t, started, "the first tool call")
-			receive(t, started, "the second tool call")
+			agenttest.Receive(t, started, "the first tool call")
+			agenttest.Receive(t, started, "the second tool call")
 			closeConnection()
 
 			// The tools emit their results after the stream failed, which ended
 			// the process when the handler stopped taking the events of the run.
-			require.Error(t, receive(t, closed, "OnClose"))
+			require.Error(t, agenttest.Receive(t, closed, "OnClose"))
 		})
 	}
 }
@@ -193,7 +193,7 @@ func Test_AnEventThatCannotBeSentWhileToolsRunConcurrently(t *testing.T) {
 			require.Equal(t, fiber.StatusOK, resp.StatusCode)
 			require.Contains(t, aguiFailure(t, body), "encode")
 			require.Equal(t, 1, strings.Count(body, `"RUN_ERROR"`), body)
-			require.Error(t, receive(t, closed, "OnClose"))
+			require.Error(t, agenttest.Receive(t, closed, "OnClose"))
 		})
 		t.Run("Vercel: "+name, func(t *testing.T) {
 			t.Parallel()
@@ -205,7 +205,7 @@ func Test_AnEventThatCannotBeSentWhileToolsRunConcurrently(t *testing.T) {
 			resp, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
 			require.Equal(t, fiber.StatusOK, resp.StatusCode)
 			require.Contains(t, vercelFailure(t, body), "encode")
-			require.Error(t, receive(t, closed, "OnClose"))
+			require.Error(t, agenttest.Receive(t, closed, "OnClose"))
 		})
 	}
 }
@@ -231,5 +231,5 @@ func Test_AnAdapterThatStopsEarlyWhileAToolEmitsLater(t *testing.T) {
 
 	_, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
 	require.Contains(t, aguiFailure(t, body), "encode tool result", "the failure of the adapter, not a panic")
-	require.NotContains(t, receive(t, closed, "OnClose").Error(), "panic")
+	require.NotContains(t, agenttest.Receive(t, closed, "OnClose").Error(), "panic")
 }
