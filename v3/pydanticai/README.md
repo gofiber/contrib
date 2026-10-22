@@ -38,6 +38,9 @@ pydanticai.AGUI[Deps, Output any](agent *ai.Agent[Deps, Output], config ...pydan
 pydanticai.Vercel[Deps, Output any](agent *ai.Agent[Deps, Output], config ...pydanticai.VercelConfig[Deps]) fiber.Handler
 pydanticai.Run[Deps, Output any](agent *ai.Agent[Deps, Output], config ...pydanticai.RunConfig[Deps, Output]) fiber.Handler
 pydanticai.StatusCode(err error) int
+
+type AGUIConfig[Deps any] = pydanticai.StreamConfig[Deps, agui.Config]
+type VercelConfig[Deps any] = pydanticai.StreamConfig[Deps, vercel.Config]
 ```
 
 `ai` is `github.com/Kludex/pydantic-ai-go/ai`. The type arguments of a handler are inferred from the agent, so `pydanticai.AGUI(agent)` needs none. A config does: `pydanticai.AGUIConfig[MyDeps]{...}`.
@@ -364,11 +367,18 @@ The handlers work with any model of pydantic-ai-go; the provider is chosen by th
 
 † The constructor returns an error as well as the model. The model names are examples; use the name of the model that you want.
 
-Most packages also take `WithBaseURL`, to point the model at a proxy or a compatible endpoint, and `WithHTTPClient`. See [Provider configuration](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/providers.md) in the documentation of pydantic-ai-go, and the pages on [Amazon Bedrock](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/bedrock.md) and the [OpenAI Codex subscription](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/openai-codex.md).
+Most packages also take `WithBaseURL`, to point the model at a proxy or a compatible endpoint, and `WithHTTPClient`. The OpenAI models take `WithProvider` for any other OpenAI-compatible service. See [Provider configuration](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/providers.md) in the documentation of pydantic-ai-go, and the pages on [Amazon Bedrock](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/bedrock.md) and the [OpenAI Codex subscription](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/openai-codex.md).
 
 ```go
 // The credentials are options of the model.
 claude := anthropic.NewModel("claude-sonnet-4-5", anthropic.WithAPIKey(apiKey))
+
+// Any other OpenAI-compatible service. Name is stored in the message history, so keep it stable.
+gateway := openai.NewModel("my-model", openai.WithProvider(openai.ProviderConfig{
+    Name:    "my-gateway",
+    BaseURL: "https://gateway.example.com/v1",
+    APIKey:  apiKey,
+}))
 
 // A local vLLM server.
 local, err := vllm.NewModel("Qwen/Qwen3-32B", vllm.WithBaseURL("http://localhost:8000/v1"))
@@ -539,6 +549,14 @@ Authenticate these routes like the chat route. The server does not say which res
 A server in memory needs no network. `mcpsdk.NewInMemoryTransports` connects the client of a run to it:
 
 ```go
+type SearchInput struct {
+    Query string `json:"query" jsonschema:"what to look for"`
+}
+
+type SearchOutput struct {
+    Hits []string `json:"hits"`
+}
+
 server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "catalog", Version: "1.0.0"}, nil)
 mcpsdk.AddTool(server, &mcpsdk.Tool{Name: "search", Description: "Search the catalog"},
     func(_ context.Context, _ *mcpsdk.CallToolRequest, in SearchInput) (*mcpsdk.CallToolResult, SearchOutput, error) {
@@ -572,7 +590,7 @@ app.Post("/mcp", pydanticaimcp.New(agent, pydanticaimcp.Config[Deps]{
 }))
 ```
 
-The client sees one tool, `ask`, with the argument `question`. Its result is the output of the agent: text as it is, and any other output as JSON in the text and as structured content. `Tool` and `Description` name the tool and say what it is for, which the model of the client reads when it chooses a tool.
+The client sees one tool, `ask`, with the argument `question`. Its result is the output of the agent: text as it is, and any other output as JSON in the text, and also as structured content when it is a JSON object. `Tool` and `Description` name the tool and say what it is for, which the model of the client reads when it chooses a tool.
 
 - **Authenticate first.** Derive `Deps` from the authenticated request, never from the arguments of the tool, which a caller can set to anything. `Deps` is called for every message of the client, including those that set up the connection and list the tool, so keep it cheap.
 - **Errors.** A failed run is an error of the tool, which the model of the client reads and can react to. `ErrorMessage` replaces its text, as for the other handlers, and a panic is reported as `internal error`.
@@ -688,6 +706,8 @@ A panic in a tool, in the model or in a callback of the handler ends the stream 
 | `*ai.UnexpectedModelBehaviorError`, `ai.ErrMaxRetriesExceeded`, `ai.ModelAPIError` | `502 Bad Gateway`           |
 | anything else                                                                      | `500 Internal Server Error` |
 
+A panic in the model or in a callback of the handler goes on to the recover middleware of the app, after `OnRunEnd` was called. A panic in a tool call happens on a goroutine of its own, which no middleware reaches, so `Run` recovers it, logs it with its stack, calls `OnRunEnd` and fails the run with `500 Internal Server Error` like any other failure: the `Err` of the `*pydanticai.Error` is the panic.
+
 Log the cause in the error handler of the app:
 
 ```go
@@ -719,7 +739,7 @@ See the [AG-UI](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/ag-ui.md
 
 ### AGUIConfig and VercelConfig
 
-The two streaming handlers take the same settings. They differ in the event that carries an error message and in the adapter config.
+The two streaming handlers take the same settings: `AGUIConfig` and `VercelConfig` are the two forms of one type, `StreamConfig`, whose `Adapter` is an `agui.Config` or a `vercel.Config`. They differ in the event that carries an error message and in the adapter config.
 
 | Property          | Type                                          | Description                                                                                                                                                                               | Default                |
 |:------------------|:----------------------------------------------|:------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|:-----------------------|
@@ -746,7 +766,7 @@ The two streaming handlers take the same settings. They differ in the event that
 | Respond         | `func(fiber.Ctx, *ai.RunResult[Output]) error`    | Writes the response for a completed run.                                                             | `{"output", "run_id", "conversation_id"}` |
 | OnRunEnd        | `func(Deps, *ai.RunInfo, error)`                  | Called once the agent has run, with what the run consumed and the error that ended it, also when the run panicked. The run is `nil` when the agent did not start. | `nil`                                   |
 | MaxRequestBytes | `int64`                                           | Bounds the body that the default `Prompt` reads. The `BodyLimit` of the app applies as well, unless `StreamRequestBody` is enabled, see [Requests](#requests). | `10 MiB`                                  |
-| Timeout         | `time.Duration`                                   | Bounds the duration of one run. A run that exceeds it fails with `504`.                              | `0` (no timeout)                          |
+| Timeout         | `time.Duration`                                   | Bounds the duration of one run. A run that exceeds it fails with `504`. Set one: `Run` cannot notice a client that left. | `0` (no timeout)                          |
 
 ### pydanticaimcp.Config
 
@@ -759,7 +779,7 @@ The two streaming handlers take the same settings. They differ in the event that
 | Tool, Description | `string`                                 | The name of the tool that runs the agent, 1 to 128 characters of `A-Z`, `a-z`, `0-9`, `_`, `.` and `-`, and what it is for.                  | `ask`, `Ask the agent a question`        |
 | ErrorMessage     | `func(error) string`                      | Maps the error of a failed run to the text that the client reads. Also applies to an output that cannot be encoded. A panic is reported with the error `internal error`. | `err.Error()`            |
 | OnRunEnd         | `func(Deps, *ai.RunInfo, error)`          | Called once the agent has run, with what the run consumed and the error that ended it, also when the run panicked. The run is `nil` when the agent did not start. | `nil`                        |
-| Timeout          | `time.Duration`                           | Bounds the duration of one run.                                                                                                              | `0` (no timeout)                         |
+| Timeout          | `time.Duration`                           | Bounds the duration of one run. Set one: a client that left is not noticed before the response is written.                                   | `0` (no timeout)                         |
 | CancelOnShutdown | `bool`                                    | Cancels the runs when the server starts shutting down, instead of waiting for them.                                                          | `false`                                  |
 
 ## See also
