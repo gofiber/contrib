@@ -25,14 +25,12 @@ import (
 	"net/http"
 	"reflect"
 	"regexp"
-	"runtime/debug"
 	"strings"
 	"time"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
 	"github.com/gofiber/contrib/v3/pydanticai/internal/agentrun"
 	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/fiber/v3/log"
 	"github.com/gofiber/fiber/v3/middleware/adaptor"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -110,7 +108,7 @@ type Config[Deps any] struct {
 	// Timeout bounds the duration of one run. A run that exceeds it fails with
 	// the context error. A client that went away is not noticed before the
 	// response is written, so a timeout keeps the run of such a client from
-	// going on for as long as the agent likes.
+	// going on for as long as the agent likes: set one.
 	//
 	// Optional. Default: 0 (no timeout)
 	Timeout time.Duration
@@ -208,26 +206,16 @@ func call[Deps, Output any](
 	agent *ai.Agent[Deps, Output], cfg Config[Deps], deps Deps, options []ai.RunOption, shutdown <-chan struct{},
 ) mcpsdk.ToolHandlerFor[askInput, any] {
 	return func(ctx context.Context, _ *mcpsdk.CallToolRequest, in askInput) (result *mcpsdk.CallToolResult, out any, err error) {
-		options, tracker := agentrun.Track(options, cfg.OnRunEnd != nil)
-		options, tools := agentrun.GuardTools(options)
-
-		ended := false
-		end := func(runErr error) { // reports the end of the run once
-			if cfg.OnRunEnd == nil || ended {
-				return
-			}
-			ended = true
-			agentrun.Safely("OnRunEnd", func() { cfg.OnRunEnd(deps, tracker.Run(), runErr) })
-		}
+		guard, options := agentrun.NewGuard(options, deps, cfg.OnRunEnd)
 		defer func() {
 			if recovered := recover(); recovered != nil {
-				panicErr := agentrun.PanicError(recovered)
-				log.Errorf("%v\n%s", panicErr, debug.Stack())
-				end(panicErr)
+				guard.End(agentrun.Recovered(recovered))
 				result, out, err = nil, nil, errors.New(agentrun.Text(cfg.ErrorMessage, agentrun.ErrPanicked))
 			}
 		}()
 
+		// strings.TrimSpace and not utils.TrimSpace: a question of Unicode spaces is
+		// as empty as one of ASCII spaces.
 		if strings.TrimSpace(in.Question) == "" {
 			return nil, nil, errors.New("the question must not be empty")
 		}
@@ -251,7 +239,7 @@ func call[Deps, Output any](
 
 		run, runErr := agent.Run(ctx, in.Question, deps, options...)
 		panicked := false
-		if panicErr := tools.Err(); panicErr != nil && runErr != nil {
+		if panicErr := guard.Err(); panicErr != nil && runErr != nil {
 			// The error of the run carries the value of the panic, or the error
 			// of a tool that the panic canceled.
 			runErr, panicked = panicErr, true
@@ -263,7 +251,7 @@ func call[Deps, Output any](
 			(errors.Is(runErr, ai.ErrRunCancelled) || errors.Is(runErr, context.Canceled)) {
 			runErr = agentrun.ErrShutdown // say why the run was canceled
 		}
-		end(runErr)
+		guard.End(runErr)
 		if panicked {
 			return nil, nil, errors.New(agentrun.Text(cfg.ErrorMessage, agentrun.ErrPanicked))
 		}

@@ -192,9 +192,12 @@ func Test_Run_OnRunEnd(t *testing.T) {
 	t.Run("a run that panics", func(t *testing.T) {
 		t.Parallel()
 
-		ends := make(chan runEnd, 1)
+		ends, recovered := make(chan runEnd, 1), make(chan any, 1)
 		app := fiber.New()
-		app.Use(recoverer.New())
+		app.Use(recoverer.New(recoverer.Config{PanicHandler: func(_ fiber.Ctx, r any) error {
+			recovered <- r
+			return fiber.ErrInternalServerError
+		}}))
 		app.Post("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](fakes.NewFunctionModel(func(
 			context.Context, []ai.ModelMessage, ai.ModelRequestParams,
 		) (*ai.ModelResponse, error) {
@@ -204,7 +207,8 @@ func Test_Run_OnRunEnd(t *testing.T) {
 		}))
 
 		resp, _ := post(t, app, "/ask", runBody)
-		require.Equal(t, fiber.StatusInternalServerError, resp.StatusCode, "the panic goes on to the recover middleware")
+		require.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
+		require.Equal(t, "model kaboom", receive(t, recovered, "the recover middleware"), "the panic goes on to the recover middleware")
 		end := receive(t, ends, "OnRunEnd")
 		require.ErrorContains(t, end.err, "panic in the run: model kaboom")
 		require.NotNil(t, end.run)
@@ -225,6 +229,7 @@ func Test_Run_OnRunEnd(t *testing.T) {
 }
 
 func Test_OnRunEnd_ARunThatPanics(t *testing.T) {
+	// Not parallel: the log is global, and CaptureLog replaces it.
 	agenttest.CaptureLog(t) // the stack of the panic goes to the log
 
 	panicking := ai.NewAgent[userDeps, string](fakes.NewTestModel())
@@ -244,6 +249,7 @@ func Test_OnRunEnd_ARunThatPanics(t *testing.T) {
 }
 
 func Test_OnRunEnd_APanicIsRecovered(t *testing.T) {
+	// Not parallel: the log is global, and CaptureLog replaces it.
 	logs := agenttest.CaptureLog(t)
 
 	closed := make(chan error, 1)
