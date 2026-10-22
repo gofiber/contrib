@@ -1,19 +1,4 @@
-// Package pydanticaimcp serves a pydantic-ai-go agent as an MCP server from Fiber.
-//
-// New returns the handler of one route. It answers MCP over Streamable HTTP
-// without sessions, and offers one tool that runs the agent with the question
-// of the caller:
-//
-//	app.Use("/mcp", authenticate) // stores the user in c.Locals
-//	app.Post("/mcp", pydanticaimcp.New(agent, pydanticaimcp.Config[Deps]{
-//		Deps: func(c fiber.Ctx) (Deps, error) {
-//			return Deps{UserID: fiber.Locals[string](c, "user")}, nil
-//		},
-//	}))
-//
-// The handler lives in a package of its own, so that an application that does
-// not serve MCP does not build the MCP SDK.
-package pydanticaimcp
+package pydanticai
 
 import (
 	"bytes"
@@ -36,20 +21,20 @@ import (
 )
 
 const (
-	defaultName        = "pydantic-ai-go"
-	defaultVersion     = "1.0.0"
-	defaultTool        = "ask"
-	defaultDescription = "Ask the agent a question"
+	defaultMCPName        = "pydantic-ai-go"
+	defaultMCPVersion     = "1.0.0"
+	defaultMCPTool        = "ask"
+	defaultMCPDescription = "Ask the agent a question"
 )
 
-// toolName is what MCP allows as the name of a tool.
-var toolName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
+// mcpToolName is what MCP allows as the name of a tool.
+var mcpToolName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 
-// errDeferred reports a run that stopped for approvals or external tool results.
-var errDeferred = errors.New("the run ended with deferred tool calls, which a tool call cannot resume")
+// errMCPDeferred reports a run that stopped for approvals or external tool results.
+var errMCPDeferred = errors.New("the run ended with deferred tool calls, which a tool call cannot resume")
 
-// Config defines the config of the handler.
-type Config[Deps any] struct {
+// MCPConfig defines the config of the MCP handler.
+type MCPConfig[Deps any] struct {
 	// Next defines a function to skip this handler when it returns true.
 	//
 	// Optional. Default: nil
@@ -122,12 +107,20 @@ type Config[Deps any] struct {
 	CancelOnShutdown bool
 }
 
-// askInput is the input of the tool.
-type askInput struct {
+// mcpAskInput is the input of the tool.
+type mcpAskInput struct {
 	Question string `json:"question" jsonschema:"The question or the task for the agent"`
 }
 
-// New returns a handler that serves agent as an MCP server.
+// MCP returns a handler that serves agent as an MCP server over Streamable HTTP.
+// It offers one tool, which runs the agent with the question of the caller:
+//
+//	app.Use("/mcp", authenticate) // stores the user in c.Locals
+//	app.Post("/mcp", pydanticai.MCP(agent, pydanticai.MCPConfig[Deps]{
+//		Deps: func(c fiber.Ctx) (Deps, error) {
+//			return Deps{UserID: fiber.Locals[string](c, "user")}, nil
+//		},
+//	}))
 //
 // There are no sessions: every request is a connection of its own. That keeps
 // the handler free of state, and answers each request with one JSON response
@@ -136,24 +129,24 @@ type askInput struct {
 // because nothing in this server changes.
 //
 // It panics when agent is nil or the name of the tool is not valid.
-func New[Deps, Output any](agent *ai.Agent[Deps, Output], config ...Config[Deps]) fiber.Handler {
+func MCP[Deps, Output any](agent *ai.Agent[Deps, Output], config ...MCPConfig[Deps]) fiber.Handler {
 	if agent == nil {
-		panic("pydanticaimcp: agent must not be nil")
+		panic("pydanticai: agent must not be nil")
 	}
-	var cfg Config[Deps]
+	var cfg MCPConfig[Deps]
 	if len(config) > 0 {
 		cfg = config[0]
 	}
 	tool := &mcpsdk.Tool{
-		Name:        cmp.Or(cfg.Tool, defaultTool),
-		Description: cmp.Or(cfg.Description, defaultDescription),
+		Name:        cmp.Or(cfg.Tool, defaultMCPTool),
+		Description: cmp.Or(cfg.Description, defaultMCPDescription),
 	}
-	if !toolName.MatchString(tool.Name) {
-		panic(fmt.Sprintf("pydanticaimcp: invalid tool name %q", tool.Name))
+	if !mcpToolName.MatchString(tool.Name) {
+		panic(fmt.Sprintf("pydanticai: invalid MCP tool name %q", tool.Name))
 	}
 	implementation := &mcpsdk.Implementation{
-		Name:    cmp.Or(cfg.Name, agent.Name(), defaultName),
-		Version: cmp.Or(cfg.Version, defaultVersion),
+		Name:    cmp.Or(cfg.Name, agent.Name(), defaultMCPName),
+		Version: cmp.Or(cfg.Version, defaultMCPVersion),
 	}
 	serverOptions := &mcpsdk.ServerOptions{
 		// Only the tool, and no notifications about it: a client that subscribes
@@ -191,7 +184,7 @@ func New[Deps, Output any](agent *ai.Agent[Deps, Output], config ...Config[Deps]
 		// The tool is made for the request, as it runs the agent with the
 		// dependencies of the request.
 		server := mcpsdk.NewServer(implementation, serverOptions)
-		mcpsdk.AddTool(server, tool, call(agent, cfg, deps, options, shutdown))
+		mcpsdk.AddTool(server, tool, mcpTool(agent, cfg, deps, options, shutdown))
 		handler := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return server }, httpOptions)
 		return adaptor.HTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			handler.ServeHTTP(w, r.WithContext(values))
@@ -199,13 +192,13 @@ func New[Deps, Output any](agent *ai.Agent[Deps, Output], config ...Config[Deps]
 	}
 }
 
-// call returns the handler of the tool. It runs on a goroutine of the MCP
+// mcpTool returns the handler of the tool. It runs on a goroutine of the MCP
 // server, where no recover middleware guards it, so a panic ends the call and
 // not the process.
-func call[Deps, Output any](
-	agent *ai.Agent[Deps, Output], cfg Config[Deps], deps Deps, options []ai.RunOption, shutdown <-chan struct{},
-) mcpsdk.ToolHandlerFor[askInput, any] {
-	return func(ctx context.Context, _ *mcpsdk.CallToolRequest, in askInput) (result *mcpsdk.CallToolResult, out any, err error) {
+func mcpTool[Deps, Output any](
+	agent *ai.Agent[Deps, Output], cfg MCPConfig[Deps], deps Deps, options []ai.RunOption, shutdown <-chan struct{},
+) mcpsdk.ToolHandlerFor[mcpAskInput, any] {
+	return func(ctx context.Context, _ *mcpsdk.CallToolRequest, in mcpAskInput) (result *mcpsdk.CallToolResult, out any, err error) {
 		guard, options := agentrun.NewGuard(options, deps, cfg.OnRunEnd)
 		defer func() {
 			if recovered := recover(); recovered != nil {
@@ -243,7 +236,7 @@ func call[Deps, Output any](
 			runErr, panicked = panicErr, true
 		}
 		if runErr == nil && run.Deferred() != nil {
-			runErr = errDeferred
+			runErr = errMCPDeferred
 		}
 		if runErr != nil && errors.Is(context.Cause(ctx), agentrun.ErrShutdown) &&
 			(errors.Is(runErr, ai.ErrRunCancelled) || errors.Is(runErr, context.Canceled)) {
@@ -256,7 +249,7 @@ func call[Deps, Output any](
 		if runErr != nil {
 			return nil, nil, errors.New(agentrun.Text(cfg.ErrorMessage, runErr))
 		}
-		result, out, err = output(run.Output)
+		result, out, err = mcpOutput(run.Output)
 		if err != nil {
 			return nil, nil, errors.New(agentrun.Text(cfg.ErrorMessage, err))
 		}
@@ -264,24 +257,24 @@ func call[Deps, Output any](
 	}
 }
 
-// output returns the result of the tool for the output of the agent. Text goes
-// to the client as it is. Anything else goes as JSON text, and as structured
-// content when it is an object, which every version of MCP allows.
-func output[Output any](value Output) (*mcpsdk.CallToolResult, any, error) {
+// mcpOutput returns the result of the tool for the output of the agent. Text
+// goes to the client as it is. Anything else goes as JSON text, and as
+// structured content when it is an object, which every version of MCP allows.
+func mcpOutput[Output any](value Output) (*mcpsdk.CallToolResult, any, error) {
 	if reflected := reflect.ValueOf(value); reflected.Kind() == reflect.String {
-		return text(reflected.String()), nil, nil
+		return mcpText(reflected.String()), nil, nil
 	}
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return nil, nil, fmt.Errorf("encode the output of the agent: %w", err)
 	}
-	result := text(string(encoded))
+	result := mcpText(string(encoded))
 	if bytes.HasPrefix(encoded, []byte("{")) {
 		return result, json.RawMessage(encoded), nil
 	}
 	return result, nil, nil
 }
 
-func text(content string) *mcpsdk.CallToolResult {
+func mcpText(content string) *mcpsdk.CallToolResult {
 	return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: content}}}
 }
