@@ -2,16 +2,14 @@ package pydanticai_test
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"math"
 	"strings"
 	"testing"
 	"time"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
-	"github.com/Kludex/pydantic-ai-go/ai/models/fakes"
 	"github.com/gofiber/contrib/v3/pydanticai"
+	"github.com/gofiber/contrib/v3/pydanticai/internal/agenttest"
 	"github.com/gofiber/contrib/v3/pydanticai/pydanticaitest"
 	"github.com/gofiber/fiber/v3"
 	recoverer "github.com/gofiber/fiber/v3/middleware/recover"
@@ -22,51 +20,13 @@ import (
 // on a goroutine of its own that nothing guards. The tests in this file make
 // sure that what happens on those goroutines cannot end the process.
 
-// concurrentCalls is a model that asks for one call of each named tool in its
-// first response, so that the calls run concurrently, and answers "done" once
-// it has their results.
-func concurrentCalls(names ...string) *fakes.FunctionModel {
-	return fakes.NewFunctionModel(func(
-		_ context.Context, messages []ai.ModelMessage, _ ai.ModelRequestParams,
-	) (*ai.ModelResponse, error) {
-		for _, message := range messages {
-			if _, ok := message.(ai.ModelResponse); ok {
-				return textResponse("done"), nil
-			}
-		}
-		parts := make([]ai.ResponsePart, len(names))
-		for i, name := range names {
-			parts[i] = ai.ToolCallPart{ToolName: name, Args: json.RawMessage(`{}`), ToolCallID: fmt.Sprintf("call-%d", i)}
-		}
-		return &ai.ModelResponse{Parts: parts}, nil
-	})
-}
-
-// concurrentAgent calls the named tools concurrently. "explode" panics,
-// "waiting" waits for its context, "fine" returns at once.
-func concurrentAgent(names ...string) *ai.Agent[struct{}, string] {
-	agent := ai.NewAgent[struct{}, string](concurrentCalls(names...))
-	ai.AddSimpleTool(agent, "explode", func(context.Context, struct{}) (string, error) {
-		time.Sleep(20 * time.Millisecond) // lets "waiting" start first
-		panic("kaboom")
-	})
-	ai.AddSimpleTool(agent, "waiting", func(ctx context.Context, _ struct{}) (string, error) {
-		<-ctx.Done()
-		return "", ctx.Err()
-	})
-	ai.AddSimpleTool(agent, "fine", func(context.Context, struct{}) (string, error) {
-		return "ok", nil
-	})
-	return agent
-}
-
 func Test_APanicInAConcurrentToolCallEndsTheRunWithAnError(t *testing.T) {
-	logs := captureLog(t) // the panic and its stack go to the log
+	logs := agenttest.CaptureLog(t) // the panic and its stack go to the log
 
 	// "waiting" comes first: the panic cancels it, and its error is the first
 	// error of the calls, which the run reports.
 	for _, calls := range [][]string{{"explode", "fine"}, {"fine", "explode"}, {"waiting", "explode"}} {
-		agent := concurrentAgent(calls...)
+		agent := agenttest.ConcurrentAgent(calls...)
 		name := strings.Join(calls, ", ")
 
 		t.Run("AG-UI: "+name, func(t *testing.T) {
@@ -165,7 +125,7 @@ func Test_AClientThatLeavesWhileToolsRunConcurrently(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			agent := ai.NewAgent[struct{}, string](concurrentCalls("first", "second"))
+			agent := ai.NewAgent[struct{}, string](agenttest.ToolCalls("first", "second"))
 			started := make(chan struct{}, 2)
 			slowTools(agent, started)
 			closed := make(chan error, 1)
@@ -200,14 +160,14 @@ func Test_AnEventThatCannotBeSentWhileToolsRunConcurrently(t *testing.T) {
 		})
 	}
 	// progress emits an event that no protocol can encode.
-	progress := ai.NewAgent[struct{}, string](concurrentCalls("progress", "slow"))
+	progress := ai.NewAgent[struct{}, string](agenttest.ToolCalls("progress", "slow"))
 	ai.AddTool(progress, "progress", func(_ context.Context, rc *ai.RunContext[struct{}], _ struct{}) (string, error) {
 		return "ok", rc.Emit(ai.NewCustomEvent("progress", unencodable{}))
 	})
 	slow(progress)
 	// nan returns a result that the AG-UI adapter cannot convert and the Vercel
 	// handler cannot encode.
-	nan := ai.NewAgent[struct{}, string](concurrentCalls("nan", "slow"))
+	nan := ai.NewAgent[struct{}, string](agenttest.ToolCalls("nan", "slow"))
 	ai.AddSimpleTool(nan, "nan", func(context.Context, struct{}) (unencodableToolResult, error) {
 		return unencodableToolResult{Value: math.NaN()}, nil
 	})
@@ -240,4 +200,28 @@ func Test_AnEventThatCannotBeSentWhileToolsRunConcurrently(t *testing.T) {
 			require.Error(t, receive(t, closed, "OnClose"))
 		})
 	}
+}
+
+// The AG-UI adapter stops by itself when it cannot convert a tool result, while
+// a tool that ignores its context goes on and emits an event afterwards. The
+// stream guard keeps that event from reaching the loop that the adapter left.
+func Test_AnAdapterThatStopsEarlyWhileAToolEmitsLater(t *testing.T) {
+	t.Parallel()
+
+	agent := ai.NewAgent[struct{}, string](agenttest.ToolCalls("nan", "late"))
+	ai.AddSimpleTool(agent, "nan", func(context.Context, struct{}) (unencodableToolResult, error) {
+		return unencodableToolResult{Value: math.NaN()}, nil // the adapter cannot convert it
+	})
+	ai.AddTool(agent, "late", func(_ context.Context, rc *ai.RunContext[struct{}], _ struct{}) (string, error) {
+		time.Sleep(300 * time.Millisecond)
+		return "ok", rc.Emit(ai.NewCustomEvent("late", "x"))
+	})
+	closed := make(chan error, 1)
+	handler := pydanticai.AGUI(agent, pydanticai.AGUIConfig[struct{}]{
+		OnClose: func(_ struct{}, err error) { closed <- err },
+	})
+
+	_, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
+	require.Contains(t, aguiFailure(t, body), "encode tool result", "the failure of the adapter, not a panic")
+	require.NotContains(t, receive(t, closed, "OnClose").Error(), "panic")
 }

@@ -1,53 +1,21 @@
 package agentrun_test
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
-	"os"
+	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
-	"github.com/Kludex/pydantic-ai-go/ai/models/fakes"
 	"github.com/gofiber/contrib/v3/pydanticai/internal/agentrun"
-	"github.com/gofiber/fiber/v3/log"
+	"github.com/gofiber/contrib/v3/pydanticai/internal/agenttest"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttputil"
 )
-
-// syncBuffer is a log destination that the goroutines of a run can write to.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-// captureLog sends the log of Fiber to the returned buffer until the test ends.
-// The logger is global, so the test must not run in parallel with others.
-func captureLog(t *testing.T) *syncBuffer {
-	t.Helper()
-
-	logs := new(syncBuffer)
-	log.SetOutput(logs)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-	return logs
-}
 
 func Test_PanicError(t *testing.T) {
 	t.Parallel()
@@ -62,7 +30,7 @@ func Test_PanicError(t *testing.T) {
 }
 
 func Test_Safely(t *testing.T) {
-	logs := captureLog(t)
+	logs := agenttest.CaptureLog(t)
 
 	called := false
 	agentrun.Safely("Callback", func() { called = true })
@@ -75,7 +43,7 @@ func Test_Safely(t *testing.T) {
 }
 
 func Test_Text(t *testing.T) {
-	logs := captureLog(t)
+	logs := agenttest.CaptureLog(t)
 
 	failure := errors.New("provider rejected the key sk-secret")
 	require.Equal(t, failure.Error(), agentrun.Text(nil, failure))
@@ -87,9 +55,72 @@ func Test_Text(t *testing.T) {
 	require.Contains(t, logs.String(), "panic in ErrorMessage: bug in ErrorMessage")
 }
 
-func answering(text string) *fakes.FunctionModel {
-	return fakes.NewFunctionModel(func(context.Context, []ai.ModelMessage, ai.ModelRequestParams) (*ai.ModelResponse, error) {
-		return &ai.ModelResponse{Parts: []ai.ResponsePart{ai.TextPart{Content: text}}}, nil
+// resolved runs Resolve in a handler of an app, which is where it gets its Ctx.
+func resolved[Deps any](
+	t *testing.T,
+	deps func(fiber.Ctx) (Deps, error),
+	options func(fiber.Ctx) ([]ai.RunOption, error),
+) (value Deps, extra []ai.RunOption, err error) {
+	t.Helper()
+
+	app := fiber.New()
+	app.Get("/", func(c fiber.Ctx) error {
+		value, extra, err = agentrun.Resolve(c, deps, options)
+		return nil
+	})
+	resp, testErr := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
+	require.NoError(t, testErr)
+	require.NoError(t, resp.Body.Close())
+	return value, extra, err
+}
+
+func Test_Resolve(t *testing.T) {
+	t.Parallel()
+
+	failure := errors.New("rejected")
+	user := func(fiber.Ctx) (string, error) { return "alice", nil }
+	metadata := func(fiber.Ctx) ([]ai.RunOption, error) {
+		return []ai.RunOption{ai.WithRunMetadata(map[string]any{"k": "v"})}, nil
+	}
+
+	t.Run("without callbacks", func(t *testing.T) {
+		t.Parallel()
+
+		deps, options, err := resolved[string](t, nil, nil)
+		require.NoError(t, err)
+		require.Empty(t, deps, "the zero value of Deps")
+		require.Nil(t, options)
+	})
+
+	t.Run("both callbacks", func(t *testing.T) {
+		t.Parallel()
+
+		deps, options, err := resolved(t, user, metadata)
+		require.NoError(t, err)
+		require.Equal(t, "alice", deps)
+		require.Len(t, options, 1)
+	})
+
+	t.Run("Deps fails", func(t *testing.T) {
+		t.Parallel()
+
+		asked := false
+		_, options, err := resolved(t,
+			func(fiber.Ctx) (string, error) { return "", failure },
+			func(fiber.Ctx) ([]ai.RunOption, error) { asked = true; return nil, nil })
+		require.ErrorIs(t, err, failure)
+		require.Nil(t, options)
+		require.False(t, asked, "an error ends the resolution")
+	})
+
+	t.Run("RunOptions fails", func(t *testing.T) {
+		t.Parallel()
+
+		_, options, err := resolved(t, user, func(fiber.Ctx) ([]ai.RunOption, error) {
+			return []ai.RunOption{ai.WithRunMetadata(nil)}, failure
+		})
+		require.ErrorIs(t, err, failure)
+		require.Nil(t, options, "the options of a failed call are dropped")
 	})
 }
 
@@ -116,7 +147,7 @@ func Test_Track(t *testing.T) {
 		require.Nil(t, options[:2][1], "the slice of the caller is not written to")
 		require.Nil(t, tracker.Run(), "no run has started")
 
-		agent := ai.NewAgent[struct{}, string](answering("done"))
+		agent := ai.NewAgent[struct{}, string](agenttest.Answering("done"))
 		result, err := agent.Run(context.Background(), "Hello", struct{}{}, tracked...)
 		require.NoError(t, err)
 		run := tracker.Run()
@@ -125,34 +156,10 @@ func Test_Track(t *testing.T) {
 	})
 }
 
-// toolCalls is a model that asks for one call of each named tool in its first
-// response, so that the calls run concurrently, and answers "done" afterwards.
-func toolCalls(names ...string) *fakes.FunctionModel {
-	return fakes.NewFunctionModel(func(
-		_ context.Context, messages []ai.ModelMessage, _ ai.ModelRequestParams,
-	) (*ai.ModelResponse, error) {
-		for _, message := range messages {
-			if _, ok := message.(ai.ModelResponse); ok {
-				return &ai.ModelResponse{Parts: []ai.ResponsePart{ai.TextPart{Content: "done"}}}, nil
-			}
-		}
-		parts := make([]ai.ResponsePart, len(names))
-		for i, name := range names {
-			parts[i] = ai.ToolCallPart{ToolName: name, Args: json.RawMessage(`{}`), ToolCallID: name}
-		}
-		return &ai.ModelResponse{Parts: parts}, nil
-	})
-}
-
 func Test_GuardTools(t *testing.T) {
-	logs := captureLog(t)
+	logs := agenttest.CaptureLog(t)
 
-	agent := ai.NewAgent[struct{}, string](toolCalls("explode", "waiting"))
-	ai.AddSimpleTool(agent, "explode", func(context.Context, struct{}) (string, error) { panic("kaboom") })
-	ai.AddSimpleTool(agent, "waiting", func(ctx context.Context, _ struct{}) (string, error) {
-		<-ctx.Done()
-		return "", ctx.Err()
-	})
+	agent := agenttest.ConcurrentAgent("explode", "waiting")
 
 	options := []ai.RunOption{ai.WithRunMetadata(map[string]any{"k": "v"})}
 	guarded, guard := agentrun.GuardTools(options)
@@ -172,8 +179,7 @@ func Test_GuardTools(t *testing.T) {
 func Test_GuardTools_NoPanic(t *testing.T) {
 	t.Parallel()
 
-	agent := ai.NewAgent[struct{}, string](toolCalls("fine"))
-	ai.AddSimpleTool(agent, "fine", func(context.Context, struct{}) (string, error) { return "ok", nil })
+	agent := agenttest.ConcurrentAgent("fine")
 
 	guarded, guard := agentrun.GuardTools(nil)
 	result, err := agent.Run(context.Background(), "Hello", struct{}{}, guarded...)

@@ -1,7 +1,6 @@
 package pydanticaimcp_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,7 +8,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,9 +17,9 @@ import (
 	ai "github.com/Kludex/pydantic-ai-go/ai"
 	aimcp "github.com/Kludex/pydantic-ai-go/ai/mcp"
 	"github.com/Kludex/pydantic-ai-go/ai/models/fakes"
+	"github.com/gofiber/contrib/v3/pydanticai/internal/agenttest"
 	"github.com/gofiber/contrib/v3/pydanticai/pydanticaimcp"
 	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/fiber/v3/log"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 )
@@ -113,51 +111,16 @@ func newApp(handler fiber.Handler) *fiber.App {
 	return app
 }
 
-func answering(text string) *fakes.FunctionModel {
-	return fakes.NewFunctionModel(func(context.Context, []ai.ModelMessage, ai.ModelRequestParams) (*ai.ModelResponse, error) {
-		return &ai.ModelResponse{Parts: []ai.ResponsePart{ai.TextPart{Content: text}}}, nil
-	})
-}
-
 func failing(err error) *fakes.FunctionModel {
 	return fakes.NewFunctionModel(func(context.Context, []ai.ModelMessage, ai.ModelRequestParams) (*ai.ModelResponse, error) {
 		return nil, err
 	})
 }
 
-// syncBuffer is a log destination that several goroutines write to.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-// captureLog sends the log of Fiber to the returned buffer until the test ends.
-// The logger is global, so the test must not run in parallel with others.
-func captureLog(t *testing.T) *syncBuffer {
-	t.Helper()
-
-	logs := new(syncBuffer)
-	log.SetOutput(logs)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-	return logs
-}
-
 func Test_New_RunsTheAgent(t *testing.T) {
 	t.Parallel()
 
-	agent := ai.NewAgent[struct{}, string](answering("Paris."))
+	agent := ai.NewAgent[struct{}, string](agenttest.Answering("Paris."))
 	session := connect(t, serve(t, newApp(pydanticaimcp.New(agent))), "")
 
 	ctx, cancel := context.WithTimeout(context.Background(), observeTimeout)
@@ -190,7 +153,7 @@ func Test_New_RunsTheAgent(t *testing.T) {
 func Test_New_Identity(t *testing.T) {
 	t.Parallel()
 
-	agent := ai.NewAgent[struct{}, string](answering("ok"), ai.WithAgentName("support"))
+	agent := ai.NewAgent[struct{}, string](agenttest.Answering("ok"), ai.WithAgentName("support"))
 
 	t.Run("the name of the agent", func(t *testing.T) {
 		t.Parallel()
@@ -417,6 +380,44 @@ func Test_New_RequestContextValuesAreAvailableToTools(t *testing.T) {
 	require.Equal(t, "trace-42", seen.Load())
 }
 
+// A tool can keep a goroutine that reads its context after the call was
+// answered. That context must not end in the RequestCtx of fasthttp, which is
+// pooled: the requests that follow write its values while the goroutine reads
+// them. The race detector reports it.
+func Test_New_ToolContextOutlivesTheCall(t *testing.T) {
+	t.Parallel()
+
+	var (
+		once sync.Once
+		late sync.WaitGroup
+	)
+	agent := ai.NewAgent[struct{}, string](fakes.NewTestModel())
+	ai.AddSimpleTool(agent, "late", func(ctx context.Context, _ struct{}) (string, error) {
+		once.Do(func() {
+			late.Go(func() {
+				time.Sleep(30 * time.Millisecond) // until the requests that follow are served
+				for range 20000 {
+					_ = ctx.Value(traceKey{})
+				}
+			})
+		})
+		return "ok", nil
+	})
+
+	app := fiber.New()
+	app.Use("/mcp", func(c fiber.Ctx) error { // writes the values of the RequestCtx
+		c.Locals("user", "alice")
+		return c.Next()
+	})
+	app.All("/mcp", pydanticaimcp.New(agent))
+	session := connect(t, serve(t, app), "")
+
+	for range 200 {
+		require.False(t, ask(t, session, "Hello").IsError)
+	}
+	late.Wait()
+}
+
 func Test_New_RunOptions(t *testing.T) {
 	t.Parallel()
 
@@ -444,7 +445,7 @@ func Test_New_RunOptions(t *testing.T) {
 func Test_New_FailedCallbacksAnswerTheRequest(t *testing.T) {
 	t.Parallel()
 
-	agent := ai.NewAgent[struct{}, string](answering("ok"))
+	agent := ai.NewAgent[struct{}, string](agenttest.Answering("ok"))
 	for name, config := range map[string]pydanticaimcp.Config[struct{}]{
 		"Deps": {Deps: func(fiber.Ctx) (struct{}, error) { return struct{}{}, fiber.ErrForbidden }},
 		"RunOptions": {RunOptions: func(fiber.Ctx) ([]ai.RunOption, error) {
@@ -455,14 +456,7 @@ func Test_New_FailedCallbacksAnswerTheRequest(t *testing.T) {
 			t.Parallel()
 
 			endpoint := serve(t, newApp(pydanticaimcp.New(agent, config)))
-			request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, endpoint,
-				strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
-			require.NoError(t, err)
-			request.Header.Set("Content-Type", "application/json")
-			request.Header.Set("Accept", "application/json, text/event-stream")
-			response, err := http.DefaultClient.Do(request)
-			require.NoError(t, err)
-			defer func() { _ = response.Body.Close() }()
+			response, _ := post(t, endpoint, `{"jsonrpc":"2.0","id":1,"method":"ping"}`, nil)
 			require.Equal(t, fiber.StatusForbidden, response.StatusCode, "the error is returned from the handler")
 		})
 	}
@@ -472,27 +466,23 @@ func Test_New_Next(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.All("/mcp", pydanticaimcp.New(ai.NewAgent[struct{}, string](answering("ok")), pydanticaimcp.Config[struct{}]{
+	app.All("/mcp", pydanticaimcp.New(ai.NewAgent[struct{}, string](agenttest.Answering("ok")), pydanticaimcp.Config[struct{}]{
 		Next: func(c fiber.Ctx) bool { return c.Get("X-Skip") != "" },
 	}), func(c fiber.Ctx) error {
 		return c.SendString("skipped")
 	})
 	endpoint := serve(t, app)
 
-	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, endpoint, nil)
-	require.NoError(t, err)
-	request.Header.Set("X-Skip", "yes")
-	response, err := http.DefaultClient.Do(request)
-	require.NoError(t, err)
-	defer func() { _ = response.Body.Close() }()
+	response, body := post(t, endpoint, "", map[string]string{"X-Skip": "yes"})
 	require.Equal(t, fiber.StatusOK, response.StatusCode)
+	require.Equal(t, "skipped", body)
 }
 
 func Test_New_Panics(t *testing.T) {
 	t.Parallel()
 
 	require.Panics(t, func() { pydanticaimcp.New[struct{}, string](nil) })
-	agent := ai.NewAgent[struct{}, string](answering("ok"))
+	agent := ai.NewAgent[struct{}, string](agenttest.Answering("ok"))
 	for _, name := range []string{"has space", "", strings.Repeat("a", 129), "ask?"} {
 		if name == "" {
 			require.NotPanics(t, func() { pydanticaimcp.New(agent, pydanticaimcp.Config[struct{}]{Tool: name}) }, "the default")
@@ -546,7 +536,7 @@ func Test_New_Errors(t *testing.T) {
 	t.Run("an empty question", func(t *testing.T) {
 		t.Parallel()
 
-		model := answering("must not be called")
+		model := agenttest.Answering("must not be called")
 		session := connect(t, serve(t, newApp(pydanticaimcp.New(ai.NewAgent[struct{}, string](model)))), "")
 		for _, question := range []string{"", "  \n\t"} {
 			result := ask(t, session, question)
@@ -558,7 +548,7 @@ func Test_New_Errors(t *testing.T) {
 	t.Run("a missing question", func(t *testing.T) {
 		t.Parallel()
 
-		session := connect(t, serve(t, newApp(pydanticaimcp.New(ai.NewAgent[struct{}, string](answering("ok"))))), "")
+		session := connect(t, serve(t, newApp(pydanticaimcp.New(ai.NewAgent[struct{}, string](agenttest.Answering("ok"))))), "")
 		ctx, cancel := context.WithTimeout(context.Background(), observeTimeout)
 		defer cancel()
 		result, err := session.CallTool(ctx, &mcpsdk.CallToolParams{Name: "ask", Arguments: map[string]any{}})
@@ -611,7 +601,7 @@ func Test_New_OnRunEnd(t *testing.T) {
 		err error
 	}
 	ends := make(chan end, 1)
-	agent := ai.NewAgent[struct{}, string](answering("ok"))
+	agent := ai.NewAgent[struct{}, string](agenttest.Answering("ok"))
 	app := newApp(pydanticaimcp.New(agent, pydanticaimcp.Config[struct{}]{
 		OnRunEnd: func(_ struct{}, run *ai.RunInfo, err error) { ends <- end{run: run, err: err} },
 	}))
@@ -623,37 +613,8 @@ func Test_New_OnRunEnd(t *testing.T) {
 	require.NotZero(t, got.run.Usage().Requests)
 }
 
-// concurrentTools is an agent whose model asks for two tool calls in one
-// response, which pydantic-ai-go runs together, each on a goroutine of its own
-// where nothing but the handler can recover. One of the tools panics while the
-// other waits.
-func concurrentTools() *ai.Agent[struct{}, string] {
-	agent := ai.NewAgent[struct{}, string](fakes.NewFunctionModel(func(
-		_ context.Context, messages []ai.ModelMessage, _ ai.ModelRequestParams,
-	) (*ai.ModelResponse, error) {
-		for _, message := range messages {
-			if _, ok := message.(ai.ModelResponse); ok {
-				return &ai.ModelResponse{Parts: []ai.ResponsePart{ai.TextPart{Content: "done"}}}, nil
-			}
-		}
-		return &ai.ModelResponse{Parts: []ai.ResponsePart{
-			ai.ToolCallPart{ToolName: "waiting", Args: json.RawMessage(`{}`), ToolCallID: "call-1"},
-			ai.ToolCallPart{ToolName: "explode", Args: json.RawMessage(`{}`), ToolCallID: "call-2"},
-		}}, nil
-	}))
-	ai.AddSimpleTool(agent, "waiting", func(ctx context.Context, _ struct{}) (string, error) {
-		<-ctx.Done()
-		return "", ctx.Err()
-	})
-	ai.AddSimpleTool(agent, "explode", func(context.Context, struct{}) (string, error) {
-		time.Sleep(20 * time.Millisecond) // lets "waiting" start first
-		panic("kaboom in explode")
-	})
-	return agent
-}
-
 func Test_New_Panics_AreErrorsOfTheTool(t *testing.T) {
-	logs := captureLog(t)
+	logs := agenttest.CaptureLog(t)
 
 	boom := func(tools ...string) *ai.Agent[struct{}, string] {
 		agent := ai.NewAgent[struct{}, string](fakes.NewTestModel())
@@ -676,7 +637,7 @@ func Test_New_Panics_AreErrorsOfTheTool(t *testing.T) {
 	}{
 		"the model":               {agent: model, cause: "kaboom in the model"},
 		"a tool":                  {agent: boom("explode"), cause: "kaboom in explode"},
-		"tools that run together": {agent: concurrentTools(), cause: "kaboom in explode"},
+		"tools that run together": {agent: agenttest.ConcurrentAgent("waiting", "explode"), cause: "kaboom in explode"},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -708,9 +669,9 @@ func Test_New_Panics_AreErrorsOfTheTool(t *testing.T) {
 }
 
 func Test_New_PanicsInCallbacksAreLogged(t *testing.T) {
-	logs := captureLog(t)
+	logs := agenttest.CaptureLog(t)
 
-	agent := ai.NewAgent[struct{}, string](answering("ok"))
+	agent := ai.NewAgent[struct{}, string](agenttest.Answering("ok"))
 	app := newApp(pydanticaimcp.New(agent, pydanticaimcp.Config[struct{}]{
 		OnRunEnd: func(struct{}, *ai.RunInfo, error) { panic("bug in OnRunEnd") },
 	}))
@@ -726,7 +687,7 @@ type explosive struct{}
 func (explosive) MarshalJSON() ([]byte, error) { panic("kaboom in MarshalJSON") }
 
 func Test_New_PanicWhileEncodingTheOutput(t *testing.T) {
-	logs := captureLog(t)
+	logs := agenttest.CaptureLog(t)
 
 	ends := make(chan error, 1)
 	agent := ai.NewAgent[struct{}, explosive](fakes.NewTestModel())
@@ -743,14 +704,9 @@ func Test_New_PanicWhileEncodingTheOutput(t *testing.T) {
 func Test_New_Methods(t *testing.T) {
 	t.Parallel()
 
-	endpoint := serve(t, newApp(pydanticaimcp.New(ai.NewAgent[struct{}, string](answering("ok")))))
+	endpoint := serve(t, newApp(pydanticaimcp.New(ai.NewAgent[struct{}, string](agenttest.Answering("ok")))))
 	for _, method := range []string{http.MethodGet, http.MethodDelete} {
-		request, err := http.NewRequestWithContext(context.Background(), method, endpoint, nil)
-		require.NoError(t, err)
-		request.Header.Set("Accept", "application/json, text/event-stream")
-		response, err := http.DefaultClient.Do(request)
-		require.NoError(t, err)
-		_ = response.Body.Close()
+		response, _ := send(t, method, endpoint, "", nil)
 		require.Equal(t, fiber.StatusMethodNotAllowed, response.StatusCode, method+": there are no sessions and no stream")
 	}
 }
@@ -775,7 +731,7 @@ func Test_New_SubscriptionsDoNotKeepRequestsOpen(t *testing.T) {
 		mu.Unlock()
 		return c.Next()
 	})
-	app.All("/mcp", pydanticaimcp.New(ai.NewAgent[struct{}, string](answering("ok"))))
+	app.All("/mcp", pydanticaimcp.New(ai.NewAgent[struct{}, string](agenttest.Answering("ok"))))
 	endpoint := serve(t, app)
 
 	// The response to a subscription ends with its result, because the server
@@ -953,7 +909,7 @@ func Test_New_Concurrent(t *testing.T) {
 func Test_New_AnotherAgentUsesTheServer(t *testing.T) {
 	t.Parallel()
 
-	support := ai.NewAgent[struct{}, string](answering("Your order shipped yesterday."))
+	support := ai.NewAgent[struct{}, string](agenttest.Answering("Your order shipped yesterday."))
 	app := fiber.New()
 	app.Use("/mcp", func(c fiber.Ctx) error {
 		if c.Get("Authorization") != "Bearer secret" {
@@ -988,13 +944,13 @@ func Test_New_AnotherAgentUsesTheServer(t *testing.T) {
 	require.Equal(t, []string{"Your order shipped yesterday."}, returned)
 }
 
-// post sends one JSON-RPC message to the route as a plain HTTP client does.
-func post(t *testing.T, endpoint, message string, headers map[string]string) (*http.Response, string) {
+// send sends one JSON-RPC message to the route as a plain HTTP client does.
+func send(t *testing.T, method, endpoint, message string, headers map[string]string) (*http.Response, string) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), observeTimeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(message))
+	request, err := http.NewRequestWithContext(ctx, method, endpoint, strings.NewReader(message))
 	require.NoError(t, err)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json, text/event-stream")
@@ -1009,12 +965,18 @@ func post(t *testing.T, endpoint, message string, headers map[string]string) (*h
 	return response, string(body)
 }
 
+// post sends one JSON-RPC message with POST.
+func post(t *testing.T, endpoint, message string, headers map[string]string) (*http.Response, string) {
+	t.Helper()
+	return send(t, http.MethodPost, endpoint, message, headers)
+}
+
 // Every answer is one JSON document, never a stream: the route has no
 // connection to keep open.
 func Test_New_AnswersWithJSON(t *testing.T) {
 	t.Parallel()
 
-	endpoint := serve(t, newApp(pydanticaimcp.New(ai.NewAgent[struct{}, string](answering("ok")))))
+	endpoint := serve(t, newApp(pydanticaimcp.New(ai.NewAgent[struct{}, string](agenttest.Answering("ok")))))
 	for name, test := range map[string]struct {
 		message string
 		headers map[string]string
@@ -1038,7 +1000,7 @@ func Test_New_AnswersWithJSON(t *testing.T) {
 func Test_New_ClientsOfEarlierVersions(t *testing.T) {
 	t.Parallel()
 
-	endpoint := serve(t, newApp(pydanticaimcp.New(ai.NewAgent[struct{}, string](answering("Paris.")))))
+	endpoint := serve(t, newApp(pydanticaimcp.New(ai.NewAgent[struct{}, string](agenttest.Answering("Paris.")))))
 	headers := map[string]string{"Mcp-Protocol-Version": "2025-06-18"}
 
 	response, body := post(t, endpoint, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{`+

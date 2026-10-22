@@ -334,3 +334,12 @@ func receive[T any](t *testing.T, channel <-chan T, what string) T {
 		panic("unreachable")
 	}
 }
+
+// drain reads the data of the records that remain in the stream.
+func drain(reader *pydanticaitest.Reader) []string {
+	var rest []string
+	for data, ok := reader.NextData(); ok; data, ok = reader.NextData() {
+		rest = append(rest, data)
+	}
+	return rest
+}

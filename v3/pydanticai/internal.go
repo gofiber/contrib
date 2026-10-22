@@ -60,17 +60,17 @@ var (
 
 // requestLimits holds the HTTP checks that the net/http handlers of
 // pydantic-ai-go apply before they decode a request. Those handlers are not
-// used here, so the same checks run in front of the Fiber handlers. The zero
-// value applies the defaults of the adapters; newRequestLimits also prepares
-// the media types for the checks.
+// used here, so the same checks run in front of the Fiber handlers.
+// newRequestLimits makes them, with the defaults of the adapters and the media
+// types prepared for the checks.
 type requestLimits struct {
-	// contentTypes are the accepted media types. nil accepts application/json.
+	// contentTypes are the accepted media types.
 	contentTypes []string
 	// plain are the contentTypes that are a bare media type: valid, without
 	// parameters, and in the form that mime.ParseMediaType returns up to case.
 	// A header that spells one of them is accepted without parsing it.
 	plain []string
-	// maxBytes bounds the body. Zero means defaultMaxRequestBytes.
+	// maxBytes bounds the body.
 	maxBytes int64
 	// skipContentTypeCheck accepts any media type.
 	skipContentTypeCheck bool
@@ -85,7 +85,7 @@ func newRequestLimits(contentTypes []string, maxBytes int64, skipContentTypeChec
 	}
 	limits := requestLimits{
 		contentTypes:         make([]string, len(contentTypes)),
-		maxBytes:             maxBytes,
+		maxBytes:             cmp.Or(maxBytes, defaultMaxRequestBytes),
 		skipContentTypeCheck: skipContentTypeCheck,
 	}
 	for i, contentType := range contentTypes {
@@ -94,7 +94,7 @@ func newRequestLimits(contentTypes []string, maxBytes int64, skipContentTypeChec
 		// Only a type that mime.ParseMediaType returns as it is, up to case, is
 		// compared with the header as it is. The others, with a parameter or a
 		// trailing semicolon, or that it rejects, are compared with the parsed
-		// header, as they always were.
+		// header.
 		if mediaType, _, err := mime.ParseMediaType(contentType); err == nil && mediaType == strings.ToLower(contentType) {
 			limits.plain = append(limits.plain, contentType)
 		}
@@ -122,11 +122,7 @@ func (l requestLimits) allowsContentType(contentType string) bool {
 	if err != nil {
 		return false
 	}
-	allowed := l.contentTypes
-	if allowed == nil {
-		allowed = defaultContentTypes
-	}
-	return slices.ContainsFunc(allowed, func(candidate string) bool {
+	return slices.ContainsFunc(l.contentTypes, func(candidate string) bool {
 		return strings.EqualFold(candidate, mediaType)
 	})
 }
@@ -156,48 +152,27 @@ func (l requestLimits) check(c fiber.Ctx) error {
 // read returns the body of a request that passed check, or fails when it is
 // larger than the limit.
 func (l requestLimits) read(c fiber.Ctx) ([]byte, error) {
-	maxBytes := cmp.Or(l.maxBytes, defaultMaxRequestBytes)
 	var body []byte
 	if stream := c.BodyStream(); stream != nil {
 		// With StreamRequestBody fasthttp leaves a body above its limit unread.
 		// The adapters never read more than one byte beyond theirs, so neither
 		// do these handlers, which keeps a huge body out of memory.
-		if int64(c.ContentLength()) > maxBytes {
+		if int64(c.ContentLength()) > l.maxBytes {
 			return nil, errBodyTooLarge
 		}
 		// The byte beyond the limit is not added to a limit of math.MaxInt64,
 		// which would wrap around and read nothing.
 		var err error
-		if body, err = io.ReadAll(io.LimitReader(stream, min(maxBytes, math.MaxInt64-1)+1)); err != nil {
+		if body, err = io.ReadAll(io.LimitReader(stream, min(l.maxBytes, math.MaxInt64-1)+1)); err != nil {
 			return nil, fiber.NewError(fiber.StatusBadRequest, "read request body")
 		}
 	} else {
 		body = c.BodyRaw()
 	}
-	if int64(len(body)) > maxBytes {
+	if int64(len(body)) > l.maxBytes {
 		return nil, errBodyTooLarge
 	}
 	return body, nil
-}
-
-// resolve runs the per-request callbacks of a handler. Both are optional: the
-// dependencies default to the zero value of Deps and there are no extra options.
-func resolve[Deps any](
-	c fiber.Ctx,
-	deps func(fiber.Ctx) (Deps, error),
-	options func(fiber.Ctx) ([]ai.RunOption, error),
-) (value Deps, extra []ai.RunOption, err error) {
-	if deps != nil {
-		if value, err = deps(c); err != nil {
-			return value, nil, err
-		}
-	}
-	if options != nil {
-		if extra, err = options(c); err != nil {
-			return value, nil, err
-		}
-	}
-	return value, extra, nil
 }
 
 // admission is a request that a handler let through.
@@ -223,7 +198,7 @@ func admit[Deps, In any](
 	}
 	request := new(admission[Deps, In])
 	var err error
-	if request.deps, request.options, err = resolve(c, deps, options); err != nil {
+	if request.deps, request.options, err = agentrun.Resolve(c, deps, options); err != nil {
 		return nil, err
 	}
 	body, err := limits.read(c)
@@ -295,7 +270,7 @@ type protocol[E any] struct {
 	// what names an event of the protocol in errors.
 	what string
 	// encode returns the data of the server-sent event that carries event.
-	encode func(event E) ([]byte, error)
+	encode func(event *E) ([]byte, error)
 	// failed reports whether event is the event that reports a failed run, and
 	// withMessage returns it with message as the text for the client. Only the
 	// message changes: the adapter can have set other fields of the event.
@@ -311,11 +286,11 @@ type protocol[E any] struct {
 // run, the error of the stream or why the run was canceled. run starts the run
 // with the options it is given.
 //
-// relay does not stop taking events before the run ends. pydantic-ai-go emits
-// the events of tool calls that run concurrently from their goroutines, and an
-// iterator that is resumed after its loop stopped panics there, where nothing
-// recovers. When the stream fails, relay cancels the run and drops the events
-// that follow.
+// When the stream fails, relay stops taking events. pydantic-ai-go goes on
+// emitting the events of tool calls that run concurrently from their
+// goroutines, and an iterator that is resumed after its loop stopped panics
+// there, where nothing recovers. streamGuard cancels the run and takes the
+// events that follow.
 func relay[E any](
 	ctx context.Context,
 	p protocol[E],
@@ -333,24 +308,26 @@ func relay[E any](
 	var (
 		failed    error // why the stream ended before the run
 		completed bool  // whether the run completed
+		// scratch is the event being encoded. encode takes it by address, as
+		// json.Marshal boxes what it is given: one copy for the stream, not one
+		// for each event.
+		scratch E
 	)
 	for event, runErr := range run(ctx, options...) {
-		if failed != nil {
-			continue
-		}
 		if runErr != nil {
 			if panicErr := tools.Err(); panicErr != nil {
 				// A tool panicked. The error of the run carries the value of the
 				// panic, or the error of a tool that the panic canceled.
 				failed = panicErr
 				fail(send, agentrun.ErrPanicked)
-				continue
+				break
 			}
 			if errorMessage != nil && p.failed(event) {
 				event = p.withMessage(event, agentrun.Text(errorMessage, runErr))
 			}
 		}
-		if encoded, err := p.encode(event); err != nil {
+		scratch = event
+		if encoded, err := p.encode(&scratch); err != nil {
 			failed = fmt.Errorf("pydanticai: encode %s: %w", p.what, err)
 			fail(send, failed)
 		} else if err := send(encoded); err != nil {
@@ -362,7 +339,7 @@ func relay[E any](
 			completed = true
 		}
 		if failed != nil {
-			cancel(errStreamFailed)
+			break
 		}
 	}
 	switch {
