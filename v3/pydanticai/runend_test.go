@@ -77,7 +77,7 @@ func Test_OnRunEnd_StreamingHandlers(t *testing.T) {
 					ends <- runEnd{deps: deps, run: run, err: err}
 				}, nil, 0)
 				post(t, newApp(protocol.path, handler), protocol.path+"?user=alice", body)
-				return receive(t, ends, "OnRunEnd")
+				return agenttest.Receive(t, ends, "OnRunEnd")
 			}
 
 			t.Run("a completed run", func(t *testing.T) {
@@ -112,8 +112,8 @@ func Test_OnRunEnd_StreamingHandlers(t *testing.T) {
 					func(userDeps, *ai.RunInfo, error) { order <- "OnRunEnd" },
 					func(userDeps, error) { order <- "OnClose" }, 0)
 				post(t, newApp(protocol.path, handler), protocol.path, protocol.body)
-				require.Equal(t, "OnRunEnd", receive(t, order, "the first callback"))
-				require.Equal(t, "OnClose", receive(t, order, "the second callback"))
+				require.Equal(t, "OnRunEnd", agenttest.Receive(t, order, "the first callback"))
+				require.Equal(t, "OnClose", agenttest.Receive(t, order, "the second callback"))
 			})
 		})
 	}
@@ -137,11 +137,11 @@ func Test_OnRunEnd_ARunWhoseClientLeft(t *testing.T) {
 			response, closeConnection := openStream(t, url, protocol.body)
 			_, ok := pydanticaitest.NewReader(response.Body).NextData()
 			require.True(t, ok)
-			receive(t, started, "the model call")
+			agenttest.Receive(t, started, "the model call")
 			closeConnection()
 
 			// The run was canceled, and what it used so far is still reported.
-			end := receive(t, ends, "OnRunEnd")
+			end := agenttest.Receive(t, ends, "OnRunEnd")
 			require.Error(t, end.err)
 			require.Equal(t, userDeps{User: "alice"}, end.deps)
 			require.NotNil(t, end.run)
@@ -166,7 +166,7 @@ func Test_Run_OnRunEnd(t *testing.T) {
 
 		resp, _ := post(t, app, "/ask?user=alice", runBody)
 		require.Equal(t, fiber.StatusOK, resp.StatusCode)
-		end := receive(t, ends, "OnRunEnd")
+		end := agenttest.Receive(t, ends, "OnRunEnd")
 		require.NoError(t, end.err)
 		require.Equal(t, userDeps{User: "alice"}, end.deps)
 		require.NotNil(t, end.run)
@@ -184,7 +184,7 @@ func Test_Run_OnRunEnd(t *testing.T) {
 		resp, body := post(t, app, "/ask", runBody)
 		require.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
 		require.NotContains(t, body, "sk-secret")
-		end := receive(t, ends, "OnRunEnd")
+		end := agenttest.Receive(t, ends, "OnRunEnd")
 		require.ErrorIs(t, end.err, secret)
 		require.NotNil(t, end.run)
 	})
@@ -208,8 +208,8 @@ func Test_Run_OnRunEnd(t *testing.T) {
 
 		resp, _ := post(t, app, "/ask", runBody)
 		require.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
-		require.Equal(t, "model kaboom", receive(t, recovered, "the recover middleware"), "the panic goes on to the recover middleware")
-		end := receive(t, ends, "OnRunEnd")
+		require.Equal(t, "model kaboom", agenttest.Receive(t, recovered, "the recover middleware"), "the panic goes on to the recover middleware")
+		end := agenttest.Receive(t, ends, "OnRunEnd")
 		require.ErrorContains(t, end.err, "panic in the run: model kaboom")
 		require.NotNil(t, end.run)
 	})
@@ -242,7 +242,7 @@ func Test_OnRunEnd_ARunThatPanics(t *testing.T) {
 		}, nil, 0)
 		post(t, newApp(protocol.path, handler), protocol.path, protocol.body)
 
-		end := receive(t, ends, protocol.name+" OnRunEnd")
+		end := agenttest.Receive(t, ends, protocol.name+" OnRunEnd")
 		require.ErrorContains(t, end.err, "panic in the run: kaboom", protocol.name)
 		require.NotNil(t, end.run, protocol.name)
 	}
@@ -260,7 +260,7 @@ func Test_OnRunEnd_APanicIsRecovered(t *testing.T) {
 
 	resp, _ := post(t, newApp("/agui", handler), "/agui", aguiBody)
 	require.Equal(t, fiber.StatusOK, resp.StatusCode)
-	require.NoError(t, receive(t, closed, "OnClose"), "the panic in OnRunEnd does not take OnClose with it")
+	require.NoError(t, agenttest.Receive(t, closed, "OnClose"), "the panic in OnRunEnd does not take OnClose with it")
 	require.Contains(t, logs.String(), "panic in OnRunEnd: bug in OnRunEnd")
 
 	// The same for the handler that answers on the goroutine of the request.
@@ -300,7 +300,7 @@ func Test_OnRunEnd_ARunThatACapabilityOfTheAgentFailed(t *testing.T) {
 			}, nil, 0)
 			post(t, newApp(protocol.path, handler), protocol.path, protocol.body)
 
-			end := receive(t, ends, "OnRunEnd")
+			end := agenttest.Receive(t, ends, "OnRunEnd")
 			require.ErrorIs(t, end.err, blocked)
 			require.NotNil(t, end.run, "the run was started")
 			require.Equal(t, seen.Load(), end.run.RunID)
@@ -317,7 +317,7 @@ func Test_OnRunEnd_ARunThatACapabilityOfTheAgentFailed(t *testing.T) {
 		}))
 		post(t, app, "/ask", runBody)
 
-		end := receive(t, ends, "OnRunEnd")
+		end := agenttest.Receive(t, ends, "OnRunEnd")
 		require.ErrorIs(t, end.err, blocked)
 		require.NotNil(t, end.run, "the run was started")
 		require.Equal(t, seen.Load(), end.run.RunID)
@@ -378,8 +378,8 @@ func Test_ATimeoutAfterTheRunCompletedDoesNotFailIt(t *testing.T) {
 				require.True(t, done)
 				require.Equal(t, vercel.ChunkFinish, chunks[len(chunks)-1].Type, "the client was told that the run completed")
 			}
-			require.NoError(t, receive(t, ends, "OnRunEnd"))
-			require.NoError(t, receive(t, closed, "OnClose"))
+			require.NoError(t, agenttest.Receive(t, ends, "OnRunEnd"))
+			require.NoError(t, agenttest.Receive(t, closed, "OnClose"))
 		})
 	}
 }

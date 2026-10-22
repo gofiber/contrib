@@ -10,6 +10,7 @@ import (
 	"github.com/Kludex/pydantic-ai-go/ai/models/fakes"
 	"github.com/Kludex/pydantic-ai-go/ai/ui/agui"
 	"github.com/gofiber/contrib/v3/pydanticai"
+	"github.com/gofiber/contrib/v3/pydanticai/internal/agenttest"
 	"github.com/gofiber/contrib/v3/pydanticai/pydanticaitest"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
@@ -50,15 +51,15 @@ func Test_CancelOnShutdown(t *testing.T) {
 			scanner := pydanticaitest.NewReader(response.Body)
 			_, ok := scanner.NextData()
 			require.True(t, ok)
-			receive(t, started, "the model call")
+			agenttest.Receive(t, started, "the model call")
 
 			// The run does not end on its own, so a shutdown that waits for it takes the whole timeout.
 			begin := time.Now()
 			require.NoError(t, app.ShutdownWithTimeout(10*time.Second))
 			require.Less(t, time.Since(begin), 5*time.Second, "the shutdown waited for the run")
 
-			require.ErrorIs(t, receive(t, canceled, "the cancellation of the model call"), ai.ErrRunCancelled)
-			require.ErrorIs(t, receive(t, closed, "OnClose"), ai.ErrRunCancelled)
+			require.ErrorIs(t, agenttest.Receive(t, canceled, "the cancellation of the model call"), ai.ErrRunCancelled)
+			require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), ai.ErrRunCancelled)
 
 			// The client gets the end of the stream, not a broken connection.
 			records := drain(scanner)
@@ -81,7 +82,7 @@ func Test_CancelOnShutdown_ARunThatEndsFirst(t *testing.T) {
 	response, _ := openStream(t, listen(t, app)+"/agui", aguiBody)
 	events := pydanticaitest.AGUIEvents(t, response.Body)
 	require.Equal(t, agui.EventRunFinished, events[len(events)-1].Type)
-	require.NoError(t, receive(t, closed, "OnClose"))
+	require.NoError(t, agenttest.Receive(t, closed, "OnClose"))
 }
 
 func Test_ShutdownWaitsForARunByDefault(t *testing.T) {
@@ -94,7 +95,7 @@ func Test_ShutdownWaitsForARunByDefault(t *testing.T) {
 	response, closeConnection := openStream(t, listen(t, app)+"/agui", aguiBody)
 	_, ok := pydanticaitest.NewReader(response.Body).NextData()
 	require.True(t, ok)
-	receive(t, started, "the model call")
+	agenttest.Receive(t, started, "the model call")
 
 	require.ErrorIs(t, app.ShutdownWithTimeout(200*time.Millisecond), context.DeadlineExceeded)
 	select {
@@ -105,7 +106,7 @@ func Test_ShutdownWaitsForARunByDefault(t *testing.T) {
 
 	// The run ends when its client leaves.
 	closeConnection()
-	require.ErrorIs(t, receive(t, canceled, "the cancellation of the model call"), context.Canceled)
+	require.ErrorIs(t, agenttest.Receive(t, canceled, "the cancellation of the model call"), context.Canceled)
 }
 
 func Test_CancelOnShutdownDoesNotWaitForAClientThatStoppedReading(t *testing.T) {
@@ -124,7 +125,7 @@ func Test_CancelOnShutdownDoesNotWaitForAClientThatStoppedReading(t *testing.T) 
 	begin := time.Now()
 	require.NoError(t, app.ShutdownWithTimeout(10*time.Second))
 	require.Less(t, time.Since(begin), 5*time.Second, "the shutdown waited for the client")
-	require.Error(t, receive(t, closed, "OnClose"))
+	require.Error(t, agenttest.Receive(t, closed, "OnClose"))
 }
 
 func Test_AShutdownAfterTheRunCompletedDoesNotFailIt(t *testing.T) {
@@ -137,14 +138,14 @@ func Test_AShutdownAfterTheRunCompletedDoesNotFailIt(t *testing.T) {
 		OnClose:          func(_ struct{}, err error) { closed <- err },
 	}))
 	response, _ := openStream(t, listen(t, app)+"/agui", aguiBody)
-	receive(t, model.closing, "the close of the model")
+	agenttest.Receive(t, model.closing, "the close of the model")
 	require.NoError(t, app.ShutdownWithTimeout(observeTimeout))
 
 	events := pydanticaitest.AGUIEvents(t, response.Body)
 	last := events[len(events)-1]
 	require.Equal(t, agui.EventRunFinished, last.Type)
 	require.NotNil(t, last.Outcome, "the client was told that the run completed")
-	require.NoError(t, receive(t, closed, "OnClose"))
+	require.NoError(t, agenttest.Receive(t, closed, "OnClose"))
 }
 
 // A RequestCtx that no fasthttp.Server serves, as tests and benchmarks build
@@ -171,7 +172,7 @@ func Test_ARequestCtxWithoutAServer(t *testing.T) {
 			require.Equal(t, fiber.StatusOK, ctx.Response.StatusCode())
 			events := aguiEvents(t, string(ctx.Response.Body())) // reads the stream to its end
 			require.Equal(t, agui.EventRunFinished, events[len(events)-1].Type)
-			require.NoError(t, receive(t, closed, "OnClose"))
+			require.NoError(t, agenttest.Receive(t, closed, "OnClose"))
 		})
 
 		t.Run(fmt.Sprintf("Vercel, CancelOnShutdown: %v", cancelOnShutdown), func(t *testing.T) {
