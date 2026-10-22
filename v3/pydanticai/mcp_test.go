@@ -166,6 +166,7 @@ func Test_MCP_ToolsOfAServer(t *testing.T) {
 		aimcp.WithID("catalog"),
 	))
 
+	// Neither subtest is parallel: the calls of both runs are counted after them.
 	t.Run("AG-UI", func(t *testing.T) {
 		_, body := post(t, newApp("/agui", pydanticai.AGUI(agent)), "/agui", aguiBody)
 		events := aguiEvents(t, body)
@@ -361,6 +362,7 @@ func Test_MCP_ProviderHostedServerWithALocalFallback(t *testing.T) {
 }
 
 func Test_MCP_ServersOfAConfigFile(t *testing.T) {
+	// Not parallel: t.Setenv, which the ${CATALOG_TOKEN} of the file reads, panics in a parallel test.
 	catalog := newMCPCatalog(t)
 	t.Setenv("CATALOG_TOKEN", "from-the-environment")
 	path := filepath.Join(t.TempDir(), ".mcp.json")
@@ -399,6 +401,8 @@ func Test_MCP_Apps(t *testing.T) {
 	agent.AddToolset(aimcp.NewHTTPToolset[struct{}](aimcp.HTTPToolsetConfig{URL: catalog.URL}, aimcp.WithID("catalog")))
 
 	t.Run("AG-UI", func(t *testing.T) {
+		t.Parallel()
+
 		_, body := post(t, newApp("/agui", pydanticai.AGUI(agent)), "/agui", aguiBody)
 		var snapshots []agui.Event
 		for _, event := range aguiEvents(t, body) {
@@ -417,6 +421,8 @@ func Test_MCP_Apps(t *testing.T) {
 	})
 
 	t.Run("Vercel", func(t *testing.T) {
+		t.Parallel()
+
 		_, body := post(t, newApp("/chat", pydanticai.Vercel(agent)), "/chat", vercelBody)
 		chunks, done := vercelChunks(t, body)
 		require.True(t, done)

@@ -209,15 +209,15 @@ func talkativeAgent() *ai.Agent[struct{}, string] {
 }
 
 func Test_TimeoutEndsAStreamWhoseClientStoppedReading(t *testing.T) {
-	pydanticai.SetStreamEndGrace(t, 100*time.Millisecond) // not parallel: the grace is global
+	t.Parallel()
 
 	ends, closed := make(chan error, 1), make(chan error, 1)
 	app := fiber.New()
-	app.Post("/agui", pydanticai.AGUI(talkativeAgent(), pydanticai.AGUIConfig[struct{}]{
+	app.Post("/agui", pydanticai.AGUI(talkativeAgent(), pydanticai.WithStreamEndGrace(pydanticai.AGUIConfig[struct{}]{
 		Timeout:  200 * time.Millisecond,
 		OnRunEnd: func(_ struct{}, _ *ai.RunInfo, err error) { ends <- err },
 		OnClose:  func(_ struct{}, err error) { closed <- err },
-	}))
+	}, 100*time.Millisecond)))
 
 	// The run is stuck in a write to the client, where its context does not
 	// reach it. Its connection is closed once the write blocked for the grace.
@@ -227,7 +227,7 @@ func Test_TimeoutEndsAStreamWhoseClientStoppedReading(t *testing.T) {
 }
 
 func Test_TimeoutLeavesTheClientOfARunThatIsSlowToEnd(t *testing.T) {
-	pydanticai.SetStreamEndGrace(t, 100*time.Millisecond) // not parallel: the grace is global
+	t.Parallel()
 
 	agent := ai.NewAgent[struct{}, string](fakes.NewFunctionModel(func(
 		context.Context, []ai.ModelMessage, ai.ModelRequestParams,
@@ -236,10 +236,10 @@ func Test_TimeoutLeavesTheClientOfARunThatIsSlowToEnd(t *testing.T) {
 		return textResponse("late"), nil
 	}))
 	closed := make(chan error, 1)
-	app := newApp("/agui", pydanticai.AGUI(agent, pydanticai.AGUIConfig[struct{}]{
+	app := newApp("/agui", pydanticai.AGUI(agent, pydanticai.WithStreamEndGrace(pydanticai.AGUIConfig[struct{}]{
 		Timeout: 200 * time.Millisecond,
 		OnClose: func(_ struct{}, err error) { closed <- err },
-	}))
+	}, 100*time.Millisecond)))
 
 	// The client reads, so nothing blocks: the stream is not cut.
 	response, _ := openStream(t, listen(t, app)+"/agui", aguiBody)
@@ -251,9 +251,10 @@ func Test_TimeoutLeavesTheClientOfARunThatIsSlowToEnd(t *testing.T) {
 }
 
 func Test_AConnectionServesTheNextRequestAfterAStreamThatTimedOut(t *testing.T) {
-	pydanticai.SetStreamEndGrace(t, 100*time.Millisecond) // not parallel: the grace is global
+	t.Parallel()
 
-	app := newApp("/agui", pydanticai.AGUI(slowAgent(), pydanticai.AGUIConfig[struct{}]{Timeout: 50 * time.Millisecond}))
+	app := newApp("/agui", pydanticai.AGUI(slowAgent(), pydanticai.WithStreamEndGrace(
+		pydanticai.AGUIConfig[struct{}]{Timeout: 50 * time.Millisecond}, 100*time.Millisecond)))
 	url := listen(t, app) + "/agui"
 	client := &http.Client{Transport: &http.Transport{}}
 	t.Cleanup(client.CloseIdleConnections)
