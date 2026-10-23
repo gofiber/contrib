@@ -1,7 +1,11 @@
 package pydanticai
 
 import (
+	"context"
+	"errors"
 	"net"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -107,5 +111,155 @@ func Test_requestHold_cut(t *testing.T) {
 		h.finish()
 		h.cut() // a check that fired while finish stopped it
 		require.False(t, conn.closed.Load(), "the connection serves another request")
+	})
+}
+
+// fakeRun is a supervised run that records what the hold does to it.
+type fakeRun struct {
+	ctx     context.Context
+	stop    context.CancelFunc
+	expired atomic.Bool
+	// asked is closed when the hold first asks whether the server ended the run.
+	asked     chan struct{}
+	askedOnce sync.Once
+
+	mu    sync.Mutex
+	calls []string
+}
+
+func newFakeRun() *fakeRun {
+	ctx, stop := context.WithCancel(context.Background())
+	return &fakeRun{ctx: ctx, stop: stop, asked: make(chan struct{})}
+}
+
+func (f *fakeRun) Context() context.Context { return f.ctx }
+
+func (f *fakeRun) Expired() bool {
+	f.askedOnce.Do(func() { close(f.asked) })
+	return f.expired.Load()
+}
+
+func (f *fakeRun) Cancel() {
+	f.record("cancel")
+	f.stop()
+}
+
+func (f *fakeRun) End(err error) { f.record("end " + text(err)) }
+
+func (f *fakeRun) record(call string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, call)
+}
+
+func (f *fakeRun) recorded() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return strings.Join(f.calls, ", ")
+}
+
+func text(err error) string {
+	if err == nil {
+		return "ok"
+	}
+	return err.Error()
+}
+
+func Test_requestHold_release(t *testing.T) {
+	t.Parallel()
+
+	failure := errors.New("the client went away")
+	newHold := func(run *fakeRun) *requestHold {
+		return newRequestHold(nil, new(closeRecorder), run, time.Hour, func(err error) { run.record("close " + text(err)) })
+	}
+
+	t.Run("reports how the stream ended, once", func(t *testing.T) {
+		t.Parallel()
+
+		run := newFakeRun()
+		hold := newHold(run)
+		hold.streamEnded(failure)
+
+		var wg sync.WaitGroup
+		for range 3 {
+			wg.Go(hold.release)
+		}
+		wg.Wait()
+		hold.release()
+		require.Equal(t, "cancel, end the client went away, close the client went away", run.recorded(),
+			"the run is canceled, ended, and then OnClose is told, each once")
+		require.Error(t, run.Context().Err(), "the run was canceled")
+	})
+
+	t.Run("waits for the run to return", func(t *testing.T) {
+		t.Parallel()
+
+		run := newFakeRun()
+		hold := newHold(run)
+		released := make(chan struct{})
+		go func() {
+			hold.release()
+			close(released)
+		}()
+
+		<-run.Context().Done() // the run is canceled first, so that it can return
+		select {
+		case <-released:
+			t.Fatal("the hold let go of the request while the run was still running")
+		case <-time.After(50 * time.Millisecond):
+		}
+
+		hold.streamEnded(nil)
+		<-released
+		require.Equal(t, "cancel, end ok, close ok", run.recorded())
+	})
+
+	t.Run("the context of the stream is the context of the run", func(t *testing.T) {
+		t.Parallel()
+
+		run := newFakeRun()
+		require.Equal(t, run.Context(), newHold(run).Context())
+	})
+}
+
+func Test_requestHold_expiry(t *testing.T) {
+	t.Parallel()
+
+	const grace = 20 * time.Millisecond
+	// blocked returns a hold whose write to the client has been blocked for longer
+	// than the grace.
+	blocked := func(run *fakeRun) (*requestHold, *closeRecorder) {
+		conn := new(closeRecorder)
+		hold := newRequestHold(nil, conn, run, grace, func(error) {})
+		hold.writing.Store(time.Now().Add(-time.Hour).UnixNano())
+		return hold, conn
+	}
+
+	t.Run("a run that the server ended closes the connection of a client that stopped reading", func(t *testing.T) {
+		t.Parallel()
+
+		run := newFakeRun()
+		hold, conn := blocked(run)
+		t.Cleanup(hold.finish)
+
+		run.expired.Store(true)
+		run.Cancel()
+		require.Eventually(t, conn.closed.Load, 5*time.Second, time.Millisecond)
+	})
+
+	t.Run("a run that its owner or its client ended leaves the connection alone", func(t *testing.T) {
+		t.Parallel()
+
+		run := newFakeRun()
+		hold, conn := blocked(run)
+		t.Cleanup(hold.finish)
+
+		run.Cancel()
+		<-run.asked // the hold looked at why the run ended
+		time.Sleep(4 * grace)
+		hold.mu.Lock()
+		defer hold.mu.Unlock()
+		require.Nil(t, hold.check, "no check was started")
+		require.False(t, conn.closed.Load())
 	})
 }
