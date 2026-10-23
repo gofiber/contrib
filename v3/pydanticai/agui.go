@@ -52,10 +52,6 @@ var aguiProtocol = protocol[agui.Event]{
 	},
 	// A canceled run ends with RUN_FINISHED as well, but without an outcome.
 	completed: func(event agui.Event) bool { return event.Type == agui.EventRunFinished && event.Outcome != nil },
-	// The stream ends with a RUN_ERROR event.
-	fail: func(send func([]byte) error, message string) {
-		if encoded, err := json.Marshal(agui.Event{Type: agui.EventRunError, Message: message}); err == nil {
-			_ = send(encoded)
-		}
-	},
+	// The RUN_ERROR event closes the stream, so nothing follows it.
+	errorEvent: func(message string) agui.Event { return agui.Event{Type: agui.EventRunError, Message: message} },
 }

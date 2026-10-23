@@ -202,14 +202,13 @@ type protocol[E any] struct {
 	// completed reports whether event ends a run that completed. A run that was
 	// canceled ends with an event of its own.
 	completed func(event E) bool
-	// fail ends the stream with message as the text for the client, for a
-	// failure that the adapter did not report itself. Best effort: the stream
-	// ends either way.
-	fail func(send func(data []byte) error, message string)
-	// end closes the stream after the event of a failure that the adapter
-	// reported itself, which is the last event it yields. Best effort, and nil
-	// when that event closes the stream.
-	end func(send func(data []byte) error)
+	// errorEvent returns the event that reports a failed run with message as the
+	// text for the client, for a failure that the adapter did not report itself.
+	errorEvent func(message string) E
+	// closing are the events that close the stream after the event that reports
+	// a failure, whoever reported it: the adapter yields none after its own.
+	// There are none when that event closes the stream.
+	closing []E
 }
 
 // stream serves an admitted request: it starts the run with run, and sends its
@@ -251,8 +250,24 @@ func relay[E, Deps any](
 	errorMessage func(error) string,
 	send func(data []byte) error,
 ) (ended error) {
-	// fail ends the stream with the error event of the protocol.
-	fail := func(err error) { p.fail(send, agentrun.Text(errorMessage, err)) }
+	// emit sends event. Best effort: a stream that fails ends either way.
+	emit := func(event *E) {
+		if encoded, err := p.encode(event); err == nil {
+			_ = send(encoded)
+		}
+	}
+	// closeStream sends the events that close the stream after a failure.
+	closeStream := func() {
+		for i := range p.closing {
+			emit(&p.closing[i])
+		}
+	}
+	// fail ends the stream with the error event of the protocol, and closes it.
+	fail := func(err error) {
+		event := p.errorEvent(agentrun.Text(errorMessage, err))
+		emit(&event)
+		closeStream()
+	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			ended = agentrun.Recovered(recovered)
@@ -294,9 +309,7 @@ func relay[E, Deps any](
 		} else if runErr != nil {
 			// The adapters end the stream after the event of an error.
 			failed = runErr
-			if p.end != nil {
-				p.end(send)
-			}
+			closeStream()
 		} else if p.completed(event) {
 			completed = true
 		}
