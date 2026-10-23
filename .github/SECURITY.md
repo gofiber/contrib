@@ -4,17 +4,27 @@
 2. [Reporting security problems to Fiber](#reporting)
 3. [Security Points of Contact](#contact)
 4. [Incident Response Process](#process)
+5. [Secure accounts with access](#accounts)
+6. [Critical Updates And Security Notices](#notices)
 
 <a name="versions"></a>
 
 ## Supported Versions
 
-The table below shows the supported versions for Fiber which include security updates.
+`gofiber/contrib` is a multi-module repository. Each middleware and service
+implementation under [`v3/`](https://github.com/gofiber/contrib/tree/main/v3)
+is its own Go module that is versioned and released independently, using tags
+such as `v3/websocket/v1.2.0`, so there is no single version range that applies
+to the whole repository.
 
-| Version   | Supported          |
-| --------- | ------------------ |
-| >= 1.12.6 | :white_check_mark: |
-| < 1.12.6  | :x:                |
+Security fixes are published as a new release of the affected module, so we
+recommend always running the latest release of every module you depend on. The
+latest releases are listed on the
+[releases page](https://github.com/gofiber/contrib/releases).
+
+If you believe a vulnerability affects any release of a module, please
+[report it](#reporting). You do not need to check first whether that release is
+still supported; just include the module name and version in your report.
 
 <a name="reporting"></a>
 
@@ -47,9 +57,9 @@ process to contain, respond and remediate:
 
 The first step is to find out the root cause, nature and scope of the incident.
 
-- Is still ongoing? If yes, first priority is to stop it.
-- Is the incident outside of our influence? If yes, first priority is to contain it.
-- Find out knows about the incident and who is affected.
+- Is the incident still ongoing? If yes, prioritize stopping it.
+- Is the incident outside our influence? If yes, prioritize containment.
+- Find out who knows about the incident and who is affected.
 - Find out what data was potentially exposed.
 
 ### 2. Response
@@ -66,12 +76,16 @@ Once the incident is confirmed to be resolved, we will summarize the lessons
 learned from the incident and create a list of actions we will take to prevent
 it from happening again.
 
-### Secure accounts with access
+<a name="accounts"></a>
+
+## Secure accounts with access
 
 The [Fiber Organization](https://github.com/gofiber) requires 2FA authorization
-for all of it's members.
+for all of its members.
 
-### Critical Updates And Security Notices
+<a name="notices"></a>
+
+## Critical Updates And Security Notices
 
 We learn about critical software updates and security threats from these sources
 
