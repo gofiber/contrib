@@ -188,14 +188,14 @@ func MCP[Deps, Output any](agent *ai.Agent[Deps, Output], config ...MCPConfig[De
 			return fiber.NewError(fiber.StatusForbidden, "forbidden origin")
 		}
 
-		deps, options, err := agentrun.Resolve(c, cfg.Deps, cfg.RunOptions)
+		deps, options, err := resolve(c, cfg.Deps, cfg.RunOptions)
 		if err != nil {
 			return err
 		}
 
 		var shutdown <-chan struct{}
 		if cfg.CancelOnShutdown {
-			shutdown = agentrun.ServerDone(c.RequestCtx())
+			shutdown = serverDone(c.RequestCtx())
 		}
 
 		// A call is served with the values of the context of the request, such as
@@ -258,53 +258,20 @@ func mcpTool[Deps, Output any](
 	agent *ai.Agent[Deps, Output], cfg MCPConfig[Deps], deps Deps, options []ai.RunOption, shutdown <-chan struct{},
 ) mcpsdk.ToolHandlerFor[mcpAskInput, any] {
 	return func(ctx context.Context, _ *mcpsdk.CallToolRequest, in mcpAskInput) (result *mcpsdk.CallToolResult, out any, err error) {
-		guard, options := agentrun.NewGuard(options, deps, cfg.OnRunEnd)
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				guard.End(agentrun.Recovered(recovered))
-				result, out, err = nil, nil, errors.New(agentrun.Text(cfg.ErrorMessage, agentrun.ErrPanicked))
-			}
-		}()
+		defer agentrun.Recover(func(panicErr error) {
+			result, out, err = nil, nil, errors.New(agentrun.Text(cfg.ErrorMessage, panicErr))
+		})
 
 		if utils.TrimSpace(in.Question) == "" {
 			return nil, nil, errors.New("the question must not be empty")
 		}
-		if shutdown != nil {
-			var cancel context.CancelCauseFunc
-			ctx, cancel = context.WithCancelCause(ctx)
-			defer cancel(nil)
-			go func(done <-chan struct{}) { // done of this context, not of the one that Timeout makes
-				select {
-				case <-shutdown:
-					cancel(agentrun.ErrShutdown)
-				case <-done:
-				}
-			}(ctx.Done())
-		}
-		if timeout := agentrun.Timeout(cfg.Timeout); timeout > 0 {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, timeout)
-			defer cancel()
-		}
-
-		run, runErr := agent.Run(ctx, in.Question, deps, options...)
-		panicked := false
-		if panicErr := guard.Err(); panicErr != nil && runErr != nil {
-			// The error of the run carries the value of the panic, or the error
-			// of a tool that the panic canceled.
-			runErr, panicked = panicErr, true
-		}
-		if runErr == nil && run.Deferred() != nil {
-			runErr = errMCPDeferred
-		}
-		if runErr != nil && errors.Is(context.Cause(ctx), agentrun.ErrShutdown) &&
-			(errors.Is(runErr, ai.ErrRunCancelled) || errors.Is(runErr, context.Canceled)) {
-			runErr = agentrun.ErrShutdown // say why the run was canceled
-		}
-		guard.End(runErr)
-		if panicked {
-			return nil, nil, errors.New(agentrun.Text(cfg.ErrorMessage, agentrun.ErrPanicked))
-		}
+		run, runErr := agentrun.Execute(ctx, agent, in.Question, options, agentrun.Config[Deps]{
+			Deps:     deps,
+			OnRunEnd: cfg.OnRunEnd,
+			Timeout:  agentrun.OneShotTimeout(cfg.Timeout),
+			Shutdown: shutdown,
+			Deferred: errMCPDeferred,
+		})
 		if runErr != nil {
 			return nil, nil, errors.New(agentrun.Text(cfg.ErrorMessage, runErr))
 		}
