@@ -3,6 +3,7 @@ package pydanticai
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gofiber/contrib/v3/pydanticai/internal/agenttest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -119,7 +121,8 @@ type fakeRun struct {
 	ctx     context.Context
 	stop    context.CancelFunc
 	expired atomic.Bool
-	// asked is closed when the hold first asks whether the server ended the run.
+	// asked is closed when the run ended and the hold was told, or not, that the
+	// server did it.
 	asked     chan struct{}
 	askedOnce sync.Once
 
@@ -134,9 +137,15 @@ func newFakeRun() *fakeRun {
 
 func (f *fakeRun) Context() context.Context { return f.ctx }
 
-func (f *fakeRun) Expired() bool {
-	f.askedOnce.Do(func() { close(f.asked) })
-	return f.expired.Load()
+// AfterExpiry calls fn when the run ends, if the test said that the server ended
+// it.
+func (f *fakeRun) AfterExpiry(fn func()) (stop func() bool) {
+	return context.AfterFunc(f.ctx, func() {
+		f.askedOnce.Do(func() { close(f.asked) })
+		if f.expired.Load() {
+			fn()
+		}
+	})
 }
 
 func (f *fakeRun) Cancel() {
@@ -202,7 +211,7 @@ func Test_requestHold_release(t *testing.T) {
 			close(released)
 		}()
 
-		<-run.Context().Done() // the run is canceled first, so that it can return
+		agenttest.Receive(t, run.Context().Done(), "the run to be canceled") // first, so that it can return
 		select {
 		case <-released:
 			t.Fatal("the hold let go of the request while the run was still running")
@@ -210,7 +219,7 @@ func Test_requestHold_release(t *testing.T) {
 		}
 
 		hold.streamEnded(nil)
-		<-released
+		agenttest.Receive(t, released, "the release to return")
 		require.Equal(t, "cancel, end ok, close ok", run.recorded())
 	})
 
@@ -255,11 +264,33 @@ func Test_requestHold_expiry(t *testing.T) {
 		t.Cleanup(hold.finish)
 
 		run.Cancel()
-		<-run.asked // the hold looked at why the run ended
+		agenttest.Receive(t, run.asked, "the hold to be told that the run ended")
 		time.Sleep(4 * grace)
 		hold.mu.Lock()
 		defer hold.mu.Unlock()
 		require.Nil(t, hold.check, "no check was started")
 		require.False(t, conn.closed.Load())
 	})
+}
+
+func Test_holdingBody_Close(t *testing.T) {
+	t.Parallel()
+
+	const grace = 20 * time.Millisecond
+	run := newFakeRun()
+	conn := new(closeRecorder)
+	hold := newRequestHold(nil, conn, run, grace, func(err error) { run.record("close " + text(err)) })
+	hold.streamEnded(nil)
+	body := &holdingBody{ReadCloser: io.NopCloser(strings.NewReader("events")), hold: hold}
+
+	// The server ended the run while a write to the client is blocked: the check
+	// that closes the connection is armed.
+	hold.writing.Store(time.Now().Add(-time.Hour).UnixNano())
+	hold.expire()
+
+	// fasthttp is done with the body, and the connection can serve another request.
+	require.NoError(t, body.Close())
+	time.Sleep(4 * grace) // a check that Close did not stop would have fired by now
+	require.False(t, conn.closed.Load(), "the connection of the next request is left alone")
+	require.Equal(t, "cancel, end ok, close ok", run.recorded(), "Close releases the run")
 }

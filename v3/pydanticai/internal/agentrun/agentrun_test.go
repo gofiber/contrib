@@ -3,6 +3,7 @@ package agentrun_test
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -42,6 +43,29 @@ func (e *ends[Deps]) only(t *testing.T) (deps Deps, run *ai.RunInfo, err error) 
 	require.Equal(t, 1, e.calls, "OnRunEnd is called once")
 	return e.deps[0], e.runs[0], e.errs[0]
 }
+
+// expiry returns a channel that is closed when run expires.
+func expiry[Deps any](run *agentrun.Run[Deps]) <-chan struct{} {
+	expired := make(chan struct{})
+	run.AfterExpiry(func() { close(expired) })
+	return expired
+}
+
+// requireOpen fails the test when the channel is closed, which a closed channel
+// does at once, or soon: the time that the other goroutines have to do their part.
+func requireOpen(t *testing.T, channel <-chan struct{}, why string) {
+	t.Helper()
+	select {
+	case <-channel:
+		t.Fatalf("the run expired, but %s", why)
+	case <-time.After(5 * shortTimeout):
+	}
+}
+
+// describedValue is a panic value whose description changes.
+type describedValue struct{ text string }
+
+func (d *describedValue) String() string { return d.text }
 
 // blocking is a model that tells that it started, and waits for its context.
 func blocking() (model *fakes.FunctionModel, started <-chan struct{}) {
@@ -122,6 +146,18 @@ func Test_Recover(t *testing.T) {
 			panic(cause)
 		})
 		require.NotErrorIs(t, reported, cause)
+	})
+
+	t.Run("the message is made when the panic is recovered", func(t *testing.T) {
+		value := &describedValue{text: "before"}
+		var reported error
+		func() {
+			defer agentrun.Recover(func(err error) { reported = err })
+			panic(value)
+		}()
+		value.text = "after"
+		require.EqualError(t, reported, "pydanticai: panic in the run: before",
+			"the error keeps what was recovered, and not the value, which may describe itself differently by now")
 	})
 
 	t.Run("no panic", func(t *testing.T) {
@@ -245,16 +281,16 @@ func Test_Run(t *testing.T) {
 
 		type key struct{}
 		parent, cancelParent := context.WithCancel(context.WithValue(context.Background(), key{}, "value"))
-		run, _ := agentrun.New(parent, agentrun.Config[struct{}]{}, nil)
+		run, _ := agentrun.New(parent, agentrun.Config[struct{}]{Timeout: time.Hour}, nil)
 		defer run.Cancel()
+		expired := expiry(run)
 
 		require.Equal(t, "value", run.Context().Value(key{}), "the values of the parent are the run's")
 		require.NoError(t, run.Context().Err())
-		require.False(t, run.Expired())
 
 		cancelParent()
-		<-run.Context().Done()
-		require.False(t, run.Expired(), "its owner canceled the run, and the server did not")
+		agenttest.Receive(t, run.Context().Done(), "the run to end with its parent")
+		requireOpen(t, expired, "its owner canceled it, and the server did not")
 	})
 
 	t.Run("a run that its owner canceled", func(t *testing.T) {
@@ -262,13 +298,14 @@ func Test_Run(t *testing.T) {
 
 		shutdown := make(chan struct{})
 		run, _ := agentrun.New(context.Background(), agentrun.Config[struct{}]{Timeout: time.Hour, Shutdown: shutdown}, nil)
+		expired := expiry(run)
 		run.Cancel()
 		run.Cancel() // more than once is fine
-		<-run.Context().Done()
-		require.False(t, run.Expired())
+		agenttest.Receive(t, run.Context().Done(), "the run to be canceled")
+		requireOpen(t, expired, "its owner canceled it")
 
 		close(shutdown)
-		require.False(t, run.Expired(), "a shutdown that comes later is not why the run ended")
+		requireOpen(t, expired, "a shutdown that comes later is not why the run ended")
 		require.NotErrorIs(t, context.Cause(run.Context()), agentrun.ErrShutdown)
 	})
 
@@ -278,9 +315,8 @@ func Test_Run(t *testing.T) {
 		run, _ := agentrun.New(context.Background(), agentrun.Config[struct{}]{Timeout: shortTimeout}, nil)
 		defer run.Cancel()
 
-		<-run.Context().Done()
+		agenttest.Receive(t, expiry(run), "the run to expire")
 		require.ErrorIs(t, run.Context().Err(), context.DeadlineExceeded)
-		require.True(t, run.Expired())
 	})
 
 	t.Run("a run that the shutdown canceled", func(t *testing.T) {
@@ -289,11 +325,11 @@ func Test_Run(t *testing.T) {
 		shutdown := make(chan struct{})
 		run, _ := agentrun.New(context.Background(), agentrun.Config[struct{}]{Timeout: time.Hour, Shutdown: shutdown}, nil)
 		defer run.Cancel()
-		require.False(t, run.Expired())
+		expired := expiry(run)
+		requireOpen(t, expired, "the server is not shutting down")
 
 		close(shutdown)
-		<-run.Context().Done()
-		require.True(t, run.Expired())
+		agenttest.Receive(t, expired, "the run to expire")
 		require.ErrorIs(t, context.Cause(run.Context()), agentrun.ErrShutdown, "with a timeout as well")
 	})
 
@@ -305,8 +341,47 @@ func Test_Run(t *testing.T) {
 		run, _ := agentrun.New(context.Background(), agentrun.Config[struct{}]{Shutdown: shutdown}, nil)
 		defer run.Cancel()
 
-		<-run.Context().Done()
-		require.True(t, run.Expired())
+		agenttest.Receive(t, expiry(run), "the run to expire")
+	})
+
+	t.Run("only a run with a timeout or a shutdown to watch can expire", func(t *testing.T) {
+		t.Parallel()
+
+		plain, _ := agentrun.New(context.Background(), agentrun.Config[struct{}]{}, nil)
+		defer plain.Cancel()
+		require.False(t, plain.AfterExpiry(func() {})(), "nothing is waiting for the run to expire")
+
+		bounded, _ := agentrun.New(context.Background(), agentrun.Config[struct{}]{Timeout: time.Hour}, nil)
+		defer bounded.Cancel()
+		called := make(chan struct{})
+		stop := bounded.AfterExpiry(func() { close(called) })
+		require.True(t, stop(), "the call is waiting, and stopped")
+		bounded.Cancel()
+		requireOpen(t, called, "the call was stopped")
+
+		watching, _ := agentrun.New(context.Background(), agentrun.Config[struct{}]{Shutdown: make(chan struct{})}, nil)
+		defer watching.Cancel()
+		require.True(t, watching.AfterExpiry(func() {})(), "a run that watches the shutdown can expire")
+	})
+
+	t.Run("the goroutine that waits for the shutdown ends with the run", func(t *testing.T) {
+		// Not parallel: it counts the goroutines of the process, which the tests
+		// that are would change.
+		const runs = 100
+		shutdown := make(chan struct{})
+		before := runtime.NumGoroutine()
+		started := make([]*agentrun.Run[struct{}], runs)
+		for i := range started {
+			started[i], _ = agentrun.New(context.Background(), agentrun.Config[struct{}]{Shutdown: shutdown}, nil)
+		}
+		require.Eventually(t, func() bool { return runtime.NumGoroutine() >= before+runs/2 },
+			agenttest.ObserveTimeout, time.Millisecond, "each run waits for the shutdown on a goroutine")
+
+		for _, run := range started {
+			run.Cancel()
+		}
+		require.Eventually(t, func() bool { return runtime.NumGoroutine() < before+runs/2 },
+			agenttest.ObserveTimeout, time.Millisecond, "the goroutines end with the runs, which a shutdown that comes later would not do")
 	})
 }
 
@@ -486,16 +561,6 @@ func Test_Execute(t *testing.T) {
 		_, err := agentrun.Execute(ctx, agent, "Hi", nil, agentrun.Config[struct{}]{Shutdown: make(chan struct{})})
 		require.ErrorIs(t, err, context.Canceled)
 		require.NotErrorIs(t, err, agentrun.ErrShutdown, "the server did not cancel it")
-	})
-
-	t.Run("a shutdown after the run completed", func(t *testing.T) {
-		t.Parallel()
-
-		shutdown := make(chan struct{})
-		agent := ai.NewAgent[struct{}, string](agenttest.Answering("hello"))
-		_, err := agentrun.Execute(context.Background(), agent, "Hi", nil, agentrun.Config[struct{}]{Shutdown: shutdown})
-		require.NoError(t, err)
-		close(shutdown)
 	})
 
 	t.Run("deferred tool calls", func(t *testing.T) {

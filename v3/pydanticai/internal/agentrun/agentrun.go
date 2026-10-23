@@ -96,6 +96,9 @@ type Run[Deps any] struct {
 	ctx    context.Context
 	cancel context.CancelCauseFunc
 	stop   context.CancelFunc
+	// expires is whether the run has a timeout or a shutdown to watch: only such
+	// a run can be ended by the server.
+	expires bool
 }
 
 // New starts to supervise a run. It returns the Run and the options that run the
@@ -108,7 +111,7 @@ type Run[Deps any] struct {
 // The caller has to end the supervision with Cancel, which releases the timer
 // and the goroutine that waits for the shutdown.
 func New[Deps any](parent context.Context, cfg Config[Deps], options []ai.RunOption) (*Run[Deps], []ai.RunOption) {
-	r := &Run[Deps]{deps: cfg.Deps, onRunEnd: cfg.OnRunEnd}
+	r := &Run[Deps]{deps: cfg.Deps, onRunEnd: cfg.OnRunEnd, expires: cfg.Timeout > 0 || cfg.Shutdown != nil}
 	ctx, cancel := context.WithCancelCause(parent)
 	r.cancel = cancel
 	r.ctx = ctx
@@ -132,12 +135,22 @@ func New[Deps any](parent context.Context, cfg Config[Deps], options []ai.RunOpt
 // supervised for that.
 func (r *Run[Deps]) Context() context.Context { return r.ctx }
 
-// Expired reports whether the run was canceled because its timeout elapsed or
-// because the server started shutting down, which is the server ending it, and
-// not its owner or its client.
-func (r *Run[Deps]) Expired() bool {
-	cause := context.Cause(r.ctx)
-	return errors.Is(cause, ErrShutdown) || errors.Is(cause, context.DeadlineExceeded)
+// AfterExpiry arranges for fn to be called once, on a goroutine of its own, when
+// the server ends the run: its timeout elapsed, which a deadline of the context
+// that New was given counts as, or the server started shutting down. A run that
+// its owner or its client canceled has not expired, and a run that has neither a
+// timeout nor a shutdown to watch never does, so fn is not called for it. The
+// returned function stops the call, as the one of context.AfterFunc does.
+func (r *Run[Deps]) AfterExpiry(fn func()) (stop func() bool) {
+	if !r.expires {
+		return func() bool { return false }
+	}
+	return context.AfterFunc(r.ctx, func() {
+		cause := context.Cause(r.ctx)
+		if errors.Is(cause, ErrShutdown) || errors.Is(cause, context.DeadlineExceeded) {
+			fn()
+		}
+	})
 }
 
 // Panic returns the error of the first panic that a tool had, or nil.
@@ -242,13 +255,17 @@ func (c capability[Deps]) WrapToolCall(
 
 // panicError is the error of a run that panicked, for the logs and the
 // callbacks of the application. A client is never told what is in it, see Text.
-type panicError struct{ value any }
+type panicError struct{ message string }
 
-func newPanicError(recovered any) error { return &panicError{value: recovered} }
+// newPanicError describes the panic as it is now, and keeps neither the value,
+// which a request or a large object can be behind and whose String method can
+// run on any goroutine that logs the error, nor an error that was panicked with
+// as its cause: that would turn the panic into a retry or a tool failure.
+func newPanicError(recovered any) error {
+	return &panicError{message: fmt.Sprintf("pydanticai: panic in the run: %v", recovered)}
+}
 
-// Error does not wrap the value: an error that was panicked with must not turn
-// the panic into a retry or a tool failure.
-func (e *panicError) Error() string { return fmt.Sprintf("pydanticai: panic in the run: %v", e.value) }
+func (e *panicError) Error() string { return e.message }
 
 // Recover is deferred by code that runs on a goroutine where no recover
 // middleware guards it. A panic is logged with the stack of the goroutine, and

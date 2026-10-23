@@ -66,9 +66,9 @@ func serveStream[Deps, A any](
 type supervised interface {
 	// Context is the context of the run.
 	Context() context.Context
-	// Expired reports whether the server ended the run, because its Timeout
-	// elapsed or it started shutting down.
-	Expired() bool
+	// AfterExpiry calls fn once when the server ends the run, because its Timeout
+	// elapsed or it started shutting down, and not when the run is canceled.
+	AfterExpiry(fn func()) (stop func() bool)
 	// Cancel cancels the run.
 	Cancel()
 	// End reports the end of the run, once.
@@ -136,11 +136,7 @@ func newRequestHold(c fiber.Ctx, conn net.Conn, run supervised, grace time.Durat
 	}
 	// The run ends when the server ends it, unless it is stuck in a write to a
 	// client that stopped reading.
-	context.AfterFunc(run.Context(), func() {
-		if run.Expired() {
-			h.expire()
-		}
-	})
+	run.AfterExpiry(h.expire)
 	return h
 }
 
