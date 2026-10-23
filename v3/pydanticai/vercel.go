@@ -71,15 +71,10 @@ var vercelProtocol = protocol[vercel.Chunk]{
 		return chunk
 	},
 	// A canceled run ends with an abort chunk instead. Both are followed by [DONE].
-	completed: func(chunk vercel.Chunk) bool { return chunk.Type == vercel.ChunkFinish },
+	completed:  func(chunk vercel.Chunk) bool { return chunk.Type == vercel.ChunkFinish },
+	errorEvent: func(message string) vercel.Chunk { return vercel.Chunk{Type: vercel.ChunkError, ErrorText: message} },
 	// The error chunk is followed by the record that ends the stream. The
 	// adapter stops after the error chunk that it reports itself, so the handler
 	// sends the record for it.
-	fail: func(send func([]byte) error, message string) {
-		if encoded, err := json.Marshal(vercel.Chunk{Type: vercel.ChunkError, ErrorText: message}); err == nil {
-			_ = send(encoded)
-			_ = send(doneRecord)
-		}
-	},
-	end: func(send func([]byte) error) { _ = send(doneRecord) },
+	closing: []vercel.Chunk{{Type: vercel.ChunkDone}},
 }
