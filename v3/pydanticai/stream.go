@@ -1,18 +1,14 @@
 package pydanticai
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"iter"
-	"sync"
 	"time"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
 	"github.com/gofiber/contrib/v3/pydanticai/internal/agentrun"
 	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/fiber/v3/middleware/sse"
-	"github.com/gofiber/utils/v2"
 )
 
 // defaultHeartbeatInterval is how often an idle stream is written to. A client
@@ -348,64 +344,4 @@ func relay[E, Deps any](
 		// canceled.
 		return context.Cause(ctx)
 	}
-}
-
-// serveStream sends what serve writes as a server-sent events response.
-//
-// The context passed to serve is canceled when a write to the client fails, when
-// a heartbeat detects that the client went away, when fasthttp gives up on the
-// response, when Timeout elapses, when the server starts shutting down with
-// CancelOnShutdown, and when the stream ends. fasthttp does not cancel the
-// request context for a disconnected client, so these are the signals that stop
-// a run nobody is listening to anymore. The cancellation of the context of the
-// request is not among them, see requestHold.
-//
-// OnRunEnd and then OnClose are called after the response is over and the run
-// has ended.
-func serveStream[Deps, A any](
-	c fiber.Ctx,
-	opts *StreamConfig[Deps, A],
-	deps Deps,
-	run *agentrun.Run[Deps],
-	serve func(ctx context.Context, send func(data []byte) error) error,
-) error {
-	// ended receives how the stream ended, once the run has returned.
-	ended := make(chan error, 1)
-	hold := &requestHold{
-		Ctx:   c,
-		ctx:   run.Context(),
-		conn:  c.RequestCtx().Conn(),
-		grace: cmp.Or(opts.grace, streamEndGrace),
-		release: sync.OnceFunc(func() {
-			run.Cancel()
-			err := <-ended
-			run.End(err)
-			if opts.OnClose != nil {
-				agentrun.Safely("OnClose", func() { opts.OnClose(deps, err) })
-			}
-		}),
-	}
-
-	// The run ends when the server ends it, unless it is stuck in a write to a
-	// client that stopped reading.
-	context.AfterFunc(run.Context(), func() {
-		if run.Expired() {
-			hold.expire()
-		}
-	})
-
-	config := sse.Config{
-		HeartbeatInterval: heartbeatInterval(opts.HeartbeatInterval),
-		DisableHeartbeat:  opts.DisableHeartbeat,
-		Handler: func(_ fiber.Ctx, stream *sse.Stream) error {
-			return serve(stream.Context(), func(data []byte) error {
-				// sse copies a []byte into a string before it writes it, and
-				// writes a string as it is. The event is written when Event
-				// returns, and nothing changes data until then.
-				return stream.Event(sse.Event{Data: utils.UnsafeString(data)})
-			})
-		},
-		OnClose: func(_ fiber.Ctx, err error) { ended <- err },
-	}
-	return sse.New(config)(hold)
 }
