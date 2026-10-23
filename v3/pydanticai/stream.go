@@ -3,7 +3,6 @@ package pydanticai
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"iter"
 	"sync"
@@ -220,18 +219,40 @@ func stream[Deps, A, In, E any](
 	p protocol[E],
 	run func(ctx context.Context, input In, deps Deps, options ...ai.RunOption) iter.Seq2[E, error],
 ) error {
-	guard, options := agentrun.NewGuard(request.options, request.deps, cfg.OnRunEnd)
-	return serveStream(c, cfg, request.deps, guard, func(ctx context.Context, send func([]byte) error) error {
+	// The context of the request is only done before the handler returns when
+	// a middleware gave up on the request, as the timeout middleware of Fiber
+	// does when its deadline passes while Deps or RunOptions run. It answered
+	// for the handler, and fasthttp never writes the response that the stream
+	// would be sent with, so the run would never end.
+	if err := context.Cause(c.Context()); err != nil {
+		return err
+	}
+
+	var shutdown <-chan struct{}
+	if cfg.CancelOnShutdown {
+		shutdown = serverDone(c.RequestCtx())
+	}
+	// The run outlives the handler, but a middleware can scope the context of
+	// the request to the handler and cancel it when the handler returns, as the
+	// timeout middleware of Fiber does. That must not cancel the run, which has
+	// only just started. The values of the context are kept.
+	supervised, options := agentrun.New(context.WithoutCancel(c.Context()), agentrun.Config[Deps]{
+		Deps:     request.deps,
+		OnRunEnd: cfg.OnRunEnd,
+		Timeout:  cfg.Timeout,
+		Shutdown: shutdown,
+	}, request.options)
+	return serveStream(c, cfg, request.deps, supervised, func(ctx context.Context, send func([]byte) error) error {
 		return relay(ctx, p, func(ctx context.Context, options ...ai.RunOption) iter.Seq2[E, error] {
 			return run(ctx, request.input, request.deps, options...)
-		}, options, guard, cfg.ErrorMessage, send)
+		}, options, supervised, cfg.ErrorMessage, send)
 	})
 }
 
 // relay sends the events of a run to the client, and returns the error that
 // ended the stream: nil when the run completed, and otherwise the error of the
-// run, the error of the stream or why the run was canceled. run starts the run
-// with the options it is given.
+// run, the error of the stream or why the run was canceled. start starts the run
+// with the options it is given, and run is its supervision.
 //
 // When the stream fails, relay stops taking events. pydantic-ai-go goes on
 // emitting the events of tool calls that run concurrently from their
@@ -244,9 +265,9 @@ func stream[Deps, A, In, E any](
 func relay[E, Deps any](
 	ctx context.Context,
 	p protocol[E],
-	run func(ctx context.Context, options ...ai.RunOption) iter.Seq2[E, error],
+	start func(ctx context.Context, options ...ai.RunOption) iter.Seq2[E, error],
 	options []ai.RunOption,
-	guard *agentrun.Guard[Deps],
+	run *agentrun.Run[Deps],
 	errorMessage func(error) string,
 	send func(data []byte) error,
 ) (ended error) {
@@ -268,12 +289,10 @@ func relay[E, Deps any](
 		emit(&event)
 		closeStream()
 	}
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			ended = agentrun.Recovered(recovered)
-			fail(agentrun.ErrPanicked)
-		}
-	}()
+	defer agentrun.Recover(func(panicErr error) {
+		ended = panicErr
+		fail(panicErr)
+	})
 
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
@@ -287,13 +306,13 @@ func relay[E, Deps any](
 		// for each event.
 		scratch E
 	)
-	for event, runErr := range run(ctx, options...) {
+	for event, runErr := range start(ctx, options...) {
 		if runErr != nil {
-			if panicErr := guard.Err(); panicErr != nil {
+			if panicErr := run.Panic(); panicErr != nil {
 				// A tool panicked. The error of the run carries the value of the
 				// panic, or the error of a tool that the panic canceled.
 				failed = panicErr
-				fail(agentrun.ErrPanicked)
+				fail(panicErr)
 				break
 			}
 			if errorMessage != nil && p.failed(event) {
@@ -331,89 +350,55 @@ func relay[E, Deps any](
 	}
 }
 
-// serveStream sends what run writes as a server-sent events response.
+// serveStream sends what serve writes as a server-sent events response.
 //
-// The context passed to run is canceled when a write to the client fails, when
+// The context passed to serve is canceled when a write to the client fails, when
 // a heartbeat detects that the client went away, when fasthttp gives up on the
-// response and when the stream ends. fasthttp does not cancel the request
-// context for a disconnected client, so these are the signals that stop a run
-// nobody is listening to anymore. The cancellation of the context of the
+// response, when Timeout elapses, when the server starts shutting down with
+// CancelOnShutdown, and when the stream ends. fasthttp does not cancel the
+// request context for a disconnected client, so these are the signals that stop
+// a run nobody is listening to anymore. The cancellation of the context of the
 // request is not among them, see requestHold.
 //
 // OnRunEnd and then OnClose are called after the response is over and the run
-// has ended. guard is the one that recorded the run.
+// has ended.
 func serveStream[Deps, A any](
 	c fiber.Ctx,
 	opts *StreamConfig[Deps, A],
 	deps Deps,
-	guard *agentrun.Guard[Deps],
-	run func(ctx context.Context, send func(data []byte) error) error,
+	run *agentrun.Run[Deps],
+	serve func(ctx context.Context, send func(data []byte) error) error,
 ) error {
-	// The context of the request is only done before the handler returns when
-	// a middleware gave up on the request, as the timeout middleware of Fiber
-	// does when its deadline passes while Deps or RunOptions run. It answered
-	// for the handler, and fasthttp never writes the response that the stream
-	// would be sent with, so the run would never end.
-	if err := context.Cause(c.Context()); err != nil {
-		return err
-	}
-
-	// The run outlives the handler, but a middleware can scope the context of
-	// the request to the handler and cancel it when the handler returns, as the
-	// timeout middleware of Fiber does. That must not cancel the run, which has
-	// only just started. The values of the context are kept.
-	runCtx, abort := context.WithCancelCause(context.WithoutCancel(c.Context()))
-
 	// ended receives how the stream ended, once the run has returned.
 	ended := make(chan error, 1)
 	hold := &requestHold{
 		Ctx:   c,
-		ctx:   runCtx,
+		ctx:   run.Context(),
 		conn:  c.RequestCtx().Conn(),
 		grace: cmp.Or(opts.grace, streamEndGrace),
 		release: sync.OnceFunc(func() {
-			abort(nil)
+			run.Cancel()
 			err := <-ended
-			guard.End(err)
+			run.End(err)
 			if opts.OnClose != nil {
 				agentrun.Safely("OnClose", func() { opts.OnClose(deps, err) })
 			}
 		}),
 	}
 
-	// fasthttp closes this channel when the server starts shutting down, which
-	// is before it waits for the connections to finish.
-	if opts.CancelOnShutdown {
-		if shutdown := agentrun.ServerDone(c.RequestCtx()); shutdown != nil {
-			go func() {
-				select {
-				case <-shutdown:
-					abort(agentrun.ErrShutdown)
-					hold.expire()
-				case <-runCtx.Done():
-				}
-			}()
+	// The run ends when the server ends it, unless it is stuck in a write to a
+	// client that stopped reading.
+	context.AfterFunc(run.Context(), func() {
+		if run.Expired() {
+			hold.expire()
 		}
-	}
+	})
 
 	config := sse.Config{
 		HeartbeatInterval: heartbeatInterval(opts.HeartbeatInterval),
 		DisableHeartbeat:  opts.DisableHeartbeat,
 		Handler: func(_ fiber.Ctx, stream *sse.Stream) error {
-			ctx := stream.Context()
-			if opts.Timeout > 0 {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
-				defer cancel()
-				// The run ends when its deadline passes, unless it is stuck in a
-				// write to a client that stopped reading.
-				defer context.AfterFunc(ctx, func() {
-					if errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
-						hold.expire()
-					}
-				})()
-			}
-			return run(ctx, func(data []byte) error {
+			return serve(stream.Context(), func(data []byte) error {
 				// sse copies a []byte into a string before it writes it, and
 				// writes a string as it is. The event is written when Event
 				// returns, and nothing changes data until then.

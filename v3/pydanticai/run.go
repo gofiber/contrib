@@ -1,7 +1,6 @@
 package pydanticai
 
 import (
-	"context"
 	"time"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
@@ -142,7 +141,7 @@ func Run[Deps, Output any](agent *ai.Agent[Deps, Output], config ...RunConfig[De
 		)
 		if cfg.Prompt != nil {
 			var err error
-			if deps, options, err = agentrun.Resolve(c, cfg.Deps, cfg.RunOptions); err != nil {
+			if deps, options, err = resolve(c, cfg.Deps, cfg.RunOptions); err != nil {
 				return err
 			}
 			if prompt, err = cfg.Prompt(c); err != nil {
@@ -162,32 +161,13 @@ func Run[Deps, Output any](agent *ai.Agent[Deps, Output], config ...RunConfig[De
 			}
 		}
 
-		ctx := c.Context()
-		if timeout := agentrun.Timeout(cfg.Timeout); timeout > 0 {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, timeout)
-			defer cancel()
-		}
-		guard, options := agentrun.NewGuard(options, deps, cfg.OnRunEnd)
-		result, err := func() (*ai.RunResult[Output], error) {
-			if cfg.OnRunEnd != nil {
-				// A panic goes on to the recover middleware of the app, but the
-				// run consumed tokens all the same.
-				defer func() {
-					if recovered := recover(); recovered != nil {
-						guard.End(agentrun.PanicError(recovered))
-						panic(recovered)
-					}
-				}()
-			}
-			return agent.Run(ctx, prompt, deps, options...)
-		}()
-		if panicErr := guard.Err(); panicErr != nil && err != nil {
-			// The error of the run carries the value of the panic, or the error
-			// of a tool that the panic canceled.
-			err = panicErr
-		}
-		guard.End(err)
+		// A panic in the model or in a callback goes on to the recover middleware
+		// of the app, after it was reported to OnRunEnd.
+		result, err := agentrun.Execute(c.Context(), agent, prompt, options, agentrun.Config[Deps]{
+			Deps:     deps,
+			OnRunEnd: cfg.OnRunEnd,
+			Timeout:  agentrun.OneShotTimeout(cfg.Timeout),
+		})
 		if err != nil {
 			return newError(err)
 		}

@@ -1,15 +1,20 @@
 package pydanticai
 
 import (
+	"errors"
 	"mime"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	ai "github.com/Kludex/pydantic-ai-go/ai"
 	"github.com/Kludex/pydantic-ai-go/ai/ui/agui"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
+	"github.com/valyala/fasthttp/fasthttputil"
 )
 
 // benchContext returns a request context of app for a POST with the headers.
@@ -234,4 +239,120 @@ func Benchmark_contentTypeCheck(b *testing.B) {
 			}
 		})
 	}
+}
+
+// resolved runs resolve in a handler of an app, which is where it gets its Ctx.
+func resolved[Deps any](
+	t *testing.T,
+	deps func(fiber.Ctx) (Deps, error),
+	options func(fiber.Ctx) ([]ai.RunOption, error),
+) (value Deps, extra []ai.RunOption, err error) {
+	t.Helper()
+
+	app := fiber.New()
+	app.Get("/", func(c fiber.Ctx) error {
+		value, extra, err = resolve(c, deps, options)
+		return nil
+	})
+	resp, testErr := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
+	require.NoError(t, testErr)
+	require.NoError(t, resp.Body.Close())
+	return value, extra, err
+}
+
+func Test_resolve(t *testing.T) {
+	t.Parallel()
+
+	failure := errors.New("rejected")
+	user := func(fiber.Ctx) (string, error) { return "alice", nil }
+	metadata := func(fiber.Ctx) ([]ai.RunOption, error) {
+		return []ai.RunOption{ai.WithRunMetadata(map[string]any{"k": "v"})}, nil
+	}
+
+	t.Run("without callbacks", func(t *testing.T) {
+		t.Parallel()
+
+		deps, options, err := resolved[string](t, nil, nil)
+		require.NoError(t, err)
+		require.Empty(t, deps, "the zero value of Deps")
+		require.Nil(t, options)
+	})
+
+	t.Run("both callbacks", func(t *testing.T) {
+		t.Parallel()
+
+		deps, options, err := resolved(t, user, metadata)
+		require.NoError(t, err)
+		require.Equal(t, "alice", deps)
+		require.Len(t, options, 1)
+	})
+
+	t.Run("Deps fails", func(t *testing.T) {
+		t.Parallel()
+
+		asked := false
+		_, options, err := resolved(t,
+			func(fiber.Ctx) (string, error) { return "", failure },
+			func(fiber.Ctx) ([]ai.RunOption, error) { asked = true; return nil, nil })
+		require.ErrorIs(t, err, failure)
+		require.Nil(t, options)
+		require.False(t, asked, "an error ends the resolution")
+	})
+
+	t.Run("RunOptions fails", func(t *testing.T) {
+		t.Parallel()
+
+		_, options, err := resolved(t, user, func(fiber.Ctx) ([]ai.RunOption, error) {
+			return []ai.RunOption{ai.WithRunMetadata(nil)}, failure
+		})
+		require.ErrorIs(t, err, failure)
+		require.Nil(t, options, "the options of a failed call are dropped")
+	})
+}
+
+func Test_serverDone(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a RequestCtx that no server serves", func(t *testing.T) {
+		t.Parallel()
+
+		require.NotPanics(t, func() { require.Nil(t, serverDone(new(fasthttp.RequestCtx))) })
+	})
+
+	t.Run("closed when the server starts to shut down", func(t *testing.T) {
+		t.Parallel()
+
+		done := make(chan (<-chan struct{}), 1)
+		server := &fasthttp.Server{Handler: func(ctx *fasthttp.RequestCtx) { done <- serverDone(ctx) }}
+		listener := fasthttputil.NewInmemoryListener()
+		served := make(chan error, 1)
+		go func() { served <- server.Serve(listener) }()
+
+		conn, err := listener.Dial()
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = conn.Close() })
+		_, err = conn.Write([]byte("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"))
+		require.NoError(t, err)
+
+		var shutdown <-chan struct{}
+		select {
+		case shutdown = <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the handler was not called")
+		}
+		require.NotNil(t, shutdown)
+		select {
+		case <-shutdown:
+			t.Fatal("the server is not shutting down")
+		default:
+		}
+
+		go func() { _ = server.Shutdown() }()
+		select {
+		case <-shutdown:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the channel was not closed")
+		}
+		require.NoError(t, <-served)
+	})
 }

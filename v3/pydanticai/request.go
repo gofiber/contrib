@@ -10,9 +10,9 @@ import (
 	"strings"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
-	"github.com/gofiber/contrib/v3/pydanticai/internal/agentrun"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/utils/v2"
+	"github.com/valyala/fasthttp"
 )
 
 const (
@@ -148,6 +148,40 @@ func (l requestLimits) read(c fiber.Ctx) ([]byte, error) {
 	return body, nil
 }
 
+// resolve runs the per-request callbacks of a handler, Deps and then
+// RunOptions. Both are optional: the dependencies default to the zero value of
+// Deps and there are no extra options.
+func resolve[Deps any](
+	c fiber.Ctx,
+	deps func(fiber.Ctx) (Deps, error),
+	options func(fiber.Ctx) ([]ai.RunOption, error),
+) (value Deps, extra []ai.RunOption, err error) {
+	if deps != nil {
+		if value, err = deps(c); err != nil {
+			return value, nil, err
+		}
+	}
+	if options != nil {
+		if extra, err = options(c); err != nil {
+			return value, nil, err
+		}
+	}
+	return value, extra, nil
+}
+
+// serverDone returns the channel that fasthttp closes when the server of ctx
+// starts shutting down, which is before it waits for the connections to finish,
+// or nil when ctx has no server, as a RequestCtx that a test or a benchmark
+// builds itself: Done of fasthttp dereferences the server.
+func serverDone(ctx *fasthttp.RequestCtx) (done <-chan struct{}) {
+	defer func() {
+		if recover() != nil {
+			done = nil
+		}
+	}()
+	return ctx.Done()
+}
+
 // admission is a request that a handler let through.
 type admission[Deps, In any] struct {
 	input   In
@@ -171,7 +205,7 @@ func admit[Deps, In any](
 	}
 	request := new(admission[Deps, In])
 	var err error
-	if request.deps, request.options, err = agentrun.Resolve(c, deps, options); err != nil {
+	if request.deps, request.options, err = resolve(c, deps, options); err != nil {
 		return nil, err
 	}
 	body, err := limits.read(c)
