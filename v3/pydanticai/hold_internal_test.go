@@ -26,27 +26,96 @@ func (c *closeRecorder) Close() error {
 	return nil
 }
 
+// fakeRun is a supervised run that records what the hold does to it. The test is
+// the server: expire ends the run, as the server does when its timeout elapses or
+// it starts shutting down.
+type fakeRun struct {
+	ctx     context.Context
+	cancel  context.CancelFunc
+	stopped atomic.Bool
+
+	mu     sync.Mutex
+	calls  []string
+	expiry func() // what the hold asked to be called when the server ends the run
+}
+
+func newFakeRun() *fakeRun {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &fakeRun{ctx: ctx, cancel: cancel}
+}
+
+func (f *fakeRun) Context() context.Context { return f.ctx }
+
+func (f *fakeRun) AfterExpiry(fn func()) (stop func() bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.expiry = fn
+	return func() bool { return !f.stopped.Swap(true) }
+}
+
+func (f *fakeRun) Cancel() {
+	f.record("cancel")
+	f.cancel()
+}
+
+func (f *fakeRun) End(err error) { f.record("end " + text(err)) }
+
+func (f *fakeRun) record(call string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, call)
+}
+
+func (f *fakeRun) recorded() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return strings.Join(f.calls, ", ")
+}
+
+// expire is the server ending the run, which calls what the hold asked for.
+func (f *fakeRun) expire(t *testing.T) {
+	t.Helper()
+	f.mu.Lock()
+	expiry := f.expiry
+	f.mu.Unlock()
+	require.NotNil(t, expiry, "the hold asked to be told when the server ends the run")
+	expiry()
+}
+
+func text(err error) string {
+	if err == nil {
+		return "ok"
+	}
+	return err.Error()
+}
+
+// newTestHold returns the hold of a fake run, on a connection that records that
+// it was closed. OnClose is recorded as a call of the run.
+func newTestHold(grace time.Duration) (*requestHold, *fakeRun, *closeRecorder) {
+	run, conn := newFakeRun(), new(closeRecorder)
+	hold := newRequestHold(nil, conn, run, grace, func(err error) { run.record("close " + text(err)) })
+	return hold, run, conn
+}
+
 func Test_requestHold_expire(t *testing.T) {
 	t.Parallel()
 
 	const grace = time.Hour // no check fires during the test
 
-	t.Run("Timeout and a shutdown arm one check", func(t *testing.T) {
+	t.Run("a check is armed", func(t *testing.T) {
 		t.Parallel()
 
-		h := &requestHold{conn: new(closeRecorder), grace: grace}
+		h, _, _ := newTestHold(grace)
 		t.Cleanup(h.finish)
 		h.expire()
-		check := h.check
-		require.NotNil(t, check)
-		h.expire()
-		require.Same(t, check, h.check)
+		require.NotNil(t, h.check)
 	})
 
 	t.Run("no check without a connection", func(t *testing.T) {
 		t.Parallel()
 
-		h := &requestHold{grace: grace} // a RequestCtx that no server serves
+		// A RequestCtx that no server serves has none.
+		h := newRequestHold(nil, nil, newFakeRun(), grace, func(error) {})
 		h.expire()
 		require.Nil(t, h.check)
 	})
@@ -54,7 +123,7 @@ func Test_requestHold_expire(t *testing.T) {
 	t.Run("no check once fasthttp is done with the body", func(t *testing.T) {
 		t.Parallel()
 
-		h := &requestHold{conn: new(closeRecorder), grace: grace}
+		h, _, _ := newTestHold(grace)
 		h.finish()
 		h.expire()
 		require.Nil(t, h.check)
@@ -68,8 +137,7 @@ func Test_requestHold_cut(t *testing.T) {
 	// blocked for blocked, or that waits for the run when blocked is 0.
 	armed := func(t *testing.T, grace, blocked time.Duration) (*requestHold, *closeRecorder) {
 		t.Helper()
-		conn := new(closeRecorder)
-		h := &requestHold{conn: conn, grace: grace}
+		h, _, conn := newTestHold(grace)
 		if blocked > 0 {
 			h.writing.Store(time.Now().Add(-blocked).UnixNano())
 		}
@@ -111,82 +179,21 @@ func Test_requestHold_cut(t *testing.T) {
 
 		h, conn := armed(t, time.Hour, time.Hour)
 		h.finish()
+		require.False(t, h.check.Stop(), "finish stopped the check")
 		h.cut() // a check that fired while finish stopped it
 		require.False(t, conn.closed.Load(), "the connection serves another request")
 	})
-}
-
-// fakeRun is a supervised run that records what the hold does to it.
-type fakeRun struct {
-	ctx     context.Context
-	stop    context.CancelFunc
-	expired atomic.Bool
-	// asked is closed when the run ended and the hold was told, or not, that the
-	// server did it.
-	asked     chan struct{}
-	askedOnce sync.Once
-
-	mu    sync.Mutex
-	calls []string
-}
-
-func newFakeRun() *fakeRun {
-	ctx, stop := context.WithCancel(context.Background())
-	return &fakeRun{ctx: ctx, stop: stop, asked: make(chan struct{})}
-}
-
-func (f *fakeRun) Context() context.Context { return f.ctx }
-
-// AfterExpiry calls fn when the run ends, if the test said that the server ended
-// it.
-func (f *fakeRun) AfterExpiry(fn func()) (stop func() bool) {
-	return context.AfterFunc(f.ctx, func() {
-		f.askedOnce.Do(func() { close(f.asked) })
-		if f.expired.Load() {
-			fn()
-		}
-	})
-}
-
-func (f *fakeRun) Cancel() {
-	f.record("cancel")
-	f.stop()
-}
-
-func (f *fakeRun) End(err error) { f.record("end " + text(err)) }
-
-func (f *fakeRun) record(call string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.calls = append(f.calls, call)
-}
-
-func (f *fakeRun) recorded() string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return strings.Join(f.calls, ", ")
-}
-
-func text(err error) string {
-	if err == nil {
-		return "ok"
-	}
-	return err.Error()
 }
 
 func Test_requestHold_release(t *testing.T) {
 	t.Parallel()
 
 	failure := errors.New("the client went away")
-	newHold := func(run *fakeRun) *requestHold {
-		return newRequestHold(nil, new(closeRecorder), run, time.Hour, func(err error) { run.record("close " + text(err)) })
-	}
 
 	t.Run("reports how the stream ended, once", func(t *testing.T) {
 		t.Parallel()
 
-		run := newFakeRun()
-		hold := newHold(run)
+		hold, run, _ := newTestHold(time.Hour)
 		hold.streamEnded(failure)
 
 		var wg sync.WaitGroup
@@ -203,8 +210,7 @@ func Test_requestHold_release(t *testing.T) {
 	t.Run("waits for the run to return", func(t *testing.T) {
 		t.Parallel()
 
-		run := newFakeRun()
-		hold := newHold(run)
+		hold, run, _ := newTestHold(time.Hour)
 		released := make(chan struct{})
 		go func() {
 			hold.release()
@@ -226,60 +232,27 @@ func Test_requestHold_release(t *testing.T) {
 	t.Run("the context of the stream is the context of the run", func(t *testing.T) {
 		t.Parallel()
 
-		run := newFakeRun()
-		require.Equal(t, run.Context(), newHold(run).Context())
+		hold, run, _ := newTestHold(time.Hour)
+		require.Equal(t, run.Context(), hold.Context())
 	})
 }
 
 func Test_requestHold_expiry(t *testing.T) {
 	t.Parallel()
 
-	const grace = 20 * time.Millisecond
-	// blocked returns a hold whose write to the client has been blocked for longer
-	// than the grace.
-	blocked := func(run *fakeRun) (*requestHold, *closeRecorder) {
-		conn := new(closeRecorder)
-		hold := newRequestHold(nil, conn, run, grace, func(error) {})
-		hold.writing.Store(time.Now().Add(-time.Hour).UnixNano())
-		return hold, conn
-	}
+	hold, run, conn := newTestHold(20 * time.Millisecond)
+	t.Cleanup(hold.finish)
+	hold.writing.Store(time.Now().Add(-time.Hour).UnixNano()) // a write to a client that stopped reading
 
-	t.Run("a run that the server ended closes the connection of a client that stopped reading", func(t *testing.T) {
-		t.Parallel()
-
-		run := newFakeRun()
-		hold, conn := blocked(run)
-		t.Cleanup(hold.finish)
-
-		run.expired.Store(true)
-		run.Cancel()
-		require.Eventually(t, conn.closed.Load, 5*time.Second, time.Millisecond)
-	})
-
-	t.Run("a run that its owner or its client ended leaves the connection alone", func(t *testing.T) {
-		t.Parallel()
-
-		run := newFakeRun()
-		hold, conn := blocked(run)
-		t.Cleanup(hold.finish)
-
-		run.Cancel()
-		agenttest.Receive(t, run.asked, "the hold to be told that the run ended")
-		time.Sleep(4 * grace)
-		hold.mu.Lock()
-		defer hold.mu.Unlock()
-		require.Nil(t, hold.check, "no check was started")
-		require.False(t, conn.closed.Load())
-	})
+	run.expire(t) // the server ended the run
+	require.Eventually(t, conn.closed.Load, agenttest.ObserveTimeout, time.Millisecond)
 }
 
 func Test_holdingBody_Close(t *testing.T) {
 	t.Parallel()
 
 	const grace = 20 * time.Millisecond
-	run := newFakeRun()
-	conn := new(closeRecorder)
-	hold := newRequestHold(nil, conn, run, grace, func(err error) { run.record("close " + text(err)) })
+	hold, run, conn := newTestHold(grace)
 	hold.streamEnded(nil)
 	body := &holdingBody{ReadCloser: io.NopCloser(strings.NewReader("events")), hold: hold}
 
@@ -292,5 +265,6 @@ func Test_holdingBody_Close(t *testing.T) {
 	require.NoError(t, body.Close())
 	time.Sleep(4 * grace) // a check that Close did not stop would have fired by now
 	require.False(t, conn.closed.Load(), "the connection of the next request is left alone")
+	require.True(t, run.stopped.Load(), "the server can end the run, and nothing is left to look for")
 	require.Equal(t, "cancel, end ok, close ok", run.recorded(), "Close releases the run")
 }

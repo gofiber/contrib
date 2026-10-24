@@ -120,7 +120,7 @@ func Test_AGUI_StreamsThroughCompress(t *testing.T) {
 func Test_AGUI_ClosedSocketCancelsRun(t *testing.T) {
 	t.Parallel()
 
-	model, started, canceled := blockingModel()
+	model, started, canceled := agenttest.Blocking()
 	closed := make(chan error, 1)
 	handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](model), pydanticai.AGUIConfig[struct{}]{
 		HeartbeatInterval: 20 * time.Millisecond,
@@ -143,7 +143,7 @@ func Test_AGUI_ClosedSocketCancelsRun(t *testing.T) {
 func Test_Vercel_ClosedSocketCancelsRun(t *testing.T) {
 	t.Parallel()
 
-	model, started, canceled := blockingModel()
+	model, started, canceled := agenttest.Blocking()
 	closed := make(chan error, 1)
 	handler := pydanticai.Vercel(ai.NewAgent[struct{}, string](model), pydanticai.VercelConfig[struct{}]{
 		HeartbeatInterval: 20 * time.Millisecond,

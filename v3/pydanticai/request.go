@@ -182,6 +182,16 @@ func serverDone(ctx *fasthttp.RequestCtx) (done <-chan struct{}) {
 	return ctx.Done()
 }
 
+// shutdownSignal returns the channel that fasthttp closes when the server of c
+// starts shutting down, for a handler that cancels its runs then, and nil for one
+// that lets them end on their own.
+func shutdownSignal(c fiber.Ctx, cancelOnShutdown bool) <-chan struct{} {
+	if !cancelOnShutdown {
+		return nil
+	}
+	return serverDone(c.RequestCtx())
+}
+
 // admission is a request that a handler let through.
 type admission[Deps, In any] struct {
 	input   In

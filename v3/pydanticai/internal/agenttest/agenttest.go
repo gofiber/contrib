@@ -77,6 +77,41 @@ func Answering(text string) *fakes.FunctionModel {
 	})
 }
 
+// Failing is a model that always fails with err.
+func Failing(err error) *fakes.FunctionModel {
+	return fakes.NewFunctionModel(func(context.Context, []ai.ModelMessage, ai.ModelRequestParams) (*ai.ModelResponse, error) {
+		return nil, err
+	})
+}
+
+// Panicking is a model that panics with value.
+func Panicking(value any) *fakes.FunctionModel {
+	return fakes.NewFunctionModel(func(context.Context, []ai.ModelMessage, ai.ModelRequestParams) (*ai.ModelResponse, error) {
+		panic(value)
+	})
+}
+
+// Blocking is a model that waits until its context is canceled. started is
+// closed when the model is called, and canceled receives the cause of the
+// cancellation.
+func Blocking() (model *fakes.FunctionModel, started <-chan struct{}, canceled <-chan error) {
+	startedCh := make(chan struct{})
+	canceledCh := make(chan error, 1)
+	var once sync.Once
+	model = fakes.NewFunctionModel(func(
+		ctx context.Context, _ []ai.ModelMessage, _ ai.ModelRequestParams,
+	) (*ai.ModelResponse, error) {
+		once.Do(func() { close(startedCh) })
+		<-ctx.Done()
+		select {
+		case canceledCh <- context.Cause(ctx):
+		default:
+		}
+		return nil, ctx.Err()
+	})
+	return model, startedCh, canceledCh
+}
+
 // Deadline is the time left until the deadline of the context of a model call,
 // or Set false when the context had none.
 type Deadline struct {
@@ -132,12 +167,17 @@ func ToolCalls(names ...string) *fakes.FunctionModel {
 }
 
 // ConcurrentAgent calls the named tools concurrently. "explode" panics,
-// "waiting" waits for its context, "fine" returns at once.
+// "aftershock" panics once its context is canceled, which is what the failure of
+// another tool does, "waiting" waits for its context, "fine" returns at once.
 func ConcurrentAgent(names ...string) *ai.Agent[struct{}, string] {
 	agent := ai.NewAgent[struct{}, string](ToolCalls(names...))
 	ai.AddSimpleTool(agent, "explode", func(context.Context, struct{}) (string, error) {
 		time.Sleep(20 * time.Millisecond) // lets "waiting" start first
 		panic("kaboom in explode")
+	})
+	ai.AddSimpleTool(agent, "aftershock", func(ctx context.Context, _ struct{}) (string, error) {
+		<-ctx.Done()
+		panic("kaboom in aftershock")
 	})
 	ai.AddSimpleTool(agent, "waiting", func(ctx context.Context, _ struct{}) (string, error) {
 		<-ctx.Done()

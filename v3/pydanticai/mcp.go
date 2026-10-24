@@ -126,6 +126,12 @@ type MCPConfig[Deps any] struct {
 	CancelOnShutdown bool
 }
 
+// failure is the error that the client of the tool receives for err, with the
+// text that ErrorMessage makes of it.
+func (cfg *MCPConfig[Deps]) failure(err error) error {
+	return errors.New(agentrun.Text(cfg.ErrorMessage, err))
+}
+
 // mcpAskInput is the input of the tool.
 type mcpAskInput struct {
 	Question string `json:"question" jsonschema:"The question or the task for the agent"`
@@ -193,10 +199,7 @@ func MCP[Deps, Output any](agent *ai.Agent[Deps, Output], config ...MCPConfig[De
 			return err
 		}
 
-		var shutdown <-chan struct{}
-		if cfg.CancelOnShutdown {
-			shutdown = serverDone(c.RequestCtx())
-		}
+		shutdown := shutdownSignal(c, cfg.CancelOnShutdown)
 
 		// A call is served with the values of the context of the request, such as
 		// a trace, and without its cancellation. The context that the SDK would
@@ -259,7 +262,7 @@ func mcpTool[Deps, Output any](
 ) mcpsdk.ToolHandlerFor[mcpAskInput, any] {
 	return func(ctx context.Context, _ *mcpsdk.CallToolRequest, in mcpAskInput) (result *mcpsdk.CallToolResult, out any, err error) {
 		defer agentrun.Recover(func(panicErr error) {
-			result, out, err = nil, nil, errors.New(agentrun.Text(cfg.ErrorMessage, panicErr))
+			result, out, err = nil, nil, cfg.failure(panicErr)
 		})
 
 		if utils.TrimSpace(in.Question) == "" {
@@ -273,11 +276,11 @@ func mcpTool[Deps, Output any](
 			Deferred: errMCPDeferred,
 		})
 		if runErr != nil {
-			return nil, nil, errors.New(agentrun.Text(cfg.ErrorMessage, runErr))
+			return nil, nil, cfg.failure(runErr)
 		}
 		result, out, err = mcpOutput(run.Output)
 		if err != nil {
-			return nil, nil, errors.New(agentrun.Text(cfg.ErrorMessage, err))
+			return nil, nil, cfg.failure(err)
 		}
 		return result, out, nil
 	}

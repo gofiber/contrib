@@ -37,7 +37,7 @@ func AGUI[Deps, Output any](agent *ai.Agent[Deps, Output], config ...AGUIConfig[
 		if err != nil {
 			return err
 		}
-		return stream(c, &cfg, request, aguiProtocol, adapter.RunStream)
+		return stream(c, &cfg, request, &aguiProtocol, adapter.RunStream)
 	}
 }
 
@@ -53,5 +53,5 @@ var aguiProtocol = protocol[agui.Event]{
 	// A canceled run ends with RUN_FINISHED as well, but without an outcome.
 	completed: func(event agui.Event) bool { return event.Type == agui.EventRunFinished && event.Outcome != nil },
 	// The RUN_ERROR event closes the stream, so nothing follows it.
-	errorEvent: func(message string) agui.Event { return agui.Event{Type: agui.EventRunError, Message: message} },
+	failure: agui.Event{Type: agui.EventRunError},
 }

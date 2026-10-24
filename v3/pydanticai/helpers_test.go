@@ -118,15 +118,6 @@ func userAgent() *ai.Agent[userDeps, string] {
 	return agent
 }
 
-// failingModel always fails with err.
-func failingModel(err error) *fakes.FunctionModel {
-	return fakes.NewFunctionModel(func(
-		context.Context, []ai.ModelMessage, ai.ModelRequestParams,
-	) (*ai.ModelResponse, error) {
-		return nil, err
-	})
-}
-
 // unreachableModel is a model that must not be called. It reports whether it was.
 func unreachableModel() (model *fakes.FunctionModel, called *atomic.Bool) {
 	called = new(atomic.Bool)
@@ -137,22 +128,6 @@ func unreachableModel() (model *fakes.FunctionModel, called *atomic.Bool) {
 		return textResponse("unreachable"), nil
 	})
 	return model, called
-}
-
-// blockingModel waits until its context is canceled. started is closed when the
-// model is called and canceled receives the cause of the cancellation.
-func blockingModel() (model *fakes.FunctionModel, started <-chan struct{}, canceled <-chan error) {
-	startedCh := make(chan struct{})
-	canceledCh := make(chan error, 1)
-	model = fakes.NewFunctionModel(func(
-		ctx context.Context, _ []ai.ModelMessage, _ ai.ModelRequestParams,
-	) (*ai.ModelResponse, error) {
-		close(startedCh)
-		<-ctx.Done()
-		canceledCh <- context.Cause(ctx)
-		return nil, ctx.Err()
-	})
-	return model, startedCh, canceledCh
 }
 
 // gatedModel answers once release is closed, or when its context is canceled.

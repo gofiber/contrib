@@ -275,7 +275,7 @@ func Test_Run_AgentErrorsAreMappedAndHidden(t *testing.T) {
 	secret := errors.New("provider rejected the key sk-secret")
 
 	var log errorLog
-	app := newApp("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](failingModel(secret))), log.config())
+	app := newApp("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](agenttest.Failing(secret))), log.config())
 
 	resp, body := post(t, app, "/ask", runBody)
 	require.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
@@ -314,7 +314,7 @@ func Test_Run_UsageLimitIsTooManyRequests(t *testing.T) {
 func Test_Run_Timeout(t *testing.T) {
 	t.Parallel()
 
-	model, _, canceled := blockingModel()
+	model, _, canceled := agenttest.Blocking()
 	app := newApp("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](model), pydanticai.RunConfig[struct{}, string]{
 		Timeout: 100 * time.Millisecond,
 	}))

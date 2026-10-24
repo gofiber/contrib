@@ -175,7 +175,7 @@ func Test_AGUI_AgentError(t *testing.T) {
 		t.Parallel()
 
 		closed := make(chan error, 1)
-		handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](failingModel(secret)), pydanticai.AGUIConfig[struct{}]{
+		handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](agenttest.Failing(secret)), pydanticai.AGUIConfig[struct{}]{
 			OnClose: func(_ struct{}, err error) { closed <- err },
 		})
 
@@ -189,7 +189,7 @@ func Test_AGUI_AgentError(t *testing.T) {
 		t.Parallel()
 
 		closed := make(chan error, 1)
-		handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](failingModel(secret)), pydanticai.AGUIConfig[struct{}]{
+		handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](agenttest.Failing(secret)), pydanticai.AGUIConfig[struct{}]{
 			ErrorMessage: func(error) string { return "the model failed" },
 			OnClose:      func(_ struct{}, err error) { closed <- err },
 		})
@@ -283,7 +283,7 @@ func Test_AGUI_ToolsSeeTheRequestContextAndItsCancellation(t *testing.T) {
 func Test_AGUI_Timeout(t *testing.T) {
 	t.Parallel()
 
-	model, _, canceled := blockingModel()
+	model, _, canceled := agenttest.Blocking()
 	closed := make(chan error, 1)
 	handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](model), pydanticai.AGUIConfig[struct{}]{
 		Timeout: 100 * time.Millisecond,
