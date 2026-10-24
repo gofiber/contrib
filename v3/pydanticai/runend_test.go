@@ -93,7 +93,7 @@ func Test_OnRunEnd_StreamingHandlers(t *testing.T) {
 
 			t.Run("a failed run", func(t *testing.T) {
 				t.Parallel()
-				end := run(t, ai.NewAgent[userDeps, string](failingModel(secret)), protocol.body)
+				end := run(t, ai.NewAgent[userDeps, string](agenttest.Failing(secret)), protocol.body)
 				require.ErrorIs(t, end.err, secret)
 				require.NotNil(t, end.run, "a run that failed was still started")
 			})
@@ -126,7 +126,7 @@ func Test_OnRunEnd_ARunWhoseClientLeft(t *testing.T) {
 		t.Run(protocol.name, func(t *testing.T) {
 			t.Parallel()
 
-			model, started, _ := blockingModel()
+			model, started, _ := agenttest.Blocking()
 			ends := make(chan runEnd, 1)
 			// The heartbeat notices that the client left.
 			handler := protocol.build(ai.NewAgent[userDeps, string](model), func(deps userDeps, run *ai.RunInfo, err error) {
@@ -177,7 +177,7 @@ func Test_Run_OnRunEnd(t *testing.T) {
 		t.Parallel()
 
 		ends := make(chan runEnd, 1)
-		app := newApp("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](failingModel(secret)), pydanticai.RunConfig[struct{}, string]{
+		app := newApp("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](agenttest.Failing(secret)), pydanticai.RunConfig[struct{}, string]{
 			OnRunEnd: func(_ struct{}, run *ai.RunInfo, err error) { ends <- runEnd{run: run, err: err} },
 		}))
 
@@ -198,11 +198,7 @@ func Test_Run_OnRunEnd(t *testing.T) {
 			recovered <- r
 			return fiber.ErrInternalServerError
 		}}))
-		app.Post("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](fakes.NewFunctionModel(func(
-			context.Context, []ai.ModelMessage, ai.ModelRequestParams,
-		) (*ai.ModelResponse, error) {
-			panic("model kaboom")
-		})), pydanticai.RunConfig[struct{}, string]{
+		app.Post("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](agenttest.Panicking("model kaboom")), pydanticai.RunConfig[struct{}, string]{
 			OnRunEnd: func(_ struct{}, run *ai.RunInfo, err error) { ends <- runEnd{run: run, err: err} },
 		}))
 

@@ -49,7 +49,7 @@ func Vercel[Deps, Output any](agent *ai.Agent[Deps, Output], config ...VercelCon
 		}
 
 		c.Set("x-vercel-ai-ui-message-stream", "v1") // marks the response as an AI SDK UI message stream
-		return stream(c, &cfg, request, vercelProtocol, adapter.RunStream)
+		return stream(c, &cfg, request, &vercelProtocol, adapter.RunStream)
 	}
 }
 
@@ -71,8 +71,8 @@ var vercelProtocol = protocol[vercel.Chunk]{
 		return chunk
 	},
 	// A canceled run ends with an abort chunk instead. Both are followed by [DONE].
-	completed:  func(chunk vercel.Chunk) bool { return chunk.Type == vercel.ChunkFinish },
-	errorEvent: func(message string) vercel.Chunk { return vercel.Chunk{Type: vercel.ChunkError, ErrorText: message} },
+	completed: func(chunk vercel.Chunk) bool { return chunk.Type == vercel.ChunkFinish },
+	failure:   vercel.Chunk{Type: vercel.ChunkError},
 	// The error chunk is followed by the record that ends the stream. The
 	// adapter stops after the error chunk that it reports itself, so the handler
 	// sends the record for it.

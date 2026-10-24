@@ -44,7 +44,7 @@ func Test_CancelOnShutdown(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			model, started, canceled := blockingModel()
+			model, started, canceled := agenttest.Blocking()
 			closed := make(chan error, 1)
 			app := newApp(test.path, test.handle(ai.NewAgent[struct{}, string](model), func(_ struct{}, err error) { closed <- err }))
 			response, _ := openStream(t, listen(t, app)+test.path, test.body)
@@ -88,7 +88,7 @@ func Test_CancelOnShutdown_ARunThatEndsFirst(t *testing.T) {
 func Test_ShutdownWaitsForARunByDefault(t *testing.T) {
 	t.Parallel()
 
-	model, started, canceled := blockingModel()
+	model, started, canceled := agenttest.Blocking()
 	app := newApp("/agui", pydanticai.AGUI(ai.NewAgent[struct{}, string](model), pydanticai.AGUIConfig[struct{}]{
 		HeartbeatInterval: 20 * time.Millisecond, // notices the client that leaves at the end
 	}))

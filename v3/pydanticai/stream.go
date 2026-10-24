@@ -197,52 +197,52 @@ type protocol[E any] struct {
 	// completed reports whether event ends a run that completed. A run that was
 	// canceled ends with an event of its own.
 	completed func(event E) bool
-	// errorEvent returns the event that reports a failed run with message as the
-	// text for the client, for a failure that the adapter did not report itself.
-	errorEvent func(message string) E
+	// failure is the event that reports a failed run, for a failure that the
+	// adapter did not report itself: withMessage gives it the text for the client.
+	failure E
 	// closing are the events that close the stream after the event that reports
 	// a failure, whoever reported it: the adapter yields none after its own.
 	// There are none when that event closes the stream.
 	closing []E
 }
 
-// stream serves an admitted request: it starts the run with run, and sends its
-// events as server-sent events.
+// emit sends event. Best effort: a stream that fails ends either way.
+func (p *protocol[E]) emit(send func(data []byte) error, event *E) {
+	if encoded, err := p.encode(event); err == nil {
+		_ = send(encoded)
+	}
+}
+
+// closeStream sends the events that close the stream after a failure.
+func (p *protocol[E]) closeStream(send func(data []byte) error) {
+	for i := range p.closing {
+		p.emit(send, &p.closing[i])
+	}
+}
+
+// fail ends the stream with the error event of the protocol, which tells the
+// client what errorMessage makes of err, and closes it.
+func (p *protocol[E]) fail(send func(data []byte) error, errorMessage func(error) string, err error) {
+	event := p.withMessage(p.failure, agentrun.Text(errorMessage, err))
+	p.emit(send, &event)
+	p.closeStream(send)
+}
+
+// stream serves an admitted request: it starts the run with runStream, and sends
+// its events as server-sent events.
 func stream[Deps, A, In, E any](
 	c fiber.Ctx,
 	cfg *StreamConfig[Deps, A],
 	request *admission[Deps, In],
-	p protocol[E],
-	run func(ctx context.Context, input In, deps Deps, options ...ai.RunOption) iter.Seq2[E, error],
+	p *protocol[E],
+	runStream func(ctx context.Context, input In, deps Deps, options ...ai.RunOption) iter.Seq2[E, error],
 ) error {
-	// The context of the request is only done before the handler returns when
-	// a middleware gave up on the request, as the timeout middleware of Fiber
-	// does when its deadline passes while Deps or RunOptions run. It answered
-	// for the handler, and fasthttp never writes the response that the stream
-	// would be sent with, so the run would never end.
-	if err := context.Cause(c.Context()); err != nil {
-		return err
-	}
-
-	var shutdown <-chan struct{}
-	if cfg.CancelOnShutdown {
-		shutdown = serverDone(c.RequestCtx())
-	}
-	// The run outlives the handler, but a middleware can scope the context of
-	// the request to the handler and cancel it when the handler returns, as the
-	// timeout middleware of Fiber does. That must not cancel the run, which has
-	// only just started. The values of the context are kept.
-	supervised, options := agentrun.New(context.WithoutCancel(c.Context()), agentrun.Config[Deps]{
-		Deps:     request.deps,
-		OnRunEnd: cfg.OnRunEnd,
-		Timeout:  cfg.Timeout,
-		Shutdown: shutdown,
-	}, request.options)
-	return serveStream(c, cfg, request.deps, supervised, func(ctx context.Context, send func([]byte) error) error {
-		return relay(ctx, p, func(ctx context.Context, options ...ai.RunOption) iter.Seq2[E, error] {
-			return run(ctx, request.input, request.deps, options...)
-		}, options, supervised, cfg.ErrorMessage, send)
-	})
+	return serveStream(c, cfg, request.deps, request.options,
+		func(ctx context.Context, run *agentrun.Run[Deps], options []ai.RunOption, send func([]byte) error) error {
+			return relay(ctx, p, func(ctx context.Context, options ...ai.RunOption) iter.Seq2[E, error] {
+				return runStream(ctx, request.input, request.deps, options...)
+			}, options, run, cfg.ErrorMessage, send)
+		})
 }
 
 // relay sends the events of a run to the client, and returns the error that
@@ -260,34 +260,16 @@ func stream[Deps, A, In, E any](
 // an error event, as one in a tool does. sse would recover it for OnClose only.
 func relay[E, Deps any](
 	ctx context.Context,
-	p protocol[E],
+	p *protocol[E],
 	start func(ctx context.Context, options ...ai.RunOption) iter.Seq2[E, error],
 	options []ai.RunOption,
 	run *agentrun.Run[Deps],
 	errorMessage func(error) string,
 	send func(data []byte) error,
 ) (ended error) {
-	// emit sends event. Best effort: a stream that fails ends either way.
-	emit := func(event *E) {
-		if encoded, err := p.encode(event); err == nil {
-			_ = send(encoded)
-		}
-	}
-	// closeStream sends the events that close the stream after a failure.
-	closeStream := func() {
-		for i := range p.closing {
-			emit(&p.closing[i])
-		}
-	}
-	// fail ends the stream with the error event of the protocol, and closes it.
-	fail := func(err error) {
-		event := p.errorEvent(agentrun.Text(errorMessage, err))
-		emit(&event)
-		closeStream()
-	}
 	defer agentrun.Recover(func(panicErr error) {
 		ended = panicErr
-		fail(panicErr)
+		p.fail(send, errorMessage, panicErr)
 	})
 
 	ctx, cancel := context.WithCancelCause(ctx)
@@ -304,11 +286,10 @@ func relay[E, Deps any](
 	)
 	for event, runErr := range start(ctx, options...) {
 		if runErr != nil {
-			if panicErr := run.Panic(); panicErr != nil {
-				// A tool panicked. The error of the run carries the value of the
-				// panic, or the error of a tool that the panic canceled.
+			if panicErr, panicked := run.Failure(runErr); panicked {
+				// A tool panicked.
 				failed = panicErr
-				fail(panicErr)
+				p.fail(send, errorMessage, panicErr)
 				break
 			}
 			if errorMessage != nil && p.failed(event) {
@@ -318,13 +299,13 @@ func relay[E, Deps any](
 		scratch = event
 		if encoded, err := p.encode(&scratch); err != nil {
 			failed = fmt.Errorf("pydanticai: encode %s: %w", p.what, err)
-			fail(failed)
+			p.fail(send, errorMessage, failed)
 		} else if err := send(encoded); err != nil {
 			failed = err
 		} else if runErr != nil {
 			// The adapters end the stream after the event of an error.
 			failed = runErr
-			closeStream()
+			p.closeStream(send)
 		} else if p.completed(event) {
 			completed = true
 		}

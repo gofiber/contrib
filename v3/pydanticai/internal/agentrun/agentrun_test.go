@@ -3,10 +3,10 @@ package agentrun_test
 import (
 	"context"
 	"errors"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
@@ -16,23 +16,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// shortTimeout is a timeout that elapses while a test waits for it.
-const shortTimeout = 20 * time.Millisecond
+// end is one call of OnRunEnd.
+type end[Deps any] struct {
+	deps Deps
+	run  *ai.RunInfo
+	err  error
+}
 
 // ends records what OnRunEnd receives.
 type ends[Deps any] struct {
 	mu    sync.Mutex
-	deps  []Deps
-	runs  []*ai.RunInfo
-	errs  []error
-	calls int
+	calls []end[Deps]
 }
 
 func (e *ends[Deps]) onRunEnd(deps Deps, run *ai.RunInfo, err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.deps, e.runs, e.errs = append(e.deps, deps), append(e.runs, run), append(e.errs, err)
-	e.calls++
+	e.calls = append(e.calls, end[Deps]{deps: deps, run: run, err: err})
 }
 
 // only returns the one call of OnRunEnd, and fails the test unless there was one.
@@ -40,8 +40,21 @@ func (e *ends[Deps]) only(t *testing.T) (deps Deps, run *ai.RunInfo, err error) 
 	t.Helper()
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	require.Equal(t, 1, e.calls, "OnRunEnd is called once")
-	return e.deps[0], e.runs[0], e.errs[0]
+	require.Len(t, e.calls, 1, "OnRunEnd is called once")
+	return e.calls[0].deps, e.calls[0].run, e.calls[0].err
+}
+
+// newRun starts to supervise a run that ends with the test.
+func newRun(t *testing.T, cfg agentrun.Config[struct{}]) *agentrun.Run[struct{}] {
+	t.Helper()
+	run, _ := agentrun.New(context.Background(), cfg, nil)
+	t.Cleanup(run.Cancel)
+	return run
+}
+
+// execute runs agent as a handler that answers with one response does.
+func execute[Deps any](agent *ai.Agent[Deps, string], cfg agentrun.Config[Deps]) (*ai.RunResult[string], error) {
+	return agentrun.Execute(context.Background(), agent, "Hi", nil, cfg)
 }
 
 // expiry returns a channel that is closed when run expires.
@@ -51,15 +64,20 @@ func expiry[Deps any](run *agentrun.Run[Deps]) <-chan struct{} {
 	return expired
 }
 
-// requireOpen fails the test when the channel is closed, which a closed channel
-// does at once, or soon: the time that the other goroutines have to do their part.
-func requireOpen(t *testing.T, channel <-chan struct{}, why string) {
-	t.Helper()
+// fired reports whether the channel is closed.
+func fired(channel <-chan struct{}) bool {
 	select {
 	case <-channel:
-		t.Fatalf("the run expired, but %s", why)
-	case <-time.After(5 * shortTimeout):
+		return true
+	default:
+		return false
 	}
+}
+
+// recovered returns the error that Recover reports for a panic with value.
+func recovered(value any) (err error) {
+	defer agentrun.Recover(func(panicErr error) { err = panicErr })
+	panic(value)
 }
 
 // describedValue is a panic value whose description changes.
@@ -67,30 +85,16 @@ type describedValue struct{ text string }
 
 func (d *describedValue) String() string { return d.text }
 
-// blocking is a model that tells that it started, and waits for its context.
-func blocking() (model *fakes.FunctionModel, started <-chan struct{}) {
-	signal := make(chan struct{})
-	var once sync.Once
-	model = fakes.NewFunctionModel(func(ctx context.Context, _ []ai.ModelMessage, _ ai.ModelRequestParams) (*ai.ModelResponse, error) {
-		once.Do(func() { close(signal) })
-		<-ctx.Done()
-		return nil, ctx.Err()
-	})
-	return model, signal
-}
+// shortCircuit is a capability of the caller that answers for the run without
+// starting it.
+type shortCircuit struct{}
 
-// failing is a model that fails with err.
-func failing(err error) *fakes.FunctionModel {
-	return fakes.NewFunctionModel(func(context.Context, []ai.ModelMessage, ai.ModelRequestParams) (*ai.ModelResponse, error) {
-		return nil, err
-	})
-}
+// Setup implements ai.Capability.
+func (shortCircuit) Setup(*ai.CapabilityRegistry) error { return nil }
 
-// panicking is a model that panics with value.
-func panicking(value any) *fakes.FunctionModel {
-	return fakes.NewFunctionModel(func(context.Context, []ai.ModelMessage, ai.ModelRequestParams) (*ai.ModelResponse, error) {
-		panic(value)
-	})
+// WrapRun implements ai.RunWrapper.
+func (shortCircuit) WrapRun(context.Context, *ai.RunInfo, ai.RunFunc) (ai.RunOutcome, error) {
+	return ai.CompletedRunOutcome("answered"), nil
 }
 
 func Test_OneShotTimeout(t *testing.T) {
@@ -129,32 +133,19 @@ func Test_Recover(t *testing.T) {
 	logs := agenttest.CaptureLog(t)
 
 	t.Run("a panic", func(t *testing.T) {
-		var reported error
-		require.NotPanics(t, func() {
-			defer agentrun.Recover(func(err error) { reported = err })
-			panic("kaboom")
-		})
-		require.EqualError(t, reported, "pydanticai: panic in the run: kaboom")
+		require.EqualError(t, recovered("kaboom"), "pydanticai: panic in the run: kaboom")
 		require.Contains(t, logs.String(), "panic in the run: kaboom")
 		require.Contains(t, logs.String(), "goroutine ", "the stack of the panic")
 
 		// A panic with an error does not make the error the cause: it would turn
 		// the panic into a retry or a failure of a tool.
 		cause := errors.New("cause")
-		require.NotPanics(t, func() {
-			defer agentrun.Recover(func(err error) { reported = err })
-			panic(cause)
-		})
-		require.NotErrorIs(t, reported, cause)
+		require.NotErrorIs(t, recovered(cause), cause)
 	})
 
 	t.Run("the message is made when the panic is recovered", func(t *testing.T) {
 		value := &describedValue{text: "before"}
-		var reported error
-		func() {
-			defer agentrun.Recover(func(err error) { reported = err })
-			panic(value)
-		}()
+		reported := recovered(value)
 		value.text = "after"
 		require.EqualError(t, reported, "pydanticai: panic in the run: before",
 			"the error keeps what was recovered, and not the value, which may describe itself differently by now")
@@ -183,11 +174,7 @@ func Test_Text(t *testing.T) {
 	require.Contains(t, logs.String(), "panic in ErrorMessage: bug in ErrorMessage")
 
 	t.Run("the error of a run that panicked", func(t *testing.T) {
-		var panicErr error
-		func() {
-			defer agentrun.Recover(func(err error) { panicErr = err })
-			panic("secret value of the panic")
-		}()
+		panicErr := recovered("secret value of the panic")
 		require.ErrorContains(t, panicErr, "secret value of the panic", "the logs and OnRunEnd have it")
 
 		require.Equal(t, agentrun.ErrPanicked.Error(), agentrun.Text(nil, panicErr))
@@ -210,11 +197,10 @@ func Test_Run(t *testing.T) {
 		run, options := agentrun.New(context.Background(), agentrun.Config[string]{
 			Deps: "alice", OnRunEnd: recorded.onRunEnd,
 		}, nil)
-		defer run.Cancel()
+		t.Cleanup(run.Cancel)
 
 		result, err := agent.Run(run.Context(), "Hi", "alice", options...)
 		require.NoError(t, err)
-		require.NoError(t, run.Panic(), "nothing has panicked")
 		failure := errors.New("failed afterwards")
 		run.End(failure)
 		run.End(nil)
@@ -230,8 +216,7 @@ func Test_Run(t *testing.T) {
 		t.Parallel()
 
 		var recorded ends[struct{}]
-		run, _ := agentrun.New(context.Background(), agentrun.Config[struct{}]{OnRunEnd: recorded.onRunEnd}, nil)
-		defer run.Cancel()
+		run := newRun(t, agentrun.Config[struct{}]{OnRunEnd: recorded.onRunEnd})
 
 		rejected := errors.New("rejected")
 		run.End(rejected)
@@ -243,8 +228,7 @@ func Test_Run(t *testing.T) {
 	t.Run("without a callback", func(t *testing.T) {
 		t.Parallel()
 
-		run, _ := agentrun.New(context.Background(), agentrun.Config[struct{}]{}, nil)
-		defer run.Cancel()
+		run := newRun(t, agentrun.Config[struct{}]{})
 		require.NotPanics(t, func() { run.End(nil) })
 	})
 
@@ -253,11 +237,45 @@ func Test_Run(t *testing.T) {
 
 		options := make([]ai.RunOption, 1, 8) // room to spare, which an append would write into
 		options[0] = ai.WithRunMetadata(map[string]any{"k": "v"})
-		run, guarded := agentrun.New(context.Background(), agentrun.Config[struct{}]{}, options)
-		defer run.Cancel()
+		run, supervised := agentrun.New(context.Background(), agentrun.Config[struct{}]{}, options)
+		t.Cleanup(run.Cancel)
 
-		require.Len(t, guarded, 2, "the options of the caller, and the one that supervises the run")
+		require.Len(t, supervised, 2, "the options of the caller, and the one that supervises the run")
 		require.Nil(t, options[:2][1], "the slice of the caller is not written to")
+	})
+
+	t.Run("the supervision is ahead of the capabilities of the caller", func(t *testing.T) {
+		t.Parallel()
+
+		// A wrapper of the caller that answers for the run does not start it. The
+		// supervision would not see the run if it came after the wrapper, and
+		// OnRunEnd would not be told what the run consumed.
+		var recorded ends[struct{}]
+		agent := ai.NewAgent[struct{}, string](agenttest.Answering("not asked"))
+		run, options := agentrun.New(context.Background(), agentrun.Config[struct{}]{OnRunEnd: recorded.onRunEnd},
+			[]ai.RunOption{ai.WithRunCapabilities(shortCircuit{})})
+		t.Cleanup(run.Cancel)
+
+		result, err := agent.Run(run.Context(), "Hi", struct{}{}, options...)
+		require.NoError(t, err)
+		require.Equal(t, "answered", result.Output, "the wrapper of the caller answered")
+
+		run.End(nil)
+		_, info, _ := recorded.only(t)
+		require.NotNil(t, info, "and the supervision saw the run")
+	})
+
+	t.Run("a failure that no tool caused", func(t *testing.T) {
+		t.Parallel()
+
+		run := newRun(t, agentrun.Config[struct{}]{})
+		failure := errors.New("failed")
+		final, panicked := run.Failure(failure)
+		require.Same(t, failure, final)
+		require.False(t, panicked)
+		final, panicked = run.Failure(nil)
+		require.NoError(t, final)
+		require.False(t, panicked)
 	})
 
 	t.Run("a panic in a tool", func(t *testing.T) {
@@ -266,122 +284,155 @@ func Test_Run(t *testing.T) {
 
 		agent := agenttest.ConcurrentAgent("explode", "waiting")
 		run, options := agentrun.New(context.Background(), agentrun.Config[struct{}]{}, nil)
-		defer run.Cancel()
+		t.Cleanup(run.Cancel)
 
 		// The two tools run on goroutines of their own: without the supervision
 		// the panic would end the process.
 		_, err := agent.Run(run.Context(), "Hello", struct{}{}, options...)
 		require.Error(t, err)
-		require.ErrorContains(t, run.Panic(), "panic in the run: kaboom")
 		require.Contains(t, logs.String(), "panic in the run: kaboom")
+
+		// The error of the run carries the value of the panic, or the error of a
+		// tool that the panic canceled: what is reported is the panic.
+		final, panicked := run.Failure(err)
+		require.True(t, panicked)
+		require.ErrorContains(t, final, "panic in the run: kaboom")
+		final, panicked = run.Failure(nil)
+		require.NoError(t, final, "a run that did not fail has no failure to explain")
+		require.False(t, panicked)
 	})
 
 	t.Run("the context of the run", func(t *testing.T) {
 		t.Parallel()
 
-		type key struct{}
-		parent, cancelParent := context.WithCancel(context.WithValue(context.Background(), key{}, "value"))
-		run, _ := agentrun.New(parent, agentrun.Config[struct{}]{Timeout: time.Hour}, nil)
-		defer run.Cancel()
-		expired := expiry(run)
+		synctest.Test(t, func(t *testing.T) {
+			type key struct{}
+			parent, cancelParent := context.WithCancel(context.WithValue(context.Background(), key{}, "value"))
+			run, _ := agentrun.New(parent, agentrun.Config[struct{}]{Timeout: time.Hour}, nil)
+			t.Cleanup(run.Cancel)
+			expired := expiry(run)
 
-		require.Equal(t, "value", run.Context().Value(key{}), "the values of the parent are the run's")
-		require.NoError(t, run.Context().Err())
+			require.Equal(t, "value", run.Context().Value(key{}), "the values of the parent are the run's")
+			require.NoError(t, run.Context().Err())
 
-		cancelParent()
-		agenttest.Receive(t, run.Context().Done(), "the run to end with its parent")
-		requireOpen(t, expired, "its owner canceled it, and the server did not")
+			cancelParent()
+			synctest.Wait()
+			require.Error(t, run.Context().Err(), "the run ends with its parent")
+			require.False(t, fired(expired), "its owner canceled it, and the server did not")
+		})
 	})
 
 	t.Run("a run that its owner canceled", func(t *testing.T) {
 		t.Parallel()
 
-		shutdown := make(chan struct{})
-		run, _ := agentrun.New(context.Background(), agentrun.Config[struct{}]{Timeout: time.Hour, Shutdown: shutdown}, nil)
-		expired := expiry(run)
-		run.Cancel()
-		run.Cancel() // more than once is fine
-		agenttest.Receive(t, run.Context().Done(), "the run to be canceled")
-		requireOpen(t, expired, "its owner canceled it")
+		for _, test := range []struct {
+			name     string
+			timeout  time.Duration
+			shutdown bool
+		}{
+			{"nothing to watch", 0, false},
+			{"a timeout", time.Hour, false},
+			{"a shutdown", 0, true},
+			{"a timeout and a shutdown", time.Hour, true},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				t.Parallel()
 
-		close(shutdown)
-		requireOpen(t, expired, "a shutdown that comes later is not why the run ended")
-		require.NotErrorIs(t, context.Cause(run.Context()), agentrun.ErrShutdown)
+				synctest.Test(t, func(t *testing.T) {
+					shutdown := make(chan struct{})
+					cfg := agentrun.Config[struct{}]{Timeout: test.timeout}
+					if test.shutdown {
+						cfg.Shutdown = shutdown
+					}
+					run := newRun(t, cfg)
+					expired := expiry(run)
+					run.Cancel()
+					run.Cancel() // more than once is fine
+					synctest.Wait()
+					require.Error(t, run.Context().Err())
+					require.False(t, fired(expired), "its owner canceled it")
+
+					close(shutdown)
+					synctest.Wait()
+					require.False(t, fired(expired), "a shutdown that comes later is not why the run ended")
+					require.NotErrorIs(t, context.Cause(run.Context()), agentrun.ErrShutdown)
+				})
+			})
+		}
 	})
 
 	t.Run("a run that timed out", func(t *testing.T) {
 		t.Parallel()
 
-		run, _ := agentrun.New(context.Background(), agentrun.Config[struct{}]{Timeout: shortTimeout}, nil)
-		defer run.Cancel()
-
-		agenttest.Receive(t, expiry(run), "the run to expire")
-		require.ErrorIs(t, run.Context().Err(), context.DeadlineExceeded)
+		synctest.Test(t, func(t *testing.T) {
+			run := newRun(t, agentrun.Config[struct{}]{Timeout: time.Minute})
+			<-expiry(run) // the clock of the test advances to the deadline
+			require.ErrorIs(t, run.Context().Err(), context.DeadlineExceeded)
+		})
 	})
 
 	t.Run("a run that the shutdown canceled", func(t *testing.T) {
 		t.Parallel()
 
-		shutdown := make(chan struct{})
-		run, _ := agentrun.New(context.Background(), agentrun.Config[struct{}]{Timeout: time.Hour, Shutdown: shutdown}, nil)
-		defer run.Cancel()
-		expired := expiry(run)
-		requireOpen(t, expired, "the server is not shutting down")
+		synctest.Test(t, func(t *testing.T) {
+			shutdown := make(chan struct{})
+			run := newRun(t, agentrun.Config[struct{}]{Timeout: time.Hour, Shutdown: shutdown})
+			expired := expiry(run)
+			synctest.Wait()
+			require.False(t, fired(expired), "the server is not shutting down")
 
-		close(shutdown)
-		agenttest.Receive(t, expired, "the run to expire")
-		require.ErrorIs(t, context.Cause(run.Context()), agentrun.ErrShutdown, "with a timeout as well")
+			close(shutdown)
+			<-expired
+			require.ErrorIs(t, context.Cause(run.Context()), agentrun.ErrShutdown, "with a timeout as well")
+		})
 	})
 
 	t.Run("a server that is already shutting down", func(t *testing.T) {
 		t.Parallel()
 
-		shutdown := make(chan struct{})
-		close(shutdown)
-		run, _ := agentrun.New(context.Background(), agentrun.Config[struct{}]{Shutdown: shutdown}, nil)
-		defer run.Cancel()
-
-		agenttest.Receive(t, expiry(run), "the run to expire")
+		synctest.Test(t, func(t *testing.T) {
+			shutdown := make(chan struct{})
+			close(shutdown)
+			run := newRun(t, agentrun.Config[struct{}]{Shutdown: shutdown})
+			<-expiry(run)
+		})
 	})
 
 	t.Run("only a run with a timeout or a shutdown to watch can expire", func(t *testing.T) {
 		t.Parallel()
 
-		plain, _ := agentrun.New(context.Background(), agentrun.Config[struct{}]{}, nil)
-		defer plain.Cancel()
+		plain := newRun(t, agentrun.Config[struct{}]{})
 		require.False(t, plain.AfterExpiry(func() {})(), "nothing is waiting for the run to expire")
 
-		bounded, _ := agentrun.New(context.Background(), agentrun.Config[struct{}]{Timeout: time.Hour}, nil)
-		defer bounded.Cancel()
-		called := make(chan struct{})
-		stop := bounded.AfterExpiry(func() { close(called) })
-		require.True(t, stop(), "the call is waiting, and stopped")
-		bounded.Cancel()
-		requireOpen(t, called, "the call was stopped")
-
-		watching, _ := agentrun.New(context.Background(), agentrun.Config[struct{}]{Shutdown: make(chan struct{})}, nil)
-		defer watching.Cancel()
+		watching := newRun(t, agentrun.Config[struct{}]{Shutdown: make(chan struct{})})
 		require.True(t, watching.AfterExpiry(func() {})(), "a run that watches the shutdown can expire")
+
+		// A call that was stopped is not made, whatever happens to the run.
+		synctest.Test(t, func(t *testing.T) {
+			bounded := newRun(t, agentrun.Config[struct{}]{Timeout: time.Hour})
+			called := make(chan struct{})
+			require.True(t, bounded.AfterExpiry(func() { close(called) })(), "the call was waiting, and it is stopped")
+			time.Sleep(2 * time.Hour) // the deadline passes
+			synctest.Wait()
+			require.Error(t, bounded.Context().Err())
+			require.False(t, fired(called))
+		})
 	})
 
 	t.Run("the goroutine that waits for the shutdown ends with the run", func(t *testing.T) {
-		// Not parallel: it counts the goroutines of the process, which the tests
-		// that are would change.
-		const runs = 100
-		shutdown := make(chan struct{})
-		before := runtime.NumGoroutine()
-		started := make([]*agentrun.Run[struct{}], runs)
-		for i := range started {
-			started[i], _ = agentrun.New(context.Background(), agentrun.Config[struct{}]{Shutdown: shutdown}, nil)
-		}
-		require.Eventually(t, func() bool { return runtime.NumGoroutine() >= before+runs/2 },
-			agenttest.ObserveTimeout, time.Millisecond, "each run waits for the shutdown on a goroutine")
+		t.Parallel()
 
-		for _, run := range started {
-			run.Cancel()
-		}
-		require.Eventually(t, func() bool { return runtime.NumGoroutine() < before+runs/2 },
-			agenttest.ObserveTimeout, time.Millisecond, "the goroutines end with the runs, which a shutdown that comes later would not do")
+		// synctest.Test fails the test when a goroutine of the bubble is still
+		// blocked once the function returned, which is what a goroutine that does
+		// not end with its run is: it keeps waiting for a shutdown that may never
+		// come, one for each request.
+		synctest.Test(t, func(t *testing.T) {
+			shutdown := make(chan struct{})
+			for range 100 {
+				run, _ := agentrun.New(context.Background(), agentrun.Config[struct{}]{Shutdown: shutdown}, nil)
+				run.Cancel()
+			}
+		})
 	})
 }
 
@@ -393,9 +444,7 @@ func Test_Execute(t *testing.T) {
 
 		var recorded ends[string]
 		agent := ai.NewAgent[string, string](agenttest.Answering("hello"))
-		result, err := agentrun.Execute(context.Background(), agent, "Hi", nil, agentrun.Config[string]{
-			Deps: "alice", OnRunEnd: recorded.onRunEnd,
-		})
+		result, err := execute(agent, agentrun.Config[string]{Deps: "alice", OnRunEnd: recorded.onRunEnd})
 		require.NoError(t, err)
 		require.Equal(t, "hello", strings.TrimSpace(result.Output))
 
@@ -410,7 +459,7 @@ func Test_Execute(t *testing.T) {
 		t.Parallel()
 
 		agent := ai.NewAgent[struct{}, string](agenttest.Answering("hello"))
-		result, err := agentrun.Execute(context.Background(), agent, "Hi", nil, agentrun.Config[struct{}]{})
+		result, err := execute(agent, agentrun.Config[struct{}]{})
 		require.NoError(t, err)
 		require.Equal(t, "hello", strings.TrimSpace(result.Output))
 	})
@@ -420,10 +469,8 @@ func Test_Execute(t *testing.T) {
 
 		var recorded ends[struct{}]
 		rejected := errors.New("the provider rejected the key")
-		agent := ai.NewAgent[struct{}, string](failing(rejected))
-		result, err := agentrun.Execute(context.Background(), agent, "Hi", nil, agentrun.Config[struct{}]{
-			OnRunEnd: recorded.onRunEnd,
-		})
+		agent := ai.NewAgent[struct{}, string](agenttest.Failing(rejected))
+		result, err := execute(agent, agentrun.Config[struct{}]{OnRunEnd: recorded.onRunEnd})
 		require.ErrorIs(t, err, rejected)
 		require.Nil(t, result)
 
@@ -436,10 +483,7 @@ func Test_Execute(t *testing.T) {
 		agenttest.CaptureLog(t)
 
 		var recorded ends[struct{}]
-		agent := agenttest.ConcurrentAgent("explode", "waiting")
-		_, err := agentrun.Execute(context.Background(), agent, "Hi", nil, agentrun.Config[struct{}]{
-			OnRunEnd: recorded.onRunEnd,
-		})
+		_, err := execute(agenttest.ConcurrentAgent("explode", "waiting"), agentrun.Config[struct{}]{OnRunEnd: recorded.onRunEnd})
 		require.ErrorContains(t, err, "panic in the run: kaboom")
 		require.Equal(t, agentrun.ErrPanicked.Error(), agentrun.Text(nil, err), "a client is not told what panicked")
 
@@ -447,15 +491,25 @@ func Test_Execute(t *testing.T) {
 		require.Equal(t, err, got)
 	})
 
+	t.Run("the first panic in a tool is the one that is reported", func(t *testing.T) {
+		// Not parallel: the log is global, and CaptureLog replaces it.
+		logs := agenttest.CaptureLog(t)
+
+		// The failure of the first tool cancels the run, and the second tool panics
+		// when it notices.
+		_, err := execute(agenttest.ConcurrentAgent("explode", "aftershock"), agentrun.Config[struct{}]{})
+		require.ErrorContains(t, err, "panic in the run: kaboom in explode")
+		require.NotContains(t, err.Error(), "aftershock")
+		require.Contains(t, logs.String(), "kaboom in aftershock", "the second panic is logged all the same")
+	})
+
 	t.Run("a panic in the model goes on after it was reported", func(t *testing.T) {
 		t.Parallel()
 
 		var recorded ends[struct{}]
-		agent := ai.NewAgent[struct{}, string](panicking("model bug"))
+		agent := ai.NewAgent[struct{}, string](agenttest.Panicking("model bug"))
 		require.PanicsWithValue(t, "model bug", func() {
-			_, _ = agentrun.Execute(context.Background(), agent, "Hi", nil, agentrun.Config[struct{}]{
-				OnRunEnd: recorded.onRunEnd,
-			})
+			_, _ = execute(agent, agentrun.Config[struct{}]{OnRunEnd: recorded.onRunEnd})
 		})
 
 		_, info, err := recorded.only(t)
@@ -466,10 +520,8 @@ func Test_Execute(t *testing.T) {
 	t.Run("a panic in the model without a callback goes on", func(t *testing.T) {
 		t.Parallel()
 
-		agent := ai.NewAgent[struct{}, string](panicking("model bug"))
-		require.PanicsWithValue(t, "model bug", func() {
-			_, _ = agentrun.Execute(context.Background(), agent, "Hi", nil, agentrun.Config[struct{}]{})
-		})
+		agent := ai.NewAgent[struct{}, string](agenttest.Panicking("model bug"))
+		require.PanicsWithValue(t, "model bug", func() { _, _ = execute(agent, agentrun.Config[struct{}]{}) })
 	})
 
 	t.Run("a panic in OnRunEnd is recovered", func(t *testing.T) {
@@ -477,7 +529,7 @@ func Test_Execute(t *testing.T) {
 		logs := agenttest.CaptureLog(t)
 
 		agent := ai.NewAgent[struct{}, string](agenttest.Answering("hello"))
-		result, err := agentrun.Execute(context.Background(), agent, "Hi", nil, agentrun.Config[struct{}]{
+		result, err := execute(agent, agentrun.Config[struct{}]{
 			OnRunEnd: func(struct{}, *ai.RunInfo, error) { panic("bug in OnRunEnd") },
 		})
 		require.NoError(t, err)
@@ -488,16 +540,16 @@ func Test_Execute(t *testing.T) {
 	t.Run("the timeout", func(t *testing.T) {
 		t.Parallel()
 
-		var recorded ends[struct{}]
-		model, _ := blocking()
-		agent := ai.NewAgent[struct{}, string](model)
-		_, err := agentrun.Execute(context.Background(), agent, "Hi", nil, agentrun.Config[struct{}]{
-			OnRunEnd: recorded.onRunEnd, Timeout: shortTimeout,
-		})
-		require.ErrorIs(t, err, context.DeadlineExceeded)
+		synctest.Test(t, func(t *testing.T) {
+			var recorded ends[struct{}]
+			model, _, _ := agenttest.Blocking()
+			agent := ai.NewAgent[struct{}, string](model)
+			_, err := execute(agent, agentrun.Config[struct{}]{OnRunEnd: recorded.onRunEnd, Timeout: time.Hour})
+			require.ErrorIs(t, err, context.DeadlineExceeded)
 
-		_, _, got := recorded.only(t)
-		require.Equal(t, err, got)
+			_, _, got := recorded.only(t)
+			require.Equal(t, err, got)
+		})
 	})
 
 	t.Run("the deadline of the run", func(t *testing.T) {
@@ -514,8 +566,7 @@ func Test_Execute(t *testing.T) {
 				t.Parallel()
 
 				model, deadlines := agenttest.DeadlineProbe()
-				agent := ai.NewAgent[struct{}, string](model)
-				_, err := agentrun.Execute(context.Background(), agent, "Hi", nil, agentrun.Config[struct{}]{Timeout: test.timeout})
+				_, err := execute(ai.NewAgent[struct{}, string](model), agentrun.Config[struct{}]{Timeout: test.timeout})
 				require.NoError(t, err)
 				agenttest.Receive(t, deadlines, "the model call").Require(t, test.timeout)
 			})
@@ -530,14 +581,13 @@ func Test_Execute(t *testing.T) {
 				t.Parallel()
 
 				var recorded ends[struct{}]
-				model, started := blocking()
-				agent := ai.NewAgent[struct{}, string](model)
+				model, started, _ := agenttest.Blocking()
 				shutdown := make(chan struct{})
 				go func() {
 					<-started
 					close(shutdown)
 				}()
-				_, err := agentrun.Execute(context.Background(), agent, "Hi", nil, agentrun.Config[struct{}]{
+				_, err := execute(ai.NewAgent[struct{}, string](model), agentrun.Config[struct{}]{
 					OnRunEnd: recorded.onRunEnd, Timeout: timeout, Shutdown: shutdown,
 				})
 				require.Same(t, agentrun.ErrShutdown, err, "and not that the context was canceled")
@@ -551,7 +601,7 @@ func Test_Execute(t *testing.T) {
 	t.Run("a context that was canceled by someone else", func(t *testing.T) {
 		t.Parallel()
 
-		model, started := blocking()
+		model, started, _ := agenttest.Blocking()
 		agent := ai.NewAgent[struct{}, string](model)
 		ctx, cancel := context.WithCancel(context.Background())
 		go func() {
@@ -561,6 +611,18 @@ func Test_Execute(t *testing.T) {
 		_, err := agentrun.Execute(ctx, agent, "Hi", nil, agentrun.Config[struct{}]{Shutdown: make(chan struct{})})
 		require.ErrorIs(t, err, context.Canceled)
 		require.NotErrorIs(t, err, agentrun.ErrShutdown, "the server did not cancel it")
+	})
+
+	t.Run("what supervises the run ends with it", func(t *testing.T) {
+		t.Parallel()
+
+		// As for New: synctest.Test fails the test when the goroutine that waits for
+		// the shutdown is still blocked once the run is over.
+		synctest.Test(t, func(t *testing.T) {
+			agent := ai.NewAgent[struct{}, string](agenttest.Answering("hello"))
+			_, err := execute(agent, agentrun.Config[struct{}]{Shutdown: make(chan struct{})})
+			require.NoError(t, err)
+		})
 	})
 
 	t.Run("deferred tool calls", func(t *testing.T) {
@@ -575,9 +637,7 @@ func Test_Execute(t *testing.T) {
 			t.Parallel()
 
 			var recorded ends[struct{}]
-			result, err := agentrun.Execute(context.Background(), agent, "Delete it", nil, agentrun.Config[struct{}]{
-				OnRunEnd: recorded.onRunEnd,
-			})
+			result, err := execute(agent, agentrun.Config[struct{}]{OnRunEnd: recorded.onRunEnd})
 			require.NoError(t, err)
 			require.NotNil(t, result.Deferred(), "the handler decides what that means")
 
@@ -590,9 +650,7 @@ func Test_Execute(t *testing.T) {
 
 			var recorded ends[struct{}]
 			cannotResume := errors.New("cannot resume")
-			_, err := agentrun.Execute(context.Background(), agent, "Delete it", nil, agentrun.Config[struct{}]{
-				OnRunEnd: recorded.onRunEnd, Deferred: cannotResume,
-			})
+			_, err := execute(agent, agentrun.Config[struct{}]{OnRunEnd: recorded.onRunEnd, Deferred: cannotResume})
 			require.Same(t, cannotResume, err)
 
 			_, _, got := recorded.only(t)

@@ -181,7 +181,7 @@ func Test_Vercel_AgentError(t *testing.T) {
 		t.Parallel()
 
 		closed := make(chan error, 1)
-		handler := pydanticai.Vercel(ai.NewAgent[struct{}, string](failingModel(secret)), pydanticai.VercelConfig[struct{}]{
+		handler := pydanticai.Vercel(ai.NewAgent[struct{}, string](agenttest.Failing(secret)), pydanticai.VercelConfig[struct{}]{
 			OnClose: func(_ struct{}, err error) { closed <- err },
 		})
 
@@ -195,7 +195,7 @@ func Test_Vercel_AgentError(t *testing.T) {
 		t.Parallel()
 
 		closed := make(chan error, 1)
-		handler := pydanticai.Vercel(ai.NewAgent[struct{}, string](failingModel(secret)), pydanticai.VercelConfig[struct{}]{
+		handler := pydanticai.Vercel(ai.NewAgent[struct{}, string](agenttest.Failing(secret)), pydanticai.VercelConfig[struct{}]{
 			ErrorMessage: func(error) string { return "the model failed" },
 			OnClose:      func(_ struct{}, err error) { closed <- err },
 		})
@@ -256,7 +256,7 @@ func Test_Vercel_OnCloseReceivesTheDeps(t *testing.T) {
 func Test_Vercel_Timeout(t *testing.T) {
 	t.Parallel()
 
-	model, _, canceled := blockingModel()
+	model, _, canceled := agenttest.Blocking()
 	closed := make(chan error, 1)
 	handler := pydanticai.Vercel(ai.NewAgent[struct{}, string](model), pydanticai.VercelConfig[struct{}]{
 		Timeout: 100 * time.Millisecond,
