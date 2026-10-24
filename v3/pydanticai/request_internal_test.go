@@ -3,14 +3,13 @@ package pydanticai
 import (
 	"errors"
 	"mime"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
 	"github.com/Kludex/pydantic-ai-go/ai/ui/agui"
+	"github.com/gofiber/contrib/v3/pydanticai/internal/agenttest"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -18,7 +17,7 @@ import (
 )
 
 // benchContext returns a request context of app for a POST with the headers.
-func benchContext(b *testing.B, app *fiber.App, body string, headers map[string]string) fiber.Ctx {
+func benchContext(b testing.TB, app *fiber.App, body string, headers map[string]string) fiber.Ctx {
 	b.Helper()
 
 	ctx := new(fasthttp.RequestCtx)
@@ -241,23 +240,14 @@ func Benchmark_contentTypeCheck(b *testing.B) {
 	}
 }
 
-// resolved runs resolve in a handler of an app, which is where it gets its Ctx.
+// resolved runs resolve with the context of a request.
 func resolved[Deps any](
 	t *testing.T,
 	deps func(fiber.Ctx) (Deps, error),
 	options func(fiber.Ctx) ([]ai.RunOption, error),
-) (value Deps, extra []ai.RunOption, err error) {
+) (Deps, []ai.RunOption, error) {
 	t.Helper()
-
-	app := fiber.New()
-	app.Get("/", func(c fiber.Ctx) error {
-		value, extra, err = resolve(c, deps, options)
-		return nil
-	})
-	resp, testErr := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
-	require.NoError(t, testErr)
-	require.NoError(t, resp.Body.Close())
-	return value, extra, err
+	return resolve(benchContext(t, fiber.New(), "", nil), deps, options)
 }
 
 func Test_resolve(t *testing.T) {
@@ -334,12 +324,7 @@ func Test_serverDone(t *testing.T) {
 		_, err = conn.Write([]byte("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"))
 		require.NoError(t, err)
 
-		var shutdown <-chan struct{}
-		select {
-		case shutdown = <-done:
-		case <-time.After(5 * time.Second):
-			t.Fatal("the handler was not called")
-		}
+		shutdown := agenttest.Receive(t, done, "the handler")
 		require.NotNil(t, shutdown)
 		select {
 		case <-shutdown:
@@ -348,11 +333,7 @@ func Test_serverDone(t *testing.T) {
 		}
 
 		go func() { _ = server.Shutdown() }()
-		select {
-		case <-shutdown:
-		case <-time.After(5 * time.Second):
-			t.Fatal("the channel was not closed")
-		}
-		require.NoError(t, <-served)
+		agenttest.Receive(t, shutdown, "the channel to be closed")
+		require.NoError(t, agenttest.Receive(t, served, "the server to stop"))
 	})
 }

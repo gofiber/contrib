@@ -124,6 +124,30 @@ func Test_AGUI_APanicInOnCloseIsRecovered(t *testing.T) {
 	}, observeTimeout, 10*time.Millisecond, logs.String())
 }
 
+func Test_ARequestWithoutCallbacksLogsNothing(t *testing.T) {
+	// Not parallel: the log is global, and CaptureLog replaces it.
+	logs := agenttest.CaptureLog(t)
+
+	// A callback that is not configured is not called. The handlers recover the
+	// panic of a nil one and log it, so the log is where a call would show.
+	agent := ai.NewAgent[struct{}, string](agenttest.Answering("hello"))
+	for _, test := range []struct {
+		name    string
+		handler fiber.Handler
+		body    string
+	}{
+		{"AGUI", pydanticai.AGUI(agent), aguiBody},
+		{"Vercel", pydanticai.Vercel(agent), vercelBody},
+		{"Run", pydanticai.Run(agent), runBody},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resp, _ := post(t, newApp("/", test.handler), "/", test.body)
+			require.Equal(t, fiber.StatusOK, resp.StatusCode)
+		})
+	}
+	require.Empty(t, logs.String())
+}
+
 func Test_AGUI_APanicInTheRunEndsTheStreamWithAnError(t *testing.T) {
 	// Not parallel: the log is global, and CaptureLog replaces it. Neither are the
 	// subtests, as the log is read after them.
@@ -187,11 +211,7 @@ func Test_APanicInTheModelEndsTheStreamWithAnError(t *testing.T) {
 	// subtests, as the log is read after them.
 	logs := agenttest.CaptureLog(t)
 
-	agent := ai.NewAgent[struct{}, string](fakes.NewFunctionModel(func(
-		context.Context, []ai.ModelMessage, ai.ModelRequestParams,
-	) (*ai.ModelResponse, error) {
-		panic("model kaboom")
-	}))
+	agent := ai.NewAgent[struct{}, string](agenttest.Panicking("model kaboom"))
 
 	t.Run("AG-UI", func(t *testing.T) {
 		closed := make(chan error, 1)
@@ -343,7 +363,7 @@ func Test_APanicInErrorMessageEndsTheStreamWithAnError(t *testing.T) {
 		closed func(t *testing.T, err error)
 	}{
 		"a failed run": {
-			agent:  func() *ai.Agent[struct{}, string] { return ai.NewAgent[struct{}, string](failingModel(secret)) },
+			agent:  func() *ai.Agent[struct{}, string] { return ai.NewAgent[struct{}, string](agenttest.Failing(secret)) },
 			closed: func(t *testing.T, err error) { require.ErrorIs(t, err, secret) },
 		},
 		"a panic in the run": {

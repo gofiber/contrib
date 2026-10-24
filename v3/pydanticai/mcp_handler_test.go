@@ -108,12 +108,6 @@ func mcpApp(handler fiber.Handler) *fiber.App {
 	return app
 }
 
-func mcpFailing(err error) *fakes.FunctionModel {
-	return fakes.NewFunctionModel(func(context.Context, []ai.ModelMessage, ai.ModelRequestParams) (*ai.ModelResponse, error) {
-		return nil, err
-	})
-}
-
 func Test_MCPHandler_RunsTheAgent(t *testing.T) {
 	t.Parallel()
 
@@ -499,7 +493,7 @@ func Test_MCPHandler_Errors(t *testing.T) {
 		t.Parallel()
 
 		ends := make(chan error, 1)
-		agent := ai.NewAgent[struct{}, string](mcpFailing(secret))
+		agent := ai.NewAgent[struct{}, string](agenttest.Failing(secret))
 		app := mcpApp(pydanticai.MCP(agent, pydanticai.MCPConfig[struct{}]{
 			OnRunEnd: func(_ struct{}, run *ai.RunInfo, err error) {
 				if run != nil {
@@ -517,7 +511,7 @@ func Test_MCPHandler_Errors(t *testing.T) {
 		t.Parallel()
 
 		var seen atomic.Value
-		agent := ai.NewAgent[struct{}, string](mcpFailing(secret))
+		agent := ai.NewAgent[struct{}, string](agenttest.Failing(secret))
 		app := mcpApp(pydanticai.MCP(agent, pydanticai.MCPConfig[struct{}]{
 			ErrorMessage: func(err error) string {
 				seen.Store(err)
@@ -651,11 +645,7 @@ func Test_MCPHandler_Panics_AreErrorsOfTheTool(t *testing.T) {
 		}
 		return agent
 	}
-	model := ai.NewAgent[struct{}, string](fakes.NewFunctionModel(func(
-		context.Context, []ai.ModelMessage, ai.ModelRequestParams,
-	) (*ai.ModelResponse, error) {
-		panic("kaboom in the model")
-	}))
+	model := ai.NewAgent[struct{}, string](agenttest.Panicking("kaboom in the model"))
 
 	tests := map[string]struct {
 		agent *ai.Agent[struct{}, string]
