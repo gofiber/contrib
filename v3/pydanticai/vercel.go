@@ -8,23 +8,14 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// doneRecord is the record that ends an AI SDK UI message stream.
 var doneRecord = []byte("[DONE]")
 
-// VercelConfig defines the config for the Vercel handler. It is a StreamConfig
-// whose Adapter is a vercel.Config.
+// VercelConfig is the StreamConfig of Vercel, with a vercel.Config as Adapter.
 type VercelConfig[Deps any] = StreamConfig[Deps, vercel.Config]
 
 // Vercel returns a handler that serves agent over the Vercel AI SDK UI message
-// stream protocol, which is what the useChat hook of the AI SDK consumes.
-//
-// The handler accepts a POST request with the JSON body that useChat sends and
-// answers with the chunks of the run as server-sent events. The body must carry
-// the id of the chat.
-//
-//	app.Post("/chat", pydanticai.Vercel(agent))
-//
-// It panics when agent is nil or the adapter config is invalid.
+// stream protocol, which the useChat hook consumes. The body must carry the chat
+// id. It panics when agent is nil or the adapter config is invalid.
 func Vercel[Deps, Output any](agent *ai.Agent[Deps, Output], config ...VercelConfig[Deps]) fiber.Handler {
 	var cfg VercelConfig[Deps]
 	if len(config) > 0 {
@@ -42,18 +33,16 @@ func Vercel[Deps, Output any](agent *ai.Agent[Deps, Output], config ...VercelCon
 		if err != nil {
 			return err
 		}
-		// The adapter takes the id as the conversation ID of the run, which
-		// panics when it is empty.
+		// The adapter takes the id as the conversation ID and panics when it is empty.
 		if request.input.ID == "" {
 			return fiber.NewError(fiber.StatusBadRequest, "invalid Vercel AI request")
 		}
 
-		c.Set("x-vercel-ai-ui-message-stream", "v1") // marks the response as an AI SDK UI message stream
+		c.Set("x-vercel-ai-ui-message-stream", "v1")
 		return stream(c, &cfg, request, &vercelProtocol, adapter.RunStream)
 	}
 }
 
-// encodeChunk encodes a chunk as the data of a server-sent event.
 func encodeChunk(chunk *vercel.Chunk) ([]byte, error) {
 	if chunk.Type == vercel.ChunkDone {
 		return doneRecord, nil
@@ -61,7 +50,6 @@ func encodeChunk(chunk *vercel.Chunk) ([]byte, error) {
 	return json.Marshal(chunk)
 }
 
-// vercelProtocol describes the Vercel AI chunks for relay.
 var vercelProtocol = protocol[vercel.Chunk]{
 	what:   "Vercel AI chunk",
 	encode: encodeChunk,
@@ -73,8 +61,7 @@ var vercelProtocol = protocol[vercel.Chunk]{
 	// A canceled run ends with an abort chunk instead. Both are followed by [DONE].
 	completed: func(chunk vercel.Chunk) bool { return chunk.Type == vercel.ChunkFinish },
 	failure:   vercel.Chunk{Type: vercel.ChunkError},
-	// The error chunk is followed by the record that ends the stream. The
-	// adapter stops after the error chunk that it reports itself, so the handler
-	// sends the record for it.
+	// The adapter stops after the error chunk it reports itself, so the handler sends
+	// the [DONE] record for it.
 	closing: []vercel.Chunk{{Type: vercel.ChunkDone}},
 }
