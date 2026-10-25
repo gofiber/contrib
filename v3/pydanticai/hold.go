@@ -18,25 +18,11 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// streamEndGrace is how long a write to the client may block once Timeout
-// elapsed or the server started shutting down. A client that takes nothing for
-// that long stopped reading, and its connection is closed.
 const streamEndGrace = 5 * time.Second
 
-// serveStream sends what serve writes as a server-sent events response, for a run
-// that it supervises. deps and options are those of the request, and serve is
-// given the run and the options that run the agent under it.
-//
-// The context passed to serve is canceled when a write to the client fails, when
-// a heartbeat detects that the client went away, when fasthttp gives up on the
-// response, when Timeout elapses, when the server starts shutting down with
-// CancelOnShutdown, and when the stream ends. fasthttp does not cancel the
-// request context for a disconnected client, so these are the signals that stop
-// a run nobody is listening to anymore. The cancellation of the context of the
-// request is not among them, see requestHold.
-//
-// OnRunEnd and then OnClose are called after the response is over and the run
-// has ended.
+// serveStream sends what serve writes as a server-sent events response for a run
+// it supervises. The context of serve ends when a write fails, the client is gone,
+// Timeout elapses, the server shuts down or the stream ends, not with the request.
 func serveStream[Deps, A any](
 	c fiber.Ctx,
 	opts *StreamConfig[Deps, A],
@@ -44,19 +30,12 @@ func serveStream[Deps, A any](
 	options []ai.RunOption,
 	serve func(ctx context.Context, run *agentrun.Run[Deps], options []ai.RunOption, send func(data []byte) error) error,
 ) error {
-	// The context of the request is only done before the handler returns when
-	// a middleware gave up on the request, as the timeout middleware of Fiber
-	// does when its deadline passes while Deps or RunOptions run. It answered
-	// for the handler, and fasthttp never writes the response that the stream
-	// would be sent with, so the run would never end.
+	// A request that a middleware gave up on is never answered, so run nothing.
 	if err := context.Cause(c.Context()); err != nil {
 		return err
 	}
 
-	// The run outlives the handler, but a middleware can scope the context of
-	// the request to the handler and cancel it when the handler returns, as the
-	// timeout middleware of Fiber does. That must not cancel the run, which has
-	// only just started. The values of the context are kept.
+	// The run outlives the handler: keep the request values, not its cancellation.
 	run, options := agentrun.New(context.WithoutCancel(c.Context()), agentrun.Config[Deps]{
 		Deps:     deps,
 		OnRunEnd: opts.OnRunEnd,
@@ -73,9 +52,7 @@ func serveStream[Deps, A any](
 		DisableHeartbeat:  opts.DisableHeartbeat,
 		Handler: func(_ fiber.Ctx, stream *sse.Stream) error {
 			return serve(stream.Context(), run, options, func(data []byte) error {
-				// sse copies a []byte into a string before it writes it, and
-				// writes a string as it is. The event is written when Event
-				// returns, and nothing changes data until then.
+				// Safe: Event writes the string before it returns.
 				return stream.Event(sse.Event{Data: utils.UnsafeString(data)})
 			})
 		},
@@ -86,73 +63,41 @@ func serveStream[Deps, A any](
 
 // supervised is the run that a hold serves, as agentrun.Run supervises it.
 type supervised interface {
-	// Context is the context of the run.
 	Context() context.Context
-	// AfterExpiry calls fn once when the server ends the run, because its Timeout
-	// elapsed or it started shutting down, and not when the run is canceled.
+	// AfterExpiry calls fn once when the server ends the run, not when it is canceled.
 	AfterExpiry(fn func()) (stop func() bool)
-	// Cancel cancels the run.
 	Cancel()
-	// End reports the end of the run, once.
 	End(err error)
 }
 
-// requestHold is the fiber.Ctx that sse writes its response to, and the
-// lifetime of that response. It ties the lifetime of the request to the end of
-// the run, serves the stream with the context of the run, and closes the
-// connection of a client that stopped reading once the server ended the run.
-//
-// fasthttp starts the goroutine that writes the response as soon as the handler
-// sets it, and reuses the request when the connection is done with it, which
-// for a client that went away is while the run is still winding down. A string
-// that a tool took from the request would then read another request. Fiber
-// keeps its own ctx, not the request of fasthttp.
-//
-// The body stream of the response that requestHold installs is closed by
-// fasthttp before it reuses the request, after the response was written or has
-// failed to be. Its Close waits for the run, and then reports its end to
-// OnRunEnd and OnClose.
+// requestHold is the fiber.Ctx that sse writes to. It holds the request until the
+// run has ended, as fasthttp reuses a request once its connection is done with
+// it, and closes the connection of a client that stopped reading.
 type requestHold struct {
 	fiber.Ctx
 
-	// run is the run that the response is for.
-	run supervised
-	// onClose is told how the stream ended, once the run has ended and OnRunEnd
-	// was told.
-	onClose func(err error)
-	// ended receives how the stream ended, once the run has returned.
-	ended chan error
-	// released makes the end of the stream be reported once, however often it is
-	// released.
+	run      supervised
+	onClose  func(err error)
+	ended    chan error
 	released sync.Once
 
 	// conn is the connection of the request, taken while the handler runs.
 	conn net.Conn
-	// writing is when fasthttp started the write to the client that it is in,
-	// in Unix nanoseconds, or 0 while it waits for the run.
+	// writing is when fasthttp started the write it is in, in Unix ns; 0 if none.
 	writing atomic.Int64
 
-	// grace is how long a write may block once the run was told to end, see
-	// streamEndGrace.
 	grace time.Duration
 
 	mu sync.Mutex
-	// done is set once fasthttp is done with the body: from then on the
-	// connection can serve another request, and is left alone.
-	done bool
-	// check looks for a write that blocks, once the run was told to end.
+	// done is set once fasthttp is done with the body: the connection is left alone.
+	done  bool
 	check *time.Timer
 
-	// stopExpiry stops the call that the hold asked the run for, to be told that
-	// the server ended it: there is nothing left to look for once fasthttp is
-	// done with the body, and the run is canceled by then, which would only start
-	// a goroutine to find out that it was not the server.
+	// stopExpiry stops the call to expire once fasthttp is done: it would only
+	// start a goroutine.
 	stopExpiry func() bool
 }
 
-// newRequestHold returns the hold for the response of run on conn, which is nil
-// for a RequestCtx that no server serves. grace is how long a write may block
-// once the server ended the run, and onClose is told how the stream ended.
 func newRequestHold(c fiber.Ctx, conn net.Conn, run supervised, grace time.Duration, onClose func(err error)) *requestHold {
 	h := &requestHold{
 		Ctx:     c,
@@ -162,18 +107,13 @@ func newRequestHold(c fiber.Ctx, conn net.Conn, run supervised, grace time.Durat
 		conn:    conn,
 		grace:   grace,
 	}
-	// The run ends when the server ends it, unless it is stuck in a write to a
-	// client that stopped reading.
 	h.stopExpiry = run.AfterExpiry(h.expire)
 	return h
 }
 
-// streamEnded is called by sse with how the stream ended, once the run has
-// returned.
 func (h *requestHold) streamEnded(err error) { h.ended <- err }
 
-// release cancels the run, waits for it to return, and reports the end of the
-// stream to OnRunEnd and OnClose. It does that once, however often it is called.
+// release cancels the run, waits for it and reports its end, once.
 func (h *requestHold) release() {
 	h.released.Do(func() {
 		h.run.Cancel()
@@ -183,11 +123,8 @@ func (h *requestHold) release() {
 	})
 }
 
-// expire starts to look for a client that stopped reading, once the server ended
-// the run, because Timeout elapsed or it started shutting down. The run,
-// OnRunEnd, OnClose and the shutdown would otherwise wait for a write to the
-// client that only fails when TCP gives up on the connection, which a client
-// that keeps its receive window closed can delay forever.
+// expire looks for a client that stopped reading: its blocked write only fails
+// when TCP gives up.
 func (h *requestHold) expire() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -197,8 +134,7 @@ func (h *requestHold) expire() {
 	h.check = time.AfterFunc(h.grace, h.cut)
 }
 
-// cut closes the connection when a write to it has been blocked for the grace.
-// The write then fails, which ends the response and the run.
+// cut closes the connection if a write has been blocked for the grace.
 func (h *requestHold) cut() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -217,7 +153,6 @@ func (h *requestHold) cut() {
 	h.check.Reset(next)
 }
 
-// finish records that fasthttp is done with the body.
 func (h *requestHold) finish() {
 	h.stopExpiry()
 	h.mu.Lock()
@@ -228,24 +163,18 @@ func (h *requestHold) finish() {
 	}
 }
 
-// Context is what sse derives the context of the stream from. It carries the
-// values of the request, and is canceled by release rather than by a
-// middleware that scoped the context of the request to the handler.
+// Context is the context of the run, which sse derives the stream context from.
 func (h *requestHold) Context() context.Context { return h.run.Context() }
 
-// SendStreamWriter sets the body of the response like fiber.Ctx does, with a
-// body stream that holds the request.
 func (h *requestHold) SendStreamWriter(write func(*bufio.Writer)) error {
 	return h.SendStream(&holdingBody{ReadCloser: fasthttp.NewStreamReader(write), hold: h})
 }
 
-// holdingBody is the body stream of a response that holds its request.
 type holdingBody struct {
 	io.ReadCloser
 	hold *requestHold
 }
 
-// Read is called by fasthttp between its writes to the client.
 func (b *holdingBody) Read(p []byte) (int, error) {
 	b.hold.writing.Store(0)
 	n, err := b.ReadCloser.Read(p)
@@ -259,8 +188,7 @@ func (b *holdingBody) Read(p []byte) (int, error) {
 func (b *holdingBody) Close() error {
 	b.hold.finish()
 	err := b.ReadCloser.Close()
-	// fasthttp calls Close once the response is complete, and when it cannot
-	// write the response any more, which means that the client went away.
+	// fasthttp calls Close when the response is complete or cannot be written.
 	b.hold.release()
 	return err
 }

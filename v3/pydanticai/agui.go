@@ -1,14 +1,7 @@
 // Package pydanticai provides Fiber v3 handlers for agents built with
-// pydantic-ai-go (github.com/Kludex/pydantic-ai-go).
-//
-// AGUI and Vercel serve an agent to a chat frontend over the AG-UI and the
-// Vercel AI SDK UI message stream protocols. Run serves an agent as a plain
-// JSON endpoint, and MCP serves it as an MCP server over Streamable HTTP. All
-// of them resolve the agent dependencies for each request from the Fiber
-// context, and the streaming handlers cancel the agent run when the client goes
-// away.
-//
-// The pydanticaitest package decodes the streams of AGUI and Vercel in tests.
+// pydantic-ai-go: AGUI and Vercel stream a run to a chat frontend, Run answers
+// with one JSON response and MCP serves the agent as an MCP server. The
+// dependencies of the agent come from the Fiber context of each request.
 package pydanticai
 
 import (
@@ -19,18 +12,12 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// AGUIConfig defines the config for the AGUI handler. It is a StreamConfig whose
-// Adapter is an agui.Config.
+// AGUIConfig is the StreamConfig of AGUI, with an agui.Config as Adapter.
 type AGUIConfig[Deps any] = StreamConfig[Deps, agui.Config]
 
-// AGUI returns a handler that serves agent over the AG-UI protocol.
-//
-// The handler accepts a POST request with an AG-UI RunAgentInput JSON body and
-// answers with the AG-UI events of the run as server-sent events.
-//
-//	app.Post("/agui", pydanticai.AGUI(agent))
-//
-// It panics when agent is nil or the adapter config is invalid.
+// AGUI returns a handler that serves agent over the AG-UI protocol: a POST with a
+// RunAgentInput body is answered with the events of the run as server-sent
+// events. It panics when agent is nil or the adapter config is invalid.
 func AGUI[Deps, Output any](agent *ai.Agent[Deps, Output], config ...AGUIConfig[Deps]) fiber.Handler {
 	var cfg AGUIConfig[Deps]
 	if len(config) > 0 {
@@ -52,7 +39,6 @@ func AGUI[Deps, Output any](agent *ai.Agent[Deps, Output], config ...AGUIConfig[
 	}
 }
 
-// aguiProtocol describes the AG-UI events for relay.
 var aguiProtocol = protocol[agui.Event]{
 	what:   "AG-UI event",
 	encode: func(event *agui.Event) ([]byte, error) { return json.Marshal(event) },

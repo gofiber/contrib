@@ -29,10 +29,8 @@ const (
 	defaultMCPDescription = "Ask the agent a question"
 )
 
-// mcpToolName is what MCP allows as the name of a tool.
 var mcpToolName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 
-// errMCPDeferred reports a run that stopped for approvals or external tool results.
 var errMCPDeferred = errors.New("the run ended with deferred tool calls, which a tool call cannot resume")
 
 // MCPConfig defines the config of the MCP handler.
@@ -42,37 +40,22 @@ type MCPConfig[Deps any] struct {
 	// Optional. Default: nil
 	Next func(c fiber.Ctx) bool
 
-	// Deps resolves the dependencies of the agent for one request. Derive them
-	// from the authenticated request, for example from c.Locals, and never from
-	// the arguments of the tool: a caller can send any argument. An error is
-	// returned from the handler as it is, before the MCP message is read, so
-	// fiber.ErrUnauthorized answers the HTTP request with a 401.
-	//
-	// It is called for every MCP message that the route receives, including
-	// those that set up a connection or list the tool, so keep it cheap.
+	// Deps resolves the dependencies of the agent for one request: derive them from
+	// the authenticated request, never from the arguments of the tool. An error is
+	// returned as it is, before the message is read. It runs for every message of the
+	// route, so keep it cheap.
 	//
 	// Optional. Default: the zero value of Deps
 	Deps func(c fiber.Ctx) (Deps, error)
 
-	// RunOptions returns additional agent run options for one request, such as
-	// ai.WithRunUsageLimits or ai.WithRunMetadata.
+	// RunOptions returns additional agent run options for one request.
 	//
 	// Optional. Default: nil
 	RunOptions func(c fiber.Ctx) ([]ai.RunOption, error)
 
-	// AllowedOrigins lists the origins of the browser pages that may call the
-	// handler, as the browsers send them: a scheme, a host and a port that is not
-	// the default of the scheme, for example "https://app.example.com". A request
-	// with an Origin header that is not listed is answered with 403 Forbidden
-	// before anything else happens, as the MCP specification has a server
-	// validate the origin of its callers: that keeps a page of another site, or
-	// one that reaches the server by DNS rebinding and so looks like its own,
-	// from calling the tool in the browser of a user. A client that is not a
-	// browser sends no Origin header and is not affected. The cors middleware
-	// answers the preflight request of a browser, and has to allow the same
-	// origins.
-	//
-	// It panics when an origin is not a scheme, a host and an optional port.
+	// AllowedOrigins lists the origins of the browser pages that may call the handler,
+	// as browsers send them, for example "https://app.example.com". A request with
+	// another Origin header gets 403. It panics on a malformed origin.
 	//
 	// Optional. Default: nil (no browser page may call the handler)
 	AllowedOrigins []string
@@ -83,81 +66,52 @@ type MCPConfig[Deps any] struct {
 	Name    string
 	Version string
 
-	// Tool is the name of the tool that runs the agent. It has to be 1 to 128
-	// characters of A-Z, a-z, 0-9, underscore, dot and hyphen. Description tells
-	// the model of the client what the tool is for, so describe the agent.
+	// Tool is the name of the tool that runs the agent, 1 to 128 characters of
+	// A-Z, a-z, 0-9, _, . and -. Description tells the model what it is for.
 	//
 	// Optional. Default: "ask" and "Ask the agent a question"
 	Tool        string
 	Description string
 
-	// ErrorMessage returns the text that the client receives in the result of a
-	// failed run. Use it to keep provider error details, which can carry request
-	// IDs or parts of credentials, away from the client. It also applies when the
-	// output of the agent cannot be encoded, and when the run panics, with an
-	// error whose text is "internal error".
+	// ErrorMessage returns the text that the client receives for a failed run, to keep
+	// provider details away from it. It also applies to panics and encoding errors.
 	//
 	// Optional. Default: err.Error()
 	ErrorMessage func(err error) string
 
-	// OnRunEnd is called once the agent has run, with the dependencies of the
-	// run, what the run consumed and the error that ended it, which is nil when
-	// the run completed. It is called for a run that failed or panicked as well,
-	// which makes it the place to record token usage. run is nil when the agent
-	// did not start the run. A panic in OnRunEnd is logged and recovered.
+	// OnRunEnd is called once the agent has run, with what the run consumed and the
+	// error that ended it: the place to record token usage. run is nil if the agent
+	// did not start the run. A panic in it is logged and recovered.
 	//
 	// Optional. Default: nil
 	OnRunEnd func(deps Deps, run *ai.RunInfo, err error)
 
-	// Timeout bounds the duration of one run. A run that exceeds it fails with
-	// the context error. A client that went away is not noticed before the
-	// response is written, so the timeout is what ends the run of such a client.
-	// A negative value turns it off.
+	// Timeout bounds the duration of one run, which fails with the context error. A
+	// negative value turns it off.
 	//
 	// Optional. Default: 5 * time.Minute
 	Timeout time.Duration
 
-	// CancelOnShutdown cancels the runs of the handler when the server starts
-	// shutting down, and the calls end with an error that matches
-	// ai.ErrRunCancelled. Without it a shutdown waits for the runs to end on
-	// their own, until the timeout of the shutdown elapses.
+	// CancelOnShutdown cancels the runs when the server starts shutting down, with
+	// an error that matches ai.ErrRunCancelled. Without it the shutdown waits for them.
 	//
 	// Optional. Default: false
 	CancelOnShutdown bool
 }
 
-// failure is the error that the client of the tool receives for err, with the
-// text that ErrorMessage makes of it.
 func (cfg *MCPConfig[Deps]) failure(err error) error {
 	return errors.New(agentrun.Text(cfg.ErrorMessage, err))
 }
 
-// mcpAskInput is the input of the tool.
 type mcpAskInput struct {
 	Question string `json:"question" jsonschema:"The question or the task for the agent"`
 }
 
-// MCP returns a handler that serves agent as an MCP server over Streamable HTTP.
-// It offers one tool, which runs the agent with the question of the caller:
-//
-//	app.Use("/mcp", authenticate) // stores the user in c.Locals
-//	app.Post("/mcp", pydanticai.MCP(agent, pydanticai.MCPConfig[Deps]{
-//		Deps: func(c fiber.Ctx) (Deps, error) {
-//			return Deps{UserID: fiber.Locals[string](c, "user")}, nil
-//		},
-//	}))
-//
-// There are no sessions: every request is a connection of its own. That keeps
-// the handler free of state, and answers each request with one JSON response
-// instead of a stream, so a server that is shut down never waits for an idle
-// connection. A client that wants notifications from the server gets none,
-// because nothing in this server changes.
-//
-// A request that carries an Origin header is answered with 403 unless
-// MCPConfig.AllowedOrigins lists it.
-//
-// It panics when agent is nil, the name of the tool is not valid or an allowed
-// origin is not an origin.
+// MCP returns a handler that serves agent as an MCP server over Streamable HTTP,
+// with one tool that runs the agent with the question of the caller (see
+// ExampleMCP). It has no sessions: each request is answered with one JSON
+// response. It panics when agent is nil, the tool name is invalid or an allowed
+// origin is malformed.
 func MCP[Deps, Output any](agent *ai.Agent[Deps, Output], config ...MCPConfig[Deps]) fiber.Handler {
 	if agent == nil {
 		panic("pydanticai: agent must not be nil")
@@ -179,8 +133,7 @@ func MCP[Deps, Output any](agent *ai.Agent[Deps, Output], config ...MCPConfig[De
 		Version: cmp.Or(cfg.Version, defaultMCPVersion),
 	}
 	serverOptions := &mcpsdk.ServerOptions{
-		// Only the tool, and no notifications about it: a client that subscribes
-		// to them would keep a request open for as long as it likes.
+		// No notifications: a subscribing client would keep a request open.
 		Capabilities: &mcpsdk.ServerCapabilities{Tools: &mcpsdk.ToolCapabilities{}},
 		SchemaCache:  mcpsdk.NewSchemaCache(),
 	}
@@ -201,18 +154,11 @@ func MCP[Deps, Output any](agent *ai.Agent[Deps, Output], config ...MCPConfig[De
 
 		shutdown := shutdownSignal(c, cfg.CancelOnShutdown)
 
-		// A call is served with the values of the context of the request, such as
-		// a trace, and without its cancellation. The context that the SDK would
-		// get otherwise is the pooled RequestCtx of fasthttp. A tool that reads it
-		// after the call would see the values of another request, and fasthttp
-		// closes its done channel when the server starts shutting down, which the
-		// handler of MCP takes for a client that went away and answers with
-		// nothing. A call that is still running is answered as usual, and
-		// CancelOnShutdown decides whether it is stopped.
+		// Tools get the values of the request context, not its cancellation or the pooled
+		// RequestCtx: fasthttp closes it on shutdown, which the SDK takes for a client
+		// that left. CancelOnShutdown stops runs instead.
 		values := context.WithoutCancel(c.Context())
 
-		// The tool is made for the request, as it runs the agent with the
-		// dependencies of the request.
 		server := mcpsdk.NewServer(implementation, serverOptions)
 		mcpsdk.AddTool(server, tool, mcpTool(agent, cfg, deps, options, shutdown))
 		handler := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return server }, httpOptions)
@@ -222,10 +168,8 @@ func MCP[Deps, Output any](agent *ai.Agent[Deps, Output], config ...MCPConfig[De
 	}
 }
 
-// mcpOrigins returns the form of the allowed origins that a browser sends: the
-// scheme and the host in lower case, and no port when it is the default of the
-// scheme. It panics when one of them is not an origin, which no browser would
-// send, so that it would allow nobody.
+// mcpOrigins returns the allowed origins as browsers send them (lower case, no
+// default port). It panics on one that is not an origin.
 func mcpOrigins(allowed []string) []string {
 	origins := make([]string, len(allowed))
 	for i, origin := range allowed {
@@ -243,8 +187,6 @@ func mcpOrigins(allowed []string) []string {
 	return origins
 }
 
-// mcpOriginAllowed reports whether origin, the Origin header of a request, is
-// one of the allowed origins.
 func mcpOriginAllowed(allowed []string, origin string) bool {
 	for _, candidate := range allowed {
 		if utils.EqualFold(candidate, origin) {
@@ -254,9 +196,8 @@ func mcpOriginAllowed(allowed []string, origin string) bool {
 	return false
 }
 
-// mcpTool returns the handler of the tool. It runs on a goroutine of the MCP
-// server, where no recover middleware guards it, so a panic ends the call and
-// not the process.
+// mcpTool returns the handler of the tool, which recovers its own panics: nothing
+// else does on this goroutine.
 func mcpTool[Deps, Output any](
 	agent *ai.Agent[Deps, Output], cfg MCPConfig[Deps], deps Deps, options []ai.RunOption, shutdown <-chan struct{},
 ) mcpsdk.ToolHandlerFor[mcpAskInput, any] {
@@ -286,9 +227,8 @@ func mcpTool[Deps, Output any](
 	}
 }
 
-// mcpOutput returns the result of the tool for the output of the agent. Text
-// goes to the client as it is. Anything else goes as JSON text, and as
-// structured content when it is an object, which every version of MCP allows.
+// mcpOutput returns text as it is and anything else as JSON text, with
+// structured content too when it is an object.
 func mcpOutput[Output any](value Output) (*mcpsdk.CallToolResult, any, error) {
 	if reflected := reflect.ValueOf(value); reflected.Kind() == reflect.String {
 		return mcpText(reflected.String()), nil, nil

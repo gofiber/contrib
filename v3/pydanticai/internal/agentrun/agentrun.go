@@ -1,12 +1,7 @@
-// Package agentrun supervises one run of an agent for the handlers of
-// pydanticai. It bounds the run, cancels it when the server shuts down, keeps a
-// panic in a tool or in a callback of the application from taking the process
-// down or reaching a client, and reports the end of the run once.
-//
-// A handler that answers with one response gives its run to Execute. A handler
-// that streams keeps the run beyond the handler, so it takes the pieces: New
-// makes the Run, and the handler cancels it and reports its end when the
-// response is over.
+// Package agentrun supervises one run of an agent for pydanticai: it bounds the
+// run, cancels it on shutdown, keeps a panic from reaching the process or a
+// client, and reports the end once. Execute serves a handler that answers once,
+// New and Run a stream.
 package agentrun
 
 import (
@@ -22,25 +17,17 @@ import (
 	"github.com/gofiber/fiber/v3/log"
 )
 
-// errPanicked is what a client is told when the run panics. The panic itself
-// goes to the log and to the callbacks of the application.
+// errPanicked is what a client is told when the run panics.
 var errPanicked = errors.New("internal error")
 
-// errShutdown is why a run was canceled when the server started shutting down.
-// It wraps ai.ErrRunCancelled, which the agent treats as a request to stop: a
-// streamed run ends with the messages and the usage it has, and a run that is
-// not streamed ends with an error that matches ai.ErrRunCancelled.
+// errShutdown is why a run was canceled on shutdown. It wraps ai.ErrRunCancelled,
+// which stops the agent.
 var errShutdown = fmt.Errorf("pydanticai: the server is shutting down: %w", ai.ErrRunCancelled)
 
-// oneShotTimeout bounds the run of a handler that cannot notice that its client
-// left, unless it is configured otherwise.
 const oneShotTimeout = 5 * time.Minute
 
-// OneShotTimeout returns how long a run may last for the configured Timeout of a
-// handler that cannot notice that its client left, as Run and the MCP handler:
-// zero is five minutes, and a negative value turns the bound off, which is a
-// returned zero. A handler that streams notices a client that left through its
-// heartbeat, and leaves a run unbounded unless it is configured.
+// OneShotTimeout returns the Timeout of a handler that cannot notice a client that
+// left, as Run and MCP: zero is five minutes, negative is none (returned as zero).
 func OneShotTimeout(configured time.Duration) time.Duration {
 	switch {
 	case configured == 0:
@@ -57,34 +44,23 @@ type Config[Deps any] struct {
 	// Deps are the dependencies of the run, which OnRunEnd receives.
 	Deps Deps
 
-	// OnRunEnd is called once with the end of the run, see Run.End. It is
-	// optional.
+	// OnRunEnd is called once with the end of the run, see Run.End.
 	OnRunEnd func(deps Deps, run *ai.RunInfo, err error)
 
-	// Timeout bounds the run: it is canceled with the context error when the
-	// timeout elapses. Zero leaves it unbounded, see OneShotTimeout.
+	// Timeout bounds the run with the context error. Zero is unbounded.
 	Timeout time.Duration
 
-	// Shutdown cancels the run when it is closed, with a cause that says why and
-	// that matches ai.ErrRunCancelled. It is the seam of the server: a handler
-	// gives the channel that fasthttp closes when the server starts shutting
-	// down, and a test any channel. Nil leaves the run alone.
+	// Shutdown cancels the run when it is closed, with a cause that matches
+	// ai.ErrRunCancelled.
 	Shutdown <-chan struct{}
 
-	// Deferred is the error that Execute fails a run with when the run ends with
-	// deferred tool calls, which the handler cannot resume. Nil lets such a run
-	// complete.
+	// Deferred is the error that Execute fails a run with when it ends with deferred
+	// tool calls. Nil lets it complete.
 	Deferred error
 }
 
-// Run is the supervision of one run of an agent. It records the run for
-// OnRunEnd, remembers a panic in a tool, owns the context of the run and reports
-// its end once.
-//
-// pydantic-ai-go runs the tool calls of a model response concurrently, each on
-// a goroutine of its own, where neither the handler nor a recover middleware
-// can catch a panic. Only capabilities are given the RunInfo and the tool
-// calls, so a Run is installed as one, through the options that New returns.
+// Run supervises one run of an agent: it records the run for OnRunEnd, keeps the
+// panic of a tool, owns the context and reports the end once.
 type Run[Deps any] struct {
 	deps     Deps
 	onRunEnd func(deps Deps, run *ai.RunInfo, err error)
@@ -93,35 +69,25 @@ type Run[Deps any] struct {
 	panicked atomic.Pointer[error]
 	ended    sync.Once
 
-	ctx    context.Context
-	cancel context.CancelCauseFunc
-	stop   context.CancelFunc
-	// expires is whether the run has a timeout or a shutdown to watch: only such
-	// a run can be ended by the server.
+	ctx     context.Context
+	cancel  context.CancelCauseFunc
+	stop    context.CancelFunc
 	expires bool
 }
 
-// New starts to supervise a run. It returns the Run and the options that run the
-// agent under it, which are ahead of the other run options. The slice that it
-// returns is a new one, so that the slice that the caller made is not written
-// to. parent is the context that the run derives its own from: its values are
-// the run's, and its cancellation too, so a handler that wants the run to
-// outlive the request passes a context without it.
-//
-// The caller has to end the supervision with Cancel, which releases the timer
-// and the goroutine that waits for the shutdown.
+// New starts to supervise a run and returns the Run and the options that run the
+// agent under it, ahead of the others, in a new slice. The run derives its context
+// from parent, cancellation included. End the supervision with Cancel.
 func New[Deps any](parent context.Context, cfg Config[Deps], options []ai.RunOption) (*Run[Deps], []ai.RunOption) {
 	r := &Run[Deps]{deps: cfg.Deps, onRunEnd: cfg.OnRunEnd, expires: cfg.Timeout > 0 || cfg.Shutdown != nil}
-	// Each layer of context costs the agent, which keeps a record of every
-	// context it is given, so only the ones that the run needs are made: a
-	// cancel with a cause for the shutdown, or for an owner that has no timeout
-	// to cancel with, and the timeout.
+	// Each context layer costs the agent, which records every context it is given, so
+	// make only the layers that the run needs.
 	ctx := parent
 	if cfg.Shutdown != nil || cfg.Timeout <= 0 {
 		ctx, r.cancel = context.WithCancelCause(parent)
 	}
 	if cfg.Shutdown != nil {
-		go cancelOnShutdown(ctx, r.cancel, cfg.Shutdown) // waits for ctx, not for the context that Timeout makes
+		go cancelOnShutdown(ctx, r.cancel, cfg.Shutdown)
 	}
 	if cfg.Timeout > 0 {
 		ctx, r.stop = context.WithTimeout(ctx, cfg.Timeout)
@@ -130,7 +96,6 @@ func New[Deps any](parent context.Context, cfg Config[Deps], options []ai.RunOpt
 	return r, append([]ai.RunOption{ai.WithRunCapabilities(capability[Deps]{r})}, options...)
 }
 
-// cancelOnShutdown cancels ctx when shutdown is closed, and returns when ctx ends.
 func cancelOnShutdown(ctx context.Context, cancel context.CancelCauseFunc, shutdown <-chan struct{}) {
 	select {
 	case <-shutdown:
@@ -139,17 +104,12 @@ func cancelOnShutdown(ctx context.Context, cancel context.CancelCauseFunc, shutd
 	}
 }
 
-// Context is the context of the run: it ends when the run is canceled, when its
-// timeout elapses and when the server starts shutting down, if the run is
-// supervised for that.
+// Context is the context of the run: canceled, timed out or shut down.
 func (r *Run[Deps]) Context() context.Context { return r.ctx }
 
-// AfterExpiry arranges for fn to be called once, on a goroutine of its own, when
-// the server ends the run: its timeout elapsed, which a deadline of the context
-// that New was given counts as, or the server started shutting down. A run that
-// its owner or its client canceled has not expired, and a run that has neither a
-// timeout nor a shutdown to watch never does, so fn is not called for it. The
-// returned function stops the call, as the one of context.AfterFunc does.
+// AfterExpiry calls fn once, on its own goroutine, when the server ends the run (a
+// deadline passed or it shut down), not when the run is canceled. The returned
+// function stops the call.
 func (r *Run[Deps]) AfterExpiry(fn func()) (stop func() bool) {
 	if !r.expires {
 		return notStopped
@@ -162,14 +122,10 @@ func (r *Run[Deps]) AfterExpiry(fn func()) (stop func() bool) {
 	})
 }
 
-// notStopped is the stop function of a call that was never registered.
 func notStopped() bool { return false }
 
-// Failure returns the error that a run which failed with err reports, and
-// whether a panic of a tool is why. When a tool panicked, the run failed with an
-// error that carries the value of the panic, or with the error of a tool that
-// the panic canceled, so what is reported is the panic. A run that did not fail
-// has no failure to explain.
+// Failure returns the error that a run which failed with err reports, and whether
+// a panic of a tool is why: it outranks the error that it caused.
 func (r *Run[Deps]) Failure(err error) (final error, panicked bool) {
 	if panicErr := r.panicked.Load(); panicErr != nil && err != nil {
 		return *panicErr, true
@@ -177,8 +133,7 @@ func (r *Run[Deps]) Failure(err error) (final error, panicked bool) {
 	return err, false
 }
 
-// Cancel cancels the run, and releases what supervises it. It can be called
-// more than once.
+// Cancel cancels the run and releases what supervises it, any number of times.
 func (r *Run[Deps]) Cancel() {
 	if r.cancel != nil {
 		r.cancel(nil)
@@ -188,10 +143,8 @@ func (r *Run[Deps]) Cancel() {
 	}
 }
 
-// End reports the end of the run to OnRunEnd, with err as the way it ended and
-// the run that the agent started, which is nil when it did not. It does that
-// once, however often it is called, and only when OnRunEnd is set. A panic in
-// OnRunEnd is logged and recovered.
+// End reports the end of the run to OnRunEnd with err, once however often it is
+// called. A panic in OnRunEnd is logged and recovered.
 func (r *Run[Deps]) End(err error) {
 	if r.onRunEnd == nil {
 		return
@@ -201,14 +154,9 @@ func (r *Run[Deps]) End(err error) {
 	})
 }
 
-// Execute runs agent once under supervision and returns its result and the error
-// that ended it. The error is final: the first panic of a tool replaces the error
-// that it caused, a run that ends deferred fails with cfg.Deferred, and a run that
-// the shutdown canceled fails with the error that says so. The end of the run is
-// reported to cfg.OnRunEnd with the same error, once.
-//
-// A panic of the model or of a callback on this goroutine is reported to
-// cfg.OnRunEnd and goes on: the caller decides what that means.
+// Execute runs agent once under supervision and returns its result and the final
+// error, where the first panic of a tool outranks the error it caused. A panic of
+// the model or a callback is reported to cfg.OnRunEnd and goes on.
 func Execute[Deps, Output any](
 	ctx context.Context,
 	agent *ai.Agent[Deps, Output],
@@ -234,29 +182,24 @@ func Execute[Deps, Output any](
 	}
 	if err != nil && errors.Is(context.Cause(run.Context()), errShutdown) &&
 		(errors.Is(err, ai.ErrRunCancelled) || errors.Is(err, context.Canceled)) {
-		err = errShutdown // say why the run was canceled
+		err = errShutdown
 	}
 	run.End(err)
 	return result, err
 }
 
-// capability installs a Run in the agent.
 type capability[Deps any] struct{ run *Run[Deps] }
 
-// Setup implements ai.Capability.
 func (capability[Deps]) Setup(*ai.CapabilityRegistry) error { return nil }
 
-// WrapRun implements ai.RunWrapper. It records the run, before any BeforeRun
-// hook can fail it, and runs it.
+// WrapRun records the run before any BeforeRun hook can fail it.
 func (c capability[Deps]) WrapRun(ctx context.Context, run *ai.RunInfo, next ai.RunFunc) (ai.RunOutcome, error) {
 	c.run.info.Store(run)
 	return next(ctx)
 }
 
-// WrapToolCall implements ai.ToolCallWrapper. It runs on the goroutine of the
-// tool. The panic becomes an error that is neither a retry nor a tool failure,
-// so the run fails with it, and the Run keeps it, so that the handler reports
-// the run as one that panicked.
+// WrapToolCall turns a panic of the tool into an error that fails the run, which
+// the Run keeps for the handler.
 func (c capability[Deps]) WrapToolCall(
 	ctx context.Context, _ *ai.RunInfo, call ai.ToolCallPart, next ai.ToolCallFunc,
 ) (result any, err error) {
@@ -267,26 +210,19 @@ func (c capability[Deps]) WrapToolCall(
 	return next(ctx, call)
 }
 
-// panicError is the error of a run that panicked, for the logs and the
-// callbacks of the application. A client is never told what is in it, see Text.
+// panicError is the error of a run that panicked, for logs and callbacks only.
 type panicError struct{ message string }
 
-// newPanicError describes the panic as it is now, and keeps neither the value,
-// which a request or a large object can be behind and whose String method can
-// run on any goroutine that logs the error, nor an error that was panicked with
-// as its cause: that would turn the panic into a retry or a tool failure.
+// newPanicError keeps neither the value nor an error as the cause, which would
+// turn the panic into a retry.
 func newPanicError(recovered any) error {
 	return &panicError{message: fmt.Sprintf("pydanticai: panic in the run: %v", recovered)}
 }
 
 func (e *panicError) Error() string { return e.message }
 
-// Recover is deferred by code that runs on a goroutine where no recover
-// middleware guards it. A panic is logged with the stack of the goroutine, and
-// report is called with its error, which Text keeps from a client. Without a
-// panic it does nothing.
-//
-//	defer agentrun.Recover(func(err error) { ... })
+// Recover is deferred on a goroutine that no recover middleware guards: it logs a
+// panic with its stack and reports an error that Text keeps from a client.
 func Recover(report func(err error)) {
 	if recovered := recover(); recovered != nil {
 		err := newPanicError(recovered)
@@ -295,8 +231,7 @@ func Recover(report func(err error)) {
 	}
 }
 
-// Safely calls fn, a callback of the application, on a goroutine where no
-// recover middleware guards it. A panic is logged instead of ending the process.
+// Safely calls the callback fn and logs a panic instead of ending the process.
 func Safely(name string, fn func()) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -306,11 +241,8 @@ func Safely(name string, fn func()) {
 	fn()
 }
 
-// Text is the message that a client receives for err. The error of a run that
-// panicked is told as "internal error", and never as what it holds, also to
-// message. A panic in message is logged and recovered, and the client is then
-// told what it is told for a panic in the run: not err.Error(), which message is
-// there to keep from it.
+// Text is the message that a client receives for err. A panic, or a panic in
+// message, is told as "internal error".
 func Text(message func(error) string, err error) string {
 	if _, panicked := errors.AsType[*panicError](err); panicked {
 		err = errPanicked
