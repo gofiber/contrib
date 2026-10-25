@@ -1,14 +1,5 @@
-// Package pydanticaitest helps to test the handlers of the pydanticai package.
-//
-// AGUI and Vercel answer with server-sent events. The functions of this
-// package decode them, so that a test can assert on the events of a run and on
-// its text instead of on raw bytes:
-//
-//	resp, err := app.Test(req)
-//	require.NoError(t, err)
-//	chunks, done := pydanticaitest.VercelChunks(t, resp.Body)
-//	require.True(t, done)
-//	require.Equal(t, "Hello!", pydanticaitest.VercelText(chunks))
+// Package pydanticaitest decodes the server-sent events of the AGUI and Vercel
+// handlers in tests.
 package pydanticaitest
 
 import (
@@ -28,26 +19,20 @@ type Record struct {
 	// Data is the data lines of the record, joined by a newline.
 	Data string
 
-	// Heartbeat is true for a record without data lines, such as the comment
-	// lines that the handlers write while the agent is busy.
+	// Heartbeat is true for a record without data lines, such as a comment line.
 	Heartbeat bool
 }
 
-// Reader reads the records of a server-sent events stream one at a time. A
-// test can use it to look at a stream while the handler is still writing it.
+// Reader reads the records of a server-sent events stream one at a time.
 type Reader struct{ scanner *bufio.Scanner }
 
-// NewReader returns a Reader for stream. A line of the stream can be of any
-// length, as one event is one line.
 func NewReader(stream io.Reader) *Reader {
 	scanner := bufio.NewScanner(stream)
 	scanner.Buffer(make([]byte, 0, 64<<10), math.MaxInt)
 	return &Reader{scanner: scanner}
 }
 
-// Next returns the next record. It returns false when the stream has ended, or
-// could not be read, see Err. A record that the stream was cut off in is
-// dropped.
+// Next returns the next record, or false at the end or on an error (see Err).
 func (r *Reader) Next() (Record, bool) {
 	var (
 		data  []string
@@ -62,10 +47,7 @@ func (r *Reader) Next() (Record, bool) {
 			return Record{Data: strings.Join(data, "\n"), Heartbeat: len(data) == 0}, true
 		}
 		lines++
-		// As in the server-sent events format: the name of a field is what
-		// precedes the first colon, a line without a colon is a field with an
-		// empty value, a line that starts with a colon is a comment, and one
-		// space after the colon is not part of the value.
+		// Field parsing follows the server-sent events format.
 		if name, value, _ := strings.Cut(line, ":"); name == "data" {
 			data = append(data, strings.TrimPrefix(value, " "))
 		}
@@ -73,9 +55,7 @@ func (r *Reader) Next() (Record, bool) {
 	return Record{}, false
 }
 
-// NextData returns the data of the next record that has any, and skips the
-// heartbeats. It returns false when the stream has ended, or could not be read,
-// see Err.
+// NextData is Next for the data of the records that have any, skipping heartbeats.
 func (r *Reader) NextData() (string, bool) {
 	for {
 		record, ok := r.Next()
@@ -88,12 +68,11 @@ func (r *Reader) NextData() (string, bool) {
 	}
 }
 
-// Err returns the error that ended the stream, or nil when it ended at its end.
+// Err returns the error that ended the stream, if any.
 func (r *Reader) Err() error { return r.scanner.Err() }
 
-// AGUIEvents reads the body of an AG-UI response to its end and decodes the
-// events in it. It fails the test when the body cannot be read or an event
-// cannot be decoded.
+// AGUIEvents decodes the events in the body of an AG-UI response, and fails the
+// test on an error.
 func AGUIEvents(t testing.TB, body io.Reader) []agui.Event {
 	t.Helper()
 
@@ -124,10 +103,8 @@ func AGUIText(events []agui.Event) string {
 	return text.String()
 }
 
-// VercelChunks reads the body of a Vercel AI response to its end and decodes
-// the chunks in it. done reports whether the stream ended with the [DONE]
-// record. It fails the test when the body cannot be read, a chunk cannot be
-// decoded, or a chunk follows [DONE].
+// VercelChunks decodes the chunks in the body of a Vercel AI response; done
+// reports whether [DONE] ended it. It fails the test on an error.
 func VercelChunks(t testing.TB, body io.Reader) (chunks []vercel.Chunk, done bool) {
 	t.Helper()
 
