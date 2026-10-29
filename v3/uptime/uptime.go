@@ -65,6 +65,7 @@ type recordTarget struct {
 }
 
 type endpointProbe struct {
+	id                  string
 	method              string
 	url                 string
 	headers             map[string]string
@@ -269,6 +270,7 @@ func newEndpointProbe(endpoint EndpointConfig) *endpointProbe {
 		expectedStatusCodes[statusCode] = struct{}{}
 	}
 	return &endpointProbe{
+		id:                  endpoint.ID,
 		method:              endpoint.Method,
 		url:                 endpoint.URL,
 		headers:             copyStringMap(endpoint.Headers),
@@ -551,7 +553,27 @@ func (u *runtime) writeTargetHeartbeat(ctx context.Context, target recordTarget,
 	return nil
 }
 
-func (u *runtime) probeEndpoint(ctx context.Context, probe *endpointProbe) bool {
+func (u *runtime) probeEndpoint(ctx context.Context, probe *endpointProbe) (success bool) {
+	var statusCode int
+	if hook := u.config.OnProbeResult; hook != nil {
+		started := time.Now()
+		defer func() {
+			// Only the parent cancellation suppresses an event; a probe's own
+			// timeout is still a completed failed check.
+			if ctx.Err() != nil {
+				return
+			}
+			checkedAt := time.Now()
+			reportProbeResult(hook, ProbeResult{
+				EndpointID: probe.id,
+				CheckedAt:  checkedAt,
+				Duration:   checkedAt.Sub(started),
+				Success:    success,
+				StatusCode: statusCode,
+			})
+		}()
+	}
+
 	probeCtx, cancel := context.WithTimeout(ctx, probe.timeout)
 	defer cancel()
 
@@ -571,9 +593,19 @@ func (u *runtime) probeEndpoint(ctx context.Context, probe *endpointProbe) bool 
 	if err != nil {
 		return false
 	}
-	statusCode := resp.StatusCode
+	statusCode = resp.StatusCode
 	_ = resp.Body.Close()
 	return probe.statusAllowed(statusCode)
+}
+
+func reportProbeResult(hook func(ProbeResult), result ProbeResult) {
+	defer func() {
+		if recover() != nil {
+			// A panic value may contain credentials or other request details.
+			fiberlog.Error("uptime: probe result hook panicked")
+		}
+	}()
+	hook(result)
 }
 
 func (p *endpointProbe) statusAllowed(statusCode int) bool {

@@ -108,6 +108,34 @@ The first probe runs when `New` is called, before `app.Listen` has opened the
 port. Endpoints pointing at the app's own routes therefore miss their first
 slot or two on startup.
 
+### Probe result hook
+
+Set `OnProbeResult` to observe completed endpoint checks, including the initial
+probe. For example, add this field to `uptime.Config` in the example above:
+
+```go
+OnProbeResult: func(result uptime.ProbeResult) {
+	log.Infof("endpoint=%s success=%t status=%d duration=%s checked_at=%s",
+		result.EndpointID, result.Success, result.StatusCode, result.Duration,
+		result.CheckedAt.Format(time.RFC3339Nano))
+},
+```
+
+The callback runs synchronously before the probe's heartbeat or service refresh
+is written. Within one runtime, calls for one endpoint are ordered; different
+endpoints may call it concurrently. Return quickly and protect shared state.
+Shutdown waits for callbacks, so do not call app shutdown from a callback. Panics
+are recovered and logged with a fixed message, without the panic value.
+
+`CheckedAt` is the completion time; `Duration` excludes callback time. An unexpected
+HTTP status is a failed result with that status code. Request construction, DNS,
+connection, TLS and probe timeout failures use status code zero. Probes canceled
+by runtime shutdown, process heartbeats, and storage failures that prevent probing
+do not produce events. A result describes the probe, not successful persistence:
+subsequent storage operations may fail. No queue, retries or event persistence are
+provided. Results contain no URL, headers, credentials or underlying errors.
+Leaving the hook nil preserves the existing behavior.
+
 ## Redis
 
 Redis state is stored through `github.com/gofiber/storage/redis/v3`. Create the
@@ -367,6 +395,7 @@ remote host, so a same-origin URL is preferred for private deployments.
 | ServiceName | `string` | Display name. | `ServiceID` |
 | ServiceDescription | `string` | Display description. | `""` |
 | Endpoints | `[]uptime.EndpointConfig` | Optional HTTP endpoints to probe as tracked services. | `nil` |
+| OnProbeResult | `func(uptime.ProbeResult)` | Optional synchronous endpoint result callback. Must return quickly and be concurrency-safe. See [Probe result hook](#probe-result-hook). | `nil` |
 | SampleInterval | `time.Duration` | Heartbeat interval. | `3 * time.Second` |
 | RetentionDays | `int` | Days to retain daily history; zero uses the default, negative values are invalid. Redis requires at most `106750` days to fit its expiry backstop in `time.Duration`; custom `Storage` has no Redis-specific limit. | `90` |
 | DaysToShow | `int` | Number of days shown in snapshots and dashboard. | `30` |

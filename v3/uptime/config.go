@@ -64,6 +64,14 @@ type Config struct {
 	// Endpoints defines optional HTTP endpoints to probe as tracked services.
 	Endpoints []EndpointConfig
 
+	// OnProbeResult optionally receives completed endpoint probes before their
+	// heartbeat or service refresh is stored. It does not report process heartbeats
+	// or probes canceled by runtime shutdown, and does not guarantee persistence.
+	// Within one runtime, calls are synchronous and ordered per endpoint, but may
+	// run concurrently for different endpoints. Return quickly, protect shared state,
+	// and do not shut down the app from this callback. Callback panics are recovered.
+	OnProbeResult func(ProbeResult)
+
 	// SampleInterval is the heartbeat interval and uptime slot size.
 	SampleInterval time.Duration
 	// RetentionDays controls how many days of heartbeat data are kept.
@@ -98,6 +106,21 @@ type Config struct {
 	StorageKeyPrefix string
 	// UI configures the built-in dashboard.
 	UI UIConfig
+}
+
+// ProbeResult describes one completed HTTP/HTTPS endpoint probe.
+// It contains no URL, headers, credentials, or underlying error details.
+type ProbeResult struct {
+	// EndpointID is the configured endpoint's stable ID.
+	EndpointID string
+	// CheckedAt is the probe completion time.
+	CheckedAt time.Time
+	// Duration is the elapsed probe time, excluding the callback.
+	Duration time.Duration
+	// Success reports whether the response matched the expected status codes.
+	Success bool
+	// StatusCode is the HTTP response status, or zero when the request failed.
+	StatusCode int
 }
 
 // EndpointConfig defines one HTTP endpoint to probe as an uptime service.
