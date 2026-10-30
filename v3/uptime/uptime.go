@@ -558,13 +558,13 @@ func (u *runtime) probeEndpoint(ctx context.Context, probe *endpointProbe) (succ
 	if hook := u.config.OnProbeResult; hook != nil {
 		started := time.Now()
 		defer func() {
-			// Only the parent cancellation suppresses an event; a probe's own
-			// timeout is still a completed failed check.
-			if ctx.Err() != nil {
+			// Preserve received responses across shutdown. Only interrupted
+			// requests without a response are suppressed; probe timeouts still report.
+			if ctx.Err() != nil && statusCode == 0 {
 				return
 			}
 			checkedAt := time.Now()
-			reportProbeResult(hook, ProbeResult{
+			reportProbeResult(ctx, hook, ProbeResult{
 				EndpointID: probe.id,
 				CheckedAt:  checkedAt,
 				Duration:   checkedAt.Sub(started),
@@ -598,14 +598,18 @@ func (u *runtime) probeEndpoint(ctx context.Context, probe *endpointProbe) (succ
 	return probe.statusAllowed(statusCode)
 }
 
-func reportProbeResult(hook func(ProbeResult), result ProbeResult) {
+func reportProbeResult(ctx context.Context, hook func(context.Context, ProbeResult), result ProbeResult) {
+	returned := false
 	defer func() {
-		if recover() != nil {
-			// A panic value may contain credentials or other request details.
-			fiberlog.Error("uptime: probe result hook panicked")
+		// Discard panic values, which may contain secrets. Goexit also runs this
+		// defer; synchronous execution cannot isolate it from the recording goroutine.
+		_ = recover()
+		if !returned {
+			fiberlog.Errorf("uptime: probe result hook did not return normally: endpoint=%q", result.EndpointID)
 		}
 	}()
-	hook(result)
+	hook(ctx, result)
+	returned = true
 }
 
 func (p *endpointProbe) statusAllowed(statusCode int) bool {

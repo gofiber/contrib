@@ -118,7 +118,7 @@ func TestProbeResultConcurrentEndpoints(t *testing.T) {
 			{ID: "first", URL: server.URL + "/first", Interval: time.Second},
 			{ID: "second", URL: server.URL + "/second", Interval: time.Second},
 		},
-		OnProbeResult: func(result uptime.ProbeResult) {
+		OnProbeResult: func(_ context.Context, result uptime.ProbeResult) {
 			mu.Lock()
 			calls[result.EndpointID]++
 			first := calls[result.EndpointID] == 1
@@ -182,6 +182,55 @@ func TestProbeResultConcurrentEndpoints(t *testing.T) {
 	defer mu.Unlock()
 	if overlapped {
 		t.Fatal("callbacks for the same endpoint overlapped")
+	}
+}
+
+func TestProbeResultHookObservesShutdown(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	entered := make(chan context.Context, 1)
+	finished := make(chan error, 1)
+	release := make(chan struct{})
+	app := fiber.New()
+	t.Cleanup(func() {
+		close(release)
+		_ = app.Shutdown()
+	})
+	app.Use(uptime.New(uptime.Config{
+		App: app, Storage: newCustomStore(),
+		Endpoints: []uptime.EndpointConfig{{ID: "health", URL: server.URL}},
+		OnProbeResult: func(ctx context.Context, _ uptime.ProbeResult) {
+			entered <- ctx
+			select {
+			case <-ctx.Done():
+			case <-release:
+			}
+			finished <- ctx.Err()
+		},
+	}))
+	select {
+	case ctx := <-entered:
+		if _, deadline := ctx.Deadline(); deadline || ctx.Err() != nil {
+			t.Fatal("hook context inherited the probe timeout or was already canceled")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("hook did not start")
+	}
+	shutdown := make(chan error, 1)
+	go func() { shutdown <- app.Shutdown() }()
+	select {
+	case err := <-shutdown:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown did not cancel the synchronous hook")
+	}
+	if err := <-finished; err != context.Canceled {
+		t.Fatalf("hook context error = %v, want context.Canceled", err)
 	}
 }
 

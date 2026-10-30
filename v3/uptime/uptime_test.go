@@ -1,15 +1,18 @@
 package uptime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
 	"io"
+	stdlog "log"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	goruntime "runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -17,6 +20,7 @@ import (
 
 	"github.com/gofiber/contrib/v3/uptime/internal/storage"
 	"github.com/gofiber/fiber/v3"
+	fiberlog "github.com/gofiber/fiber/v3/log"
 	fiberredis "github.com/gofiber/storage/redis/v3"
 )
 
@@ -1429,7 +1433,7 @@ func TestProbeResultHTTP(t *testing.T) {
 			}))
 			t.Cleanup(server.Close)
 			var results []ProbeResult
-			u := &runtime{config: Config{OnProbeResult: func(result ProbeResult) {
+			u := &runtime{config: Config{OnProbeResult: func(_ context.Context, result ProbeResult) {
 				results = append(results, result)
 			}}}
 			if tc.tls {
@@ -1483,7 +1487,7 @@ func TestProbeResultRequestFailures(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var results []ProbeResult
 			u := &runtime{
-				config:     Config{OnProbeResult: func(result ProbeResult) { results = append(results, result) }},
+				config:     Config{OnProbeResult: func(_ context.Context, result ProbeResult) { results = append(results, result) }},
 				httpClient: tc.client,
 			}
 			probe := newEndpointProbe(EndpointConfig{ID: "health", URL: tc.url, Method: tc.method, Timeout: time.Second})
@@ -1514,7 +1518,12 @@ func TestProbeResultTimeoutAndCancellation(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			t.Cleanup(cancel)
 			var results []ProbeResult
-			u := &runtime{config: Config{OnProbeResult: func(result ProbeResult) { results = append(results, result) }}}
+			u := &runtime{config: Config{OnProbeResult: func(hookCtx context.Context, result ProbeResult) {
+				if hookCtx != ctx || hookCtx.Err() != nil {
+					t.Error("hook did not receive the live parent context")
+				}
+				results = append(results, result)
+			}}}
 			timeout := 250 * time.Millisecond
 			if cancelParent {
 				timeout = 5 * time.Second
@@ -1582,7 +1591,7 @@ func TestProbeResultStorageOrdering(t *testing.T) {
 			var results []ProbeResult
 			var panicFormatted atomic.Bool
 			if !tc.nilHook {
-				cfg.OnProbeResult = func(result ProbeResult) {
+				cfg.OnProbeResult = func(_ context.Context, result ProbeResult) {
 					results = append(results, result)
 					// Initial registration is allowed; no post-probe writes may precede the hook.
 					requireEqual(t, 1, store.upsertServiceCalls)
@@ -1646,28 +1655,122 @@ func (p probeResultPanicValue) String() string {
 	return "sensitive panic value"
 }
 
-func TestProbeResultDurationExcludesCallback(t *testing.T) {
+func TestProbeResultResponseSurvivesShutdown(t *testing.T) {
 	t.Parallel()
+	for _, status := range []int{http.StatusOK, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			var results []ProbeResult
+			u := &runtime{
+				config: Config{OnProbeResult: func(hookCtx context.Context, result ProbeResult) {
+					if hookCtx != ctx || !errors.Is(hookCtx.Err(), context.Canceled) {
+						t.Error("completed response did not receive the canceled parent context")
+					}
+					results = append(results, result)
+				}},
+				httpClient: &http.Client{Transport: probeResultTransport(func(*http.Request) (*http.Response, error) {
+					return &http.Response{
+						StatusCode: status,
+						Body: &probeResultCancelBody{
+							ReadCloser: io.NopCloser(strings.NewReader("")), cancel: cancel,
+						},
+					}, nil
+				})},
+			}
+			probe := newEndpointProbe(EndpointConfig{ID: "health", URL: "http://example.invalid", Timeout: time.Second})
+			requireEqual(t, status == http.StatusOK, u.probeEndpoint(ctx, probe))
+			requireEqual(t, 1, len(results))
+			requireEqual(t, status, results[0].StatusCode)
+			requireEqual(t, status == http.StatusOK, results[0].Success)
+		})
+	}
+}
+
+type probeResultTransport func(*http.Request) (*http.Response, error)
+
+func (transport probeResultTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return transport(request)
+}
+
+type probeResultCancelBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (body *probeResultCancelBody) Close() error {
+	// Cancel after Do has returned a response but before the hook runs.
+	body.cancel()
+	return body.ReadCloser.Close()
+}
+
+func TestProbeResultAbnormalExitLogs(t *testing.T) {
+	// Keep this test serial while capturing the shared Fiber logger's output.
+	logger := fiberlog.DefaultLogger[*stdlog.Logger]().Logger()
+	previousOutput := logger.Writer()
+	var output bytes.Buffer
+	logger.SetOutput(&output)
+	t.Cleanup(func() { logger.SetOutput(previousOutput) })
+	for _, exit := range []string{"return", "panic", "Goexit"} {
+		t.Run(exit, func(t *testing.T) {
+			output.Reset()
+			endpointID := "health\n\r\t\x00\x1b\u2028"
+			var formatted, returned atomic.Bool
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				reportProbeResult(context.Background(), func(context.Context, ProbeResult) {
+					switch exit {
+					case "panic":
+						panic(probeResultPanicValue{formatted: &formatted})
+					case "Goexit":
+						goruntime.Goexit()
+					}
+				}, ProbeResult{EndpointID: endpointID})
+				returned.Store(true)
+			}()
+			<-done
+			requireEqual(t, exit != "Goexit", returned.Load())
+			requireEqual(t, false, formatted.Load())
+			message := output.String()
+			if exit == "return" {
+				requireEqual(t, "", message)
+				return
+			}
+			if !strings.Contains(message, "uptime: probe result hook did not return normally: endpoint="+fmt.Sprintf("%q", endpointID)) {
+				t.Fatalf("missing safe endpoint diagnostic: %q", message)
+			}
+			requireEqual(t, 1, strings.Count(message, "\n"))
+			if strings.ContainsAny(message, "\r\t\x00\x1b\u2028") || strings.Contains(message, "sensitive panic value") {
+				t.Fatalf("unsafe hook diagnostic: %q", message)
+			}
+		})
+	}
+}
+
+func TestProbeResultDuration(t *testing.T) {
+	t.Parallel()
+	const probeDelay = 25 * time.Millisecond
+	responseAt := make(chan time.Time, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(probeDelay)
+		responseAt <- time.Now()
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(server.Close)
 	var result ProbeResult
-	var callbackDuration time.Duration
-	u := &runtime{config: Config{OnProbeResult: func(r ProbeResult) {
+	u := &runtime{config: Config{OnProbeResult: func(_ context.Context, r ProbeResult) {
 		result = r
-		started := time.Now()
-		time.Sleep(25 * time.Millisecond)
-		callbackDuration = time.Since(started)
 	}}}
 	probe := newEndpointProbe(EndpointConfig{ID: "health", URL: server.URL, Timeout: time.Second})
 	started := time.Now()
 	requireEqual(t, true, u.probeEndpoint(context.Background(), probe))
-	if elapsed := time.Since(started); elapsed < result.Duration+callbackDuration {
-		t.Fatalf("probe duration %s includes callback time %s (elapsed %s)", result.Duration, callbackDuration, elapsed)
+	if result.Duration < probeDelay || result.Duration > time.Since(started) {
+		t.Fatalf("probe duration = %s, want at least server delay %s within elapsed probe time", result.Duration, probeDelay)
 	}
-	if time.Since(result.CheckedAt) < callbackDuration {
-		t.Fatal("CheckedAt includes callback time")
+	if result.CheckedAt.Before(<-responseAt) || result.CheckedAt.After(time.Now()) {
+		t.Fatal("CheckedAt does not reflect response completion")
 	}
 }
 
@@ -1675,7 +1778,7 @@ func TestProbeResultIgnoresProcessHeartbeat(t *testing.T) {
 	t.Parallel()
 	store := newSnapshotStore()
 	calls := 0
-	cfg := normalizedTestConfig(t, Config{ServiceID: "process", OnProbeResult: func(ProbeResult) { calls++ }})
+	cfg := normalizedTestConfig(t, Config{ServiceID: "process", OnProbeResult: func(context.Context, ProbeResult) { calls++ }})
 	u := &runtime{config: cfg, store: store}
 	target := buildRecordTargets(cfg, store.now, 7)[0]
 	requireNoError(t, u.recordTarget(context.Background(), target, store.now))
