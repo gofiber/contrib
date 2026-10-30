@@ -1,6 +1,7 @@
 package uptime
 
 import (
+	"context"
 	"errors"
 	"maps"
 	"net/http"
@@ -64,6 +65,20 @@ type Config struct {
 	// Endpoints defines optional HTTP endpoints to probe as tracked services.
 	Endpoints []EndpointConfig
 
+	// OnProbeResult optionally receives completed endpoint probes before their
+	// heartbeat or service refresh is stored, without guaranteeing persistence.
+	// It has no effect unless Endpoints is configured; ServiceID alone emits no events.
+	// Shutdown-interrupted probes without an HTTP response do not emit events.
+	// The context is the runtime's parent context, canceled on shutdown, rather
+	// than the individual probe's timeout context. It may already be canceled
+	// when a completed HTTP response is reported.
+	// Within one runtime, calls are synchronous and ordered per endpoint, but may
+	// run concurrently for different endpoints. Return quickly, respect cancellation,
+	// protect shared state, and do not shut down the app from this callback.
+	// Panics are recovered; abnormal exits are logged without their values.
+	// runtime.Goexit cannot be recovered and ends the endpoint's recording goroutine.
+	OnProbeResult func(context.Context, ProbeResult)
+
 	// SampleInterval is the heartbeat interval and uptime slot size.
 	SampleInterval time.Duration
 	// RetentionDays controls how many days of heartbeat data are kept.
@@ -98,6 +113,21 @@ type Config struct {
 	StorageKeyPrefix string
 	// UI configures the built-in dashboard.
 	UI UIConfig
+}
+
+// ProbeResult describes one completed HTTP/HTTPS endpoint probe.
+// It contains no URL, headers, credentials, or underlying error details.
+type ProbeResult struct {
+	// EndpointID is the configured endpoint's stable ID.
+	EndpointID string
+	// CheckedAt is the probe completion time.
+	CheckedAt time.Time
+	// Duration is the elapsed probe time, excluding the callback.
+	Duration time.Duration
+	// Success reports whether the response matched the expected status codes.
+	Success bool
+	// StatusCode is the HTTP response status, or zero when the request failed.
+	StatusCode int
 }
 
 // EndpointConfig defines one HTTP endpoint to probe as an uptime service.

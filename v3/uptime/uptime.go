@@ -65,6 +65,7 @@ type recordTarget struct {
 }
 
 type endpointProbe struct {
+	id                  string
 	method              string
 	url                 string
 	headers             map[string]string
@@ -269,6 +270,7 @@ func newEndpointProbe(endpoint EndpointConfig) *endpointProbe {
 		expectedStatusCodes[statusCode] = struct{}{}
 	}
 	return &endpointProbe{
+		id:                  endpoint.ID,
 		method:              endpoint.Method,
 		url:                 endpoint.URL,
 		headers:             copyStringMap(endpoint.Headers),
@@ -551,7 +553,27 @@ func (u *runtime) writeTargetHeartbeat(ctx context.Context, target recordTarget,
 	return nil
 }
 
-func (u *runtime) probeEndpoint(ctx context.Context, probe *endpointProbe) bool {
+func (u *runtime) probeEndpoint(ctx context.Context, probe *endpointProbe) (success bool) {
+	var statusCode int
+	if hook := u.config.OnProbeResult; hook != nil {
+		started := time.Now()
+		defer func() {
+			// Preserve received responses across shutdown. Only interrupted
+			// requests without a response are suppressed; probe timeouts still report.
+			if ctx.Err() != nil && statusCode == 0 {
+				return
+			}
+			checkedAt := time.Now()
+			reportProbeResult(ctx, hook, ProbeResult{
+				EndpointID: probe.id,
+				CheckedAt:  checkedAt,
+				Duration:   checkedAt.Sub(started),
+				Success:    success,
+				StatusCode: statusCode,
+			})
+		}()
+	}
+
 	probeCtx, cancel := context.WithTimeout(ctx, probe.timeout)
 	defer cancel()
 
@@ -571,9 +593,23 @@ func (u *runtime) probeEndpoint(ctx context.Context, probe *endpointProbe) bool 
 	if err != nil {
 		return false
 	}
-	statusCode := resp.StatusCode
+	statusCode = resp.StatusCode
 	_ = resp.Body.Close()
 	return probe.statusAllowed(statusCode)
+}
+
+func reportProbeResult(ctx context.Context, hook func(context.Context, ProbeResult), result ProbeResult) {
+	returned := false
+	defer func() {
+		// Discard panic values, which may contain secrets. Goexit also runs this
+		// defer; synchronous execution cannot isolate it from the recording goroutine.
+		_ = recover()
+		if !returned {
+			fiberlog.Errorf("uptime: probe result hook did not return normally: endpoint=%q", result.EndpointID)
+		}
+	}()
+	hook(ctx, result)
+	returned = true
 }
 
 func (p *endpointProbe) statusAllowed(statusCode int) bool {

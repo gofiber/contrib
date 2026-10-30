@@ -108,6 +108,48 @@ The first probe runs when `New` is called, before `app.Listen` has opened the
 port. Endpoints pointing at the app's own routes therefore miss their first
 slot or two on startup.
 
+### Probe result hook
+
+Set `OnProbeResult` to observe completed endpoint checks, including the initial
+probe. It has no effect without `Endpoints`: configuring only `ServiceID` does
+not produce hook events. Add this field to `uptime.Config` in the example above
+(import `context`):
+
+```go
+OnProbeResult: func(ctx context.Context, result uptime.ProbeResult) {
+	if ctx.Err() != nil {
+		return
+	}
+	log.Infof("endpoint=%q success=%t status=%d duration=%s checked_at=%s",
+		result.EndpointID, result.Success, result.StatusCode, result.Duration,
+		result.CheckedAt.Format(time.RFC3339Nano))
+},
+```
+
+The callback runs synchronously before the probe's heartbeat or service refresh
+is written. Within one runtime, calls for one endpoint are ordered; different
+endpoints may call it concurrently. Return quickly, protect shared state, and
+respect cancellation. Slow or blocked callbacks delay that endpoint's recording
+and shutdown. The context is the runtime's parent context, canceled on shutdown,
+not the individual probe's timeout context. Uptime does not enforce a callback
+timeout; do not call app shutdown from a callback.
+
+Panics are recovered, and abnormal exits are logged with a safely quoted endpoint
+ID and no panic value. Synchronous execution cannot isolate `runtime.Goexit`:
+it is logged but still ends that endpoint's recording goroutine, skipping the
+remaining storage work. Callbacks must return normally.
+
+`CheckedAt` is the completion time; `Duration` excludes callback time. An unexpected
+HTTP status is a failed result with that status code. Request construction, DNS,
+connection, TLS and probe timeout failures use status code zero. Shutdown-interrupted
+probes without an HTTP response do not produce events. Received HTTP responses
+are still reported if shutdown cancels the context before the callback; that
+callback receives the canceled context. Storage failures that prevent probing
+produce no events. A result describes the probe, not successful persistence:
+subsequent storage operations may fail. No queue, retries or event persistence are
+provided. Results contain no URL, headers, credentials or underlying errors.
+Leaving the hook nil preserves the existing behavior.
+
 ## Redis
 
 Redis state is stored through `github.com/gofiber/storage/redis/v3`. Create the
@@ -367,6 +409,7 @@ remote host, so a same-origin URL is preferred for private deployments.
 | ServiceName | `string` | Display name. | `ServiceID` |
 | ServiceDescription | `string` | Display description. | `""` |
 | Endpoints | `[]uptime.EndpointConfig` | Optional HTTP endpoints to probe as tracked services. | `nil` |
+| OnProbeResult | `func(context.Context, uptime.ProbeResult)` | Optional synchronous endpoint result callback. Requires `Endpoints`. Must return quickly, respect cancellation, and be concurrency-safe. See [Probe result hook](#probe-result-hook). | `nil` |
 | SampleInterval | `time.Duration` | Heartbeat interval. | `3 * time.Second` |
 | RetentionDays | `int` | Days to retain daily history; zero uses the default, negative values are invalid. Redis requires at most `106750` days to fit its expiry backstop in `time.Duration`; custom `Storage` has no Redis-specific limit. | `90` |
 | DaysToShow | `int` | Number of days shown in snapshots and dashboard. | `30` |
