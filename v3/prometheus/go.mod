@@ -26,7 +26,7 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/molecule-man/go-brrr v1.3.1 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/pandatix/go-abnf v0.5.3 // indirect
+	github.com/pandatix/go-abnf v0.5.4 // indirect
 	github.com/philhofer/fwd v1.2.1 // indirect
 	github.com/prometheus/procfs v0.23.0 // indirect
 	github.com/tinylib/msgp v1.6.5 // indirect
