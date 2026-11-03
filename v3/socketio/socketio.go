@@ -617,7 +617,7 @@ type Websocket struct {
 	UUID string
 	// Locals wraps the Fiber Locals lookup so listener callbacks can reach
 	// values stored on the originating request context.
-	Locals func(key string) any
+	Locals func(key any) any
 	// Params wraps the Fiber Params lookup so listener callbacks can read
 	// route parameters from the originating request.
 	Params func(key string, defaultValue ...string) string
@@ -881,7 +881,7 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 		kws.Conn = c
 		// The middleware allocates c per upgrade and never reuses it, so
 		// closures over it stay valid for the life of the session.
-		kws.Locals = func(key string) any {
+		kws.Locals = func(key any) any {
 			return c.Locals(key)
 		}
 		kws.Params = func(key string, defaultValue ...string) string {
