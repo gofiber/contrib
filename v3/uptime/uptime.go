@@ -558,8 +558,7 @@ func (u *runtime) probeEndpoint(ctx context.Context, probe *endpointProbe) (succ
 	if hook := u.config.OnProbeResult; hook != nil {
 		started := time.Now()
 		defer func() {
-			// Preserve received responses across shutdown. Only interrupted
-			// requests without a response are suppressed; probe timeouts still report.
+			// Skip only probes that shutdown interrupted before a response arrived.
 			if ctx.Err() != nil && statusCode == 0 {
 				return
 			}
@@ -601,8 +600,8 @@ func (u *runtime) probeEndpoint(ctx context.Context, probe *endpointProbe) (succ
 func reportProbeResult(ctx context.Context, hook func(context.Context, ProbeResult), result ProbeResult) {
 	returned := false
 	defer func() {
-		// Discard panic values, which may contain secrets. Goexit also runs this
-		// defer; synchronous execution cannot isolate it from the recording goroutine.
+		// Panic values may hold request secrets, so only the endpoint is logged.
+		// A runtime.Goexit lands here too and is logged the same way.
 		_ = recover()
 		if !returned {
 			fiberlog.Errorf("uptime: probe result hook did not return normally: endpoint=%q", result.EndpointID)
