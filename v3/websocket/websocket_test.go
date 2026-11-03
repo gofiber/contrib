@@ -802,6 +802,27 @@ func TestConnCaptureCanonicalizesHeaderNames(t *testing.T) {
 	assert.Equal(t, "value", conn.Headers("X-CUSTOM"))
 }
 
+func TestConnCaptureKeepsTypedLocalKeys(t *testing.T) {
+	type ctxKey struct{}
+	fctx := &fasthttp.RequestCtx{}
+	fctx.SetUserValue(ctxKey{}, "typed")
+	fctx.SetUserValue("plain", "string")
+
+	conn := &Conn{}
+	conn.capture(fctx)
+
+	assert.Equal(t, "typed", conn.Locals(ctxKey{}))
+	assert.Equal(t, "string", conn.Locals("plain"))
+}
+
+func TestConnLocalsByteSliceKey(t *testing.T) {
+	conn := &Conn{}
+
+	assert.Equal(t, "value", conn.Locals([]byte("key"), "value"))
+	assert.Equal(t, "value", conn.Locals("key"))
+	assert.Equal(t, "value", conn.Locals([]byte("key")))
+}
+
 func TestConnAccessorsOnEmptyConn(t *testing.T) {
 	conn := &Conn{}
 
