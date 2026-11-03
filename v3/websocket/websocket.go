@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"runtime/debug"
 	"slices"
 	"sync"
@@ -239,6 +240,8 @@ func (conn *Conn) capture(fctx *fasthttp.RequestCtx) {
 	fctx.VisitUserValuesAll(func(key, value any) {
 		if s, ok := key.(string); ok {
 			key = utils.CopyString(s)
+		} else if key != nil && !reflect.ValueOf(key).Comparable() {
+			return // fasthttp accepts e.g. a slice key, a map panics on it
 		}
 		setEntry(&conn.locals, key, value)
 	})
