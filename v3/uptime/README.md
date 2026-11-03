@@ -108,6 +108,29 @@ The first probe runs when `New` is called, before `app.Listen` has opened the
 port. Endpoints pointing at the app's own routes therefore miss their first
 slot or two on startup.
 
+### Probe result hook
+
+Set `OnProbeResult` to observe completed endpoint checks, including the initial
+probe. It requires `Endpoints`; the `ServiceID` process heartbeat produces no
+events. Add this field to `uptime.Config` in the example above (import `context`):
+
+```go
+OnProbeResult: func(_ context.Context, result uptime.ProbeResult) {
+	log.Infof("endpoint=%q success=%t status=%d duration=%s",
+		result.EndpointID, result.Success, result.StatusCode, result.Duration)
+},
+```
+
+The callback runs synchronously: calls for one endpoint are ordered, different
+endpoints may call it concurrently. A slow callback delays that endpoint's
+recording and shutdown, so return quickly and respect the context, which is
+canceled on shutdown. Do not shut down the app from the callback. Panics are
+recovered and logged.
+
+`Success` follows `ExpectedStatusCodes`. Failed requests (DNS, connection, TLS,
+timeout) report status code zero; probes interrupted by shutdown before a
+response report nothing. A result describes the probe, not its persistence.
+
 ## Redis
 
 Redis state is stored through `github.com/gofiber/storage/redis/v3`. Create the
@@ -367,6 +390,7 @@ remote host, so a same-origin URL is preferred for private deployments.
 | ServiceName | `string` | Display name. | `ServiceID` |
 | ServiceDescription | `string` | Display description. | `""` |
 | Endpoints | `[]uptime.EndpointConfig` | Optional HTTP endpoints to probe as tracked services. | `nil` |
+| OnProbeResult | `func(context.Context, uptime.ProbeResult)` | Optional callback for completed endpoint probes. Requires `Endpoints`. See [Probe result hook](#probe-result-hook). | `nil` |
 | SampleInterval | `time.Duration` | Heartbeat interval. | `3 * time.Second` |
 | RetentionDays | `int` | Days to retain daily history; zero uses the default, negative values are invalid. Redis requires at most `106750` days to fit its expiry backstop in `time.Duration`; custom `Storage` has no Redis-specific limit. | `90` |
 | DaysToShow | `int` | Number of days shown in snapshots and dashboard. | `30` |
