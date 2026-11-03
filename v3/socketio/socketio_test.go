@@ -396,7 +396,7 @@ func assertPanic(t *testing.T, f func()) {
 func createWS() *Websocket {
 	kws := &Websocket{
 		Conn: nil,
-		Locals: func(key string) interface{} {
+		Locals: func(key any) any {
 			return ""
 		},
 		Params: func(key string, defaultValue ...string) string {

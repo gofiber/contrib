@@ -142,6 +142,39 @@ func splitPollFrames(body []byte) [][]byte {
 	return clean
 }
 
+func TestPollingOpenKeepsTypedLocals(t *testing.T) {
+	resetSIOGlobals(t)
+	prevEnable := EnablePolling
+	EnablePolling = true
+	t.Cleanup(func() { EnablePolling = prevEnable })
+
+	type ctxKey struct{}
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		c.Locals(ctxKey{}, "typed")
+		c.Locals("plain", "string")
+		return c.Next()
+	})
+	app.Get("/", New(func(*Websocket) {}))
+
+	req, err := http.NewRequest(http.MethodGet, "/?EIO=4&transport=polling", nil)
+	require.NoError(t, err)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.True(t, len(body) > 1 && body[0] == eioOpen, "expected OPEN packet, got %q", body)
+	var open eioOpenPacket
+	require.NoError(t, json.Unmarshal(body[1:], &open))
+
+	w, err := pool.get(open.SID)
+	require.NoError(t, err)
+	kws, ok := w.(*Websocket)
+	require.True(t, ok)
+	require.Equal(t, "typed", kws.Locals(ctxKey{}))
+	require.Equal(t, "string", kws.Locals("plain"))
+}
+
 // TestPollingOpenHandshake verifies the GET-with-no-sid path returns a
 // well-formed OPEN packet with the configured timing fields and an
 // empty upgrades array (polling-to-WS upgrade is not yet implemented).
