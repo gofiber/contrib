@@ -154,6 +154,7 @@ func TestPollingOpenKeepsTypedLocals(t *testing.T) {
 		c.Locals(ctxKey{}, "typed")
 		c.Locals("plain", "string")
 		c.Locals([]int{1}, "unhashable, skipped")
+		c.Locals(nil, "nil key")
 		return c.Next()
 	})
 	app.Get("/", New(func(*Websocket) {}))
@@ -175,6 +176,7 @@ func TestPollingOpenKeepsTypedLocals(t *testing.T) {
 	require.Equal(t, "typed", kws.Locals(ctxKey{}))
 	require.Equal(t, "string", kws.Locals("plain"))
 	require.Equal(t, "string", kws.Locals([]byte("plain")))
+	require.Equal(t, "nil key", kws.Locals(nil))
 }
 
 // TestPollingOpenHandshake verifies the GET-with-no-sid path returns a

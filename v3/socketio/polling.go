@@ -398,7 +398,7 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 	c.RequestCtx().VisitUserValuesAll(func(k, v any) {
 		if s, ok := k.(string); ok {
 			k = utils.CopyString(s)
-		} else if !reflect.ValueOf(k).Comparable() {
+		} else if k != nil && !reflect.ValueOf(k).Comparable() {
 			return // fasthttp accepts e.g. a slice key, a map panics on it
 		}
 		if localsSnap == nil {
