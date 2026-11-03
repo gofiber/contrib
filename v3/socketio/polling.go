@@ -415,7 +415,13 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 			return ""
 		}
 	}
-	kws.Locals = func(key any) any { return localsSnap[key] }
+	kws.Locals = func(key any) any {
+		// fasthttp stores []byte keys as strings; a slice cannot key a map.
+		if b, ok := key.([]byte); ok {
+			key = string(b)
+		}
+		return localsSnap[key]
+	}
 	kws.Params = newLookupFunc(paramsSnap)
 	kws.Query = newLookupFunc(queriesSnap)
 	kws.Cookies = newLookupFunc(cookiesSnap)

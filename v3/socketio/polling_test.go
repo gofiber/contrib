@@ -173,6 +173,7 @@ func TestPollingOpenKeepsTypedLocals(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "typed", kws.Locals(ctxKey{}))
 	require.Equal(t, "string", kws.Locals("plain"))
+	require.Equal(t, "string", kws.Locals([]byte("plain")))
 }
 
 // TestPollingOpenHandshake verifies the GET-with-no-sid path returns a
