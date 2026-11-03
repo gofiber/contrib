@@ -503,6 +503,45 @@ func TestCloseSendsFormatCloseMessage(t *testing.T) {
 	require.Equal(t, "Connection closed", ce.Text)
 }
 
+func TestLocalsKeepTypedKeys(t *testing.T) {
+	resetState()
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	type ctxKey struct{}
+	got := make(chan any, 1)
+	app.Use(func(c fiber.Ctx) error {
+		c.Locals(ctxKey{}, "typed")
+		return c.Next()
+	})
+	app.Use(upgradeMiddleware)
+	app.Get("/", New(func(kws *Websocket) {
+		got <- kws.Locals(ctxKey{})
+	}))
+
+	go func() { _ = app.Listener(ln) }()
+
+	dialer := &websocket.Dialer{
+		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+		HandshakeTimeout: 5 * time.Second,
+	}
+	conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+
+	select {
+	case v := <-got:
+		require.Equal(t, "typed", v)
+	case <-time.After(2 * time.Second):
+		t.Fatal("upgrade did not complete")
+	}
+}
+
 func TestCloseInterruptsReadDespitePongs(t *testing.T) {
 	resetState()
 

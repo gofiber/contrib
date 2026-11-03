@@ -271,6 +271,10 @@ func setEntry[K comparable, V any](m *map[K]V, key K, value V) {
 // and therefore available to all following routes that match the request.
 // Keys work as in fiber.Ctx.Locals, typed keys included.
 func (conn *Conn) Locals(key any, value ...any) any {
+	// fasthttp stores []byte keys as strings; a slice cannot key a map.
+	if b, ok := key.([]byte); ok {
+		key = string(b)
+	}
 	if len(value) == 0 {
 		return conn.locals[key]
 	}
