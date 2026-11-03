@@ -240,7 +240,7 @@ func (conn *Conn) capture(fctx *fasthttp.RequestCtx) {
 	fctx.VisitUserValuesAll(func(key, value any) {
 		if s, ok := key.(string); ok {
 			key = utils.CopyString(s)
-		} else if !reflect.ValueOf(key).Comparable() {
+		} else if key != nil && !reflect.ValueOf(key).Comparable() {
 			return // fasthttp accepts e.g. a slice key, a map panics on it
 		}
 		setEntry(&conn.locals, key, value)

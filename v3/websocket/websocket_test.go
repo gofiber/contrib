@@ -829,11 +829,13 @@ func TestConnCaptureSkipsUnhashableLocalKeys(t *testing.T) {
 	fctx.SetUserValue([]int{1}, "slice")
 	fctx.SetUserValue(holder{v: []int{1}}, "struct holding a slice")
 	fctx.SetUserValue("plain", "string")
+	fctx.SetUserValue(nil, "nil key")
 
 	conn := &Conn{}
 	require.NotPanics(t, func() { conn.capture(fctx) })
 
-	assert.Len(t, conn.locals, 1)
+	assert.Len(t, conn.locals, 2)
+	assert.Equal(t, "nil key", conn.Locals(nil))
 	assert.Equal(t, "string", conn.Locals("plain"))
 }
 
