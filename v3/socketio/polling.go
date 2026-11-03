@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http"
+	"reflect"
 	"sync"
 	"time"
 
@@ -395,11 +396,13 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 	// All keys, not just strings: Fiber middlewares store under typed keys.
 	var localsSnap map[any]any
 	c.RequestCtx().VisitUserValuesAll(func(k, v any) {
-		if localsSnap == nil {
-			localsSnap = make(map[any]any)
-		}
 		if s, ok := k.(string); ok {
 			k = utils.CopyString(s)
+		} else if !reflect.ValueOf(k).Comparable() {
+			return // fasthttp accepts e.g. a slice key, a map panics on it
+		}
+		if localsSnap == nil {
+			localsSnap = make(map[any]any)
 		}
 		localsSnap[k] = v
 	})

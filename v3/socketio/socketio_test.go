@@ -3627,3 +3627,36 @@ func TestSocketIOAckCrossNamespaceDropped(t *testing.T) {
 		t.Fatal("properly-namespaced ack failed to deliver after cross-ns drop")
 	}
 }
+
+func TestSocketIOWebsocketKeepsTypedLocals(t *testing.T) {
+	resetSIOGlobals(t)
+
+	type ctxKey struct{}
+	got := make(chan any, 1)
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.ShutdownWithTimeout(5 * time.Second)
+		_ = ln.Close()
+	}()
+	app.Use(func(c fiber.Ctx) error {
+		c.Locals(ctxKey{}, "typed")
+		return c.Next()
+	})
+	app.Use(upgradeMiddleware)
+	app.Get("/", New(func(kws *Websocket) {
+		got <- kws.Locals(ctxKey{})
+	}))
+	go func() { _ = app.Listener(ln) }()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+
+	select {
+	case v := <-got:
+		require.Equal(t, "typed", v)
+	case <-time.After(2 * time.Second):
+		t.Fatal("New callback did not run")
+	}
+}

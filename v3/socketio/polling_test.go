@@ -153,6 +153,7 @@ func TestPollingOpenKeepsTypedLocals(t *testing.T) {
 	app.Use(func(c fiber.Ctx) error {
 		c.Locals(ctxKey{}, "typed")
 		c.Locals("plain", "string")
+		c.Locals([]int{1}, "unhashable, skipped")
 		return c.Next()
 	})
 	app.Get("/", New(func(*Websocket) {}))
