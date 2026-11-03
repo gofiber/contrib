@@ -50,8 +50,8 @@ github.com/gofiber/fiber/v3 v3.6.1 h1:wYjbgqpJm6VErIVLSGzGpX7lLZyTNgElsj8nQ1i+iF
 github.com/gofiber/fiber/v3 v3.6.1/go.mod h1:+nxjBal3gw0EPf3gqK5EmtxaxTL01+zbSTagFletlDI=
 github.com/gofiber/schema v1.9.3 h1:KbKui12hYcvv6Ht0iUCOPrFU4KnrxX4D/h74TeE9Q/E=
 github.com/gofiber/schema v1.9.3/go.mod h1:TmN3rIGytK690YcZZ6BSq8OOswWcmRhLYcReauIfC68=
-github.com/gofiber/storage/redis/v3 v3.6.2 h1:93yTUzIXFhCIS+t6GI1w8/3hNSU0AARWkIgPdOfj+nM=
-github.com/gofiber/storage/redis/v3 v3.6.2/go.mod h1:x/sieGcaTuZG3ssTxJvhSoHp1L1dioTf+fZsuy9LkM4=
+github.com/gofiber/storage/redis/v3 v3.6.3 h1:/Wzy9+1rxgYGmg8561+Dm+cAGRdWj8NYNbrR+0UQIYQ=
+github.com/gofiber/storage/redis/v3 v3.6.3/go.mod h1:eTO0i2Mno8dwUCs4sS7oFNGvfG/UBK2Bgi4KSnZ0BnY=
 github.com/gofiber/storage/testhelpers/redis v0.1.0 h1:lDUwtanDf3f5YwlDwhbqnqCtj9Y/xc8ctxRE6HpQcws=
 github.com/gofiber/storage/testhelpers/redis v0.1.0/go.mod h1:Y1UccxbGVL04+TF5RuyCsksX+76hu6nJIWjPukBBgJ4=
 github.com/gofiber/utils/v2 v2.6.4 h1:VsC3hEFZXk2JO6I/+FZ1OdZzMX4COPgwwrFaDAey3+o=
