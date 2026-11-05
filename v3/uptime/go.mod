@@ -7,7 +7,7 @@ require (
 	github.com/gofiber/storage/redis/v3 v3.6.3
 	github.com/gofiber/utils/v2 v2.6.4
 	github.com/redis/go-redis/v9 v9.23.0
-	github.com/testcontainers/testcontainers-go/modules/redis v0.44.0
+	github.com/testcontainers/testcontainers-go/modules/redis v0.45.0
 )
 
 require (
