@@ -10,7 +10,7 @@ require (
 // Test-time dependencies
 require (
 	github.com/stretchr/testify v1.12.1
-	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
+	github.com/testcontainers/testcontainers-go/modules/postgres v0.45.0
 	github.com/testcontainers/testcontainers-go/modules/redis v0.45.0
 )
 
