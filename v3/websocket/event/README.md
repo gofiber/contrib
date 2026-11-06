@@ -66,7 +66,7 @@ Connection identity and attributes:
 
 ```go
 func (kws *Websocket) GetUUID() string
-func (kws *Websocket) SetUUID(uuid string) error // returns ErrorUUIDDuplication on conflict
+func (kws *Websocket) SetUUID(uuid string) error // ErrorUUIDDuplication on conflict, ErrorInvalidConnection once disconnected
 func (kws *Websocket) SetAttribute(key string, value interface{})
 func (kws *Websocket) GetAttribute(key string) interface{}
 ```
@@ -104,6 +104,11 @@ app.Get("/ws/:id", event.New(func(kws *event.Websocket) {
 }))
 ```
 
+Listeners run in registration order, global before per-connection. Once one of
+them has ended the connection (for example with `Close`), the listeners after it
+are skipped; only `EventDisconnect`, `EventClose` and `EventError` always reach
+every listener.
+
 ## Sending messages
 
 There are two flavors of `EmitTo` / `EmitToList` / `Broadcast`, and the
@@ -122,7 +127,14 @@ Use the method forms when you want delivery failures surfaced as `EventError`
 events; use the package forms for fire-and-forget fan-out. `Emit` enqueues the
 message on the connection's outbound queue, which a dedicated goroutine drains
 in order; if the queue is full it blocks until a slot frees up or the connection
-closes.
+closes. The queue is drained from before the `New` callback runs, so a callback
+may emit more than `SendQueueSize` messages, for instance to replay history.
+
+Until the `New` callback and the `EventConnect` listeners have returned, a new
+connection is not yet a member: `EmitTo`, `EmitToList`, `Broadcast` and `Fire`
+from elsewhere skip it, so a client the callback refuses never receives traffic
+meant for accepted clients. To send to it during that time use `kws.Emit` or the
+method forms on `kws` itself.
 
 ## Configuration
 
@@ -266,7 +278,7 @@ event.Fire("notify", []byte("broadcast"))
 | `EventPing`       | `ping`       | Fired when a WebSocket ping control frame is received.  |
 | `EventPong`       | `pong`       | Fired when a WebSocket pong control frame is received.  |
 | `EventDisconnect` | `disconnect` | Fired when the connection is closed. On an error close, `EventError` fires too. |
-| `EventConnect`    | `connect`    | Fired after the `New` callback runs, before the read loop starts. |
+| `EventConnect`    | `connect`    | Fired after the `New` callback runs, before the read loop starts. Not fired when the callback closed the connection. |
 | `EventClose`      | `close`      | Fired when the server actively closes the connection.   |
 | `EventError`      | `error`      | Fired on a failed `EmitTo`, a dropped outbound message, or an error-driven disconnect. |
 
