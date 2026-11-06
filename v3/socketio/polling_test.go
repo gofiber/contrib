@@ -169,9 +169,7 @@ func TestPollingOpenKeepsTypedLocals(t *testing.T) {
 	var open eioOpenPacket
 	require.NoError(t, json.Unmarshal(body[1:], &open))
 
-	w, err := pool.get(open.SID)
-	require.NoError(t, err)
-	kws, ok := w.(*Websocket)
+	kws, ok := getEIOSession(open.SID)
 	require.True(t, ok)
 	require.Equal(t, "typed", kws.Locals(ctxKey{}))
 	require.Equal(t, "string", kws.Locals("plain"))
@@ -1801,13 +1799,15 @@ func TestPollingTransportMismatch(t *testing.T) {
 	EnablePolling = true
 	defer func() { EnablePolling = prev }()
 
-	// Build a fake WS-only entry by inserting a plain *Websocket without
-	// pollQ into the pool under a known sid.
+	// Build a fake WS-only entry by registering a plain *Websocket without
+	// pollQ under a known Engine.IO sid.
 	const sid = "deadbeef-0000-0000-0000-000000000001"
-	kws := &Websocket{UUID: sid}
+	kws := &Websocket{UUID: "deadbeef-0000-0000-0000-000000000002", eioSID: sid}
 	kws.isAlive.Store(true)
+	kws.registerEIOSession()
+	defer kws.releaseEIOSession()
 	pool.set(kws)
-	defer pool.delete(sid)
+	defer pool.delete(kws.UUID)
 
 	app := fiber.New()
 	ln := fasthttputil.NewInmemoryListener()
@@ -1829,4 +1829,45 @@ func TestPollingTransportMismatch(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	require.Contains(t, string(body), `"code":3`)
+}
+
+// The public UUID (socket.id, SetUUID) must not attach a polling request.
+func TestPollingUUIDIsNotSessionID(t *testing.T) {
+	resetSIOGlobals(t)
+
+	var fired atomic.Int32
+	On("whoami", func(*EventPayload) { fired.Add(1) })
+
+	uuids := make(chan string, 2)
+	_, client, closeFn := newPollingTestServer(t, func(kws *Websocket) {
+		uuids <- kws.GetUUID()
+		require.NoError(t, kws.SetUUID("alice"))
+		uuids <- kws.GetUUID()
+	})
+	defer closeFn()
+
+	sid, _, status := pollOpen(t, client)
+	require.Equal(t, http.StatusOK, status)
+	_, status = pollPost(t, client, sid, []byte("40"))
+	require.Equal(t, http.StatusOK, status)
+
+	for range 2 {
+		uuid := <-uuids
+		require.NotEqual(t, sid, uuid)
+
+		body, status := pollPost(t, client, uuid, []byte(`42["whoami"]`))
+		require.Equal(t, http.StatusBadRequest, status)
+		require.Contains(t, string(body), `"code":1`)
+		body, status = pollGet(t, client, uuid)
+		require.Equal(t, http.StatusBadRequest, status)
+		require.Contains(t, string(body), `"code":1`)
+	}
+	require.Zero(t, fired.Load())
+
+	_, status = pollPost(t, client, sid, []byte(`42["whoami"]`))
+	require.Equal(t, http.StatusOK, status)
+	require.EqualValues(t, 1, fired.Load())
+	body, status := pollGet(t, client, sid)
+	require.Equal(t, http.StatusOK, status)
+	require.Contains(t, string(body), `40{"sid":`)
 }

@@ -333,13 +333,12 @@ func handlePolling(c fiber.Ctx, callback func(kws *Websocket)) (handled bool, er
 		return true, openPollingSession(c, callback)
 	}
 
-	// Existing session lookup.
-	kwsAny, lookupErr := pool.get(sid)
-	if lookupErr != nil {
+	// Never resolve sid in the pool: its UUID keys are public.
+	kws, ok := getEIOSession(sid)
+	if !ok {
 		return true, writePollingError(c, 1)
 	}
-	kws, ok := kwsAny.(*Websocket)
-	if !ok || kws.pollQ == nil {
+	if kws.pollQ == nil {
 		// sid resolves to a non-polling session: transport mismatch.
 		return true, writePollingError(c, 3)
 	}
@@ -430,9 +429,10 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 	kws.Cookies = newLookupFunc(cookiesSnap)
 	kws.pollCallback = callback
 
+	kws.registerEIOSession()
 	pool.set(kws)
 
-	frame, err := buildEIOOpenFrame(kws.UUID)
+	frame, err := buildEIOOpenFrame(kws.eioSID)
 	if err != nil {
 		kws.disconnected(err)
 		return writePollingError(c, 3)

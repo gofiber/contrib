@@ -428,6 +428,12 @@ func upgradeMiddleware(c fiber.Ctx) error {
 	return fiber.ErrUpgradeRequired
 }
 
+func resetEIOSessions() {
+	eioSessions.Lock()
+	eioSessions.m = make(map[string]*Websocket)
+	eioSessions.Unlock()
+}
+
 // resetSIOGlobals isolates a test from any global state left behind by
 // previous tests AND from any state THIS test leaves behind. It:
 //
@@ -443,6 +449,7 @@ func upgradeMiddleware(c fiber.Ctx) error {
 func resetSIOGlobals(t *testing.T) {
 	t.Helper()
 	pool.reset()
+	resetEIOSessions()
 	resetDraining()
 	listeners.reset()
 	t.Cleanup(func() {
@@ -496,6 +503,7 @@ func resetSIOGlobals(t *testing.T) {
 			}
 		}
 		pool.reset()
+		resetEIOSessions()
 		resetDraining()
 		listeners.reset()
 	})

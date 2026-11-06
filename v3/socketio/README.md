@@ -51,6 +51,7 @@ This middleware implements the full Engine.IO v4 / Socket.IO v5 wire protocol. H
 
 - **Rate limiting**. Each polling open allocates a `*Websocket` and arms a heartbeat timer (no goroutine). With `EnablePolling = true` an unauthenticated client can create sessions until `HandshakeTimeout` reaps idle ones (10s default). Mount `github.com/gofiber/fiber/v3/middleware/limiter` upstream of the route to bound concurrent session creation.
 - **Write timeout**. A long-poll GET response that the client never reads pins a fasthttp worker on TCP backpressure. Configure `fiber.Config{WriteTimeout: ...}` (a few seconds is typically appropriate) so abandoned reads do not strand workers.
+- **Session id**. A polling request is bound to its session by the Engine.IO `sid` query parameter; keep query strings out of shared access logs.
 - **Burst sizing**. `PollQueueMaxFrames` (default `1024`) bounds the per-session outbound buffer. With the default `DropFramesOnOverflow = false` a synchronous burst of more than 1024 emits inside a single listener call disconnects the session with `ErrSendQueueClosed`. Either pace large bursts across drains, raise `PollQueueMaxFrames`, or set `DropFramesOnOverflow = true` to tolerate overflow at the cost of dropped frames + `EventError`.
 - **Listener panics**. Both transports recover panics inside the `New()` callback and inside event listeners; the panic value is logged via the package `Logger` hook. Avoid `panic(string(attackerControlledBytes))` to prevent log injection in downstream consumers.
 
