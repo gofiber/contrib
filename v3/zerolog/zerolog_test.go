@@ -952,8 +952,6 @@ func Test_StreamedRequest_NotBuffered(t *testing.T) {
 func Test_StreamedMultipartForm_NotMarshaled(t *testing.T) {
 	t.Parallel()
 
-	// Under StreamRequestBody a multipart form past BodyLimit is parsed into
-	// temporary files before the handler runs; Body() would marshal it back.
 	const body = "--b\r\nContent-Disposition: form-data; name=\"field\"\r\n\r\nvalue\r\n--b--\r\n"
 
 	var buf bytes.Buffer

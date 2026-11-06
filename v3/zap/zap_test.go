@@ -124,8 +124,6 @@ func Test_StreamedRequest_NotBuffered(t *testing.T) {
 
 // go test -run Test_StreamedMultipartForm_NotMarshaled
 func Test_StreamedMultipartForm_NotMarshaled(t *testing.T) {
-	// Under StreamRequestBody a multipart form past BodyLimit is parsed into
-	// temporary files before the handler runs; Body() would marshal it back.
 	const body = "--b\r\nContent-Disposition: form-data; name=\"field\"\r\n\r\nvalue\r\n--b--\r\n"
 
 	logger, logs := setupLogsCapture()
