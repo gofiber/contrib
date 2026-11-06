@@ -613,7 +613,7 @@ type Websocket struct {
 	// Attributes map collection for the connection
 	attributes map[string]any
 	// UUID is the unique identifier assigned to this connection and used as
-	// its key in the active connections pool. It is public (socket.id), not a secret.
+	// its key in the active connections pool. It is the Socket.IO socket.id, separate from eioSID.
 	UUID string
 	// eioSID is the Engine.IO sid from the OPEN packet; it alone binds polling requests.
 	eioSID string
@@ -769,7 +769,7 @@ func (p *safePool) reset() {
 	p.Unlock()
 }
 
-// eioSessions indexes live sessions by eioSID; the pool's UUID keys are public.
+// eioSessions indexes live sessions by eioSID, separate from the pool's UUID keys.
 var eioSessions = struct {
 	sync.RWMutex
 	m map[string]*Websocket

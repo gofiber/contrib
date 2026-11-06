@@ -1831,7 +1831,7 @@ func TestPollingTransportMismatch(t *testing.T) {
 	require.Contains(t, string(body), `"code":3`)
 }
 
-// The public UUID (socket.id, SetUUID) must not attach a polling request.
+// The pool UUID (socket.id, SetUUID) must not attach a polling request.
 func TestPollingUUIDIsNotSessionID(t *testing.T) {
 	resetSIOGlobals(t)
 

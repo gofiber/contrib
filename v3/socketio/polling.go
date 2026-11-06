@@ -333,7 +333,7 @@ func handlePolling(c fiber.Ctx, callback func(kws *Websocket)) (handled bool, er
 		return true, openPollingSession(c, callback)
 	}
 
-	// Never resolve sid in the pool: its UUID keys are public.
+	// sid is the Engine.IO id, not the pool UUID: resolve it only through eioSessions.
 	kws, ok := getEIOSession(sid)
 	if !ok {
 		return true, writePollingError(c, 1)
