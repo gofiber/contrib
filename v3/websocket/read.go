@@ -1,12 +1,18 @@
 package websocket
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/gofiber/utils/v2"
 )
+
+// readLimitCloseWait bounds the 1009 close frame, as the library bounds its own.
+const readLimitCloseWait = time.Second
 
 const (
 	frameBufferInitial  = 512
@@ -18,6 +24,13 @@ var framePool = sync.Pool{New: func() any { return new(frameReader) }}
 type frameReader struct {
 	buf   []byte
 	probe [1]byte
+}
+
+// SetReadLimit sets the maximum message size. The library counts wire bytes;
+// ReadMessage and ReadJSON also count what a compressed message inflates to.
+func (conn *Conn) SetReadLimit(limit int64) {
+	conn.readLimit = limit
+	conn.Conn.SetReadLimit(limit)
 }
 
 // ReadMessage reads the next data message and returns a buffer the caller
@@ -32,17 +45,51 @@ func (conn *Conn) ReadMessage() (messageType int, p []byte, err error) {
 		return messageType, nil, err
 	}
 	fr := framePool.Get().(*frameReader)
-	p, err = fr.readAll(r)
+	p, err = fr.readAll(r, conn.readLimit)
 	fr.release()
+	if errors.Is(err, ErrReadLimit) {
+		// Sticky like the library's: nothing is handed out after the 1009 close.
+		conn.readErr = err
+		_ = conn.WriteControl(CloseMessage, FormatCloseMessage(CloseMessageTooBig, ""), time.Now().Add(readLimitCloseWait))
+		return messageType, nil, err
+	}
 	return messageType, p, err
 }
 
-func (fr *frameReader) readAll(r io.Reader) ([]byte, error) {
+// NextReader is the library's NextReader; it also returns the ErrReadLimit
+// ReadMessage hit, keeping read errors permanent across both.
+func (conn *Conn) NextReader() (messageType int, r io.Reader, err error) {
+	if conn.readErr != nil {
+		return -1, nil, conn.readErr // the library's noFrame
+	}
+	return conn.Conn.NextReader()
+}
+
+// ReadJSON is the library's ReadJSON, read through ReadMessage so SetReadLimit
+// also bounds an inflated message.
+func (conn *Conn) ReadJSON(v any) error {
+	_, p, err := conn.ReadMessage()
+	if err != nil {
+		return err
+	}
+	err = json.NewDecoder(bytes.NewReader(p)).Decode(v)
+	if errors.Is(err, io.EOF) {
+		return io.ErrUnexpectedEOF
+	}
+	return err
+}
+
+// readAll reads r to EOF; a positive limit stops it with ErrReadLimit.
+func (fr *frameReader) readAll(r io.Reader, limit int64) ([]byte, error) {
 	buf := fr.buf[:0]
 	if cap(buf) == 0 {
 		buf = make([]byte, 0, frameBufferInitial)
 	}
 	for {
+		if limit > 0 && int64(len(buf)) > limit {
+			fr.buf = buf
+			return nil, ErrReadLimit
+		}
 		if len(buf) == cap(buf) {
 			// Probe one byte so a message that exactly fills the buffer does not double it.
 			n, err := r.Read(fr.probe[:])
@@ -67,6 +114,10 @@ func (fr *frameReader) readAll(r io.Reader) ([]byte, error) {
 			fr.buf = buf
 			return nil, err
 		}
+	}
+	if limit > 0 && int64(len(buf)) > limit {
+		fr.buf = buf
+		return nil, ErrReadLimit
 	}
 	if cap(buf) > frameBufferRetained {
 		// Too big for the pool: the caller takes it as it is, rather than

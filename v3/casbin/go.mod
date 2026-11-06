@@ -5,13 +5,13 @@ go 1.26.0
 require (
 	github.com/casbin/casbin/v3 v3.11.0
 	github.com/gofiber/fiber/v3 v3.6.1
+	github.com/gofiber/utils/v2 v2.6.4
 )
 
 require (
 	github.com/bmatcuk/doublestar/v4 v4.10.4 // indirect
 	github.com/casbin/govaluate v1.10.0 // indirect
 	github.com/gofiber/schema v1.9.3 // indirect
-	github.com/gofiber/utils/v2 v2.6.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/mattn/go-colorable v0.1.16 // indirect

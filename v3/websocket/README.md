@@ -133,8 +133,10 @@ by earlier middleware are left in place.
 
 `c.ReadMessage()` reads messages up to 64 KiB into a pooled buffer and returns an exact-size
 copy; a larger message comes back in its own buffer, as from the library's `ReadMessage`.
-Bound message size with `SetReadLimit`; for zero-copy reads use `NextReader` with your own
-buffer.
+Bound message size with `SetReadLimit`: `ReadMessage` and `ReadJSON` apply it to the message as read, so
+with `EnableCompression` it bounds what a compressed message inflates to, not only the bytes on
+the wire. For zero-copy reads use `NextReader` with your own buffer; only the wire size is
+checked there, so bound what you read from it yourself.
 
 Replies to a burst of pipelined frames leave in one write instead of one per frame: writes
 made while the handler still has unread frames wait until it asks for the next one, at most
@@ -182,7 +184,10 @@ A handler that returns normally leaves the socket open, so it may hand the
 connection to another goroutine before returning and keep writing after. The
 `*websocket.Conn` it receives is allocated for that upgrade alone and never reused,
 so `Locals`, `Params`, `Query`, `Cookies`, `Headers` and `IP` keep answering with
-that connection's own data for as long as anything holds it.
+that connection's own data for as long as anything holds it. String and `[]byte`
+locals are copied at the upgrade; other values are kept as stored. A name the
+request repeats resolves to the occurrence `c.Query`, `c.Cookies` and `c.Get`
+return, so the handler sees the value middleware in front of the upgrade checked.
 
 ```go
 app := fiber.New()

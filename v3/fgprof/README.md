@@ -26,12 +26,17 @@ go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/v3/fgprof
 ```
 
+> [!WARNING]
+> The profiler shows the stacks of every goroutine and each profile costs CPU and memory while it runs. Do not expose it to untrusted clients: serve it on an internal listener, or put authentication in front of it (for example with `Next` or a middleware on `Prefix`).
+
 ## Config
 
 | Property | Type                      | Description                                                                                                                                      | Default |
 |----------|---------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|---------|
 | Next     | `func(c fiber.Ctx) bool` | A function to skip this middleware when returned `true`.                                                                                         | `nil`   |
 | Prefix   | `string`.                 | Prefix defines a URL prefix added before "/debug/fgprof". Note that it should start with (but not end with) a slash. Example: "/federated-fiber" | `""`    |
+| MaxConcurrent | `int`                | The number of profiles that may run at the same time. A request beyond it is answered with `503 Service Unavailable`.                            | `4`     |
+| MaxSeconds | `int`                   | The longest profile a request may ask for with the `seconds` parameter (`30` when absent). A longer one is answered with `400 Bad Request`.      | `60`    |
 
 ## Example
 

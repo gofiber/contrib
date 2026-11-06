@@ -25,8 +25,6 @@ const benchBodyRules = `SecRuleEngine On
 SecRequestBodyAccess On
 SecRule REQUEST_BODY "@contains attack" "id:1002,phase:2,deny,status:403,msg:'body attack detected'"`
 
-const benchBodyLimit = 4 * 1024 * 1024
-
 var (
 	// "payload=safe&" is 13 bytes; the repeat counts size each body to the
 	// labelled order of magnitude (78*13 ~= 1KB, 5041*13 ~= 64KB).
@@ -167,11 +165,13 @@ func BenchmarkProcessRequest_FromStdRequest_GET(b *testing.B) {
 	waf := newBenchmarkWAF(b, "")
 	req := httptest.NewRequest(http.MethodGet, "/?name=safe", nil)
 	req.RemoteAddr = "127.0.0.1:1234"
+	app, ctx := newBenchmarkCtx(b, http.MethodGet, "/?name=safe", nil)
+	defer app.ReleaseCtx(ctx)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		tx := waf.NewTransaction()
-		if _, err := processRequest(tx, req, benchBodyLimit); err != nil {
+		if _, err := processRequest(tx, req, ctx); err != nil {
 			b.Fatal(err)
 		}
 		closeTransaction(b, tx)
@@ -182,13 +182,15 @@ func BenchmarkProcessRequest_FromStdRequest_POST_1KB(b *testing.B) {
 	b.ReportAllocs()
 
 	waf := newBenchmarkWAF(b, benchBodyRules)
+	app, ctx := newBenchmarkCtx(b, http.MethodPost, "/", benchBody1KBAllow)
+	defer app.ReleaseCtx(ctx)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		tx := waf.NewTransaction()
 		req := newBenchmarkPostRequest(benchBody1KBAllow)
 		req.RemoteAddr = "127.0.0.1:1234"
-		if _, err := processRequest(tx, req, benchBodyLimit); err != nil {
+		if _, err := processRequest(tx, req, ctx); err != nil {
 			b.Fatal(err)
 		}
 		closeTransaction(b, tx)

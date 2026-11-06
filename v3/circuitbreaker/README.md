@@ -34,8 +34,17 @@ We only support the latest two versions of Go. Visit [https://go.dev/doc/devel/r
    - Allows a limited number of requests to test service recovery.  
    - `HalfOpenMaxConcurrent` bounds how many of those probes run at once; the rest are
      refused by `OnHalfOpen`.  
+   - A probe holds its slot for `Timeout` at most. Each slot expires on its own, after which
+     the next request is admitted as a probe in its place, so a probe that never finishes
+     cannot keep the circuit half-open. The outcome of a late probe still counts if the
+     circuit is still in the same half-open state when it finishes.  
    - If enough requests **succeed** (`SuccessThreshold`), the circuit resets to **Closed**.  
    - If a single request **fails**, the circuit returns to **Open**.
+
+Client errors are **neutral** in every state: a request that `IsFailure` does not count
+and that ends with a 4xx status (a returned `*fiber.Error` below 500, such as a route miss
+or `fiber.ErrBadRequest`, or a 4xx response status) counts neither as a failure nor as a
+success. In half-open it gives its probe slot back, so the next request probes instead.
 
 ## Benefits of Using a Circuit Breaker
 
@@ -62,19 +71,19 @@ circuitbreaker.Middleware(cb *circuitbreaker.CircuitBreaker) fiber.Handler
 the half-open slot it took, so none of that has to be paired up by hand. `AllowRequest`,
 `ReleaseSemaphore`, `ReportSuccess` and `ReportFailure` remain available for callers that
 already drive the circuit themselves, but they are **deprecated**: a half-open slot taken
-through `AllowRequest` is held until `ReleaseSemaphore` returns it or the next state change
-reclaims it.
+through `AllowRequest` is held until `ReleaseSemaphore` returns it, the next state change
+reclaims it, or `Timeout` has passed since it was taken.
 
 ## Config
 
 | Property | Type | Description | Default |
 |:---------|:-----|:------------|:--------|
 | FailureThreshold | `int` | Number of failures required to open the circuit | `5` |
-| Timeout | `time.Duration` | How long the circuit stays open before a probe is allowed | `5 * time.Second` |
+| Timeout | `time.Duration` | How long the circuit stays open before a probe is allowed, and the longest a probe keeps its half-open slot | `5 * time.Second` |
 | SuccessThreshold | `int` | Number of successful probes required to close the circuit | `1` |
 | HalfOpenMaxConcurrent | `int` | Max concurrent probes in half-open state | `1` |
 | Interval | `time.Duration` | Period after which failure counts reset in closed state. Zero means failures accumulate until the circuit opens. | `0` |
-| IsFailure | `func(c fiber.Ctx, err error) bool` | Decides whether a served request counts as a failure | `err != nil \|\| Status >= 500` |
+| IsFailure | `func(c fiber.Ctx, err error) bool` | Decides whether a served request counts as a failure. An outcome it does not count that ends with a 4xx status is neutral. | `Status >= 500`, taken from a returned `*fiber.Error` or else from the response; any other returned error |
 | Clock | `func() time.Time` | Reads the current time. Recovery is derived from it, so substituting a clock drives the circuit through every state without waiting. | `time.Now` |
 | OnOpen | `func(fiber.Ctx) error` | Answers a request **refused because the circuit is open** | `503 response` |
 | OnHalfOpen | `func(fiber.Ctx) error` | Answers a request **refused because half-open is already at `HalfOpenMaxConcurrent`** | `429 response` |

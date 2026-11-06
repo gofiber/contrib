@@ -2,15 +2,18 @@ package websocket
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/fasthttp/websocket"
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -772,6 +775,53 @@ func TestConnCaptureAllocatesOnlyWhatTheRequestCarries(t *testing.T) {
 	assert.Nil(t, conn.Locals("missing"))
 }
 
+func TestConnCaptureCopiesStringAndByteLocals(t *testing.T) {
+	// A Local taken from c.Params or c.Query aliases a buffer the next request reuses.
+	buf := []byte("alice")
+	fctx := &fasthttp.RequestCtx{}
+	fctx.SetUserValue("user", utils.UnsafeString(buf))
+	fctx.SetUserValue("raw", buf)
+
+	conn := &Conn{}
+	conn.capture(fctx)
+	copy(buf, "carol")
+
+	assert.Equal(t, "alice", conn.Locals("user"))
+	assert.Equal(t, []byte("alice"), conn.Locals("raw"))
+}
+
+func TestConnCaptureResolvesRepeatedNamesLikeFiber(t *testing.T) {
+	// Middleware in front of the upgrade reads through Fiber; the handler must see the same occurrence.
+	app := fiber.New()
+	fctx := &fasthttp.RequestCtx{}
+	fctx.Request.SetRequestURI("/ws?room=first&room=last&empty=&empty=last")
+	fctx.Request.Header.Set(fiber.HeaderCookie, "user=first; user=last; empty=; empty=last")
+	fctx.Request.Header.Add("X-User", "first")
+	fctx.Request.Header.Add("X-User", "last")
+	fctx.Request.Header.Add("X-Empty", "")
+	fctx.Request.Header.Add("X-Empty", "second")
+	fctx.Request.Header.Add("X-Empty", "last")
+	c := app.AcquireCtx(fctx)
+	defer app.ReleaseCtx(c)
+
+	conn := &Conn{}
+	conn.capture(fctx)
+
+	assert.Equal(t, "first", conn.Query("room"))
+	assert.Equal(t, c.Query("room"), conn.Query("room"))
+	assert.Equal(t, "", conn.Query("empty"))
+	assert.Equal(t, c.Query("empty"), conn.Query("empty"))
+	assert.Equal(t, "first", conn.Cookies("user"))
+	assert.Equal(t, c.Cookies("user"), conn.Cookies("user"))
+	assert.Equal(t, "", conn.Cookies("empty"))
+	assert.Equal(t, c.Cookies("empty"), conn.Cookies("empty"))
+	assert.Equal(t, "first", conn.Headers("X-User"))
+	assert.Equal(t, c.Get("X-User"), conn.Headers("X-User"))
+	// Get skips an empty field line.
+	assert.Equal(t, "second", conn.Headers("X-Empty"))
+	assert.Equal(t, c.Get("X-Empty"), conn.Headers("X-Empty"))
+}
+
 func TestConnHeadersLookup(t *testing.T) {
 	conn := &Conn{headers: map[string]string{
 		"Content-Type":  "application/json",
@@ -916,5 +966,91 @@ func BenchmarkNewConn(b *testing.B) {
 	for b.Loop() {
 		conn := &Conn{ip: "127.0.0.1"}
 		conn.capture(fctx)
+	}
+}
+
+func TestReadLimitBoundsDecompressedMessage(t *testing.T) {
+	reads := map[string]func(c *Conn) error{
+		"ReadMessage": func(c *Conn) error {
+			_, msg, err := c.ReadMessage()
+			if err == nil {
+				err = fmt.Errorf("read %d bytes past the limit", len(msg))
+			}
+			return err
+		},
+		"ReadJSON": func(c *Conn) error {
+			var msg string
+			err := c.ReadJSON(&msg)
+			if err == nil {
+				err = fmt.Errorf("decoded %d bytes past the limit", len(msg))
+			}
+			return err
+		},
+	}
+	// A few KiB on the wire, under the limit the library checks; what it
+	// inflates to is not.
+	payload := []byte(`"` + strings.Repeat("a", 1<<20) + `"`)
+
+	for name, read := range reads {
+		t.Run(name, func(t *testing.T) {
+			readErr := make(chan error, 1)
+			app := setupTestApp(Config{EnableCompression: true}, func(c *Conn) {
+				c.SetReadLimit(4096)
+				err := read(c)
+				readErr <- err
+				assert.Same(t, err, read(c), "ErrReadLimit is sticky, as the library's is")
+			})
+			defer app.Shutdown()
+
+			dialer := websocket.Dialer{EnableCompression: true}
+			conn, resp, err := dialer.Dial("ws://localhost:3000/ws/message", nil)
+			require.NoError(t, err)
+			defer conn.Close()
+			require.Contains(t, resp.Header.Get("Sec-WebSocket-Extensions"), "permessage-deflate")
+
+			conn.EnableWriteCompression(true)
+			require.NoError(t, conn.WriteMessage(websocket.TextMessage, payload))
+
+			select {
+			case err := <-readErr:
+				require.ErrorIs(t, err, ErrReadLimit)
+			case <-time.After(5 * time.Second):
+				t.Fatal("timed out waiting for the handler's read")
+			}
+
+			require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+			_, _, err = conn.ReadMessage()
+			require.True(t, IsCloseError(err, CloseMessageTooBig), "expected a 1009 close, got %v", err)
+		})
+	}
+}
+
+func TestReadLimitErrorStopsNextReader(t *testing.T) {
+	next := make(chan error, 1)
+	app := setupTestApp(Config{EnableCompression: true}, func(c *Conn) {
+		c.SetReadLimit(4096)
+		if _, _, err := c.ReadMessage(); !errors.Is(err, ErrReadLimit) {
+			next <- fmt.Errorf("ReadMessage: %w", err)
+			return
+		}
+		_, _, err := c.NextReader()
+		next <- err
+	})
+	defer app.Shutdown()
+
+	dialer := websocket.Dialer{EnableCompression: true}
+	conn, _, err := dialer.Dial("ws://localhost:3000/ws/message", nil)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	conn.EnableWriteCompression(true)
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(strings.Repeat("a", 1<<20))))
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte("next")))
+
+	select {
+	case err := <-next:
+		require.ErrorIs(t, err, ErrReadLimit, "NextReader returned the message pipelined behind the oversized one")
+	case <-time.After(5 * time.Second):
+		t.Fatal("NextReader blocked after ErrReadLimit")
 	}
 }

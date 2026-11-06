@@ -442,3 +442,97 @@ func Test_RoutePermission(t *testing.T) {
 		})
 	}
 }
+
+// The router folds case and trailing slashes while params keep the client's spelling, so both must be allowed.
+func Test_RoutePermission_RouterSpelling(t *testing.T) {
+	const restModel = `
+	[request_definition]
+	r = sub, obj, act
+
+	[policy_definition]
+	p = sub, obj, act, eft
+
+	[policy_effect]
+	e = some(where (p.eft == allow)) && !some(where (p.eft == deny))
+
+	[matchers]
+	m = r.sub == p.sub && keyMatch(r.obj, p.obj) && regexMatch(r.act, p.act)`
+
+	const restPolicy = `
+	p,bob,/*,GET,allow
+	p,bob,/admin,GET,deny
+	p,bob,/admin/*,GET,deny
+	p,bob,/blog/*,DELETE,allow
+	p,bob,/doc/abc,PUT,allow`
+
+	testCases := []struct {
+		desc       string
+		config     fiber.Config
+		url        string
+		method     string
+		statusCode int
+	}{
+		{desc: "denied path", url: "/admin", method: "GET", statusCode: 403},
+		{desc: "denied path in upper case", url: "/ADMIN", method: "GET", statusCode: 403},
+		{desc: "denied path in escaped upper case", url: "/%41dmin", method: "GET", statusCode: 403},
+		{desc: "denied sub path in mixed case", url: "/Admin/users", method: "GET", statusCode: 403},
+		{desc: "collection is not covered by the item pattern", url: "/blog", method: "DELETE", statusCode: 403},
+		{desc: "collection with a trailing slash", url: "/blog/", method: "DELETE", statusCode: 403},
+		{desc: "collection with trailing slashes", url: "/blog//", method: "DELETE", statusCode: 403},
+		{desc: "allowed item", url: "/blog/1", method: "DELETE", statusCode: 200},
+		{desc: "allowed item with a trailing slash", url: "/blog/1/", method: "DELETE", statusCode: 200},
+		{desc: "allowed path", url: "/blog", method: "GET", statusCode: 200},
+		{desc: "allowed path in upper case", url: "/BLOG/", method: "GET", statusCode: 200},
+		{desc: "allowed parameter", url: "/doc/abc", method: "PUT", statusCode: 200},
+		{desc: "another parameter that folds to the allowed one", url: "/doc/ABC", method: "PUT", statusCode: 403},
+		{desc: "case sensitive router", config: fiber.Config{CaseSensitive: true}, url: "/ADMIN", method: "GET", statusCode: 404},
+		{desc: "strict router", config: fiber.Config{StrictRouting: true}, url: "/blog/", method: "DELETE", statusCode: 404},
+	}
+
+	m, err := model.NewModelFromString(restModel)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	enf, err := casbin.NewEnforcer(m, newMockAdapter(restPolicy))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	authz := New(Config{
+		Enforcer: enf,
+		Lookup:   subjectBob,
+	})
+
+	ok := func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	}
+
+	for _, tC := range testCases {
+		app := fiber.New(tC.config)
+		app.Use(authz.RoutePermission())
+		app.Get("/admin", ok)
+		app.Get("/admin/users", ok)
+		app.Get("/blog", ok)
+		app.Delete("/blog", ok)
+		app.Delete("/blog/:id", ok)
+		app.Put("/doc/:id", ok)
+
+		t.Run(tC.desc, func(t *testing.T) {
+			req, err := http.NewRequest(tC.method, tC.url, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Host = "localhost"
+
+			resp, err := app.Test(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if resp.StatusCode != tC.statusCode {
+				t.Errorf(`StatusCode: got %v - expected %v`, resp.StatusCode, tC.statusCode)
+			}
+		})
+	}
+}

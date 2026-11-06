@@ -46,9 +46,24 @@ hcaptcha.New(config hcaptcha.Config) fiber.Handler
 | Property        | Type                               | Description                                                                                                                                                                                                                                                                                  | Default                               |
 |:----------------|:-----------------------------------|:---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|:--------------------------------------|
 | SecretKey       | `string`                           | The secret key you obtained from the HCaptcha admin panel. This field must not be empty.                                                                                                                                                                                                    | `""`                                  |
-| ResponseKeyFunc | `func(fiber.Ctx) (string, error)`  | ResponseKeyFunc should return the token that the captcha provides upon successful solving. By default, it gets the token from the body by parsing a JSON request and returns the `hcaptcha_token` field.                                                                                 | `hcaptcha.DefaultResponseKeyFunc`     |
+| ResponseKeyFunc | `func(fiber.Ctx) (string, error)`  | ResponseKeyFunc should return the token that the captcha provides upon successful solving. By default, it gets the token from the body by parsing a JSON request and returns the `hcaptcha_token` field. The request is rejected when the token is longer than 32 KiB.                 | `hcaptcha.DefaultResponseKeyFunc`     |
 | SiteVerifyURL   | `string`                           | This property specifies the API resource used for token authentication.                                                                                                                                                                                                                      | `https://api.hcaptcha.com/siteverify` |
 | ValidateFunc    | `func(success bool, c fiber.Ctx) error` | Optional custom validation hook called after siteverify completes. Parameters: `success` (hCaptcha verification result), `c` (Fiber context). Return `nil` to continue, or return an `error` to stop request processing. If unset, middleware defaults to blocking unsuccessful verification. For secure bot protection, reject when `success == false`. | `nil`                                 |
+
+## Error responses
+
+Errors are returned to Fiber's error handler:
+
+| Case | Status | Body (default error handler) |
+|:-----|:-------|:-----------------------------|
+| `ResponseKeyFunc` returns an error (for example a missing or empty token) | `400` | `Bad Request: error retrieving HCaptcha token: <error>` |
+| The token is longer than 32 KiB | `400` | `Bad Request: hcaptcha token is too long` |
+| The siteverify request fails | `500` | `error sending request to HCaptcha API` |
+| The siteverify response is not valid JSON | `500` | `error decoding HCaptcha API response` |
+
+The returned error wraps `fiber.ErrBadRequest` and the `ResponseKeyFunc` error, so `errors.Is` matches both. The cause of a failed siteverify request or response is logged with Fiber's `log` package instead of being sent to the client.
+
+Earlier releases answered a `ResponseKeyFunc` error with `500` and included the underlying network or decoding error in the body of a siteverify failure.
 
 ## Example
 

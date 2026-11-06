@@ -911,3 +911,120 @@ func Test_BlacklistHeaders_Resp_Headers(t *testing.T) {
 
 	assert.Equal(t, expected, logs)
 }
+
+func Test_StreamedRequest_NotBuffered(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	unread := strings.NewReader("streamed")
+	left := -1
+
+	app := fiber.New(fiber.Config{StreamRequestBody: true})
+	app.Use(func(c fiber.Ctx) error {
+		c.Request().SetBodyStream(unread, unread.Len())
+		err := c.Next()
+		left = unread.Len()
+		return err
+	})
+	app.Use(New(Config{
+		Logger: &logger,
+		Fields: []string{FieldStatus, FieldBytesReceived, FieldBody},
+	}))
+	app.Post("/", func(_ fiber.Ctx) error {
+		return fiber.ErrUnauthorized
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodPost, "/", nil))
+	assert.NoError(t, err)
+	assert.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
+	// the stream the handler left alone is not read for a log field
+	assert.Equal(t, len("streamed"), left)
+
+	var logs map[string]any
+	assert.NoError(t, json.Unmarshal(buf.Bytes(), &logs))
+	assert.EqualValues(t, fiber.StatusUnauthorized, logs[FieldStatus])
+	assert.EqualValues(t, len("streamed"), logs[FieldBytesReceived])
+	assert.Equal(t, "", logs[FieldBody])
+}
+
+func Test_StreamedMultipartForm_NotMarshaled(t *testing.T) {
+	t.Parallel()
+
+	const body = "--b\r\nContent-Disposition: form-data; name=\"field\"\r\n\r\nvalue\r\n--b--\r\n"
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	app := fiber.New(fiber.Config{StreamRequestBody: true, BodyLimit: 8})
+	app.Use(New(Config{
+		Logger: &logger,
+		Fields: []string{FieldStatus, FieldBytesReceived, FieldBody},
+	}))
+	app.Post("/", func(_ fiber.Ctx) error {
+		return fiber.ErrUnauthorized
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set(fiber.HeaderContentType, "multipart/form-data; boundary=b")
+
+	resp, err := app.Test(req)
+	assert.NoError(t, err)
+	assert.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
+
+	var logs map[string]any
+	assert.NoError(t, json.Unmarshal(buf.Bytes(), &logs))
+	assert.EqualValues(t, fiber.StatusUnauthorized, logs[FieldStatus])
+	assert.EqualValues(t, len(body), logs[FieldBytesReceived])
+	assert.Equal(t, "", logs[FieldBody])
+}
+
+func Test_StreamedResponse_NotBuffered(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		size int
+		sent int
+	}{
+		{name: "known length", size: len("streamed"), sent: len("streamed")},
+		{name: "unknown length", size: -1, sent: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var buf bytes.Buffer
+			logger := zerolog.New(&buf)
+
+			unread := strings.NewReader("streamed")
+			left := -1
+
+			app := fiber.New()
+			app.Use(func(c fiber.Ctx) error {
+				err := c.Next()
+				left = unread.Len()
+				return err
+			})
+			app.Use(New(Config{
+				Logger: &logger,
+				Fields: []string{FieldStatus, FieldBytesSent, FieldResBody},
+			}))
+			app.Get("/", func(c fiber.Ctx) error {
+				return c.SendStream(unread, tc.size)
+			})
+
+			resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+			assert.NoError(t, err)
+			assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+			// the stream is for the client, not the log
+			assert.Equal(t, len("streamed"), left)
+
+			var logs map[string]any
+			assert.NoError(t, json.Unmarshal(buf.Bytes(), &logs))
+			assert.EqualValues(t, fiber.StatusOK, logs[FieldStatus])
+			assert.EqualValues(t, tc.sent, logs[FieldBytesSent])
+			assert.Equal(t, "", logs[FieldResBody])
+		})
+	}
+}
