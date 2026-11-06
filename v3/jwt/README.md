@@ -198,6 +198,11 @@ For an overview and additional examples, see the Fiber Extractors guide:
   but found it absent or empty - `?token=` names the parameter without carrying
   a credential, and the extractors read it as no credential too.
 
+  The directive is set before the handler runs and checked again after it. A
+  request Fiber's `timeout` middleware answered gets only the first: its
+  response is the one that middleware sent, and the one on `c` stays with the
+  handler, which may still be writing it.
+
   The three sources above are the ones a middleware can recognise. An extractor
   of your own reads wherever you wrote it to, so if that is somewhere in the URL,
   mark the response yourself - there is nothing in its metadata to tell this
