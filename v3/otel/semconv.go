@@ -275,12 +275,11 @@ func requestBodySize(c fiber.Ctx) (int64, bool) {
 }
 
 // responseBodySize returns the response body size and whether it is known.
-func responseBodySize(c fiber.Ctx) (int64, bool) {
-	if responseBodySuppressed(c) {
+func responseBodySize(c fiber.Ctx, response *fasthttp.Response) (int64, bool) {
+	if responseBodySuppressed(c, response) {
 		return 0, true
 	}
 
-	response := c.Response()
 	if !response.IsBodyStream() {
 		return int64(len(response.Body())), true
 	}
@@ -312,13 +311,13 @@ func bodyStreamSize(stream io.Reader) (int64, bool) {
 }
 
 // responseBodySuppressed mirrors fasthttp's mustSkipBody: only headers are sent.
-func responseBodySuppressed(c fiber.Ctx) bool {
-	if c.Method() == fiber.MethodHead || c.Response().SkipBody {
+func responseBodySuppressed(c fiber.Ctx, response *fasthttp.Response) bool {
+	if c.Method() == fiber.MethodHead || response.SkipBody {
 		return true
 	}
 
 	// 1xx, 204 and 304 responses must not include a message body.
-	status := c.Response().StatusCode()
+	status := response.StatusCode()
 
 	return (status >= 100 && status < 200) || status == fiber.StatusNoContent || status == fiber.StatusNotModified
 }

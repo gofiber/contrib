@@ -315,6 +315,11 @@ receives, and returns `nil`. It picks the handler Fiber would: a mounted
 sub-app's own `ErrorHandler` for its routes, and a 500 when the error handler
 itself fails.
 
+A request Fiber's `timeout` middleware answered is recorded with the response
+that middleware sent, a 503 by default. The one on `c` stays with the handler,
+which may still be writing it, so such a response carries no trace headers, and
+the handler keeps the context the timeout middleware gave it.
+
 ### Panics
 
 A panic in the handler chain is not recovered: it continues, unchanged, to the

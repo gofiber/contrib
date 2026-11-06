@@ -260,9 +260,10 @@ func (m *middleware) handle(c fiber.Ctx) error {
 	}
 	r.phase = phaseCallbacks
 
-	r.status = c.Response().StatusCode()
+	response := sentResponse(c)
+	r.status = response.StatusCode()
 	r.route = routePattern(c)
-	r.responseSize, r.responseSizeKnown = responseBodySize(c)
+	r.responseSize, r.responseSizeKnown = responseBodySize(c, response)
 
 	if r.metrics && m.CustomResponseMetricAttributes != nil {
 		r.customMetricAttrs = m.CustomResponseMetricAttributes(c)
@@ -281,7 +282,11 @@ func (m *middleware) handle(c fiber.Ctx) error {
 		r.naming = false
 	}
 	r.phase = phaseDone
-	m.setTraceHeaders(c, c.Context(), &r)
+	// Handlers may have replaced the context; a timed-out c is its handler's to read.
+	if timedOutResponse(c) == nil {
+		ctx = c.Context()
+	}
+	m.setTraceHeaders(c, ctx, &r)
 
 	if recording {
 		spanStatus, spanMessage := internal.SpanStatusFromHTTPStatusCodeAndSpanKind(r.status, oteltrace.SpanKindServer)
@@ -298,7 +303,7 @@ func (m *middleware) handle(c fiber.Ctx) error {
 			attrs = append(attrs, semconv.HTTPResponseBodySize(int(r.responseSize)))
 		}
 		for _, header := range m.responseHeaders {
-			if headerValues := responseHeaderValues(&c.Response().Header, header.name, settings.disableHeaderNormalizing); len(headerValues) > 0 {
+			if headerValues := responseHeaderValues(&response.Header, header.name, settings.disableHeaderNormalizing); len(headerValues) > 0 {
 				attrs = append(attrs, header.key.StringSlice(headerValues))
 			}
 		}
@@ -310,8 +315,33 @@ func (m *middleware) handle(c fiber.Ctx) error {
 	return nil
 }
 
+// timedOutResponse returns what fasthttp sends for a request timeout.New gave up on, or nil.
+// The response on c then stays with the handler, which may still be writing it.
+func timedOutResponse(c fiber.Ctx) *fasthttp.Response {
+	// IsAbandoned goes first: its atomic load orders the read after the timeout middleware's write.
+	if !c.IsAbandoned() {
+		return nil
+	}
+
+	return c.RequestCtx().LastTimeoutErrorResponse()
+}
+
+// sentResponse returns the response the client receives, to read from.
+func sentResponse(c fiber.Ctx) *fasthttp.Response {
+	if timedOut := timedOutResponse(c); timedOut != nil {
+		return timedOut
+	}
+
+	return c.Response()
+}
+
 // setTraceHeaders writes the trace ID header and the response propagators' fields.
 func (m *middleware) setTraceHeaders(c fiber.Ctx, ctx context.Context, r *request) {
+	// Neither response is ours after a timeout: c's is the handler's, the parked one may be in flight.
+	if timedOutResponse(c) != nil {
+		return
+	}
+
 	if m.TraceResponseHeader != "" {
 		if traceID := r.span.SpanContext().TraceID(); traceID.IsValid() {
 			var encoded [2 * len(traceID)]byte
@@ -347,14 +377,17 @@ func (m *middleware) end(c fiber.Ctx, r *request) {
 		m.recordMetrics(c, r)
 	}
 
-	var ctx context.Context
-	if r.phase != phaseDone {
-		ctx = c.Context()
+	ctx := r.ctx
+	// A timed-out handler keeps the context it was given.
+	if timedOutResponse(c) == nil {
+		if r.phase != phaseDone {
+			ctx = c.Context()
+		}
+		c.SetContext(r.parent)
 	}
-	c.SetContext(r.parent)
 	// A body stream is written after return and may watch ctx.Done(), so its context is
 	// left uncanceled - unless the parent is cancelable, where that would leak.
-	if !c.Response().IsBodyStream() || r.parent.Done() != nil {
+	if !sentResponse(c).IsBodyStream() || r.parent.Done() != nil {
 		r.cancel()
 	}
 
