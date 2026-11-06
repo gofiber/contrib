@@ -4,16 +4,19 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/timeout"
 	"github.com/valyala/fasthttp"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -482,4 +485,67 @@ func Test_Fields_Func(t *testing.T) {
 	}
 
 	assert.Equal(t, expected, logs.All()[0].ContextMap())
+}
+
+// go test -run Test_Logger_MountedErrorHandler
+func Test_Logger_MountedErrorHandler(t *testing.T) {
+	logger, _ := setupLogsCapture()
+
+	api := fiber.New(fiber.Config{
+		ErrorHandler: func(c fiber.Ctx, _ error) error {
+			return c.Status(fiber.StatusTeapot).SendString("handled by the mounted app")
+		},
+	})
+	api.Get("/", func(_ fiber.Ctx) error {
+		return errors.New("internal detail")
+	})
+
+	app := fiber.New()
+	app.Use(New(Config{Logger: logger}))
+	app.Use("/api", api)
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/api", nil))
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusTeapot, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, "handled by the mounted app", string(body))
+}
+
+// go test -race -run Test_Logger_TimedOutHandler
+func Test_Logger_TimedOutHandler(t *testing.T) {
+	logger, logs := setupLogsCapture()
+
+	answered := make(chan struct{})
+	untouched := make(chan string, 1)
+	finished := make(chan struct{})
+
+	app := fiber.New()
+	app.Use(New(Config{
+		Logger: logger,
+		Fields: []string{"status", "resBody", "bytesSent"},
+	}))
+	app.Get("/", timeout.New(func(c fiber.Ctx) error {
+		defer close(finished)
+		<-answered
+		untouched <- fmt.Sprintf("%d %q", c.Response().StatusCode(), c.Response().Body())
+		return c.Status(fiber.StatusAccepted).SendString("late")
+	}, timeout.Config{Timeout: 10 * time.Millisecond}))
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/", nil))
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
+
+	// The handler still owns the live response: nothing may have been written into it.
+	close(answered)
+	assert.Equal(t, `200 ""`, <-untouched)
+	<-finished
+
+	assert.Equal(t, "Server error", logs.All()[0].Message)
+	assert.Equal(t, map[string]any{
+		"status":    int64(fiber.StatusServiceUnavailable),
+		"resBody":   fiber.ErrServiceUnavailable.Message,
+		"bytesSent": int64(len(fiber.ErrServiceUnavailable.Message)),
+	}, logs.All()[0].ContextMap())
 }

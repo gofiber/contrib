@@ -9,6 +9,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/utils/v2"
 	utilsstrings "github.com/gofiber/utils/v2/strings"
+	"github.com/valyala/fasthttp"
 	"go.uber.org/zap"
 )
 
@@ -59,7 +60,7 @@ func New(config ...Config) fiber.Handler {
 				}
 			}
 			// override error handler
-			errHandler = c.App().Config().ErrorHandler
+			errHandler = c.App().ErrorHandler
 		})
 
 		var start, stop time.Time
@@ -83,9 +84,11 @@ func New(config ...Config) fiber.Handler {
 			stop = time.Now()
 		}
 
+		response := sentResponse(c)
+
 		// Check if the logger has the appropriate level
 		var (
-			s     = c.Response().StatusCode()
+			s     = response.StatusCode()
 			index int
 		)
 		switch {
@@ -143,11 +146,11 @@ func New(config ...Config) fiber.Handler {
 			case "latency":
 				fields = append(fields, zap.String("latency", stop.Sub(start).String()))
 			case "status":
-				fields = append(fields, zap.Int("status", c.Response().StatusCode()))
+				fields = append(fields, zap.Int("status", s))
 			case "resBody":
 				if cfg.SkipResBody == nil || !cfg.SkipResBody(c) {
 					if cfg.GetResBody == nil {
-						fields = append(fields, zap.ByteString("resBody", c.Response().Body()))
+						fields = append(fields, zap.ByteString("resBody", response.Body()))
 					} else {
 						fields = append(fields, zap.ByteString("resBody", cfg.GetResBody(c)))
 					}
@@ -161,13 +164,13 @@ func New(config ...Config) fiber.Handler {
 			case "bytesReceived":
 				fields = append(fields, zap.Int("bytesReceived", len(c.Request().Body())))
 			case "bytesSent":
-				fields = append(fields, zap.Int("bytesSent", len(c.Response().Body())))
+				fields = append(fields, zap.Int("bytesSent", len(response.Body())))
 			case "route":
 				fields = append(fields, zap.String("route", c.Route().Path))
 			case "method":
 				fields = append(fields, zap.String("method", c.Method()))
 			case "requestId":
-				fields = append(fields, zap.String("requestId", c.GetRespHeader(fiber.HeaderXRequestID)))
+				fields = append(fields, zap.String("requestId", string(response.Header.Peek(fiber.HeaderXRequestID))))
 			case "error":
 				if chainErr != nil {
 					fields = append(fields, zap.String("error", chainErr.Error()))
@@ -194,6 +197,18 @@ func New(config ...Config) fiber.Handler {
 
 		return nil
 	}
+}
+
+// sentResponse is what the client gets: timeout.New parks its own while the handler keeps c's.
+func sentResponse(c fiber.Ctx) *fasthttp.Response {
+	// IsAbandoned goes first: its atomic load orders the read after the timeout middleware's write.
+	if c.IsAbandoned() {
+		if resp := c.RequestCtx().LastTimeoutErrorResponse(); resp != nil {
+			return resp
+		}
+	}
+
+	return c.Response()
 }
 
 func contains(needle string, slice []string) bool {
