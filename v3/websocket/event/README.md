@@ -138,7 +138,7 @@ counterpart.
 | `PingTimeout`       | `20s`   | How long a peer may stay silent after a Ping before it is considered dead. Socket.IO's default. |
 | `ReadIdleTimeout`   | `PingInterval + PingTimeout` | Maximum silence before the connection is disconnected, 45s by default. |
 | `WriteTimeout`      | `10s`   | Bounds a single `WriteMessage` / `WriteControl` call. |
-| `MaxMessageSize`    | `1 MiB` | Inbound frame size limit. Set to `math.MaxInt64` to opt out. |
+| `MaxMessageSize`    | `1 MiB` | Inbound message size limit, counted after decompression when `EnableCompression` is on. Set to `math.MaxInt64` to opt out. |
 | `SendQueueSize`     | `100`   | Per-connection outbound message queue capacity. |
 | `MaxSendRetry`      | `5`     | Max retries for transient socket write readiness issues. |
 | `RetrySendTimeout`  | `20ms`  | Backoff between retries while the connection is not ready. |

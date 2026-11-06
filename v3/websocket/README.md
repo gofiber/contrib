@@ -133,8 +133,10 @@ by earlier middleware are left in place.
 
 `c.ReadMessage()` reads messages up to 64 KiB into a pooled buffer and returns an exact-size
 copy; a larger message comes back in its own buffer, as from the library's `ReadMessage`.
-Bound message size with `SetReadLimit`; for zero-copy reads use `NextReader` with your own
-buffer.
+Bound message size with `SetReadLimit`: `ReadMessage` and `ReadJSON` apply it to the message as read, so
+with `EnableCompression` it bounds what a compressed message inflates to, not only the bytes on
+the wire. For zero-copy reads use `NextReader` with your own buffer; only the wire size is
+checked there, so bound what you read from it yourself.
 
 Replies to a burst of pipelined frames leave in one write instead of one per frame: writes
 made while the handler still has unread frames wait until it asks for the next one, at most

@@ -226,6 +226,9 @@ type Conn struct {
 	headers map[string]string
 	queries map[string]string
 	ip      string
+	// Read goroutine state, like the library's own read limit.
+	readLimit int64
+	readErr   error
 }
 
 // A Conn is allocated per upgrade and never reused: the event helper reads
