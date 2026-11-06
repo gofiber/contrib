@@ -1156,12 +1156,18 @@ func (kws *Websocket) bindNamespace(namespace, auth []byte) {
 
 // SetUUID replaces this connection's UUID, updating the active connections
 // pool atomically. It returns ErrorUUIDDuplication when the requested UUID is
-// already taken by another live connection.
+// already taken by another live connection, and ErrorInvalidConnection once
+// this connection has disconnected.
 func (kws *Websocket) SetUUID(uuid string) error {
 	pool.Lock()
 	defer pool.Unlock()
 	kws.mu.Lock()
 	defer kws.mu.Unlock()
+
+	// disconnected removes the entry only once: a dead session must not get a new one.
+	if !kws.IsAlive() {
+		return ErrorInvalidConnection
+	}
 
 	prevUUID := kws.UUID
 	if prevUUID == uuid {
