@@ -49,11 +49,10 @@ zerolog.New(config ...zerolog.Config) fiber.Handler
 | GetResBody      | `func(c fiber.Ctx) []byte`          | Define a function to get the response body when it returns non-nil.<br />For example, with compress middleware the body can be unreadable; `GetResBody` lets you provide a readable body.                                                      | `nil`                                                                    |
 
 The `body` and `resBody` fields never read a body stream, and
-`bytesReceived` and `bytesSent` never read one to measure it. Under
-`fiber.Config{StreamRequestBody: true}` a request body the handler did not buffer
-(a stream, or a multipart form past `BodyLimit` that fasthttp parsed into
-temporary files) is logged with an empty `body`, and `bytesReceived` is the
-announced `Content-Length` (`0` when chunked). A streamed response (`SendStream`,
+`bytesReceived` and `bytesSent` never read one to measure it. A request body
+that is a stream or whose `Content-Length` exceeds `BodyLimit` (possible with
+`fiber.Config{StreamRequestBody: true}`) is logged with an empty `body`, and
+`bytesReceived` is the announced `Content-Length` (`0` when chunked). A streamed response (`SendStream`,
 `SendStreamWriter`, `SendFile`) is logged with an empty `resBody` unless
 `GetResBody` provides one, and its announced length as `bytesSent`.
 A multipart form that fasthttp parsed within `BodyLimit` is marshaled back for
