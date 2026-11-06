@@ -1290,7 +1290,13 @@ func TestPollingNoPingBeforeConnect(t *testing.T) {
 	defer td()
 
 	sid, _, _ := pollOpen(t, c)
-	time.Sleep(100 * time.Millisecond) // several PingIntervals
+	sessions := pool.snapshot()
+	require.Len(t, sessions, 1)
+	kws, ok := sessions[0].(*Websocket)
+	require.True(t, ok)
+	// Past PingInterval, so this tick would PING a connected session.
+	time.Sleep(PingInterval)
+	kws.heartbeatTick()
 	_, st := pollPost(t, c, sid, []byte("40"))
 	require.Equal(t, http.StatusOK, st)
 	select {
