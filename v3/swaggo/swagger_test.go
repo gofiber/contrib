@@ -1,12 +1,15 @@
 package swaggo
 
 import (
+	"io"
 	"mime"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/cache"
 	"github.com/swaggo/swag"
 )
 
@@ -125,8 +128,14 @@ func Test_Swagger(t *testing.T) {
 	}
 }
 
+// app.Test connects from 0.0.0.0.
+var trustTestProxy = fiber.Config{
+	TrustProxy:       true,
+	TrustProxyConfig: fiber.TrustProxyConfig{Proxies: []string{"0.0.0.0"}},
+}
+
 func Test_Swagger_Proxy_Redirect(t *testing.T) {
-	app := fiber.New()
+	app := fiber.New(trustTestProxy)
 
 	registrationOnce.Do(func() {
 		swag.Register(swag.Name, &mockedSwag{})
@@ -163,4 +172,132 @@ func Test_Swagger_Proxy_Redirect(t *testing.T) {
 			}
 		}
 	})
+}
+
+func swaggerRequest(t *testing.T, app *fiber.App, url, forwardedPrefix string) (*http.Response, string) {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "localhost"
+	if forwardedPrefix != "" {
+		req.Header.Set("X-Forwarded-Prefix", forwardedPrefix)
+	}
+
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp, string(body)
+}
+
+func Test_Swagger_Forwarded_Prefix_Requires_Trusted_Proxy(t *testing.T) {
+	registrationOnce.Do(func() {
+		swag.Register(swag.Name, &mockedSwag{})
+	})
+
+	configs := map[string]fiber.Config{
+		"TrustProxy disabled": {},
+		"peer not listed": {
+			TrustProxy:       true,
+			TrustProxyConfig: fiber.TrustProxyConfig{Proxies: []string{"10.0.0.1"}},
+		},
+	}
+
+	for name, cfg := range configs {
+		t.Run(name, func(t *testing.T) {
+			app := fiber.New(cfg)
+			app.Get("/swag/*", New())
+
+			resp, _ := swaggerRequest(t, app, "/swag/", "/custom/path")
+			if location := resp.Header.Get("Location"); location != "/swag/index.html" {
+				t.Fatalf(`Location: got %s - expected /swag/index.html`, location)
+			}
+			if cc := resp.Header.Get("Cache-Control"); cc != "" {
+				t.Fatalf(`Cache-Control: got %q - expected none`, cc)
+			}
+
+			_, body := swaggerRequest(t, app, "/swag/index.html", "/custom/path")
+			if !strings.Contains(body, `"url":"/swag/doc.json"`) {
+				t.Fatal(`index.html does not load the spec from /swag/doc.json`)
+			}
+		})
+	}
+}
+
+func Test_Swagger_Forwarded_Prefix_Stays_On_Origin(t *testing.T) {
+	registrationOnce.Do(func() {
+		swag.Register(swag.Name, &mockedSwag{})
+	})
+
+	app := fiber.New(trustTestProxy)
+	app.Get("/swag/*", New())
+
+	tests := []struct {
+		prefix   string
+		location string
+	}{
+		{prefix: "/custom/../other//path/", location: "/other/path/swag/index.html"},
+		{prefix: `\\other.example`, location: "/swag/index.html"},
+		{prefix: `/\other.example`, location: "/swag/index.html"},
+		{prefix: "//other.example", location: "/swag/index.html"},
+		{prefix: "https://other.example", location: "/swag/index.html"},
+		{prefix: "other.example", location: "/swag/index.html"},
+		{prefix: "/custom?x=1", location: "/swag/index.html"},
+		{prefix: "/custom#frag", location: "/swag/index.html"},
+		{prefix: "/custom\tpath", location: "/swag/index.html"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.prefix, func(t *testing.T) {
+			resp, _ := swaggerRequest(t, app, "/swag/", tt.prefix)
+			if resp.StatusCode != fiber.StatusMovedPermanently {
+				t.Fatalf(`StatusCode: got %v - expected %v`, resp.StatusCode, fiber.StatusMovedPermanently)
+			}
+			if location := resp.Header.Get("Location"); location != tt.location {
+				t.Fatalf(`Location: got %s - expected %s`, location, tt.location)
+			}
+
+			_, body := swaggerRequest(t, app, "/swag/index.html", tt.prefix)
+			specURL := strings.TrimSuffix(tt.location, "index.html") + "doc.json"
+			if !strings.Contains(body, `"url":"`+specURL+`"`) {
+				t.Fatalf(`index.html does not load the spec from %s`, specURL)
+			}
+		})
+	}
+}
+
+func Test_Swagger_Forwarded_Prefix_Not_Shared_By_Cache(t *testing.T) {
+	registrationOnce.Do(func() {
+		swag.Register(swag.Name, &mockedSwag{})
+	})
+
+	app := fiber.New(trustTestProxy)
+	app.Get("/swag/*", cache.New(), New())
+
+	for _, url := range []string{"/swag/", "/swag/index.html"} {
+		t.Run(url, func(t *testing.T) {
+			resp, _ := swaggerRequest(t, app, url, "/other")
+			if vary := resp.Header.Get("Vary"); !strings.Contains(vary, "X-Forwarded-Prefix") {
+				t.Fatalf(`Vary: got %q - expected X-Forwarded-Prefix`, vary)
+			}
+			if cc := resp.Header.Get("Cache-Control"); cc != "private" {
+				t.Fatalf(`Cache-Control: got %q - expected private`, cc)
+			}
+
+			resp, body := swaggerRequest(t, app, url, "")
+			if location := resp.Header.Get("Location"); strings.Contains(location, "/other") {
+				t.Fatalf(`Location: got %s from another client's cached response`, location)
+			}
+			if strings.Contains(body, "/other") {
+				t.Fatal(`index.html is another client's cached response`)
+			}
+		})
+	}
 }
