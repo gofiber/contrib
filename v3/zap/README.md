@@ -44,6 +44,15 @@ zap.New(config ...zap.Config) fiber.Handler
 | SkipURIs   | `[]string`                 | Skip logging these URI.                                                                                                                                                        | `[]string{}`                                                                |
 | GetResBody | `func(c fiber.Ctx) []byte` | Define a function to get response body when return non-nil.<br />eg: When use compress middleware, resBody is unreadable. you can set GetResBody func to get readable resBody. | `nil`                                                                       |
 
+The `body` and `resBody` fields log a body only when it is already in memory, and
+`bytesReceived` and `bytesSent` never read one to measure it. Under
+`fiber.Config{StreamRequestBody: true}` a request body the handler did not buffer
+(a stream, or a multipart form past `BodyLimit` that fasthttp parsed into
+temporary files) is logged with an empty `body`, and `bytesReceived` is the
+announced `Content-Length` (`0` when chunked). A streamed response (`SendStream`,
+`SendStreamWriter`, `SendFile`) is logged with an empty `resBody` unless
+`GetResBody` provides one, and its announced length as `bytesSent`.
+
 ### Example
 
 ```go
