@@ -175,7 +175,7 @@ These package-level variables can be overridden before the first connection is a
 | `HandshakeTimeout`  | `10 * time.Second` | Maximum time allowed for the Engine.IO / Socket.IO handshake (including namespace CONNECT) to complete. |
 | `CloseTimeout`      | `5 * time.Second`  | Budget for the whole tear-down after `Close` or a client SIO DISCONNECT; the socket is closed once the peer's Close frame arrives or the budget is spent, whatever it was spent on. |
 | `WriteTimeout`      | `0` (disabled)     | Deadline for a single WebSocket frame write; zero relies on the heartbeat to detect a peer that stopped reading. |
-| `MaxPayload`        | `1 << 20` (1 MiB)  | Maximum size in bytes for a single inbound WebSocket message, counted after permessage-deflate decompression; oversize messages close the socket. |
+| `MaxPayload`        | `1_000_000` (1 MB) | Maximum size in bytes for a single inbound WebSocket message, counted after permessage-deflate decompression; oversize messages close the socket. |
 | `MaxAuthPayload`    | `8 << 10` (8 KiB)  | Maximum size in bytes for the Socket.IO CONNECT auth JSON.                                           |
 | `MaxBatchPackets`   | `256`              | Maximum number of Engine.IO packets accepted in a single `0x1E`-batched frame.                       |
 | `MaxEventNameLength`| `256`              | Maximum length of an inbound Socket.IO event name.                                                   |
