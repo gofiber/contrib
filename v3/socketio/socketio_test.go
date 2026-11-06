@@ -1999,7 +1999,10 @@ func TestSocketIOOversizeNamespaceRejected(t *testing.T) {
 	require.Equal(t, MaxNamespaceLength+1, len(ns))
 	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte("40"+ns+",")))
 
-	assertConnectErrorOrClose(t, conn, "oversize namespace")
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, msg, err := conn.ReadMessage()
+	require.NoError(t, err)
+	require.Equal(t, `44{"message":"invalid namespace"}`, string(msg))
 	require.Zero(t, connected.Load(), "New callback ran for a rejected CONNECT")
 }
 
