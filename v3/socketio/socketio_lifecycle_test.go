@@ -352,6 +352,111 @@ func TestSocketIONewCallbackCloseCompletesClosingHandshake(t *testing.T) {
 	}
 }
 
+// A client withholding CONNECT, then refused in New, must not receive broadcasts.
+func TestSocketIOBroadcastSkipsSessionInHandshake(t *testing.T) {
+	resetSIOGlobals(t)
+	kwsCh := captureConnect(t)
+	var fired []string
+	var firedMu sync.Mutex
+	On("audit", func(p *EventPayload) {
+		firedMu.Lock()
+		fired = append(fired, p.Kws.GetUUID())
+		firedMu.Unlock()
+	})
+
+	ln, teardown := newSIOTestServer(t, func(kws *Websocket) {
+		if string(kws.HandshakeAuth()) != `{"token":"member"}` {
+			kws.Close()
+		}
+	})
+	defer teardown()
+
+	member := dialSIO(t, ln)
+	defer member.Close()
+	sioHandshakeWithConnect(t, member, `{"token":"member"}`)
+	memberKws := awaitSession(t, kwsCh)
+
+	// The guest reads EIO OPEN, so its session is in the pool, and
+	// stops there: no CONNECT, no callback.
+	guest := dialSIO(t, ln)
+	defer guest.Close()
+	_, msg, err := guest.ReadMessage()
+	require.NoError(t, err)
+	require.Equal(t, byte(eioOpen), msg[0])
+
+	Broadcast([]byte(`"secret"`))
+	memberKws.Broadcast([]byte(`"secret"`), false)
+	Fire("audit", []byte(`"x"`))
+
+	_ = member.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for i := 0; i < 2; i++ {
+		_, msg, err = sioReadSkipPings(member)
+		require.NoError(t, err)
+		require.Equal(t, `42["message","secret"]`, string(msg))
+	}
+	firedMu.Lock()
+	require.Equal(t, []string{memberKws.GetUUID()}, fired, "Fire must skip the session in its handshake")
+	firedMu.Unlock()
+
+	// Only now does the guest send its CONNECT; the callback refuses it.
+	require.NoError(t, guest.WriteMessage(websocket.TextMessage, []byte(`40{"token":"wrong"}`)))
+	_ = guest.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, msg, err = sioReadSkipPings(guest)
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(string(msg), "40{"), "got %q", msg)
+	_, msg, err = sioReadSkipPings(guest)
+	require.NoError(t, err)
+	require.Equal(t, "41", string(msg), "the refused session must receive nothing but SIO DISCONNECT")
+	_, _, err = guest.ReadMessage()
+	require.Truef(t, websocket.IsCloseError(err, websocket.CloseNormalClosure),
+		"expected Close frame with code 1000, got %v", err)
+}
+
+// A client refused inside EventConnect must not receive broadcasts sent meanwhile.
+func TestSocketIOBroadcastSkipsSessionInEventConnect(t *testing.T) {
+	resetSIOGlobals(t)
+	inListener := make(chan struct{}, 1)
+	release := make(chan struct{})
+	On(EventConnect, func(p *EventPayload) {
+		if string(p.HandshakeAuth) == `{"token":"member"}` {
+			return
+		}
+		inListener <- struct{}{}
+		<-release
+		p.Kws.Close()
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	member := dialSIO(t, ln)
+	defer member.Close()
+	sioHandshakeWithConnect(t, member, `{"token":"member"}`)
+
+	guest := dialSIO(t, ln)
+	defer guest.Close()
+	sioHandshakeWithConnect(t, guest, `{"token":"wrong"}`)
+	select {
+	case <-inListener:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventConnect did not fire")
+	}
+
+	// The guest's EventConnect listener is still running.
+	Broadcast([]byte(`"secret"`))
+	close(release)
+
+	_ = member.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, msg, err := sioReadSkipPings(member)
+	require.NoError(t, err)
+	require.Equal(t, `42["message","secret"]`, string(msg))
+
+	_ = guest.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, msg, err = sioReadSkipPings(guest)
+	require.NoError(t, err)
+	require.Equal(t, "41", string(msg), "the refused session must receive nothing but SIO DISCONNECT")
+}
+
 // TestSocketIOShutdownWaitsForClosingSessions verifies that Shutdown also
 // waits for a session that was closed just before it was called and is
 // still draining its closing handshake, even though it already left the

@@ -52,7 +52,7 @@ This middleware implements the full Engine.IO v4 / Socket.IO v5 wire protocol. H
 - **Rate limiting**. Each polling open allocates a `*Websocket` and arms a heartbeat timer (no goroutine). With `EnablePolling = true` an unauthenticated client can create sessions until `HandshakeTimeout` reaps idle ones (10s default). Mount `github.com/gofiber/fiber/v3/middleware/limiter` upstream of the route to bound concurrent session creation.
 - **Write timeout**. A long-poll GET response that the client never reads pins a fasthttp worker on TCP backpressure. Configure `fiber.Config{WriteTimeout: ...}` (a few seconds is typically appropriate) so abandoned reads do not strand workers.
 - **Burst sizing**. `PollQueueMaxFrames` (default `1024`) bounds the per-session outbound buffer. With the default `DropFramesOnOverflow = false` a synchronous burst of more than 1024 emits inside a single listener call disconnects the session with `ErrSendQueueClosed`. Either pace large bursts across drains, raise `PollQueueMaxFrames`, or set `DropFramesOnOverflow = true` to tolerate overflow at the cost of dropped frames + `EventError`.
-- **Listener panics**. Both transports recover panics inside the `New()` callback and inside event listeners; the panic value is logged via the package `Logger` hook. Avoid `panic(string(attackerControlledBytes))` to prevent log injection in downstream consumers.
+- **Listener panics**. Both transports recover panics inside the `New()` callback and inside event listeners; the panic value is logged via the package `Logger` hook. A panic in the `New()` callback or in an `EventConnect` listener ends the session (either may be where the `auth` payload is checked); a panic in any other listener leaves the connection open. Avoid `panic(string(attackerControlledBytes))` to prevent log injection in downstream consumers.
 
 ## Performance
 
@@ -275,6 +275,8 @@ socketio.On(socketio.EventConnect, func(ep *socketio.EventPayload) {
 })
 ```
 
+To reject a client, call `kws.Close()` from the `New` callback or the `EventConnect` listener. A panic in either place also ends the session. Listeners registered after the one that closed the session are skipped (`EventDisconnect`, `EventClose` and `EventError` always reach every listener). A session joins the `Broadcast` and `Fire` fan-out only after the handshake, the `New` callback and the `EventConnect` listeners have completed without closing it, so nothing broadcast while a client is still connecting reaches a peer the application has not admitted. Use `kws.Emit` to address the connecting session itself from inside those callbacks.
+
 ## Signatures
 
 ```go
@@ -301,12 +303,13 @@ func EmitTo(uuid string, message []byte, mType ...int) error
 ```
 
 ```go
-// Broadcast to all the active connections
+// Broadcast to all the connected sessions (handshake, New callback and
+// EventConnect completed)
 func Broadcast(message []byte, mType ...int)
 ```
 
 ```go
-// Fire custom event on all connections
+// Fire custom event on all connected sessions
 func Fire(event string, data []byte)
 ```
 
@@ -560,7 +563,7 @@ Custom events map directly to the event name used in `socket.emit("myEvent", …
 | GetAttribute        | `string`           | Get a specific attribute from the socket attributes                                          |
 | EmitToList          | `void`             | Emit the message to a specific socket uuids list                                             |
 | EmitTo              | `error`            | Emit to a specific socket connection                                                         |
-| Broadcast           | `void`             | Broadcast to all the active connections except broadcasting the message to itself            |
+| Broadcast           | `void`             | Broadcast to all the connected sessions, optionally except itself; a session still in its handshake, `New` callback or `EventConnect` is skipped |
 | Fire                | `void`             | Fire custom event                                                                            |
 | Emit                | `void`             | Send data as a `"message"` socket.io event; valid JSON is passed through, raw text is JSON-encoded |
 | EmitEvent           | `void`             | Send a named socket.io event; valid JSON is passed through, raw text is JSON-encoded         |

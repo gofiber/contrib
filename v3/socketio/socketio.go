@@ -181,8 +181,8 @@ var (
 	// until heartbeat reaped them.
 	ErrPollingBodyTooLarge = errors.New("socketio: polling POST body exceeds PollingMaxBufferSize")
 	// ErrPollingBeforeConnect is delivered to EventDisconnect when a
-	// polling session sends any Socket.IO payload before the first
-	// SIO CONNECT packet completes auth/namespace validation.
+	// polling session sends any packet other than the first SIO
+	// CONNECT before it completes auth/namespace validation.
 	ErrPollingBeforeConnect = errors.New("socketio: polling packet received before SIO CONNECT")
 	// ErrUnknownEIOPacket is surfaced via EventError when the inbound EIO
 	// packet type byte does not match any recognised Engine.IO opcode.
@@ -646,6 +646,8 @@ type Websocket struct {
 	// listener exactly once when SIO CONNECT arrives via POST. Unused on
 	// the WebSocket path (handshake() fires EventConnect synchronously).
 	connectFired atomic.Bool
+	// connected is set once New and EventConnect admitted the session; only then is it a Broadcast/Fire target.
+	connected atomic.Bool
 	// postGate serialises polling POST handlers per session. Engine.IO
 	// clients send POSTs sequentially, but a misbehaving or hostile
 	// client could fire two simultaneously; without serialisation the
@@ -945,6 +947,9 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 
 		// 4. Notify listeners that the socket is ready.
 		kws.fireEvent(EventConnect, nil, nil)
+		if kws.IsAlive() {
+			kws.connected.Store(true)
+		}
 
 		// 5. Heartbeat and read loop; blocks until the connection closes.
 		kws.run()
@@ -1301,14 +1306,16 @@ func (kws *Websocket) emitShared(cache *broadcastFrames, message []byte, mType i
 	kws.write(TextMessage, cache.frame(kws.getNamespace(), message))
 }
 
-// Broadcast sends message to every active connection in the pool. When except
+// Broadcast sends message to every connected session in the pool. When except
 // is true the originating connection is skipped. The optional mType selects
 // the WebSocket frame type: omit it (or pass TextMessage) to wrap message as
 // a Socket.IO "message" event; pass BinaryMessage to send the bytes verbatim
 // as a binary frame.
 //
-// A target that has gone away between the pool snapshot and the emit is
-// reported with EventError (ErrorInvalidConnection) on kws, as EmitTo does.
+// A session still in its handshake, New callback or EventConnect listeners
+// is skipped. A target that has gone away between the pool snapshot and
+// the emit is reported with EventError (ErrorInvalidConnection) on kws, as
+// EmitTo does.
 func (kws *Websocket) Broadcast(message []byte, except bool, mType ...int) {
 	selfUUID := kws.GetUUID()
 	t := frameType(mType)
@@ -1323,7 +1330,9 @@ func (kws *Websocket) Broadcast(message []byte, except bool, mType ...int) {
 			continue
 		}
 		if w, ok := target.(*Websocket); ok {
-			w.emitShared(&cache, message, t)
+			if w.isConnected() {
+				w.emitShared(&cache, message, t)
+			}
 			continue
 		}
 		target.Emit(message, mType...)
@@ -1331,7 +1340,7 @@ func (kws *Websocket) Broadcast(message []byte, except bool, mType ...int) {
 }
 
 // Broadcast is the package-level form of Websocket.Broadcast. It sends
-// message to every active connection in the pool, including the originator
+// message to every connected session in the pool, including the originator
 // (use the method form to skip the originator). See Websocket.Emit for the
 // meaning of mType.
 func Broadcast(message []byte, mType ...int) {
@@ -1339,7 +1348,9 @@ func Broadcast(message []byte, mType ...int) {
 	var cache broadcastFrames
 	for _, target := range pool.snapshot() {
 		if w, ok := target.(*Websocket); ok {
-			w.emitShared(&cache, message, t)
+			if w.isConnected() {
+				w.emitShared(&cache, message, t)
+			}
 			continue
 		}
 		target.Emit(message, mType...)
@@ -1355,8 +1366,9 @@ func (kws *Websocket) Fire(event string, data []byte) {
 }
 
 // Fire delivers a synthetic event to the listeners registered for event on
-// every active connection. It does not produce a wire frame. See
-// Websocket.Fire for the per-connection variant.
+// every connected session (see Websocket.Broadcast for what connected
+// means). It does not produce a wire frame. See Websocket.Fire for the
+// per-connection variant.
 func Fire(event string, data []byte) {
 	fireGlobalEvent(event, data, nil)
 }
@@ -1735,7 +1747,8 @@ func (kws *Websocket) getNamespace() []byte {
 // clients that did not send an auth payload.
 //
 // Typical use: validate the auth payload from inside the New() callback or
-// the EventConnect listener, then call kws.Close() if invalid.
+// the EventConnect listener, then call kws.Close() if invalid. A panic in
+// either place ends the session instead of admitting the client.
 func (kws *Websocket) HandshakeAuth() json.RawMessage {
 	kws.mu.RLock()
 	defer kws.mu.RUnlock()
@@ -1757,6 +1770,10 @@ func (kws *Websocket) writeConnectError(namespace []byte, jsonMessage string) {
 // to deliver outbound frames. Lock-free.
 func (kws *Websocket) IsAlive() bool {
 	return kws.isAlive.Load()
+}
+
+func (kws *Websocket) isConnected() bool {
+	return kws.connected.Load() && kws.isAlive.Load()
 }
 
 // IsPolling reports whether this session is bound to the HTTP long-
@@ -2169,7 +2186,7 @@ func (kws *Websocket) dispatchEIOFrame(msg []byte) {
 		return
 	}
 	rest, count := msg, 0
-	for len(rest) > 0 {
+	for len(rest) > 0 && kws.IsAlive() {
 		if count >= MaxBatchPackets {
 			logf("warn", "batched_frame_overflow", "uuid", kws.UUID, "limit", MaxBatchPackets)
 			kws.fireEvent(EventError, nil, ErrBatchPacketsExceeded)
@@ -2186,9 +2203,6 @@ func (kws *Websocket) dispatchEIOFrame(msg []byte) {
 		}
 		kws.dispatchEIOPacket(packet)
 		count++
-		if !kws.IsAlive() {
-			return
-		}
 	}
 }
 
@@ -2370,8 +2384,10 @@ func (kws *Websocket) connectPolling(ns, auth []byte) {
 		kws.disconnected(ErrInvalidAuthPayload)
 		return
 	}
-	if t := kws.handshakeTimer.Load(); t != nil {
-		t.Stop()
+	// Stop false means the handshake deadline fired first and owns the tear-down.
+	if t := kws.handshakeTimer.Load(); t != nil && !t.Stop() {
+		kws.disconnected(ErrHandshakeClosed)
+		return
 	}
 	kws.bindNamespace(ns, auth)
 	kws.write(TextMessage, buildSIOConnectAckSID(kws.getNamespace(), kws.UUID))
@@ -2388,6 +2404,9 @@ func (kws *Websocket) connectPolling(ns, auth []byte) {
 	}
 	if kws.connectFired.CompareAndSwap(false, true) {
 		kws.fireEvent(EventConnect, nil, nil)
+		if kws.IsAlive() {
+			kws.connected.Store(true)
+		}
 	}
 }
 
@@ -2502,9 +2521,12 @@ func (kws *Websocket) randomUUID() string {
 	return utils.UUIDv4()
 }
 
-// Fires event on all connections.
+// Fires event on all connected sessions.
 func fireGlobalEvent(event string, data []byte, error error) {
 	for _, kws := range pool.snapshot() {
+		if w, ok := kws.(*Websocket); ok && !w.isConnected() {
+			continue
+		}
 		kws.fireEvent(event, data, error)
 	}
 }
@@ -2556,7 +2578,13 @@ func (kws *Websocket) fireEventWithAck(event string, args [][]byte, fireErr erro
 		firstArg = args[0]
 	}
 
+	// Once a listener closes the session (e.g. refused auth) the rest are skipped; tear-down events reach all.
+	stopWhenDead := event != EventDisconnect && event != EventClose && event != EventError && kws.IsAlive()
+
 	for _, callback := range callbacks {
+		if stopWhenDead && !kws.IsAlive() {
+			return
+		}
 		// Recover from listener panics so one buggy handler cannot kill
 		// the read goroutine (and therefore the whole connection). Surface
 		// the panic value as an EventError event so the user can wire it
@@ -2564,12 +2592,18 @@ func (kws *Websocket) fireEventWithAck(event string, args [][]byte, fireErr erro
 		// listener we skip the re-fire to avoid an unbounded recursion (a
 		// panicky EventError handler would otherwise keep refiring itself
 		// until the goroutine stack overflows).
+		// An EventConnect panic fails closed: it may have skipped an auth Close.
 		func(cb eventCallback) {
 			defer func() {
 				if r := recover(); r != nil {
 					logf("error", "listener_panic", "uuid", uuid, "event", event, "panic", fmt.Sprintf("%v", r))
+					err := fmt.Errorf("socketio: listener panic on %q: %v", event, r)
+					if event == EventConnect && kws.IsAlive() {
+						kws.disconnected(err)
+						return
+					}
 					if event != EventError {
-						kws.fireEvent(EventError, nil, fmt.Errorf("socketio: listener panic on %q: %v", event, r))
+						kws.fireEvent(EventError, nil, err)
 					}
 				}
 			}()
@@ -2595,7 +2629,9 @@ type eventCallback func(payload *EventPayload)
 // On registers callback for the named event. The callback fires for every
 // connection that receives event, in registration order. Multiple callbacks
 // may be registered for the same event; all run synchronously on the
-// connection's read goroutine.
+// connection's read goroutine. Once a callback has ended the session (for
+// example with Websocket.Close), the callbacks registered after it are
+// skipped; EventDisconnect, EventClose and EventError always reach them all.
 //
 // On is concurrency-safe and may be called at any time, including from
 // inside another listener; later registrations may or may not be observed
