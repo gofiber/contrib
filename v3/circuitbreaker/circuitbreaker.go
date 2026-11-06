@@ -1,7 +1,9 @@
 package circuitbreaker
 
 import (
+	"errors"
 	"net/http"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,7 +24,8 @@ const (
 type Config struct {
 	// Failure threshold to trip the circuit
 	FailureThreshold int
-	// Duration circuit stays open before allowing test requests
+	// Duration circuit stays open before allowing test requests, and the
+	// longest a test request keeps its half-open slot
 	Timeout time.Duration
 	// Success threshold to close the circuit from half-open
 	SuccessThreshold int
@@ -31,7 +34,8 @@ type Config struct {
 	// Interval for resetting failure counts in closed state.
 	// Zero means failures accumulate until the circuit opens.
 	Interval time.Duration
-	// Custom failure detector function (return true if response should count as failure)
+	// Custom failure detector function (return true if response should count as failure).
+	// An outcome it does not count that ends with a 4xx status is neutral: neither failure nor success.
 	IsFailure func(c fiber.Ctx, err error) bool
 
 	// Clock reads the current time. Recovery is derived from it rather than
@@ -65,7 +69,14 @@ var DefaultConfig = Config{
 	Interval:              0,
 	Clock:                 time.Now,
 	IsFailure: func(c fiber.Ctx, err error) bool {
-		return err != nil || c.Response().StatusCode() >= http.StatusInternalServerError
+		if err == nil {
+			return c.Response().StatusCode() >= http.StatusInternalServerError
+		}
+		// Below 500 a *fiber.Error is about the request (route miss, 405, 4xx), which any client can cause.
+		if fiberErr, ok := errors.AsType[*fiber.Error](err); ok {
+			return fiberErr.Code >= http.StatusInternalServerError
+		}
+		return true
 	},
 	OnOpen: func(c fiber.Ctx) error {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
@@ -97,11 +108,14 @@ type CircuitBreaker struct {
 	openedAt        time.Time // with timeout, the recovery deadline
 	forced          bool      // ForceOpen suspends recovery until closed explicitly
 
-	// gen advances on every transition. A slot is released by it, and an
-	// outcome matched against it, so a request that outlived the circuit that
-	// admitted it can neither free a later probe's slot nor be counted.
-	halfOpenInFlight int
-	gen              uint64
+	// gen advances on every transition. An outcome is matched against it, so a
+	// request that outlived the circuit that admitted it cannot be counted.
+	gen uint64
+
+	// probes are the half-open slots taken; each expires Timeout after its own
+	// admission and is released by its ticket only.
+	probes     []probe
+	lastTicket uint64
 
 	expiry time.Time // when the failure count is dropped, if Interval is set
 
@@ -218,11 +232,30 @@ func (cb *CircuitBreaker) serve(c fiber.Ctx, next func() error) error {
 		return err
 	}
 
+	// A 4xx describes the request, not the service, so it is neither failure nor success.
+	if isClientError(c, err) {
+		return err
+	}
+
 	if cb.recordSuccess(cb.clock(), adm) && cb.config.OnClose != nil {
 		// The handler has answered; OnClose must not overwrite that.
 		_ = cb.config.OnClose(c)
 	}
 	return err
+}
+
+// isClientError reports a 4xx outcome, taken from a returned *fiber.Error or else
+// from the response; any other returned error is answered with 500.
+func isClientError(c fiber.Ctx, err error) bool {
+	status := c.Response().StatusCode()
+	if err != nil {
+		fiberErr, ok := errors.AsType[*fiber.Error](err)
+		if !ok {
+			return false
+		}
+		status = fiberErr.Code
+	}
+	return status >= http.StatusBadRequest && status < http.StatusInternalServerError
 }
 
 // admit reports whether one request may proceed, how it was admitted, and the
@@ -249,7 +282,7 @@ func (cb *CircuitBreaker) admit(now time.Time) (bool, admission, func()) {
 	cb.recoverLocked(now)
 
 	if cb.state == StateHalfOpen {
-		return cb.admitProbeLocked()
+		return cb.admitProbeLocked(now)
 	}
 	return cb.admitOnState(cb.state, cb.gen)
 }
@@ -264,30 +297,36 @@ func (cb *CircuitBreaker) admitOnState(state State, gen uint64) (bool, admission
 	return true, admission{state: StateClosed, gen: gen}, func() {}
 }
 
+type probe struct {
+	ticket   uint64
+	admitted time.Time
+}
+
 // admitProbeLocked takes a slot of the current half-open window if one is free,
-// tagged with that window so a probe outliving it cannot free a later slot.
-func (cb *CircuitBreaker) admitProbeLocked() (bool, admission, func()) {
-	if cb.halfOpenInFlight >= cb.halfOpenMaxConcurrent {
+// tagged with a ticket so a probe outliving its slot cannot free a later one.
+// Each slot is lent for Timeout at most, so a probe that never returns cannot pin half-open.
+func (cb *CircuitBreaker) admitProbeLocked(now time.Time) (bool, admission, func()) {
+	cb.probes = slices.DeleteFunc(cb.probes, func(p probe) bool {
+		return !now.Before(p.admitted.Add(cb.timeout))
+	})
+	if len(cb.probes) >= cb.halfOpenMaxConcurrent {
 		cb.rejectedRequests.Add(1)
 		return false, admission{state: StateHalfOpen}, func() {}
 	}
 
-	cb.halfOpenInFlight++
-	gen := cb.gen
-	return true, admission{state: StateHalfOpen, gen: gen}, func() { cb.releaseProbe(gen) }
+	cb.lastTicket++
+	ticket := cb.lastTicket
+	cb.probes = append(cb.probes, probe{ticket: ticket, admitted: now})
+	return true, admission{state: StateHalfOpen, gen: cb.gen}, func() { cb.releaseProbe(ticket) }
 }
 
-// releaseProbe gives back a slot taken in generation gen. The transition that
-// ends a window reclaims every slot of it, so a probe outliving its window has
-// nothing to return: releasing would free a slot another probe now holds.
-func (cb *CircuitBreaker) releaseProbe(gen uint64) {
+// releaseProbe gives back the slot taken under ticket. A probe whose slot was
+// reclaimed has nothing to return: releasing would free a slot another probe holds.
+func (cb *CircuitBreaker) releaseProbe(ticket uint64) {
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
 
-	if cb.gen != gen || cb.halfOpenInFlight == 0 {
-		return
-	}
-	cb.halfOpenInFlight--
+	cb.probes = slices.DeleteFunc(cb.probes, func(p probe) bool { return p.ticket == ticket })
 }
 
 // recoveryDueLocked reports whether the open to half-open transition has come
@@ -314,7 +353,7 @@ func (cb *CircuitBreaker) recoverLocked(now time.Time) {
 // nextGenLocked starts a new generation, freeing every probe slot and leaving
 // the admissions of the generation that just ended stale.
 func (cb *CircuitBreaker) nextGenLocked() {
-	cb.halfOpenInFlight = 0
+	cb.probes = nil
 	cb.gen++
 }
 
@@ -488,8 +527,8 @@ func (cb *CircuitBreaker) Stop() {}
 // AllowRequest determines if a request is allowed based on circuit state.
 //
 // Deprecated: use Middleware, which admits, reports and releases as one
-// operation. A slot taken here is held until ReleaseSemaphore returns it or
-// the next state change reclaims it.
+// operation. A slot taken here is held until ReleaseSemaphore returns it, the
+// next state change reclaims it, or Timeout has passed since it was taken.
 func (cb *CircuitBreaker) AllowRequest() (bool, State) {
 	allowed, adm, _ := cb.admit(cb.clock())
 	return allowed, adm.state
@@ -503,8 +542,8 @@ func (cb *CircuitBreaker) ReleaseSemaphore() {
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
 
-	if cb.halfOpenInFlight > 0 {
-		cb.halfOpenInFlight--
+	if len(cb.probes) > 0 {
+		cb.probes = slices.Delete(cb.probes, 0, 1)
 	}
 }
 
