@@ -764,6 +764,41 @@ func TestPollingConnectInvalidNamespace(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, status)
 }
 
+// TestPollingConnectOversizeNamespace verifies that a namespace one byte over
+// MaxNamespaceLength gets CONNECT_ERROR and never reaches the New callback.
+func TestPollingConnectOversizeNamespace(t *testing.T) {
+	resetSIOGlobals(t)
+	var connected atomic.Int32
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) { connected.Add(1) })
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+
+	pollResult := make(chan []byte, 1)
+	go func() {
+		body, _ := pollGet(t, c, sid)
+		pollResult <- body
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	ns := "/" + strings.Repeat("a", MaxNamespaceLength)
+	require.Equal(t, MaxNamespaceLength+1, len(ns))
+	_, st := pollPost(t, c, sid, []byte("40"+ns+","))
+	require.Equal(t, http.StatusOK, st)
+
+	select {
+	case body := <-pollResult:
+		require.Contains(t, string(body), "Invalid namespace",
+			"expected CONNECT_ERROR with 'Invalid namespace' in drain, got %q", body)
+	case <-time.After(2 * time.Second):
+		t.Fatal("long-poll did not return after oversize CONNECT")
+	}
+	require.Zero(t, connected.Load(), "New callback ran for a rejected CONNECT")
+
+	_, status := pollGet(t, c, sid)
+	require.Equal(t, http.StatusBadRequest, status)
+}
+
 // TestPollingConnectInvalidAuth verifies that a polling CONNECT with a
 // non-object auth payload is rejected with CONNECT_ERROR and disconnect.
 func TestPollingConnectInvalidAuth(t *testing.T) {

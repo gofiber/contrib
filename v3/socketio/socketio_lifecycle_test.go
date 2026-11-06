@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -900,6 +901,9 @@ func TestIsValidNamespaceTable(t *testing.T) {
 	for _, bad := range []string{"admin", "/a b", "/ab,c", "/ünï", "/a\"b", long + " ", "/" + strings.Repeat("a", 40) + "," + strings.Repeat("b", 40)} {
 		require.Falsef(t, isValidNamespace([]byte(bad)), "%q should be invalid", bad)
 	}
+	atCap := "/" + strings.Repeat("a", MaxNamespaceLength-1)
+	require.True(t, isValidNamespace([]byte(atCap)), "namespace of exactly MaxNamespaceLength bytes should be valid")
+	require.False(t, isValidNamespace([]byte(atCap+"a")), "namespace over MaxNamespaceLength should be invalid")
 }
 
 func TestBroadcastFramesCache(t *testing.T) {
@@ -912,4 +916,69 @@ func TestBroadcastFramesCache(t *testing.T) {
 	require.Equal(t, `42/admin,["message","m"]`, string(admin))
 	require.Same(t, &admin[0], &c.frame([]byte("/admin"), msg)[0], "namespace frame must be built once")
 	require.NotSame(t, &root[0], &admin[0])
+}
+
+// Compared with a pool sharing one namespace rather than a fixed budget, so
+// the check holds on any machine and under -race.
+func TestBroadcastDistinctNamespacesStaysLinear(t *testing.T) {
+	resetSIOGlobals(t)
+	t.Cleanup(pool.reset) // runs first: the fake sessions have no socket to close
+
+	const n = 8000
+	prefix := "/" + strings.Repeat("a", 240)
+	conns := make([]*Websocket, n)
+	for i := range conns {
+		conns[i] = createWS()
+		conns[i].queue = make(chan message, 1)
+	}
+	broadcast := func(distinct bool) time.Duration {
+		pool.reset()
+		for i, kws := range conns {
+			ns := prefix + "00000000"
+			if distinct {
+				ns = fmt.Sprintf("%s%08d", prefix, i)
+			}
+			kws.bindNamespace([]byte(ns), nil)
+			select {
+			case <-kws.queue:
+			default:
+			}
+			pool.set(kws)
+		}
+		start := time.Now()
+		Broadcast([]byte(`"m"`))
+		return time.Since(start)
+	}
+
+	// A list scan is about 100x slower here; retries absorb a stray GC pause.
+	var shared, distinct time.Duration
+	for range 3 {
+		shared, distinct = broadcast(false), broadcast(true)
+		if distinct < 20*shared {
+			break
+		}
+	}
+	require.Less(t, distinct, 20*shared, "Broadcast cost must not grow with the namespaces already seen")
+	last := <-conns[n-1].queue
+	require.Equal(t, fmt.Sprintf(`42%s%08d,["message","m"]`, prefix, n-1), string(last.data))
+}
+
+func TestSocketIOLateConnectOversizeNamespaceNotEchoed(t *testing.T) {
+	resetSIOGlobals(t)
+	kwsCh := captureConnect(t)
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+	awaitSession(t, kwsCh)
+
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	ns := "/" + strings.Repeat("a", MaxNamespaceLength)
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte("40"+ns+",")))
+	_, msg, err := sioReadSkipPings(conn)
+	require.NoError(t, err)
+	require.Equal(t, `44{"message":"Invalid namespace"}`, string(msg))
 }

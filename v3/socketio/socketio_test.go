@@ -1980,6 +1980,29 @@ func TestSocketIOInvalidNamespaceRejected(t *testing.T) {
 	}
 }
 
+// TestSocketIOOversizeNamespaceRejected verifies that a namespace one byte
+// over MaxNamespaceLength is refused before the New callback runs.
+func TestSocketIOOversizeNamespaceRejected(t *testing.T) {
+	resetSIOGlobals(t)
+
+	var connected atomic.Int32
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) { connected.Add(1) })
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	_, _, err := conn.ReadMessage()
+	require.NoError(t, err)
+
+	ns := "/" + strings.Repeat("a", MaxNamespaceLength)
+	require.Equal(t, MaxNamespaceLength+1, len(ns))
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte("40"+ns+",")))
+
+	assertConnectErrorOrClose(t, conn, "oversize namespace")
+	require.Zero(t, connected.Load(), "New callback ran for a rejected CONNECT")
+}
+
 // TestSocketIOServerDisconnectNamespacedComma verifies that Close() on a
 // connection bound to a namespace emits "41/<ns>," with the trailing comma
 // required by socket.io-protocol v5. Without the comma, strict parsers
