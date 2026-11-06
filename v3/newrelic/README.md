@@ -12,6 +12,7 @@ id: newrelic
 
 Only the headers the New Relic agent itself consumes are forwarded to New Relic transactions by default: the distributed tracing headers (`traceparent`, `tracestate`, `newrelic`), the synthetic monitor headers (`X-NewRelic-Synthetics`, `X-NewRelic-Synthetics-Info`) and the queue timing headers (`X-Request-Start`, `X-Queue-Start`). Any other header, including W3C `baggage`, has to be opted into with `RequestHeaderFilter`. The default is exported as `DefaultRequestHeaderFilter`, so a custom filter can build on top of it instead of restating the allowlist.
 
+Transactions are named `{method} {route}`, for example `GET /users/:id`. A request that no route handles (404, 405) is named after its method alone, so clients cannot create new transaction names, and the metrics the agent keeps for each of them, by varying the path. A handler can still rename its transaction with `FromContext(c).SetName(...)`.
 
 **Compatible with Fiber v3.**
 

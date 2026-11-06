@@ -499,3 +499,49 @@ func TestFromContext_PassLocalsToContext(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusOK, res.StatusCode)
 }
+
+func TestCreateTransactionName(t *testing.T) {
+	var names []string
+
+	app := fiber.New()
+	app.Use(New(Config{
+		License: "0123456789abcdef0123456789abcdef01234567",
+		Enabled: false,
+	}))
+	app.Use(func(ctx fiber.Ctx) error {
+		names = append(names, FromContext(ctx).Name())
+		return ctx.Next()
+	})
+	app.Get("/", func(ctx fiber.Ctx) error { return ctx.SendStatus(http.StatusOK) })
+	app.Get("/users/:id", func(ctx fiber.Ctx) error { return ctx.SendStatus(http.StatusOK) })
+	app.Group("/api").Get("/files/*", func(ctx fiber.Ctx) error { return ctx.SendStatus(http.StatusOK) })
+
+	tests := []struct {
+		method string
+		target string
+		status int
+		name   string
+	}{
+		{method: http.MethodGet, target: "/", status: http.StatusOK, name: "GET /"},
+		{method: http.MethodGet, target: "/?foo=bar", status: http.StatusOK, name: "GET /"},
+		{method: http.MethodGet, target: "/users/1", status: http.StatusOK, name: "GET /users/:id"},
+		{method: http.MethodGet, target: "/users/2", status: http.StatusOK, name: "GET /users/:id"},
+		{method: http.MethodGet, target: "/api/files/a/b", status: http.StatusOK, name: "GET /api/files/*"},
+		{method: http.MethodGet, target: "/no-such-route-1", status: http.StatusNotFound, name: "GET"},
+		{method: http.MethodGet, target: "/no-such-route-2", status: http.StatusNotFound, name: "GET"},
+		{method: http.MethodPost, target: "/users/1", status: http.StatusMethodNotAllowed, name: "POST"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.target, func(t *testing.T) {
+			names = names[:0]
+
+			r := httptest.NewRequest(tt.method, tt.target, nil)
+			r.Host = "localhost"
+			resp, err := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+			assert.NoError(t, err)
+			assert.Equal(t, tt.status, resp.StatusCode)
+			assert.Equal(t, []string{tt.name}, names)
+		})
+	}
+}

@@ -50,7 +50,7 @@ const (
 	EventDisconnect = "disconnect"
 	// EventConnect is fired when the connection is initialized, immediately
 	// after the New / NewWithConfig callback has run and before the read loop
-	// starts.
+	// starts. It is not fired when the callback closed the connection.
 	EventConnect = "connect"
 	// EventClose is fired when the server actively closes the connection (for
 	// example via Close or CloseAll).
@@ -142,8 +142,9 @@ type Config struct {
 	// WriteTimeout bounds a single WriteMessage or WriteControl call. Zero
 	// falls back to 10s.
 	WriteTimeout time.Duration
-	// MaxMessageSize bounds the largest inbound frame in bytes. Zero falls
-	// back to 1 MiB. To opt out, set math.MaxInt64.
+	// MaxMessageSize bounds the largest inbound message in bytes, after
+	// decompression when EnableCompression is on. Zero falls back to 1 MiB.
+	// To opt out, set math.MaxInt64.
 	MaxMessageSize int64
 	// SendQueueSize is the per-connection outbound buffer. Zero falls back
 	// to SendQueueSize package var, then 100.
@@ -239,8 +240,9 @@ type ws interface {
 	Close()
 	pong(ctx context.Context)
 	write(messageType int, messageBytes []byte)
-	run()
+	run(ctx context.Context, cancelFunc context.CancelFunc, wg *sync.WaitGroup)
 	read(ctx context.Context)
+	isPending() bool
 	disconnected(err error) bool
 	createUUID() string
 	randomUUID() string
@@ -259,6 +261,8 @@ type Websocket struct {
 	settings settings
 	// isAlive defines if the connection is alive or not.
 	isAlive bool
+	// pending is set until the New callback and EventConnect have accepted the connection.
+	pending atomic.Bool
 	// queue stores outbound messages.
 	queue chan message
 	// done signals goroutines to stop gracefully.
@@ -425,7 +429,14 @@ func NewWithConfig(callback func(kws *Websocket), eventCfg Config, wsConfig ...w
 		}
 
 		kws.UUID = kws.createUUID()
+		// Other connections reach kws through the pool only once it is accepted.
+		kws.pending.Store(true)
 		pool.set(kws)
+
+		// The callback's own Emits must drain, or a full queue blocks it for good.
+		ctx, cancelFunc := context.WithCancel(context.Background())
+		var wg sync.WaitGroup
+		wg.Go(func() { kws.send(ctx) })
 
 		// If callback panics before run starts, the pool entry would keep its done
 		// channel open forever and every later Broadcast would block on its queue.
@@ -444,11 +455,19 @@ func NewWithConfig(callback func(kws *Websocket), eventCfg Config, wsConfig ...w
 			if !kws.disconnected(ErrorCallbackPanic) {
 				kws.fireEvent(EventError, nil, ErrorCallbackPanic)
 			}
+			// RecoverHandler writes to the socket next, so the sender must be gone.
+			cancelFunc()
+			wg.Wait()
 		}()
 
 		callback(kws)
+		// fire drops EventConnect on a closed connection; a refused one also stays
+		// pending, so a Fire still iterating an older pool snapshot skips it.
 		kws.fireEvent(EventConnect, nil, nil)
-		kws.run()
+		if kws.IsAlive() {
+			kws.pending.Store(false)
+		}
+		kws.run(ctx, cancelFunc, &wg)
 		completed = true
 	}, wsConfig...)
 }
@@ -460,12 +479,18 @@ func (kws *Websocket) GetUUID() string {
 	return kws.UUID
 }
 
-// SetUUID updates the connection UUID and its pool entry.
+// SetUUID updates the connection UUID and its pool entry. It returns
+// ErrorInvalidConnection once the connection has disconnected.
 func (kws *Websocket) SetUUID(uuid string) error {
 	pool.Lock()
 	defer pool.Unlock()
 	kws.mu.Lock()
 	defer kws.mu.Unlock()
+
+	// disconnected removes the entry only once: a dead conn must not get a new one.
+	if !kws.isAlive {
+		return ErrorInvalidConnection
+	}
 
 	prevUUID := kws.UUID
 	if prevUUID == uuid {
@@ -562,7 +587,7 @@ func (kws *Websocket) EmitTo(uuid string, message []byte, mType ...int) error {
 		kws.fireOwnedEvent(EventError, []byte(uuid), ErrorInvalidConnection)
 		return ErrorInvalidConnection
 	}
-	if !conn.IsAlive() {
+	if !conn.IsAlive() || (conn != ws(kws) && conn.isPending()) {
 		kws.fireOwnedEvent(EventError, []byte(uuid), ErrorInvalidConnection)
 		return ErrorInvalidConnection
 	}
@@ -579,7 +604,7 @@ func EmitTo(uuid string, message []byte, mType ...int) error {
 	if err != nil {
 		return ErrorInvalidConnection
 	}
-	if !conn.IsAlive() {
+	if !conn.IsAlive() || conn.isPending() {
 		return ErrorInvalidConnection
 	}
 
@@ -596,6 +621,10 @@ func (kws *Websocket) Broadcast(message []byte, except bool, mType ...int) {
 		if except && conn == ws(kws) {
 			continue
 		}
+		// Not a member yet: its New callback or EventConnect may still refuse it.
+		if conn != ws(kws) && conn.isPending() {
+			continue
+		}
 		// The snapshot already resolved every target; one that died meanwhile still
 		// reports EventError on kws.
 		if !conn.IsAlive() {
@@ -609,7 +638,9 @@ func (kws *Websocket) Broadcast(message []byte, except bool, mType ...int) {
 // Broadcast emits to all active connections.
 func Broadcast(message []byte, mType ...int) {
 	for _, kws := range pool.snapshot() {
-		kws.Emit(message, mType...)
+		if !kws.isPending() {
+			kws.Emit(message, mType...)
+		}
 	}
 }
 
@@ -730,6 +761,10 @@ func (kws *Websocket) IsAlive() bool {
 	return kws.isAlive
 }
 
+func (kws *Websocket) isPending() bool {
+	return kws.pending.Load()
+}
+
 // conn returns the underlying connection, or nil once closeConn has cleared it.
 func (kws *Websocket) conn() *websocket.Conn {
 	kws.mu.RLock()
@@ -846,7 +881,9 @@ func (kws *Websocket) drainQueue() {
 	}
 }
 
-func (kws *Websocket) run() {
+// run starts the ping and read goroutines next to the sender already in wg,
+// then waits for the connection to end and tears all of them down.
+func (kws *Websocket) run(ctx context.Context, cancelFunc context.CancelFunc, wg *sync.WaitGroup) {
 	// The handlers close over the connection value: they run on the read
 	// goroutine while closeConn may clear kws.Conn.
 	if conn := kws.conn(); conn != nil {
@@ -892,10 +929,7 @@ func (kws *Websocket) run() {
 		})
 	}
 
-	ctx, cancelFunc := context.WithCancel(context.Background())
-	var wg sync.WaitGroup
-
-	wg.Add(3)
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		kws.pong(ctx)
@@ -903,10 +937,6 @@ func (kws *Websocket) run() {
 	go func() {
 		defer wg.Done()
 		kws.read(ctx)
-	}()
-	go func() {
-		defer wg.Done()
-		kws.send(ctx)
 	}()
 
 	<-kws.done
@@ -1042,7 +1072,9 @@ func fireGlobalEvent(event string, data []byte, err error) {
 	// Every connection gets its own copy: Data is mutable, and one listener must
 	// not change what another connection's listeners see.
 	for _, kws := range pool.snapshot() {
-		kws.fireEvent(event, data, err)
+		if !kws.isPending() {
+			kws.fireEvent(event, data, err)
+		}
 	}
 }
 
@@ -1085,11 +1117,21 @@ func (kws *Websocket) fire(event string, data []byte, err error, clone bool) {
 		Data:             data,
 		Error:            err,
 	}
+	// Once a listener ends the connection, the rest of a live dispatch is skipped; the tear-down
+	// events and a Fire on a dead connection reach every listener, EventConnect none.
+	stopWhenDead := event == EventConnect ||
+		(event != EventDisconnect && event != EventClose && event != EventError && kws.IsAlive())
 	for _, callback := range globalCallbacks {
+		if stopWhenDead && !kws.IsAlive() {
+			return
+		}
 		p := payload
 		kws.invokeCallback(event, callback, &p)
 	}
 	for _, callback := range localCallbacks {
+		if stopWhenDead && !kws.IsAlive() {
+			return
+		}
 		p := payload
 		kws.invokeCallback(event, callback, &p)
 	}
@@ -1124,6 +1166,10 @@ type EventCallback func(payload *EventPayload)
 // that event on every connection created by New / NewWithConfig, regardless of
 // route or Config, and stays registered until removed with Off. For listeners
 // scoped to a single connection use the (*Websocket).On method instead.
+//
+// Listeners run in registration order, global before per-connection. Once one
+// has ended the connection (for example with Close), the ones after it are
+// skipped; EventDisconnect, EventClose and EventError always reach them all.
 func On(event string, callback EventCallback) {
 	listeners.set(event, callback)
 }

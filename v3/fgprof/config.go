@@ -13,11 +13,25 @@ type Config struct {
 	//
 	// Optional. Default: ""
 	Prefix string
+
+	// MaxConcurrent is the number of profiles that may run at the same time.
+	// A request beyond it is answered with 503 Service Unavailable.
+	//
+	// Optional. Default: 4
+	MaxConcurrent int
+
+	// MaxSeconds is the longest profile a request may ask for with the seconds
+	// parameter (30 when absent). A longer one is answered with 400 Bad Request.
+	//
+	// Optional. Default: 60
+	MaxSeconds int
 }
 
 // ConfigDefault is the default config
 var ConfigDefault = Config{
-	Next: nil,
+	Next:          nil,
+	MaxConcurrent: 4,
+	MaxSeconds:    60,
 }
 
 func configDefault(config ...Config) Config {
@@ -32,6 +46,15 @@ func configDefault(config ...Config) Config {
 	// Set default values
 	if cfg.Next == nil {
 		cfg.Next = ConfigDefault.Next
+	}
+	if cfg.Prefix == "" {
+		cfg.Prefix = ConfigDefault.Prefix
+	}
+	if cfg.MaxConcurrent <= 0 {
+		cfg.MaxConcurrent = ConfigDefault.MaxConcurrent
+	}
+	if cfg.MaxSeconds <= 0 {
+		cfg.MaxSeconds = ConfigDefault.MaxSeconds
 	}
 
 	return cfg

@@ -96,6 +96,8 @@ func main() {
 
 ## RoutePermission
 
+Unless `fiber.Config.CaseSensitive` and `StrictRouting` are set, the router matches routes on the lower-cased path without trailing slashes. When the request path differs from that form, `RoutePermission` enforces both, so write path objects lower-case and without trailing slashes.
+
 ```go
 package main
 
