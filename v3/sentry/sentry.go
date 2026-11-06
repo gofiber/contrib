@@ -14,6 +14,9 @@ import (
 	"github.com/gofiber/utils/v2"
 )
 
+// maxRequestBodyBytes mirrors sentry-go's httputils.MaxBodyBytes; keep the two in step.
+const maxRequestBodyBytes = 10 * 1024
+
 // New creates a new middleware handler
 func New(config ...Config) fiber.Handler {
 	// Set default config
@@ -27,10 +30,17 @@ func New(config ...Config) fiber.Handler {
 			return err
 		}
 
+		// Raw like sentry-go's net/http integration: c.Body() decodes on every path and can rewrite the status.
+		body := c.BodyRaw()
+		if len(body) > maxRequestBodyBytes {
+			// One byte past the limit keeps sentry-go's "too large, omitted" result.
+			body = body[:maxRequestBodyBytes+1]
+		}
+
 		// The converted request aliases fasthttp's reusable buffers and must
 		// not be referenced once the handler has returned. Sentry serializes
 		// events on background goroutines, so store a deep copy in the scope.
-		body := utils.CopyBytes(c.Body())
+		body = utils.CopyBytes(body)
 		r = cloneRequest(r, body)
 
 		// Init sentry hub

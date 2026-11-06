@@ -1,8 +1,11 @@
 package sentry
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
 	"net/http"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -242,4 +245,74 @@ func Test_GetHubFromContext_PassLocalsToContext(t *testing.T) {
 	resp, err := app.Test(req)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// gzipChain wraps payload in gzip layers: stored inner layers keep every
+// decode full size, a compressed outer layer keeps the request small.
+func gzipChain(t *testing.T, payload []byte, layers int) []byte {
+	t.Helper()
+
+	body := payload
+	for i := range layers {
+		level := gzip.NoCompression
+		if i == layers-1 {
+			level = gzip.BestCompression
+		}
+		var buf bytes.Buffer
+		zw, err := gzip.NewWriterLevel(&buf, level)
+		require.NoError(t, err)
+		_, err = zw.Write(body)
+		require.NoError(t, err)
+		require.NoError(t, zw.Close())
+		body = buf.Bytes()
+	}
+	return body
+}
+
+func Test_Sentry_RequestBodyNotDecoded(t *testing.T) {
+	const layers, layerSize = 32, 1 << 20
+	encoded := gzipChain(t, make([]byte, layerSize), layers)
+	require.Less(t, len(encoded), 64<<10)
+
+	require.NoError(t, sentry.Init(sentry.ClientOptions{}))
+
+	app := fiber.New()
+	app.Use(New())
+
+	req, err := http.NewRequest(http.MethodPost, "http://example.com/no-such-path", bytes.NewReader(encoded))
+	require.NoError(t, err)
+	req.Header.Set(fiber.HeaderContentEncoding, strings.TrimSuffix(strings.Repeat("gzip,", layers), ","))
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	resp, err := app.Test(req)
+	runtime.ReadMemStats(&after)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+
+	// Decoding allocates at least layerSize per layer.
+	require.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(layers*layerSize/4))
+}
+
+func Test_Sentry_KeepsResponseStatusForUndecodableBody(t *testing.T) {
+	require.NoError(t, sentry.Init(sentry.ClientOptions{}))
+
+	app := fiber.New(fiber.Config{BodyLimit: 1024})
+	app.Use(New())
+	app.Post("/", func(c fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	bomb := gzipChain(t, make([]byte, 4096), 1)
+	for _, encoding := range []string{"compress", "x-compress", "bogus", "gzip"} {
+		req, err := http.NewRequest(http.MethodPost, "http://example.com/", bytes.NewReader(bomb))
+		require.NoError(t, err)
+		req.Header.Set(fiber.HeaderContentEncoding, encoding)
+
+		resp, err := app.Test(req)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+		require.Equal(t, http.StatusOK, resp.StatusCode, encoding)
+	}
 }
