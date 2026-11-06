@@ -95,6 +95,105 @@ func Test_SkipResBody(t *testing.T) {
 	assert.Equal(t, false, ok)
 }
 
+// go test -run Test_StreamedRequest_NotBuffered
+func Test_StreamedRequest_NotBuffered(t *testing.T) {
+	logger, logs := setupLogsCapture()
+
+	app := fiber.New(fiber.Config{StreamRequestBody: true})
+	app.Use(New(Config{
+		Logger: logger,
+		Fields: []string{"status", "bytesReceived", "body"},
+	}))
+	app.Post("/", func(_ fiber.Ctx) error {
+		return fiber.ErrUnauthorized
+	})
+
+	unread := bytes.NewReader([]byte("streamed"))
+
+	fctx := &fasthttp.RequestCtx{}
+	fctx.Request.Header.SetMethod(fiber.MethodPost)
+	fctx.Request.SetRequestURI("/")
+	fctx.Request.SetBodyStream(unread, unread.Len())
+	app.Handler()(fctx)
+
+	// the stream the handler left alone is not read for a log field
+	assert.Equal(t, len("streamed"), unread.Len())
+	assert.Equal(t, map[string]interface{}{
+		"status":        int64(fiber.StatusUnauthorized),
+		"bytesReceived": int64(len("streamed")),
+		"body":          "",
+	}, logs.All()[0].ContextMap())
+}
+
+// go test -run Test_StreamedMultipartForm_NotMarshaled
+func Test_StreamedMultipartForm_NotMarshaled(t *testing.T) {
+	const body = "--b\r\nContent-Disposition: form-data; name=\"field\"\r\n\r\nvalue\r\n--b--\r\n"
+
+	logger, logs := setupLogsCapture()
+
+	app := fiber.New(fiber.Config{StreamRequestBody: true, BodyLimit: 8})
+	app.Use(New(Config{
+		Logger: logger,
+		Fields: []string{"status", "bytesReceived", "body"},
+	}))
+	app.Post("/", func(_ fiber.Ctx) error {
+		return fiber.ErrUnauthorized
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(body)))
+	req.Header.Set(fiber.HeaderContentType, "multipart/form-data; boundary=b")
+
+	resp, err := app.Test(req)
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
+
+	assert.Equal(t, map[string]interface{}{
+		"status":        int64(fiber.StatusUnauthorized),
+		"bytesReceived": int64(len(body)),
+		"body":          "",
+	}, logs.All()[0].ContextMap())
+}
+
+// go test -run Test_StreamedResponse_NotBuffered
+func Test_StreamedResponse_NotBuffered(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		size int
+		sent int64
+	}{
+		{name: "known length", size: len("streamed"), sent: int64(len("streamed"))},
+		{name: "unknown length", size: -1, sent: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logger, logs := setupLogsCapture()
+
+			unread := bytes.NewReader([]byte("streamed"))
+
+			app := fiber.New()
+			app.Use(New(Config{
+				Logger: logger,
+				Fields: []string{"status", "bytesSent", "resBody"},
+			}))
+			app.Get("/", func(c fiber.Ctx) error {
+				return c.SendStream(unread, tc.size)
+			})
+
+			fctx := &fasthttp.RequestCtx{}
+			fctx.Request.Header.SetMethod(fiber.MethodGet)
+			fctx.Request.SetRequestURI("/")
+			app.Handler()(fctx)
+
+			// the stream is for the client, not the log
+			assert.Equal(t, len("streamed"), unread.Len())
+			assert.Equal(t, map[string]interface{}{
+				"status":    int64(fiber.StatusOK),
+				"bytesSent": tc.sent,
+				"resBody":   "",
+			}, logs.All()[0].ContextMap())
+		})
+	}
+}
+
 // go test -run Test_Logger
 func Test_Logger(t *testing.T) {
 	app := fiber.New()

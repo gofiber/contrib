@@ -136,8 +136,14 @@ func FromContext(ctx any) *newrelic.Transaction {
 	return nil
 }
 
+// createTransactionName returns "{method} {route}", or "{method}" without a route.
+// Never the raw path: the agent keeps uncapped metrics per name.
 func createTransactionName(c fiber.Ctx) string {
-	return fmt.Sprintf("%s %s", c.Request().Header.Method(), c.Request().URI().Path())
+	if endpoint := c.Endpoint(); endpoint != nil {
+		return c.Method() + " " + endpoint.Path
+	}
+
+	return c.Method()
 }
 
 func createWebRequest(c fiber.Ctx, host, method, scheme string, filter func(key, value string) bool) newrelic.WebRequest {

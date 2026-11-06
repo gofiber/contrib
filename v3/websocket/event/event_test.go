@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -327,6 +328,27 @@ func TestWebsocketSetUUIDUpdatesPool(t *testing.T) {
 	poolEntry, err = pool.get(newUUID)
 	require.NoError(t, err)
 	require.Equal(t, kws, poolEntry)
+}
+
+func TestWebsocketSetUUIDAfterDisconnectStaysOutOfPool(t *testing.T) {
+	resetState()
+
+	kws := createWS()
+	require.NoError(t, kws.SetUUID("name"))
+	kws.disconnected(nil)
+
+	// The former UUID is free again and now belongs to another connection.
+	successor := createWS()
+	require.NoError(t, successor.SetUUID("name"))
+
+	require.ErrorIs(t, kws.SetUUID("late"), ErrorInvalidConnection)
+	_, err := pool.get("late")
+	require.ErrorIs(t, err, ErrorInvalidConnection, "a dead connection went back into the pool")
+
+	poolEntry, err := pool.get("name")
+	require.NoError(t, err, "a dead connection removed its successor from the pool")
+	require.Equal(t, successor, poolEntry)
+	require.Len(t, pool.snapshot(), 1)
 }
 
 func TestWebsocketCloseRemovesConnectionFromPool(t *testing.T) {
@@ -794,6 +816,65 @@ func TestReadLimitRejectsOversizedFrame(t *testing.T) {
 	}
 }
 
+func TestReadLimitRejectsOversizedCompressedMessage(t *testing.T) {
+	resetState()
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	var delivered atomic.Int64
+	On(EventMessage, func(p *EventPayload) {
+		delivered.Store(int64(len(p.Data)))
+	})
+	disconnected := make(chan error, 1)
+	On(EventDisconnect, func(p *EventPayload) {
+		select {
+		case disconnected <- p.Error:
+		default:
+		}
+	})
+
+	app.Use(upgradeMiddleware)
+	app.Get("/", NewWithConfig(func(_ *Websocket) {}, Config{MaxMessageSize: 4096}, fws.Config{EnableCompression: true}))
+
+	go func() {
+		_ = app.Listener(ln)
+	}()
+
+	dialer := &websocket.Dialer{
+		NetDial: func(_, _ string) (net.Conn, error) {
+			return ln.Dial()
+		},
+		HandshakeTimeout:  5 * time.Second,
+		EnableCompression: true,
+	}
+	conn, resp, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+	require.Contains(t, resp.Header.Get("Sec-WebSocket-Extensions"), "permessage-deflate")
+
+	// 1 MiB of zeros is a few KiB on the wire: under the limit as the library
+	// counts it, far over it once inflated.
+	conn.EnableWriteCompression(true)
+	require.NoError(t, conn.WriteMessage(websocket.BinaryMessage, make([]byte, 1<<20)))
+
+	select {
+	case discErr := <-disconnected:
+		require.ErrorIs(t, discErr, fws.ErrReadLimit)
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected disconnect event after oversize compressed message")
+	}
+	require.Zero(t, delivered.Load(), "the message over the limit reached a listener")
+
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+	_, _, err = conn.ReadMessage()
+	require.True(t, websocket.IsCloseError(err, websocket.CloseMessageTooBig), "expected a 1009 close, got %v", err)
+}
+
 func dialWithRetry(dialer *websocket.Dialer, url string) (*websocket.Conn, *http.Response, error) {
 	var lastErr error
 	for i := 0; i < 50; i++ {
@@ -1052,12 +1133,16 @@ func (s *WebsocketMock) write(_ int, _ []byte) {
 	panic("implement me")
 }
 
-func (s *WebsocketMock) run() {
+func (s *WebsocketMock) run(_ context.Context, _ context.CancelFunc, _ *sync.WaitGroup) {
 	panic("implement me")
 }
 
 func (s *WebsocketMock) read(_ context.Context) {
 	panic("implement me")
+}
+
+func (s *WebsocketMock) isPending() bool {
+	return false
 }
 
 func (s *WebsocketMock) disconnected(_ error) bool {
@@ -1314,6 +1399,243 @@ func TestCallbackPanicAfterCloseStillReportsError(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return len(pool.snapshot()) == 0
 	}, 2*time.Second, 10*time.Millisecond)
+}
+
+// Once user code has closed a connection, nothing more is dispatched for it;
+// the tear-down events still reach every listener.
+func TestCloseStopsDispatch(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		closeEvent string // empty: the New callback closes
+		want       []string
+	}{
+		{"callback", "", []string{"close 1", "close 2", "disconnect 1", "disconnect 2"}},
+		{"connect listener", EventConnect, []string{"refuse", "close 1", "close 2", "disconnect 1", "disconnect 2"}},
+		{"message listener", EventMessage, []string{"connect", "connect local", "refuse", "close 1", "close 2", "disconnect 1", "disconnect 2"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetState()
+
+			var mu sync.Mutex
+			var order []string
+			record := func(s string) EventCallback {
+				return func(*EventPayload) {
+					mu.Lock()
+					order = append(order, s)
+					mu.Unlock()
+				}
+			}
+			if tc.closeEvent != "" {
+				On(tc.closeEvent, func(p *EventPayload) {
+					record("refuse")(p)
+					p.Kws.Close()
+				})
+			}
+			On(EventConnect, record("connect"))
+			On(EventMessage, record("message"))
+			On(EventClose, record("close 1"))
+			On(EventClose, record("close 2"))
+			On(EventDisconnect, record("disconnect 1"))
+			On(EventDisconnect, record("disconnect 2"))
+
+			app := fiber.New()
+			ln := fasthttputil.NewInmemoryListener()
+			defer func() {
+				_ = app.Shutdown()
+				_ = ln.Close()
+			}()
+
+			app.Use(upgradeMiddleware)
+			app.Get("/", New(func(kws *Websocket) {
+				kws.On(EventConnect, record("connect local"))
+				kws.On(EventMessage, record("message local"))
+				if tc.closeEvent == "" {
+					kws.Close()
+				}
+			}))
+
+			go func() { _ = app.Listener(ln) }()
+
+			dialer := &websocket.Dialer{
+				NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+				HandshakeTimeout: 5 * time.Second,
+			}
+			conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+			require.NoError(t, err)
+			defer conn.Close()
+			if tc.closeEvent == EventMessage {
+				require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte("after close")))
+			}
+
+			require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+			_, _, err = conn.ReadMessage()
+			require.True(t, websocket.IsCloseError(err, websocket.CloseNormalClosure), "expected the close frame, got %v", err)
+			_, err = conn.NetConn().Read(make([]byte, 1))
+			require.ErrorIs(t, err, io.EOF)
+
+			// After a Close on the read goroutine the socket can close before the disconnect listeners ran.
+			require.Eventually(t, func() bool {
+				mu.Lock()
+				defer mu.Unlock()
+				return len(order) >= len(tc.want)
+			}, 5*time.Second, time.Millisecond)
+			mu.Lock()
+			defer mu.Unlock()
+			require.Equal(t, tc.want, order)
+			require.Empty(t, pool.snapshot())
+		})
+	}
+}
+
+func TestConnectSkipsConnectionDeadAtDispatch(t *testing.T) {
+	resetState()
+
+	var fired atomic.Int32
+	On(EventConnect, func(*EventPayload) { fired.Add(1) })
+
+	kws := createWS()
+	// The early sender failed a write after NewWithConfig last saw it alive.
+	kws.disconnected(errors.New("write failed"))
+	kws.fireEvent(EventConnect, nil, nil)
+	require.Zero(t, fired.Load(), "EventConnect ran on a disconnected connection")
+}
+
+func TestCallbackEmitBeyondQueueSizeDoesNotBlock(t *testing.T) {
+	resetState()
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	const queueSize = 4
+	const numMessages = 3 * queueSize
+	returned := make(chan struct{})
+	app.Use(upgradeMiddleware)
+	app.Get("/", NewWithConfig(func(kws *Websocket) {
+		// A history replay larger than the queue.
+		for i := range numMessages {
+			kws.Emit([]byte(strconv.Itoa(i)))
+		}
+		close(returned)
+	}, Config{SendQueueSize: queueSize}))
+
+	go func() { _ = app.Listener(ln) }()
+
+	dialer := &websocket.Dialer{
+		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+		HandshakeTimeout: 5 * time.Second,
+	}
+	conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+	require.NoError(t, err)
+	defer conn.Close()
+
+	// Read while the callback runs, as a client would: nothing dropped, in order.
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	for i := range numMessages {
+		_, msg, err := conn.ReadMessage()
+		require.NoError(t, err, "callback is still blocked in Emit on a full queue")
+		require.Equal(t, strconv.Itoa(i), string(msg))
+	}
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("callback is still blocked in Emit on a full queue")
+	}
+
+	require.NoError(t, conn.Close())
+	require.Eventually(t, func() bool {
+		return len(pool.snapshot()) == 0
+	}, 5*time.Second, 10*time.Millisecond)
+}
+
+func TestPendingConnectionGetsNoPoolTraffic(t *testing.T) {
+	for _, refuse := range []bool{false, true} {
+		t.Run(fmt.Sprintf("refuse=%v", refuse), func(t *testing.T) {
+			resetState()
+
+			var fired atomic.Int32
+			On("custom", func(*EventPayload) { fired.Add(1) })
+
+			app := fiber.New()
+			ln := fasthttputil.NewInmemoryListener()
+			defer func() {
+				_ = app.Shutdown()
+				_ = ln.Close()
+			}()
+
+			const queueSize = 2
+			inCallback := make(chan *Websocket, 1)
+			release := make(chan struct{})
+			app.Use(upgradeMiddleware)
+			app.Get("/", NewWithConfig(func(kws *Websocket) {
+				inCallback <- kws
+				<-release // stands in for a user or token lookup
+				if refuse {
+					kws.Close()
+				}
+			}, Config{SendQueueSize: queueSize}))
+
+			go func() { _ = app.Listener(ln) }()
+
+			dialer := &websocket.Dialer{
+				NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+				HandshakeTimeout: 5 * time.Second,
+			}
+			conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+			require.NoError(t, err)
+			defer conn.Close()
+
+			var kws *Websocket
+			select {
+			case kws = <-inCallback:
+			case <-time.After(2 * time.Second):
+				t.Fatal("callback did not run")
+			}
+
+			// Traffic from other connections while the callback still decides.
+			sent := make(chan struct{})
+			go func() {
+				for i := range 3 * queueSize {
+					Broadcast([]byte("early " + strconv.Itoa(i)))
+				}
+				close(sent)
+			}()
+			select {
+			case <-sent:
+			case <-time.After(2 * time.Second):
+				t.Fatal("Broadcast blocked on a connection still in its New callback")
+			}
+			require.ErrorIs(t, EmitTo(kws.GetUUID(), []byte("early")), ErrorInvalidConnection)
+			Fire("custom", nil)
+			require.Zero(t, fired.Load(), "listeners ran for a connection not yet accepted")
+			stale := pool.snapshot() // what a Fire under way since before the refusal iterates
+			close(release)
+
+			require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+			if refuse {
+				_, msg, err := conn.ReadMessage()
+				require.True(t, websocket.IsCloseError(err, websocket.CloseNormalClosure), "refused client got %q, %v", msg, err)
+				// EOF once the handler is done with kws.
+				_, err = conn.NetConn().Read(make([]byte, 1))
+				require.ErrorIs(t, err, io.EOF)
+
+				pool.Lock()
+				pool.snap = stale
+				pool.Unlock()
+				Fire("custom", nil)
+				require.Zero(t, fired.Load(), "a Fire from before the refusal reached the refused connection")
+				return
+			}
+			require.Eventually(t, func() bool { return !kws.isPending() }, 2*time.Second, 5*time.Millisecond)
+			Broadcast([]byte("after"))
+			_, msg, err := conn.ReadMessage()
+			require.NoError(t, err)
+			require.Equal(t, "after", string(msg))
+		})
+	}
 }
 
 func TestCloseAllListenersStillSeeRequestData(t *testing.T) {

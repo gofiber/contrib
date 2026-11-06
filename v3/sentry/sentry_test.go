@@ -1,6 +1,8 @@
 package sentry
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
 	"net/http"
 	"strings"
@@ -242,4 +244,84 @@ func Test_GetHubFromContext_PassLocalsToContext(t *testing.T) {
 	resp, err := app.Test(req)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func gzipBody(t *testing.T, payload []byte) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	_, err := zw.Write(payload)
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+	return buf.Bytes()
+}
+
+func Test_Sentry_RequestBodyInEvent(t *testing.T) {
+	events := make(chan *sentry.Event, 1)
+	require.NoError(t, sentry.Init(sentry.ClientOptions{
+		SendDefaultPII: true,
+		BeforeSend: func(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
+			events <- event
+			return event
+		},
+	}))
+
+	app := fiber.New()
+	app.Use(New())
+	app.Post("/", func(c fiber.Ctx) error {
+		MustGetHubFromContext(c).CaptureMessage("body")
+		return nil
+	})
+
+	jsonBody := func(n int) string { return `{"k":"` + strings.Repeat("a", n-8) + `"}` }
+	testCases := []struct {
+		desc, encoding, body, want string
+	}{
+		// sentry-go reports non-JSON bodies as "[Filtered]"; a decoded body would read {"k":"v"}.
+		{desc: "compressed body is not decoded", encoding: "gzip", body: string(gzipBody(t, []byte(`{"k":"v"}`))), want: "[Filtered]"},
+		{desc: "body at limit is kept", body: jsonBody(maxRequestBodyBytes), want: jsonBody(maxRequestBodyBytes)},
+		{desc: "body over limit is omitted", body: jsonBody(maxRequestBodyBytes + 1), want: ""},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.desc, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, "http://example.com/", strings.NewReader(tc.body))
+			require.NoError(t, err)
+			req.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+			if tc.encoding != "" {
+				req.Header.Set(fiber.HeaderContentEncoding, tc.encoding)
+			}
+
+			resp, err := app.Test(req)
+			require.NoError(t, err)
+			require.NoError(t, resp.Body.Close())
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+
+			require.Len(t, events, 1)
+			require.Equal(t, tc.want, (<-events).Request.Data)
+		})
+	}
+}
+
+func Test_Sentry_KeepsResponseStatusForUndecodableBody(t *testing.T) {
+	require.NoError(t, sentry.Init(sentry.ClientOptions{}))
+
+	app := fiber.New(fiber.Config{BodyLimit: 1024})
+	app.Use(New())
+	app.Post("/", func(c fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	body := gzipBody(t, make([]byte, 4096))
+	for _, encoding := range []string{"compress", "x-compress", "bogus", "gzip"} {
+		req, err := http.NewRequest(http.MethodPost, "http://example.com/", bytes.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set(fiber.HeaderContentEncoding, encoding)
+
+		resp, err := app.Test(req)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+		require.Equal(t, http.StatusOK, resp.StatusCode, encoding)
+	}
 }
