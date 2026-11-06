@@ -460,12 +460,12 @@ func NewWithConfig(callback func(kws *Websocket), eventCfg Config, wsConfig ...w
 		}()
 
 		callback(kws)
-		// A callback that closed the connection refused it: no EventConnect after
-		// EventDisconnect. run still releases the socket.
+		// fire drops EventConnect on a closed connection; a refused one also stays
+		// pending, so a Fire still iterating an older pool snapshot skips it.
+		kws.fireEvent(EventConnect, nil, nil)
 		if kws.IsAlive() {
-			kws.fireEvent(EventConnect, nil, nil)
+			kws.pending.Store(false)
 		}
-		kws.pending.Store(false)
 		kws.run(ctx, cancelFunc, &wg)
 		completed = true
 	}, wsConfig...)
@@ -1116,9 +1116,10 @@ func (kws *Websocket) fire(event string, data []byte, err error, clone bool) {
 		Data:             data,
 		Error:            err,
 	}
-	// Once a listener ends the connection, the rest of a live dispatch is skipped;
-	// the tear-down events, and a Fire on a dead connection, reach every listener.
-	stopWhenDead := event != EventDisconnect && event != EventClose && event != EventError && kws.IsAlive()
+	// Once a listener ends the connection, the rest of a live dispatch is skipped; the tear-down
+	// events and a Fire on a dead connection reach every listener, EventConnect none.
+	stopWhenDead := event == EventConnect ||
+		(event != EventDisconnect && event != EventClose && event != EventError && kws.IsAlive())
 	for _, callback := range globalCallbacks {
 		if stopWhenDead && !kws.IsAlive() {
 			return

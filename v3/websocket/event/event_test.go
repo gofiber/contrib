@@ -1405,22 +1405,40 @@ func TestCloseStopsDispatch(t *testing.T) {
 			require.NoError(t, err)
 			defer conn.Close()
 			if tc.closeEvent == EventMessage {
-				require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte("abuse")))
+				require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte("after close")))
 			}
 
-			// The socket is closed only after the dispatch has returned.
 			require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
 			_, _, err = conn.ReadMessage()
 			require.True(t, websocket.IsCloseError(err, websocket.CloseNormalClosure), "expected the close frame, got %v", err)
 			_, err = conn.NetConn().Read(make([]byte, 1))
 			require.ErrorIs(t, err, io.EOF)
 
+			// After a Close on the read goroutine the socket can close before the disconnect listeners ran.
+			require.Eventually(t, func() bool {
+				mu.Lock()
+				defer mu.Unlock()
+				return len(order) >= len(tc.want)
+			}, 5*time.Second, time.Millisecond)
 			mu.Lock()
 			defer mu.Unlock()
 			require.Equal(t, tc.want, order)
 			require.Empty(t, pool.snapshot())
 		})
 	}
+}
+
+func TestConnectSkipsConnectionDeadAtDispatch(t *testing.T) {
+	resetState()
+
+	var fired atomic.Int32
+	On(EventConnect, func(*EventPayload) { fired.Add(1) })
+
+	kws := createWS()
+	// The early sender failed a write after NewWithConfig last saw it alive.
+	kws.disconnected(errors.New("write failed"))
+	kws.fireEvent(EventConnect, nil, nil)
+	require.Zero(t, fired.Load(), "EventConnect ran on a disconnected connection")
 }
 
 func TestCallbackEmitBeyondQueueSizeDoesNotBlock(t *testing.T) {
@@ -1534,12 +1552,22 @@ func TestPendingConnectionGetsNoPoolTraffic(t *testing.T) {
 			require.ErrorIs(t, EmitTo(kws.GetUUID(), []byte("early")), ErrorInvalidConnection)
 			Fire("custom", nil)
 			require.Zero(t, fired.Load(), "listeners ran for a connection not yet accepted")
+			stale := pool.snapshot() // what a Fire under way since before the refusal iterates
 			close(release)
 
 			require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
 			if refuse {
 				_, msg, err := conn.ReadMessage()
 				require.True(t, websocket.IsCloseError(err, websocket.CloseNormalClosure), "refused client got %q, %v", msg, err)
+				// EOF once the handler is done with kws.
+				_, err = conn.NetConn().Read(make([]byte, 1))
+				require.ErrorIs(t, err, io.EOF)
+
+				pool.Lock()
+				pool.snap = stale
+				pool.Unlock()
+				Fire("custom", nil)
+				require.Zero(t, fired.Load(), "a Fire from before the refusal reached the refused connection")
 				return
 			}
 			require.Eventually(t, func() bool { return !kws.isPending() }, 2*time.Second, 5*time.Millisecond)
