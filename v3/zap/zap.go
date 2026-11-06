@@ -9,6 +9,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/utils/v2"
 	utilsstrings "github.com/gofiber/utils/v2/strings"
+	"github.com/valyala/fasthttp"
 	"go.uber.org/zap"
 )
 
@@ -147,7 +148,7 @@ func New(config ...Config) fiber.Handler {
 			case "resBody":
 				if cfg.SkipResBody == nil || !cfg.SkipResBody(c) {
 					if cfg.GetResBody == nil {
-						fields = append(fields, zap.ByteString("resBody", c.Response().Body()))
+						fields = append(fields, zap.ByteString("resBody", responseBody(c.Response())))
 					} else {
 						fields = append(fields, zap.ByteString("resBody", cfg.GetResBody(c)))
 					}
@@ -156,12 +157,12 @@ func New(config ...Config) fiber.Handler {
 				fields = append(fields, zap.String("queryParams", c.Request().URI().QueryArgs().String()))
 			case "body":
 				if cfg.SkipBody == nil || !cfg.SkipBody(c) {
-					fields = append(fields, zap.ByteString("body", c.Body()))
+					fields = append(fields, zap.ByteString("body", requestBody(c)))
 				}
 			case "bytesReceived":
-				fields = append(fields, zap.Int("bytesReceived", len(c.Request().Body())))
+				fields = append(fields, zap.Int("bytesReceived", bytesReceived(c)))
 			case "bytesSent":
-				fields = append(fields, zap.Int("bytesSent", len(c.Response().Body())))
+				fields = append(fields, zap.Int("bytesSent", bytesSent(c.Response())))
 			case "route":
 				fields = append(fields, zap.String("route", c.Route().Path))
 			case "method":
@@ -194,6 +195,47 @@ func New(config ...Config) fiber.Handler {
 
 		return nil
 	}
+}
+
+// requestBody skips a body that is a stream or past BodyLimit: c.Body() would read all of it.
+func requestBody(c fiber.Ctx) []byte {
+	req := c.Request()
+	if req.IsBodyStream() || req.Header.ContentLength() > c.App().Config().BodyLimit {
+		return nil
+	}
+
+	return c.Body()
+}
+
+// bytesReceived is the announced Content-Length, as in Fiber's logger, so no stream is read.
+func bytesReceived(c fiber.Ctx) int {
+	req := c.Request()
+	if n := req.Header.ContentLength(); n > 0 {
+		return n
+	}
+	if req.IsBodyStream() {
+		return 0
+	}
+
+	return len(req.Body())
+}
+
+// responseBody skips a streamed response, which is sent after the handler returns.
+func responseBody(resp *fasthttp.Response) []byte {
+	if resp.IsBodyStream() {
+		return nil
+	}
+
+	return resp.Body()
+}
+
+// bytesSent is the announced length of a streamed response, so the stream is not read.
+func bytesSent(resp *fasthttp.Response) int {
+	if resp.IsBodyStream() {
+		return max(resp.Header.ContentLength(), 0)
+	}
+
+	return len(resp.Body())
 }
 
 func contains(needle string, slice []string) bool {
