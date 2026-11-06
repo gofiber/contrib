@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp/fasthttputil"
 )
@@ -175,6 +176,81 @@ func TestPollingOpenKeepsTypedLocals(t *testing.T) {
 	require.Equal(t, "string", kws.Locals("plain"))
 	require.Equal(t, "string", kws.Locals([]byte("plain")))
 	require.Equal(t, "nil key", kws.Locals(nil))
+}
+
+// pollOpenSession opens a polling session through app.Test and returns it.
+func pollOpenSession(t *testing.T, app *fiber.App, req *http.Request) *Websocket {
+	t.Helper()
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.True(t, len(body) > 1 && body[0] == eioOpen, "expected OPEN packet, got %q", body)
+	var open eioOpenPacket
+	require.NoError(t, json.Unmarshal(body[1:], &open))
+	kws, ok := getEIOSession(open.SID)
+	require.True(t, ok)
+	return kws
+}
+
+func TestPollingOpenCopiesStringAndByteLocals(t *testing.T) {
+	resetSIOGlobals(t)
+	prevEnable := EnablePolling
+	EnablePolling = true
+	t.Cleanup(func() { EnablePolling = prevEnable })
+
+	// A Local taken from c.Params or c.Query aliases a buffer the next request reuses.
+	buf := []byte("alice")
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		c.Locals("user", utils.UnsafeString(buf))
+		c.Locals("raw", buf)
+		return c.Next()
+	})
+	app.Get("/", New(func(*Websocket) {}))
+
+	req, err := http.NewRequest(http.MethodGet, "/?EIO=4&transport=polling", nil)
+	require.NoError(t, err)
+	kws := pollOpenSession(t, app, req)
+	copy(buf, "carol")
+
+	require.Equal(t, "alice", kws.Locals("user"))
+	require.Equal(t, []byte("alice"), kws.Locals("raw"))
+}
+
+func TestPollingOpenResolvesRepeatedNamesLikeFiber(t *testing.T) {
+	resetSIOGlobals(t)
+	prevEnable := EnablePolling
+	EnablePolling = true
+	t.Cleanup(func() { EnablePolling = prevEnable })
+
+	// Middleware in front of the handler reads through Fiber; listeners must see the same occurrence.
+	var seen map[string]string
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		seen = map[string]string{
+			"room":  strings.Clone(c.Query("room")),
+			"empty": strings.Clone(c.Query("empty")),
+			"user":  strings.Clone(c.Cookies("user")),
+			"blank": strings.Clone(c.Cookies("blank")),
+		}
+		return c.Next()
+	})
+	app.Get("/", New(func(*Websocket) {}))
+
+	req, err := http.NewRequest(http.MethodGet, "/?EIO=4&transport=polling&room=first&room=last&empty=&empty=last", nil)
+	require.NoError(t, err)
+	req.Header.Set(fiber.HeaderCookie, "user=first; user=last; blank=; blank=last")
+	kws := pollOpenSession(t, app, req)
+
+	require.Equal(t, "first", kws.Query("room"))
+	require.Equal(t, seen["room"], kws.Query("room"))
+	require.Empty(t, kws.Query("empty"))
+	require.Equal(t, seen["empty"], kws.Query("empty"))
+	require.Equal(t, "first", kws.Cookies("user"))
+	require.Equal(t, seen["user"], kws.Cookies("user"))
+	require.Empty(t, kws.Cookies("blank"))
+	require.Equal(t, seen["blank"], kws.Cookies("blank"))
 }
 
 // TestPollingOpenHandshake verifies the GET-with-no-sid path returns a
