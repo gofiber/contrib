@@ -11,6 +11,7 @@ import (
 
 	"github.com/fasthttp/websocket"
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -770,6 +771,53 @@ func TestConnCaptureAllocatesOnlyWhatTheRequestCarries(t *testing.T) {
 	assert.Equal(t, "", conn.Query("missing"))
 	assert.Equal(t, "", conn.Cookies("missing"))
 	assert.Nil(t, conn.Locals("missing"))
+}
+
+func TestConnCaptureCopiesStringAndByteLocals(t *testing.T) {
+	// A Local taken from c.Params or c.Query aliases a buffer the next request reuses.
+	buf := []byte("alice")
+	fctx := &fasthttp.RequestCtx{}
+	fctx.SetUserValue("user", utils.UnsafeString(buf))
+	fctx.SetUserValue("raw", buf)
+
+	conn := &Conn{}
+	conn.capture(fctx)
+	copy(buf, "carol")
+
+	assert.Equal(t, "alice", conn.Locals("user"))
+	assert.Equal(t, []byte("alice"), conn.Locals("raw"))
+}
+
+func TestConnCaptureResolvesRepeatedNamesLikeFiber(t *testing.T) {
+	// Middleware in front of the upgrade reads through Fiber; the handler must see the same occurrence.
+	app := fiber.New()
+	fctx := &fasthttp.RequestCtx{}
+	fctx.Request.SetRequestURI("/ws?room=first&room=last&empty=&empty=last")
+	fctx.Request.Header.Set(fiber.HeaderCookie, "user=first; user=last; empty=; empty=last")
+	fctx.Request.Header.Add("X-User", "first")
+	fctx.Request.Header.Add("X-User", "last")
+	fctx.Request.Header.Add("X-Empty", "")
+	fctx.Request.Header.Add("X-Empty", "second")
+	fctx.Request.Header.Add("X-Empty", "last")
+	c := app.AcquireCtx(fctx)
+	defer app.ReleaseCtx(c)
+
+	conn := &Conn{}
+	conn.capture(fctx)
+
+	assert.Equal(t, "first", conn.Query("room"))
+	assert.Equal(t, c.Query("room"), conn.Query("room"))
+	assert.Equal(t, "", conn.Query("empty"))
+	assert.Equal(t, c.Query("empty"), conn.Query("empty"))
+	assert.Equal(t, "first", conn.Cookies("user"))
+	assert.Equal(t, c.Cookies("user"), conn.Cookies("user"))
+	assert.Equal(t, "", conn.Cookies("empty"))
+	assert.Equal(t, c.Cookies("empty"), conn.Cookies("empty"))
+	assert.Equal(t, "first", conn.Headers("X-User"))
+	assert.Equal(t, c.Get("X-User"), conn.Headers("X-User"))
+	// Get skips an empty field line.
+	assert.Equal(t, "second", conn.Headers("X-Empty"))
+	assert.Equal(t, c.Get("X-Empty"), conn.Headers("X-Empty"))
 }
 
 func TestConnHeadersLookup(t *testing.T) {

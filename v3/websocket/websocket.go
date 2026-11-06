@@ -243,21 +243,38 @@ func (conn *Conn) capture(fctx *fasthttp.RequestCtx) {
 		} else if key != nil && !reflect.ValueOf(key).Comparable() {
 			return // fasthttp accepts e.g. a slice key, a map panics on it
 		}
+		// Request strings and bytes alias buffers the next request reuses.
+		switch v := value.(type) {
+		case string:
+			value = utils.CopyString(v)
+		case []byte:
+			value = utils.CopyBytes(v)
+		}
 		setEntry(&conn.locals, key, value)
 	})
+	// A repeated name keeps the occurrence Fiber's Query, Cookies and Get return,
+	// so the handler cannot get a value the middleware never checked.
 	// No size hint: Args.Len counts repeated keys that collapse into one entry.
 	for key, value := range fctx.QueryArgs().All() {
-		setEntry(&conn.queries, string(key), string(value))
+		if _, seen := conn.queries[string(key)]; !seen {
+			setEntry(&conn.queries, string(key), string(value))
+		}
 	}
 	for key, value := range fctx.Request.Header.Cookies() {
-		setEntry(&conn.cookies, string(key), string(value))
+		if _, seen := conn.cookies[string(key)]; !seen {
+			setEntry(&conn.cookies, string(key), string(value))
+		}
 	}
 	// Names are stored canonical so Headers is one probe. fasthttp delivers them
 	// that way unless normalizing was disabled, server-wide or per request, which
 	// is not observable here, so every name is checked; a canonical name comes
 	// back without allocating.
 	for key, value := range fctx.Request.Header.All() {
-		setEntry(&conn.headers, string(utils.CanonicalHeaderKey(key)), string(value))
+		name := utils.CanonicalHeaderKey(key)
+		// First non-empty field line, as c.Get.
+		if conn.headers[string(name)] == "" {
+			setEntry(&conn.headers, string(name), string(value))
+		}
 	}
 }
 
