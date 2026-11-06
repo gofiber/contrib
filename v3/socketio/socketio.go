@@ -2579,8 +2579,9 @@ func (kws *Websocket) fireEventWithAck(event string, args [][]byte, fireErr erro
 		firstArg = args[0]
 	}
 
-	// Once a listener closes the session (e.g. refused auth) the rest are skipped; tear-down events reach all.
-	stopWhenDead := event != EventDisconnect && event != EventClose && event != EventError && kws.IsAlive()
+	// Once a listener closes the session (e.g. refused auth) the rest are skipped; tear-down events
+	// reach all, EventConnect none once the session is dead.
+	stopWhenDead := event == EventConnect || (event != EventDisconnect && event != EventClose && event != EventError && kws.IsAlive())
 
 	for _, callback := range callbacks {
 		if stopWhenDead && !kws.IsAlive() {

@@ -1134,6 +1134,19 @@ func TestSocketIONewCallbackCloseSuppressesEventConnect(t *testing.T) {
 	}
 }
 
+func TestSocketIOConnectSkipsSessionDeadAtDispatch(t *testing.T) {
+	resetSIOGlobals(t)
+
+	var fired atomic.Int32
+	On(EventConnect, func(*EventPayload) { fired.Add(1) })
+
+	kws := createWS()
+	// A tear-down landed after the callback last saw the session alive.
+	kws.setAlive(false)
+	kws.fireEvent(EventConnect, nil, nil)
+	require.Zero(t, fired.Load(), "EventConnect ran on a disconnected session")
+}
+
 // Listeners after one that closed the session must not run; tear-down events reach all.
 func TestSocketIOListenerCloseStopsDispatch(t *testing.T) {
 	for _, event := range []string{EventConnect, "chat"} {
