@@ -5,7 +5,6 @@ import (
 	"compress/gzip"
 	"fmt"
 	"net/http"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -247,52 +246,62 @@ func Test_GetHubFromContext_PassLocalsToContext(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
-// gzipChain wraps payload in gzip layers: stored inner layers keep every
-// decode full size, a compressed outer layer keeps the request small.
-func gzipChain(t *testing.T, payload []byte, layers int) []byte {
+func gzipBody(t *testing.T, payload []byte) []byte {
 	t.Helper()
 
-	body := payload
-	for i := range layers {
-		level := gzip.NoCompression
-		if i == layers-1 {
-			level = gzip.BestCompression
-		}
-		var buf bytes.Buffer
-		zw, err := gzip.NewWriterLevel(&buf, level)
-		require.NoError(t, err)
-		_, err = zw.Write(body)
-		require.NoError(t, err)
-		require.NoError(t, zw.Close())
-		body = buf.Bytes()
-	}
-	return body
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	_, err := zw.Write(payload)
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+	return buf.Bytes()
 }
 
-func Test_Sentry_RequestBodyNotDecoded(t *testing.T) {
-	const layers, layerSize = 32, 1 << 20
-	encoded := gzipChain(t, make([]byte, layerSize), layers)
-	require.Less(t, len(encoded), 64<<10)
-
-	require.NoError(t, sentry.Init(sentry.ClientOptions{}))
+func Test_Sentry_RequestBodyInEvent(t *testing.T) {
+	events := make(chan *sentry.Event, 1)
+	require.NoError(t, sentry.Init(sentry.ClientOptions{
+		SendDefaultPII: true,
+		BeforeSend: func(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
+			events <- event
+			return event
+		},
+	}))
 
 	app := fiber.New()
 	app.Use(New())
+	app.Post("/", func(c fiber.Ctx) error {
+		MustGetHubFromContext(c).CaptureMessage("body")
+		return nil
+	})
 
-	req, err := http.NewRequest(http.MethodPost, "http://example.com/no-such-path", bytes.NewReader(encoded))
-	require.NoError(t, err)
-	req.Header.Set(fiber.HeaderContentEncoding, strings.TrimSuffix(strings.Repeat("gzip,", layers), ","))
+	jsonBody := func(n int) string { return `{"k":"` + strings.Repeat("a", n-8) + `"}` }
+	testCases := []struct {
+		desc, encoding, body, want string
+	}{
+		// sentry-go reports non-JSON bodies as "[Filtered]"; a decoded body would read {"k":"v"}.
+		{desc: "compressed body is not decoded", encoding: "gzip", body: string(gzipBody(t, []byte(`{"k":"v"}`))), want: "[Filtered]"},
+		{desc: "body at limit is kept", body: jsonBody(maxRequestBodyBytes), want: jsonBody(maxRequestBodyBytes)},
+		{desc: "body over limit is omitted", body: jsonBody(maxRequestBodyBytes + 1), want: ""},
+	}
 
-	var before, after runtime.MemStats
-	runtime.ReadMemStats(&before)
-	resp, err := app.Test(req)
-	runtime.ReadMemStats(&after)
-	require.NoError(t, err)
-	require.NoError(t, resp.Body.Close())
-	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+	for _, tc := range testCases {
+		t.Run(tc.desc, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, "http://example.com/", strings.NewReader(tc.body))
+			require.NoError(t, err)
+			req.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+			if tc.encoding != "" {
+				req.Header.Set(fiber.HeaderContentEncoding, tc.encoding)
+			}
 
-	// Decoding allocates at least layerSize per layer.
-	require.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(layers*layerSize/4))
+			resp, err := app.Test(req)
+			require.NoError(t, err)
+			require.NoError(t, resp.Body.Close())
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+
+			require.Len(t, events, 1)
+			require.Equal(t, tc.want, (<-events).Request.Data)
+		})
+	}
 }
 
 func Test_Sentry_KeepsResponseStatusForUndecodableBody(t *testing.T) {
@@ -304,9 +313,9 @@ func Test_Sentry_KeepsResponseStatusForUndecodableBody(t *testing.T) {
 		return c.SendString("ok")
 	})
 
-	bomb := gzipChain(t, make([]byte, 4096), 1)
+	body := gzipBody(t, make([]byte, 4096))
 	for _, encoding := range []string{"compress", "x-compress", "bogus", "gzip"} {
-		req, err := http.NewRequest(http.MethodPost, "http://example.com/", bytes.NewReader(bomb))
+		req, err := http.NewRequest(http.MethodPost, "http://example.com/", bytes.NewReader(body))
 		require.NoError(t, err)
 		req.Header.Set(fiber.HeaderContentEncoding, encoding)
 
