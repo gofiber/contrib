@@ -816,6 +816,65 @@ func TestReadLimitRejectsOversizedFrame(t *testing.T) {
 	}
 }
 
+func TestReadLimitRejectsOversizedCompressedMessage(t *testing.T) {
+	resetState()
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	var delivered atomic.Int64
+	On(EventMessage, func(p *EventPayload) {
+		delivered.Store(int64(len(p.Data)))
+	})
+	disconnected := make(chan error, 1)
+	On(EventDisconnect, func(p *EventPayload) {
+		select {
+		case disconnected <- p.Error:
+		default:
+		}
+	})
+
+	app.Use(upgradeMiddleware)
+	app.Get("/", NewWithConfig(func(_ *Websocket) {}, Config{MaxMessageSize: 4096}, fws.Config{EnableCompression: true}))
+
+	go func() {
+		_ = app.Listener(ln)
+	}()
+
+	dialer := &websocket.Dialer{
+		NetDial: func(_, _ string) (net.Conn, error) {
+			return ln.Dial()
+		},
+		HandshakeTimeout:  5 * time.Second,
+		EnableCompression: true,
+	}
+	conn, resp, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+	require.Contains(t, resp.Header.Get("Sec-WebSocket-Extensions"), "permessage-deflate")
+
+	// 1 MiB of zeros is a few KiB on the wire: under the limit as the library
+	// counts it, far over it once inflated.
+	conn.EnableWriteCompression(true)
+	require.NoError(t, conn.WriteMessage(websocket.BinaryMessage, make([]byte, 1<<20)))
+
+	select {
+	case discErr := <-disconnected:
+		require.ErrorIs(t, discErr, fws.ErrReadLimit)
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected disconnect event after oversize compressed message")
+	}
+	require.Zero(t, delivered.Load(), "the message over the limit reached a listener")
+
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+	_, _, err = conn.ReadMessage()
+	require.True(t, websocket.IsCloseError(err, websocket.CloseMessageTooBig), "expected a 1009 close, got %v", err)
+}
+
 func dialWithRetry(dialer *websocket.Dialer, url string) (*websocket.Conn, *http.Response, error) {
 	var lastErr error
 	for i := 0; i < 50; i++ {

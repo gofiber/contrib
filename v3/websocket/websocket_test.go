@@ -2,9 +2,11 @@ package websocket
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -964,5 +966,91 @@ func BenchmarkNewConn(b *testing.B) {
 	for b.Loop() {
 		conn := &Conn{ip: "127.0.0.1"}
 		conn.capture(fctx)
+	}
+}
+
+func TestReadLimitBoundsDecompressedMessage(t *testing.T) {
+	reads := map[string]func(c *Conn) error{
+		"ReadMessage": func(c *Conn) error {
+			_, msg, err := c.ReadMessage()
+			if err == nil {
+				err = fmt.Errorf("read %d bytes past the limit", len(msg))
+			}
+			return err
+		},
+		"ReadJSON": func(c *Conn) error {
+			var msg string
+			err := c.ReadJSON(&msg)
+			if err == nil {
+				err = fmt.Errorf("decoded %d bytes past the limit", len(msg))
+			}
+			return err
+		},
+	}
+	// A few KiB on the wire, under the limit the library checks; what it
+	// inflates to is not.
+	payload := []byte(`"` + strings.Repeat("a", 1<<20) + `"`)
+
+	for name, read := range reads {
+		t.Run(name, func(t *testing.T) {
+			readErr := make(chan error, 1)
+			app := setupTestApp(Config{EnableCompression: true}, func(c *Conn) {
+				c.SetReadLimit(4096)
+				err := read(c)
+				readErr <- err
+				assert.Same(t, err, read(c), "ErrReadLimit is sticky, as the library's is")
+			})
+			defer app.Shutdown()
+
+			dialer := websocket.Dialer{EnableCompression: true}
+			conn, resp, err := dialer.Dial("ws://localhost:3000/ws/message", nil)
+			require.NoError(t, err)
+			defer conn.Close()
+			require.Contains(t, resp.Header.Get("Sec-WebSocket-Extensions"), "permessage-deflate")
+
+			conn.EnableWriteCompression(true)
+			require.NoError(t, conn.WriteMessage(websocket.TextMessage, payload))
+
+			select {
+			case err := <-readErr:
+				require.ErrorIs(t, err, ErrReadLimit)
+			case <-time.After(5 * time.Second):
+				t.Fatal("timed out waiting for the handler's read")
+			}
+
+			require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+			_, _, err = conn.ReadMessage()
+			require.True(t, IsCloseError(err, CloseMessageTooBig), "expected a 1009 close, got %v", err)
+		})
+	}
+}
+
+func TestReadLimitErrorStopsNextReader(t *testing.T) {
+	next := make(chan error, 1)
+	app := setupTestApp(Config{EnableCompression: true}, func(c *Conn) {
+		c.SetReadLimit(4096)
+		if _, _, err := c.ReadMessage(); !errors.Is(err, ErrReadLimit) {
+			next <- fmt.Errorf("ReadMessage: %w", err)
+			return
+		}
+		_, _, err := c.NextReader()
+		next <- err
+	})
+	defer app.Shutdown()
+
+	dialer := websocket.Dialer{EnableCompression: true}
+	conn, _, err := dialer.Dial("ws://localhost:3000/ws/message", nil)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	conn.EnableWriteCompression(true)
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(strings.Repeat("a", 1<<20))))
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte("next")))
+
+	select {
+	case err := <-next:
+		require.ErrorIs(t, err, ErrReadLimit, "NextReader returned the message pipelined behind the oversized one")
+	case <-time.After(5 * time.Second):
+		t.Fatal("NextReader blocked after ErrReadLimit")
 	}
 }

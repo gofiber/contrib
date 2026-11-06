@@ -142,8 +142,9 @@ type Config struct {
 	// WriteTimeout bounds a single WriteMessage or WriteControl call. Zero
 	// falls back to 10s.
 	WriteTimeout time.Duration
-	// MaxMessageSize bounds the largest inbound frame in bytes. Zero falls
-	// back to 1 MiB. To opt out, set math.MaxInt64.
+	// MaxMessageSize bounds the largest inbound message in bytes, after
+	// decompression when EnableCompression is on. Zero falls back to 1 MiB.
+	// To opt out, set math.MaxInt64.
 	MaxMessageSize int64
 	// SendQueueSize is the per-connection outbound buffer. Zero falls back
 	// to SendQueueSize package var, then 100.
