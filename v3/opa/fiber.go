@@ -7,6 +7,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/utils/v2"
+	utilsstrings "github.com/gofiber/utils/v2/strings"
 	"github.com/open-policy-agent/opa/v1/rego"
 )
 
@@ -61,6 +62,13 @@ func New(cfg Config) fiber.Handler {
 			input["headers"] = headers
 		}
 		res, err := query.Eval(context.Background(), rego.EvalInput(input))
+		// The router matches a case-folded, slash-trimmed path, so the policy has to allow that spelling too.
+		if path := c.Path(); err == nil && res.Allowed() && input["path"] == path {
+			if routed := routerPath(c); routed != path {
+				input["path"] = routed
+				res, err = query.Eval(context.Background(), rego.EvalInput(input))
+			}
+		}
 		if err != nil {
 			c.Response().SetStatusCode(fiber.StatusInternalServerError)
 			c.Response().SetBodyString(fmt.Sprintf("Error evaluating rego policy: %s", err))
@@ -75,6 +83,21 @@ func New(cfg Config) fiber.Handler {
 
 		return c.Next()
 	}
+}
+
+// routerPath returns c.Path() as the router matches it: ASCII lower-cased unless
+// CaseSensitive, trailing slashes trimmed unless StrictRouting.
+func routerPath(c fiber.Ctx) string {
+	path := c.Path()
+	cfg := c.App().Config()
+
+	if !cfg.CaseSensitive {
+		path = utilsstrings.ToLower(path)
+	}
+	if !cfg.StrictRouting && len(path) > 1 {
+		path = utils.TrimRight(path, '/')
+	}
+	return path
 }
 
 func (c *Config) fillAndValidate() error {

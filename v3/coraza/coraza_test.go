@@ -2,13 +2,16 @@ package coraza
 
 import (
 	"bytes"
+	"compress/gzip"
 	"errors"
 	"io"
 	"math"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -319,6 +322,331 @@ SecRule REQUEST_BODY "@contains attack" "id:1002,phase:2,deny,status:403,msg:'bo
 	}
 	if !errors.Is(err, fasthttp.ErrBodyTooLarge) {
 		t.Fatalf("expected Fiber body limit error, got %v", err)
+	}
+}
+
+func TestEngineMiddlewareInspectsDecodedRequestBody(t *testing.T) {
+	bodyRules := `SecRuleEngine On
+SecRequestBodyAccess On
+SecRule REQUEST_HEADERS:X-Deny-Encoded "@streq 1" "id:1003,phase:2,deny,status:406,chain"
+SecRule REQUEST_HEADERS:Content-Encoding "@streq gzip" "chain"
+SecRule REQUEST_HEADERS:Content-Length "@streq %{REQUEST_HEADERS.X-Wire-Length}" ""
+SecRule ARGS|REQUEST_BODY "@contains attack" "id:1002,phase:2,deny,status:403,msg:'body attack detected'"`
+
+	engine, err := newTestEngineWithRules(t, bodyRules)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	app := fiber.New(fiber.Config{BodyLimit: 4096})
+	// A reader ahead of the WAF must not pin the form values of the encoded body.
+	app.Use(func(c fiber.Ctx) error {
+		_ = c.FormValue("payload")
+		return c.Next()
+	})
+	app.Use(engine.Middleware())
+	app.Post("/", func(c fiber.Ctx) error {
+		return c.SendString(strings.Join([]string{
+			string(c.Body()), string(c.BodyRaw()), c.FormValue("payload"),
+			c.Get(fiber.HeaderContentEncoding), c.Get(fiber.HeaderContentLength),
+		}, "|"))
+	})
+
+	send := func(body []byte, contentType, encoding string, headers ...string) (int, string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+		req.Header.Set(fiber.HeaderContentType, contentType)
+		req.Header.Set(fiber.HeaderContentEncoding, encoding)
+		for i := 0; i+1 < len(headers); i += 2 {
+			req.Header.Set(headers[i], headers[i+1])
+		}
+		resp := performRequest(t, app, req)
+		defer resp.Body.Close()
+		got, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("failed to read response: %v", err)
+		}
+		return resp.StatusCode, string(got)
+	}
+
+	// Long enough to be compressed rather than stored, which would leave it readable.
+	deniedBody := []byte("pad=" + strings.Repeat("a", 256) + "&payload=attack")
+	for encoding, body := range map[string][]byte{
+		"gzip":          fasthttp.AppendGzipBytes(nil, deniedBody),
+		"x-gzip":        fasthttp.AppendGzipBytes(nil, deniedBody),
+		"deflate":       fasthttp.AppendDeflateBytes(nil, deniedBody),
+		"br":            fasthttp.AppendBrotliBytes(nil, deniedBody),
+		"zstd":          fasthttp.AppendZstdBytes(nil, deniedBody),
+		"deflate, GZIP": fasthttp.AppendGzipBytes(nil, fasthttp.AppendDeflateBytes(nil, deniedBody)),
+	} {
+		if status, got := send(body, fiber.MIMEApplicationForm, encoding); status != http.StatusForbidden {
+			t.Fatalf("%s: expected status 403 for an encoded body the rule denies, got %d with body %q", encoding, status, got)
+		}
+	}
+
+	var form bytes.Buffer
+	writer := multipart.NewWriter(&form)
+	if err := writer.WriteField("payload", "attack"); err != nil {
+		t.Fatalf("failed to write multipart field: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("failed to close multipart writer: %v", err)
+	}
+	if status, got := send(fasthttp.AppendGzipBytes(nil, form.Bytes()), writer.FormDataContentType(), "gzip"); status != http.StatusForbidden {
+		t.Fatalf("expected status 403 for an encoded multipart body the rule denies, got %d with body %q", status, got)
+	}
+
+	// A clean encoded body reaches every reader decoded, even when the encoded
+	// bytes spell form values of their own.
+	var cleanGzip bytes.Buffer
+	zw := gzip.NewWriter(&cleanGzip)
+	zw.Extra = []byte("&payload=attack&")
+	if _, err := zw.Write([]byte("payload=clean")); err != nil {
+		t.Fatalf("failed to write gzip body: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("failed to close gzip writer: %v", err)
+	}
+	if status, got := send(cleanGzip.Bytes(), fiber.MIMEApplicationForm, "gzip"); status != http.StatusOK || got != "payload=clean|payload=clean|clean||13" {
+		t.Fatalf("expected the decoded clean body, got %d with body %q", status, got)
+	}
+
+	// Rules still see the headers as they were received.
+	if status, got := send(cleanGzip.Bytes(), fiber.MIMEApplicationForm, "gzip",
+		"X-Deny-Encoded", "1", "X-Wire-Length", strconv.Itoa(cleanGzip.Len())); status != http.StatusNotAcceptable {
+		t.Fatalf("expected status 406 from the header rule, got %d with body %q", status, got)
+	}
+
+	// What cannot be decoded cannot be inspected: PostArgs would still read it.
+	for _, encoding := range []string{"gzip", "compress", "gzip, unknown"} {
+		if status, got := send(deniedBody, fiber.MIMEApplicationForm, encoding); status != http.StatusUnsupportedMediaType {
+			t.Fatalf("%s: expected status 415 for an undecodable body, got %d with body %q", encoding, status, got)
+		}
+	}
+
+	stacked := deniedBody
+	for layers := 1; layers <= maxContentCodings+1; layers++ {
+		stacked = fasthttp.AppendGzipBytes(nil, stacked)
+		want := http.StatusForbidden
+		if layers > maxContentCodings {
+			want = http.StatusUnsupportedMediaType
+		}
+		encoding := strings.TrimSuffix(strings.Repeat("gzip,", layers), ",")
+		if status, got := send(stacked, fiber.MIMEApplicationForm, encoding); status != want {
+			t.Fatalf("%d codings: expected status %d, got %d with body %q", layers, want, status, got)
+		}
+	}
+
+	oversized := fasthttp.AppendGzipBytes(nil, bytes.Repeat([]byte("a"), 8192))
+	if status, got := send(oversized, fiber.MIMEApplicationForm, "gzip"); status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected status 413 for a body decoding beyond BodyLimit, got %d with body %q", status, got)
+	}
+}
+
+func TestEngineMiddlewareDecodesRequestBodyOnlyWhenInspected(t *testing.T) {
+	bodyRules := `SecRuleEngine On
+SecRequestBodyAccess Off
+SecRule REQUEST_URI "@beginsWith /inspected" "id:1004,phase:1,pass,nolog,ctl:requestBodyAccess=On"
+SecRule REQUEST_BODY "@contains attack" "id:1002,phase:2,deny,status:403,msg:'body attack detected'"`
+
+	engine, err := NewEngine(Config{
+		DirectivesFile: []string{writeRuleFile(t, t.TempDir(), "test.conf", bodyRules)},
+	}.WithRequestBodyAccess(false))
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	app := fiber.New()
+	app.Use(engine.Middleware())
+	app.Post("/*", func(c fiber.Ctx) error {
+		return c.Send(c.BodyRaw())
+	})
+
+	body := fasthttp.AppendGzipBytes(nil, []byte("pad="+strings.Repeat("a", 256)+"&payload=attack"))
+	send := func(target string) *http.Response {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, target, bytes.NewReader(body))
+		req.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationForm)
+		req.Header.Set(fiber.HeaderContentEncoding, "gzip")
+		return performRequest(t, app, req)
+	}
+
+	resp := send("/inspected")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected status 403 once a rule enables body access, got %d", resp.StatusCode)
+	}
+
+	resp = send("/")
+	defer resp.Body.Close()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || !bytes.Equal(got, body) {
+		t.Fatalf("expected the request to be left untouched without body access, got %d with body %q", resp.StatusCode, got)
+	}
+}
+
+func TestEngineMiddlewareInspectsMultipartFormThatGrowsBeyondBodyLimit(t *testing.T) {
+	uploadRules := `SecRuleEngine On
+SecRequestBodyAccess On
+SecRule REQBODY_ERROR "!@eq 0" "id:200002,phase:2,t:none,deny,status:400"
+SecRule MULTIPART_STRICT_ERROR "!@eq 0" "id:200003,phase:2,t:none,deny,status:400"
+SecRule FILES "@endsWith .php" "id:1003,phase:2,deny,status:403,msg:'php upload detected'"`
+
+	engine, err := newTestEngineWithRules(t, uploadRules)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	const bodyLimit = 64 * 1024
+
+	app := fiber.New(fiber.Config{
+		BodyLimit: bodyLimit,
+	})
+	app.Use(engine.Middleware())
+	app.Post("/", func(c fiber.Ctx) error {
+		file, err := c.FormFile("file")
+		if err != nil {
+			return err
+		}
+		return c.SendString(file.Filename)
+	})
+
+	// fasthttp re-serializes a pre-parsed form with every backslash of a field
+	// name doubled, so the body Coraza sees grows past BodyLimit.
+	for _, fieldName := range []string{"note", strings.Repeat("aa", bodyLimit/3), strings.Repeat(`\a`, bodyLimit/3)} {
+		body := "--A\r\nContent-Disposition: form-data; name=\"" + fieldName + "\"\r\n\r\nx\r\n" +
+			"--A\r\nContent-Disposition: form-data; name=\"file\"; filename=\"shell.php\"\r\n\r\ndata\r\n--A--\r\n"
+		if len(body) >= bodyLimit {
+			t.Fatalf("request body of %d bytes is not within the body limit", len(body))
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+		req.Header.Set("Content-Type", "multipart/form-data; boundary=A")
+
+		resp := performRequest(t, app, req)
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected status 403 with a field name of %d bytes starting with %q, got %d", len(fieldName), fieldName[:2], resp.StatusCode)
+		}
+	}
+}
+
+func TestEngineMiddlewareInspectsStreamedBodyBeyondBodyLimit(t *testing.T) {
+	bodyRules := `SecRuleEngine On
+SecRequestBodyAccess On
+SecRule REQUEST_BODY "@contains attack" "id:1002,phase:2,deny,status:403,msg:'body attack detected'"`
+
+	engine, err := newTestEngineWithRules(t, bodyRules)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	// With StreamRequestBody fasthttp hands a larger body on instead of refusing it.
+	app := fiber.New(fiber.Config{
+		BodyLimit:         8,
+		StreamRequestBody: true,
+	})
+	app.Use(engine.Middleware())
+	app.Post("/", func(c fiber.Ctx) error {
+		return c.Send(c.Body())
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("payload=attack"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp := performRequest(t, app, req)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected status 403 for a streamed body beyond the body limit, got %d", resp.StatusCode)
+	}
+}
+
+func TestEngineMiddlewareInspectsTheMultipartFormHandlersRead(t *testing.T) {
+	uploadRules := `SecRuleEngine On
+SecRequestBodyAccess On
+SecRule REQBODY_ERROR "!@eq 0" "id:200002,phase:2,t:none,deny,status:400"
+SecRule MULTIPART_STRICT_ERROR "!@eq 0" "id:200003,phase:2,t:none,deny,status:400"
+SecRule FILES "@rx (?i)\.php$" "id:1000,phase:2,deny,status:403"
+SecRule ARGS_POST "@contains ../" "id:1001,phase:2,deny,status:403"`
+
+	engine, err := newTestEngineWithRules(t, uploadRules)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	app := fiber.New()
+	app.Use(engine.Middleware())
+	app.Post("/", func(c fiber.Ctx) error {
+		file := ""
+		if fh, err := c.FormFile("file"); err == nil {
+			file = fh.Filename
+		}
+		return c.SendString("folder=" + c.FormValue("folder") + " file=" + file)
+	})
+
+	part := func(disposition, value string) string {
+		return "--A\r\nContent-Disposition: form-data; " + disposition + "\r\n\r\n" + value + "\r\n"
+	}
+	qpNote := func(value string) string {
+		return "--A\r\nContent-Disposition: form-data; name=\"note\"\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n" + value + "\r\n"
+	}
+	phpUpload := part(`name="file"; filename="shell.php"`, "<?php ?>")
+	boundaryB := part(`name="folder"`, "../../etc") +
+		part(`name="decoy"`, "\r\n--B\r\nContent-Disposition: form-data; name=\"folder\"\r\n\r\npictures\r\n--B--") + "--A--\r\n"
+
+	clean := qpNote("hello=0D=0A") + part(`name="folder"`, "pictures") + part(`name="file"; filename="cat.png"`, "png") + "--A--\r\n"
+
+	for _, tc := range []struct {
+		name, contentType, body string
+		preParsed               bool
+		want                    int
+	}{
+		{"clean form", "multipart/form-data; boundary=A", clean, true, http.StatusOK},
+		{"clean chunked form", "Multipart/Form-Data; Boundary=A", clean, false, http.StatusOK},
+		{"control: quoted-printable note", "multipart/form-data; boundary=A", qpNote("hello=0D=0A") + phpUpload + "--A--\r\n", true, http.StatusForbidden},
+		{"quoted-printable note closing the re-serialized form", "multipart/form-data; boundary=A", qpNote("hello=0D=0A--A--=0D=0A") + phpUpload + "--A--\r\n", true, http.StatusBadRequest},
+		{"control: one boundary parameter", "multipart/form-data; boundary=A", boundaryB, false, http.StatusForbidden},
+		{"duplicate boundary parameter", "multipart/form-data; boundary=A; boundary*=utf-8''B", boundaryB, false, http.StatusBadRequest},
+		{"control: plain field", "multipart/form-data; boundary=A", part(`name="folder"`, "../../etc") + "--A--\r\n", false, http.StatusForbidden},
+		{"filename* parameter", "multipart/form-data; boundary=A", part(`name="folder"; filename*=iso-8859-1''x`, "../../etc") + "--A--\r\n", false, http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var (
+				status int
+				got    []byte
+			)
+			if tc.preParsed {
+				// The server pre-parses a form that has a Content-Length.
+				req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body))
+				req.Header.Set(fiber.HeaderContentType, tc.contentType)
+				resp := performRequest(t, app, req)
+				defer resp.Body.Close()
+				status = resp.StatusCode
+				got, _ = io.ReadAll(resp.Body)
+			} else {
+				// A chunked form reaches the handlers as received.
+				var ctx fasthttp.RequestCtx
+				ctx.Request.Header.SetMethod(http.MethodPost)
+				ctx.Request.SetRequestURI("/")
+				ctx.Request.Header.SetHost("example.com")
+				ctx.Request.Header.SetContentType(tc.contentType)
+				ctx.Request.SetBodyString(tc.body)
+				app.Handler()(&ctx)
+				status = ctx.Response.StatusCode()
+				got = ctx.Response.Body()
+			}
+			if status != tc.want {
+				t.Fatalf("expected status %d, got %d with body %q", tc.want, status, got)
+			}
+			if tc.want == http.StatusOK && string(got) != "folder=pictures file=cat.png" {
+				t.Fatalf("expected the handler to read the whole form, got %q", got)
+			}
+		})
 	}
 }
 

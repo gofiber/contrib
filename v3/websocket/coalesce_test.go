@@ -485,7 +485,7 @@ func TestCoalescingConnWriteErrorIsSticky(t *testing.T) {
 
 func TestFrameReaderCopyIsExactAndTrimmed(t *testing.T) {
 	fr := &frameReader{}
-	msg, err := fr.readAll(bytes.NewReader(bytes.Repeat([]byte{'x'}, frameBufferRetained)))
+	msg, err := fr.readAll(bytes.NewReader(bytes.Repeat([]byte{'x'}, frameBufferRetained)), 0)
 	require.NoError(t, err)
 	assert.Len(t, msg, frameBufferRetained)
 	assert.Equal(t, len(msg), cap(msg))
@@ -494,11 +494,28 @@ func TestFrameReaderCopyIsExactAndTrimmed(t *testing.T) {
 
 	// Past the cap the buffer is handed over instead of copied, having grown
 	// by at most a quarter.
-	msg, err = fr.readAll(bytes.NewReader(bytes.Repeat([]byte{'x'}, frameBufferRetained+1)))
+	msg, err = fr.readAll(bytes.NewReader(bytes.Repeat([]byte{'x'}, frameBufferRetained+1)), 0)
 	require.NoError(t, err)
 	assert.Len(t, msg, frameBufferRetained+1)
 	assert.LessOrEqual(t, cap(msg), frameBufferRetained+frameBufferRetained/4)
 	assert.Nil(t, fr.buf, "a buffer past the cap is not kept")
+}
+
+func TestFrameReaderLimit(t *testing.T) {
+	fr := &frameReader{}
+	// A message that fills the limit exactly is read, one byte more is not,
+	// whether the overflow lands in the pooled buffer or past it.
+	for _, limit := range []int64{frameBufferInitial, frameBufferRetained + 1, frameBufferRetained * 2} {
+		msg, err := fr.readAll(bytes.NewReader(make([]byte, limit)), limit)
+		require.NoError(t, err)
+		assert.Len(t, msg, int(limit))
+		fr.trim()
+
+		msg, err = fr.readAll(bytes.NewReader(make([]byte, limit+1)), limit)
+		require.ErrorIs(t, err, ErrReadLimit)
+		assert.Nil(t, msg)
+		fr.trim()
+	}
 }
 
 // clientFrame builds one masked client frame (payload up to 125 bytes).

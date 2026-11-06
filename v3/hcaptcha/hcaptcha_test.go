@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
@@ -89,6 +90,148 @@ func TestHCaptchaDefaultValidation(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, fiber.StatusForbidden, res.StatusCode)
 		assert.Equal(t, "unable to check that you are not a robot", string(body))
+	})
+}
+
+func TestHCaptchaTokenTooLong(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_, err := io.Copy(io.Discard, r.Body)
+		assert.NoError(t, err)
+		_, err = w.Write([]byte(`{"success":true}`))
+		assert.NoError(t, err)
+	}))
+	defer server.Close()
+
+	tests := []struct {
+		name            string
+		responseKeyFunc func(fiber.Ctx) (string, error)
+		prefix, suffix  string
+	}{
+		{name: "default response key func", prefix: `{"hcaptcha_token":"`, suffix: `"}`},
+		{name: "custom response key func", responseKeyFunc: func(c fiber.Ctx) (string, error) {
+			return string(c.Body()), nil
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := fiber.New()
+			app.Post("/hcaptcha", New(Config{
+				SecretKey:       TestSecretKey,
+				SiteVerifyURL:   server.URL,
+				ResponseKeyFunc: tt.responseKeyFunc,
+			}), func(c fiber.Ctx) error {
+				return c.SendString("ok")
+			})
+
+			post := func(tokenLength int) (int, string) {
+				body := tt.prefix + strings.Repeat("a", tokenLength) + tt.suffix
+				req := httptest.NewRequest(http.MethodPost, "/hcaptcha", strings.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				res, err := app.Test(req, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+				require.NoError(t, err)
+				defer res.Body.Close()
+
+				resBody, err := io.ReadAll(res.Body)
+				require.NoError(t, err)
+				return res.StatusCode, string(resBody)
+			}
+
+			calls.Store(0)
+			status, body := post(maxTokenLength)
+			assert.Equal(t, fiber.StatusOK, status)
+			assert.Equal(t, "ok", body)
+			assert.Equal(t, int32(1), calls.Load())
+
+			status, body = post(maxTokenLength + 1)
+			assert.Equal(t, fiber.StatusBadRequest, status)
+			assert.Equal(t, "Bad Request: hcaptcha token is too long", body)
+			assert.Equal(t, int32(1), calls.Load(), "an oversized token must not reach the HCaptcha API")
+		})
+	}
+}
+
+func TestHCaptchaErrorResponses(t *testing.T) {
+	tokenFunc := func(c fiber.Ctx) (string, error) {
+		return TestResponseToken, nil
+	}
+
+	send := func(t *testing.T, app *fiber.App, body string) (int, string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/hcaptcha", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		res, err := app.Test(req, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+		require.NoError(t, err)
+		defer res.Body.Close()
+
+		resBody, err := io.ReadAll(res.Body)
+		require.NoError(t, err)
+		return res.StatusCode, string(resBody)
+	}
+
+	newApp := func(config Config, appConfig ...fiber.Config) *fiber.App {
+		app := fiber.New(appConfig...)
+		app.Post("/hcaptcha", New(config), func(c fiber.Ctx) error {
+			return c.SendString("ok")
+		})
+		return app
+	}
+
+	t.Run("transport error detail is not sent to the client", func(t *testing.T) {
+		server := newSiteVerifyServer(t, true)
+		address := server.Listener.Addr().String()
+		server.Close()
+
+		status, body := send(t, newApp(Config{
+			SecretKey:       TestSecretKey,
+			SiteVerifyURL:   "http://" + address,
+			ResponseKeyFunc: tokenFunc,
+		}), "")
+		assert.Equal(t, fiber.StatusInternalServerError, status)
+		assert.Equal(t, "error sending request to HCaptcha API", body)
+		assert.NotContains(t, body, address)
+	})
+
+	t.Run("decode error detail is not sent to the client", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("<html>"))
+		}))
+		defer server.Close()
+
+		status, body := send(t, newApp(Config{
+			SecretKey:       TestSecretKey,
+			SiteVerifyURL:   server.URL,
+			ResponseKeyFunc: tokenFunc,
+		}), "")
+		assert.Equal(t, fiber.StatusInternalServerError, status)
+		assert.Equal(t, "error decoding HCaptcha API response", body)
+	})
+
+	t.Run("missing token returns 400", func(t *testing.T) {
+		status, body := send(t, newApp(Config{SecretKey: TestSecretKey}), `{}`)
+		assert.Equal(t, fiber.StatusBadRequest, status)
+		assert.Equal(t, "Bad Request: error retrieving HCaptcha token: hcaptcha token is empty", body)
+	})
+
+	t.Run("ResponseKeyFunc error stays reachable with errors.Is", func(t *testing.T) {
+		errNoToken := errors.New("no token")
+		var handled error
+		app := newApp(Config{
+			SecretKey: TestSecretKey,
+			ResponseKeyFunc: func(fiber.Ctx) (string, error) {
+				return "", errNoToken
+			},
+		}, fiber.Config{ErrorHandler: func(c fiber.Ctx, err error) error {
+			handled = err
+			return fiber.DefaultErrorHandler(c, err)
+		}})
+
+		status, _ := send(t, app, "")
+		assert.Equal(t, fiber.StatusBadRequest, status)
+		require.ErrorIs(t, handled, errNoToken)
+		require.ErrorIs(t, handled, fiber.ErrBadRequest)
 	})
 }
 

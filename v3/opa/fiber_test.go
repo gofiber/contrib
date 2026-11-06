@@ -326,3 +326,57 @@ func TestFillAndValidate(t *testing.T) {
 	assert.IsType(t, cfg.InputCreationMethod, InputCreationFunc(nil))
 	assert.IsType(t, cfg.IncludeHeaders, []string(nil))
 }
+
+func TestOpaRequestPathRegoPolicyShouldCoverRouterSpelling(t *testing.T) {
+	module := `
+package example.authz
+
+default allow := false
+
+allow if {
+	not startswith(input.path, "/admin")
+	input.path != "/private"
+	input.path != "/doc/ABC"
+}
+`
+
+	testCases := []struct {
+		config     fiber.Config
+		path       string
+		statusCode int
+	}{
+		{path: "/path", statusCode: 200},
+		{path: "/PATH/", statusCode: 200},
+		{path: "/admin/secret", statusCode: 400},
+		{path: "/ADMIN/secret", statusCode: 400},
+		{path: "/%41dmin/secret/", statusCode: 400},
+		{path: "/private", statusCode: 400},
+		{path: "/private/", statusCode: 400},
+		{path: "/doc/abc", statusCode: 200},
+		{path: "/doc/ABC", statusCode: 400},
+		{config: fiber.Config{CaseSensitive: true}, path: "/ADMIN/secret", statusCode: 404},
+		{config: fiber.Config{StrictRouting: true}, path: "/private/", statusCode: 404},
+	}
+
+	ok := func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(200)
+	}
+
+	for _, tC := range testCases {
+		app := fiber.New(tC.config)
+		app.Use(New(Config{
+			RegoQuery:  "data.example.authz.allow",
+			RegoPolicy: bytes.NewBufferString(module),
+		}))
+		app.Get("/path", ok)
+		app.Get("/admin/secret", ok)
+		app.Get("/private", ok)
+		app.Get("/doc/:id", ok)
+
+		r := httptest.NewRequest("GET", tC.path, nil)
+		resp, err := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+
+		assert.NoError(t, err)
+		assert.Equal(t, tC.statusCode, resp.StatusCode, tC.path)
+	}
+}

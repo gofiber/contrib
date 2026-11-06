@@ -22,6 +22,7 @@ We only support the latest two versions of Go. Visit [https://go.dev/doc/devel/r
 - [Signatures](#signatures)
 - [Installation](#installation)
 - [Usage](#usage)
+- [Behind a reverse proxy](#behind-a-reverse-proxy)
 - [Config](#config)
 - [Default Config](#default-config)
 
@@ -73,6 +74,21 @@ func main() {
     app.Listen(":8080")
 }
 ```
+
+### Behind a reverse proxy
+
+A proxy that strips a path prefix before forwarding can send it in `X-Forwarded-Prefix` (for example `/api`); the redirect and the spec URL in `index.html` are then prefixed with it. Like Fiber's other `X-Forwarded-*` handling, the header is honored only from a trusted proxy, so enable `TrustProxy` and list the proxy in `TrustProxyConfig`:
+
+```go
+app := fiber.New(fiber.Config{
+    TrustProxy: true,
+    TrustProxyConfig: fiber.TrustProxyConfig{
+        Proxies: []string{"10.0.0.1"}, // your proxy
+    },
+})
+```
+
+Only a plain rooted path is accepted; any other value is ignored. The affected responses carry `Vary: X-Forwarded-Prefix`, and when the request carries the header, even one that is ignored, `private` is added to `Cache-Control`. Make sure the proxy replaces the header rather than appending to one the client sent.
 
 ### Config
 ```go

@@ -8,9 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/log"
 	"github.com/valyala/fasthttp"
 	"net/url"
 )
+
+// maxTokenLength is generous: issued tokens are a few KiB.
+const maxTokenLength = 32 * 1024
 
 // HCaptcha is a middleware handler that checks for an HCaptcha UUID and then validates it.
 type HCaptcha struct {
@@ -37,13 +41,17 @@ func New(config Config) fiber.Handler {
 func (h *HCaptcha) Validate(c fiber.Ctx) error {
 	token, err := h.ResponseKeyFunc(c)
 	if err != nil {
-		c.Status(fiber.StatusBadRequest)
-		return fmt.Errorf("error retrieving HCaptcha token: %w", err)
+		return fmt.Errorf("%w: error retrieving HCaptcha token: %w", fiber.ErrBadRequest, err)
+	}
+
+	if len(token) > maxTokenLength {
+		return fmt.Errorf("%w: hcaptcha token is too long", fiber.ErrBadRequest)
 	}
 
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
-	req.SetBody([]byte(url.Values{
+	// SetBodyRaw keeps this buffer out of the body pool the server reuses for incoming requests.
+	req.SetBodyRaw([]byte(url.Values{
 		"secret":   {h.SecretKey},
 		"response": {token},
 	}.Encode()))
@@ -54,10 +62,11 @@ func (h *HCaptcha) Validate(c fiber.Ctx) error {
 	res := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(res)
 
-	// Send the request to the HCaptcha API
+	// Send the request to the HCaptcha API.
+	// Error details name network addresses, so they go to the log, not the client.
 	if err = fasthttp.Do(req, res); err != nil {
-		c.Status(fiber.StatusBadRequest)
-		return fmt.Errorf("error sending request to HCaptcha API: %w", err)
+		log.Errorf("hcaptcha: error sending request to HCaptcha API: %v", err)
+		return fiber.NewError(fiber.StatusInternalServerError, "error sending request to HCaptcha API")
 	}
 
 	o := struct {
@@ -65,8 +74,8 @@ func (h *HCaptcha) Validate(c fiber.Ctx) error {
 	}{}
 
 	if err = json.NewDecoder(bytes.NewReader(res.Body())).Decode(&o); err != nil {
-		c.Status(fiber.StatusInternalServerError)
-		return fmt.Errorf("error decoding HCaptcha API response: %w", err)
+		log.Errorf("hcaptcha: error decoding HCaptcha API response: %v", err)
+		return fiber.NewError(fiber.StatusInternalServerError, "error decoding HCaptcha API response")
 	}
 
 	// Execute custom validation if ValidateFunc is defined.
