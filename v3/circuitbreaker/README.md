@@ -34,8 +34,8 @@ We only support the latest two versions of Go. Visit [https://go.dev/doc/devel/r
    - Allows a limited number of requests to test service recovery.  
    - `HalfOpenMaxConcurrent` bounds how many of those probes run at once; the rest are
      refused by `OnHalfOpen`.  
-   - A probe holds its slot for `Timeout` at most. Once every slot has been held that long
-     the next request is admitted as a probe in their place, so a probe that never finishes
+   - A probe holds its slot for `Timeout` at most. Each slot expires on its own, after which
+     the next request is admitted as a probe in its place, so a probe that never finishes
      cannot keep the circuit half-open. The outcome of a late probe still counts if the
      circuit is still in the same half-open state when it finishes.  
    - If enough requests **succeed** (`SuccessThreshold`), the circuit resets to **Closed**.  
@@ -72,7 +72,7 @@ the half-open slot it took, so none of that has to be paired up by hand. `AllowR
 `ReleaseSemaphore`, `ReportSuccess` and `ReportFailure` remain available for callers that
 already drive the circuit themselves, but they are **deprecated**: a half-open slot taken
 through `AllowRequest` is held until `ReleaseSemaphore` returns it, the next state change
-reclaims it, or `Timeout` has passed with every slot taken.
+reclaims it, or `Timeout` has passed since it was taken.
 
 ## Config
 

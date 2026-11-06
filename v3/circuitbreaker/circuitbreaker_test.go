@@ -408,6 +408,61 @@ func TestOverdueProbeLosesItsSlotButStillCounts(t *testing.T) {
 	require.Equal(t, circuitbreaker.StateClosed, cb.GetState(), "the overdue probe's success counts towards SuccessThreshold")
 }
 
+func TestHalfOpenSlotsExpireIndependently(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold:      1,
+		SuccessThreshold:      99, // never close, so the window stays open
+		HalfOpenMaxConcurrent: 2,
+		Timeout:               time.Minute,
+		Clock:                 clock.Now,
+	})
+
+	entered := make(chan struct{}, 4)
+	firstOut := make(chan struct{})
+	holdOut := make(chan struct{})
+	releaseFirst := releaser(t, firstOut)
+	releaseHeld := releaser(t, holdOut)
+
+	app := newApp(cb)
+	app.Get("/first", func(c fiber.Ctx) error {
+		entered <- struct{}{}
+		<-firstOut
+		return c.SendString("OK")
+	})
+	app.Get("/hold", func(c fiber.Ctx) error {
+		entered <- struct{}{}
+		<-holdOut
+		return c.SendString("OK")
+	})
+
+	trip(t, app, 1)
+	clock.Advance(time.Minute)
+
+	first := inBackground(app, "/first")
+	awaitEntry(t, entered, "the first probe was not admitted")
+
+	clock.Advance(59 * time.Second)
+	second := inBackground(app, "/hold")
+	awaitEntry(t, entered, "the second probe was not admitted")
+
+	clock.Advance(time.Second)
+	third := inBackground(app, "/hold")
+	awaitEntry(t, entered, "the first probe's slot did not expire Timeout after its own admission")
+	require.Equal(t, fiber.StatusTooManyRequests, get(t, app, "/ok").StatusCode, "the second probe's slot has not expired")
+
+	releaseFirst()
+	first.wait(t)
+	require.Equal(t, fiber.StatusTooManyRequests, get(t, app, "/ok").StatusCode,
+		"the expired probe freed a slot it no longer held")
+
+	releaseHeld()
+	second.wait(t)
+	third.wait(t)
+}
+
 // TestHalfOpenSlotsAreNotLeakedAcrossWindows pins the guarantee that a probe
 // which outlives its half-open window cannot free a slot in a later one.
 //

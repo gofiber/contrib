@@ -3,6 +3,7 @@ package circuitbreaker
 import (
 	"errors"
 	"net/http"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -111,11 +112,10 @@ type CircuitBreaker struct {
 	// request that outlived the circuit that admitted it cannot be counted.
 	gen uint64
 
-	// lease advances whenever probe slots are reclaimed (every transition, or all
-	// held for timeout); a slot is released by it.
-	halfOpenInFlight int
-	lease            uint64
-	lastProbeAt      time.Time // when a slot was last taken
+	// probes are the half-open slots taken; each expires Timeout after its own
+	// admission and is released by its ticket only.
+	probes     []probe
+	lastTicket uint64
 
 	expiry time.Time // when the failure count is dropped, if Interval is set
 
@@ -297,40 +297,36 @@ func (cb *CircuitBreaker) admitOnState(state State, gen uint64) (bool, admission
 	return true, admission{state: StateClosed, gen: gen}, func() {}
 }
 
-// admitProbeLocked takes a slot of the current half-open window if one is free,
-// tagged with its lease so a probe outliving that cannot free a later slot.
-// Slots are lent for Timeout at most, so a probe that never returns cannot pin half-open.
-func (cb *CircuitBreaker) admitProbeLocked(now time.Time) (bool, admission, func()) {
-	if cb.halfOpenInFlight >= cb.halfOpenMaxConcurrent {
-		if now.Before(cb.lastProbeAt.Add(cb.timeout)) {
-			cb.rejectedRequests.Add(1)
-			return false, admission{state: StateHalfOpen}, func() {}
-		}
-		cb.reclaimSlotsLocked()
-	}
-
-	cb.halfOpenInFlight++
-	cb.lastProbeAt = now
-	lease := cb.lease
-	return true, admission{state: StateHalfOpen, gen: cb.gen}, func() { cb.releaseProbe(lease) }
+type probe struct {
+	ticket   uint64
+	admitted time.Time
 }
 
-// releaseProbe gives back a slot taken under lease. A probe that outlived its
-// lease has nothing to return: releasing would free a slot another probe holds.
-func (cb *CircuitBreaker) releaseProbe(lease uint64) {
+// admitProbeLocked takes a slot of the current half-open window if one is free,
+// tagged with a ticket so a probe outliving its slot cannot free a later one.
+// Each slot is lent for Timeout at most, so a probe that never returns cannot pin half-open.
+func (cb *CircuitBreaker) admitProbeLocked(now time.Time) (bool, admission, func()) {
+	cb.probes = slices.DeleteFunc(cb.probes, func(p probe) bool {
+		return !now.Before(p.admitted.Add(cb.timeout))
+	})
+	if len(cb.probes) >= cb.halfOpenMaxConcurrent {
+		cb.rejectedRequests.Add(1)
+		return false, admission{state: StateHalfOpen}, func() {}
+	}
+
+	cb.lastTicket++
+	ticket := cb.lastTicket
+	cb.probes = append(cb.probes, probe{ticket: ticket, admitted: now})
+	return true, admission{state: StateHalfOpen, gen: cb.gen}, func() { cb.releaseProbe(ticket) }
+}
+
+// releaseProbe gives back the slot taken under ticket. A probe whose slot was
+// reclaimed has nothing to return: releasing would free a slot another probe holds.
+func (cb *CircuitBreaker) releaseProbe(ticket uint64) {
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
 
-	if cb.lease != lease || cb.halfOpenInFlight == 0 {
-		return
-	}
-	cb.halfOpenInFlight--
-}
-
-// reclaimSlotsLocked frees every probe slot, leaving their holders nothing to release.
-func (cb *CircuitBreaker) reclaimSlotsLocked() {
-	cb.halfOpenInFlight = 0
-	cb.lease++
+	cb.probes = slices.DeleteFunc(cb.probes, func(p probe) bool { return p.ticket == ticket })
 }
 
 // recoveryDueLocked reports whether the open to half-open transition has come
@@ -357,7 +353,7 @@ func (cb *CircuitBreaker) recoverLocked(now time.Time) {
 // nextGenLocked starts a new generation, freeing every probe slot and leaving
 // the admissions of the generation that just ended stale.
 func (cb *CircuitBreaker) nextGenLocked() {
-	cb.reclaimSlotsLocked()
+	cb.probes = nil
 	cb.gen++
 }
 
@@ -532,7 +528,7 @@ func (cb *CircuitBreaker) Stop() {}
 //
 // Deprecated: use Middleware, which admits, reports and releases as one
 // operation. A slot taken here is held until ReleaseSemaphore returns it, the
-// next state change reclaims it, or Timeout has passed with every slot taken.
+// next state change reclaims it, or Timeout has passed since it was taken.
 func (cb *CircuitBreaker) AllowRequest() (bool, State) {
 	allowed, adm, _ := cb.admit(cb.clock())
 	return allowed, adm.state
@@ -546,8 +542,8 @@ func (cb *CircuitBreaker) ReleaseSemaphore() {
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
 
-	if cb.halfOpenInFlight > 0 {
-		cb.halfOpenInFlight--
+	if len(cb.probes) > 0 {
+		cb.probes = slices.Delete(cb.probes, 0, 1)
 	}
 }
 
