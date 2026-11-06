@@ -985,35 +985,48 @@ func Test_StreamedMultipartForm_NotMarshaled(t *testing.T) {
 func Test_StreamedResponse_NotBuffered(t *testing.T) {
 	t.Parallel()
 
-	var buf bytes.Buffer
-	logger := zerolog.New(&buf)
+	for _, tc := range []struct {
+		name string
+		size int
+		sent int
+	}{
+		{name: "known length", size: len("streamed"), sent: len("streamed")},
+		{name: "unknown length", size: -1, sent: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	unread := strings.NewReader("streamed")
-	left := -1
+			var buf bytes.Buffer
+			logger := zerolog.New(&buf)
 
-	app := fiber.New()
-	app.Use(func(c fiber.Ctx) error {
-		err := c.Next()
-		left = unread.Len()
-		return err
-	})
-	app.Use(New(Config{
-		Logger: &logger,
-		Fields: []string{FieldStatus, FieldBytesSent, FieldResBody},
-	}))
-	app.Get("/", func(c fiber.Ctx) error {
-		return c.SendStream(unread, unread.Len())
-	})
+			unread := strings.NewReader("streamed")
+			left := -1
 
-	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
-	assert.NoError(t, err)
-	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
-	// the stream is for the client, not the log
-	assert.Equal(t, len("streamed"), left)
+			app := fiber.New()
+			app.Use(func(c fiber.Ctx) error {
+				err := c.Next()
+				left = unread.Len()
+				return err
+			})
+			app.Use(New(Config{
+				Logger: &logger,
+				Fields: []string{FieldStatus, FieldBytesSent, FieldResBody},
+			}))
+			app.Get("/", func(c fiber.Ctx) error {
+				return c.SendStream(unread, tc.size)
+			})
 
-	var logs map[string]any
-	assert.NoError(t, json.Unmarshal(buf.Bytes(), &logs))
-	assert.EqualValues(t, fiber.StatusOK, logs[FieldStatus])
-	assert.EqualValues(t, len("streamed"), logs[FieldBytesSent])
-	assert.Equal(t, "", logs[FieldResBody])
+			resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+			assert.NoError(t, err)
+			assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+			// the stream is for the client, not the log
+			assert.Equal(t, len("streamed"), left)
+
+			var logs map[string]any
+			assert.NoError(t, json.Unmarshal(buf.Bytes(), &logs))
+			assert.EqualValues(t, fiber.StatusOK, logs[FieldStatus])
+			assert.EqualValues(t, tc.sent, logs[FieldBytesSent])
+			assert.Equal(t, "", logs[FieldResBody])
+		})
+	}
 }

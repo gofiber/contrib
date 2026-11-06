@@ -155,31 +155,42 @@ func Test_StreamedMultipartForm_NotMarshaled(t *testing.T) {
 
 // go test -run Test_StreamedResponse_NotBuffered
 func Test_StreamedResponse_NotBuffered(t *testing.T) {
-	logger, logs := setupLogsCapture()
+	for _, tc := range []struct {
+		name string
+		size int
+		sent int64
+	}{
+		{name: "known length", size: len("streamed"), sent: int64(len("streamed"))},
+		{name: "unknown length", size: -1, sent: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logger, logs := setupLogsCapture()
 
-	unread := bytes.NewReader([]byte("streamed"))
+			unread := bytes.NewReader([]byte("streamed"))
 
-	app := fiber.New()
-	app.Use(New(Config{
-		Logger: logger,
-		Fields: []string{"status", "bytesSent", "resBody"},
-	}))
-	app.Get("/", func(c fiber.Ctx) error {
-		return c.SendStream(unread, unread.Len())
-	})
+			app := fiber.New()
+			app.Use(New(Config{
+				Logger: logger,
+				Fields: []string{"status", "bytesSent", "resBody"},
+			}))
+			app.Get("/", func(c fiber.Ctx) error {
+				return c.SendStream(unread, tc.size)
+			})
 
-	fctx := &fasthttp.RequestCtx{}
-	fctx.Request.Header.SetMethod(fiber.MethodGet)
-	fctx.Request.SetRequestURI("/")
-	app.Handler()(fctx)
+			fctx := &fasthttp.RequestCtx{}
+			fctx.Request.Header.SetMethod(fiber.MethodGet)
+			fctx.Request.SetRequestURI("/")
+			app.Handler()(fctx)
 
-	// the stream is for the client, not the log
-	assert.Equal(t, len("streamed"), unread.Len())
-	assert.Equal(t, map[string]interface{}{
-		"status":    int64(fiber.StatusOK),
-		"bytesSent": int64(len("streamed")),
-		"resBody":   "",
-	}, logs.All()[0].ContextMap())
+			// the stream is for the client, not the log
+			assert.Equal(t, len("streamed"), unread.Len())
+			assert.Equal(t, map[string]interface{}{
+				"status":    int64(fiber.StatusOK),
+				"bytesSent": tc.sent,
+				"resBody":   "",
+			}, logs.All()[0].ContextMap())
+		})
+	}
 }
 
 // go test -run Test_Logger
