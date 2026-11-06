@@ -3,6 +3,7 @@ package swaggo
 import (
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -219,8 +220,8 @@ func Test_Swagger_Forwarded_Prefix_Requires_Trusted_Proxy(t *testing.T) {
 			if location := resp.Header.Get("Location"); location != "/swag/index.html" {
 				t.Fatalf(`Location: got %s - expected /swag/index.html`, location)
 			}
-			if cc := resp.Header.Get("Cache-Control"); cc != "" {
-				t.Fatalf(`Cache-Control: got %q - expected none`, cc)
+			if cc := resp.Header.Get("Cache-Control"); cc != "private" {
+				t.Fatalf(`Cache-Control: got %q - expected private`, cc)
 			}
 
 			_, body := swaggerRequest(t, app, "/swag/index.html", "/custom/path")
@@ -297,6 +298,68 @@ func Test_Swagger_Forwarded_Prefix_Not_Shared_By_Cache(t *testing.T) {
 			}
 			if strings.Contains(body, "/other") {
 				t.Fatal(`index.html is another client's cached response`)
+			}
+		})
+	}
+}
+
+func Test_Swagger_Ignored_Forwarded_Prefix_Not_Cached(t *testing.T) {
+	registrationOnce.Do(func() {
+		swag.Register(swag.Name, &mockedSwag{})
+	})
+
+	proxy := &net.TCPAddr{IP: net.IPv4(10, 0, 0, 1)}
+	peer := &net.TCPAddr{IP: net.IPv4(203, 0, 113, 1)}
+	app := fiber.New(fiber.Config{
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Proxies: []string{proxy.IP.String()}},
+	})
+	app.Use(func(c fiber.Ctx) error {
+		c.RequestCtx().SetRemoteAddr(peer)
+		return c.Next()
+	})
+	app.Get("/swag/*", cache.New(), New())
+
+	swaggerRequest(t, app, "/swag/", "/tenant")
+	swaggerRequest(t, app, "/swag/index.html", "/tenant")
+
+	peer = proxy
+	resp, _ := swaggerRequest(t, app, "/swag/", "/tenant")
+	if location := resp.Header.Get("Location"); location != "/tenant/swag/index.html" {
+		t.Fatalf(`Location: got %s - expected /tenant/swag/index.html`, location)
+	}
+	_, body := swaggerRequest(t, app, "/swag/index.html", "/tenant")
+	if !strings.Contains(body, `"url":"/tenant/swag/doc.json"`) {
+		t.Fatal(`index.html does not load the spec from /tenant/swag/doc.json`)
+	}
+}
+
+func Test_Swagger_Forwarded_Prefix_Keeps_Cache_Control(t *testing.T) {
+	registrationOnce.Do(func() {
+		swag.Register(swag.Name, &mockedSwag{})
+	})
+
+	tests := []struct {
+		upstream string
+		expected string
+	}{
+		{upstream: "no-store", expected: "no-store, private"},
+		{upstream: "private", expected: "private"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.upstream, func(t *testing.T) {
+			app := fiber.New(trustTestProxy)
+			app.Get("/swag/*", func(c fiber.Ctx) error {
+				c.Set(fiber.HeaderCacheControl, tt.upstream)
+				return c.Next()
+			}, New())
+
+			for _, url := range []string{"/swag/", "/swag/index.html"} {
+				resp, _ := swaggerRequest(t, app, url, "/tenant")
+				if cc := resp.Header.Get("Cache-Control"); cc != tt.expected {
+					t.Fatalf(`%s Cache-Control: got %q - expected %q`, url, cc, tt.expected)
+				}
 			}
 		})
 	}

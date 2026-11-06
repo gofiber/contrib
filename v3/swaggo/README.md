@@ -88,7 +88,7 @@ app := fiber.New(fiber.Config{
 })
 ```
 
-Only a plain rooted path is accepted; any other value is ignored. The affected responses carry `Vary: X-Forwarded-Prefix`, and a prefixed response is sent with `Cache-Control: private`. Make sure the proxy replaces the header rather than appending to one the client sent.
+Only a plain rooted path is accepted; any other value is ignored. The affected responses carry `Vary: X-Forwarded-Prefix`, and when the request carries the header, even one that is ignored, `private` is added to `Cache-Control`. Make sure the proxy replaces the header rather than appending to one the client sent.
 
 ### Config
 ```go

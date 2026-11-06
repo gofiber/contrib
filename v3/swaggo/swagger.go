@@ -58,7 +58,7 @@ func New(config ...Config) fiber.Handler {
 
 		switch p {
 		case defaultIndex:
-			setForwardedPrefixCaching(c, forwardedPrefix)
+			setForwardedPrefixCaching(c)
 			c.Type("html")
 			return index.Execute(c, cfgCopy)
 		case defaultDocURL:
@@ -68,7 +68,7 @@ func New(config ...Config) fiber.Handler {
 			}
 			return c.Type("json").SendString(doc)
 		case "", "/":
-			setForwardedPrefixCaching(c, forwardedPrefix)
+			setForwardedPrefixCaching(c)
 			return c.Redirect().Status(fiber.StatusMovedPermanently).To(path.Join(prefix, defaultIndex))
 		default:
 			filePath := path.Clean("/" + p)
@@ -158,11 +158,11 @@ func sanitizeForwardedPrefix(prefix string) string {
 	return path.Clean(prefix)
 }
 
-// setForwardedPrefixCaching marks the responses that embed the prefix: caches
-// key on the header, and a shared cache never stores a prefixed copy.
-func setForwardedPrefixCaching(c fiber.Ctx, forwardedPrefix string) {
+// setForwardedPrefixCaching marks the responses that embed the prefix. Caches key
+// on the header but not on proxy trust, so any request carrying it gets private.
+func setForwardedPrefixCaching(c fiber.Ctx) {
 	c.Vary(headerForwardedPrefix)
-	if forwardedPrefix != "" {
-		c.Set(fiber.HeaderCacheControl, "private")
+	if len(c.Request().Header.PeekAll(headerForwardedPrefix)) > 0 {
+		c.Append(fiber.HeaderCacheControl, "private")
 	}
 }
