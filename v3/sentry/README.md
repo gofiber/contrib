@@ -50,6 +50,7 @@ You can access it by using the `sentry.GetHubFromContext()` or `sentry.MustGetHu
 Keep in mind that `*sentry.Hub` should be used instead of the global `sentry.CaptureMessage`, `sentry.CaptureException`, or any other calls, as it keeps the separation of data between the requests.
 
 - **Keep in mind that `*sentry.Hub` won't be available in middleware attached before `sentry`. In this case, `GetHubFromContext()` returns nil, and `MustGetHubFromContext()` will panic.**
+- The request body attached to events is the body as received, up to sentry-go's 10 KiB capture limit; `Content-Encoding` is not decoded.
 
 ```go
 package main

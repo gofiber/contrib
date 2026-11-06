@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	defaultDocURL = "doc.json"
-	defaultIndex  = "index.html"
+	defaultDocURL         = "doc.json"
+	defaultIndex          = "index.html"
+	headerForwardedPrefix = "X-Forwarded-Prefix"
 )
 
 var HandlerDefault = New()
@@ -43,7 +44,8 @@ func New(config ...Config) fiber.Handler {
 		})
 
 		prefix := basePrefix
-		if forwardedPrefix := getForwardedPrefix(c); forwardedPrefix != "" {
+		forwardedPrefix := getForwardedPrefix(c)
+		if forwardedPrefix != "" {
 			prefix = forwardedPrefix + prefix
 		}
 
@@ -56,6 +58,7 @@ func New(config ...Config) fiber.Handler {
 
 		switch p {
 		case defaultIndex:
+			setForwardedPrefixCaching(c)
 			c.Type("html")
 			return index.Execute(c, cfgCopy)
 		case defaultDocURL:
@@ -65,6 +68,7 @@ func New(config ...Config) fiber.Handler {
 			}
 			return c.Type("json").SendString(doc)
 		case "", "/":
+			setForwardedPrefixCaching(c)
 			return c.Redirect().Status(fiber.StatusMovedPermanently).To(path.Join(prefix, defaultIndex))
 		default:
 			filePath := path.Clean("/" + p)
@@ -113,8 +117,14 @@ func New(config ...Config) fiber.Handler {
 	}
 }
 
+// getForwardedPrefix honors the header only from a trusted proxy, like Fiber's
+// other X-Forwarded-* handling.
 func getForwardedPrefix(c fiber.Ctx) string {
-	header := c.GetReqHeaders()["X-Forwarded-Prefix"]
+	if !c.IsProxyTrusted() {
+		return ""
+	}
+
+	header := c.GetReqHeaders()[headerForwardedPrefix]
 
 	if len(header) == 0 {
 		return ""
@@ -131,5 +141,28 @@ func getForwardedPrefix(c fiber.Ctx) string {
 		prefix.WriteString(rawPrefix[:endIndex])
 	}
 
-	return prefix.String()
+	return sanitizeForwardedPrefix(prefix.String())
+}
+
+// sanitizeForwardedPrefix keeps the prefix a same-origin path, since browsers
+// resolve "\\host", "/\host" and "//host" to another origin.
+func sanitizeForwardedPrefix(prefix string) string {
+	if len(prefix) < 2 || prefix[0] != '/' || prefix[1] == '/' {
+		return ""
+	}
+	for i := 0; i < len(prefix); i++ {
+		if ch := prefix[i]; ch == '\\' || ch == '?' || ch == '#' || ch <= ' ' || ch == 0x7f {
+			return ""
+		}
+	}
+	return path.Clean(prefix)
+}
+
+// setForwardedPrefixCaching marks the responses that embed the prefix. Caches key
+// on the header but not on proxy trust, so any request carrying it gets private.
+func setForwardedPrefixCaching(c fiber.Ctx) {
+	c.Vary(headerForwardedPrefix)
+	if len(c.Request().Header.PeekAll(headerForwardedPrefix)) > 0 {
+		c.Append(fiber.HeaderCacheControl, "private")
+	}
 }

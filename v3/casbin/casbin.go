@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
+	utilsstrings "github.com/gofiber/utils/v2/strings"
 )
 
 // Middleware holds the enforce and role-lookup functions resolved at
@@ -79,7 +81,8 @@ func (m *Middleware) RequiresPermissions(permissions []string, opts ...Option) f
 
 // RoutePermission tries to find the current subject and determine if the
 // subject has the required permissions according to predefined Casbin policies.
-// This method uses http Path and Method as object and action.
+// This method uses http Path and Method as object and action. When the router
+// matches another spelling of the path, both have to be allowed.
 func (m *Middleware) RoutePermission() fiber.Handler {
 	return func(c fiber.Ctx) error {
 		sub := m.lookup(c)
@@ -87,14 +90,36 @@ func (m *Middleware) RoutePermission() fiber.Handler {
 			return m.unauthorized(c)
 		}
 
-		if ok, err := m.enforce(sub, c.Path(), c.Method()); err != nil {
-			return c.SendStatus(fiber.StatusInternalServerError)
-		} else if !ok {
-			return m.forbidden(c)
+		for _, path := range routePaths(c) {
+			if ok, err := m.enforce(sub, path, c.Method()); err != nil {
+				return c.SendStatus(fiber.StatusInternalServerError)
+			} else if !ok {
+				return m.forbidden(c)
+			}
 		}
 
 		return c.Next()
 	}
+}
+
+// routePaths returns c.Path(), which route params are cut from, and, if it
+// differs, the case-folded, slash-trimmed form the router matches routes on.
+func routePaths(c fiber.Ctx) []string {
+	path := c.Path()
+	cfg := c.App().Config()
+
+	routed := path
+	if !cfg.CaseSensitive {
+		routed = utilsstrings.ToLower(routed)
+	}
+	if !cfg.StrictRouting && len(routed) > 1 {
+		routed = utils.TrimRight(routed, '/')
+	}
+
+	if routed == path {
+		return []string{path}
+	}
+	return []string{path, routed}
 }
 
 // RequiresRoles tries to find the current subject and determine if the

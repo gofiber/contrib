@@ -179,12 +179,12 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 		case FieldStatus:
 			zc = zc.Int(field, fc.Response().StatusCode())
 		case FieldBody:
-			zc = zc.Str(field, string(fc.Body()))
+			zc = zc.Str(field, string(requestBody(fc)))
 		case FieldResBody:
 			if c.FieldsSnakeCase {
 				field = fieldResBody_
 			}
-			resBody := fc.Response().Body()
+			resBody := fc.Res().Body()
 			if c.GetResBody != nil {
 				if customResBody := c.GetResBody(fc); customResBody != nil {
 					resBody = customResBody
@@ -200,12 +200,12 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 			if c.FieldsSnakeCase {
 				field = fieldBytesReceived_
 			}
-			zc = zc.Int(field, len(fc.Request().Body()))
+			zc = zc.Int(field, bytesReceived(fc))
 		case FieldBytesSent:
 			if c.FieldsSnakeCase {
 				field = fieldBytesSent_
 			}
-			zc = zc.Int(field, len(fc.Response().Body()))
+			zc = zc.Int(field, bytesSent(fc))
 		case FieldRoute:
 			zc = zc.Str(field, fc.Route().Path)
 		case FieldMethod:
@@ -317,6 +317,39 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 	}
 
 	return zc.Logger()
+}
+
+// requestBody skips a body that is a stream or past BodyLimit: fc.Body() would read all of it.
+func requestBody(fc fiber.Ctx) []byte {
+	req := fc.Request()
+	if req.IsBodyStream() || req.Header.ContentLength() > fc.App().Config().BodyLimit {
+		return nil
+	}
+
+	return fc.Body()
+}
+
+// bytesReceived is the announced Content-Length, as in Fiber's logger, so no stream is read.
+func bytesReceived(fc fiber.Ctx) int {
+	req := fc.Request()
+	if n := req.Header.ContentLength(); n > 0 {
+		return n
+	}
+	if req.IsBodyStream() {
+		return 0
+	}
+
+	return len(req.Body())
+}
+
+// bytesSent is the announced length of a streamed response, so the stream is not read.
+func bytesSent(fc fiber.Ctx) int {
+	resp := fc.Response()
+	if resp.IsBodyStream() {
+		return max(resp.Header.ContentLength(), 0)
+	}
+
+	return len(resp.Body())
 }
 
 var logger = zerolog.New(os.Stderr).With().Timestamp().Logger()

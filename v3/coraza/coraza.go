@@ -2,14 +2,18 @@
 package coraza
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"mime"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,9 +25,18 @@ import (
 	"github.com/gofiber/fiber/v3"
 	fiberlog "github.com/gofiber/fiber/v3/log"
 	"github.com/gofiber/fiber/v3/middleware/adaptor"
+	"github.com/valyala/fasthttp"
 )
 
 const defaultBlockMessage = "Request blocked by Web Application Firewall"
+
+// maxContentCodings bounds the decoders run per request, each of which may inflate to BodyLimit.
+const maxContentCodings = 5
+
+var (
+	errRequestBodyDecode = errors.New("failed to decode request body")
+	errMultipartForm     = errors.New("multipart form cannot be inspected as handlers read it")
+)
 
 // Config defines the configuration for the Coraza middleware and Engine.
 //
@@ -377,8 +390,29 @@ func (e *Engine) inspectRequest(
 		return nil, nil
 	}
 
-	it, err := processRequest(tx, stdReq, c.App().Config().BodyLimit)
-	if err != nil {
+	it, err := processRequest(tx, stdReq, c)
+	switch {
+	case err == nil:
+		return it, nil
+	case errors.Is(err, errRequestBodyDecode):
+		statusCode := http.StatusUnsupportedMediaType
+		if errors.Is(err, fasthttp.ErrBodyTooLarge) {
+			statusCode = http.StatusRequestEntityTooLarge
+		}
+		return nil, &MiddlewareError{
+			StatusCode: statusCode,
+			Code:       "waf_request_body_decode_failed",
+			Message:    "Failed to decode request body",
+			Err:        err,
+		}
+	case errors.Is(err, errMultipartForm):
+		return nil, &MiddlewareError{
+			StatusCode: http.StatusBadRequest,
+			Code:       "waf_multipart_form_invalid",
+			Message:    "Failed to inspect multipart form",
+			Err:        err,
+		}
+	default:
 		return nil, &MiddlewareError{
 			StatusCode: http.StatusInternalServerError,
 			Code:       "waf_request_processing_failed",
@@ -386,8 +420,6 @@ func (e *Engine) inspectRequest(
 			Err:        err,
 		}
 	}
-
-	return it, nil
 }
 
 func (e *Engine) finishTransaction(c fiber.Ctx, tx types.Transaction, mwErr **MiddlewareError) {
@@ -601,7 +633,7 @@ func defaultErrorHandler(_ fiber.Ctx, mwErr MiddlewareError) error {
 	return fiber.NewError(mwErr.StatusCode, mwErr.Message)
 }
 
-func processRequest(tx types.Transaction, req *http.Request, bodyLimit int) (*types.Interruption, error) {
+func processRequest(tx types.Transaction, req *http.Request, c fiber.Ctx) (*types.Interruption, error) {
 	client, cport := splitRemoteAddr(req.RemoteAddr)
 
 	tx.ProcessConnection(client, cport, "", 0)
@@ -627,12 +659,21 @@ func processRequest(tx types.Transaction, req *http.Request, bodyLimit int) (*ty
 	}
 
 	if tx.IsRequestBodyAccessible() && req.Body != nil && req.Body != http.NoBody {
-		bodyReader := io.Reader(req.Body)
-		if bodyLimit > 0 {
-			bodyReader = io.LimitReader(req.Body, int64(bodyLimit))
+		if err := decodeRequestBody(c.Request(), req, c.App().Config().BodyLimit); err != nil {
+			return nil, fmt.Errorf("%w: %w", errRequestBodyDecode, err)
 		}
 
-		it, _, err := tx.ReadRequestBodyFrom(bodyReader)
+		// No cut at BodyLimit: a re-serialized form can be longer than what was received.
+		body := io.Reader(req.Body)
+		if c.IsMultipart() {
+			form, err := multipartFormBody(c, req.Header.Get(fiber.HeaderContentType))
+			if err != nil {
+				return nil, fmt.Errorf("%w: %w", errMultipartForm, err)
+			}
+			body = form
+		}
+
+		it, _, err := tx.ReadRequestBodyFrom(body)
 		if err != nil {
 			return nil, err
 		}
@@ -642,6 +683,108 @@ func processRequest(tx types.Transaction, req *http.Request, bodyLimit int) (*ty
 	}
 
 	return tx.ProcessRequestBody()
+}
+
+// decodeRequestBody undoes the Content-Encoding in place so Coraza and all readers see the same
+// bytes; c.Body() alone would not do, as PostArgs read the encoded body and multipart only gunzips.
+func decodeRequestBody(fiberReq *fasthttp.Request, req *http.Request, bodyLimit int) error {
+	if len(req.Header[fiber.HeaderContentEncoding]) == 0 {
+		return nil
+	}
+
+	var names, codings []string
+	for k, v := range fiberReq.Header.All() {
+		if !strings.EqualFold(string(k), fiber.HeaderContentEncoding) {
+			continue
+		}
+		names = append(names, string(k))
+		for coding := range strings.SplitSeq(string(v), ",") {
+			if coding = strings.ToLower(strings.TrimSpace(coding)); coding != "" && coding != fiber.StrIdentity {
+				codings = append(codings, coding)
+			}
+		}
+	}
+	if len(codings) == 0 || len(fiberReq.Body()) == 0 {
+		return nil
+	}
+	if len(codings) > maxContentCodings {
+		return fmt.Errorf("%d content codings exceed the limit of %d", len(codings), maxContentCodings)
+	}
+
+	// Codings are listed in the order they were applied.
+	for _, coding := range slices.Backward(codings) {
+		var (
+			body []byte
+			err  error
+		)
+		switch coding {
+		case fiber.StrGzip, "x-gzip":
+			body, err = fiberReq.BodyGunzipWithLimit(bodyLimit)
+		case fiber.StrBr, fiber.StrBrotli:
+			body, err = fiberReq.BodyUnbrotliWithLimit(bodyLimit)
+		case fiber.StrDeflate:
+			body, err = fiberReq.BodyInflateWithLimit(bodyLimit)
+		case fiber.StrZstd:
+			body, err = fiberReq.BodyUnzstdWithLimit(bodyLimit)
+		default:
+			err = fmt.Errorf("unsupported content coding %q", coding)
+		}
+		if err != nil {
+			return err
+		}
+		fiberReq.SetBodyRaw(body)
+	}
+
+	for _, name := range names {
+		fiberReq.Header.Del(name)
+	}
+	body := fiberReq.Body()
+	fiberReq.Header.SetContentLength(len(body))
+	req.Body = io.NopCloser(bytes.NewReader(body))
+
+	// A reader ahead of this middleware may have parsed PostArgs from the encoded body.
+	postArgs := fiberReq.PostArgs()
+	postArgs.Reset()
+	if bytes.HasPrefix(fiberReq.Header.ContentType(), []byte(fiber.MIMEApplicationForm)) {
+		postArgs.ParseBytes(body)
+	}
+
+	return nil
+}
+
+// multipartFormBody writes the form the handlers read under the boundary Coraza
+// reads, so Coraza inspects exactly the parts the handlers see.
+func multipartFormBody(c fiber.Ctx, contentType string) (io.Reader, error) {
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return nil, err
+	}
+	boundary := params["boundary"]
+
+	form, err := c.MultipartForm()
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := fasthttp.WriteMultipartForm(&buf, form, boundary); err != nil {
+		return nil, err
+	}
+
+	// The writer puts the delimiter once before each part and once at the end;
+	// any other occurrence would end a part early for Coraza.
+	parts := 0
+	for _, values := range form.Value {
+		parts += len(values)
+	}
+	for _, files := range form.File {
+		parts += len(files)
+	}
+	if bytes.Count(buf.Bytes(), []byte("--"+boundary)) != parts+1 {
+		return nil, errors.New("form content contains its boundary")
+	}
+
+	return &buf, nil
 }
 
 func obtainStatusCodeFromInterruptionOrDefault(it *types.Interruption, defaultStatusCode int) int {
@@ -659,6 +802,11 @@ func convertFiberToStdRequest(c fiber.Ctx) (*http.Request, error) {
 	req, err := adaptor.ConvertRequest(c, false)
 	if err != nil {
 		return nil, err
+	}
+
+	// Header values alias the Fiber request, whose Content-Length decodeRequestBody rewrites.
+	if cl := req.Header[fiber.HeaderContentLength]; len(cl) > 0 && len(req.Header[fiber.HeaderContentEncoding]) > 0 {
+		cl[0] = strings.Clone(cl[0])
 	}
 
 	req.RemoteAddr = net.JoinHostPort(c.IP(), c.Port())

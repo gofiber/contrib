@@ -67,6 +67,8 @@ OPA Fiber middleware sends the following example data to the policy engine as in
 }
 ```
 
+`path` is the path as the client sent it. Unless `fiber.Config.CaseSensitive` and `StrictRouting` are set, the router matches routes on the lower-cased path without trailing slashes; when `path` differs from that form, the policy is evaluated again with it and has to allow both. Write policy paths lower-case and without trailing slashes. An `InputCreationMethod` that sets `path` to `ctx.Path()` gets the same check.
+
 ```go
 package main
 

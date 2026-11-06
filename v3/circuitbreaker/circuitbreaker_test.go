@@ -1,6 +1,8 @@
 package circuitbreaker_test
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -311,6 +313,156 @@ func TestHalfOpenAdmitsAtMostMaxConcurrent(t *testing.T) {
 	}
 }
 
+func TestStalledProbeDoesNotPinHalfOpen(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold:      1,
+		SuccessThreshold:      1,
+		HalfOpenMaxConcurrent: 1,
+		Timeout:               time.Minute,
+		Clock:                 clock.Now,
+	})
+
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	unblock := releaser(t, release)
+
+	app := newApp(cb)
+	app.Get("/stalled", func(c fiber.Ctx) error {
+		entered <- struct{}{}
+		<-release
+		return c.SendStatus(fiber.StatusInternalServerError)
+	})
+
+	trip(t, app, 1)
+	clock.Advance(time.Minute)
+
+	stalled := inBackground(app, "/stalled")
+	awaitEntry(t, entered, "the first probe was not admitted")
+
+	clock.Advance(time.Minute - time.Nanosecond)
+	require.Equal(t, fiber.StatusTooManyRequests, get(t, app, "/ok").StatusCode, "the slot is held for Timeout")
+
+	clock.Advance(time.Nanosecond)
+	require.Equal(t, fiber.StatusOK, get(t, app, "/ok").StatusCode, "after Timeout the slot is lent to the next probe")
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState(), "whose success closes the circuit")
+
+	unblock()
+	stalled.wait(t)
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState(), "the stalled probe's own outcome is stale by now")
+}
+
+// Discarding an overdue outcome would keep a circuit whose handler is always
+// slower than Timeout from ever closing.
+func TestOverdueProbeLosesItsSlotButStillCounts(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold:      1,
+		SuccessThreshold:      2,
+		HalfOpenMaxConcurrent: 1,
+		Timeout:               time.Minute,
+		Clock:                 clock.Now,
+	})
+
+	overdueIn := make(chan struct{}, 1)
+	overdueOut := make(chan struct{})
+	successorIn := make(chan struct{}, 1)
+	successorOut := make(chan struct{})
+	releaseOverdue := releaser(t, overdueOut)
+	releaseSuccessor := releaser(t, successorOut)
+
+	app := newApp(cb)
+	app.Get("/overdue", func(c fiber.Ctx) error {
+		overdueIn <- struct{}{}
+		<-overdueOut
+		return c.SendString("OK")
+	})
+	app.Get("/successor", func(c fiber.Ctx) error {
+		successorIn <- struct{}{}
+		<-successorOut
+		return c.SendString("OK")
+	})
+
+	trip(t, app, 1)
+	clock.Advance(time.Minute)
+
+	overdue := inBackground(app, "/overdue")
+	awaitEntry(t, overdueIn, "the first probe was not admitted")
+
+	clock.Advance(time.Minute)
+	successor := inBackground(app, "/successor")
+	awaitEntry(t, successorIn, "the overdue probe's slot was not lent on")
+
+	releaseOverdue()
+	overdue.wait(t)
+	require.Equal(t, fiber.StatusTooManyRequests, get(t, app, "/ok").StatusCode,
+		"the overdue probe returned a slot it no longer held, admitting more probes than HalfOpenMaxConcurrent")
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState(), "one success of two keeps the trial open")
+
+	releaseSuccessor()
+	successor.wait(t)
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState(), "the overdue probe's success counts towards SuccessThreshold")
+}
+
+func TestHalfOpenSlotsExpireIndependently(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold:      1,
+		SuccessThreshold:      99, // never close, so the window stays open
+		HalfOpenMaxConcurrent: 2,
+		Timeout:               time.Minute,
+		Clock:                 clock.Now,
+	})
+
+	entered := make(chan struct{}, 4)
+	firstOut := make(chan struct{})
+	holdOut := make(chan struct{})
+	releaseFirst := releaser(t, firstOut)
+	releaseHeld := releaser(t, holdOut)
+
+	app := newApp(cb)
+	app.Get("/first", func(c fiber.Ctx) error {
+		entered <- struct{}{}
+		<-firstOut
+		return c.SendString("OK")
+	})
+	app.Get("/hold", func(c fiber.Ctx) error {
+		entered <- struct{}{}
+		<-holdOut
+		return c.SendString("OK")
+	})
+
+	trip(t, app, 1)
+	clock.Advance(time.Minute)
+
+	first := inBackground(app, "/first")
+	awaitEntry(t, entered, "the first probe was not admitted")
+
+	clock.Advance(59 * time.Second)
+	second := inBackground(app, "/hold")
+	awaitEntry(t, entered, "the second probe was not admitted")
+
+	clock.Advance(time.Second)
+	third := inBackground(app, "/hold")
+	awaitEntry(t, entered, "the first probe's slot did not expire Timeout after its own admission")
+	require.Equal(t, fiber.StatusTooManyRequests, get(t, app, "/ok").StatusCode, "the second probe's slot has not expired")
+
+	releaseFirst()
+	first.wait(t)
+	require.Equal(t, fiber.StatusTooManyRequests, get(t, app, "/ok").StatusCode,
+		"the expired probe freed a slot it no longer held")
+
+	releaseHeld()
+	second.wait(t)
+	third.wait(t)
+}
+
 // TestHalfOpenSlotsAreNotLeakedAcrossWindows pins the guarantee that a probe
 // which outlives its half-open window cannot free a slot in a later one.
 //
@@ -574,6 +726,87 @@ func TestCustomFailureDetection(t *testing.T) {
 		get(t, app, "/missing")
 	}
 	require.Equal(t, circuitbreaker.StateOpen, cb.GetState(), "404 is a failure under this detector")
+}
+
+func TestClientErrorsAreNotFailures(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 2,
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
+	})
+	app := newApp(cb)
+	app.Get("/bad-request", func(c fiber.Ctx) error {
+		return fiber.ErrBadRequest
+	})
+	app.Get("/wrapped", func(c fiber.Ctx) error {
+		return fmt.Errorf("lookup: %w", fiber.ErrNotFound)
+	})
+	app.Get("/unavailable", func(c fiber.Ctx) error {
+		return fiber.ErrServiceUnavailable
+	})
+	app.Get("/error", func(c fiber.Ctx) error {
+		return errors.New("dependency down")
+	})
+
+	for i := 0; i < 5; i++ {
+		require.Equal(t, fiber.StatusNotFound, get(t, app, "/no-such-route").StatusCode)
+		require.Equal(t, fiber.StatusBadRequest, get(t, app, "/bad-request").StatusCode)
+		require.Equal(t, fiber.StatusNotFound, get(t, app, "/wrapped").StatusCode)
+
+		resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, "/ok", nil))
+		require.NoError(t, err)
+		require.Equal(t, fiber.StatusMethodNotAllowed, resp.StatusCode)
+	}
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState(), "4xx errors are not failures of the service")
+
+	get(t, app, "/unavailable")
+	get(t, app, "/error")
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState(), "a 5xx error and a plain error still are")
+
+	clock.Advance(time.Minute)
+	require.Equal(t, fiber.StatusNotFound, get(t, app, "/no-such-route").StatusCode)
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState(), "a route miss neither fails nor passes the probe")
+}
+
+func TestClientErrorsDoNotCloseHalfOpen(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold:      1,
+		SuccessThreshold:      1,
+		HalfOpenMaxConcurrent: 1,
+		Timeout:               time.Minute,
+		Clock:                 clock.Now,
+	})
+	app := newApp(cb)
+	app.Get("/bad-request", func(c fiber.Ctx) error {
+		return fiber.ErrBadRequest
+	})
+	app.Get("/not-found", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusNotFound)
+	})
+
+	trip(t, app, 1)
+	clock.Advance(time.Minute)
+
+	// Each 4xx probe gives its slot back, so the next one is admitted rather than refused with 429
+	for i := 0; i < 5; i++ {
+		require.Equal(t, fiber.StatusNotFound, get(t, app, "/no-such-route").StatusCode)
+		require.Equal(t, fiber.StatusBadRequest, get(t, app, "/bad-request").StatusCode)
+		require.Equal(t, fiber.StatusNotFound, get(t, app, "/not-found").StatusCode)
+	}
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState(), "4xx probes say nothing about recovery")
+
+	get(t, app, "/fail")
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState(), "a failing backend still reopens the circuit")
+
+	clock.Advance(time.Minute)
+	require.Equal(t, fiber.StatusOK, get(t, app, "/ok").StatusCode)
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState(), "a real success still closes it")
 }
 
 // TestDefaultOnCloseDoesNotAdvanceChainTwice guards the regression where a
