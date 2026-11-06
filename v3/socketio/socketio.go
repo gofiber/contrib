@@ -250,8 +250,9 @@ var (
 	// deadline. Read once per frame.
 	WriteTimeout time.Duration
 	// MaxPayload is the maximum size in bytes of an inbound WebSocket
-	// frame. It is advertised to the client in the EIO OPEN packet and
-	// enforced via SetReadLimit on the underlying connection: frames
+	// message, counted after decompression when permessage-deflate is
+	// enabled. It is advertised to the client in the EIO OPEN packet and
+	// enforced via SetReadLimit on the underlying connection: messages
 	// exceeding this size are rejected and the connection is closed. Set
 	// to zero or negative to disable the limit (not recommended).
 	MaxPayload int64 = 1_000_000
