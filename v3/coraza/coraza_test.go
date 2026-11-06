@@ -370,17 +370,17 @@ SecRule ARGS|REQUEST_BODY "@contains attack" "id:1002,phase:2,deny,status:403,ms
 	}
 
 	// Long enough to be compressed rather than stored, which would leave it readable.
-	attack := []byte("pad=" + strings.Repeat("a", 256) + "&payload=attack")
+	deniedBody := []byte("pad=" + strings.Repeat("a", 256) + "&payload=attack")
 	for encoding, body := range map[string][]byte{
-		"gzip":          fasthttp.AppendGzipBytes(nil, attack),
-		"x-gzip":        fasthttp.AppendGzipBytes(nil, attack),
-		"deflate":       fasthttp.AppendDeflateBytes(nil, attack),
-		"br":            fasthttp.AppendBrotliBytes(nil, attack),
-		"zstd":          fasthttp.AppendZstdBytes(nil, attack),
-		"deflate, GZIP": fasthttp.AppendGzipBytes(nil, fasthttp.AppendDeflateBytes(nil, attack)),
+		"gzip":          fasthttp.AppendGzipBytes(nil, deniedBody),
+		"x-gzip":        fasthttp.AppendGzipBytes(nil, deniedBody),
+		"deflate":       fasthttp.AppendDeflateBytes(nil, deniedBody),
+		"br":            fasthttp.AppendBrotliBytes(nil, deniedBody),
+		"zstd":          fasthttp.AppendZstdBytes(nil, deniedBody),
+		"deflate, GZIP": fasthttp.AppendGzipBytes(nil, fasthttp.AppendDeflateBytes(nil, deniedBody)),
 	} {
 		if status, got := send(body, fiber.MIMEApplicationForm, encoding); status != http.StatusForbidden {
-			t.Fatalf("%s: expected status 403 for an encoded malicious body, got %d with body %q", encoding, status, got)
+			t.Fatalf("%s: expected status 403 for an encoded body the rule denies, got %d with body %q", encoding, status, got)
 		}
 	}
 
@@ -393,13 +393,13 @@ SecRule ARGS|REQUEST_BODY "@contains attack" "id:1002,phase:2,deny,status:403,ms
 		t.Fatalf("failed to close multipart writer: %v", err)
 	}
 	if status, got := send(fasthttp.AppendGzipBytes(nil, form.Bytes()), writer.FormDataContentType(), "gzip"); status != http.StatusForbidden {
-		t.Fatalf("expected status 403 for an encoded malicious multipart body, got %d with body %q", status, got)
+		t.Fatalf("expected status 403 for an encoded multipart body the rule denies, got %d with body %q", status, got)
 	}
 
 	// A clean encoded body reaches every reader decoded, even when the encoded
 	// bytes spell form values of their own.
-	var smuggled bytes.Buffer
-	zw := gzip.NewWriter(&smuggled)
+	var cleanGzip bytes.Buffer
+	zw := gzip.NewWriter(&cleanGzip)
 	zw.Extra = []byte("&payload=attack&")
 	if _, err := zw.Write([]byte("payload=clean")); err != nil {
 		t.Fatalf("failed to write gzip body: %v", err)
@@ -407,24 +407,24 @@ SecRule ARGS|REQUEST_BODY "@contains attack" "id:1002,phase:2,deny,status:403,ms
 	if err := zw.Close(); err != nil {
 		t.Fatalf("failed to close gzip writer: %v", err)
 	}
-	if status, got := send(smuggled.Bytes(), fiber.MIMEApplicationForm, "gzip"); status != http.StatusOK || got != "payload=clean|payload=clean|clean||13" {
+	if status, got := send(cleanGzip.Bytes(), fiber.MIMEApplicationForm, "gzip"); status != http.StatusOK || got != "payload=clean|payload=clean|clean||13" {
 		t.Fatalf("expected the decoded clean body, got %d with body %q", status, got)
 	}
 
 	// Rules still see the headers as they were received.
-	if status, got := send(smuggled.Bytes(), fiber.MIMEApplicationForm, "gzip",
-		"X-Deny-Encoded", "1", "X-Wire-Length", strconv.Itoa(smuggled.Len())); status != http.StatusNotAcceptable {
+	if status, got := send(cleanGzip.Bytes(), fiber.MIMEApplicationForm, "gzip",
+		"X-Deny-Encoded", "1", "X-Wire-Length", strconv.Itoa(cleanGzip.Len())); status != http.StatusNotAcceptable {
 		t.Fatalf("expected status 406 from the header rule, got %d with body %q", status, got)
 	}
 
 	// What cannot be decoded cannot be inspected: PostArgs would still read it.
 	for _, encoding := range []string{"gzip", "compress", "gzip, unknown"} {
-		if status, got := send(attack, fiber.MIMEApplicationForm, encoding); status != http.StatusUnsupportedMediaType {
+		if status, got := send(deniedBody, fiber.MIMEApplicationForm, encoding); status != http.StatusUnsupportedMediaType {
 			t.Fatalf("%s: expected status 415 for an undecodable body, got %d with body %q", encoding, status, got)
 		}
 	}
 
-	stacked := attack
+	stacked := deniedBody
 	for layers := 1; layers <= maxContentCodings+1; layers++ {
 		stacked = fasthttp.AppendGzipBytes(nil, stacked)
 		want := http.StatusForbidden
@@ -437,8 +437,8 @@ SecRule ARGS|REQUEST_BODY "@contains attack" "id:1002,phase:2,deny,status:403,ms
 		}
 	}
 
-	bomb := fasthttp.AppendGzipBytes(nil, bytes.Repeat([]byte("a"), 8192))
-	if status, got := send(bomb, fiber.MIMEApplicationForm, "gzip"); status != http.StatusRequestEntityTooLarge {
+	oversized := fasthttp.AppendGzipBytes(nil, bytes.Repeat([]byte("a"), 8192))
+	if status, got := send(oversized, fiber.MIMEApplicationForm, "gzip"); status != http.StatusRequestEntityTooLarge {
 		t.Fatalf("expected status 413 for a body decoding beyond BodyLimit, got %d with body %q", status, got)
 	}
 }
@@ -562,7 +562,7 @@ SecRule REQUEST_BODY "@contains attack" "id:1002,phase:2,deny,status:403,msg:'bo
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("expected status 403 for a payload behind the body limit, got %d", resp.StatusCode)
+		t.Fatalf("expected status 403 for a streamed body beyond the body limit, got %d", resp.StatusCode)
 	}
 }
 
@@ -595,7 +595,7 @@ SecRule ARGS_POST "@contains ../" "id:1001,phase:2,deny,status:403"`
 	qpNote := func(value string) string {
 		return "--A\r\nContent-Disposition: form-data; name=\"note\"\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n" + value + "\r\n"
 	}
-	shell := part(`name="file"; filename="shell.php"`, "<?php ?>")
+	phpUpload := part(`name="file"; filename="shell.php"`, "<?php ?>")
 	boundaryB := part(`name="folder"`, "../../etc") +
 		part(`name="decoy"`, "\r\n--B\r\nContent-Disposition: form-data; name=\"folder\"\r\n\r\npictures\r\n--B--") + "--A--\r\n"
 
@@ -608,12 +608,12 @@ SecRule ARGS_POST "@contains ../" "id:1001,phase:2,deny,status:403"`
 	}{
 		{"clean form", "multipart/form-data; boundary=A", clean, true, http.StatusOK},
 		{"clean chunked form", "Multipart/Form-Data; Boundary=A", clean, false, http.StatusOK},
-		{"control: quoted-printable note", "multipart/form-data; boundary=A", qpNote("hello=0D=0A") + shell + "--A--\r\n", true, http.StatusForbidden},
-		{"quoted-printable note closing the re-serialized form", "multipart/form-data; boundary=A", qpNote("hello=0D=0A--A--=0D=0A") + shell + "--A--\r\n", true, http.StatusBadRequest},
+		{"control: quoted-printable note", "multipart/form-data; boundary=A", qpNote("hello=0D=0A") + phpUpload + "--A--\r\n", true, http.StatusForbidden},
+		{"quoted-printable note closing the re-serialized form", "multipart/form-data; boundary=A", qpNote("hello=0D=0A--A--=0D=0A") + phpUpload + "--A--\r\n", true, http.StatusBadRequest},
 		{"control: one boundary parameter", "multipart/form-data; boundary=A", boundaryB, false, http.StatusForbidden},
-		{"boundary read differently by the two parsers", "multipart/form-data; boundary=A; boundary*=utf-8''B", boundaryB, false, http.StatusBadRequest},
+		{"duplicate boundary parameter", "multipart/form-data; boundary=A; boundary*=utf-8''B", boundaryB, false, http.StatusBadRequest},
 		{"control: plain field", "multipart/form-data; boundary=A", part(`name="folder"`, "../../etc") + "--A--\r\n", false, http.StatusForbidden},
-		{"field with a filename* Go ignores", "multipart/form-data; boundary=A", part(`name="folder"; filename*=iso-8859-1''x`, "../../etc") + "--A--\r\n", false, http.StatusForbidden},
+		{"filename* parameter", "multipart/form-data; boundary=A", part(`name="folder"; filename*=iso-8859-1''x`, "../../etc") + "--A--\r\n", false, http.StatusForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var (

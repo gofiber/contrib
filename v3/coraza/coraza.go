@@ -753,7 +753,7 @@ func decodeRequestBody(fiberReq *fasthttp.Request, req *http.Request, bodyLimit 
 }
 
 // multipartFormBody writes the form the handlers read under the boundary Coraza
-// reads, so both see the same parts whatever the two parsers make of the wire bytes.
+// reads, so Coraza inspects exactly the parts the handlers see.
 func multipartFormBody(c fiber.Ctx, contentType string) (io.Reader, error) {
 	_, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
