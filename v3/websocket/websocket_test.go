@@ -976,3 +976,33 @@ func TestReadLimitBoundsDecompressedMessage(t *testing.T) {
 		})
 	}
 }
+
+func TestReadLimitErrorStopsNextReader(t *testing.T) {
+	next := make(chan error, 1)
+	app := setupTestApp(Config{EnableCompression: true}, func(c *Conn) {
+		c.SetReadLimit(4096)
+		if _, _, err := c.ReadMessage(); !errors.Is(err, ErrReadLimit) {
+			next <- fmt.Errorf("ReadMessage: %w", err)
+			return
+		}
+		_, _, err := c.NextReader()
+		next <- err
+	})
+	defer app.Shutdown()
+
+	dialer := websocket.Dialer{EnableCompression: true}
+	conn, _, err := dialer.Dial("ws://localhost:3000/ws/message", nil)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	conn.EnableWriteCompression(true)
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(strings.Repeat("a", 1<<20))))
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte("next")))
+
+	select {
+	case err := <-next:
+		require.ErrorIs(t, err, ErrReadLimit, "NextReader returned the message pipelined behind the oversized one")
+	case <-time.After(5 * time.Second):
+		t.Fatal("NextReader blocked after ErrReadLimit")
+	}
+}

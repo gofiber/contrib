@@ -40,9 +40,6 @@ func (conn *Conn) SetReadLimit(limit int64) {
 // ReadMessage grows its own. Bound message size with SetReadLimit. On error p
 // is nil.
 func (conn *Conn) ReadMessage() (messageType int, p []byte, err error) {
-	if conn.readErr != nil {
-		return 0, nil, conn.readErr
-	}
 	messageType, r, err := conn.NextReader()
 	if err != nil {
 		return messageType, nil, err
@@ -57,6 +54,15 @@ func (conn *Conn) ReadMessage() (messageType int, p []byte, err error) {
 		return messageType, nil, err
 	}
 	return messageType, p, err
+}
+
+// NextReader is the library's NextReader; it also returns the ErrReadLimit
+// ReadMessage hit, keeping read errors permanent across both.
+func (conn *Conn) NextReader() (messageType int, r io.Reader, err error) {
+	if conn.readErr != nil {
+		return -1, nil, conn.readErr // the library's noFrame
+	}
+	return conn.Conn.NextReader()
 }
 
 // ReadJSON is the library's ReadJSON, read through ReadMessage so SetReadLimit
