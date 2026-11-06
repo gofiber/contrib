@@ -1294,7 +1294,7 @@ func TestPollingNoPingBeforeConnect(t *testing.T) {
 	require.Len(t, sessions, 1)
 	kws, ok := sessions[0].(*Websocket)
 	require.True(t, ok)
-	// Past PingInterval, so this tick would PING a connected session.
+	// Past PingInterval: only the CONNECT guard keeps this tick from queuing a PING.
 	time.Sleep(PingInterval)
 	kws.heartbeatTick()
 	_, st := pollPost(t, c, sid, []byte("40"))
