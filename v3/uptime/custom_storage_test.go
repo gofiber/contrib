@@ -3,6 +3,7 @@ package uptime_test
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"sort"
 	"sync"
@@ -74,6 +75,56 @@ func TestCustomStorageBackend(t *testing.T) {
 	}
 	if store.closeCount() != 0 {
 		t.Fatal("uptime closed caller-owned custom storage")
+	}
+}
+
+func TestProbeResultHookConcurrencyAndShutdown(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	entered := make(chan struct{}, 2)
+	finished := make(chan error, 2)
+	app := fiber.New()
+	t.Cleanup(func() { _ = app.Shutdown() })
+	app.Use(uptime.New(uptime.Config{
+		App: app, Storage: newCustomStore(),
+		Endpoints: []uptime.EndpointConfig{
+			{ID: "first", URL: server.URL},
+			{ID: "second", URL: server.URL},
+		},
+		OnProbeResult: func(ctx context.Context, _ uptime.ProbeResult) {
+			if _, deadline := ctx.Deadline(); deadline || ctx.Err() != nil {
+				t.Error("hook context inherited the probe timeout or was already canceled")
+			}
+			entered <- struct{}{}
+			<-ctx.Done()
+			finished <- ctx.Err()
+		},
+	}))
+	// Both hooks block until shutdown, so both entering proves they run concurrently.
+	for range 2 {
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("endpoint hooks did not run concurrently")
+		}
+	}
+	shutdown := make(chan error, 1)
+	go func() { shutdown <- app.Shutdown() }()
+	select {
+	case err := <-shutdown:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown did not cancel the blocked hooks")
+	}
+	for range 2 {
+		if err := <-finished; err != context.Canceled {
+			t.Fatalf("hook context error = %v, want context.Canceled", err)
+		}
 	}
 }
 

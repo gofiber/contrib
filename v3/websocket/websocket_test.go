@@ -802,6 +802,43 @@ func TestConnCaptureCanonicalizesHeaderNames(t *testing.T) {
 	assert.Equal(t, "value", conn.Headers("X-CUSTOM"))
 }
 
+func TestConnCaptureKeepsTypedLocalKeys(t *testing.T) {
+	type ctxKey struct{}
+	fctx := &fasthttp.RequestCtx{}
+	fctx.SetUserValue(ctxKey{}, "typed")
+	fctx.SetUserValue("plain", "string")
+
+	conn := &Conn{}
+	conn.capture(fctx)
+
+	assert.Equal(t, "typed", conn.Locals(ctxKey{}))
+	assert.Equal(t, "string", conn.Locals("plain"))
+}
+
+func TestConnLocalsByteSliceKey(t *testing.T) {
+	conn := &Conn{}
+
+	assert.Equal(t, "value", conn.Locals([]byte("key"), "value"))
+	assert.Equal(t, "value", conn.Locals("key"))
+	assert.Equal(t, "value", conn.Locals([]byte("key")))
+}
+
+func TestConnCaptureSkipsUnhashableLocalKeys(t *testing.T) {
+	type holder struct{ v any }
+	fctx := &fasthttp.RequestCtx{}
+	fctx.SetUserValue([]int{1}, "slice")
+	fctx.SetUserValue(holder{v: []int{1}}, "struct holding a slice")
+	fctx.SetUserValue("plain", "string")
+	fctx.SetUserValue(nil, "nil key")
+
+	conn := &Conn{}
+	require.NotPanics(t, func() { conn.capture(fctx) })
+
+	assert.Len(t, conn.locals, 2)
+	assert.Equal(t, "nil key", conn.Locals(nil))
+	assert.Equal(t, "string", conn.Locals("plain"))
+}
+
 func TestConnAccessorsOnEmptyConn(t *testing.T) {
 	conn := &Conn{}
 

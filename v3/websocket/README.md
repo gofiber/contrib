@@ -72,6 +72,9 @@ func main() {
     })
 
     app.Get("/ws/:id", websocket.New(func(c *websocket.Conn) {
+        // Returning alone leaves the socket open
+        defer c.Close()
+
         // c.Locals is added to the *websocket.Conn
         log.Println(c.Locals("allowed"))  // true
         log.Println(c.Params("id"))       // 123

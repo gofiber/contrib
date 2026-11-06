@@ -1,6 +1,7 @@
 package uptime
 
 import (
+	"context"
 	"errors"
 	"maps"
 	"net/http"
@@ -64,6 +65,12 @@ type Config struct {
 	// Endpoints defines optional HTTP endpoints to probe as tracked services.
 	Endpoints []EndpointConfig
 
+	// OnProbeResult optionally receives each completed endpoint probe; it requires
+	// Endpoints. Calls are synchronous and ordered per endpoint but may run
+	// concurrently across endpoints, so return quickly and protect shared state.
+	// The context is canceled on shutdown. Panics are recovered.
+	OnProbeResult func(context.Context, ProbeResult)
+
 	// SampleInterval is the heartbeat interval and uptime slot size.
 	SampleInterval time.Duration
 	// RetentionDays controls how many days of heartbeat data are kept.
@@ -98,6 +105,20 @@ type Config struct {
 	StorageKeyPrefix string
 	// UI configures the built-in dashboard.
 	UI UIConfig
+}
+
+// ProbeResult describes one completed HTTP/HTTPS endpoint probe.
+type ProbeResult struct {
+	// EndpointID is the configured endpoint's stable ID.
+	EndpointID string
+	// CheckedAt is the probe completion time.
+	CheckedAt time.Time
+	// Duration is the elapsed probe time, excluding the callback.
+	Duration time.Duration
+	// Success reports whether the response matched the expected status codes.
+	Success bool
+	// StatusCode is the HTTP response status, or zero when the request failed.
+	StatusCode int
 }
 
 // EndpointConfig defines one HTTP endpoint to probe as an uptime service.

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http"
+	"reflect"
 	"sync"
 	"time"
 
@@ -392,12 +393,18 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 		}
 		cookiesSnap[string(k)] = string(v)
 	}
-	var localsSnap map[string]any
-	c.RequestCtx().VisitUserValues(func(k []byte, v any) {
-		if localsSnap == nil {
-			localsSnap = make(map[string]any)
+	// All keys, not just strings: Fiber middlewares store under typed keys.
+	var localsSnap map[any]any
+	c.RequestCtx().VisitUserValuesAll(func(k, v any) {
+		if s, ok := k.(string); ok {
+			k = utils.CopyString(s)
+		} else if k != nil && !reflect.ValueOf(k).Comparable() {
+			return // fasthttp accepts e.g. a slice key, a map panics on it
 		}
-		localsSnap[string(k)] = v
+		if localsSnap == nil {
+			localsSnap = make(map[any]any)
+		}
+		localsSnap[k] = v
 	})
 
 	newLookupFunc := func(m map[string]string) func(string, ...string) string {
@@ -411,7 +418,13 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 			return ""
 		}
 	}
-	kws.Locals = func(key string) any { return localsSnap[key] }
+	kws.Locals = func(key any) any {
+		// fasthttp stores []byte keys as strings; a slice cannot key a map.
+		if b, ok := key.([]byte); ok {
+			key = string(b)
+		}
+		return localsSnap[key]
+	}
 	kws.Params = newLookupFunc(paramsSnap)
 	kws.Query = newLookupFunc(queriesSnap)
 	kws.Cookies = newLookupFunc(cookiesSnap)

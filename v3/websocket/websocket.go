@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"runtime/debug"
 	"slices"
 	"sync"
@@ -219,7 +220,7 @@ func rejectHandshake(c fiber.Ctx, status int) error {
 // Conn https://godoc.org/github.com/gorilla/websocket#pkg-index
 type Conn struct {
 	*websocket.Conn
-	locals  map[string]any
+	locals  map[any]any
 	params  map[string]string
 	cookies map[string]string
 	headers map[string]string
@@ -235,8 +236,14 @@ type Conn struct {
 // capture copies the request's locals, query arguments, cookies and headers
 // into the Conn before fasthttp recycles the RequestCtx.
 func (conn *Conn) capture(fctx *fasthttp.RequestCtx) {
-	fctx.VisitUserValues(func(key []byte, value any) {
-		setEntry(&conn.locals, string(key), value)
+	// All keys, not just strings: Fiber middlewares store under typed keys.
+	fctx.VisitUserValuesAll(func(key, value any) {
+		if s, ok := key.(string); ok {
+			key = utils.CopyString(s)
+		} else if key != nil && !reflect.ValueOf(key).Comparable() {
+			return // fasthttp accepts e.g. a slice key, a map panics on it
+		}
+		setEntry(&conn.locals, key, value)
 	})
 	// No size hint: Args.Len counts repeated keys that collapse into one entry.
 	for key, value := range fctx.QueryArgs().All() {
@@ -256,16 +263,21 @@ func (conn *Conn) capture(fctx *fasthttp.RequestCtx) {
 
 // setEntry stores value under key in *m, allocating the map on first use so a
 // connection that carries no entries of a kind never allocates one.
-func setEntry[V any](m *map[string]V, key string, value V) {
+func setEntry[K comparable, V any](m *map[K]V, key K, value V) {
 	if *m == nil {
-		*m = make(map[string]V)
+		*m = make(map[K]V)
 	}
 	(*m)[key] = value
 }
 
-// Locals makes it possible to pass interface{} values under string keys scoped to the request
+// Locals makes it possible to pass interface{} values under keys scoped to the request
 // and therefore available to all following routes that match the request.
-func (conn *Conn) Locals(key string, value ...any) any {
+// Keys work as in fiber.Ctx.Locals, typed keys included.
+func (conn *Conn) Locals(key any, value ...any) any {
+	// fasthttp stores []byte keys as strings; a slice cannot key a map.
+	if b, ok := key.([]byte); ok {
+		key = string(b)
+	}
 	if len(value) == 0 {
 		return conn.locals[key]
 	}

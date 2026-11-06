@@ -274,7 +274,7 @@ type Websocket struct {
 	// UUID is the unique connection identifier.
 	UUID string
 	// Locals wraps Fiber Locals.
-	Locals func(key string) any
+	Locals func(key any) any
 	// Params wraps Fiber Params.
 	Params func(key string, defaultValue ...string) string
 	// Query wraps Fiber Query.
@@ -406,7 +406,7 @@ func NewWithConfig(callback func(kws *Websocket), eventCfg Config, wsConfig ...w
 		kws := &Websocket{
 			Conn:     c,
 			settings: s,
-			Locals: func(key string) any {
+			Locals: func(key any) any {
 				return c.Locals(key)
 			},
 			Params: func(key string, defaultValue ...string) string {
