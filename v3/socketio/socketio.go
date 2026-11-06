@@ -1837,8 +1837,9 @@ func (kws *Websocket) heartbeatTick() {
 		kws.disconnected(ErrHeartbeatTimeout)
 		return
 	}
-	// Emit a PING only every PingInterval, regardless of tick rate.
-	if now.Sub(time.Unix(0, kws.lastPingNanos.Load())) >= kws.hbInterval {
+	// Emit a PING only every PingInterval, regardless of tick rate. None
+	// before a polling CONNECT: the client may not answer it yet.
+	if now.Sub(time.Unix(0, kws.lastPingNanos.Load())) >= kws.hbInterval && (kws.pollQ == nil || kws.connectFired.Load()) {
 		kws.write(TextMessage, eioPingFrame)
 		kws.lastPingNanos.Store(now.UnixNano())
 	}

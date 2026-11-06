@@ -375,6 +375,7 @@ func TestSocketIOBroadcastSkipsSessionInHandshake(t *testing.T) {
 	defer member.Close()
 	sioHandshakeWithConnect(t, member, `{"token":"member"}`)
 	memberKws := awaitSession(t, kwsCh)
+	require.Eventually(t, memberKws.isConnected, 2*time.Second, 5*time.Millisecond)
 
 	// The guest reads EIO OPEN, so its session is in the pool, and
 	// stops there: no CONNECT, no callback.
@@ -415,6 +416,7 @@ func TestSocketIOBroadcastSkipsSessionInHandshake(t *testing.T) {
 // A client refused inside EventConnect must not receive broadcasts sent meanwhile.
 func TestSocketIOBroadcastSkipsSessionInEventConnect(t *testing.T) {
 	resetSIOGlobals(t)
+	kwsCh := captureConnect(t)
 	inListener := make(chan struct{}, 1)
 	release := make(chan struct{})
 	On(EventConnect, func(p *EventPayload) {
@@ -432,6 +434,7 @@ func TestSocketIOBroadcastSkipsSessionInEventConnect(t *testing.T) {
 	member := dialSIO(t, ln)
 	defer member.Close()
 	sioHandshakeWithConnect(t, member, `{"token":"member"}`)
+	require.Eventually(t, awaitSession(t, kwsCh).isConnected, 2*time.Second, 5*time.Millisecond)
 
 	guest := dialSIO(t, ln)
 	defer guest.Close()

@@ -1211,7 +1211,7 @@ func TestPollingBinaryRejectedBeforeConnect(t *testing.T) {
 
 // EIO-level packets before CONNECT end the session with ErrPollingBeforeConnect.
 func TestPollingEIOPacketRejectedBeforeConnect(t *testing.T) {
-	for _, packet := range []string{"3", "1", "2", "5", "6", "xGARBAGE"} {
+	for _, packet := range []string{"3", "1", "2", "4", "5", "6", "xGARBAGE"} {
 		t.Run(packet, func(t *testing.T) {
 			resetSIOGlobals(t)
 
@@ -1273,6 +1273,60 @@ func TestPollingEIOPacketRejectedBeforeConnect(t *testing.T) {
 			_, st = pollPost(t, c, sid, []byte("40"))
 			require.Equal(t, http.StatusBadRequest, st)
 		})
+	}
+}
+
+// A client may not answer "3" before CONNECT, so the server must not PING it yet.
+func TestPollingNoPingBeforeConnect(t *testing.T) {
+	resetSIOGlobals(t)
+	prevInterval, prevHS := PingInterval, HandshakeTimeout
+	PingInterval, HandshakeTimeout = 20*time.Millisecond, 0
+	defer func() { PingInterval, HandshakeTimeout = prevInterval, prevHS }()
+
+	connected := make(chan struct{}, 1)
+	On(EventConnect, func(_ *EventPayload) { connected <- struct{}{} })
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	time.Sleep(100 * time.Millisecond) // several PingIntervals
+	_, st := pollPost(t, c, sid, []byte("40"))
+	require.Equal(t, http.StatusOK, st)
+	select {
+	case <-connected:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventConnect did not fire")
+	}
+
+	body, _ := pollGet(t, c, sid)
+	frames := splitPollFrames(body)
+	require.NotEmpty(t, frames)
+	require.True(t, bytes.HasPrefix(frames[0], []byte("40{")), "PING queued before the CONNECT ack: %q", body)
+
+	// The heartbeat resumes once connected.
+	body, _ = pollGet(t, c, sid)
+	require.True(t, bytes.HasPrefix(body, []byte("2")), "no PING after CONNECT: %q", body)
+}
+
+func TestPollingHeartbeatEndsSessionWithoutConnect(t *testing.T) {
+	resetSIOGlobals(t)
+	prevInterval, prevTimeout, prevHS := PingInterval, PingTimeout, HandshakeTimeout
+	PingInterval, PingTimeout, HandshakeTimeout = 20*time.Millisecond, 20*time.Millisecond, 0
+	defer func() { PingInterval, PingTimeout, HandshakeTimeout = prevInterval, prevTimeout, prevHS }()
+
+	disc := make(chan error, 1)
+	On(EventDisconnect, func(p *EventPayload) { disc <- p.Error })
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	pollOpen(t, c)
+	select {
+	case err := <-disc:
+		require.ErrorIs(t, err, ErrHeartbeatTimeout)
+	case <-time.After(2 * time.Second):
+		t.Fatal("idle unconnected session was not reaped")
 	}
 }
 

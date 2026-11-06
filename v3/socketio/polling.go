@@ -604,7 +604,7 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 
 	rest := body
 	count := 0
-	// Checked before each packet, as read() does: nothing after EventDisconnect.
+	// Checked before each packet, as read() does: a tear-down stops the dispatch.
 	for len(rest) > 0 && kws.IsAlive() {
 		if count >= MaxBatchPackets {
 			kws.fireEvent(EventError, nil, ErrBatchPacketsExceeded)
@@ -621,7 +621,7 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 			continue
 		}
 		// Before CONNECT only "4" (carrying "40") may pass, as on the WebSocket handshake.
-		if !kws.connectFired.Load() && packet[0] != eioMessage {
+		if !kws.connectFired.Load() && (packet[0] != eioMessage || len(packet) == 1) {
 			kws.fireEvent(EventError, packet, fmt.Errorf("%w: EIO packet type %q", ErrPollingBeforeConnect, packet[0]))
 			kws.disconnected(ErrPollingBeforeConnect)
 			break
