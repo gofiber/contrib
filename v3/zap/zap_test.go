@@ -2,6 +2,7 @@ package zap
 
 import (
 	"bytes"
+	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
@@ -647,4 +648,50 @@ func Test_Logger_TimedOutHandler(t *testing.T) {
 		"resBody":   fiber.ErrServiceUnavailable.Message,
 		"bytesSent": int64(len(fiber.ErrServiceUnavailable.Message)),
 	}, logs.All()[0].ContextMap())
+}
+
+// go test -run Test_Body_LoggedAsReceived
+func Test_Body_LoggedAsReceived(t *testing.T) {
+	gzipped := func(b []byte) []byte {
+		var buf bytes.Buffer
+		w := gzip.NewWriter(&buf)
+		_, err := w.Write(b)
+		assert.NoError(t, err)
+		assert.NoError(t, w.Close())
+		return buf.Bytes()
+	}
+
+	for _, tc := range []struct {
+		name     string
+		encoding string
+		body     []byte
+	}{
+		{name: "unknown coding", encoding: "unknown", body: []byte("raw")},
+		{name: "compress", encoding: "compress", body: []byte("raw")},
+		{name: "gzip", encoding: "gzip", body: gzipped([]byte("decoded"))},
+		{name: "gzip past BodyLimit", encoding: "gzip", body: gzipped(make([]byte, 4096))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logger, logs := setupLogsCapture()
+
+			app := fiber.New(fiber.Config{BodyLimit: 1024})
+			app.Use(New(Config{
+				Logger: logger,
+				Fields: []string{"status", "body"},
+			}))
+			app.Post("/", func(c fiber.Ctx) error {
+				return c.SendStatus(fiber.StatusNoContent)
+			})
+
+			req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(tc.body))
+			req.Header.Set(fiber.HeaderContentEncoding, tc.encoding)
+			resp, err := app.Test(req)
+			assert.NoError(t, err)
+			assert.Equal(t, fiber.StatusNoContent, resp.StatusCode)
+			assert.Equal(t, map[string]interface{}{
+				"status": int64(fiber.StatusNoContent),
+				"body":   string(tc.body),
+			}, logs.All()[0].ContextMap())
+		})
+	}
 }

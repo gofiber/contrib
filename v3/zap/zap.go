@@ -211,14 +211,15 @@ func sentResponse(c fiber.Ctx) *fasthttp.Response {
 	return c.Response()
 }
 
-// requestBody skips a body that is a stream or past BodyLimit: c.Body() would read all of it.
+// requestBody is the body as received; a stream or a body past BodyLimit is skipped,
+// as reading it buffers all of it. c.Body() would also decode it and can set the status.
 func requestBody(c fiber.Ctx) []byte {
 	req := c.Request()
 	if req.IsBodyStream() || req.Header.ContentLength() > c.App().Config().BodyLimit {
 		return nil
 	}
 
-	return c.Body()
+	return c.BodyRaw()
 }
 
 // bytesReceived is the announced Content-Length, as in Fiber's logger, so no stream is read.

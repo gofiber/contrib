@@ -75,6 +75,9 @@ func buildSIOConnectAckSID(namespace []byte, sid string) []byte {
 // ("44[/ns,]<json>"). jsonMessage must already be a JSON object such as
 // `{"message":"Not authorized"}` (socket.io-protocol v5).
 func buildSIOConnectError(namespace []byte, jsonMessage string) []byte {
+	if MaxNamespaceLength > 0 && len(namespace) > MaxNamespaceLength {
+		namespace = nil // never echo an over-long namespace back
+	}
 	buf := make([]byte, 0, 3+len(namespace)+len(jsonMessage))
 	buf = appendSIOPrefix(buf, sioConnectError, namespace)
 	return append(buf, jsonMessage...)
@@ -427,7 +430,7 @@ func splitSIONamespace(data []byte) (namespace, rest []byte) {
 // the socket.io namespace grammar: empty (root), or "/<segment>" with at
 // least one byte and only [A-Za-z0-9._\-/] characters. We deliberately
 // reject characters that would change framing if echoed verbatim into a
-// "42<ns>,..." event packet.
+// "42<ns>,..." event packet. Also enforces MaxNamespaceLength.
 //
 // Runs of word characters are skipped with simd.MemchrNotWord (AVX2 on
 // amd64 for 32+ byte inputs, SWAR otherwise); only the three extra
@@ -435,6 +438,9 @@ func splitSIONamespace(data []byte) (namespace, rest []byte) {
 func isValidNamespace(ns []byte) bool {
 	if len(ns) == 0 {
 		return true
+	}
+	if MaxNamespaceLength > 0 && len(ns) > MaxNamespaceLength {
+		return false
 	}
 	if ns[0] != '/' {
 		return false

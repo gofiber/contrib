@@ -12,12 +12,14 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttputil"
 )
 
@@ -272,6 +274,30 @@ func TestPollingConnectFiresEventConnect(t *testing.T) {
 		}
 	}
 	require.True(t, hasAck, "expected 40{\"sid\":...} ack frame in drain, got %q", frames)
+}
+
+// TestPollingConnectListenerCloseStopsDispatch mirrors
+// TestSocketIOListenerCloseStopsDispatch on the polling transport.
+func TestPollingConnectListenerCloseStopsDispatch(t *testing.T) {
+	resetSIOGlobals(t)
+
+	var afterRefuse, disconnects atomic.Int32
+	On(EventConnect, func(p *EventPayload) { p.Kws.Close() })
+	On(EventConnect, func(*EventPayload) { afterRefuse.Add(1) })
+	On(EventDisconnect, func(*EventPayload) { disconnects.Add(1) })
+	On(EventDisconnect, func(*EventPayload) { disconnects.Add(1) })
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, status := pollOpen(t, c)
+	require.Equal(t, http.StatusOK, status)
+
+	// The POST returns once the CONNECT packet has been dispatched.
+	pollPost(t, c, sid, []byte(`40{"token":"wrong"}`))
+
+	require.Equal(t, int32(2), disconnects.Load())
+	require.Zero(t, afterRefuse.Load(), "EventConnect listener ran after the session was closed")
 }
 
 // TestPollingCallbackEmitArrivesAfterConnectAck verifies polling preserves the
@@ -764,6 +790,41 @@ func TestPollingConnectInvalidNamespace(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, status)
 }
 
+// TestPollingConnectOversizeNamespace verifies that a namespace one byte over
+// MaxNamespaceLength gets CONNECT_ERROR and never reaches the New callback.
+func TestPollingConnectOversizeNamespace(t *testing.T) {
+	resetSIOGlobals(t)
+	var connected atomic.Int32
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) { connected.Add(1) })
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+
+	pollResult := make(chan []byte, 1)
+	go func() {
+		body, _ := pollGet(t, c, sid)
+		pollResult <- body
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	ns := "/" + strings.Repeat("a", MaxNamespaceLength)
+	require.Equal(t, MaxNamespaceLength+1, len(ns))
+	_, st := pollPost(t, c, sid, []byte("40"+ns+","))
+	require.Equal(t, http.StatusOK, st)
+
+	select {
+	case body := <-pollResult:
+		require.Contains(t, string(body), "Invalid namespace",
+			"expected CONNECT_ERROR with 'Invalid namespace' in drain, got %q", body)
+	case <-time.After(2 * time.Second):
+		t.Fatal("long-poll did not return after oversize CONNECT")
+	}
+	require.Zero(t, connected.Load(), "New callback ran for a rejected CONNECT")
+
+	_, status := pollGet(t, c, sid)
+	require.Equal(t, http.StatusBadRequest, status)
+}
+
 // TestPollingConnectInvalidAuth verifies that a polling CONNECT with a
 // non-object auth payload is rejected with CONNECT_ERROR and disconnect.
 func TestPollingConnectInvalidAuth(t *testing.T) {
@@ -828,6 +889,144 @@ func TestPollingBatchedPostStopsAfterCallbackDisconnect(t *testing.T) {
 		t.Fatalf("batched event dispatched after callback disconnect: %q", data)
 	case <-time.After(150 * time.Millisecond):
 	}
+}
+
+// Broadcast and Fire must not reach a polling session before its CONNECT is admitted.
+func TestPollingBroadcastSkipsSessionBeforeConnect(t *testing.T) {
+	resetSIOGlobals(t)
+
+	var member atomic.Pointer[Websocket]
+	On(EventConnect, func(p *EventPayload) {
+		member.Store(p.Kws)
+	})
+	var fired []string
+	var firedMu sync.Mutex
+	On("audit", func(p *EventPayload) {
+		firedMu.Lock()
+		fired = append(fired, p.Kws.GetUUID())
+		firedMu.Unlock()
+	})
+
+	_, c, td := newPollingTestServer(t, func(kws *Websocket) {
+		if string(kws.HandshakeAuth()) != `{"token":"member"}` {
+			kws.Close()
+		}
+	})
+	defer td()
+
+	memberSid, _, _ := pollOpen(t, c)
+	_, _ = pollPost(t, c, memberSid, []byte(`40{"token":"member"}`))
+	require.Eventually(t, func() bool { return member.Load() != nil }, 2*time.Second, 10*time.Millisecond)
+	_, _ = pollGet(t, c, memberSid) // drain the CONNECT ack
+
+	// The guest opens a session and never sends CONNECT.
+	guestSid, _, status := pollOpen(t, c)
+	require.Equal(t, http.StatusOK, status)
+
+	Broadcast([]byte(`"secret"`))
+	member.Load().Broadcast([]byte(`"secret"`), false)
+	Fire("audit", []byte(`"x"`))
+
+	body, _ := pollGet(t, c, memberSid)
+	require.Equal(t, 2, bytes.Count(body, []byte(`42["message","secret"]`)), "member drain: %q", body)
+	firedMu.Lock()
+	require.Equal(t, []string{member.Load().GetUUID()}, fired, "Fire must skip the session before CONNECT")
+	firedMu.Unlock()
+
+	var guest *Websocket
+	for _, s := range pool.snapshot() {
+		if w, ok := s.(*Websocket); ok && w != member.Load() {
+			guest = w
+		}
+	}
+	require.NotNil(t, guest)
+
+	// The refused CONNECT leaves only the ack and DISCONNECT in its queue.
+	_, status = pollPost(t, c, guestSid, []byte(`40{"token":"wrong"}`))
+	require.Equal(t, http.StatusOK, status)
+	frames, closed := guest.pollQ.drain(context.Background(), PollingMaxBufferSize)
+	require.True(t, closed)
+	body = bytes.Join(frames, []byte{eioPacketSeparator})
+	require.NotContains(t, string(body), `42["message"`, "refused session queued a broadcast: %q", body)
+	require.Contains(t, string(body), `40{"sid":`)
+	require.Contains(t, string(body), string([]byte{eioMessage, sioDisconnect}))
+}
+
+// A POST that resolved the session before a refused CONNECT tore it down must reach no listener.
+func TestPollingPostQueuedBehindRefusedConnectNotDispatched(t *testing.T) {
+	resetSIOGlobals(t)
+
+	var transfers atomic.Int32
+	On(EventConnect, func(ep *EventPayload) { ep.Kws.Close() })
+	On("transfer", func(_ *EventPayload) { transfers.Add(1) })
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	sessions := pool.snapshot()
+	require.Len(t, sessions, 1)
+	kws, ok := sessions[0].(*Websocket)
+	require.True(t, ok)
+
+	_, status := pollPost(t, c, sid, []byte(`40{"token":"wrong"}`))
+	require.Equal(t, http.StatusOK, status)
+	require.False(t, kws.IsAlive())
+
+	// Replay the queued POST: it passed the sid lookup, then waited on postGate.
+	app := fiber.New()
+	fctx := &fasthttp.RequestCtx{}
+	fctx.Request.Header.SetMethod(fiber.MethodPost)
+	fctx.Request.SetBodyString(`42["transfer",1]`)
+	ctx := app.AcquireCtx(fctx)
+	defer app.ReleaseCtx(ctx)
+	require.NoError(t, ingestPolling(ctx, kws))
+
+	require.Equal(t, http.StatusBadRequest, fctx.Response.StatusCode())
+	require.Contains(t, string(fctx.Response.Body()), `"code":1`)
+	require.Zero(t, transfers.Load())
+}
+
+func TestPollingConnectLosesToFiredHandshakeTimer(t *testing.T) {
+	resetSIOGlobals(t)
+
+	var callbacks, disconnects atomic.Int32
+	disconnectErr := make(chan error, 1)
+	On(EventDisconnect, func(p *EventPayload) {
+		disconnects.Add(1)
+		disconnectErr <- p.Error
+	})
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) { callbacks.Add(1) })
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	sessions := pool.snapshot()
+	require.Len(t, sessions, 1)
+	kws, ok := sessions[0].(*Websocket)
+	require.True(t, ok)
+
+	// A timer that has fired and is parked just before its tear-down.
+	kws.handshakeTimer.Load().Stop()
+	fired, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	kws.handshakeTimer.Store(time.AfterFunc(0, func() {
+		defer close(done)
+		close(fired)
+		<-release
+		kws.disconnected(ErrHandshakeClosed)
+	}))
+	<-fired
+	require.True(t, kws.IsAlive())
+
+	_, status := pollPost(t, c, sid, []byte("40\x1e42[\"chat\"]"))
+	require.Equal(t, http.StatusOK, status)
+	close(release)
+	<-done
+
+	require.Zero(t, callbacks.Load(), "New callback ran although the handshake deadline had fired")
+	require.False(t, kws.IsAlive())
+	require.ErrorIs(t, <-disconnectErr, ErrHandshakeClosed)
+	require.EqualValues(t, 1, disconnects.Load())
 }
 
 // TestPollingConnectFiresOnceOnRepeat verifies the connectFired CAS
@@ -1042,6 +1241,133 @@ func TestPollingBinaryRejectedBeforeConnect(t *testing.T) {
 		require.ErrorIs(t, err, ErrPollingBeforeConnect)
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected disconnect for pre-connect binary payload")
+	}
+}
+
+// EIO-level packets before CONNECT end the session with ErrPollingBeforeConnect.
+func TestPollingEIOPacketRejectedBeforeConnect(t *testing.T) {
+	for _, packet := range []string{"3", "1", "2", "4", "5", "6", "xGARBAGE"} {
+		t.Run(packet, func(t *testing.T) {
+			resetSIOGlobals(t)
+
+			pong := make(chan struct{}, 1)
+			unknown := make(chan struct{}, 1)
+			disc := make(chan error, 1)
+			connected := make(chan struct{}, 1)
+			On(EventPong, func(_ *EventPayload) {
+				select {
+				case pong <- struct{}{}:
+				default:
+				}
+			})
+			On(EventError, func(p *EventPayload) {
+				if errors.Is(p.Error, ErrUnknownEIOPacket) {
+					select {
+					case unknown <- struct{}{}:
+					default:
+					}
+				}
+			})
+			On(EventDisconnect, func(p *EventPayload) {
+				select {
+				case disc <- p.Error:
+				default:
+				}
+			})
+
+			_, c, td := newPollingTestServer(t, func(_ *Websocket) {
+				select {
+				case connected <- struct{}{}:
+				default:
+				}
+			})
+			defer td()
+
+			sid, _, _ := pollOpen(t, c)
+			_, st := pollPost(t, c, sid, []byte(packet))
+			require.Equal(t, http.StatusOK, st)
+
+			select {
+			case err := <-disc:
+				require.ErrorIs(t, err, ErrPollingBeforeConnect)
+			case <-time.After(2 * time.Second):
+				t.Fatalf("session survived EIO packet %q before connect", packet)
+			}
+			select {
+			case <-pong:
+				t.Fatal("EventPong fired before connect")
+			case <-unknown:
+				t.Fatal("unknown EIO packet dispatched before connect")
+			case <-connected:
+				t.Fatal("user callback ran without a CONNECT")
+			default:
+			}
+
+			// The rejected session is gone: a CONNECT sent afterwards
+			// must not revive it.
+			_, st = pollPost(t, c, sid, []byte("40"))
+			require.Equal(t, http.StatusBadRequest, st)
+		})
+	}
+}
+
+// A client may not answer "3" before CONNECT, so the server must not PING it yet.
+func TestPollingNoPingBeforeConnect(t *testing.T) {
+	resetSIOGlobals(t)
+	prevInterval, prevHS := PingInterval, HandshakeTimeout
+	PingInterval, HandshakeTimeout = 20*time.Millisecond, 0
+	defer func() { PingInterval, HandshakeTimeout = prevInterval, prevHS }()
+
+	connected := make(chan struct{}, 1)
+	On(EventConnect, func(_ *EventPayload) { connected <- struct{}{} })
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	sessions := pool.snapshot()
+	require.Len(t, sessions, 1)
+	kws, ok := sessions[0].(*Websocket)
+	require.True(t, ok)
+	// Past PingInterval: only the CONNECT guard keeps this tick from queuing a PING.
+	time.Sleep(PingInterval)
+	kws.heartbeatTick()
+	_, st := pollPost(t, c, sid, []byte("40"))
+	require.Equal(t, http.StatusOK, st)
+	select {
+	case <-connected:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventConnect did not fire")
+	}
+
+	body, _ := pollGet(t, c, sid)
+	frames := splitPollFrames(body)
+	require.NotEmpty(t, frames)
+	require.True(t, bytes.HasPrefix(frames[0], []byte("40{")), "PING queued before the CONNECT ack: %q", body)
+
+	// The heartbeat resumes once connected.
+	body, _ = pollGet(t, c, sid)
+	require.True(t, bytes.HasPrefix(body, []byte("2")), "no PING after CONNECT: %q", body)
+}
+
+func TestPollingHeartbeatEndsSessionWithoutConnect(t *testing.T) {
+	resetSIOGlobals(t)
+	prevInterval, prevTimeout, prevHS := PingInterval, PingTimeout, HandshakeTimeout
+	PingInterval, PingTimeout, HandshakeTimeout = 20*time.Millisecond, 20*time.Millisecond, 0
+	defer func() { PingInterval, PingTimeout, HandshakeTimeout = prevInterval, prevTimeout, prevHS }()
+
+	disc := make(chan error, 1)
+	On(EventDisconnect, func(p *EventPayload) { disc <- p.Error })
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	pollOpen(t, c)
+	select {
+	case err := <-disc:
+		require.ErrorIs(t, err, ErrHeartbeatTimeout)
+	case <-time.After(2 * time.Second):
+		t.Fatal("idle unconnected session was not reaped")
 	}
 }
 
@@ -1791,6 +2117,50 @@ func TestPollingCallbackPanicCleansUp(t *testing.T) {
 		return true
 	}, 2*time.Second, 10*time.Millisecond,
 		"pool should not retain polling session after callback panic")
+}
+
+// A panicking EventConnect listener ends the polling session; nothing behind it runs.
+func TestPollingConnectListenerPanicRefusesClient(t *testing.T) {
+	resetSIOGlobals(t)
+
+	On(EventConnect, func(_ *EventPayload) {
+		panic("intentional EventConnect panic")
+	})
+	var later, events, errs atomic.Int32
+	On(EventConnect, func(_ *EventPayload) { later.Add(1) })
+	On("members", func(_ *EventPayload) { events.Add(1) })
+	On(EventError, func(_ *EventPayload) { errs.Add(1) })
+	disconnectErr := make(chan error, 1)
+	On(EventDisconnect, func(p *EventPayload) {
+		select {
+		case disconnectErr <- p.Error:
+		default:
+		}
+	})
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, status := pollOpen(t, c)
+	require.Equal(t, http.StatusOK, status)
+	_, status = pollPost(t, c, sid, []byte("40\x1e42[\"members\"]"))
+	require.Equal(t, http.StatusOK, status)
+
+	select {
+	case err := <-disconnectErr:
+		require.ErrorContains(t, err, `listener panic on "connect"`)
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventDisconnect did not fire after EventConnect listener panic")
+	}
+
+	// The session is gone: a later POST on the same sid meets an unknown sid.
+	_, status = pollPost(t, c, sid, []byte(`42["members"]`))
+	require.Equal(t, http.StatusBadRequest, status)
+
+	require.Zero(t, events.Load(), "event dispatched for a client no listener accepted")
+	require.Zero(t, later.Load(), "EventConnect listener ran after the session ended")
+	require.Equal(t, int32(1), errs.Load(), "the panic must be reported exactly once")
+	require.Empty(t, pool.all(), "pool should not retain polling session after EventConnect panic")
 }
 
 // TestPollingTransportMismatch verifies that a polling request whose sid

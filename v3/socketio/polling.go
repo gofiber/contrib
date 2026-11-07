@@ -572,6 +572,11 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 	kws.postGate.Lock()
 	defer kws.postGate.Unlock()
 
+	// The POST ahead of us may have torn the session down (e.g. refused auth).
+	if !kws.IsAlive() {
+		return writePollingError(c, 1)
+	}
+
 	src := c.Body()
 	if PollingMaxBufferSize > 0 && len(src) > PollingMaxBufferSize {
 		// Tear the session down: matching the WebSocket SetReadLimit
@@ -599,7 +604,8 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 
 	rest := body
 	count := 0
-	for len(rest) > 0 {
+	// Checked before each packet, as read() does: a tear-down stops the dispatch.
+	for len(rest) > 0 && kws.IsAlive() {
 		if count >= MaxBatchPackets {
 			kws.fireEvent(EventError, nil, ErrBatchPacketsExceeded)
 			break
@@ -614,17 +620,18 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 		if len(packet) == 0 {
 			continue
 		}
+		// Before CONNECT only "4" (carrying "40") may pass, as on the WebSocket handshake.
+		if !kws.connectFired.Load() && (packet[0] != eioMessage || len(packet) == 1) {
+			kws.fireEvent(EventError, packet, fmt.Errorf("%w: EIO packet type %q", ErrPollingBeforeConnect, packet[0]))
+			kws.disconnected(ErrPollingBeforeConnect)
+			break
+		}
 		// Binary packet encoding: "b" prefix + base64 payload. Decode
 		// inline and surface as an EventMessage with the raw bytes,
 		// matching the WebSocket BinaryMessage path in read(). The
 		// decoded slice owns its memory; safe to surface to listeners
 		// even after fasthttp recycles the request body.
 		if packet[0] == 'b' {
-			if !kws.connectFired.Load() {
-				kws.fireEvent(EventError, packet, ErrPollingBeforeConnect)
-				kws.disconnected(ErrPollingBeforeConnect)
-				break
-			}
 			decoded := make([]byte, base64.StdEncoding.DecodedLen(len(packet)-1))
 			n, decErr := base64.StdEncoding.Decode(decoded, packet[1:])
 			if decErr != nil {
@@ -633,9 +640,6 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 			}
 			kws.fireEvent(EventMessage, decoded[:n], nil)
 			count++
-			if !kws.IsAlive() {
-				break
-			}
 			continue
 		}
 		// packet is a sub-slice of the body buffer we already copied
@@ -644,9 +648,6 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 		// additional per-packet allocation.
 		kws.dispatchEIOPacket(packet)
 		count++
-		if !kws.IsAlive() {
-			break
-		}
 	}
 
 	c.Set(fiber.HeaderContentType, "text/html")

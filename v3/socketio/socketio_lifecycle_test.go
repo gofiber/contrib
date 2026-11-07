@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -350,6 +351,114 @@ func TestSocketIONewCallbackCloseCompletesClosingHandshake(t *testing.T) {
 		t.Fatal("EventConnect fired for a session the callback rejected")
 	default:
 	}
+}
+
+// A client withholding CONNECT, then refused in New, must not receive broadcasts.
+func TestSocketIOBroadcastSkipsSessionInHandshake(t *testing.T) {
+	resetSIOGlobals(t)
+	kwsCh := captureConnect(t)
+	var fired []string
+	var firedMu sync.Mutex
+	On("audit", func(p *EventPayload) {
+		firedMu.Lock()
+		fired = append(fired, p.Kws.GetUUID())
+		firedMu.Unlock()
+	})
+
+	ln, teardown := newSIOTestServer(t, func(kws *Websocket) {
+		if string(kws.HandshakeAuth()) != `{"token":"member"}` {
+			kws.Close()
+		}
+	})
+	defer teardown()
+
+	member := dialSIO(t, ln)
+	defer member.Close()
+	sioHandshakeWithConnect(t, member, `{"token":"member"}`)
+	memberKws := awaitSession(t, kwsCh)
+	require.Eventually(t, memberKws.isConnected, 2*time.Second, 5*time.Millisecond)
+
+	// The guest reads EIO OPEN, so its session is in the pool, and
+	// stops there: no CONNECT, no callback.
+	guest := dialSIO(t, ln)
+	defer guest.Close()
+	_, msg, err := guest.ReadMessage()
+	require.NoError(t, err)
+	require.Equal(t, byte(eioOpen), msg[0])
+
+	Broadcast([]byte(`"secret"`))
+	memberKws.Broadcast([]byte(`"secret"`), false)
+	Fire("audit", []byte(`"x"`))
+
+	_ = member.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for i := 0; i < 2; i++ {
+		_, msg, err = sioReadSkipPings(member)
+		require.NoError(t, err)
+		require.Equal(t, `42["message","secret"]`, string(msg))
+	}
+	firedMu.Lock()
+	require.Equal(t, []string{memberKws.GetUUID()}, fired, "Fire must skip the session in its handshake")
+	firedMu.Unlock()
+
+	// Only now does the guest send its CONNECT; the callback refuses it.
+	require.NoError(t, guest.WriteMessage(websocket.TextMessage, []byte(`40{"token":"wrong"}`)))
+	_ = guest.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, msg, err = sioReadSkipPings(guest)
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(string(msg), "40{"), "got %q", msg)
+	_, msg, err = sioReadSkipPings(guest)
+	require.NoError(t, err)
+	require.Equal(t, "41", string(msg), "the refused session must receive nothing but SIO DISCONNECT")
+	_, _, err = guest.ReadMessage()
+	require.Truef(t, websocket.IsCloseError(err, websocket.CloseNormalClosure),
+		"expected Close frame with code 1000, got %v", err)
+}
+
+// A client refused inside EventConnect must not receive broadcasts sent meanwhile.
+func TestSocketIOBroadcastSkipsSessionInEventConnect(t *testing.T) {
+	resetSIOGlobals(t)
+	kwsCh := captureConnect(t)
+	inListener := make(chan struct{}, 1)
+	release := make(chan struct{})
+	On(EventConnect, func(p *EventPayload) {
+		if string(p.HandshakeAuth) == `{"token":"member"}` {
+			return
+		}
+		inListener <- struct{}{}
+		<-release
+		p.Kws.Close()
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	member := dialSIO(t, ln)
+	defer member.Close()
+	sioHandshakeWithConnect(t, member, `{"token":"member"}`)
+	require.Eventually(t, awaitSession(t, kwsCh).isConnected, 2*time.Second, 5*time.Millisecond)
+
+	guest := dialSIO(t, ln)
+	defer guest.Close()
+	sioHandshakeWithConnect(t, guest, `{"token":"wrong"}`)
+	select {
+	case <-inListener:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventConnect did not fire")
+	}
+
+	// The guest's EventConnect listener is still running.
+	Broadcast([]byte(`"secret"`))
+	close(release)
+
+	_ = member.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, msg, err := sioReadSkipPings(member)
+	require.NoError(t, err)
+	require.Equal(t, `42["message","secret"]`, string(msg))
+
+	_ = guest.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, msg, err = sioReadSkipPings(guest)
+	require.NoError(t, err)
+	require.Equal(t, "41", string(msg), "the refused session must receive nothing but SIO DISCONNECT")
 }
 
 // TestSocketIOShutdownWaitsForClosingSessions verifies that Shutdown also
@@ -900,6 +1009,9 @@ func TestIsValidNamespaceTable(t *testing.T) {
 	for _, bad := range []string{"admin", "/a b", "/ab,c", "/ünï", "/a\"b", long + " ", "/" + strings.Repeat("a", 40) + "," + strings.Repeat("b", 40)} {
 		require.Falsef(t, isValidNamespace([]byte(bad)), "%q should be invalid", bad)
 	}
+	atCap := "/" + strings.Repeat("a", MaxNamespaceLength-1)
+	require.True(t, isValidNamespace([]byte(atCap)), "namespace of exactly MaxNamespaceLength bytes should be valid")
+	require.False(t, isValidNamespace([]byte(atCap+"a")), "namespace over MaxNamespaceLength should be invalid")
 }
 
 func TestBroadcastFramesCache(t *testing.T) {
@@ -912,4 +1024,69 @@ func TestBroadcastFramesCache(t *testing.T) {
 	require.Equal(t, `42/admin,["message","m"]`, string(admin))
 	require.Same(t, &admin[0], &c.frame([]byte("/admin"), msg)[0], "namespace frame must be built once")
 	require.NotSame(t, &root[0], &admin[0])
+}
+
+// Compared with a pool sharing one namespace rather than a fixed budget, so
+// the check holds on any machine and under -race.
+func TestBroadcastDistinctNamespacesStaysLinear(t *testing.T) {
+	resetSIOGlobals(t)
+	t.Cleanup(pool.reset) // runs first: the fake sessions have no socket to close
+
+	const n = 8000
+	prefix := "/" + strings.Repeat("a", 240)
+	conns := make([]*Websocket, n)
+	for i := range conns {
+		conns[i] = createWS()
+		conns[i].queue = make(chan message, 1)
+	}
+	broadcast := func(distinct bool) time.Duration {
+		pool.reset()
+		for i, kws := range conns {
+			ns := prefix + "00000000"
+			if distinct {
+				ns = fmt.Sprintf("%s%08d", prefix, i)
+			}
+			kws.bindNamespace([]byte(ns), nil)
+			select {
+			case <-kws.queue:
+			default:
+			}
+			pool.set(kws)
+		}
+		start := time.Now()
+		Broadcast([]byte(`"m"`))
+		return time.Since(start)
+	}
+
+	// A list scan is about 100x slower here; retries absorb a stray GC pause.
+	var shared, distinct time.Duration
+	for range 3 {
+		shared, distinct = broadcast(false), broadcast(true)
+		if distinct < 20*shared {
+			break
+		}
+	}
+	require.Less(t, distinct, 20*shared, "Broadcast cost must not grow with the namespaces already seen")
+	last := <-conns[n-1].queue
+	require.Equal(t, fmt.Sprintf(`42%s%08d,["message","m"]`, prefix, n-1), string(last.data))
+}
+
+func TestSocketIOLateConnectOversizeNamespaceNotEchoed(t *testing.T) {
+	resetSIOGlobals(t)
+	kwsCh := captureConnect(t)
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+	awaitSession(t, kwsCh)
+
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	ns := "/" + strings.Repeat("a", MaxNamespaceLength)
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte("40"+ns+",")))
+	_, msg, err := sioReadSkipPings(conn)
+	require.NoError(t, err)
+	require.Equal(t, `44{"message":"Invalid namespace"}`, string(msg))
 }

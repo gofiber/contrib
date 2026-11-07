@@ -412,6 +412,7 @@ func createWS() *Websocket {
 		attributes: make(map[string]interface{}),
 	}
 	kws.isAlive.Store(true)
+	kws.connected.Store(true) // simulated sessions are past EventConnect
 
 	kws.UUID = kws.createUUID()
 
@@ -1133,6 +1134,69 @@ func TestSocketIONewCallbackCloseSuppressesEventConnect(t *testing.T) {
 	}
 }
 
+func TestSocketIOConnectSkipsSessionDeadAtDispatch(t *testing.T) {
+	resetSIOGlobals(t)
+
+	var fired atomic.Int32
+	On(EventConnect, func(*EventPayload) { fired.Add(1) })
+
+	kws := createWS()
+	// A tear-down landed after the callback last saw the session alive.
+	kws.setAlive(false)
+	kws.fireEvent(EventConnect, nil, nil)
+	require.Zero(t, fired.Load(), "EventConnect ran on a disconnected session")
+}
+
+// Listeners after one that closed the session must not run; tear-down events reach all.
+func TestSocketIOListenerCloseStopsDispatch(t *testing.T) {
+	for _, event := range []string{EventConnect, "chat"} {
+		t.Run(event, func(t *testing.T) {
+			resetSIOGlobals(t)
+
+			var mu sync.Mutex
+			var order []string
+			record := func(s string) func(*EventPayload) {
+				return func(*EventPayload) {
+					mu.Lock()
+					order = append(order, s)
+					mu.Unlock()
+				}
+			}
+			On(event, func(p *EventPayload) {
+				record("refuse")(p)
+				p.Kws.Close()
+			})
+			On(event, record("after refuse"))
+			On(EventClose, record("close 1"))
+			On(EventClose, record("close 2"))
+			On(EventDisconnect, record("disconnect 1"))
+			On(EventDisconnect, record("disconnect 2"))
+
+			ln, teardown := newSIOTestServer(t, func(*Websocket) {})
+			defer teardown()
+
+			conn := dialSIO(t, ln)
+			defer conn.Close()
+			require.NoError(t, sioHandshake(t, conn))
+			if event != EventConnect {
+				require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`42["`+event+`"]`)))
+			}
+			// The library answers the server's Close frame; the server reads
+			// the answer only after the dispatch returned.
+			_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+			for {
+				if _, _, err := conn.ReadMessage(); err != nil {
+					break
+				}
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			require.Equal(t, []string{"refuse", "close 1", "close 2", "disconnect 1", "disconnect 2"}, order)
+		})
+	}
+}
+
 // TestSocketIONewCallbackPanicCleansUp verifies that a panic in the
 // user New() callback runs disconnected() so the send goroutine,
 // pool entry, and *Websocket graph do not leak. Mirrors the polling
@@ -1180,6 +1244,58 @@ func TestSocketIONewCallbackPanicCleansUp(t *testing.T) {
 		return true
 	}, 1*time.Second, 10*time.Millisecond,
 		"pool should not retain WS session after callback panic")
+}
+
+// A panicking EventConnect listener ends the session like a New callback panic.
+func TestSocketIOConnectListenerPanicRefusesClient(t *testing.T) {
+	resetSIOGlobals(t)
+
+	On(EventConnect, func(_ *EventPayload) {
+		panic("intentional EventConnect panic")
+	})
+	var later, events, errs atomic.Int32
+	On(EventConnect, func(_ *EventPayload) { later.Add(1) })
+	On("members", func(_ *EventPayload) { events.Add(1) })
+	On(EventError, func(_ *EventPayload) { errs.Add(1) })
+	disconnectErr := make(chan error, 1)
+	On(EventDisconnect, func(p *EventPayload) {
+		select {
+		case disconnectErr <- p.Error:
+		default:
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+	_ = conn.WriteMessage(websocket.TextMessage, []byte(`42["members"]`))
+
+	select {
+	case err := <-disconnectErr:
+		require.ErrorContains(t, err, `listener panic on "connect"`)
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventDisconnect did not fire after EventConnect listener panic")
+	}
+
+	// The server closes the socket rather than leaving the read loop open.
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+	for {
+		_, _, err := conn.ReadMessage()
+		if err == nil {
+			continue
+		}
+		var ne net.Error
+		require.False(t, errors.As(err, &ne) && ne.Timeout(), "connection left open: %v", err)
+		break
+	}
+
+	require.Zero(t, events.Load(), "event dispatched for a client no listener accepted")
+	require.Zero(t, later.Load(), "EventConnect listener ran after the session ended")
+	require.Equal(t, int32(1), errs.Load(), "the panic must be reported exactly once")
+	require.Empty(t, pool.all(), "pool should not retain WS session after EventConnect panic")
 }
 
 // TestSocketIONamespaceHandshake verifies that a client connecting to a
@@ -1978,6 +2094,32 @@ func TestSocketIOInvalidNamespaceRejected(t *testing.T) {
 			return
 		}
 	}
+}
+
+// TestSocketIOOversizeNamespaceRejected verifies that a namespace one byte
+// over MaxNamespaceLength is refused before the New callback runs.
+func TestSocketIOOversizeNamespaceRejected(t *testing.T) {
+	resetSIOGlobals(t)
+
+	var connected atomic.Int32
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) { connected.Add(1) })
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+
+	_, _, err := conn.ReadMessage()
+	require.NoError(t, err)
+
+	ns := "/" + strings.Repeat("a", MaxNamespaceLength)
+	require.Equal(t, MaxNamespaceLength+1, len(ns))
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte("40"+ns+",")))
+
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, msg, err := conn.ReadMessage()
+	require.NoError(t, err)
+	require.Equal(t, `44{"message":"invalid namespace"}`, string(msg))
+	require.Zero(t, connected.Load(), "New callback ran for a rejected CONNECT")
 }
 
 // TestSocketIOServerDisconnectNamespacedComma verifies that Close() on a
