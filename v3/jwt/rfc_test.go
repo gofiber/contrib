@@ -11,6 +11,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/extractors"
+	"github.com/gofiber/fiber/v3/middleware/timeout"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/require"
 
@@ -1120,4 +1121,32 @@ func TestHeaderTokenIsNotMarkedPrivate(t *testing.T) {
 			require.Empty(t, resp.Header.Get(fiber.HeaderCacheControl))
 		})
 	}
+}
+
+// TestQueryTokenLeavesTimedOutResponseAlone covers a handler the timeout
+// middleware gave up on: the response on c is still the handler's.
+func TestQueryTokenLeavesTimedOutResponseAlone(t *testing.T) {
+	t.Parallel()
+
+	answered := make(chan struct{})
+	seen := make(chan string, 1)
+
+	app := fiber.New()
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+		Extractor:  extractors.FromQuery("token"),
+	}))
+	app.Get("/ok", timeout.New(func(c fiber.Ctx) error {
+		c.Set(fiber.HeaderCacheControl, "public, max-age=60")
+		<-answered
+		seen <- c.GetRespHeader(fiber.HeaderCacheControl)
+		return c.SendString("OK")
+	}, timeout.Config{Timeout: 20 * time.Millisecond}))
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/ok?token="+hamac[0].Token, nil))
+	require.NoError(t, err)
+	require.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
+
+	close(answered)
+	require.Equal(t, "public, max-age=60", <-seen)
 }

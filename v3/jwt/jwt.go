@@ -227,6 +227,12 @@ func keepPrivate(c fiber.Ctx, next fiber.Handler) error {
 
 	err := next(c)
 
+	// timeout.New answered with a response of its own; c's is still the handler's.
+	// IsAbandoned goes first: its atomic load orders the read after the timeout middleware's write.
+	if c.IsAbandoned() && c.RequestCtx().LastTimeoutErrorResponse() != nil {
+		return err
+	}
+
 	// Only a response a cache would store needs the directive, and the early
 	// pass already covered anything downstream that has stored one by now.
 	status := c.Response().StatusCode()

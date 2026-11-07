@@ -23,6 +23,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	recoverer "github.com/gofiber/fiber/v3/middleware/recover"
 	"github.com/gofiber/fiber/v3/middleware/static"
+	"github.com/gofiber/fiber/v3/middleware/timeout"
 	"github.com/gofiber/utils/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -492,6 +493,48 @@ func TestErrorHandlerFailureAnswers500(t *testing.T) {
 	require.Len(t, spans, 1)
 	assert.Contains(t, spans[0].Attributes(), semconv.HTTPResponseStatusCode(http.StatusInternalServerError))
 	assert.Equal(t, codes.Error, spans[0].Status().Code)
+}
+
+// The timed-out handler still owns c.Response(); the client gets the response Fiber parked.
+func TestTimedOutRequestUsesTheParkedResponse(t *testing.T) {
+	t.Parallel()
+
+	answered := make(chan struct{})
+	seen := make(chan string, 1)
+	canceled := make(chan bool, 1)
+	sr := tracetest.NewSpanRecorder()
+
+	app := fiber.New()
+	app.Use(New(
+		WithTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))),
+		WithPropagators(propagation.TraceContext{}),
+		WithTraceResponseHeader("X-Trace-Id"),
+	))
+	app.Get("/", timeout.New(func(c fiber.Ctx) error {
+		<-c.Context().Done()
+		c.Locals("late", true)             // races with a read by the middleware
+		c.Set(fiber.HeaderRetryAfter, "5") // races with a write by the middleware
+		c.Status(http.StatusAccepted)
+		<-answered
+		seen <- c.Response().Header.String()
+		canceled <- c.Context().Err() != nil
+		return nil
+	}, timeout.Config{Timeout: 10 * time.Millisecond}))
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+	assert.Contains(t, spans[0].Attributes(), semconv.HTTPResponseStatusCode(http.StatusServiceUnavailable))
+	assert.Equal(t, codes.Error, spans[0].Status().Code)
+
+	close(answered)
+	header := <-seen
+	assert.NotContains(t, header, "X-Trace-Id")
+	assert.NotContains(t, header, "Traceparent")
+	assert.True(t, <-canceled, "the handler lost the deadline timeout.New gave it")
 }
 
 func TestGetSpanNotInstrumented(t *testing.T) {
