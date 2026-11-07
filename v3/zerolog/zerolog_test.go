@@ -2,6 +2,7 @@ package zerolog
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1025,6 +1026,63 @@ func Test_StreamedResponse_NotBuffered(t *testing.T) {
 			assert.EqualValues(t, fiber.StatusOK, logs[FieldStatus])
 			assert.EqualValues(t, tc.sent, logs[FieldBytesSent])
 			assert.Equal(t, "", logs[FieldResBody])
+		})
+	}
+}
+
+func Test_Body_LoggedAsReceived(t *testing.T) {
+	t.Parallel()
+
+	gzipped := func(b []byte) []byte {
+		var buf bytes.Buffer
+		w := gzip.NewWriter(&buf)
+		_, err := w.Write(b)
+		assert.NoError(t, err)
+		assert.NoError(t, w.Close())
+		return buf.Bytes()
+	}
+
+	for _, tc := range []struct {
+		name     string
+		encoding string
+		body     []byte
+	}{
+		{name: "unknown coding", encoding: "unknown", body: []byte("raw")},
+		{name: "compress", encoding: "compress", body: []byte("raw")},
+		{name: "gzip", encoding: "gzip", body: gzipped([]byte("decoded"))},
+		{name: "gzip past BodyLimit", encoding: "gzip", body: gzipped(make([]byte, 4096))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var buf bytes.Buffer
+			logger := zerolog.New(&buf)
+
+			app := fiber.New(fiber.Config{BodyLimit: 1024})
+			app.Use(New(Config{
+				Logger: &logger,
+				Fields: []string{FieldStatus, FieldBody},
+			}))
+			app.Post("/", func(c fiber.Ctx) error {
+				return c.SendStatus(fiber.StatusNoContent)
+			})
+
+			req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(tc.body))
+			req.Header.Set(fiber.HeaderContentEncoding, tc.encoding)
+			resp, err := app.Test(req)
+			assert.NoError(t, err)
+			assert.Equal(t, fiber.StatusNoContent, resp.StatusCode)
+
+			// zerolog replaces invalid UTF-8 as encoding/json does
+			want, err := json.Marshal(string(tc.body))
+			assert.NoError(t, err)
+			var wantBody string
+			assert.NoError(t, json.Unmarshal(want, &wantBody))
+
+			var logs map[string]any
+			assert.NoError(t, json.Unmarshal(buf.Bytes(), &logs))
+			assert.EqualValues(t, fiber.StatusNoContent, logs[FieldStatus])
+			assert.Equal(t, wantBody, logs[FieldBody])
 		})
 	}
 }

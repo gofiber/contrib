@@ -33,7 +33,7 @@ This middleware implements the full Engine.IO v4 / Socket.IO v5 wire protocol. H
 - **Reserved-event-name guard.** User code cannot register or emit names reserved by the protocol (e.g. `connect`, `disconnect`).
 - **EIO version validation.** Handshakes that advertise an unsupported `EIO` version are rejected.
 - **Auth payload validation.** The auth blob must be a JSON object and is bounded by `MaxAuthPayload`; oversize or malformed payloads are answered with CONNECT_ERROR.
-- **DoS hardening.** `MaxPayload`, `MaxBatchPackets`, `MaxEventNameLength`, `MaxEventArgs`, and `MaxAuthPayload` bound every attacker-controlled length and count.
+- **DoS hardening.** `MaxPayload`, `MaxBatchPackets`, `MaxEventNameLength`, `MaxNamespaceLength`, `MaxEventArgs`, and `MaxAuthPayload` bound every attacker-controlled length and count.
 - **Lock-free listener registry** plus `atomic.Bool isAlive`, removing the per-event mutex from the hot path.
 - **Optional drop-frames-on-overflow.** When `DropFramesOnOverflow` is true, a saturated send queue drops the offending frame and fires `EventError` instead of tearing down the connection.
 - **Graceful drain.** The package-level `Shutdown(ctx)` closes every active socket and waits for each worker to exit (or until `ctx` is cancelled).
@@ -53,7 +53,7 @@ This middleware implements the full Engine.IO v4 / Socket.IO v5 wire protocol. H
 - **Write timeout**. A long-poll GET response that the client never reads pins a fasthttp worker on TCP backpressure. Configure `fiber.Config{WriteTimeout: ...}` (a few seconds is typically appropriate) so abandoned reads do not strand workers.
 - **Session id**. A polling request is bound to its session by the Engine.IO `sid` query parameter; keep query strings out of shared access logs.
 - **Burst sizing**. `PollQueueMaxFrames` (default `1024`) bounds the per-session outbound buffer. With the default `DropFramesOnOverflow = false` a synchronous burst of more than 1024 emits inside a single listener call disconnects the session with `ErrSendQueueClosed`. Either pace large bursts across drains, raise `PollQueueMaxFrames`, or set `DropFramesOnOverflow = true` to tolerate overflow at the cost of dropped frames + `EventError`.
-- **Listener panics**. Both transports recover panics inside the `New()` callback and inside event listeners; the panic value is logged via the package `Logger` hook. Avoid `panic(string(attackerControlledBytes))` to prevent log injection in downstream consumers.
+- **Listener panics**. Both transports recover panics inside the `New()` callback and inside event listeners; the panic value is logged via the package `Logger` hook. A panic in the `New()` callback or in an `EventConnect` listener ends the session (either may be where the `auth` payload is checked); a panic in any other listener leaves the connection open. Avoid `panic(string(attackerControlledBytes))` to prevent log injection in downstream consumers.
 
 ## Performance
 
@@ -85,6 +85,7 @@ All tunables are package-level variables; override before the first connection i
 | `MaxAuthPayload`       | `8 KiB`            | Max bytes for the SIO CONNECT auth JSON.                                      |
 | `MaxBatchPackets`      | `256`              | Max EIO packets in a single `0x1E`-batched frame.                             |
 | `MaxEventNameLength`   | `256`              | Max length of an inbound SIO event name.                                      |
+| `MaxNamespaceLength`   | `256`              | Max length of the namespace a SIO CONNECT may bind to a session.              |
 | `MaxEventArgs`         | `256`              | Max elements (event name included) in an inbound SIO EVENT or ACK array.      |
 | `CloseTimeout`         | `5s`               | One budget for the whole tear-down after `Close`: waiting for a slot in a saturated send queue, reading for the peer's Close frame and letting a stalled write finish all share it. Zero closes the socket as soon as the frames are queued. |
 | `WriteTimeout`         | `0` (disabled)     | Deadline for a single WebSocket frame write by the send goroutine; a peer that stops reading is otherwise only detected by the heartbeat. |
@@ -179,6 +180,7 @@ These package-level variables can be overridden before the first connection is a
 | `MaxAuthPayload`    | `8 << 10` (8 KiB)  | Maximum size in bytes for the Socket.IO CONNECT auth JSON.                                           |
 | `MaxBatchPackets`   | `256`              | Maximum number of Engine.IO packets accepted in a single `0x1E`-batched frame.                       |
 | `MaxEventNameLength`| `256`              | Maximum length of an inbound Socket.IO event name.                                                   |
+| `MaxNamespaceLength`| `256`              | Maximum length in bytes of the namespace a Socket.IO CONNECT may bind to a session; longer ones get CONNECT_ERROR. |
 | `MaxEventArgs`      | `256`              | Maximum number of elements, event name included, in an inbound Socket.IO EVENT or ACK array.         |
 | `OutboundAckTimeout`| `30 * time.Second` | Default timeout used by `EmitWithAck` when no per-call timeout is supplied.                          |
 | `DropFramesOnOverflow` | `false`         | If true, saturated outbound queues drop the offending frame and fire `EventError`.                   |
@@ -276,6 +278,8 @@ socketio.On(socketio.EventConnect, func(ep *socketio.EventPayload) {
 })
 ```
 
+To reject a client, call `kws.Close()` from the `New` callback or the `EventConnect` listener. A panic in either place also ends the session. Listeners registered after the one that closed the session are skipped (`EventDisconnect`, `EventClose` and `EventError` always reach every listener). A session joins the `Broadcast` and `Fire` fan-out only after the handshake, the `New` callback and the `EventConnect` listeners have completed without closing it, so nothing broadcast while a client is still connecting reaches a peer the application has not admitted. Use `kws.Emit` to address the connecting session itself from inside those callbacks.
+
 ## Signatures
 
 ```go
@@ -302,12 +306,13 @@ func EmitTo(uuid string, message []byte, mType ...int) error
 ```
 
 ```go
-// Broadcast to all the active connections
+// Broadcast to all the connected sessions (handshake, New callback and
+// EventConnect completed)
 func Broadcast(message []byte, mType ...int)
 ```
 
 ```go
-// Fire custom event on all connections
+// Fire custom event on all connected sessions
 func Fire(event string, data []byte)
 ```
 
@@ -561,7 +566,7 @@ Custom events map directly to the event name used in `socket.emit("myEvent", …
 | GetAttribute        | `string`           | Get a specific attribute from the socket attributes                                          |
 | EmitToList          | `void`             | Emit the message to a specific socket uuids list                                             |
 | EmitTo              | `error`            | Emit to a specific socket connection                                                         |
-| Broadcast           | `void`             | Broadcast to all the active connections except broadcasting the message to itself            |
+| Broadcast           | `void`             | Broadcast to all the connected sessions, optionally except itself; a session still in its handshake, `New` callback or `EventConnect` is skipped |
 | Fire                | `void`             | Fire custom event                                                                            |
 | Emit                | `void`             | Send data as a `"message"` socket.io event; valid JSON is passed through, raw text is JSON-encoded |
 | EmitEvent           | `void`             | Send a named socket.io event; valid JSON is passed through, raw text is JSON-encoded         |

@@ -1,9 +1,12 @@
 package socketio
 
 import (
+	"fmt"
 	"net"
 	"runtime"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -254,4 +257,26 @@ func BenchmarkBuildSIOEvent(b *testing.B) {
 			}
 		}
 	})
+}
+
+// BenchmarkBroadcastFrames gives every recipient its own namespace;
+// ns/recipient must stay flat as the pool grows.
+func BenchmarkBroadcastFrames(b *testing.B) {
+	msg := []byte(`"hello"`)
+	prefix := "/" + strings.Repeat("a", 240)
+	for _, n := range []int{1000, 4000, 16000} {
+		names := make([][]byte, n)
+		for i := range names {
+			names[i] = fmt.Appendf(nil, "%s%08d", prefix, i)
+		}
+		b.Run(strconv.Itoa(n), func(b *testing.B) {
+			for b.Loop() {
+				var c broadcastFrames
+				for _, ns := range names {
+					c.frame(ns, msg)
+				}
+			}
+			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*n), "ns/recipient")
+		})
+	}
 }
