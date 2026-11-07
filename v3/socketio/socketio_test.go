@@ -384,6 +384,23 @@ func TestWebsocket_SetUUIDUpdatesPool(t *testing.T) {
 	require.Equal(t, kws, poolEntry)
 }
 
+func TestWebsocket_SetUUIDAfterDisconnectStaysOutOfPool(t *testing.T) {
+	resetSIOGlobals(t)
+	kwsCh := captureConnect(t)
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	require.NoError(t, sioHandshake(t, conn))
+	kws := awaitSession(t, kwsCh)
+	require.NoError(t, conn.Close())
+	waitClosed(t, kws, 5*time.Second)
+
+	require.ErrorIs(t, kws.SetUUID("alice"), ErrorInvalidConnection)
+	_, err := pool.get("alice")
+	require.ErrorIs(t, err, ErrorInvalidConnection, "nothing removes a session that rejoins after its tear-down")
+}
+
 func assertPanic(t *testing.T, f func()) {
 	defer func() {
 		if r := recover(); r == nil {

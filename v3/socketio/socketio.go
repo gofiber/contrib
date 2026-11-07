@@ -250,8 +250,9 @@ var (
 	// deadline. Read once per frame.
 	WriteTimeout time.Duration
 	// MaxPayload is the maximum size in bytes of an inbound WebSocket
-	// frame. It is advertised to the client in the EIO OPEN packet and
-	// enforced via SetReadLimit on the underlying connection: frames
+	// message, counted after decompression when permessage-deflate is
+	// enabled. It is advertised to the client in the EIO OPEN packet and
+	// enforced via SetReadLimit on the underlying connection: messages
 	// exceeding this size are rejected and the connection is closed. Set
 	// to zero or negative to disable the limit (not recommended).
 	MaxPayload int64 = 1_000_000
@@ -1156,12 +1157,18 @@ func (kws *Websocket) bindNamespace(namespace, auth []byte) {
 
 // SetUUID replaces this connection's UUID, updating the active connections
 // pool atomically. It returns ErrorUUIDDuplication when the requested UUID is
-// already taken by another live connection.
+// already taken by another live connection, and ErrorInvalidConnection once
+// this connection has disconnected.
 func (kws *Websocket) SetUUID(uuid string) error {
 	pool.Lock()
 	defer pool.Unlock()
 	kws.mu.Lock()
 	defer kws.mu.Unlock()
+
+	// disconnected removes the entry only once: a dead session must not get a new one.
+	if !kws.IsAlive() {
+		return ErrorInvalidConnection
+	}
 
 	prevUUID := kws.UUID
 	if prevUUID == uuid {
