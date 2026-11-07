@@ -319,14 +319,15 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 	return zc.Logger()
 }
 
-// requestBody skips a body that is a stream or past BodyLimit: fc.Body() would read all of it.
+// requestBody is the body as received; a stream or a body past BodyLimit is skipped,
+// as reading it buffers all of it. fc.Body() would also decode it and can set the status.
 func requestBody(fc fiber.Ctx) []byte {
 	req := fc.Request()
 	if req.IsBodyStream() || req.Header.ContentLength() > fc.App().Config().BodyLimit {
 		return nil
 	}
 
-	return fc.Body()
+	return fc.BodyRaw()
 }
 
 // bytesReceived is the announced Content-Length, as in Fiber's logger, so no stream is read.

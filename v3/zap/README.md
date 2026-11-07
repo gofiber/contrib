@@ -53,7 +53,8 @@ streamed response (`SendStream`, `SendStreamWriter`, `SendFile`) is logged
 with an empty `resBody` unless `GetResBody` provides one, and its announced
 length as `bytesSent` (`0` when unknown).
 A multipart form that fasthttp parsed within `BodyLimit` is marshaled back for
-`body`, as in Fiber's logger; use `SkipBody` to leave it out.
+`body`, as in Fiber's logger; use `SkipBody` to leave it out. `body` does not
+decode a `Content-Encoding`: such a body is logged as received.
 
 ### Example
 
