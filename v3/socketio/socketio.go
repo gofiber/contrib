@@ -277,6 +277,11 @@ var (
 	// frame inside the EventPayload dispatched to user listeners. Set
 	// to zero to disable the bound (not recommended).
 	MaxEventNameLength = 256
+	// MaxNamespaceLength bounds the SIO CONNECT namespace in bytes, leading
+	// "/" included; it is prefixed to every frame of the session. Longer
+	// ones get CONNECT_ERROR. Set to zero to disable the bound (not
+	// recommended).
+	MaxNamespaceLength = 256
 	// MaxEventArgs caps the number of elements accepted in an inbound
 	// SIO EVENT or ACK array, the event name included. Each element
 	// costs a slice header, so without the cap a payload of MaxPayload
@@ -1266,10 +1271,10 @@ func frameType(mType []int) int {
 // namespace, so a fan-out to N connections builds each frame once rather
 // than N times. The root namespace, by far the most common, has its own
 // slot so a root-only pool costs a single allocation: the frame itself.
+// Namespaces are client-chosen, so a list scan would make a broadcast quadratic.
 type broadcastFrames struct {
 	root   []byte
-	ns     [][]byte
-	frames [][]byte
+	frames map[string][]byte
 }
 
 func (b *broadcastFrames) frame(namespace, message []byte) []byte {
@@ -1279,14 +1284,14 @@ func (b *broadcastFrames) frame(namespace, message []byte) []byte {
 		}
 		return b.root
 	}
-	for i := range b.ns {
-		if bytes.Equal(b.ns[i], namespace) {
-			return b.frames[i]
-		}
+	if f, ok := b.frames[string(namespace)]; ok {
+		return f
 	}
 	f := buildSIOEvent(namespace, EventMessage, message)
-	b.ns = append(b.ns, namespace)
-	b.frames = append(b.frames, f)
+	if b.frames == nil {
+		b.frames = make(map[string][]byte)
+	}
+	b.frames[string(namespace)] = f
 	return f
 }
 
