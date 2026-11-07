@@ -384,6 +384,23 @@ func TestWebsocket_SetUUIDUpdatesPool(t *testing.T) {
 	require.Equal(t, kws, poolEntry)
 }
 
+func TestWebsocket_SetUUIDAfterDisconnectStaysOutOfPool(t *testing.T) {
+	resetSIOGlobals(t)
+	kwsCh := captureConnect(t)
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	require.NoError(t, sioHandshake(t, conn))
+	kws := awaitSession(t, kwsCh)
+	require.NoError(t, conn.Close())
+	waitClosed(t, kws, 5*time.Second)
+
+	require.ErrorIs(t, kws.SetUUID("alice"), ErrorInvalidConnection)
+	_, err := pool.get("alice")
+	require.ErrorIs(t, err, ErrorInvalidConnection, "nothing removes a session that rejoins after its tear-down")
+}
+
 func assertPanic(t *testing.T, f func()) {
 	defer func() {
 		if r := recover(); r == nil {
@@ -429,6 +446,12 @@ func upgradeMiddleware(c fiber.Ctx) error {
 	return fiber.ErrUpgradeRequired
 }
 
+func resetEIOSessions() {
+	eioSessions.Lock()
+	eioSessions.m = make(map[string]*Websocket)
+	eioSessions.Unlock()
+}
+
 // resetSIOGlobals isolates a test from any global state left behind by
 // previous tests AND from any state THIS test leaves behind. It:
 //
@@ -444,6 +467,7 @@ func upgradeMiddleware(c fiber.Ctx) error {
 func resetSIOGlobals(t *testing.T) {
 	t.Helper()
 	pool.reset()
+	resetEIOSessions()
 	resetDraining()
 	listeners.reset()
 	t.Cleanup(func() {
@@ -497,6 +521,7 @@ func resetSIOGlobals(t *testing.T) {
 			}
 		}
 		pool.reset()
+		resetEIOSessions()
 		resetDraining()
 		listeners.reset()
 	})

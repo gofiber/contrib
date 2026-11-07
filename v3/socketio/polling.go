@@ -333,13 +333,12 @@ func handlePolling(c fiber.Ctx, callback func(kws *Websocket)) (handled bool, er
 		return true, openPollingSession(c, callback)
 	}
 
-	// Existing session lookup.
-	kwsAny, lookupErr := pool.get(sid)
-	if lookupErr != nil {
+	// sid is the Engine.IO id, not the pool UUID: resolve it only through eioSessions.
+	kws, ok := getEIOSession(sid)
+	if !ok {
 		return true, writePollingError(c, 1)
 	}
-	kws, ok := kwsAny.(*Websocket)
-	if !ok || kws.pollQ == nil {
+	if kws.pollQ == nil {
 		// sid resolves to a non-polling session: transport mismatch.
 		return true, writePollingError(c, 3)
 	}
@@ -371,11 +370,15 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 	// Users needing per-connection mutable state should use
 	// SetAttribute, which is transport-agnostic. Unless the app runs with
 	// Immutable set, Fiber hands out strings that alias the request
-	// buffers, so every value is copied.
-	queries := c.Queries()
-	queriesSnap := make(map[string]string, len(queries))
-	for k, v := range queries {
-		queriesSnap[utils.CopyString(k)] = utils.CopyString(v)
+	// buffers, so every value is copied. A repeated name keeps the
+	// occurrence c.Query and c.Cookies return, so listeners read the value
+	// middleware in front of the handler checked.
+	args := c.RequestCtx().QueryArgs()
+	queriesSnap := make(map[string]string, args.Len())
+	for k, v := range args.All() {
+		if _, seen := queriesSnap[string(k)]; !seen {
+			queriesSnap[string(k)] = string(v)
+		}
 	}
 	var paramsSnap map[string]string
 	if route := c.Route(); route != nil && len(route.Params) > 0 {
@@ -388,6 +391,9 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 	// init keeps the OPEN allocation budget low for the common case.
 	var cookiesSnap map[string]string
 	for k, v := range c.RequestCtx().Request.Header.Cookies() {
+		if _, seen := cookiesSnap[string(k)]; seen {
+			continue
+		}
 		if cookiesSnap == nil {
 			cookiesSnap = make(map[string]string)
 		}
@@ -400,6 +406,13 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 			k = utils.CopyString(s)
 		} else if k != nil && !reflect.ValueOf(k).Comparable() {
 			return // fasthttp accepts e.g. a slice key, a map panics on it
+		}
+		// Request strings and bytes alias buffers the next request reuses.
+		switch val := v.(type) {
+		case string:
+			v = utils.CopyString(val)
+		case []byte:
+			v = utils.CopyBytes(val)
 		}
 		if localsSnap == nil {
 			localsSnap = make(map[any]any)
@@ -430,9 +443,10 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 	kws.Cookies = newLookupFunc(cookiesSnap)
 	kws.pollCallback = callback
 
+	kws.registerEIOSession()
 	pool.set(kws)
 
-	frame, err := buildEIOOpenFrame(kws.UUID)
+	frame, err := buildEIOOpenFrame(kws.eioSID)
 	if err != nil {
 		kws.disconnected(err)
 		return writePollingError(c, 3)

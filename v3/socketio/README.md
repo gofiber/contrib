@@ -51,6 +51,7 @@ This middleware implements the full Engine.IO v4 / Socket.IO v5 wire protocol. H
 
 - **Rate limiting**. Each polling open allocates a `*Websocket` and arms a heartbeat timer (no goroutine). With `EnablePolling = true` an unauthenticated client can create sessions until `HandshakeTimeout` reaps idle ones (10s default). Mount `github.com/gofiber/fiber/v3/middleware/limiter` upstream of the route to bound concurrent session creation.
 - **Write timeout**. A long-poll GET response that the client never reads pins a fasthttp worker on TCP backpressure. Configure `fiber.Config{WriteTimeout: ...}` (a few seconds is typically appropriate) so abandoned reads do not strand workers.
+- **Session id**. A polling request is bound to its session by the Engine.IO `sid` query parameter; keep query strings out of shared access logs.
 - **Burst sizing**. `PollQueueMaxFrames` (default `1024`) bounds the per-session outbound buffer. With the default `DropFramesOnOverflow = false` a synchronous burst of more than 1024 emits inside a single listener call disconnects the session with `ErrSendQueueClosed`. Either pace large bursts across drains, raise `PollQueueMaxFrames`, or set `DropFramesOnOverflow = true` to tolerate overflow at the cost of dropped frames + `EventError`.
 - **Listener panics**. Both transports recover panics inside the `New()` callback and inside event listeners; the panic value is logged via the package `Logger` hook. A panic in the `New()` callback or in an `EventConnect` listener ends the session (either may be where the `auth` payload is checked); a panic in any other listener leaves the connection open. Avoid `panic(string(attackerControlledBytes))` to prevent log injection in downstream consumers.
 
@@ -80,7 +81,7 @@ All tunables are package-level variables; override before the first connection i
 | `PingInterval`         | `25s`              | How often the server emits Engine.IO PING.                                    |
 | `PingTimeout`          | `20s`              | Grace window for the client PONG before the connection is killed.             |
 | `HandshakeTimeout`     | `10s`              | Hard deadline for completing EIO OPEN + SIO CONNECT.                          |
-| `MaxPayload`           | `1_000_000` (1 MB) | Max bytes per inbound WebSocket frame; advertised to the client.              |
+| `MaxPayload`           | `1_000_000` (1 MB) | Max bytes per inbound WebSocket message, counted after decompression; advertised to the client. |
 | `MaxAuthPayload`       | `8 KiB`            | Max bytes for the SIO CONNECT auth JSON.                                      |
 | `MaxBatchPackets`      | `256`              | Max EIO packets in a single `0x1E`-batched frame.                             |
 | `MaxEventNameLength`   | `256`              | Max length of an inbound SIO event name.                                      |
@@ -175,7 +176,7 @@ These package-level variables can be overridden before the first connection is a
 | `HandshakeTimeout`  | `10 * time.Second` | Maximum time allowed for the Engine.IO / Socket.IO handshake (including namespace CONNECT) to complete. |
 | `CloseTimeout`      | `5 * time.Second`  | Budget for the whole tear-down after `Close` or a client SIO DISCONNECT; the socket is closed once the peer's Close frame arrives or the budget is spent, whatever it was spent on. |
 | `WriteTimeout`      | `0` (disabled)     | Deadline for a single WebSocket frame write; zero relies on the heartbeat to detect a peer that stopped reading. |
-| `MaxPayload`        | `1 << 20` (1 MiB)  | Maximum size in bytes for a single inbound WebSocket frame; oversize messages close the socket.      |
+| `MaxPayload`        | `1_000_000` (1 MB) | Maximum size in bytes for a single inbound WebSocket message, counted after permessage-deflate decompression; oversize messages close the socket. |
 | `MaxAuthPayload`    | `8 << 10` (8 KiB)  | Maximum size in bytes for the Socket.IO CONNECT auth JSON.                                           |
 | `MaxBatchPackets`   | `256`              | Maximum number of Engine.IO packets accepted in a single `0x1E`-batched frame.                       |
 | `MaxEventNameLength`| `256`              | Maximum length of an inbound Socket.IO event name.                                                   |

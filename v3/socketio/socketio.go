@@ -250,8 +250,9 @@ var (
 	// deadline. Read once per frame.
 	WriteTimeout time.Duration
 	// MaxPayload is the maximum size in bytes of an inbound WebSocket
-	// frame. It is advertised to the client in the EIO OPEN packet and
-	// enforced via SetReadLimit on the underlying connection: frames
+	// message, counted after decompression when permessage-deflate is
+	// enabled. It is advertised to the client in the EIO OPEN packet and
+	// enforced via SetReadLimit on the underlying connection: messages
 	// exceeding this size are rejected and the connection is closed. Set
 	// to zero or negative to disable the limit (not recommended).
 	MaxPayload int64 = 1_000_000
@@ -618,8 +619,10 @@ type Websocket struct {
 	// Attributes map collection for the connection
 	attributes map[string]any
 	// UUID is the unique identifier assigned to this connection and used as
-	// its key in the active connections pool.
+	// its key in the active connections pool. It is the Socket.IO socket.id, separate from eioSID.
 	UUID string
+	// eioSID is the Engine.IO sid from the OPEN packet; it alone binds polling requests.
+	eioSID string
 	// Locals wraps the Fiber Locals lookup so listener callbacks can reach
 	// values stored on the originating request context.
 	Locals func(key any) any
@@ -690,6 +693,7 @@ func newWebsocket() *Websocket {
 	kws.isAlive.Store(true)
 	kws.lastPongNanos.Store(time.Now().UnixNano())
 	kws.UUID = kws.createUUID()
+	kws.eioSID = kws.randomUUID()
 	return kws
 }
 
@@ -771,6 +775,31 @@ func (p *safePool) reset() {
 	p.conn = make(map[string]ws)
 	p.snap = nil
 	p.Unlock()
+}
+
+// eioSessions indexes live sessions by eioSID, separate from the pool's UUID keys.
+var eioSessions = struct {
+	sync.RWMutex
+	m map[string]*Websocket
+}{m: make(map[string]*Websocket)}
+
+func (kws *Websocket) registerEIOSession() {
+	eioSessions.Lock()
+	eioSessions.m[kws.eioSID] = kws
+	eioSessions.Unlock()
+}
+
+func (kws *Websocket) releaseEIOSession() {
+	eioSessions.Lock()
+	delete(eioSessions.m, kws.eioSID)
+	eioSessions.Unlock()
+}
+
+func getEIOSession(sid string) (*Websocket, bool) {
+	eioSessions.RLock()
+	kws, ok := eioSessions.m[sid]
+	eioSessions.RUnlock()
+	return kws, ok
 }
 
 // draining holds WebSocket sessions that have left the pool but still own
@@ -902,6 +931,7 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 		}
 
 		// register the connection into the pool
+		kws.registerEIOSession()
 		pool.set(kws)
 
 		// 1. Perform the EIO/SIO handshake synchronously so that the EIO OPEN
@@ -1029,7 +1059,7 @@ func (kws *Websocket) handshake() error {
 	}
 
 	// 1. Send EIO OPEN
-	frame, err := buildEIOOpenFrame(kws.UUID)
+	frame, err := buildEIOOpenFrame(kws.eioSID)
 	if err != nil {
 		return fmt.Errorf("socketio: marshal EIO OPEN: %w", err)
 	}
@@ -1137,12 +1167,18 @@ func (kws *Websocket) bindNamespace(namespace, auth []byte) {
 
 // SetUUID replaces this connection's UUID, updating the active connections
 // pool atomically. It returns ErrorUUIDDuplication when the requested UUID is
-// already taken by another live connection.
+// already taken by another live connection, and ErrorInvalidConnection once
+// this connection has disconnected.
 func (kws *Websocket) SetUUID(uuid string) error {
 	pool.Lock()
 	defer pool.Unlock()
 	kws.mu.Lock()
 	defer kws.mu.Unlock()
+
+	// disconnected removes the entry only once: a dead session must not get a new one.
+	if !kws.IsAlive() {
+		return ErrorInvalidConnection
+	}
 
 	prevUUID := kws.UUID
 	if prevUUID == uuid {
@@ -2471,6 +2507,7 @@ func (kws *Websocket) disconnected(err error) {
 	// session joined the draining set above, so it is in at least one of
 	// the two sets at any time.
 	pool.delete(kws.GetUUID())
+	kws.releaseEIOSession()
 
 	// Drain pending outbound ack callbacks: invoke each with
 	// ErrAckDisconnected so callers can distinguish "ack received" (cb
