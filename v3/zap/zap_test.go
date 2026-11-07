@@ -650,6 +650,38 @@ func Test_Logger_TimedOutHandler(t *testing.T) {
 	}, logs.All()[0].ContextMap())
 }
 
+// go test -race -run Test_Logger_TimedOutHandler_GetResBody
+func Test_Logger_TimedOutHandler_GetResBody(t *testing.T) {
+	logger, logs := setupLogsCapture()
+
+	answered := make(chan struct{})
+	finished := make(chan struct{})
+
+	app := fiber.New()
+	app.Use(New(Config{
+		Logger: logger,
+		Fields: []string{"resBody"},
+		GetResBody: func(c fiber.Ctx) []byte {
+			return c.Response().Body()
+		},
+	}))
+	app.Get("/", timeout.New(func(c fiber.Ctx) error {
+		defer close(finished)
+		<-answered
+		return c.SendString("late")
+	}, timeout.Config{Timeout: 10 * time.Millisecond}))
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/", nil))
+	assert.Equal(t, nil, err)
+	assert.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
+	close(answered)
+	<-finished
+
+	assert.Equal(t, map[string]any{
+		"resBody": fiber.ErrServiceUnavailable.Message,
+	}, logs.All()[0].ContextMap())
+}
+
 // go test -run Test_Body_LoggedAsReceived
 func Test_Body_LoggedAsReceived(t *testing.T) {
 	gzipped := func(b []byte) []byte {

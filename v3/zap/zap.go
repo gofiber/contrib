@@ -22,10 +22,7 @@ func New(config ...Config) fiber.Handler {
 	pid := utils.FormatInt(int64(os.Getpid()))
 
 	// Set variables
-	var (
-		once       sync.Once
-		errHandler fiber.ErrorHandler
-	)
+	var once sync.Once
 
 	var errPadding = 15
 	var latencyEnabled = contains("latency", cfg.Fields)
@@ -48,7 +45,7 @@ func New(config ...Config) fiber.Handler {
 			return c.Next()
 		}
 
-		// Set error handler once
+		// Compute the error padding once
 		once.Do(func() {
 			// get longested possible path
 			stack := c.App().Stack()
@@ -59,8 +56,6 @@ func New(config ...Config) fiber.Handler {
 					}
 				}
 			}
-			// override error handler
-			errHandler = c.App().ErrorHandler
 		})
 
 		var start, stop time.Time
@@ -74,7 +69,8 @@ func New(config ...Config) fiber.Handler {
 
 		// Manually call error handler
 		if chainErr != nil {
-			if err := errHandler(c, chainErr); err != nil {
+			// Resolved per request: c.App() is the app serving this request.
+			if err := c.App().ErrorHandler(c, chainErr); err != nil {
 				_ = c.SendStatus(fiber.StatusInternalServerError)
 			}
 		}
@@ -149,7 +145,8 @@ func New(config ...Config) fiber.Handler {
 				fields = append(fields, zap.Int("status", s))
 			case "resBody":
 				if cfg.SkipResBody == nil || !cfg.SkipResBody(c) {
-					if cfg.GetResBody == nil {
+					// GetResBody reads c, whose response a timed-out handler still owns.
+					if cfg.GetResBody == nil || response != c.Response() {
 						fields = append(fields, zap.ByteString("resBody", responseBody(response)))
 					} else {
 						fields = append(fields, zap.ByteString("resBody", cfg.GetResBody(c)))
