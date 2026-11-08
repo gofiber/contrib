@@ -40,7 +40,7 @@ type Config struct {
 
 	// Action names the action to check.
 	//
-	// Optional. Default: the HTTP method of the request.
+	// Optional. Default: the HTTP method of the request, with HEAD checked as GET.
 	Action func(fiber.Ctx) string
 
 	// Unauthorized handles a request without a principal.
@@ -71,7 +71,13 @@ func configDefault(cfg Config) Config {
 		panic("cerbos: Resource is required")
 	}
 	if cfg.Action == nil {
-		cfg.Action = func(c fiber.Ctx) string { return c.Method() }
+		cfg.Action = func(c fiber.Ctx) string {
+			// Fiber serves HEAD on every GET route, so check it as GET.
+			if m := c.Method(); m != fiber.MethodHead {
+				return m
+			}
+			return fiber.MethodGet
+		}
 	}
 	if cfg.Unauthorized == nil {
 		cfg.Unauthorized = func(c fiber.Ctx) error { return c.SendStatus(fiber.StatusUnauthorized) }

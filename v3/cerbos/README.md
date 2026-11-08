@@ -55,7 +55,7 @@ cerbos.New(config cerbos.Config) fiber.Handler
 
 1. If `Next` returns true, the request skips the check.
 2. `Principal` runs. A nil principal goes to `Unauthorized`, without asking Cerbos.
-3. `Resource` runs, and `Action` names the action.
+3. `Resource` runs, and `Action` names the action. The default is the HTTP method, with `HEAD` checked as `GET` because Fiber serves `HEAD` on every `GET` route.
 4. Cerbos is asked. If it allows the action the next handler runs, and otherwise the request goes to `Forbidden`.
 
 The middleware fails closed: an error from `Principal`, `Resource` or the client goes to `ErrorHandler` and never reaches the next handler. If Cerbos can't be reached, the request gets the `ErrorHandler` response, not an allow.

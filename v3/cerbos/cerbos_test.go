@@ -192,6 +192,17 @@ func TestErrorsFailClosed(t *testing.T) {
 	}
 }
 
+func TestHeadIsCheckedAsGet(t *testing.T) {
+	t.Parallel()
+	client := &mockClient{allowed: true}
+
+	status, _, reached := serve(t, Config{Client: client, Principal: alice, Resource: post}, http.MethodHead)
+
+	require.Equal(t, fiber.StatusOK, status)
+	require.True(t, reached)
+	require.Equal(t, http.MethodGet, client.action, "a policy that allows GET also covers HEAD")
+}
+
 func TestCustomAction(t *testing.T) {
 	t.Parallel()
 	client := &mockClient{allowed: true}
@@ -335,6 +346,7 @@ func TestAgainstCerbosServer(t *testing.T) {
 		wantStatus int
 	}{
 		{name: "allowed by role", method: http.MethodGet, user: "bob", role: "user", wantStatus: fiber.StatusOK},
+		{name: "HEAD allowed by the GET rule", method: http.MethodHead, user: "bob", role: "user", wantStatus: fiber.StatusOK},
 		{name: "denied by role", method: http.MethodDelete, user: "bob", role: "user", wantStatus: fiber.StatusForbidden},
 		{name: "admin allowed", method: http.MethodDelete, user: "bob", role: "admin", wantStatus: fiber.StatusOK},
 		{name: "allowed by condition", method: http.MethodPut, user: "alice", role: "user", wantStatus: fiber.StatusOK},
