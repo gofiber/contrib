@@ -4,10 +4,10 @@ go 1.26.0
 
 require (
 	github.com/MicahParks/keyfunc/v2 v2.1.0
-	github.com/gofiber/fiber/v3 v3.6.1
+	github.com/gofiber/fiber/v3 v3.7.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/stretchr/testify v1.12.1
-	github.com/valyala/fasthttp v1.77.0
+	github.com/valyala/fasthttp v1.78.0
 )
 
 require (
