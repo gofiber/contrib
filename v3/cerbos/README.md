@@ -75,7 +75,8 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// authenticate stands in for your authentication middleware.
+// authenticate stands in for your authentication middleware. It believes whatever
+// the client sends, so use it only to try this example.
 func authenticate(c fiber.Ctx) error {
 	fiber.Locals(c, "user", c.Get("X-User"))
 	fiber.Locals(c, "role", c.Get("X-Role"))
@@ -227,7 +228,9 @@ A `Resource` func that returns nil without an error reaches `ErrorHandler` as `c
 
 ```go
 authz := cerbos.New(cerbos.Config{
-	Next:      func(c fiber.Ctx) bool { return c.Path() == "/posts/feed" },
+	Next: func(c fiber.Ctx) bool {
+		return c.Path() == "/posts/feed" && (c.Method() == fiber.MethodGet || c.Method() == fiber.MethodHead)
+	},
 	Client:    client,
 	Principal: currentUser,
 	Resource:  post,
