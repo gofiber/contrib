@@ -5,6 +5,12 @@ on:
     branches:
       - master
       - main
+    paths:
+      - '**'
+      - '!**/*.md'
+      - '!.github/dependabot.yml'
+      - '!.github/workflows/**'
+      - '.github/workflows/test-jwt.yml'
   pull_request:
     paths:
       - 'v3/jwt/**/*.go'

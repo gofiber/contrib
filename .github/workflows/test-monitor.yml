@@ -5,6 +5,12 @@ on:
     branches:
       - master
       - main
+    paths:
+      - '**'
+      - '!**/*.md'
+      - '!.github/dependabot.yml'
+      - '!.github/workflows/**'
+      - '.github/workflows/test-monitor.yml'
   pull_request:
     paths:
       - 'v3/monitor/**/*.go'

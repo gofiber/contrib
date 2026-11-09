@@ -5,6 +5,12 @@ on:
     branches:
       - master
       - main
+    paths:
+      - '**'
+      - '!**/*.md'
+      - '!.github/dependabot.yml'
+      - '!.github/workflows/**'
+      - '.github/workflows/test-otel.yml'
   pull_request:
     paths:
       - 'v3/otel/**/*.go'
