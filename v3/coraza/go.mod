@@ -4,8 +4,8 @@ go 1.27.0
 
 require (
 	github.com/corazawaf/coraza/v3 v3.8.1
-	github.com/gofiber/fiber/v3 v3.6.1
-	github.com/valyala/fasthttp v1.77.0
+	github.com/gofiber/fiber/v3 v3.7.0
+	github.com/valyala/fasthttp v1.78.0
 )
 
 require (
