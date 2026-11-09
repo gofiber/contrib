@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/v3/opa
 go 1.26.0
 
 require (
-	github.com/gofiber/fiber/v3 v3.6.1
+	github.com/gofiber/fiber/v3 v3.7.0
 	github.com/gofiber/utils/v2 v2.6.4
 	github.com/open-policy-agent/opa v1.22.2
 	github.com/stretchr/testify v1.12.1
@@ -33,7 +33,7 @@ require (
 	github.com/sirupsen/logrus v1.10.2 // indirect
 	github.com/tinylib/msgp v1.6.5 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
-	github.com/valyala/fasthttp v1.77.0 // indirect
+	github.com/valyala/fasthttp v1.78.0 // indirect
 	github.com/valyala/fastjson v1.6.10 // indirect
 	github.com/vektah/gqlparser/v2 v2.5.64 // indirect
 	github.com/xeipuuv/gojsonpointer v0.0.0-20190905194746-02993c407bfb // indirect
