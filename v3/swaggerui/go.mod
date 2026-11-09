@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/go-openapi/runtime/server-middleware v0.33.4
-	github.com/gofiber/fiber/v3 v3.6.1
+	github.com/gofiber/fiber/v3 v3.7.0
 	github.com/stretchr/testify v1.12.1
 	gopkg.in/yaml.v3 v3.0.1
 )
