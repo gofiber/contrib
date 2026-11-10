@@ -5,8 +5,8 @@ github.com/JohannesKaufmann/dom v0.3.1 h1:J16l9JAHWgkFPR3VIPbQ1gvS0cWab6laK1q7PF
 github.com/JohannesKaufmann/dom v0.3.1/go.mod h1:BZPkf8ZeYrBgABjwJn9iiKt8aiCtkxpHkevms+Yp2DE=
 github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2 h1:XFJZFWESIWlUEHHjzBuv8RvrtCWnSGlimEX17ysSDb8=
 github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2/go.mod h1:BHWO8lJzttJLqwuV8Rb1B3OG2OSzLbssZDI1FRg2eAA=
-github.com/Kludex/pydantic-ai-go v0.6.0 h1:aAqJa7EC/hwzbpwR15AaxAbUbFmiEHbg9GbHDVm9EEs=
-github.com/Kludex/pydantic-ai-go v0.6.0/go.mod h1:m0kcC+fWPur0hKPn7Wj5Mxci2BQBlIKAJvXWfrV2S8g=
+github.com/Kludex/pydantic-ai-go v0.7.1 h1:h5EHWPnYDmD+RXOBoWcLWU3oOUIfCxxUB6bWLDOK0kk=
+github.com/Kludex/pydantic-ai-go v0.7.1/go.mod h1:m0kcC+fWPur0hKPn7Wj5Mxci2BQBlIKAJvXWfrV2S8g=
 github.com/PuerkitoBio/goquery v1.13.0 h1:mqHbjD7Jmnul4DTR24LKTjo1uUmHUh072kteGV+xpFM=
 github.com/PuerkitoBio/goquery v1.13.0/go.mod h1:Hip5mdBL8K2wEGKJdr27sRaNwIdDajmCwB/ExUPwW+g=
 github.com/andybalholm/cascadia v1.3.4 h1:vM2lgh0Vru9Vwyfm4cQqWP2HHMW0u0+2PAW7Q38Qufg=

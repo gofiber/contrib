@@ -609,7 +609,9 @@ func Test_Vercel_Timeout(t *testing.T) {
 	require.Equal(t, fiber.StatusOK, resp.StatusCode)
 	chunks, done := vercelChunks(t, body)
 	require.True(t, done, "a canceled run still ends with [DONE]")
-	require.Equal(t, vercel.ChunkAbort, chunks[len(chunks)-1].Type)
+	last := chunks[len(chunks)-1]
+	require.Equal(t, vercel.ChunkAbort, last.Type)
+	require.Equal(t, "The agent run timed out.", last.Reason, "the adapter tells a timeout from a cancellation")
 	require.ErrorIs(t, agenttest.Receive(t, canceled, "the cancellation of the model call"), context.DeadlineExceeded)
 	require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), context.DeadlineExceeded)
 }

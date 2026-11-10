@@ -3,7 +3,7 @@ module github.com/gofiber/contrib/v3/pydanticai
 go 1.26.0
 
 require (
-	github.com/Kludex/pydantic-ai-go v0.6.0
+	github.com/Kludex/pydantic-ai-go v0.7.1
 	github.com/gofiber/fiber/v3 v3.6.1
 	github.com/gofiber/utils/v2 v2.6.2
 	github.com/modelcontextprotocol/go-sdk v1.7.0
