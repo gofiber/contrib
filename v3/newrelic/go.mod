@@ -10,7 +10,7 @@ require (
 )
 
 require (
-	github.com/gofiber/schema v1.9.3 // indirect
+	github.com/gofiber/schema v1.9.4 // indirect
 	github.com/google/pprof v0.0.0-20260802141513-ef3492d7dac3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.20.4 // indirect
