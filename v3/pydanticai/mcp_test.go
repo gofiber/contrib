@@ -1,6 +1,7 @@
 package pydanticai_test
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -396,9 +397,12 @@ func Test_MCP_ServersOfAConfigFile(t *testing.T) {
 	for _, name := range names {
 		require.True(t, strings.HasPrefix(name, "catalog"), "the name of the server prefixes the tools: %s", name)
 	}
-	for _, call := range catalog.called() {
-		require.Equal(t, "Bearer from-the-environment", call.authorization)
-	}
+	// Calls that never reach the server leave the stream with their events too: look at
+	// what the server received. The calls run together, in any order.
+	require.ElementsMatch(t, []mcpCall{
+		{tool: "search", authorization: "Bearer from-the-environment"},
+		{tool: "weather", authorization: "Bearer from-the-environment"},
+	}, catalog.called())
 }
 
 func Test_MCP_Apps(t *testing.T) {
@@ -534,7 +538,7 @@ func Test_MCP_ServerInMemory(t *testing.T) {
 	app.Post("/chat", pydanticai.AGUI(agent))
 
 	request := newRequest(fiber.MethodPost, "/chat", fiber.MIMEApplicationJSON, aguiBody)
-	response, err := app.Test(request)
+	response, err := app.Test(request, testConfig)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = response.Body.Close() })
 
@@ -1357,17 +1361,23 @@ func Test_MCPHandler_SubscriptionsDoNotKeepRequestsOpen(t *testing.T) {
 	endpoint := mcpServe(t, app)
 
 	// The response to a subscription ends with its result, because the server
-	// has nothing to tell: post returns when the response is over.
-	response, body := mcpPost(t, endpoint, `{"jsonrpc":"2.0","id":7,"method":"subscriptions/listen","params":{`+
-		`"_meta":{"io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"c","version":"1"},`+
-		`"io.modelcontextprotocol/protocolVersion":"2026-07-28"},"notifications":{"toolsListChanged":true}}}`,
-		map[string]string{"Mcp-Protocol-Version": "2026-07-28", "Mcp-Method": "subscriptions/listen"})
-	require.Equal(t, fiber.StatusOK, response.StatusCode)
-	require.Contains(t, body, `"notifications":{}`, "the server agreed to no notification")
-	require.Contains(t, body, `"result"`)
+	// has nothing to tell: post returns when the response is over. Whether the
+	// client of the SDK subscribes depends on its version, which asks for what the
+	// server advertises, so the test sends the requests itself.
+	subscribe := func(id int, notifications string) {
+		t.Helper()
+		response, body := mcpPost(t, endpoint, fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"subscriptions/listen","params":{`+
+			`"_meta":{"io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"c","version":"1"},`+
+			`"io.modelcontextprotocol/protocolVersion":"2026-07-28"},"notifications":%s}}`, id, notifications),
+			map[string]string{"Mcp-Protocol-Version": "2026-07-28", "Mcp-Method": "subscriptions/listen"})
+		require.Equal(t, fiber.StatusOK, response.StatusCode)
+		require.Contains(t, body, `"notifications":{}`, "the server agreed to no notification")
+		require.Contains(t, body, `"result"`)
+	}
+	subscribe(7, `{"toolsListChanged":true}`)
+	subscribe(8, `{"toolsListChanged":true,"promptsListChanged":true,"resourcesListChanged":true}`)
 
-	// A client that asks for them, as the client of the SDK does when it has a
-	// handler, connects and calls the tool.
+	// A client of the SDK that has a handler connects and calls the tool.
 	changed := make(chan struct{}, 1)
 	session := mcpConnect(t, endpoint, "", &mcpsdk.ClientOptions{
 		ToolListChangedHandler: func(context.Context, *mcpsdk.ToolListChangedRequest) { changed <- struct{}{} },
@@ -1377,7 +1387,7 @@ func Test_MCPHandler_SubscriptionsDoNotKeepRequestsOpen(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.Equal(t, 2, strings.Count(strings.Join(methods, " "), "subscriptions/listen"), "the client asked to be told about changes")
+	require.GreaterOrEqual(t, strings.Count(strings.Join(methods, " "), "subscriptions/listen"), 2, "the requests reached the route")
 }
 
 // callAsync calls the tool without waiting for its result.
@@ -1591,6 +1601,170 @@ func mcpSend(t *testing.T, method, endpoint, message string, headers map[string]
 func mcpPost(t *testing.T, endpoint, message string, headers map[string]string) (*http.Response, string) {
 	t.Helper()
 	return mcpSend(t, http.MethodPost, endpoint, message, headers)
+}
+
+// With StreamRequestBody the handler runs while most of a large body is still on
+// the connection, and fasthttp does not apply the BodyLimit. The adaptor reads
+// the whole of it, so the handler reads what the SDK accepts first, and no more.
+func Test_MCPHandler_StreamedBodiesAreReadUpToTheLimitOnly(t *testing.T) {
+	t.Parallel()
+
+	const limit = mcpsdk.DefaultMaxRequestBodyBytes
+	handler := pydanticai.MCP(ai.NewAgent[struct{}, string](agenttest.Answering("Paris.")))
+	url := listen(t, newApp("/mcp", handler, fiber.Config{StreamRequestBody: true, BodyLimit: 1 << 10}))
+	addr := strings.TrimPrefix(url, "http://")
+	const (
+		protocol = "Mcp-Protocol-Version: 2026-07-28\r\nMcp-Method: tools/call\r\nMcp-Name: ask\r\n"
+		headers  = "POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n" +
+			"Accept: application/json, text/event-stream\r\n" + protocol
+	)
+	// message is a call of the tool, padded with spaces to size bytes. Above the
+	// BodyLimit of the app, fasthttp streams it.
+	message := func(size int) string { return callMessage + strings.Repeat(" ", size-len(callMessage)) }
+
+	t.Run("declared length above the limit", func(t *testing.T) {
+		t.Parallel()
+		// Most of the body is announced and never sent: the answer must not wait for it.
+		line := statusLine(t, addr, headers+"Content-Length: 1000000000\r\n\r\n"+strings.Repeat("a", partialBody))
+		require.Contains(t, line, "413")
+	})
+
+	t.Run("chunked above the limit", func(t *testing.T) {
+		t.Parallel()
+		// One chunk more than the limit holds, and no end of the body.
+		chunk := strings.Repeat("a", 64<<10)
+		var body strings.Builder
+		for range limit/len(chunk) + 1 {
+			fmt.Fprintf(&body, "%x\r\n%s\r\n", len(chunk), chunk)
+		}
+		line := statusLine(t, addr, headers+"Transfer-Encoding: chunked\r\n\r\n"+body.String())
+		require.Contains(t, line, "413")
+	})
+
+	t.Run("the limit itself", func(t *testing.T) {
+		t.Parallel()
+		response, body := mcpPost(t, url+"/mcp", message(limit), map[string]string{
+			"Mcp-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": "ask",
+		})
+		require.Equal(t, fiber.StatusOK, response.StatusCode, body)
+	})
+
+	t.Run("one byte above the limit", func(t *testing.T) {
+		t.Parallel()
+		// The answer comes before the body is read, and the server closes the connection
+		// that the client is still writing to: read it on the side.
+		conn, err := net.Dial("tcp", addr)
+		require.NoError(t, err)
+		defer func() { _ = conn.Close() }()
+		require.NoError(t, conn.SetDeadline(time.Now().Add(observeTimeout)))
+		go func() {
+			_, _ = fmt.Fprintf(conn, "%sContent-Length: %d\r\n\r\n%s", headers, limit+1, message(limit+1))
+		}()
+		line, err := bufio.NewReader(conn).ReadString('\n')
+		require.NoError(t, err)
+		require.Contains(t, line, "413")
+	})
+
+	t.Run("a complete body that fits", func(t *testing.T) {
+		t.Parallel()
+		// With a length...
+		response, body := mcpPost(t, url+"/mcp", message(2<<10), map[string]string{
+			"Mcp-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": "ask",
+		})
+		require.Equal(t, fiber.StatusOK, response.StatusCode, body)
+		require.Contains(t, body, `"text":"Paris."`)
+
+		// ...and without.
+		conn, err := net.Dial("tcp", addr)
+		require.NoError(t, err)
+		defer func() { _ = conn.Close() }()
+		require.NoError(t, conn.SetDeadline(time.Now().Add(observeTimeout)))
+		_, err = fmt.Fprintf(conn, "%sTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n%x\r\n%s\r\n0\r\n\r\n",
+			headers, 2<<10, message(2<<10))
+		require.NoError(t, err)
+		answer, err := io.ReadAll(conn)
+		require.NoError(t, err)
+		require.Contains(t, string(answer), "200 OK")
+		require.Contains(t, string(answer), `"text":"Paris."`)
+	})
+}
+
+// The caller is turned away before any of the body is read.
+func Test_MCPHandler_StreamedBodiesWaitForDeps(t *testing.T) {
+	t.Parallel()
+
+	handler := pydanticai.MCP(ai.NewAgent[struct{}, string](agenttest.Answering("ok")), pydanticai.MCPConfig[struct{}]{
+		Deps: func(fiber.Ctx) (struct{}, error) { return struct{}{}, fiber.ErrUnauthorized },
+	})
+	addr := strings.TrimPrefix(listen(t, newApp("/mcp", handler, fiber.Config{StreamRequestBody: true, BodyLimit: 1 << 10})), "http://")
+
+	// The body is too large as well, but the caller is turned away first.
+	line := statusLine(t, addr,
+		"POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 1000000000\r\n\r\n"+
+			strings.Repeat("a", partialBody))
+	require.Contains(t, line, "401")
+}
+
+// A JSON-RPC batch starts all of its calls at once, behind the one request that a
+// limiter in front of the route counts. The protocol versions since 2025-06-18
+// have no batches, and the SDK takes a request without a version for 2025-03-26.
+func Test_MCPHandler_RejectsBatches(t *testing.T) {
+	t.Parallel()
+
+	var runs atomic.Int32
+	model := fakes.NewFunctionModel(func(context.Context, []ai.ModelMessage, ai.ModelRequestParams) (*ai.ModelResponse, error) {
+		runs.Add(1)
+		return textResponse("ok"), nil
+	})
+	handler := pydanticai.MCP(ai.NewAgent[struct{}, string](model))
+	call := func(id int) string {
+		return fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"ask","arguments":{"question":"Hello"}}}`, id)
+	}
+	bodies := map[string]string{
+		"two calls":              "[" + call(1) + "," + call(2) + "]",
+		"one call":               "[" + call(1) + "]",
+		"blank before the array": " \r\n\t[" + call(1) + "," + call(2) + "]",
+		"notifications":          `[{"jsonrpc":"2.0","method":"notifications/initialized"}]`,
+	}
+	versions := map[string]map[string]string{
+		"no version header": nil,
+		"2024-11-05":        {"Mcp-Protocol-Version": "2024-11-05"},
+		"2025-03-26":        {"Mcp-Protocol-Version": "2025-03-26"},
+		"2025-06-18":        {"Mcp-Protocol-Version": "2025-06-18"},
+		"2026-07-28":        {"Mcp-Protocol-Version": "2026-07-28"},
+	}
+
+	for name, app := range map[string]*fiber.App{
+		"": mcpApp(handler),
+		// The body is still on the connection when the handler starts.
+		"a streamed body: ": newApp("/mcp", handler, fiber.Config{StreamRequestBody: true, BodyLimit: 1 << 10}),
+	} {
+		endpoint := mcpServe(t, app)
+		for body, text := range bodies {
+			for version, headers := range versions {
+				response, answer := mcpPost(t, endpoint, text, headers)
+				require.Equal(t, fiber.StatusBadRequest, response.StatusCode, "%s%s, %s: %s", name, body, version, answer)
+				require.Contains(t, answer, "batching is not supported", "%s%s, %s", name, body, version)
+			}
+		}
+		require.Zero(t, runs.Load(), "no call of a batch ran")
+
+		// A single message is not affected, also after blank space.
+		for _, message := range []string{call(1), " \r\n\t" + call(1)} {
+			response, answer := mcpPost(t, endpoint, message, nil)
+			require.Equal(t, fiber.StatusOK, response.StatusCode, answer)
+			require.Contains(t, answer, `"text":"ok"`)
+		}
+		require.EqualValues(t, 2, runs.Swap(0))
+
+		// An empty or blank body keeps the answer of the SDK.
+		for _, message := range []string{"", " \n "} {
+			response, answer := mcpPost(t, endpoint, message, nil)
+			require.Equal(t, fiber.StatusBadRequest, response.StatusCode, answer)
+			require.NotContains(t, answer, "batching")
+		}
+		require.Zero(t, runs.Load())
+	}
 }
 
 // Every answer is one JSON document, never a stream: the route has no

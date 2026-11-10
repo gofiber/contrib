@@ -14,7 +14,7 @@ id: pydanticai
 - A streamed run is canceled when its client disconnects or its `Timeout` elapses, and optionally when the server shuts down. `Run` and `MCP` cannot notice a client that left, so they end a run after `Timeout`, 5 minutes by default.
 - `OnRunEnd` reports what every run consumed, including runs that failed or lost their client.
 - Rejected requests and failed `Run` calls go through the error handler of the app.
-- A panic in a tool ends the stream with an error event, also when the tool runs concurrently with other tool calls.
+- A panic in a tool, or in the validation of its arguments, ends the stream with an error event, also when the tool runs concurrently with other tool calls.
 - Agents use [MCP](#mcp) servers as tools, with the credentials of the caller, and `MCP` serves an agent as an MCP server.
 
 **Compatible with Fiber v3.**
@@ -30,6 +30,8 @@ go get -u github.com/gofiber/fiber/v3
 go get -u github.com/gofiber/contrib/v3/pydanticai
 go get -u github.com/Kludex/pydantic-ai-go/ai
 ```
+
+The streaming handlers build on the `sse` middleware of Fiber, which sends its stream with `SendStream` since Fiber v3.7: the module needs that version or a later one.
 
 ## Signatures
 
@@ -340,6 +342,7 @@ The handlers work with any model of pydantic-ai-go; the provider is chosen by th
 | OpenAI Chat Completions | `openai.NewModel(name)` | `openai.WithAPIKey(key)` |
 | OpenAI Responses | `openai.NewResponsesModel(name)` | `openai.WithAPIKey(key)` |
 | OpenAI Codex subscription | `openaicodex.NewModel(name)` † | `openaicodex.WithCredentials(...)` or `openaicodex.WithCredentialSource(...)` |
+| ChatGPT subscription | `openaichatgpt.NewModel(name)` † | `openaichatgpt.WithCredentials(...)` or `openaichatgpt.WithCredentialSource(...)` |
 | OpenAI Decisions | `openaidecisions.NewModel(name)` | `openaidecisions.WithAPIKey(key)` |
 | Azure OpenAI | `azure.NewModel(deployment, azure.Config{})` † | `APIKey` or `TokenProvider` of `azure.Config` |
 | Amazon Bedrock | `bedrock.NewModel(name)` | `bedrock.WithAWSConfig(cfg)` |
@@ -600,7 +603,9 @@ The client sees one tool, `ask`, with the argument `question`. Its result is the
 - **Timeouts.** A client that went away is not noticed before the response is written, so a call ends after `Timeout`: 5 minutes by default, and a negative value turns the bound off. `CancelOnShutdown` ends the calls when the server shuts down, and the client reads an error that says so.
 - **Context.** As for the other handlers, the `ctx` of a tool carries the values of `c.Context()`, for example the span of the [otel](https://github.com/gofiber/contrib/tree/main/v3/otel) middleware.
 - **Origins.** A request with an `Origin` header is answered with `403` unless `AllowedOrigins` lists it, as the MCP specification has a server validate the origin of its callers. That keeps a page of another site, or one that reaches the server by DNS rebinding and so looks like its own, from calling the tool in the browser of a user. A client that is not a browser sends no `Origin`. A page that you serve yourself has to be listed too, for example `AllowedOrigins: []string{"https://app.example.com"}`.
-- **Middleware.** Clients of the 2026-07-28 protocol send the method and the tool name in the headers `Mcp-Method` and `Mcp-Name`, so a middleware can authorize or limit `tools/call` without reading the body. A browser client also sends `Mcp-Protocol-Version`: allow these headers in the `cors` middleware, for the origins that `AllowedOrigins` lists.
+- **One message per request.** A JSON-RPC batch, a body that is an array, is answered with `400`. The protocol versions before 2025-06-18 allow batches, and a request without `Mcp-Protocol-Version` counts as one of them, so each call of a batch would start a run at once behind the one request that a limiter counts.
+- **Size.** A message of more than 4 MiB gets `413`, also when `StreamRequestBody` is enabled.
+- **Middleware.** Clients of the 2026-07-28 protocol send the method and the tool name in the headers `Mcp-Method` and `Mcp-Name`, so a middleware can authorize or limit `tools/call` of these clients without reading the body. Clients of earlier versions send neither header, so a rule that keys on them lets their calls through: limit the route as a whole, or by caller. A browser client also sends `Mcp-Protocol-Version`: allow these headers in the `cors` middleware, for the origins that `AllowedOrigins` lists.
 
 Another agent uses the server as a toolset:
 
@@ -652,7 +657,7 @@ app.Use(limiter.New(limiter.Config{
 app.Post("/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[Deps]{Deps: depsOfUser}))
 ```
 
-`cors` comes first, because preflight requests carry no credentials. The limiter counts the requests of each user, not of each address. The `timeout` middleware does not stop a stream, and a request that it gave up on before the stream started, for example while `Deps` ran, is not run. `compress` works, see [Disconnects, timeouts and heartbeats](#disconnects-timeouts-and-heartbeats).
+`cors` comes first, because preflight requests carry no credentials. The limiter counts the requests of each user, not of each address. The `timeout` middleware does not stop a stream or a run that has started, and a request that it gave up on before the run started, for example while `Deps` ran, is not run, by any of the handlers. `compress` works, see [Disconnects, timeouts and heartbeats](#disconnects-timeouts-and-heartbeats).
 
 ## Requests
 
@@ -663,9 +668,9 @@ A request is checked before the agent runs. A rejected request is returned as a 
 | `405`  | The method is not `POST`. The response carries `Allow: POST`.                                            |
 | `415`  | The content type is not allowed (`application/json` unless configured), or the body has a `Content-Encoding` other than `identity`. Request bodies are not decompressed. |
 | `413`  | The body is larger than `MaxRequestBytes`.                                                               |
-| `400`  | The body is not a valid request of the protocol, the Vercel request has no chat `id`, or the `Run` request has no `prompt`. |
+| `400`  | The body is not JSON that decodes into the request of the protocol, the Vercel request has no chat `id`, or the `Run` request has no `prompt`. A body that decodes but has no user message is answered with `200` and an error event, see [How a stream ends](#how-a-stream-ends). |
 
-The body is limited by `MaxRequestBytes` of the adapter config (10 MiB by default) and by Fiber's `BodyLimit` (4 MiB by default). Raise `BodyLimit` in `fiber.Config` to accept larger bodies, such as inline images. With `StreamRequestBody` enabled only `MaxRequestBytes` applies, and the handlers read no more than that plus one byte.
+The body is limited by `MaxRequestBytes` of the adapter config (10 MiB by default) and by Fiber's `BodyLimit` (4 MiB by default). Raise `BodyLimit` in `fiber.Config` to accept larger bodies, such as inline images. With `StreamRequestBody` enabled only `MaxRequestBytes` applies, and the handlers read no more than that plus one byte (`MCP`: its limit of 4 MiB).
 
 A request body larger than 64 KiB is released once it has been decoded, so that it is not kept for the length of the run. Middleware that runs after the handler sees an empty body.
 
@@ -673,7 +678,7 @@ The content type check keeps cross-site form posts from reaching the agent. `Dis
 
 ## Disconnects, timeouts and heartbeats
 
-While a response is open, the streaming handlers write a comment line (`:`) every `HeartbeatInterval`, 5 seconds by default. A failed write cancels the run. Writes keep succeeding for a moment after a client has closed its connection, so a disconnect is noticed by the second or third heartbeat: with the default interval, a run that nobody waits for is canceled within 15 seconds. A failed write of an event cancels the run as well. A client that vanishes without closing its connection, for example because it lost its network, is only noticed when TCP gives up on the connection, so set `Timeout` to bound such a run. Once `Timeout` elapsed, a write to a client that stopped reading may stay blocked for 5 seconds before its connection is closed, and `OnClose` then receives the write error.
+While a response is open, the streaming handlers write a comment line (`:`) every `HeartbeatInterval`, 5 seconds by default. A failed write cancels the run. Writes keep succeeding for a moment after a client has closed its connection, so a disconnect is noticed by the second or third heartbeat: with the default interval, a run that nobody waits for is canceled within 15 seconds. A failed write of an event cancels the run as well. A client that vanishes without closing its connection, for example because it lost its network, is only noticed when TCP gives up on the connection, which can take many minutes, and never happens for a client that keeps the connection open and answers the probes of TCP without reading. Without a `Timeout` such a client holds the connection, its goroutines and the run for as long as it likes, so set `Timeout` to bound such a run. Once `Timeout` elapsed, a write to a client that stopped reading may stay blocked for 5 seconds before its connection is closed, and `OnClose` then receives the write error.
 
 Heartbeat comments are ignored by server-sent events parsers. `DisableHeartbeat` turns them off. A client that leaves during a long silent phase, such as a tool call, is then only noticed by the next write to it, which can be after the run has ended.
 
@@ -692,7 +697,7 @@ Heartbeat comments are ignored by server-sent events parsers. `DisableHeartbeat`
 
 The status of the response is `200` in all of these cases, because it is sent before the run starts. When the client disconnects, the run is canceled, nothing more is sent and `OnClose` receives the error.
 
-A panic in a tool, in the model or in a callback of the handler ends the stream with an error event too. The client sees `internal error`, or what `ErrorMessage` returns, and the panic with its stack goes to the logger of Fiber and to `OnClose`. This covers tool calls that run concurrently on goroutines of their own. Other code that pydantic-ai-go runs on those goroutines, such as the event listeners of the agent, is not covered: recover the panics of such code yourself.
+A panic in a tool, in the validation of its arguments, in the model or in a callback of the handler ends the stream with an error event too. The client sees `internal error`, or what `ErrorMessage` returns, and the panic with its stack goes to the logger of Fiber and to `OnClose`. This covers tool calls that run concurrently on goroutines of their own, and the handling of their events by the adapter and the handler, the encoding of a tool result included. Other code that pydantic-ai-go runs on those goroutines, such as the event listeners of the agent, is not covered: recover the panics of such code yourself.
 
 ## Errors of `Run`
 
@@ -709,7 +714,7 @@ A panic in a tool, in the model or in a callback of the handler ends the stream 
 | `*ai.UnexpectedModelBehaviorError`, `ai.ErrMaxRetriesExceeded`, `ai.ModelAPIError` | `502 Bad Gateway`           |
 | anything else                                                                      | `500 Internal Server Error` |
 
-A panic in the model or in a callback of the handler goes on to the recover middleware of the app, after `OnRunEnd` was called. A panic in a tool call happens on a goroutine of its own, which no middleware reaches, so `Run` recovers it, logs it with its stack, calls `OnRunEnd` and fails the run with `500 Internal Server Error` like any other failure: the `Err` of the `*pydanticai.Error` is the panic.
+A panic in the model or in a callback of the handler goes on to the recover middleware of the app, after `OnRunEnd` was called. A panic in a tool call, or in the validation of its arguments, happens on a goroutine of its own, which no middleware reaches, so `Run` recovers it, logs it with its stack, calls `OnRunEnd` and fails the run with `500 Internal Server Error` like any other failure: the `Err` of the `*pydanticai.Error` is the panic.
 
 Log the cause in the error handler of the app:
 

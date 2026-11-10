@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -28,6 +29,10 @@ const (
 	defaultMCPTool        = "ask"
 	defaultMCPDescription = "Ask the agent a question"
 )
+
+// maxMCPRequestBytes bounds the body of a message: the default of the SDK, stated so
+// that its limit and the one that the handler applies first stay equal.
+const maxMCPRequestBytes int64 = mcpsdk.DefaultMaxRequestBodyBytes
 
 var mcpToolName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 
@@ -110,8 +115,9 @@ type mcpAskInput struct {
 // MCP returns a handler that serves agent as an MCP server over Streamable HTTP,
 // with one tool that runs the agent with the question of the caller (see
 // ExampleMCP). It has no sessions: each request is answered with one JSON
-// response. It panics when agent is nil, the tool name is invalid or an allowed
-// origin is malformed.
+// response, a message of more than 4 MiB gets 413 and a JSON-RPC batch gets 400.
+// It panics when agent is nil, the tool name is invalid or an allowed origin is
+// malformed.
 func MCP[Deps, Output any](agent *ai.Agent[Deps, Output], config ...MCPConfig[Deps]) fiber.Handler {
 	if agent == nil {
 		panic("pydanticai: agent must not be nil")
@@ -137,7 +143,8 @@ func MCP[Deps, Output any](agent *ai.Agent[Deps, Output], config ...MCPConfig[De
 		Capabilities: &mcpsdk.ServerCapabilities{Tools: &mcpsdk.ToolCapabilities{}},
 		SchemaCache:  mcpsdk.NewSchemaCache(),
 	}
-	httpOptions := &mcpsdk.StreamableHTTPOptions{Stateless: true, JSONResponse: true}
+	httpOptions := &mcpsdk.StreamableHTTPOptions{Stateless: true, JSONResponse: true, MaxRequestBodyBytes: maxMCPRequestBytes}
+	limits := requestLimits{maxBytes: maxMCPRequestBytes}
 
 	return func(c fiber.Ctx) error {
 		if cfg.Next != nil && cfg.Next(c) {
@@ -151,6 +158,21 @@ func MCP[Deps, Output any](agent *ai.Agent[Deps, Output], config ...MCPConfig[De
 		if err != nil {
 			return err
 		}
+		// A request that a middleware gave up on is never answered, so run nothing.
+		if err = context.Cause(c.Context()); err != nil {
+			return err
+		}
+
+		// With StreamRequestBody the body is still on the connection and the BodyLimit of the
+		// app does not apply, while the adaptor reads all of it before the SDK checks its
+		// limit: read what the SDK accepts, and no more.
+		if c.BodyStream() != nil {
+			body, err := limits.read(c)
+			if err != nil {
+				return err
+			}
+			c.Request().SetBodyRaw(body)
+		}
 
 		shutdown := shutdownSignal(c, cfg.CancelOnShutdown)
 
@@ -163,9 +185,42 @@ func MCP[Deps, Output any](agent *ai.Agent[Deps, Output], config ...MCPConfig[De
 		mcpsdk.AddTool(server, tool, mcpTool(agent, cfg, deps, options, shutdown))
 		handler := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return server }, httpOptions)
 		return adaptor.HTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if rejectBatch(w, r) {
+				return
+			}
 			handler.ServeHTTP(w, r.WithContext(values))
 		}))(c)
 	}
+}
+
+// rejectBatch answers a JSON-RPC batch, a body that is an array, with 400. The
+// protocol versions that allow a batch (2025-03-26 and before, also a request
+// without Mcp-Protocol-Version) would start all of its calls at once, behind the
+// one request that a limiter in front of the route counts. It reports whether it
+// answered. It consumes only the whitespace before the first byte, which JSON
+// ignores, and reads no more than the SDK would.
+func rejectBatch(w http.ResponseWriter, r *http.Request) bool {
+	body := http.MaxBytesReader(w, r.Body, maxMCPRequestBytes)
+	r.Body = body
+	var first [1]byte
+	for {
+		n, err := body.Read(first[:])
+		if n == 1 && first[0] != ' ' && first[0] != '\t' && first[0] != '\n' && first[0] != '\r' {
+			break
+		}
+		if err != nil { // empty, blank or too large: the handler of the SDK answers it
+			return false
+		}
+	}
+	if first[0] == '[' {
+		http.Error(w, "JSON-RPC batching is not supported", http.StatusBadRequest)
+		return true
+	}
+	r.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(first[:]), body), body}
+	return false
 }
 
 // mcpOrigins returns the allowed origins as browsers send them (lower case, no

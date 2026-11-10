@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net"
 	"net/http"
@@ -854,6 +855,50 @@ func Test_Vercel_RejectsEncodedBodiesBeforeResolvingDeps(t *testing.T) {
 	checkEncodedBodies(t, app, "/chat", vercelBody, &resolved)
 }
 
+// A peer can write the name of a header in lower case, as HTTP/2 does, and an app
+// can keep the spelling that it got. The handlers find the header all the same.
+func Test_RejectsEncodedBodiesWhateverTheSpellingOfTheHeader(t *testing.T) {
+	t.Parallel()
+
+	agent := ai.NewAgent[struct{}, string](fakes.NewTestModel())
+	tests := []struct {
+		name    string
+		path    string
+		body    string
+		handler fiber.Handler
+	}{
+		{"AG-UI", "/agui", aguiBody, pydanticai.AGUI(agent)},
+		{"Vercel", "/chat", vercelBody, pydanticai.Vercel(agent)},
+		{"Run", "/ask", runBody, pydanticai.Run(agent)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			app := newApp(test.path, test.handler, fiber.Config{DisableHeaderNormalizing: true})
+			status := func(header http.Header) int {
+				request := newRequest(fiber.MethodPost, test.path, fiber.MIMEApplicationJSON, test.body)
+				maps.Copy(request.Header, header) // not Set, which writes the canonical spelling
+				resp, _ := send(t, app, request)
+				return resp.StatusCode
+			}
+
+			for _, name := range []string{"Content-Encoding", "content-encoding", "CONTENT-ENCODING"} {
+				require.Equal(t, fiber.StatusUnsupportedMediaType, status(http.Header{name: {"gzip"}}), name)
+			}
+			// The encodings can be listed over several lines of the header, in any spelling.
+			require.Equal(t, fiber.StatusUnsupportedMediaType,
+				status(http.Header{"Content-Encoding": {"identity"}, "content-encoding": {"gzip"}}))
+			require.Equal(t, fiber.StatusUnsupportedMediaType,
+				status(http.Header{"content-encoding": {"identity"}, "Content-Encoding": {"gzip"}}))
+
+			// No encoding, however it is spelled, and an empty line, are no encoding.
+			require.Equal(t, fiber.StatusOK, status(http.Header{"content-encoding": {"identity"}}))
+			require.Equal(t, fiber.StatusOK, status(http.Header{"content-encoding": {""}}))
+		})
+	}
+}
+
 func Test_Next(t *testing.T) {
 	t.Parallel()
 
@@ -925,6 +970,18 @@ func Test_AGUI_StreamedBodiesAreReadUpToTheLimitOnly(t *testing.T) {
 		t.Parallel()
 		// Most of the body is announced and never sent: the answer must not wait for it.
 		line := statusLine(t, addr, headers+"Content-Length: 1000000\r\n\r\n"+strings.Repeat("a", partialBody))
+		require.Contains(t, line, "413")
+	})
+
+	t.Run("declared length above a limit that the body has not reached", func(t *testing.T) {
+		t.Parallel()
+		// What was sent is below the limit, only the announced length is above it: the
+		// answer must not wait for the rest of a body that the handler will not accept.
+		large := pydanticai.AGUI(ai.NewAgent[struct{}, string](fakes.NewTestModel()), pydanticai.AGUIConfig[struct{}]{
+			Adapter: agui.Config{MaxRequestBytes: 1 << 20},
+		})
+		line := statusLine(t, strings.TrimPrefix(listen(t, streamingApp(large)), "http://"),
+			headers+"Content-Length: 5000000\r\n\r\n"+strings.Repeat("a", partialBody))
 		require.Contains(t, line, "413")
 	})
 

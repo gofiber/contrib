@@ -192,6 +192,11 @@ func Test_Vercel_Fails(t *testing.T) {
 	require.Contains(t, message, "chunk after [DONE]")
 
 	message = failure(func(t testing.TB) {
+		pydanticaitest.VercelChunks(t, strings.NewReader("data: {\"type\":\"start\"}\n\ndata: [DONE]\n\ndata: [DONE]\n\n"))
+	})
+	require.Contains(t, message, "chunk after [DONE]", "a stream ends once")
+
+	message = failure(func(t testing.TB) {
 		pydanticaitest.VercelChunks(t, iotest.ErrReader(errors.New("connection reset")))
 	})
 	require.Contains(t, message, "read the stream: connection reset")

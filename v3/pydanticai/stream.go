@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"slices"
+	"sync/atomic"
 	"time"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
@@ -102,22 +104,43 @@ func heartbeatInterval(interval time.Duration) time.Duration {
 }
 
 // streamGuard cancels the run once its events are no longer consumed and drops
-// the rest, as a stopped iterator resumed from a tool goroutine panics.
+// the rest, as a stopped iterator resumed from a tool goroutine panics. A panic of
+// the consumer is treated the same way: pydantic-ai-go emits the result of a tool
+// on the goroutine of the tool call when it runs with others, where nothing else
+// recovers it. The panic resumes on the goroutine that ranges once the stream ended,
+// as a range function that recovers a loop body panic must not return normally.
 type streamGuard struct{ cancel context.CancelCauseFunc }
 
 func (streamGuard) Setup(*ai.CapabilityRegistry) error { return nil }
 
+// CapabilityOrdering puts the guard next to the agent, behind the capabilities of
+// the application: one of them that ends the stream would otherwise hide it from
+// the guard.
+func (streamGuard) CapabilityOrdering() ai.CapabilityOrdering {
+	return ai.CapabilityOrdering{Position: ai.CapabilityInnermost}
+}
+
 func (g streamGuard) WrapRunEventStream(_ context.Context, _ *ai.RunInfo, stream ai.EventStream) ai.EventStream {
 	return func(yield func(ai.StreamEvent, error) bool) {
-		stopped := false
+		var (
+			stopped  bool
+			panicked atomic.Pointer[error]
+		)
+		deliver := func(event ai.StreamEvent, err error) bool {
+			defer agentrun.Recover(func(panicErr error) { panicked.CompareAndSwap(nil, &panicErr) })
+			return yield(event, err)
+		}
 		for event, err := range stream {
 			if stopped {
 				continue
 			}
-			if !yield(event, err) {
+			if !deliver(event, err) {
 				stopped = true
 				g.cancel(errStreamFailed)
 			}
+		}
+		if panicErr := panicked.Load(); panicErr != nil {
+			panic(*panicErr)
 		}
 	}
 }
@@ -186,9 +209,12 @@ func relay[E, Deps any](
 		p.fail(send, errorMessage, panicErr)
 	})
 
-	ctx, cancel := context.WithCancelCause(ctx)
+	parent := ctx
+	ctx, cancel := context.WithCancelCause(parent)
 	defer cancel(nil)
-	options = append([]ai.RunOption{ai.WithRunCapabilities(streamGuard{cancel: cancel})}, options...)
+	// The guard goes last, next to the agent: capabilities of the application come
+	// before it. Clip keeps append from writing into options.
+	options = append(slices.Clip(options), ai.WithRunCapabilities(streamGuard{cancel: cancel}))
 
 	var (
 		failed    error // why the stream ended before the run
@@ -231,7 +257,9 @@ func relay[E, Deps any](
 		// A deadline or a shutdown after the run completed does not fail it.
 		return nil
 	default:
-		// A canceled run ends without an error, so report why it was canceled.
-		return context.Cause(ctx)
+		// A canceled run ends without an error, so report why the server canceled it,
+		// if it did: a run that a tool canceled has no such reason. Not the cause of
+		// ctx, which streamGuard sets once the adapter stopped, after the cancel too.
+		return context.Cause(parent)
 	}
 }

@@ -86,9 +86,11 @@ func (l requestLimits) check(c fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusUnsupportedMediaType, "unsupported content type")
 	}
 	// A compressed body would fail as a 400 about its content: say what is wrong.
-	// Every header line counts.
-	for _, encoding := range c.Request().Header.PeekAll(fiber.HeaderContentEncoding) {
-		if len(encoding) > 0 && !utils.EqualFold(utils.UnsafeString(encoding), fiber.StrIdentity) {
+	// Every header line counts, however the peer spelled the name: GetAll compares it
+	// without regard to case, which the header of fasthttp does not with
+	// DisableHeaderNormalizing, and it leaves out the empty lines.
+	for _, encoding := range c.GetAll(fiber.HeaderContentEncoding) {
+		if !utils.EqualFold(encoding, fiber.StrIdentity) {
 			return fiber.NewError(fiber.StatusUnsupportedMediaType, "unsupported content encoding")
 		}
 	}

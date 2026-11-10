@@ -1,7 +1,6 @@
 package pydanticai
 
 import (
-	"bufio"
 	"cmp"
 	"context"
 	"io"
@@ -15,7 +14,6 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/sse"
 	"github.com/gofiber/utils/v2"
-	"github.com/valyala/fasthttp"
 )
 
 const streamEndGrace = 5 * time.Second
@@ -47,10 +45,14 @@ func serveStream[Deps, A any](
 			agentrun.Safely("OnClose", func() { opts.OnClose(deps, err) })
 		}
 	})
+	// fasthttp closes the user values of a request once it is done with the response,
+	// which is later than the Close of the body when a compressor reads it.
+	c.RequestCtx().SetUserValue(responseDoneKey{}, responseDone{hold})
 	config := sse.Config{
 		HeartbeatInterval: heartbeatInterval(opts.HeartbeatInterval),
 		DisableHeartbeat:  opts.DisableHeartbeat,
 		Handler: func(_ fiber.Ctx, stream *sse.Stream) error {
+			hold.started.Store(true)
 			return serve(stream.Context(), run, options, func(data []byte) error {
 				// Safe: Event writes the string before it returns.
 				return stream.Event(sse.Event{Data: utils.UnsafeString(data)})
@@ -80,16 +82,24 @@ type requestHold struct {
 	onClose  func(err error)
 	ended    chan error
 	released sync.Once
+	// started is set when the handler of the stream runs. The sse middleware starts it
+	// with the first read of the body, so a body that is closed unread never runs it.
+	started atomic.Bool
 
 	// conn is the connection of the request, taken while the handler runs.
 	conn net.Conn
-	// writing is when fasthttp started the write it is in, in Unix ns; 0 if none.
+	// base is the origin of writing. Its monotonic clock reading keeps a step of the
+	// wall clock, as an NTP correction or a restored snapshot, from changing how long
+	// a write has been blocked.
+	base time.Time
+	// writing is when fasthttp started the write it is in, in ns since base plus one;
+	// 0 if none.
 	writing atomic.Int64
 
 	grace time.Duration
 
 	mu sync.Mutex
-	// done is set once fasthttp is done with the body: the connection is left alone.
+	// done is set once fasthttp is done with the response: the connection is left alone.
 	done  bool
 	check *time.Timer
 
@@ -105,19 +115,37 @@ func newRequestHold(c fiber.Ctx, conn net.Conn, run supervised, grace time.Durat
 		onClose: onClose,
 		ended:   make(chan error, 1),
 		conn:    conn,
+		base:    time.Now(),
 		grace:   grace,
 	}
 	h.stopExpiry = run.AfterExpiry(h.expire)
 	return h
 }
 
-func (h *requestHold) streamEnded(err error) { h.ended <- err }
+// stamp is the value of writing for a write that starts now.
+func (h *requestHold) stamp() int64 { return int64(time.Since(h.base)) + 1 }
 
-// release cancels the run, waits for it and reports its end, once.
+// streamEnded reports why the stream ended, the first time.
+func (h *requestHold) streamEnded(err error) {
+	select {
+	case h.ended <- err:
+	default:
+	}
+}
+
+// release cancels the run if it is still going, waits for it and reports its end,
+// once.
 func (h *requestHold) release() {
 	h.released.Do(func() {
-		h.run.Cancel()
-		err := <-h.ended
+		var err error
+		select {
+		case err = <-h.ended:
+			// The run is over, but fasthttp may still be writing its end, which Timeout
+			// and a shutdown give a grace for: finish cancels the run.
+		default:
+			h.run.Cancel()
+			err = <-h.ended
+		}
 		h.run.End(err)
 		h.onClose(err)
 	})
@@ -143,7 +171,7 @@ func (h *requestHold) cut() {
 	}
 	next := h.grace
 	if since := h.writing.Load(); since != 0 {
-		blocked := time.Since(time.Unix(0, since))
+		blocked := time.Since(h.base) - time.Duration(since-1)
 		if blocked >= h.grace {
 			_ = h.conn.Close()
 			return
@@ -153,42 +181,100 @@ func (h *requestHold) cut() {
 	h.check.Reset(next)
 }
 
+// finish is called once fasthttp is done with the response: nothing is left to
+// cut, and the run lets go of its timers.
 func (h *requestHold) finish() {
 	h.stopExpiry()
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	h.done = true
 	if h.check != nil {
 		h.check.Stop()
 	}
+	h.mu.Unlock()
+	h.run.Cancel()
+}
+
+type responseDoneKey struct{}
+
+// responseDone is stored in the request, which fasthttp resets after it wrote the
+// response, or could not, and closes the values of that implement io.Closer.
+type responseDone struct{ hold *requestHold }
+
+func (d responseDone) Close() error {
+	d.hold.finish()
+	return nil
 }
 
 // Context is the context of the run, which sse derives the stream context from.
 func (h *requestHold) Context() context.Context { return h.run.Context() }
 
-func (h *requestHold) SendStreamWriter(write func(*bufio.Writer)) error {
-	return h.SendStream(&holdingBody{ReadCloser: fasthttp.NewStreamReader(write), hold: h})
+// gaveUp returns why a middleware gave up on the request, if it did, and lets go
+// of the run: nothing reads what the hold would send.
+func (h *requestHold) gaveUp() error {
+	err := context.Cause(h.Ctx.Context())
+	if err != nil {
+		h.finish()
+	}
+	return err
+}
+
+// SendStream is how the sse middleware sends its stream, which starts with the
+// first read of the body: the response is the hold's from here on.
+func (h *requestHold) SendStream(stream io.Reader, size ...int) error {
+	body, ok := stream.(io.ReadCloser)
+	if !ok {
+		body = io.NopCloser(stream)
+	}
+	if err := h.gaveUp(); err != nil {
+		_ = body.Close()
+		return err
+	}
+	return h.install(&holdingBody{ReadCloser: body, hold: h}, size...)
+}
+
+func (h *requestHold) install(body *holdingBody, size ...int) error {
+	err := h.Ctx.SendStream(body, size...)
+	// A middleware that gave up while the stream was set up never answers the request
+	// either, and fasthttp would not close the body of a response that it drops.
+	if err == nil && context.Cause(h.Ctx.Context()) != nil {
+		_ = body.Close()
+		h.finish()
+	}
+	return err
 }
 
 type holdingBody struct {
 	io.ReadCloser
 	hold *requestHold
+
+	closing  sync.Once
+	closeErr error
 }
 
 func (b *holdingBody) Read(p []byte) (int, error) {
 	b.hold.writing.Store(0)
 	n, err := b.ReadCloser.Read(p)
 	if n > 0 {
-		b.hold.writing.Store(time.Now().UnixNano())
+		b.hold.writing.Store(b.hold.stamp())
 	}
 	return n, err
 }
 
-// Close ends the response. It does not return before the run has ended.
+// Close ends the stream. It does not return before the run has ended.
 func (b *holdingBody) Close() error {
-	b.hold.finish()
-	err := b.ReadCloser.Close()
-	// fasthttp calls Close when the response is complete or cannot be written.
-	b.hold.release()
-	return err
+	b.closing.Do(func() {
+		// The callbacks of release are not a write to the client.
+		b.hold.writing.Store(0)
+		b.closeErr = b.ReadCloser.Close()
+		if !b.hold.started.Load() {
+			// Closing waited for a stream that started: this one never will.
+			b.hold.streamEnded(errStreamFailed)
+		}
+		b.hold.release()
+		// fasthttp calls Close when it has read the stream or cannot write it, and a
+		// compressor when it has read it, while the server may still be writing what it
+		// compressed. The rest of the response is being written until fasthttp is done.
+		b.hold.writing.Store(b.hold.stamp())
+	})
+	return b.closeErr
 }

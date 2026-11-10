@@ -110,12 +110,12 @@ func VercelChunks(t testing.TB, body io.Reader) (chunks []vercel.Chunk, done boo
 
 	reader := NewReader(body)
 	for data, ok := reader.NextData(); ok; data, ok = reader.NextData() {
+		if done {
+			t.Fatalf("pydanticaitest: chunk after [DONE]: %s", data)
+		}
 		if data == "[DONE]" {
 			done = true
 			continue
-		}
-		if done {
-			t.Fatalf("pydanticaitest: chunk after [DONE]: %s", data)
 		}
 		var chunk vercel.Chunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {

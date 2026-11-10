@@ -12,6 +12,7 @@ import (
 	"net/http/httptrace"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -316,10 +317,11 @@ func Test_ARequestThatATimeoutMiddlewareGaveUpOnStartsNoRun(t *testing.T) {
 		return struct{}{}, nil
 	}
 	tests := []struct {
-		name   string
-		path   string
-		body   string
-		handle func(agent *ai.Agent[struct{}, string]) fiber.Handler
+		name    string
+		path    string
+		body    string
+		headers map[string]string
+		handle  func(agent *ai.Agent[struct{}, string]) fiber.Handler
 	}{
 		{
 			name: "AG-UI", path: "/agui", body: aguiBody,
@@ -331,6 +333,24 @@ func Test_ARequestThatATimeoutMiddlewareGaveUpOnStartsNoRun(t *testing.T) {
 			name: "Vercel", path: "/chat", body: vercelBody,
 			handle: func(agent *ai.Agent[struct{}, string]) fiber.Handler {
 				return pydanticai.Vercel(agent, pydanticai.VercelConfig[struct{}]{Deps: slowDeps})
+			},
+		},
+		{
+			name: "Run", path: "/run", body: runBody,
+			handle: func(agent *ai.Agent[struct{}, string]) fiber.Handler {
+				return pydanticai.Run(agent, pydanticai.RunConfig[struct{}, string]{Deps: slowDeps})
+			},
+		},
+		{
+			// The run of a tool call does not see the cancellation of the request, so only
+			// the check before it starts keeps it from running.
+			name: "MCP", path: "/mcp", body: callMessage,
+			headers: map[string]string{
+				"Accept": "application/json, text/event-stream", "Mcp-Protocol-Version": "2026-07-28",
+				"Mcp-Method": "tools/call", "Mcp-Name": "ask",
+			},
+			handle: func(agent *ai.Agent[struct{}, string]) fiber.Handler {
+				return pydanticai.MCP(agent, pydanticai.MCPConfig[struct{}]{Deps: slowDeps})
 			},
 		},
 	}
@@ -347,9 +367,14 @@ func Test_ARequestThatATimeoutMiddlewareGaveUpOnStartsNoRun(t *testing.T) {
 				return err
 			}, timeout.Config{Timeout: 10 * time.Millisecond}))
 
-			// The middleware answers for the handler, and fasthttp never writes
-			// the response of the handler, so a run would never end.
-			resp, _ := post(t, app, test.path, test.body)
+			// The middleware answers for the handler and fasthttp never writes its
+			// response, so nobody would receive what a run produces, and a stream
+			// would never end.
+			request := newRequest(fiber.MethodPost, test.path, fiber.MIMEApplicationJSON, test.body)
+			for name, value := range test.headers {
+				request.Header.Set(name, value)
+			}
+			resp, _ := send(t, app, request)
 			require.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
 			require.ErrorIs(t, agenttest.Receive(t, returned, "the handler"), context.DeadlineExceeded)
 			require.False(t, called.Load(), "the agent ran for a request nobody waits for")
@@ -989,6 +1014,321 @@ func Test_AnAdapterThatStopsEarlyWhileAToolEmitsLater(t *testing.T) {
 	require.NotContains(t, agenttest.Receive(t, closed, "OnClose").Error(), "panic")
 }
 
+// Two tools emit several events after the adapter stopped: each one that reaches
+// the loop which the adapter left would panic, not only the first.
+func Test_AnAdapterThatStopsEarlyWhileToolsEmitManyEventsLater(t *testing.T) {
+	t.Parallel()
+
+	agent := ai.NewAgent[struct{}, string](agenttest.ToolCalls("nan", "late1", "late2"))
+	ai.AddSimpleTool(agent, "nan", func(context.Context, struct{}) (unencodableToolResult, error) {
+		return unencodableToolResult{Value: math.NaN()}, nil // the adapter cannot convert it
+	})
+	finished := make(chan struct{}, 2)
+	for _, name := range []string{"late1", "late2"} {
+		ai.AddTool(agent, name, func(_ context.Context, rc *ai.RunContext[struct{}], _ struct{}) (string, error) {
+			defer func() { finished <- struct{}{} }()
+			time.Sleep(300 * time.Millisecond)
+			for range 3 {
+				_ = rc.Emit(ai.NewCustomEvent("late", "x"))
+			}
+			return "ok", nil
+		})
+	}
+	closed := make(chan error, 1)
+	handler := pydanticai.AGUI(agent, pydanticai.AGUIConfig[struct{}]{
+		OnClose: func(_ struct{}, err error) { closed <- err },
+	})
+
+	_, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
+	require.Contains(t, aguiFailure(t, body), "encode tool result", "the failure of the adapter, not a panic")
+	require.NotContains(t, agenttest.Receive(t, closed, "OnClose").Error(), "panic")
+	// A panic after the test returned would be lost: wait for the tools.
+	agenttest.Receive(t, finished, "the first late tool")
+	agenttest.Receive(t, finished, "the second late tool")
+}
+
+// A run that goes on after its stream failed spends the tokens of a client that is
+// gone, and repeats the side effects of its tools.
+func Test_ARunStopsWhenItsStreamFailed(t *testing.T) {
+	t.Parallel()
+
+	var modelCalls atomic.Int32
+	model := fakes.NewFunctionModel(func(
+		_ context.Context, messages []ai.ModelMessage, _ ai.ModelRequestParams,
+	) (*ai.ModelResponse, error) {
+		modelCalls.Add(1)
+		for _, message := range messages {
+			if _, ok := message.(ai.ModelResponse); ok {
+				return textResponse("done"), nil
+			}
+		}
+		return &ai.ModelResponse{Parts: []ai.ResponsePart{
+			ai.ToolCallPart{ToolName: "progress", Args: []byte(`{}`), ToolCallID: "call-0"},
+		}}, nil
+	})
+	agent := ai.NewAgent[struct{}, string](model)
+	ai.AddTool(agent, "progress", func(_ context.Context, rc *ai.RunContext[struct{}], _ struct{}) (string, error) {
+		return "ok", rc.Emit(ai.NewCustomEvent("progress", unencodable{})) // no protocol can encode it
+	})
+	closed := make(chan error, 1)
+	handler := pydanticai.AGUI(agent, pydanticai.AGUIConfig[struct{}]{
+		OnClose: func(_ struct{}, err error) { closed <- err },
+	})
+
+	_, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
+	require.Contains(t, aguiFailure(t, body), "encode")
+	require.Error(t, agenttest.Receive(t, closed, "OnClose"))
+	require.Never(t, func() bool { return modelCalls.Load() > 1 }, 300*time.Millisecond, 10*time.Millisecond,
+		"the run went on after its stream failed")
+}
+
+// panickingResult is a tool result that panics when it is encoded as JSON, as a
+// MarshalJSON with a bug does.
+type panickingResult struct{}
+
+func (panickingResult) MarshalJSON() ([]byte, error) { panic("bug in MarshalJSON") }
+
+// pydantic-ai-go emits the result of a tool on the goroutine of the tool call when
+// the response has more than one call, and the code that handles the event runs
+// there: the adapter and the encoding of the handler. A panic in it must not end
+// the process either.
+func Test_APanicWhileHandlingAToolResultEndsTheRunWithAnError(t *testing.T) {
+	// Not parallel: the log is global, and CaptureLog replaces it. Neither are the
+	// subtests, as the log is read after them.
+	logs := agenttest.CaptureLog(t)
+
+	// A single call runs on the goroutine of the stream, two on goroutines of their own.
+	for _, calls := range [][]string{{"report"}, {"report", "fine"}, {"fine", "report"}} {
+		agent := ai.NewAgent[struct{}, string](agenttest.ToolCalls(calls...))
+		ai.AddSimpleTool(agent, "report", func(context.Context, struct{}) (panickingResult, error) {
+			return panickingResult{}, nil
+		})
+		ai.AddSimpleTool(agent, "fine", func(context.Context, struct{}) (string, error) { return "ok", nil })
+		name := strings.Join(calls, ", ")
+
+		t.Run("AG-UI: "+name, func(t *testing.T) {
+			closed := make(chan error, 1)
+			handler := pydanticai.AGUI(agent, pydanticai.AGUIConfig[struct{}]{
+				OnClose: func(_ struct{}, err error) { closed <- err },
+			})
+
+			resp, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
+			require.Equal(t, fiber.StatusOK, resp.StatusCode)
+			require.Equal(t, "internal error", aguiFailure(t, body))
+			require.NotContains(t, body, "bug in MarshalJSON", "the value of the panic stays on the server")
+			require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "panic in the run: bug in MarshalJSON")
+		})
+
+		t.Run("Vercel: "+name, func(t *testing.T) {
+			closed := make(chan error, 1)
+			handler := pydanticai.Vercel(agent, pydanticai.VercelConfig[struct{}]{
+				OnClose: func(_ struct{}, err error) { closed <- err },
+			})
+
+			resp, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
+			require.Equal(t, fiber.StatusOK, resp.StatusCode)
+			require.Equal(t, "internal error", vercelFailure(t, body))
+			require.NotContains(t, body, "bug in MarshalJSON", "the value of the panic stays on the server")
+			require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "panic in the run: bug in MarshalJSON")
+		})
+	}
+	require.Contains(t, logs.String(), "panic in the run: bug in MarshalJSON")
+	require.Contains(t, logs.String(), "goroutine ", "the stack of the panic")
+}
+
+// emptyArgs are the arguments of a tool that takes none.
+type emptyArgs struct{}
+
+// panickingArgs are arguments that panic when they are decoded, as an UnmarshalJSON
+// with a bug does.
+type panickingArgs struct{}
+
+func (*panickingArgs) UnmarshalJSON([]byte) error { panic("bug in UnmarshalJSON") }
+
+// pydantic-ai-go decodes and validates the arguments of a tool call before it calls
+// the tool: outside the wrapper of the call, and when the response has more than one
+// call on the goroutine of the call. A panic in that code, which the arguments that
+// the model chose can reach, must not end the process either, whichever handler
+// runs the agent.
+func Test_APanicWhileValidatingTheArgumentsOfAToolCallEndsTheRunWithAnError(t *testing.T) {
+	// Not parallel: the log is global, and CaptureLog replaces it. Neither are the
+	// subtests, as the log is read after them.
+	logs := agenttest.CaptureLog(t)
+
+	kinds := map[string]struct {
+		cause string
+		add   func(agent *ai.Agent[struct{}, string])
+	}{
+		"a validator": {"bug in the validator", func(agent *ai.Agent[struct{}, string]) {
+			ai.AddToolWithArgsValidator(agent, "checked",
+				func(context.Context, *ai.RunContext[struct{}], emptyArgs) (string, error) { return "ok", nil },
+				func(context.Context, *ai.RunContext[struct{}], emptyArgs) error { panic("bug in the validator") })
+		}},
+		"UnmarshalJSON": {"bug in UnmarshalJSON", func(agent *ai.Agent[struct{}, string]) {
+			ai.AddSimpleTool(agent, "checked", func(context.Context, panickingArgs) (string, error) { return "ok", nil })
+		}},
+	}
+	for kind, test := range kinds {
+		for _, calls := range [][]string{{"checked"}, {"checked", "fine"}} {
+			agent := ai.NewAgent[struct{}, string](agenttest.ToolCalls(calls...))
+			test.add(agent)
+			ai.AddSimpleTool(agent, "fine", func(context.Context, struct{}) (string, error) { return "ok", nil })
+			name := kind + ": " + strings.Join(calls, ", ")
+
+			t.Run("AG-UI: "+name, func(t *testing.T) {
+				closed := make(chan error, 1)
+				handler := pydanticai.AGUI(agent, pydanticai.AGUIConfig[struct{}]{
+					OnClose: func(_ struct{}, err error) { closed <- err },
+				})
+
+				resp, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
+				require.Equal(t, fiber.StatusOK, resp.StatusCode)
+				require.Equal(t, "internal error", aguiFailure(t, body))
+				require.NotContains(t, body, test.cause, "the value of the panic stays on the server")
+				require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "panic in the run: "+test.cause)
+			})
+
+			t.Run("Vercel: "+name, func(t *testing.T) {
+				closed := make(chan error, 1)
+				handler := pydanticai.Vercel(agent, pydanticai.VercelConfig[struct{}]{
+					OnClose: func(_ struct{}, err error) { closed <- err },
+				})
+
+				resp, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
+				require.Equal(t, fiber.StatusOK, resp.StatusCode)
+				require.Equal(t, "internal error", vercelFailure(t, body))
+				require.NotContains(t, body, test.cause, "the value of the panic stays on the server")
+				require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "panic in the run: "+test.cause)
+			})
+
+			t.Run("Run: "+name, func(t *testing.T) {
+				ends, recovered := make(chan runEnd, 1), make(chan any, 1)
+				app := fiber.New()
+				app.Use(recoverer.New(recoverer.Config{PanicHandler: func(_ fiber.Ctx, r any) error {
+					recovered <- r
+					return fiber.ErrInternalServerError
+				}}))
+				app.Post("/ask", pydanticai.Run(agent, pydanticai.RunConfig[struct{}, string]{
+					OnRunEnd: func(_ struct{}, run *ai.RunInfo, err error) { ends <- runEnd{run: run, err: err} },
+				}))
+
+				resp, body := post(t, app, "/ask", runBody)
+				require.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
+				require.Equal(t, "Internal Server Error", body, "the value of the panic stays on the server")
+				require.ErrorContains(t, agenttest.Receive(t, ends, "OnRunEnd").err, "panic in the run: "+test.cause)
+				require.Empty(t, recovered, "Run recovered the panic, not the recover middleware")
+			})
+
+			t.Run("MCP: "+name, func(t *testing.T) {
+				ends := make(chan runEnd, 1)
+				app := mcpApp(pydanticai.MCP(agent, pydanticai.MCPConfig[struct{}]{
+					OnRunEnd: func(_ struct{}, run *ai.RunInfo, err error) { ends <- runEnd{run: run, err: err} },
+				}))
+
+				result := mcpAsk(t, mcpConnect(t, mcpServe(t, app), ""), "Hello")
+				require.True(t, result.IsError)
+				require.Equal(t, "internal error", mcpResultText(t, result))
+				require.ErrorContains(t, agenttest.Receive(t, ends, "OnRunEnd").err, "panic in the run: "+test.cause)
+			})
+		}
+	}
+	require.Contains(t, logs.String(), "panic in the run: bug in the validator")
+	require.Contains(t, logs.String(), "goroutine ", "the stack of the panic")
+}
+
+func Test_ARunThatAToolCanceledEndsWithoutAnError(t *testing.T) {
+	t.Parallel()
+
+	for _, protocol := range streamProtocols() {
+		t.Run(protocol.name, func(t *testing.T) {
+			t.Parallel()
+
+			agent := ai.NewAgent[userDeps, string](agenttest.ToolCalls("stop"))
+			ai.AddTool(agent, "stop", func(_ context.Context, rc *ai.RunContext[userDeps], _ struct{}) (string, error) {
+				rc.Cancel()
+				return "", nil
+			})
+			ends, closed := make(chan runEnd, 1), make(chan closeEvent, 1)
+			handler := protocol.build(agent,
+				func(deps userDeps, run *ai.RunInfo, err error) { ends <- runEnd{deps: deps, run: run, err: err} },
+				func(deps userDeps, err error) { closed <- closeEvent{deps: deps, err: err} },
+				0)
+
+			resp, body := post(t, newApp(protocol.path, handler), protocol.path, protocol.body)
+			require.Equal(t, fiber.StatusOK, resp.StatusCode)
+			// The client gets the end of a canceled run, which is not a failure.
+			if protocol.name == "AG-UI" {
+				events := aguiEvents(t, body)
+				last := events[len(events)-1]
+				require.Equal(t, agui.EventRunFinished, last.Type)
+				require.Nil(t, last.Outcome, "a canceled run has no outcome")
+			} else {
+				chunks, done := vercelChunks(t, body)
+				require.True(t, done)
+				require.Equal(t, vercel.ChunkAbort, chunks[len(chunks)-1].Type)
+			}
+
+			// And so do the callbacks: the guard of the stream cancels the context of
+			// the relay when the adapter stops, which is not why this run ended.
+			require.NoError(t, agenttest.Receive(t, closed, "OnClose").err, "a run that a tool canceled ended normally")
+			end := agenttest.Receive(t, ends, "OnRunEnd")
+			require.NoError(t, end.err)
+			require.NotNil(t, end.run)
+		})
+	}
+}
+
+var errRejected = errors.New("rejected by the application")
+
+// rejectingProcessor fails the stream on the first tool result, as a content filter
+// of the application would, and reports that it did.
+type rejectingProcessor struct {
+	stopped chan struct{}
+	once    sync.Once
+}
+
+func (*rejectingProcessor) Setup(*ai.CapabilityRegistry) error { return nil }
+
+func (p *rejectingProcessor) ProcessStreamEvent(_ context.Context, _ *ai.RunInfo, event ai.StreamEvent) (ai.StreamEvent, error) {
+	if _, ok := event.(ai.FunctionToolResultEvent); ok {
+		p.once.Do(func() { close(p.stopped) })
+		return nil, errRejected
+	}
+	return event, nil
+}
+
+// A capability that the application adds to a run with RunOptions can end the stream.
+// The guard sits next to the agent, behind it, so that the loop of the agent never
+// sees its consumer stop, whatever comes between them.
+func Test_ACapabilityOfTheApplicationThatEndsTheStreamWhileAToolEmitsLater(t *testing.T) {
+	// Not parallel: a panic goes to the log, which CaptureLog replaces.
+	logs := agenttest.CaptureLog(t)
+
+	stopped, finished := make(chan struct{}), make(chan struct{})
+	agent := ai.NewAgent[struct{}, string](agenttest.ToolCalls("fast", "late"))
+	ai.AddSimpleTool(agent, "fast", func(context.Context, struct{}) (string, error) { return "ok", nil })
+	ai.AddTool(agent, "late", func(_ context.Context, rc *ai.RunContext[struct{}], _ struct{}) (string, error) {
+		defer close(finished)
+		<-stopped
+		time.Sleep(100 * time.Millisecond) // the stream is over by now
+		return "ok", rc.Emit(ai.NewCustomEvent("progress", "late"))
+	})
+	closed := make(chan error, 1)
+	handler := pydanticai.AGUI(agent, pydanticai.AGUIConfig[struct{}]{
+		RunOptions: func(fiber.Ctx) ([]ai.RunOption, error) {
+			return []ai.RunOption{ai.WithRunCapabilities(&rejectingProcessor{stopped: stopped})}, nil
+		},
+		OnClose: func(_ struct{}, err error) { closed <- err },
+	})
+
+	_, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
+	require.Equal(t, "rejected by the application", aguiFailure(t, body))
+	require.Equal(t, 1, strings.Count(body, `"RUN_ERROR"`), "the failure is told once")
+	require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), errRejected)
+	agenttest.Receive(t, finished, "the late tool") // a panic after the test returned would be lost
+	require.NotContains(t, logs.String(), "panic")
+}
+
 func Test_CancelOnShutdown(t *testing.T) {
 	t.Parallel()
 
@@ -1284,6 +1624,34 @@ func Test_AGUI_ClosedSocketCancelsRun(t *testing.T) {
 	require.Error(t, agenttest.Receive(t, closed, "OnClose"))
 }
 
+func Test_AGUI_ClosedSocketCancelsRunBehindCompress(t *testing.T) {
+	t.Parallel()
+
+	model, started, canceled := agenttest.Blocking()
+	closed := make(chan error, 1)
+	app := fiber.New()
+	app.Use(compress.New())
+	app.Post("/agui", pydanticai.AGUI(ai.NewAgent[struct{}, string](model), pydanticai.AGUIConfig[struct{}]{
+		HeartbeatInterval: 20 * time.Millisecond,
+		OnClose:           func(_ struct{}, err error) { closed <- err },
+	}))
+
+	response, closeConnection := openStream(t, listen(t, app)+"/agui", aguiBody, func(request *http.Request) {
+		request.Header.Set(fiber.HeaderAcceptEncoding, "gzip") // set by hand, so net/http leaves the body encoded
+	})
+	reader, err := gzip.NewReader(response.Body)
+	require.NoError(t, err)
+	record, ok := pydanticaitest.NewReader(reader).NextData()
+	require.True(t, ok)
+	require.Contains(t, record, `"type":"RUN_STARTED"`)
+	agenttest.Receive(t, started, "the model call")
+
+	closeConnection()
+
+	require.ErrorIs(t, agenttest.Receive(t, canceled, "the cancellation of the model call"), context.Canceled)
+	require.Error(t, agenttest.Receive(t, closed, "OnClose"))
+}
+
 func Test_Vercel_ClosedSocketCancelsRun(t *testing.T) {
 	t.Parallel()
 
@@ -1371,6 +1739,87 @@ func Test_TimeoutEndsAStreamWhoseClientStoppedReading(t *testing.T) {
 	require.Error(t, agenttest.Receive(t, closed, "OnClose"))
 }
 
+// stallingListener serves connections whose writes block, after the first, until
+// the connection is closed: a client that stopped reading, whatever the size of the
+// socket buffers.
+type stallingListener struct{ net.Listener }
+
+func (l stallingListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return &stallingConn{Conn: conn, closed: make(chan struct{})}, nil
+}
+
+type stallingConn struct {
+	net.Conn
+	writes atomic.Int32
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (c *stallingConn) Write(p []byte) (int, error) {
+	if c.writes.Add(1) == 1 {
+		return c.Conn.Write(p)
+	}
+	<-c.closed
+	return 0, net.ErrClosed
+}
+
+func (c *stallingConn) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return c.Conn.Close()
+}
+
+// A compressor closes the body of the stream when it has read the stream, while the
+// server is still writing what it compressed to a client that stopped reading.
+func Test_CompressKeepsTheCutOfAClientThatStoppedReading(t *testing.T) {
+	t.Parallel()
+
+	for _, shutdown := range []bool{false, true} {
+		t.Run(fmt.Sprintf("shutdown: %v", shutdown), func(t *testing.T) {
+			t.Parallel()
+
+			closed := make(chan error, 1)
+			config := pydanticai.AGUIConfig[struct{}]{
+				CancelOnShutdown: shutdown,
+				OnClose:          func(_ struct{}, err error) { closed <- err },
+			}
+			if !shutdown {
+				config.Timeout = 200 * time.Millisecond
+			}
+			app := fiber.New()
+			app.Use(compress.New())
+			app.Post("/agui", pydanticai.AGUI(ai.NewAgent[struct{}, string](fakes.NewTestModel()),
+				pydanticai.WithStreamEndGrace(config, 50*time.Millisecond)))
+
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+			go func() { _ = app.Listener(stallingListener{ln}, fiber.ListenConfig{DisableStartupMessage: true}) }()
+			t.Cleanup(func() { _ = app.ShutdownWithTimeout(observeTimeout) })
+
+			conn, err := net.Dial("tcp", ln.Addr().String())
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = conn.Close() })
+			_, err = fmt.Fprintf(conn, "POST /agui HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"+
+				"Accept-Encoding: gzip\r\nContent-Length: %d\r\n\r\n%s", len(aguiBody), aguiBody)
+			require.NoError(t, err)
+
+			// The run is over, and the server is stuck writing the end of the stream.
+			agenttest.Receive(t, closed, "OnClose")
+			if shutdown {
+				require.NoError(t, app.ShutdownWithTimeout(observeTimeout), "the shutdown waited for the client")
+			}
+
+			// The connection is closed once the write was blocked for the grace.
+			require.NoError(t, conn.SetReadDeadline(time.Now().Add(observeTimeout)))
+			_, err = io.Copy(io.Discard, conn)
+			require.NoError(t, err, "the connection of the client was not closed")
+		})
+	}
+}
+
 func Test_TimeoutLeavesTheClientOfARunThatIsSlowToEnd(t *testing.T) {
 	t.Parallel()
 
@@ -1398,30 +1847,41 @@ func Test_TimeoutLeavesTheClientOfARunThatIsSlowToEnd(t *testing.T) {
 func Test_AConnectionServesTheNextRequestAfterAStreamThatTimedOut(t *testing.T) {
 	t.Parallel()
 
-	app := newApp("/agui", pydanticai.AGUI(slowAgent(), pydanticai.WithStreamEndGrace(
-		pydanticai.AGUIConfig[struct{}]{Timeout: 50 * time.Millisecond}, 100*time.Millisecond)))
-	url := listen(t, app) + "/agui"
-	client := &http.Client{Transport: &http.Transport{}}
-	t.Cleanup(client.CloseIdleConnections)
+	for _, compressed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("compress: %v", compressed), func(t *testing.T) {
+			t.Parallel()
 
-	// stream posts a request and returns whether it reused a connection.
-	stream := func() bool {
-		var reused bool
-		trace := &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) { reused = info.Reused }}
-		ctx, cancel := context.WithTimeout(httptrace.WithClientTrace(context.Background(), trace), 2*observeTimeout)
-		defer cancel()
-		request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(aguiBody))
-		require.NoError(t, err)
-		request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
-		response, err := client.Do(request)
-		require.NoError(t, err)
-		defer func() { _ = response.Body.Close() }()
-		events := pydanticaitest.AGUIEvents(t, response.Body)
-		require.Equal(t, agui.EventRunFinished, events[len(events)-1].Type)
-		return reused
+			app := fiber.New()
+			if compressed {
+				app.Use(compress.New())
+			}
+			app.Post("/agui", pydanticai.AGUI(slowAgent(), pydanticai.WithStreamEndGrace(
+				pydanticai.AGUIConfig[struct{}]{Timeout: 50 * time.Millisecond}, 100*time.Millisecond)))
+			url := listen(t, app) + "/agui"
+			client := &http.Client{Transport: &http.Transport{}} // asks for gzip, and decodes it
+			t.Cleanup(client.CloseIdleConnections)
+
+			// stream posts a request and returns whether it reused a connection.
+			stream := func() bool {
+				var reused bool
+				trace := &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) { reused = info.Reused }}
+				ctx, cancel := context.WithTimeout(httptrace.WithClientTrace(context.Background(), trace), 2*observeTimeout)
+				defer cancel()
+				request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(aguiBody))
+				require.NoError(t, err)
+				request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+				response, err := client.Do(request)
+				require.NoError(t, err)
+				defer func() { _ = response.Body.Close() }()
+				require.Equal(t, compressed, response.Uncompressed, "the transport decoded the stream if it was compressed")
+				events := pydanticaitest.AGUIEvents(t, response.Body)
+				require.Equal(t, agui.EventRunFinished, events[len(events)-1].Type)
+				return reused
+			}
+
+			stream()
+			time.Sleep(300 * time.Millisecond) // past the grace
+			require.True(t, stream(), "the connection was closed")
+		})
 	}
-
-	stream()
-	time.Sleep(300 * time.Millisecond) // past the grace
-	require.True(t, stream(), "the connection was closed")
 }

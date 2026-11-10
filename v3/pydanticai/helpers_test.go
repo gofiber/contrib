@@ -33,6 +33,11 @@ const (
 	observeTimeout = agenttest.ObserveTimeout
 )
 
+// testConfig is the config of app.Test for the requests that a test does not give
+// one: the default timeout of a second is short for a runner under the race
+// detector, with a request that makes calls of its own to a server.
+var testConfig = fiber.TestConfig{Timeout: 10 * time.Second, FailOnTimeout: true}
+
 // userDeps are the dependencies of the agents that see a per-request user.
 type userDeps struct {
 	User string
@@ -191,6 +196,9 @@ func newApp(path string, handler fiber.Handler, config ...fiber.Config) *fiber.A
 // send sends a prepared request to app and returns the response with its body.
 func send(t *testing.T, app *fiber.App, request *http.Request, config ...fiber.TestConfig) (*http.Response, string) {
 	t.Helper()
+	if len(config) == 0 {
+		config = []fiber.TestConfig{testConfig}
+	}
 	response, err := app.Test(request, config...)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = response.Body.Close() })
@@ -235,7 +243,7 @@ func concurrently(t *testing.T, app *fiber.App, target, body string) []string {
 	for i := range requests {
 		group.Go(func() {
 			request := newRequest(fiber.MethodPost, fmt.Sprintf("%s?user=user-%d", target, i), fiber.MIMEApplicationJSON, body)
-			response, err := app.Test(request)
+			response, err := app.Test(request, testConfig)
 			if err != nil {
 				errs[i] = err
 				return

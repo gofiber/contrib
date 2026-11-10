@@ -435,6 +435,11 @@ func newTestHold(grace time.Duration) (*requestHold, *fakeRun, *closeRecorder) {
 	return hold, run, conn
 }
 
+// stampWrite records that fasthttp started a write ago, as holdingBody.Read does.
+func (h *requestHold) stampWrite(ago time.Duration) {
+	h.writing.Store(int64(time.Since(h.base)-ago) + 1)
+}
+
 func Test_requestHold_expire(t *testing.T) {
 	t.Parallel()
 
@@ -477,7 +482,7 @@ func Test_requestHold_cut(t *testing.T) {
 		t.Helper()
 		h, _, conn := newTestHold(grace)
 		if blocked > 0 {
-			h.writing.Store(time.Now().Add(-blocked).UnixNano())
+			h.stampWrite(blocked)
 		}
 		h.expire()
 		t.Cleanup(h.finish)
@@ -540,9 +545,9 @@ func Test_requestHold_release(t *testing.T) {
 		}
 		wg.Wait()
 		hold.release()
-		require.Equal(t, "cancel, end the client went away, close the client went away", run.recorded(),
-			"the run is canceled, ended, and then OnClose is told, each once")
-		require.Error(t, run.Context().Err(), "the run was canceled")
+		require.Equal(t, "end the client went away, close the client went away", run.recorded(),
+			"the run is ended, and then OnClose is told, each once")
+		require.NoError(t, run.Context().Err(), "a run that is over keeps its context for finish")
 	})
 
 	t.Run("waits for the run to return", func(t *testing.T) {
@@ -580,31 +585,288 @@ func Test_requestHold_expiry(t *testing.T) {
 
 	hold, run, conn := newTestHold(20 * time.Millisecond)
 	t.Cleanup(hold.finish)
-	hold.writing.Store(time.Now().Add(-time.Hour).UnixNano()) // a write to a client that stopped reading
+	hold.stampWrite(time.Hour) // a write to a client that stopped reading
 
 	run.expire(t) // the server ended the run
 	require.Eventually(t, conn.closed.Load, agenttest.ObserveTimeout, time.Millisecond)
 }
 
+func Test_holdingBody_Read(t *testing.T) {
+	t.Parallel()
+
+	hold, _, _ := newTestHold(time.Hour)
+	t.Cleanup(hold.finish)
+	body := &holdingBody{ReadCloser: io.NopCloser(strings.NewReader("events")), hold: hold}
+
+	// How long a write has been blocked comes from the monotonic clock: a step of the
+	// wall clock, as an NTP correction or a restored snapshot make, must not change it.
+	require.Contains(t, hold.base.String(), "m=", "the base has a monotonic clock reading")
+
+	p := make([]byte, 16)
+	n, err := body.Read(p)
+	require.NoError(t, err)
+	require.Equal(t, "events", string(p[:n]))
+	since := hold.writing.Load()
+	require.Positive(t, since, "fasthttp is writing what it read")
+	require.Less(t, since, int64(time.Minute), "an offset from the base, not a Unix time")
+
+	_, err = body.Read(p)
+	require.ErrorIs(t, err, io.EOF)
+	require.Zero(t, hold.writing.Load(), "no write is in flight while fasthttp waits for the next read")
+}
+
 func Test_holdingBody_Close(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a compressor closes the body while the server writes what it compressed", func(t *testing.T) {
+		t.Parallel()
+
+		const grace = 50 * time.Millisecond
+		run, conn := newFakeRun(), new(closeRecorder)
+		var (
+			hold         *requestHold
+			inCallback   int64 = -1
+			closedDuring bool
+		)
+		hold = newRequestHold(nil, conn, run, grace, func(err error) {
+			inCallback = hold.writing.Load()
+			time.Sleep(4 * grace) // a slow OnClose, while the check runs
+			closedDuring = conn.closed.Load()
+			run.record("close " + text(err))
+		})
+		hold.streamEnded(nil)
+		body := &holdingBody{ReadCloser: io.NopCloser(strings.NewReader("events")), hold: hold}
+
+		// The server ended the run while a write to the client is blocked: the check
+		// that closes the connection is armed.
+		hold.stampWrite(time.Hour)
+		hold.expire()
+
+		// A compressor closes the body when it has read the stream, while the server is
+		// still writing what it compressed: the check goes on.
+		require.NoError(t, body.Close())
+		require.Zero(t, inCallback, "the callbacks are not a write to the client")
+		require.False(t, closedDuring, "a slow OnClose does not get the connection closed")
+		require.Equal(t, "end ok, close ok", run.recorded(), "Close ends the run")
+		require.False(t, run.stopped.Load(), "the server can still end the run")
+		require.NotZero(t, hold.writing.Load(), "the rest of the response is being written")
+		require.Eventually(t, conn.closed.Load, agenttest.ObserveTimeout, time.Millisecond,
+			"the connection of a client that stopped reading is closed")
+	})
+
+	t.Run("a run that is still going is canceled", func(t *testing.T) {
+		t.Parallel()
+
+		hold, run, _ := newTestHold(time.Hour)
+		hold.started.Store(true) // the handler runs, and reports its end when the run is canceled
+		body := &holdingBody{ReadCloser: io.NopCloser(strings.NewReader("events")), hold: hold}
+		closed := make(chan error, 1)
+		go func() { closed <- body.Close() }()
+
+		agenttest.Receive(t, run.Context().Done(), "the run to be canceled")
+		hold.streamEnded(nil)
+		require.NoError(t, agenttest.Receive(t, closed, "Close"))
+		require.Equal(t, "cancel, end ok, close ok", run.recorded())
+	})
+
+	t.Run("once, however often and from wherever it is called", func(t *testing.T) {
+		t.Parallel()
+
+		hold, run, _ := newTestHold(time.Hour)
+		hold.streamEnded(nil)
+		body := &holdingBody{ReadCloser: io.NopCloser(strings.NewReader("events")), hold: hold}
+
+		var wg sync.WaitGroup
+		for range 3 {
+			wg.Go(func() { require.NoError(t, body.Close()) })
+		}
+		wg.Wait()
+		require.NoError(t, body.Close())
+		require.Equal(t, "end ok, close ok", run.recorded())
+	})
+
+	// The sse middleware starts the handler of a stream with the first read of the body.
+	t.Run("a body that is closed unread", func(t *testing.T) {
+		t.Parallel()
+
+		hold, run, _ := newTestHold(time.Hour)
+		body := &holdingBody{ReadCloser: io.NopCloser(strings.NewReader("events")), hold: hold}
+
+		// Nothing will report the end of a stream that never starts.
+		require.NoError(t, agenttest.Receive(t, func() chan error {
+			closed := make(chan error, 1)
+			go func() { closed <- body.Close() }()
+			return closed
+		}(), "Close"))
+		require.Equal(t, "end "+text(errStreamFailed)+", close "+text(errStreamFailed), run.recorded())
+	})
+
+	t.Run("a body that was read", func(t *testing.T) {
+		t.Parallel()
+
+		hold, run, _ := newTestHold(time.Hour)
+		hold.started.Store(true) // the handler ran, and OnClose reported its end
+		hold.streamEnded(nil)
+		body := &holdingBody{ReadCloser: io.NopCloser(strings.NewReader("events")), hold: hold}
+
+		require.NoError(t, body.Close())
+		require.Equal(t, "end ok, close ok", run.recorded(), "the end that OnClose reported, not a failure")
+	})
+}
+
+func Test_requestHold_finish(t *testing.T) {
 	t.Parallel()
 
 	const grace = 20 * time.Millisecond
 	hold, run, conn := newTestHold(grace)
-	hold.streamEnded(nil)
-	body := &holdingBody{ReadCloser: io.NopCloser(strings.NewReader("events")), hold: hold}
-
-	// The server ended the run while a write to the client is blocked: the check
-	// that closes the connection is armed.
-	hold.writing.Store(time.Now().Add(-time.Hour).UnixNano())
+	hold.stampWrite(time.Hour)
 	hold.expire()
 
-	// fasthttp is done with the body, and the connection can serve another request.
-	require.NoError(t, body.Close())
-	time.Sleep(4 * grace) // a check that Close did not stop would have fired by now
+	// fasthttp closes the values of a request once it is done with the response,
+	// and the connection can serve another request.
+	require.NoError(t, responseDone{hold}.Close())
+	time.Sleep(4 * grace) // a check that finish did not stop would have fired by now
 	require.False(t, conn.closed.Load(), "the connection of the next request is left alone")
 	require.True(t, run.stopped.Load(), "the server can end the run, and nothing is left to look for")
-	require.Equal(t, "cancel, end ok, close ok", run.recorded(), "Close releases the run")
+	require.Equal(t, "cancel", run.recorded(), "the run lets go of its timers")
+}
+
+// lazyStream is a body that starts its handler with the first read, as the stream
+// of the sse middleware does, and whose Close waits for the handler.
+type lazyStream struct {
+	hold    *requestHold
+	started bool
+	done    chan struct{}
+}
+
+func (s *lazyStream) Read([]byte) (int, error) {
+	if !s.started {
+		s.started = true
+		s.done = make(chan struct{})
+		s.hold.started.Store(true)
+		go func() {
+			s.hold.streamEnded(nil)
+			close(s.done)
+		}()
+	}
+	return 0, io.EOF
+}
+
+func (s *lazyStream) Close() error {
+	if s.started {
+		<-s.done
+	}
+	return nil
+}
+
+// closedRecorder is a body that records that it was closed.
+type closedRecorder struct {
+	io.Reader
+	closed atomic.Bool
+}
+
+func (c *closedRecorder) Close() error {
+	c.closed.Store(true)
+	return nil
+}
+
+func Test_requestHold_SendStream(t *testing.T) {
+	t.Parallel()
+
+	// newCtx returns a context of the request, and the function that ends the request
+	// as a timeout middleware does: with a cause for its context.
+	newCtx := func(t *testing.T) (fiber.Ctx, context.CancelCauseFunc) {
+		t.Helper()
+		app := fiber.New()
+		c := app.AcquireCtx(new(fasthttp.RequestCtx))
+		t.Cleanup(func() { app.ReleaseCtx(c) })
+		ctx, cancel := context.WithCancelCause(context.Background())
+		c.SetContext(ctx)
+		return c, cancel
+	}
+
+	t.Run("wraps the stream of the sse middleware and runs it once", func(t *testing.T) {
+		t.Parallel()
+
+		c, _ := newCtx(t)
+		run := newFakeRun()
+		hold := newRequestHold(c, new(closeRecorder), run, time.Hour, func(err error) { run.record("close " + text(err)) })
+		stream := &lazyStream{hold: hold}
+
+		require.NoError(t, hold.SendStream(stream))
+		body, ok := c.RequestCtx().Response.BodyStream().(*holdingBody)
+		require.True(t, ok, "the response is sent through the hold")
+		require.Equal(t, stream, body.ReadCloser)
+
+		_, err := body.Read(make([]byte, 8))
+		require.ErrorIs(t, err, io.EOF)
+		require.NoError(t, body.Close())
+		require.Equal(t, "end ok, close ok", run.recorded())
+	})
+
+	t.Run("a stream that cannot be closed", func(t *testing.T) {
+		t.Parallel()
+
+		c, _ := newCtx(t)
+		run := newFakeRun()
+		hold := newRequestHold(c, new(closeRecorder), run, time.Hour, func(err error) { run.record("close " + text(err)) })
+		hold.started.Store(true)
+		hold.streamEnded(nil)
+
+		require.NoError(t, hold.SendStream(strings.NewReader("events")))
+		require.NoError(t, c.RequestCtx().Response.CloseBodyStream())
+		require.Equal(t, "end ok, close ok", run.recorded())
+	})
+
+	t.Run("a body that is closed unread does not wait for a stream that never starts", func(t *testing.T) {
+		t.Parallel()
+
+		c, _ := newCtx(t)
+		run := newFakeRun()
+		hold := newRequestHold(c, new(closeRecorder), run, time.Hour, func(err error) { run.record("close " + text(err)) })
+		require.NoError(t, hold.SendStream(&lazyStream{hold: hold}))
+
+		// fasthttp closes the response as it drops it, with nothing read.
+		closed := make(chan error, 1)
+		go func() { closed <- c.RequestCtx().Response.CloseBodyStream() }()
+		require.NoError(t, agenttest.Receive(t, closed, "the body to be closed"))
+		require.Equal(t, "end "+text(errStreamFailed)+", close "+text(errStreamFailed), run.recorded())
+	})
+
+	t.Run("a middleware gave up before the stream is sent", func(t *testing.T) {
+		t.Parallel()
+
+		gaveUp := errors.New("the middleware gave up")
+		c, cancel := newCtx(t)
+		run, conn := newFakeRun(), new(closeRecorder)
+		hold := newRequestHold(c, conn, run, time.Hour, func(err error) { run.record("close " + text(err)) })
+		cancel(gaveUp)
+		stream := &closedRecorder{Reader: strings.NewReader("")}
+
+		require.ErrorIs(t, hold.SendStream(stream), gaveUp)
+		require.False(t, c.RequestCtx().Response.IsBodyStream(), "nothing is sent")
+		require.True(t, stream.closed.Load(), "the stream of the middleware is closed")
+		require.Equal(t, "cancel", run.recorded(), "the run lets go of its timers, and no run was reported")
+	})
+
+	t.Run("a middleware gave up while the stream was sent", func(t *testing.T) {
+		t.Parallel()
+
+		c, cancel := newCtx(t)
+		run, conn := newFakeRun(), new(closeRecorder)
+		hold := newRequestHold(c, conn, run, time.Millisecond, func(err error) { run.record("close " + text(err)) })
+		body := &holdingBody{ReadCloser: io.NopCloser(strings.NewReader("events")), hold: hold}
+		cancel(errors.New("the middleware gave up"))
+
+		// fasthttp does not close the body of a response that it drops: the hold does,
+		// and it leaves the connection alone, which serves other requests.
+		require.NoError(t, hold.install(body))
+		require.Equal(t, "end "+text(errStreamFailed)+", close "+text(errStreamFailed)+", cancel", run.recorded())
+		hold.stampWrite(time.Hour)
+		hold.expire()
+		time.Sleep(20 * time.Millisecond)
+		require.False(t, conn.closed.Load(), "the connection of the next request is left alone")
+	})
 }
 
 // WithStreamEndGrace returns cfg with the time that a write to a client that

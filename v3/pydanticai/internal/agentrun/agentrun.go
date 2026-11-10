@@ -6,6 +6,7 @@ package agentrun
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"runtime/debug"
@@ -203,11 +204,27 @@ func (c capability[Deps]) WrapRun(ctx context.Context, run *ai.RunInfo, next ai.
 func (c capability[Deps]) WrapToolCall(
 	ctx context.Context, _ *ai.RunInfo, call ai.ToolCallPart, next ai.ToolCallFunc,
 ) (result any, err error) {
-	defer Recover(func(panicErr error) {
-		c.run.panicked.CompareAndSwap(nil, &panicErr)
-		result, err = nil, panicErr
-	})
+	defer Recover(c.failed(&result, &err))
 	return next(ctx, call)
+}
+
+// WrapToolValidation does the same for the code that decodes and validates the
+// arguments of a tool call, which the agent runs before the call and outside
+// WrapToolCall: the UnmarshalJSON of the arguments, their validators and hooks.
+func (c capability[Deps]) WrapToolValidation(
+	ctx context.Context, _ *ai.RunInfo, _ ai.ToolHookContext, rawArgs json.RawMessage, next ai.ToolValidationFunc,
+) (validated any, err error) {
+	defer Recover(c.failed(&validated, &err))
+	return next(ctx, rawArgs)
+}
+
+// failed returns what Recover reports a panic with: the run keeps the first panic
+// for the handler, and the call fails with it.
+func (c capability[Deps]) failed(result *any, err *error) func(panicErr error) {
+	return func(panicErr error) {
+		c.run.panicked.CompareAndSwap(nil, &panicErr)
+		*result, *err = nil, panicErr
+	}
 }
 
 // panicError is the error of a run that panicked, for logs and callbacks only.
@@ -225,6 +242,10 @@ func (e *panicError) Error() string { return e.message }
 // panic with its stack and reports an error that Text keeps from a client.
 func Recover(report func(err error)) {
 	if recovered := recover(); recovered != nil {
+		if again, ok := recovered.(*panicError); ok { // resumed after it was logged
+			report(again)
+			return
+		}
 		err := newPanicError(recovered)
 		log.Errorf("%v\n%s", err, debug.Stack())
 		report(err)
