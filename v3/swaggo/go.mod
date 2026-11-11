@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/gofiber/fiber/v3 v3.7.0
-	github.com/gofiber/utils/v2 v2.6.4
+	github.com/gofiber/utils/v2 v2.6.5
 	github.com/swaggo/files/v2 v2.0.2
 	github.com/swaggo/swag v1.16.6
 )
