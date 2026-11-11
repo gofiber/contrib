@@ -11,7 +11,7 @@ require (
 
 require (
 	github.com/gofiber/schema v1.9.4 // indirect
-	github.com/gofiber/utils/v2 v2.6.4 // indirect
+	github.com/gofiber/utils/v2 v2.6.5 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.20.4 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
