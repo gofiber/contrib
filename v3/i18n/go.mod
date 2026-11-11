@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/gofiber/fiber/v3 v3.7.0
-	github.com/gofiber/utils/v2 v2.6.4
+	github.com/gofiber/utils/v2 v2.6.5
 	github.com/nicksnyder/go-i18n/v2 v2.7.0
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/text v0.44.0
