@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/gofiber/fiber/v3 v3.7.0
 	github.com/gofiber/utils/v2 v2.6.5
-	github.com/open-policy-agent/opa v1.22.3
+	github.com/open-policy-agent/opa v1.22.4
 	github.com/stretchr/testify v1.12.1
 )
 
