@@ -370,8 +370,13 @@ func (e *Engine) inspectRequest(
 
 	stdReq, err := convertFiberToStdRequest(c)
 	if err != nil {
+		statusCode := http.StatusInternalServerError
+		// The adaptor refuses a streamed body beyond BodyLimit before Coraza could read it.
+		if errors.Is(err, fiber.ErrRequestEntityTooLarge) {
+			statusCode = http.StatusRequestEntityTooLarge
+		}
 		return nil, &MiddlewareError{
-			StatusCode: http.StatusInternalServerError,
+			StatusCode: statusCode,
 			Code:       "waf_request_convert_failed",
 			Message:    "Failed to convert request",
 			Err:        err,

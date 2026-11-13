@@ -535,7 +535,7 @@ SecRule FILES "@endsWith .php" "id:1003,phase:2,deny,status:403,msg:'php upload 
 	}
 }
 
-func TestEngineMiddlewareInspectsStreamedBodyBeyondBodyLimit(t *testing.T) {
+func TestEngineMiddlewareRefusesStreamedBodyBeyondBodyLimit(t *testing.T) {
 	bodyRules := `SecRuleEngine On
 SecRequestBodyAccess On
 SecRule REQUEST_BODY "@contains attack" "id:1002,phase:2,deny,status:403,msg:'body attack detected'"`
@@ -545,7 +545,7 @@ SecRule REQUEST_BODY "@contains attack" "id:1002,phase:2,deny,status:403,msg:'bo
 		t.Fatalf("failed to create engine: %v", err)
 	}
 
-	// With StreamRequestBody fasthttp hands a larger body on instead of refusing it.
+	// With StreamRequestBody fasthttp hands a larger body on; the adaptor must refuse it.
 	app := fiber.New(fiber.Config{
 		BodyLimit:         8,
 		StreamRequestBody: true,
@@ -561,8 +561,8 @@ SecRule REQUEST_BODY "@contains attack" "id:1002,phase:2,deny,status:403,msg:'bo
 	resp := performRequest(t, app, req)
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("expected status 403 for a streamed body beyond the body limit, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected status 413 for a streamed body beyond the body limit, got %d", resp.StatusCode)
 	}
 }
 
