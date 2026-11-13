@@ -148,7 +148,7 @@ may cause Coraza to evaluate rules against attacker-controlled client IP values.
 ## Notes
 
 - Request headers and request bodies are inspected.
-- Request body size follows the Fiber app `BodyLimit`; a body Fiber accepted is handed to Coraza as a whole, where `SecRequestBodyLimit` and `SecRequestBodyLimitAction` apply.
+- Request body size follows the Fiber app `BodyLimit`; a body Fiber accepted is handed to Coraza as a whole, where `SecRequestBodyLimit` and `SecRequestBodyLimitAction` apply. A streamed body (`StreamRequestBody`) beyond `BodyLimit` is refused through `ErrorHandler` with code `waf_request_convert_failed` and status `413`.
 - When the request body is inspected, a body with a `Content-Encoding` (`gzip`, `deflate`, `br`, `zstd`, up to five stacked) is decoded first. The decoded body replaces the encoded one and `Content-Encoding` is removed from the Fiber request, so handlers read what the WAF inspected; rules still see the header as received. A body that cannot be decoded is refused through `ErrorHandler` with code `waf_request_body_decode_failed` and status `415`, or `413` when it decodes beyond `BodyLimit`.
 - A `multipart/form-data` body is inspected as the form Fiber parses for `c.FormValue`, `c.FormFile` and `c.MultipartForm`, written out under the boundary Coraza reads. A form Fiber cannot parse, or one whose content contains its own boundary, is refused through `ErrorHandler` with code `waf_multipart_form_invalid` and status `400`.
 - Response body inspection is not supported.
