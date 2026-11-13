@@ -536,3 +536,83 @@ func Test_RoutePermission_RouterSpelling(t *testing.T) {
 		})
 	}
 }
+
+func Test_EnforcerImplementations(t *testing.T) {
+	newModel := func(t *testing.T) model.Model {
+		t.Helper()
+		m, err := model.NewModelFromString(modelConf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+
+	enforcers := []struct {
+		desc string
+		new  func(t *testing.T) (casbin.IEnforcer, error)
+	}{
+		{"Enforcer", func(t *testing.T) (casbin.IEnforcer, error) {
+			return casbin.NewEnforcer(newModel(t), newMockAdapter(policyList))
+		}},
+		{"SyncedEnforcer", func(t *testing.T) (casbin.IEnforcer, error) {
+			return casbin.NewSyncedEnforcer(newModel(t), newMockAdapter(policyList))
+		}},
+		{"CachedEnforcer", func(t *testing.T) (casbin.IEnforcer, error) {
+			return casbin.NewCachedEnforcer(newModel(t), newMockAdapter(policyList))
+		}},
+		{"DistributedEnforcer", func(t *testing.T) (casbin.IEnforcer, error) {
+			return casbin.NewDistributedEnforcer(newModel(t), newMockAdapter(policyList))
+		}},
+		{"SyncedCachedEnforcer", func(t *testing.T) (casbin.IEnforcer, error) {
+			return casbin.NewSyncedCachedEnforcer(newModel(t), newMockAdapter(policyList))
+		}},
+	}
+
+	testCases := []struct {
+		desc       string
+		lookup     func(fiber.Ctx) string
+		handler    func(*Middleware) fiber.Handler
+		statusCode int
+	}{
+		{"alice may create blog", subjectAlice, func(m *Middleware) fiber.Handler { return m.RequiresPermissions([]string{"blog:create"}) }, 200},
+		{"bob may not create blog", subjectBob, func(m *Middleware) fiber.Handler { return m.RequiresPermissions([]string{"blog:create"}) }, 403},
+		{"empty subject is unauthorized", subjectEmpty, func(m *Middleware) fiber.Handler { return m.RequiresPermissions([]string{"blog:create"}) }, 401},
+		{"alice has admin role", subjectAlice, func(m *Middleware) fiber.Handler { return m.RequiresRoles([]string{"admin"}) }, 200},
+		{"bob lacks admin role", subjectBob, func(m *Middleware) fiber.Handler { return m.RequiresRoles([]string{"admin"}) }, 403},
+		{"alice route permission allowed", subjectAlice, func(m *Middleware) fiber.Handler { return m.RoutePermission() }, 200},
+		{"bob route permission forbidden", subjectBob, func(m *Middleware) fiber.Handler { return m.RoutePermission() }, 403},
+	}
+
+	for _, e := range enforcers {
+		enf, err := e.new(t)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for _, tC := range testCases {
+			t.Run(e.desc+"/"+tC.desc, func(t *testing.T) {
+				authz := New(Config{Enforcer: enf, Lookup: tC.lookup})
+
+				app := fiber.New()
+				app.Post("/blog", tC.handler(authz), func(c fiber.Ctx) error {
+					return c.SendStatus(fiber.StatusOK)
+				})
+
+				req, err := http.NewRequest(http.MethodPost, "/blog", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				req.Host = "localhost"
+
+				resp, err := app.Test(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				if resp.StatusCode != tC.statusCode {
+					t.Errorf("StatusCode: got %v - expected %v", resp.StatusCode, tC.statusCode)
+				}
+			})
+		}
+	}
+}

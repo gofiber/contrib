@@ -18,8 +18,11 @@ type Config struct {
 	PolicyAdapter persist.Adapter
 
 	// Enforcer is a Casbin enforcer. If you want to use your own enforcer.
+	// Any implementation of casbin.IEnforcer is accepted, e.g. *casbin.Enforcer,
+	// *casbin.SyncedEnforcer, *casbin.CachedEnforcer, *casbin.SyncedCachedEnforcer
+	// or *casbin.DistributedEnforcer.
 	// Optional. Default: nil (one is created from ModelFilePath and PolicyAdapter).
-	Enforcer *casbin.Enforcer
+	Enforcer casbin.IEnforcer
 
 	// Lookup is a function that is used to look up current subject.
 	// An empty string is considered as unauthenticated user.
