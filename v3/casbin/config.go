@@ -1,6 +1,8 @@
 package casbin
 
 import (
+	"reflect"
+
 	"github.com/casbin/casbin/v3"
 	"github.com/casbin/casbin/v3/persist"
 	fileadapter "github.com/casbin/casbin/v3/persist/file-adapter"
@@ -56,7 +58,7 @@ func configDefault(config ...Config) (Config, error) {
 	// Override default config
 	cfg := config[0]
 
-	if cfg.Enforcer == nil {
+	if isNilEnforcer(cfg.Enforcer) {
 		if cfg.ModelFilePath == "" {
 			cfg.ModelFilePath = ConfigDefault.ModelFilePath
 		}
@@ -86,4 +88,14 @@ func configDefault(config ...Config) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// isNilEnforcer reports whether e is nil or a nil pointer such as a nil
+// *casbin.Enforcer, which a non-nil casbin.IEnforcer interface can hold.
+func isNilEnforcer(e casbin.IEnforcer) bool {
+	if e == nil {
+		return true
+	}
+	v := reflect.ValueOf(e)
+	return v.Kind() == reflect.Pointer && v.IsNil()
 }

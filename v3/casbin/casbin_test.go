@@ -3,6 +3,8 @@ package casbin
 import (
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -614,5 +616,40 @@ func Test_EnforcerImplementations(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func Test_NilEnforcerPointerUsesDefault(t *testing.T) {
+	modelPath := filepath.Join(t.TempDir(), "model.conf")
+	if err := os.WriteFile(modelPath, []byte(modelConf), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var enf *casbin.Enforcer
+	authz := New(Config{
+		Enforcer:      enf,
+		ModelFilePath: modelPath,
+		PolicyAdapter: newMockAdapter(policyList),
+		Lookup:        subjectAlice,
+	})
+
+	app := fiber.New()
+	app.Post("/blog", authz.RequiresRoles([]string{"admin"}), func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	req, err := http.NewRequest(http.MethodPost, "/blog", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "localhost"
+
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if resp.StatusCode != fiber.StatusOK {
+		t.Errorf("StatusCode: got %v - expected %v", resp.StatusCode, fiber.StatusOK)
 	}
 }
