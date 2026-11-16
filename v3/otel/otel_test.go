@@ -541,6 +541,9 @@ func TestTimedOutRequestReturnsTheTimeoutError(t *testing.T) {
 	t.Parallel()
 
 	errs := make(chan error, 1)
+	// Released only after the test: a handler done before the deadline could win timeout's select.
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
 
 	app := fiber.New()
 	app.Use(func(c fiber.Ctx) error {
@@ -550,7 +553,7 @@ func TestTimedOutRequestReturnsTheTimeoutError(t *testing.T) {
 	})
 	app.Use(New(WithTracerProvider(sdktrace.NewTracerProvider())))
 	app.Get("/slow", timeout.New(func(c fiber.Ctx) error {
-		<-c.Context().Done()
+		<-release
 		return c.SendString("late")
 	}, timeout.Config{Timeout: 10 * time.Millisecond}))
 	app.Get("/bad", func(fiber.Ctx) error { return fiber.ErrBadRequest })

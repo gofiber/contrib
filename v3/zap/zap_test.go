@@ -691,6 +691,9 @@ func Test_Logger_TimedOutHandler_ReturnsError(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			errs := make(chan error, 1)
+			// Released only after the test: a handler done before the deadline could win timeout's select.
+			release := make(chan struct{})
+			t.Cleanup(func() { close(release) })
 
 			app := fiber.New()
 			app.Use(func(c fiber.Ctx) error {
@@ -700,7 +703,7 @@ func Test_Logger_TimedOutHandler_ReturnsError(t *testing.T) {
 			})
 			app.Use(New(Config{Logger: logger}))
 			app.Get("/slow", timeout.New(func(c fiber.Ctx) error {
-				<-c.Context().Done()
+				<-release
 				return c.SendString("late")
 			}, timeout.Config{Timeout: 10 * time.Millisecond}))
 			app.Get("/bad", func(fiber.Ctx) error { return fiber.ErrBadRequest })

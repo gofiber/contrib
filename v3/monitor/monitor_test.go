@@ -227,6 +227,9 @@ func TestFiberTimeoutIsRecordedAsTimeout(t *testing.T) {
 func TestFiberTimeoutReturnsTheTimeoutError(t *testing.T) {
 	m := mustInstrumentingMiddleware(t)
 	errs := make(chan error, 1)
+	// Released only after the test: a handler done before the deadline could win timeout's select.
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
 	app := fiber.New()
 	app.Use(func(c fiber.Ctx) error {
 		err := c.Next()
@@ -235,7 +238,7 @@ func TestFiberTimeoutReturnsTheTimeoutError(t *testing.T) {
 	})
 	app.Use(m.handler())
 	app.Get("/slow", timeout.New(func(c fiber.Ctx) error {
-		<-c.Context().Done()
+		<-release
 		return c.SendString("late")
 	}, timeout.Config{Timeout: 10 * time.Millisecond}))
 	app.Get("/bad", func(fiber.Ctx) error { return fiber.ErrBadRequest })
