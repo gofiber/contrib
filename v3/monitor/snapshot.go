@@ -156,7 +156,8 @@ func (m *middleware) currentSnapshot(now time.Time) snapshot {
 	}
 
 	current := m.collectFn(now)
-	m.cache.Store(&cacheEntry{snapshot: current, cachedAt: now})
+	// Age from the end of collection so callers queued behind a slow one share it.
+	m.cache.Store(&cacheEntry{snapshot: current, cachedAt: m.now()})
 	return current
 }
 

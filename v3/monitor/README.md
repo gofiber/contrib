@@ -231,9 +231,10 @@ established. While they are disabled, the GC Pause trend explains how to
 enable them.
 
 Snapshots are collected only when JSON is requested and are shared within the
-configured refresh TTL. The dashboard keeps at most 90 trend samples in browser
-memory and displays 60 by default. The 30/60/90 selector changes only the
-visible browser history and remembers the choice in local storage.
+configured refresh TTL, which starts when a collection finishes. The dashboard
+keeps at most 90 trend samples in browser memory and displays 60 by default.
+The 30/60/90 selector changes only the visible browser history and remembers
+the choice in local storage.
 
 The dashboard stops polling while its browser tab is hidden and refreshes as
 soon as the tab is visible again, so a forgotten tab does not keep triggering
