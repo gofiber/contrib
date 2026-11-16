@@ -3934,6 +3934,30 @@ func testInflatedContentLength(t *testing.T, contentType string) {
 	}
 }
 
+// TestUnreadFormIsNotRecorded covers a form announced below BodyLimit that fasthttp
+// rejects unread for its invalid URI, so comparing the length with the limit tells nothing.
+func TestUnreadFormIsNotRecorded(t *testing.T) {
+	app := newAppWithMiddleware(Config{TrackUnmatchedRequests: true}, "")
+	app.Post("/upload", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	send := dialRaw(t, app)
+	status := send("POST http://[bad/ HTTP/1.1\r\nHost: example.com\r\n" +
+		"Content-Type: multipart/form-data; boundary=zzz\r\nContent-Length: 2048\r\n\r\n")
+	if status != fiber.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", status)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `http_requests_total{method="POST",path="/__unmatched__"`) {
+		t.Fatalf("expected the rejected request to be counted, got %q", metrics)
+	}
+	if strings.Contains(metrics, `http_request_size_bytes_sum{method="POST"`) {
+		t.Fatalf("expected no size for a form that never arrived, got %q", metrics)
+	}
+}
+
 // TestZeroLengthStreamIsRecorded covers c.SendStream(reader, 0): the length is
 // announced, not absent, so the observation belongs in the histogram - otherwise
 // _count under-reports against http_requests_total.

@@ -163,8 +163,9 @@ cannot bill the histogram for a body it never sent. The exception is a pre-parse
 multipart form: fasthttp keeps the parsed parts — the large ones spilled to temp
 files — so reading the body back would re-marshal every uploaded file into memory
 just to size it, and the announced `Content-Length` is used instead — unless it
-exceeds `BodyLimit`, which means the body was never received in full and no
-honest size exists to record.
+exceeds `BodyLimit`, or fasthttp rejected the request unread for another reason,
+which means the body was never received in full and no honest size exists to
+record.
 
 Under `fiber.Config{StreamRequestBody: true}` request payloads are left out of
 `http_request_size_bytes` entirely. fasthttp prefetches a bounded prefix and

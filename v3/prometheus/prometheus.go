@@ -976,7 +976,9 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 				bodyLimit = ctx.App().Config().BodyLimit
 			}
 
-			if size, known := requestBodySize(req.Header.ContentLength(), bodyLimit, preParsedForm, req); known {
+			// fasthttp rejects an invalid URI unread too, at any length under BodyLimit.
+			size, known := requestBodySize(req.Header.ContentLength(), bodyLimit, preParsedForm, req)
+			if known && (!preParsedForm || formReceived(ctx)) {
 				observe(sizeObserver(&s.requestSize, m.requestSize, s.labels), size, exemplar)
 			}
 		}
@@ -1269,6 +1271,21 @@ func requestBodySize(contentLength, bodyLimit int, preParsedForm bool, p payload
 	}
 
 	return float64(buffered), true
+}
+
+// formReceived reports whether the multipart body the request announces arrived.
+func formReceived(ctx fiber.Ctx) bool {
+	req := ctx.Request()
+	// fasthttp's own pre-parse conditions: MultipartForm then returns the cached form
+	// or fails at once on the empty body, so nothing is parsed or re-marshaled here.
+	if !ctx.App().Server().DisablePreParseMultipartForm &&
+		len(req.Header.MultipartFormBoundary()) > 0 && len(req.Header.ContentEncoding()) == 0 {
+		if _, err := req.MultipartForm(); err == nil {
+			return true
+		}
+	}
+
+	return len(req.Body()) > 0
 }
 
 // multipartFormPrefix is the media type fasthttp parses before the chain runs.
