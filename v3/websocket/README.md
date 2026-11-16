@@ -184,10 +184,15 @@ A handler that returns normally leaves the socket open, so it may hand the
 connection to another goroutine before returning and keep writing after. The
 `*websocket.Conn` it receives is allocated for that upgrade alone and never reused,
 so `Locals`, `Params`, `Query`, `Cookies`, `Headers` and `IP` keep answering with
-that connection's own data for as long as anything holds it. String and `[]byte`
-locals are copied at the upgrade; other values are kept as stored. A name the
-request repeats resolves to the occurrence `c.Query`, `c.Cookies` and `c.Get`
-return, so the handler sees the value middleware in front of the upgrade checked.
+that connection's own data for as long as anything holds it. Locals of a string or
+byte-slice kind, named types such as `json.RawMessage` included, are copied at the
+upgrade, once per connection, so share a large one through a pointer. Other values
+are kept as stored, so request strings such a value holds must be copied first (or
+taken from Fiber's getters with `Immutable` set), and objects middleware recycles
+after `c.Next()`, such as the session from `session.FromContext`, must not be passed
+through `Locals`: the connection outlives the request. A name the request repeats
+resolves to the occurrence `c.Query`, `c.Cookies` and `c.Get` return, so the handler
+sees the value middleware in front of the upgrade checked.
 
 ```go
 app := fiber.New()

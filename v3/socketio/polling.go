@@ -413,6 +413,8 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 			v = utils.CopyString(val)
 		case []byte:
 			v = utils.CopyBytes(val)
+		default:
+			v = copyNamedKind(v)
 		}
 		if localsSnap == nil {
 			localsSnap = make(map[any]any)
@@ -479,6 +481,23 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 	c.Set(fiber.HeaderContentType, "text/plain; charset=UTF-8")
 	c.Set(fiber.HeaderCacheControl, "no-store")
 	return c.Send(frame)
+}
+
+// copyNamedKind copies a named string or byte-slice type, such as
+// json.RawMessage, as websocket's capture does.
+func copyNamedKind(v any) any {
+	switch rv := reflect.ValueOf(v); rv.Kind() {
+	case reflect.String:
+		return reflect.ValueOf(utils.CopyString(rv.String())).Convert(rv.Type()).Interface()
+	case reflect.Slice:
+		// Not Convert: it panics for an element type like `type B uint8`.
+		if rv.Type().Elem().Kind() == reflect.Uint8 && !rv.IsNil() {
+			cp := reflect.MakeSlice(rv.Type(), rv.Len(), rv.Len())
+			reflect.Copy(cp, rv)
+			return cp.Interface()
+		}
+	}
+	return v
 }
 
 // drainPolling is the GET long-poll handler: blocks until queued frames

@@ -220,6 +220,41 @@ func TestPollingOpenCopiesStringAndByteLocals(t *testing.T) {
 	require.Equal(t, []byte("alice"), kws.Locals("raw"))
 }
 
+func TestPollingOpenCopiesNamedStringAndByteLocals(t *testing.T) {
+	resetSIOGlobals(t)
+	prevEnable := EnablePolling
+	EnablePolling = true
+	t.Cleanup(func() { EnablePolling = prevEnable })
+
+	type userID string
+	type octet uint8
+	buf := []byte("alice")
+	octets := []octet("alice")
+	ptr := &struct{ N int }{N: 1}
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		c.Locals("user", userID(utils.UnsafeString(buf)))
+		c.Locals("raw", json.RawMessage(buf))
+		c.Locals("octets", octets)
+		c.Locals("none", json.RawMessage(nil))
+		c.Locals("ptr", ptr)
+		return c.Next()
+	})
+	app.Get("/", New(func(*Websocket) {}))
+
+	req, err := http.NewRequest(http.MethodGet, "/?EIO=4&transport=polling", nil)
+	require.NoError(t, err)
+	kws := pollOpenSession(t, app, req)
+	copy(buf, "carol")
+	copy(octets, []octet("carol"))
+
+	require.Equal(t, userID("alice"), kws.Locals("user"))
+	require.Equal(t, json.RawMessage("alice"), kws.Locals("raw"))
+	require.Equal(t, []octet("alice"), kws.Locals("octets"))
+	require.Nil(t, kws.Locals("none"))
+	require.Same(t, ptr, kws.Locals("ptr"))
+}
+
 func TestPollingOpenResolvesRepeatedNamesLikeFiber(t *testing.T) {
 	resetSIOGlobals(t)
 	prevEnable := EnablePolling
