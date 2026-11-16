@@ -3854,6 +3854,26 @@ func TestRemovedFormFilesStillRecordTheUpload(t *testing.T) {
 	}
 }
 
+// TestChunkedFormIsLeftToTheHandler covers a form fasthttp does not pre-parse: the
+// middleware must not parse it first and so bypass the handler's own limit.
+func TestChunkedFormIsLeftToTheHandler(t *testing.T) {
+	app := newAppWithMiddleware(Config{}, "")
+	app.Post("/upload", func(c fiber.Ctx) error {
+		if _, err := c.Request().MultipartFormWithLimit(100); err != nil {
+			return c.SendStatus(fiber.StatusRequestEntityTooLarge)
+		}
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	body := "--zzz\r\nContent-Disposition: form-data; name=\"f\"\r\n\r\n" + strings.Repeat("x", 1024) + "\r\n--zzz--\r\n"
+	send := dialRaw(t, app)
+	status := send(fmt.Sprintf("POST /upload HTTP/1.1\r\nHost: example.com\r\n"+
+		"Content-Type: multipart/form-data; boundary=zzz\r\nTransfer-Encoding: chunked\r\n\r\n%x\r\n%s\r\n0\r\n\r\n", len(body), body))
+	if status != fiber.StatusRequestEntityTooLarge {
+		t.Fatalf("expected the handler's own limit to answer 413, got %d", status)
+	}
+}
+
 // TestUnsampledTraceProducesNoExemplar pins that an exemplar points somewhere.
 // Under head-based sampling every request has a valid trace ID, and one exemplar
 // per bucket is overwritten, so unsampled traces would evict the useful links.

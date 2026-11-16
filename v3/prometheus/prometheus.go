@@ -891,8 +891,8 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	if m.requestSize != nil {
 		req := ctx.Request()
 		preParsedForm = bytes.HasPrefix(req.Header.ContentType(), multipartFormPrefix)
-		// A stream is never sized, and reading it here would drain it.
-		if preParsedForm && !req.IsBodyStream() {
+		// Only what fasthttp pre-parses: a stream would be drained, a chunked form parsed here.
+		if preParsedForm && !req.IsBodyStream() && req.Header.ContentLength() > 0 {
 			formArrived = formReceived(ctx)
 		}
 	}
