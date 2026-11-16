@@ -39,6 +39,7 @@ jwtware.FromContext(ctx any) *jwt.Token    // jwt "github.com/golang-jwt/jwt/v5"
 ```
 
 `FromContext` accepts a `fiber.Ctx`, `fiber.CustomCtx`, `*fasthttp.RequestCtx`, or a standard `context.Context` (e.g. the value returned by `c.Context()` when `PassLocalsToContext` is enabled). It returns a `*jwt.Token` from `github.com/golang-jwt/jwt/v5`.
+The middleware copies the credential before parsing it, so the string `TokenProcessorFunc` receives and `Token.Raw`, as `KeyFunc` and `FromContext` see it, can be kept past the request.
 
 ## Config
 

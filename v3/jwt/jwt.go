@@ -87,6 +87,8 @@ func New(config ...Config) fiber.Handler {
 		if err != nil {
 			return reject(c, err)
 		}
+		// Extractors may return a view into the request buffer, and the token can outlive the request.
+		auth = strings.Clone(auth)
 
 		if processToken != nil {
 			if auth, err = processToken(auth); err != nil {
