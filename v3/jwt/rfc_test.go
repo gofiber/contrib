@@ -1150,3 +1150,46 @@ func TestQueryTokenLeavesTimedOutResponseAlone(t *testing.T) {
 	close(answered)
 	require.Equal(t, "public, max-age=60", <-seen)
 }
+
+// TestRejectionLeavesTimedOutResponseAlone covers an ErrorHandler that resumes
+// the chain into a handler the timeout middleware gave up on.
+func TestRejectionLeavesTimedOutResponseAlone(t *testing.T) {
+	t.Parallel()
+
+	wrote := make(chan struct{})
+	answered := make(chan struct{})
+	seen := make(chan string, 1)
+
+	app := fiber.New()
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{JWTAlg: jwtware.HS256, Key: []byte(defaultSigningKey)},
+		ErrorHandler: func(c fiber.Ctx, _ error) error {
+			return c.Next()
+		},
+	}))
+	// Handles the error and returns nil, as the logging middlewares do.
+	app.Use(func(c fiber.Ctx) error {
+		if err := c.Next(); err != nil {
+			_ = c.App().ErrorHandler(c, err)
+		}
+		<-wrote
+		return nil
+	})
+	app.Get("/", timeout.New(func(c fiber.Ctx) error {
+		<-c.Context().Done()
+		c.Status(fiber.StatusUnauthorized)
+		close(wrote)
+		// Still writing its answer while jwt runs.
+		_ = c.SendStatus(fiber.StatusUnauthorized)
+		<-answered
+		seen <- c.GetRespHeader(fiber.HeaderWWWAuthenticate)
+		return nil
+	}, timeout.Config{Timeout: 20 * time.Millisecond}))
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+	require.NoError(t, err)
+	require.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
+
+	close(answered)
+	require.Empty(t, <-seen)
+}

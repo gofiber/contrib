@@ -5,6 +5,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/rs/zerolog"
+	"github.com/valyala/fasthttp"
 )
 
 // New creates a new middleware handler
@@ -30,14 +31,21 @@ func New(config ...Config) fiber.Handler {
 			}
 		}
 
+		response := sentResponse(c)
+		// As in Fiber's logger: the timeout error keeps middleware before us off the handler's response.
+		var result error
+		if response != c.Response() {
+			result = chainErr
+		}
+
 		// New: Skip check AFTER c.Next() but BEFORE log assembly
 		if cfg.Skip != nil && cfg.Skip(c) {
-			return nil
+			return result
 		}
 
 		latency := time.Since(start)
 
-		status := c.Response().StatusCode()
+		status := response.StatusCode()
 
 		index := 0
 		switch {
@@ -57,7 +65,7 @@ func New(config ...Config) fiber.Handler {
 
 		// no log
 		if level == zerolog.NoLevel || level == zerolog.Disabled {
-			return nil
+			return result
 		}
 
 		messageIndex := index
@@ -66,7 +74,7 @@ func New(config ...Config) fiber.Handler {
 		}
 		message := cfg.Messages[messageIndex]
 
-		logger := cfg.logger(c, latency, chainErr)
+		logger := cfg.logger(c, response, latency, chainErr)
 		ctx := c
 
 		switch level {
@@ -86,6 +94,18 @@ func New(config ...Config) fiber.Handler {
 			logger.Trace().Ctx(ctx).Msg(message)
 		}
 
-		return nil
+		return result
 	}
+}
+
+// sentResponse is what the client gets: timeout.New parks its own while the handler keeps c's.
+func sentResponse(c fiber.Ctx) *fasthttp.Response {
+	// IsAbandoned goes first: its atomic load orders the read after the timeout middleware's write.
+	if c.IsAbandoned() {
+		if resp := c.RequestCtx().LastTimeoutErrorResponse(); resp != nil {
+			return resp
+		}
+	}
+
+	return c.Response()
 }

@@ -181,6 +181,11 @@ For an overview and additional examples, see the Fiber Extractors guide:
       return fiber.ErrUnauthorized // or c.SendStatus(fiber.StatusUnauthorized)
   },
   ```
+
+  An `ErrorHandler` that continues the chain with `c.Next()` gets no challenge
+  for a request Fiber's `timeout` middleware answered: its response is the one
+  that middleware sent, and the one on `c` stays with the handler, which may
+  still be writing it.
 - **Tokens in the URL are not stored in shared caches.** When the request URL
   carries a token - a query parameter, a form parameter (Fiber's `FormValue`
   reads the query before the body), or a route parameter - the successful

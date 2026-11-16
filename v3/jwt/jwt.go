@@ -68,6 +68,10 @@ func New(config ...Config) fiber.Handler {
 		inherited := inheritedChallenges(c)
 
 		handlerErr := errorHandler(c, err)
+		// An ErrorHandler that resumed the chain may have run into timeout.New.
+		if timedOut(c) {
+			return handlerErr
+		}
 		authChallenge.apply(c, handlerErr, err, inherited)
 		return handlerErr
 	}
@@ -227,9 +231,7 @@ func keepPrivate(c fiber.Ctx, next fiber.Handler) error {
 
 	err := next(c)
 
-	// timeout.New answered with a response of its own; c's is still the handler's.
-	// IsAbandoned goes first: its atomic load orders the read after the timeout middleware's write.
-	if c.IsAbandoned() && c.RequestCtx().LastTimeoutErrorResponse() != nil {
+	if timedOut(c) {
 		return err
 	}
 
@@ -242,6 +244,12 @@ func keepPrivate(c fiber.Ctx, next fiber.Handler) error {
 
 	setPrivate(c)
 	return err
+}
+
+// timedOut reports whether timeout.New answered with a response of its own; c's is still the handler's.
+func timedOut(c fiber.Ctx) bool {
+	// IsAbandoned goes first: its atomic load orders the read after the timeout middleware's write.
+	return c.IsAbandoned() && c.RequestCtx().LastTimeoutErrorResponse() != nil
 }
 
 // setPrivate merges the directive into whatever policy the response carries.

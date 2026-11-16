@@ -5,8 +5,10 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
 	utilsstrings "github.com/gofiber/utils/v2/strings"
 	"github.com/rs/zerolog"
+	"github.com/valyala/fasthttp"
 )
 
 const (
@@ -146,7 +148,7 @@ func (c *Config) loggerCtx(fc fiber.Ctx) zerolog.Context {
 	return c.Logger.With()
 }
 
-func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.Logger {
+func (c *Config) logger(fc fiber.Ctx, resp *fasthttp.Response, latency time.Duration, err error) zerolog.Logger {
 	zc := c.loggerCtx(fc)
 
 	for _, field := range c.Fields {
@@ -177,15 +179,16 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 		case FieldLatency:
 			zc = zc.Str(field, latency.String())
 		case FieldStatus:
-			zc = zc.Int(field, fc.Response().StatusCode())
+			zc = zc.Int(field, resp.StatusCode())
 		case FieldBody:
 			zc = zc.Str(field, string(requestBody(fc)))
 		case FieldResBody:
 			if c.FieldsSnakeCase {
 				field = fieldResBody_
 			}
-			resBody := fc.Res().Body()
-			if c.GetResBody != nil {
+			resBody := responseBody(resp)
+			// GetResBody reads fc, whose response a timed-out handler still owns.
+			if c.GetResBody != nil && resp == fc.Response() {
 				if customResBody := c.GetResBody(fc); customResBody != nil {
 					resBody = customResBody
 				}
@@ -205,7 +208,7 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 			if c.FieldsSnakeCase {
 				field = fieldBytesSent_
 			}
-			zc = zc.Int(field, bytesSent(fc))
+			zc = zc.Int(field, bytesSent(resp))
 		case FieldRoute:
 			zc = zc.Str(field, fc.Route().Path)
 		case FieldMethod:
@@ -214,7 +217,7 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 			if c.FieldsSnakeCase {
 				field = fieldRequestID_
 			}
-			zc = zc.Str(field, fc.GetRespHeader(fiber.HeaderXRequestID))
+			zc = zc.Str(field, fc.App().GetString(utils.UnsafeString(resp.Header.Peek(fiber.HeaderXRequestID))))
 		case FieldError:
 			if err != nil {
 				zc = zc.Err(err)
@@ -272,7 +275,7 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 			}
 			if c.WrapHeaders {
 				dict := zerolog.Dict()
-				for header, values := range fc.GetRespHeaders() {
+				for header, values := range responseHeaders(fc.App(), resp) {
 					if len(values) == 0 {
 						continue
 					}
@@ -293,7 +296,7 @@ func (c *Config) logger(fc fiber.Ctx, latency time.Duration, err error) zerolog.
 				}
 				zc = zc.Dict(field, dict)
 			} else {
-				for header, values := range fc.GetRespHeaders() {
+				for header, values := range responseHeaders(fc.App(), resp) {
 					if len(values) == 0 {
 						continue
 					}
@@ -343,14 +346,33 @@ func bytesReceived(fc fiber.Ctx) int {
 	return len(req.Body())
 }
 
+// responseBody skips a streamed response, which is sent after the handler returns.
+func responseBody(resp *fasthttp.Response) []byte {
+	if resp.IsBodyStream() {
+		return nil
+	}
+
+	return resp.Body()
+}
+
 // bytesSent is the announced length of a streamed response, so the stream is not read.
-func bytesSent(fc fiber.Ctx) int {
-	resp := fc.Response()
+func bytesSent(resp *fasthttp.Response) int {
 	if resp.IsBodyStream() {
 		return max(resp.Header.ContentLength(), 0)
 	}
 
 	return len(resp.Body())
+}
+
+// responseHeaders is fc.GetRespHeaders for resp, copying only under Immutable as it does.
+func responseHeaders(app *fiber.App, resp *fasthttp.Response) map[string][]string {
+	headers := make(map[string][]string, resp.Header.Len())
+	for k, v := range resp.Header.All() {
+		key := app.GetString(utils.UnsafeString(k))
+		headers[key] = append(headers[key], app.GetString(utils.UnsafeString(v)))
+	}
+
+	return headers
 }
 
 var logger = zerolog.New(os.Stderr).With().Timestamp().Logger()
