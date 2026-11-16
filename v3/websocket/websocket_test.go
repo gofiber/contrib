@@ -801,6 +801,8 @@ func TestConnCaptureCopiesNamedStringAndByteLocals(t *testing.T) {
 	fctx.SetUserValue("raw", json.RawMessage(buf))
 	fctx.SetUserValue("octets", octets)
 	fctx.SetUserValue("none", json.RawMessage(nil))
+	ptr := &struct{ N int }{N: 1}
+	fctx.SetUserValue("ptr", ptr)
 
 	conn := &Conn{}
 	conn.capture(fctx)
@@ -811,6 +813,7 @@ func TestConnCaptureCopiesNamedStringAndByteLocals(t *testing.T) {
 	assert.Equal(t, json.RawMessage("alice"), conn.Locals("raw"))
 	assert.Equal(t, []octet("alice"), conn.Locals("octets"))
 	assert.Nil(t, conn.Locals("none"))
+	assert.Same(t, ptr, conn.Locals("ptr"))
 }
 
 func TestConnCaptureResolvesRepeatedNamesLikeFiber(t *testing.T) {

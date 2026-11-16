@@ -488,9 +488,7 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 func copyNamedKind(v any) any {
 	switch rv := reflect.ValueOf(v); rv.Kind() {
 	case reflect.String:
-		cp := reflect.New(rv.Type()).Elem()
-		cp.SetString(utils.CopyString(rv.String()))
-		return cp.Interface()
+		return reflect.ValueOf(utils.CopyString(rv.String())).Convert(rv.Type()).Interface()
 	case reflect.Slice:
 		// Not Convert: it panics for an element type like `type B uint8`.
 		if rv.Type().Elem().Kind() == reflect.Uint8 && !rv.IsNil() {
