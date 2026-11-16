@@ -671,8 +671,9 @@ func processRequest(tx types.Transaction, req *http.Request, c fiber.Ctx) (*type
 
 		// No cut at BodyLimit: a re-serialized form can be longer than what was received.
 		body := io.Reader(req.Body)
-		if c.IsMultipart() {
-			form, err := multipartFormBody(c, req.Header.Get(fiber.HeaderContentType), body)
+		contentType := req.Header.Get(fiber.HeaderContentType)
+		if c.IsMultipart() || corazaReadsMultipart(contentType) {
+			form, err := multipartFormBody(c, contentType, body)
 			if err != nil {
 				return nil, fmt.Errorf("%w: %w", errMultipartForm, err)
 			}
@@ -756,6 +757,12 @@ func decodeRequestBody(fiberReq *fasthttp.Request, req *http.Request, bodyLimit 
 	}
 
 	return nil
+}
+
+// corazaReadsMultipart matches how Coraza picks its multipart processor, which also
+// trims Unicode spaces Fiber's media type match keeps.
+func corazaReadsMultipart(contentType string) bool {
+	return strings.HasPrefix(strings.TrimSpace(strings.ToLower(contentType)), "multipart/form-data")
 }
 
 func hasControl(s string) bool {
