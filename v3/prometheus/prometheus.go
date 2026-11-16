@@ -9,6 +9,7 @@ import (
 	"maps"
 	"math"
 	"net/http"
+	"net/url"
 	"reflect"
 	"slices"
 	"strconv"
@@ -568,9 +569,9 @@ func typedNil(value any) bool {
 	}
 }
 
-// detachRequest hands the wrapped handler a request whose header no longer aliases
-// the connection buffers. Under MetricsTimeout promhttp answers 503 and returns
-// while the gather goroutine still reads req.Header from recycled memory.
+// detachRequest hands the wrapped handler a request whose header and URL no longer
+// alias the connection buffers. Under MetricsTimeout promhttp answers 503 and returns
+// while the gather goroutine still reads req.Header and req.URL from recycled memory.
 func detachRequest(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(rsp http.ResponseWriter, req *http.Request) {
 		// Both names and values alias: the adaptor clones only Cookie, and a
@@ -584,9 +585,36 @@ func detachRequest(h http.Handler) http.Handler {
 			header[strings.Clone(name)] = detached
 		}
 		req.Header = header
+		req.URL = detachURL(req.URL)
 
 		h.ServeHTTP(rsp, req)
 	})
+}
+
+// detachURL returns a copy of u whose strings no longer point into the request
+// line the adaptor parsed it from.
+func detachURL(u *url.URL) *url.URL {
+	if u == nil {
+		return nil
+	}
+	detached := *u
+	detached.Scheme = strings.Clone(u.Scheme)
+	detached.Opaque = strings.Clone(u.Opaque)
+	detached.Host = strings.Clone(u.Host)
+	detached.Path = strings.Clone(u.Path)
+	detached.RawPath = strings.Clone(u.RawPath)
+	detached.RawQuery = strings.Clone(u.RawQuery)
+	detached.Fragment = strings.Clone(u.Fragment)
+	detached.RawFragment = strings.Clone(u.RawFragment)
+	if u.User != nil {
+		if password, ok := u.User.Password(); ok {
+			detached.User = url.UserPassword(strings.Clone(u.User.Username()), strings.Clone(password))
+		} else {
+			detached.User = url.User(strings.Clone(u.User.Username()))
+		}
+	}
+
+	return &detached
 }
 
 // variableLabels builds a metric's variable label names: the status label the

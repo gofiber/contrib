@@ -2706,6 +2706,98 @@ func TestScrapeHandlerDetachesOnlyWithTimeout(t *testing.T) {
 	}
 }
 
+// dialRaw serves app on an in-memory listener and returns a function that sends
+// a raw request over one keep-alive connection and returns the response status.
+func dialRaw(t *testing.T, app *fiber.App) func(request string) int {
+	t.Helper()
+
+	ln := fasthttputil.NewInmemoryListener()
+	served := make(chan error, 1)
+	go func() {
+		served <- app.Listener(ln, fiber.ListenConfig{DisableStartupMessage: true})
+	}()
+	t.Cleanup(func() {
+		if err := app.Shutdown(); err != nil {
+			t.Errorf("shutting down: %v", err)
+		}
+		<-served
+	})
+
+	conn, err := ln.Dial()
+	if err != nil {
+		t.Fatalf("dialing: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	reader := bufio.NewReader(conn)
+
+	return func(request string) int {
+		t.Helper()
+
+		if _, err := io.WriteString(conn, request); err != nil {
+			t.Fatalf("writing the request: %v", err)
+		}
+		resp, err := http.ReadResponse(reader, nil)
+		if err != nil {
+			t.Fatalf("reading the response: %v", err)
+		}
+		if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+			t.Fatalf("reading the response body: %v", err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			t.Fatalf("closing the response body: %v", err)
+		}
+		return resp.StatusCode
+	}
+}
+
+// lineLogger hands each line promhttp logs to a test waiting for it.
+type lineLogger chan string
+
+func (l lineLogger) Println(v ...any) {
+	l <- fmt.Sprint(v...)
+}
+
+// TestTimedOutScrapeKeepsItsOwnFilter covers the gather a MetricsTimeout 503 leaves
+// running: it reads name[] only once Gather returns, by which time the connection
+// has parsed the next request line into the buffer the adaptor built the URL from.
+func TestTimedOutScrapeKeepsItsOwnFilter(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(prometheus.NewGauge(prometheus.GaugeOpts{Name: "scrape_filter_target"}))
+	release := make(chan struct{})
+	logged := make(lineLogger, 1)
+
+	app := fiber.New()
+	app.Use(New(Config{
+		Registerer:      registry,
+		Gatherer:        &blockingGatherer{Gatherer: registry, entered: make(chan struct{}, 1), release: release},
+		MetricsTimeout:  50 * time.Millisecond,
+		MetricsErrorLog: logged,
+	}))
+	app.Get("/healthz", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	send := dialRaw(t, app)
+	if status := send("GET /metrics?name[]=scrape_filter_target HTTP/1.1\r\nHost: example.com\r\n\r\n"); status != fiber.StatusServiceUnavailable {
+		t.Fatalf("expected the scrape to time out with 503, got %d", status)
+	}
+	// Same offsets and length, so a URL still aliasing the line reads exactly this filter.
+	if status := send("GET /healthz?name[]=scrape_filter_absent HTTP/1.1\r\nHost: example.com\r\n\r\n"); status != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d", status)
+	}
+
+	close(release)
+	// Encoding into the timed-out response fails, so the log shows what the filter selected.
+	select {
+	case line := <-logged:
+		if !strings.Contains(line, http.ErrHandlerTimeout.Error()) {
+			t.Fatalf("expected the encode error of the timed-out response, got %q", line)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("expected the scrape to encode the family its own name[] selected")
+	}
+}
+
 // TestBucketsAreCopiedFromConfig pins the defensive copy: client_golang aliases
 // the slice it is handed into the live histogram, so a caller reusing its own
 // slice would otherwise reshape an already-registered metric.
