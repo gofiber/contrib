@@ -52,6 +52,7 @@ type Config struct {
 	SigningKey SigningKey
 
 	// SigningKeys is a map of keys used to validate tokens with the "kid" field.
+	// A "kid" found here wins over the same "kid" published by JWKSetURLs.
 	// At least one of the following is required: KeyFunc, JWKSetURLs, SigningKeys, or SigningKey.
 	SigningKeys map[string]SigningKey
 
@@ -265,8 +266,10 @@ func validAlgorithms(config []Config) []string {
 
 // multiKeyfunc resolves keys against several JWK Set URLs at once, giving each
 // of them the same refresh policy and taking the first key that matches.
+// Configured keys are asked first, not passed as Options.GivenKeys: keyfunc
+// merges those into fetched sets without their algorithm, dropping JWTAlg.
 func multiKeyfunc(givenKeys map[string]keyfunc.GivenKey, jwkSetURLs []string) (jwt.Keyfunc, error) {
-	opts := keyfuncOptions(givenKeys)
+	opts := keyfuncOptions()
 	multiple := make(map[string]keyfunc.Options, len(jwkSetURLs))
 	for _, url := range jwkSetURLs {
 		multiple[url] = opts
@@ -278,15 +281,24 @@ func multiKeyfunc(givenKeys map[string]keyfunc.GivenKey, jwkSetURLs []string) (j
 	if err != nil {
 		return nil, fmt.Errorf("failed to get multiple JWK Set URLs: %w", err)
 	}
-	return multi.Keyfunc, nil
+	if len(givenKeys) == 0 {
+		return multi.Keyfunc, nil
+	}
+	given := keyfunc.NewGiven(givenKeys)
+	return func(token *jwt.Token) (any, error) {
+		key, err := given.Keyfunc(token)
+		if errors.Is(err, keyfunc.ErrKIDNotFound) {
+			return multi.Keyfunc(token)
+		}
+		return key, err
+	}, nil
 }
 
 // keyfuncOptions is the refresh policy every JWK Set in a configuration is
 // fetched under: hourly in the background, rate limited, and re-fetched on a
 // key ID the cache has not seen.
-func keyfuncOptions(givenKeys map[string]keyfunc.GivenKey) keyfunc.Options {
+func keyfuncOptions() keyfunc.Options {
 	return keyfunc.Options{
-		GivenKeys: givenKeys,
 		RefreshErrorHandler: func(err error) {
 			log.Printf("Failed to perform background refresh of JWK Set: %s.", err)
 		},

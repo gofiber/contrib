@@ -566,6 +566,72 @@ func TestMultiKeys(t *testing.T) {
 	}
 }
 
+// Configured keys keep their JWTAlg and their precedence when JWKSetURLs is set too.
+func TestMultiKeysWithJWKSetURLs(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"keys":[` +
+			`{"kty":"oct","kid":"remote","k":"cmVtb3RlLXNlY3JldA"},` +
+			`{"kty":"oct","kid":"both","k":"cmVtb3RlLXNlY3JldA"}]}`))
+	}))
+	defer server.Close()
+
+	sign := func(method jwt.SigningMethod, kid, secret string) string {
+		token := jwt.New(method)
+		token.Header["kid"] = kid
+		tokenStr, err := token.SignedString([]byte(secret))
+		assert.Equal(t, nil, err)
+		return tokenStr
+	}
+
+	tests := []struct {
+		name       string
+		token      string
+		status     int
+		remoteOnly bool
+	}{
+		{name: "pinned algorithm", token: sign(jwt.SigningMethodHS512, "local", "aaa"), status: 200},
+		{name: "other algorithm", token: sign(jwt.SigningMethodHS256, "local", "aaa"), status: 401},
+		{name: "configured key of a published kid", token: sign(jwt.SigningMethodHS512, "both", "aaa"), status: 200},
+		{name: "published key of a configured kid", token: sign(jwt.SigningMethodHS512, "both", "remote-secret"), status: 401},
+		{name: "published key", token: sign(jwt.SigningMethodHS256, "remote", "remote-secret"), status: 200, remoteOnly: true},
+		{name: "unknown kid", token: sign(jwt.SigningMethodHS512, "unknown", "aaa"), status: 401},
+	}
+
+	for _, urls := range [][]string{nil, {server.URL}} {
+		// Arrange
+		app := fiber.New()
+
+		app.Use(jwtware.New(jwtware.Config{
+			SigningKeys: map[string]jwtware.SigningKey{
+				"local": {JWTAlg: jwtware.HS512, Key: []byte("aaa")},
+				"both":  {JWTAlg: jwtware.HS512, Key: []byte("aaa")},
+			},
+			JWKSetURLs: urls,
+		}))
+
+		app.Get("/ok", func(c fiber.Ctx) error {
+			return c.SendString("OK")
+		})
+
+		for _, test := range tests {
+			if test.remoteOnly && urls == nil {
+				continue
+			}
+			req := httptest.NewRequest("GET", "/ok", nil)
+			req.Header.Add("Authorization", "Bearer "+test.token)
+
+			// Act
+			resp, err := app.Test(req)
+
+			// Assert
+			assert.Equal(t, nil, err)
+			assert.Equal(t, test.status, resp.StatusCode, "%s, JWKSetURLs: %v", test.name, urls)
+		}
+	}
+}
+
 func customKeyfunc() jwt.Keyfunc {
 	return func(t *jwt.Token) (interface{}, error) {
 		// Always check the signing method
