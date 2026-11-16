@@ -202,8 +202,12 @@ app.Use(fiberotel.New(fiberotel.WithPublicEndpointFn(func(c fiber.Ctx) bool {
 })))
 ```
 
-Under the no-op tracer provider there is no new trace to start, so the caller's
-span context is simply not handed on.
+Of what the propagators extract from such a request, only the baggage reaches
+your handlers: the caller's span context and anything else a propagator keeps
+in the context, such as B3's debug flag, are dropped. Under the no-op tracer
+provider, or the global one while no SDK is installed, there is no new trace to
+start, so the caller's span context is simply not handed on. The function given
+to `WithPublicEndpointFn` runs for every request, whatever the tracer provider.
 
 ## Metrics
 

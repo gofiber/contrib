@@ -2610,6 +2610,82 @@ func TestPublicEndpointWithoutTracing(t *testing.T) {
 	assert.Empty(t, resp.Header.Get("traceparent"))
 }
 
+// passthroughTracerProvider hands on the parent's span context whatever the start options say,
+// as the global tracer provider does until an SDK is installed.
+type passthroughTracerProvider struct{ tracenoop.TracerProvider }
+
+func (passthroughTracerProvider) Tracer(string, ...oteltrace.TracerOption) oteltrace.Tracer {
+	return tracenoop.Tracer{}
+}
+
+// Dropping the caller's trace is not left to the tracer; the baggage is kept.
+func TestPublicEndpointDoesNotRelyOnTheTracer(t *testing.T) {
+	t.Parallel()
+
+	_, traceparent := callerContext()
+
+	app := fiber.New()
+	app.Use(New(
+		WithTracerProvider(passthroughTracerProvider{}),
+		WithoutMetrics(true),
+		WithPropagators(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})),
+		WithPublicEndpoint(),
+	))
+	var (
+		handlerSpanContext oteltrace.SpanContext
+		tenant             string
+	)
+	app.Get("/", func(c fiber.Ctx) error {
+		handlerSpanContext = oteltrace.SpanContextFromContext(c.Context())
+		tenant = baggage.FromContext(c.Context()).Member("tenant").Value()
+		return c.SendStatus(http.StatusNoContent)
+	})
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("traceparent", traceparent)
+	r.Header.Set("baggage", "tenant=acme")
+	resp, err := app.Test(r)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	assert.False(t, handlerSpanContext.IsValid())
+	assert.Empty(t, resp.Header.Get("traceparent"))
+	assert.Equal(t, "acme", tenant)
+}
+
+// B3 keeps its debug flag, which forces sampling downstream, beside the span context.
+func TestPublicEndpointDropsB3Debug(t *testing.T) {
+	t.Parallel()
+
+	for name, provider := range map[string]oteltrace.TracerProvider{
+		"sdk":   sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.NeverSample()))),
+		"no-op": tracenoop.NewTracerProvider(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			app := fiber.New()
+			app.Use(New(
+				WithTracerProvider(provider),
+				WithoutMetrics(true),
+				WithPropagators(b3prop.New()),
+				WithPublicEndpoint(),
+			))
+			app.Get("/", func(c fiber.Ctx) error {
+				return c.SendStatus(http.StatusNoContent)
+			})
+
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.Header.Set("b3", "d")
+			resp, err := app.Test(r)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+			assert.False(t, strings.HasSuffix(resp.Header.Get("b3"), "d"), resp.Header.Get("b3"))
+		})
+	}
+}
+
 // fasthttp's stamp on a rejected keep-alive request is the previous request's.
 func TestRejectedRequestOnKeepAliveConnectionIsNotBackdated(t *testing.T) {
 	t.Parallel()
