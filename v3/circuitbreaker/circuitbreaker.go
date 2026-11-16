@@ -35,7 +35,8 @@ type Config struct {
 	// Zero means failures accumulate until the circuit opens.
 	Interval time.Duration
 	// Custom failure detector function (return true if response should count as failure).
-	// An outcome it does not count that ends with a 4xx status is neutral: neither failure nor success.
+	// An outcome it does not count that ends with a 4xx status or a request bind error is
+	// neutral: neither failure nor success.
 	IsFailure func(c fiber.Ctx, err error) bool
 
 	// Clock reads the current time. Recovery is derived from it rather than
@@ -76,7 +77,7 @@ var DefaultConfig = Config{
 		if fiberErr, ok := errors.AsType[*fiber.Error](err); ok {
 			return fiberErr.Code >= http.StatusInternalServerError
 		}
-		return true
+		return !isRequestBindError(err)
 	},
 	OnOpen: func(c fiber.Ctx) error {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
@@ -245,17 +246,23 @@ func (cb *CircuitBreaker) serve(c fiber.Ctx, next func() error) error {
 }
 
 // isClientError reports a 4xx outcome, taken from a returned *fiber.Error or else
-// from the response; any other returned error is answered with 500.
+// from the response, or a request bind error; any other returned error is answered with 500.
 func isClientError(c fiber.Ctx, err error) bool {
 	status := c.Response().StatusCode()
 	if err != nil {
 		fiberErr, ok := errors.AsType[*fiber.Error](err)
 		if !ok {
-			return false
+			return isRequestBindError(err)
 		}
 		status = fiberErr.Code
 	}
 	return status >= http.StatusBadRequest && status < http.StatusInternalServerError
+}
+
+// isRequestBindError reports malformed request input; RespHeader binds the server's own response.
+func isRequestBindError(err error) bool {
+	bindErr, ok := errors.AsType[*fiber.BindError](err)
+	return ok && bindErr.Source != fiber.BindSourceRespHeader
 }
 
 // admit reports whether one request may proceed, how it was admitted, and the

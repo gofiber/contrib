@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -805,6 +806,59 @@ func TestClientErrorsDoNotCloseHalfOpen(t *testing.T) {
 	require.Equal(t, circuitbreaker.StateOpen, cb.GetState(), "a failing backend still reopens the circuit")
 
 	clock.Advance(time.Minute)
+	require.Equal(t, fiber.StatusOK, get(t, app, "/ok").StatusCode)
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState(), "a real success still closes it")
+}
+
+func TestBindErrorsAreNeutral(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold:      2,
+		SuccessThreshold:      1,
+		HalfOpenMaxConcurrent: 1,
+		Timeout:               time.Minute,
+		Clock:                 clock.Now,
+	})
+	app := newApp(cb)
+	app.Post("/items", func(c fiber.Ctx) error {
+		var item struct{ ID int }
+		if err := c.Bind().Body(&item); err != nil {
+			return err
+		}
+		return c.SendStatus(fiber.StatusCreated)
+	})
+	app.Get("/resp-header", func(c fiber.Ctx) error {
+		c.Set("X-Count", "many")
+		var h struct {
+			Count int `respHeader:"X-Count"`
+		}
+		return c.Bind().RespHeader(&h)
+	})
+	postMalformed := func() int {
+		req := httptest.NewRequest(fiber.MethodPost, "/items", strings.NewReader("{not json"))
+		req.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+		resp, err := app.Test(req)
+		require.NoError(t, err)
+		return resp.StatusCode
+	}
+
+	for range 5 {
+		require.Equal(t, fiber.StatusInternalServerError, postMalformed(), "the default ErrorHandler answers a bind error with 500")
+	}
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState(), "malformed bodies are not failures of the service")
+
+	get(t, app, "/resp-header")
+	get(t, app, "/resp-header")
+	require.Equal(t, circuitbreaker.StateOpen, cb.GetState(), "a response header that fails to bind still is")
+
+	clock.Advance(time.Minute)
+	for range 5 {
+		require.Equal(t, fiber.StatusInternalServerError, postMalformed(), "a malformed probe gives its slot back without reopening")
+	}
+	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState(), "malformed probes say nothing about recovery")
+
 	require.Equal(t, fiber.StatusOK, get(t, app, "/ok").StatusCode)
 	require.Equal(t, circuitbreaker.StateClosed, cb.GetState(), "a real success still closes it")
 }
