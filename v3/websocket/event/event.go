@@ -50,7 +50,9 @@ const (
 	EventDisconnect = "disconnect"
 	// EventConnect is fired when the connection is initialized, immediately
 	// after the New / NewWithConfig callback has run and before the read loop
-	// starts. It is not fired when the callback closed the connection.
+	// starts. It is not fired when the callback closed the connection. A
+	// listener that panics while the connection is being accepted refuses it
+	// with a 1011 close and ErrorCallbackPanic.
 	EventConnect = "connect"
 	// EventClose is fired when the server actively closes the connection (for
 	// example via Close or CloseAll).
@@ -1153,6 +1155,11 @@ func (kws *Websocket) invokeCallback(event string, cb EventCallback, p *EventPay
 		if r := recover(); r != nil {
 			if kws.settings.recover != nil {
 				kws.settings.recover(event, r)
+			}
+			// The listener may have panicked before it could refuse the connection.
+			if event == EventConnect && kws.isPending() && kws.IsAlive() {
+				kws.writeClose(websocket.CloseInternalServerErr, "internal error")
+				kws.disconnected(ErrorCallbackPanic)
 			}
 		}
 	}()
