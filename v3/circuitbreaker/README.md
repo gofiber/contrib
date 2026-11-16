@@ -48,10 +48,11 @@ success. In half-open it gives its probe slot back, so the next request probes i
 A `*fiber.BindError` from binding the request (not `RespHeader`), custom binders included, is
 neutral too, although the default error handler answers it with 500. That holds when it is
 returned as is, wrapped with `%w`, or joined (`errors.Join`) with other request bind errors only;
-joined with any other error it counts like that error. Other errors a client can
-cause, such as struct validator or `c.FormFile` errors, still count as failures; to make them
-neutral, return a 4xx `*fiber.Error` for them (from the validator, for example). An `IsFailure`
-that does not count them makes them successes instead.
+joined with any other error it counts like that error. A custom binder that fails on a
+dependency should return a 5xx `*fiber.Error`, so that the failure still counts. Other errors a
+client can cause, such as struct validator or `c.FormFile` errors, still count as failures; to
+make them neutral, return a 4xx `*fiber.Error` for them (from the validator, for example). An
+`IsFailure` that does not count them makes them successes instead.
 
 ## Benefits of Using a Circuit Breaker
 

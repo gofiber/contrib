@@ -881,7 +881,12 @@ func TestBindErrorsAreNeutral(t *testing.T) {
 func TestBindErrorJoinedWithServerErrorFails(t *testing.T) {
 	t.Parallel()
 
-	for _, serverErr := range []error{fiber.ErrServiceUnavailable, errors.New("insert audit row: timeout")} {
+	var noErr error
+	for _, serverErr := range []error{
+		fiber.ErrServiceUnavailable,
+		errors.New("insert audit row: timeout"),
+		fmt.Errorf("audit: %w %w", noErr, noErr),
+	} {
 		cb := circuitbreaker.New(circuitbreaker.Config{FailureThreshold: 1, Timeout: time.Minute})
 		app := newApp(cb)
 		app.Post("/items", func(c fiber.Ctx) error {
