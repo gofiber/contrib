@@ -254,7 +254,10 @@ func (m *middleware) handle(c fiber.Ctx) error {
 	// serve the request to the next middleware
 	chainErr := c.Next()
 	if chainErr != nil {
-		r.span.RecordError(chainErr)
+		// RecordError is a no-op unless recording; skip the message check with it.
+		if r.span.IsRecording() {
+			r.span.RecordError(recordableError(chainErr))
+		}
 		// Run the error handler now, as Fiber's logger does, so the recorded status is the one sent.
 		if handlerErr := c.App().ErrorHandler(c, chainErr); handlerErr != nil {
 			_ = c.SendStatus(fiber.StatusInternalServerError) //nolint:errcheck // mirrors Fiber's own fallback
@@ -310,7 +313,7 @@ func (m *middleware) handle(c fiber.Ctx) error {
 			}
 		}
 		r.span.SetAttributes(append(attrs, customSpanAttrs...)...)
-		r.span.SetName(spanName)
+		r.span.SetName(validString(spanName))
 		r.span.SetStatus(spanStatus, spanMessage)
 	}
 
@@ -416,7 +419,7 @@ func (m *middleware) end(c fiber.Ctx, r *request) {
 			if r.naming {
 				format = defaultSpanNameFormatter
 			}
-			r.span.SetName(format(c))
+			r.span.SetName(validString(format(c)))
 		}
 	}
 }

@@ -3,6 +3,7 @@ package otel
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net"
 	"net/netip"
@@ -250,6 +251,16 @@ func validString(value string) string {
 	}
 
 	return strings.ToValidUTF8(value, "�")
+}
+
+// recordableError replaces an error whose message, often built from request input, is invalid UTF-8.
+func recordableError(err error) error {
+	msg := err.Error()
+	if valid := validString(msg); valid != msg {
+		return errors.New(valid)
+	}
+
+	return err
 }
 
 // validStrings is validString over a slice the caller owns.

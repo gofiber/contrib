@@ -2230,6 +2230,37 @@ func TestInvalidUTF8RequestValuesAreReplaced(t *testing.T) {
 	}
 }
 
+func TestInvalidUTF8ErrorAndSpanNameAreReplaced(t *testing.T) {
+	t.Parallel()
+
+	sr := tracetest.NewSpanRecorder()
+	app := fiber.New(fiber.Config{UnescapePath: true})
+	app.Use(recoverer.New())
+	app.Use(New(
+		WithTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))),
+		WithoutMetrics(true),
+		WithSpanNameFormatter(func(c fiber.Ctx) string { return strings.Clone(c.Path()) }),
+	))
+	app.Get("/users/:id", func(c fiber.Ctx) error {
+		return fmt.Errorf("no user %s", c.Params("id"))
+	})
+	app.Get("/panic/:id", func(fiber.Ctx) error {
+		panic("handler exploded")
+	})
+
+	_, err := app.Test(httptest.NewRequest(http.MethodGet, "/users/%ff", nil))
+	require.NoError(t, err)
+	_, err = app.Test(httptest.NewRequest(http.MethodGet, "/panic/%ff", nil))
+	require.NoError(t, err)
+
+	spans := sr.Ended()
+	require.Len(t, spans, 2)
+	assert.Equal(t, "/users/\uFFFD", spans[0].Name())
+	assert.Equal(t, "/panic/\uFFFD", spans[1].Name())
+	require.Len(t, spans[0].Events(), 1)
+	assert.Contains(t, spans[0].Events()[0].Attributes, semconv.ExceptionMessage("no user \uFFFD"))
+}
+
 func TestRedactedQueryParams(t *testing.T) {
 	t.Parallel()
 

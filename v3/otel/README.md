@@ -149,9 +149,10 @@ trusts - see `fiber.Config.TrustProxy`.
 
 Bytes of the request that are not valid UTF-8 are replaced by `U+FFFD` in
 `url.path`, `url.query`, `server.address`, `client.address`,
-`user_agent.original`, `enduser.id` and the captured headers, since protobuf
-refuses such strings and an OTLP exporter would otherwise lose the whole batch
-the span is in.
+`user_agent.original`, `enduser.id`, the captured headers, the span name and
+the message of a returned handler error, since protobuf refuses such strings and
+an OTLP exporter would otherwise lose the whole batch the span is in. A panic
+value is recorded by the SDK as it is, so keep request input out of it.
 
 ### Query redaction
 
