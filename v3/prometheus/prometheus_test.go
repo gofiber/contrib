@@ -2706,6 +2706,106 @@ func TestScrapeHandlerDetachesOnlyWithTimeout(t *testing.T) {
 	}
 }
 
+// dialRaw serves app on an in-memory listener and returns a function that sends
+// a raw request over one keep-alive connection and returns the response status.
+func dialRaw(t *testing.T, app *fiber.App) func(request string) int {
+	t.Helper()
+
+	ln := fasthttputil.NewInmemoryListener()
+	served := make(chan error, 1)
+	go func() {
+		served <- app.Listener(ln, fiber.ListenConfig{DisableStartupMessage: true})
+	}()
+	t.Cleanup(func() {
+		if err := app.Shutdown(); err != nil {
+			t.Errorf("shutting down: %v", err)
+		}
+		<-served
+	})
+
+	conn, err := ln.Dial()
+	if err != nil {
+		t.Fatalf("dialing: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	reader := bufio.NewReader(conn)
+
+	return func(request string) int {
+		t.Helper()
+
+		if _, err := io.WriteString(conn, request); err != nil {
+			t.Fatalf("writing the request: %v", err)
+		}
+		resp, err := http.ReadResponse(reader, nil)
+		if err != nil {
+			t.Fatalf("reading the response: %v", err)
+		}
+		if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+			t.Fatalf("reading the response body: %v", err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			t.Fatalf("closing the response body: %v", err)
+		}
+		return resp.StatusCode
+	}
+}
+
+// lineLogger hands each line promhttp logs to a test waiting for it.
+type lineLogger chan string
+
+func (l lineLogger) Println(v ...any) {
+	l <- fmt.Sprint(v...)
+}
+
+// TestTimedOutScrapeKeepsItsOwnFilter covers the gather a MetricsTimeout 503 leaves
+// running: it reads name[] only once Gather returns, by which time the connection
+// has parsed the next request line into the buffer the adaptor built the URL from.
+func TestTimedOutScrapeKeepsItsOwnFilter(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(prometheus.NewGauge(prometheus.GaugeOpts{Name: "scrape_filter_target"}))
+	release := make(chan struct{})
+	registry.MustRegister(prometheus.NewGauge(prometheus.GaugeOpts{Name: "scrape_filter_other"}))
+	logged := make(lineLogger, 4)
+
+	app := fiber.New()
+	app.Use(New(Config{
+		Registerer:      registry,
+		Gatherer:        &blockingGatherer{Gatherer: registry, entered: make(chan struct{}, 1), release: release},
+		MetricsTimeout:  50 * time.Millisecond,
+		MetricsErrorLog: logged,
+		// One encode error per family, so the log counts what the filter selected.
+		MetricsErrorHandling: promhttp.ContinueOnError,
+	}))
+	app.Get("/healthz", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	send := dialRaw(t, app)
+	if status := send("GET /metrics?name[]=scrape_filter_target HTTP/1.1\r\nHost: example.com\r\n\r\n"); status != fiber.StatusServiceUnavailable {
+		t.Fatalf("expected the scrape to time out with 503, got %d", status)
+	}
+	// Same offsets and length, so a URL still aliasing the line reads exactly this filter.
+	if status := send("GET /healthz?name[]=scrape_filter_absent HTTP/1.1\r\nHost: example.com\r\n\r\n"); status != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d", status)
+	}
+
+	close(release)
+	// Encoding into the timed-out response fails, so the log shows what the filter selected.
+	select {
+	case line := <-logged:
+		if !strings.Contains(line, http.ErrHandlerTimeout.Error()) {
+			t.Fatalf("expected the encode error of the timed-out response, got %q", line)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("expected the scrape to encode the family its own name[] selected")
+	}
+	select {
+	case line := <-logged:
+		t.Fatalf("expected only the selected family to be encoded, got another encode error %q", line)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 // TestBucketsAreCopiedFromConfig pins the defensive copy: client_golang aliases
 // the slice it is handed into the live histogram, so a caller reusing its own
 // slice would otherwise reshape an already-registered metric.
@@ -3711,6 +3811,69 @@ func TestMultipartUploadIsNotReMarshalled(t *testing.T) {
 	}
 }
 
+// TestRemovedFormFilesStillRecordTheUpload covers a handler that frees the parsed
+// form, which fasthttp recommends and which leaves no form or body behind.
+func TestRemovedFormFilesStillRecordTheUpload(t *testing.T) {
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", "payload.bin")
+	if err != nil {
+		t.Fatalf("creating the form file: %v", err)
+	}
+	if _, err := part.Write(bytes.Repeat([]byte("u"), 4096)); err != nil {
+		t.Fatalf("writing the form file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("closing the writer: %v", err)
+	}
+	announced := float64(body.Len())
+
+	app := newAppWithMiddleware(Config{}, "")
+	app.Post("/upload", func(c fiber.Ctx) error {
+		if _, err := c.FormFile("file"); err != nil {
+			return err
+		}
+		c.Request().RemoveMultipartFormFiles()
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	req := httptest.NewRequest(fiber.MethodPost, "/upload", body)
+	req.Header.Set(fiber.HeaderContentType, writer.FormDataContentType())
+	resp, err := app.Test(req, noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	metrics := getMetrics(t, app, "")
+	series := `http_request_size_bytes_sum{method="POST",path="/upload",status_code="200"}`
+	if size := gaugeValue(t, metrics, series); size != announced {
+		t.Fatalf("expected the announced %v bytes, got %v", announced, size)
+	}
+}
+
+// TestChunkedFormIsLeftToTheHandler covers a form fasthttp does not pre-parse: the
+// middleware must not parse it first and so bypass the handler's own limit.
+func TestChunkedFormIsLeftToTheHandler(t *testing.T) {
+	app := newAppWithMiddleware(Config{}, "")
+	app.Post("/upload", func(c fiber.Ctx) error {
+		if _, err := c.Request().MultipartFormWithLimit(100); err != nil {
+			return c.SendStatus(fiber.StatusRequestEntityTooLarge)
+		}
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	body := "--zzz\r\nContent-Disposition: form-data; name=\"f\"\r\n\r\n" + strings.Repeat("x", 1024) + "\r\n--zzz--\r\n"
+	send := dialRaw(t, app)
+	status := send(fmt.Sprintf("POST /upload HTTP/1.1\r\nHost: example.com\r\n"+
+		"Content-Type: multipart/form-data; boundary=zzz\r\nTransfer-Encoding: chunked\r\n\r\n%x\r\n%s\r\n0\r\n\r\n", len(body), body))
+	if status != fiber.StatusRequestEntityTooLarge {
+		t.Fatalf("expected the handler's own limit to answer 413, got %d", status)
+	}
+}
+
 // TestUnsampledTraceProducesNoExemplar pins that an exemplar points somewhere.
 // Under head-based sampling every request has a valid trace ID, and one exemplar
 // per bucket is overwritten, so unsampled traces would evict the useful links.
@@ -3839,6 +4002,56 @@ func testInflatedContentLength(t *testing.T, contentType string) {
 		if size > 4 {
 			t.Fatalf("expected no size beyond what arrived, got %v in %q", size, line)
 		}
+	}
+}
+
+// TestUnreadFormIsNotRecorded covers a form announced below BodyLimit that fasthttp
+// rejects unread for its invalid URI, so comparing the length with the limit tells nothing.
+func TestUnreadFormIsNotRecorded(t *testing.T) {
+	app := newAppWithMiddleware(Config{TrackUnmatchedRequests: true}, "")
+	app.Post("/upload", func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	send := dialRaw(t, app)
+	status := send("POST http://[bad/ HTTP/1.1\r\nHost: example.com\r\n" +
+		"Content-Type: multipart/form-data; boundary=zzz\r\nContent-Length: 2048\r\n\r\n")
+	if status != fiber.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", status)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `http_requests_total{method="POST",path="/__unmatched__"`) {
+		t.Fatalf("expected the rejected request to be counted, got %q", metrics)
+	}
+	if strings.Contains(metrics, `http_request_size_bytes_sum{method="POST"`) {
+		t.Fatalf("expected no size for a form that never arrived, got %q", metrics)
+	}
+}
+
+// TestStreamedFormOverLimitIsNotRecorded covers a form fasthttp streams instead of
+// rejecting: once the handler closes the stream, Body() still holds the prefetched part.
+func TestStreamedFormOverLimitIsNotRecorded(t *testing.T) {
+	app := fiber.New(fiber.Config{BodyLimit: 1024, StreamRequestBody: true})
+	app.Use(New(Config{}))
+	app.Post("/upload", func(c fiber.Ctx) error {
+		if err := c.Request().CloseBodyStream(); err != nil {
+			return err
+		}
+		return c.SendStatus(fiber.StatusRequestEntityTooLarge)
+	})
+
+	send := dialRaw(t, app)
+	status := send("POST /upload HTTP/1.1\r\nHost: example.com\r\n" +
+		"Content-Type: multipart/form-data; boundary=zzz\r\nContent-Length: 500000000\r\n\r\n" +
+		strings.Repeat("x", 2048))
+	if status != fiber.StatusRequestEntityTooLarge {
+		t.Fatalf("expected status 413, got %d", status)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if strings.Contains(metrics, `http_request_size_bytes_sum{method="POST"`) {
+		t.Fatalf("expected no size for a form over BodyLimit, got %q", metrics)
 	}
 }
 
@@ -5119,42 +5332,10 @@ func TestRejectedRequestDurationExcludesKeepAliveIdle(t *testing.T) {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 
-	ln := fasthttputil.NewInmemoryListener()
-	served := make(chan error, 1)
-	go func() {
-		served <- app.Listener(ln, fiber.ListenConfig{DisableStartupMessage: true})
-	}()
-	t.Cleanup(func() {
-		if err := app.Shutdown(); err != nil {
-			t.Errorf("shutting down: %v", err)
-		}
-		<-served
-	})
-
-	conn, err := ln.Dial()
-	if err != nil {
-		t.Fatalf("dialing: %v", err)
-	}
-	defer conn.Close()
-	reader := bufio.NewReader(conn)
-
+	send := dialRaw(t, app)
 	post := func(body string) int {
 		t.Helper()
-
-		if _, err := fmt.Fprintf(conn, "POST /upload HTTP/1.1\r\nHost: example.com\r\nContent-Length: %d\r\n\r\n%s", len(body), body); err != nil {
-			t.Fatalf("writing the request: %v", err)
-		}
-		resp, err := http.ReadResponse(reader, nil)
-		if err != nil {
-			t.Fatalf("reading the response: %v", err)
-		}
-		if _, err := io.Copy(io.Discard, resp.Body); err != nil {
-			t.Fatalf("reading the response body: %v", err)
-		}
-		if err := resp.Body.Close(); err != nil {
-			t.Fatalf("closing the response body: %v", err)
-		}
-		return resp.StatusCode
+		return send(fmt.Sprintf("POST /upload HTTP/1.1\r\nHost: example.com\r\nContent-Length: %d\r\n\r\n%s", len(body), body))
 	}
 
 	if status := post("ok"); status != fiber.StatusNoContent {
