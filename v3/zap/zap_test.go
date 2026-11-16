@@ -682,6 +682,45 @@ func Test_Logger_TimedOutHandler_GetResBody(t *testing.T) {
 	}, logs.All()[0].ContextMap())
 }
 
+// go test -race -run Test_Logger_TimedOutHandler_ReturnsError
+func Test_Logger_TimedOutHandler_ReturnsError(t *testing.T) {
+	logged, _ := setupLogsCapture()
+	for name, logger := range map[string]*zap.Logger{
+		"logged":     logged,
+		"not logged": zap.NewNop(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			errs := make(chan error, 1)
+			// Released only after the test: a handler done before the deadline could win timeout's select.
+			release := make(chan struct{})
+			t.Cleanup(func() { close(release) })
+
+			app := fiber.New()
+			app.Use(func(c fiber.Ctx) error {
+				err := c.Next()
+				errs <- err
+				return err
+			})
+			app.Use(New(Config{Logger: logger}))
+			app.Get("/slow", timeout.New(func(c fiber.Ctx) error {
+				<-release
+				return c.SendString("late")
+			}, timeout.Config{Timeout: 10 * time.Millisecond}))
+			app.Get("/bad", func(fiber.Ctx) error { return fiber.ErrBadRequest })
+
+			resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/slow", nil))
+			assert.NoError(t, err)
+			assert.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
+			assert.ErrorIs(t, <-errs, fiber.ErrServiceUnavailable)
+
+			resp, err = app.Test(httptest.NewRequest(http.MethodGet, "/bad", nil))
+			assert.NoError(t, err)
+			assert.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
+			assert.NoError(t, <-errs)
+		})
+	}
+}
+
 // go test -run Test_Body_LoggedAsReceived
 func Test_Body_LoggedAsReceived(t *testing.T) {
 	gzipped := func(b []byte) []byte {

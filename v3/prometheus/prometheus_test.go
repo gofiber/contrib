@@ -4430,6 +4430,54 @@ func TestFiberTimeoutIsRecordedAsTimeout(t *testing.T) {
 	}
 }
 
+func TestFiberTimeoutReturnsTheTimeoutError(t *testing.T) {
+	for name, cfg := range map[string]Config{
+		"recorded":     {},
+		"not recorded": {SkipStatusCodes: []int{fiber.StatusServiceUnavailable, fiber.StatusBadRequest}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			errs := make(chan error, 1)
+			// Released only after the test: a handler done before the deadline could win timeout's select.
+			release := make(chan struct{})
+			t.Cleanup(func() { close(release) })
+			app := fiber.New()
+			app.Use(func(c fiber.Ctx) error {
+				err := c.Next()
+				errs <- err
+				return err
+			})
+			app.Use(New(cfg))
+			app.Get("/slow", timeout.New(func(c fiber.Ctx) error {
+				<-release
+				return c.SendString("late")
+			}, timeout.Config{Timeout: 10 * time.Millisecond}))
+			app.Get("/bad", func(fiber.Ctx) error { return fiber.ErrBadRequest })
+
+			resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/slow", nil), noTimeoutConfig)
+			if err != nil {
+				t.Fatalf("unexpected request error: %v", err)
+			}
+			if resp.StatusCode != fiber.StatusServiceUnavailable {
+				t.Fatalf("expected the client to receive 503, got %d", resp.StatusCode)
+			}
+			if err := <-errs; !errors.Is(err, fiber.ErrServiceUnavailable) {
+				t.Fatalf("expected the timeout error to reach middleware mounted before, got %v", err)
+			}
+
+			resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/bad", nil), noTimeoutConfig)
+			if err != nil {
+				t.Fatalf("unexpected request error: %v", err)
+			}
+			if resp.StatusCode != fiber.StatusBadRequest {
+				t.Fatalf("expected the client to receive 400, got %d", resp.StatusCode)
+			}
+			if err := <-errs; err != nil {
+				t.Fatalf("expected the answered error to be consumed, got %v", err)
+			}
+		})
+	}
+}
+
 // TestSkippedURIErrorPropagates covers a route excluded by SkipURIs that returns
 // an error. A skipped route records nothing, so there is no status to buy by
 // consuming it - and the two other stand-aside paths already return it.

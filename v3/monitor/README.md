@@ -112,7 +112,11 @@ For instrumented requests that return an error, monitor invokes the
 application's configured Fiber `ErrorHandler` before recording the response.
 This makes status metrics match the response sent to the client, including
 custom error statuses. The error is therefore consumed at the monitor layer and
-does not propagate to middleware mounted before it.
+does not propagate to middleware mounted before it, except for a request Fiber's
+`timeout` middleware answered: as with Fiber's logger, that error is returned, so
+middleware mounted before monitor, such as `cache`, leaves that response alone;
+an error-handling middleware mounted before it should check `c.IsAbandoned()`
+before it writes a response.
 
 ## Config
 

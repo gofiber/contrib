@@ -224,6 +224,38 @@ func TestFiberTimeoutIsRecordedAsTimeout(t *testing.T) {
 	assert.Zero(t, m.status4.Load())
 }
 
+func TestFiberTimeoutReturnsTheTimeoutError(t *testing.T) {
+	m := mustInstrumentingMiddleware(t)
+	errs := make(chan error, 1)
+	// Released only after the test: a handler done before the deadline could win timeout's select.
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		err := c.Next()
+		errs <- err
+		return err
+	})
+	app.Use(m.handler())
+	app.Get("/slow", timeout.New(func(c fiber.Ctx) error {
+		<-release
+		return c.SendString("late")
+	}, timeout.Config{Timeout: 10 * time.Millisecond}))
+	app.Get("/bad", func(fiber.Ctx) error { return fiber.ErrBadRequest })
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/slow", nil))
+	require.NoError(t, err)
+	assert.NoError(t, resp.Body.Close())
+	assert.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
+	assert.ErrorIs(t, <-errs, fiber.ErrServiceUnavailable)
+
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/bad", nil))
+	require.NoError(t, err)
+	assert.NoError(t, resp.Body.Close())
+	assert.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
+	assert.NoError(t, <-errs)
+}
+
 func TestRecoveredPanicDoesNotLeakInFlight(t *testing.T) {
 	m := mustInstrumentingMiddleware(t)
 	app := fiber.New()

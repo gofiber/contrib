@@ -537,6 +537,38 @@ func TestTimedOutRequestUsesTheParkedResponse(t *testing.T) {
 	assert.True(t, <-canceled, "the handler lost the deadline timeout.New gave it")
 }
 
+func TestTimedOutRequestReturnsTheTimeoutError(t *testing.T) {
+	t.Parallel()
+
+	errs := make(chan error, 1)
+	// Released only after the test: a handler done before the deadline could win timeout's select.
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		err := c.Next()
+		errs <- err
+		return err
+	})
+	app.Use(New(WithTracerProvider(sdktrace.NewTracerProvider())))
+	app.Get("/slow", timeout.New(func(c fiber.Ctx) error {
+		<-release
+		return c.SendString("late")
+	}, timeout.Config{Timeout: 10 * time.Millisecond}))
+	app.Get("/bad", func(fiber.Ctx) error { return fiber.ErrBadRequest })
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/slow", nil))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	require.ErrorIs(t, <-errs, fiber.ErrServiceUnavailable)
+
+	resp, err = app.Test(httptest.NewRequest(http.MethodGet, "/bad", nil))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	require.NoError(t, <-errs)
+}
+
 func TestGetSpanNotInstrumented(t *testing.T) {
 	var gotSpan oteltrace.Span
 
