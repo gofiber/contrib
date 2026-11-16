@@ -103,6 +103,9 @@ const (
 	statusUp                = "up"
 	statusDown              = "down"
 	storageErrorPublicLabel = "storage operation failed"
+	// Caps how long a failure before the first snapshot keeps answering 500, so
+	// a recovered store is seen within seconds even with a long SampleInterval.
+	snapshotErrorHold = 5 * time.Second
 )
 
 // cachedSnapshot limits status requests to one store refresh per cache
@@ -118,13 +121,25 @@ func (u *runtime) cachedSnapshot(ctx context.Context) (Snapshot, error) {
 	u.snapshotMu.Lock()
 	defer u.snapshotMu.Unlock()
 
-	if u.snapshotHasCache && now.Sub(u.snapshotCachedAt) < u.snapshotTTL {
-		return cloneSnapshot(u.snapshotCache), nil
+	if now.Sub(u.snapshotCachedAt) < u.snapshotTTL {
+		if u.snapshotHasCache {
+			return cloneSnapshot(u.snapshotCache), nil
+		}
+		if u.snapshotErr != nil {
+			return Snapshot{}, u.snapshotErr
+		}
 	}
 
 	snapshot, err := u.buildStatus(ctx, now)
 	if err != nil {
 		if !u.snapshotHasCache {
+			// With nothing to fall back on, hold the failure itself. A done caller
+			// context is that request's own deadline, not a store outage.
+			if ctx.Err() == nil {
+				u.snapshotErr = err
+				u.snapshotCachedAt = time.Now()
+				u.snapshotTTL = min(u.config.SampleInterval, snapshotErrorHold)
+			}
 			return Snapshot{}, err
 		}
 
@@ -144,6 +159,7 @@ func (u *runtime) cachedSnapshot(ctx context.Context) (Snapshot, error) {
 	u.snapshotCachedAt = now
 	u.snapshotTTL = snapshotLifetime(u.config.SampleInterval, snapshot)
 	u.snapshotHasCache = true
+	u.snapshotErr = nil
 	return cloneSnapshot(snapshot), nil
 }
 

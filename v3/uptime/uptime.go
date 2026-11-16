@@ -55,6 +55,7 @@ type runtime struct {
 	snapshotCachedAt time.Time
 	snapshotTTL      time.Duration
 	snapshotHasCache bool
+	snapshotErr      error
 }
 
 type recordTarget struct {
