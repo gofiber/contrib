@@ -613,6 +613,18 @@ func TestRedisStoreRollupKeepsFinalizedRowWhenSamplesRemain(t *testing.T) {
 	if row.UpSlots != 1 || row.ExpectedSlots != 1440 || !row.Finalized {
 		t.Fatalf("daily = %+v, want the original up=1 expected=1440 finalized row", row)
 	}
+
+	// a heartbeat that lands after the rollup may only raise up_slots
+	mustNoErr(t, first.WriteHeartbeat(ctx, Heartbeat{ServiceID: "api", InstanceID: 1, Day: "2026-06-25", Slot: 1, SeenAt: created}))
+	mustNoErr(t, second.RollupDaily(ctx, RollupOptions{
+		BeforeDay:     "2026-06-26",
+		ExpectedSlots: func(Service, string) int { return 96 },
+	}))
+
+	row = queryDailyMap(t, first)["2026-06-25"]
+	if row.UpSlots != 2 || row.ExpectedSlots != 1440 || !row.Finalized {
+		t.Fatalf("daily = %+v, want up=2 expected=1440 finalized after the late heartbeat", row)
+	}
 }
 
 func TestIntFieldRejectsOutOfRangeValue(t *testing.T) {
