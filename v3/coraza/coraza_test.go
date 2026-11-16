@@ -22,6 +22,7 @@ import (
 	"github.com/corazawaf/coraza/v3/types"
 	"github.com/gofiber/fiber/v3"
 	fiberlog "github.com/gofiber/fiber/v3/log"
+	"github.com/gofiber/fiber/v3/middleware/adaptor"
 	"github.com/valyala/fasthttp"
 )
 
@@ -648,6 +649,168 @@ SecRule ARGS_POST "@contains ../" "id:1001,phase:2,deny,status:403"`
 			}
 		})
 	}
+}
+
+func TestEngineMiddlewareRefusesMultipartFormsHandlersCouldReadDifferently(t *testing.T) {
+	// Without REQBODY_ERROR rules, so a refusal comes from the middleware and not from Coraza's parser.
+	uploadRules := `SecRuleEngine On
+SecRequestBodyAccess On
+SecRule ARGS_POST "@contains ../" "id:1001,phase:2,deny,status:403"
+SecRule ARGS_NAMES "@rx [\r\n]" "id:1002,phase:2,deny,status:403"
+SecRule FILES "@rx (?i)\.php$" "id:1003,phase:2,deny,status:403"`
+
+	engine, err := newTestEngineWithRules(t, uploadRules)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	// A streaming net/http handler reads every part under the boundary mime.ParseMediaType reads.
+	app := fiber.New(fiber.Config{BodyLimit: 16 << 20})
+	var refusal error
+	app.Use(engine.Middleware(MiddlewareConfig{ErrorHandler: func(c fiber.Ctx, e MiddlewareError) error {
+		refusal = e.Err
+		return c.Status(e.StatusCode).SendString(e.Message)
+	}}))
+	app.Post("/", adaptor.HTTPHandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mr, err := r.MultipartReader()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		var parts []string
+		for p, err := mr.NextPart(); err == nil; p, err = mr.NextPart() {
+			value, _ := io.ReadAll(p)
+			parts = append(parts, p.FormName()+"="+string(value))
+		}
+		_, _ = io.WriteString(w, strings.Join(parts, " "))
+	}))
+
+	send := func(contentType, body string, preParsed bool) (int, string) {
+		if preParsed {
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+			req.Header.Set(fiber.HeaderContentType, contentType)
+			resp := performRequest(t, app, req)
+			defer resp.Body.Close()
+			got, _ := io.ReadAll(resp.Body)
+			return resp.StatusCode, string(got)
+		}
+		// Without a pre-parse, as for a chunked body, the handler reads the raw bytes.
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(http.MethodPost)
+		ctx.Request.SetRequestURI("/")
+		ctx.Request.Header.SetHost("example.com")
+		ctx.Request.Header.SetContentType(contentType)
+		ctx.Request.SetBodyString(body)
+		app.Handler()(&ctx)
+		return ctx.Response.StatusCode(), string(ctx.Response.Body())
+	}
+	form := func(boundary, folder string) string {
+		return "--" + boundary + "\r\nContent-Disposition: form-data; name=\"folder\"\r\n\r\n" + folder + "\r\n--" + boundary + "--\r\n"
+	}
+
+	named := "--A\r\nContent-Disposition: form-data; name=\"note\"\r\n\r\nhello\r\n"
+	withPart := func(header string) string {
+		return named + "--A\r\n" + header + "\r\n\r\n../../etc\r\n--A--\r\n"
+	}
+
+	controlName := withPart("Content-Disposition: form-data; name*=utf-8''x%01y")
+	crlfName := named + "--A\r\nContent-Disposition: form-data; name*=utf-8''x%0D%0Ay\r\n\r\nv\r\n--A--\r\n"
+	// The writer doubles each backslash, so this 8 MB header grows past the 10 MB a part header may have.
+	grownName := withPart(`Content-Disposition: form-data; name="` + strings.Repeat(`\a`, 4<<20) + `"`)
+	shortenedFilename := named + "--A\r\nContent-Disposition: form-data; name=\"file\"; filename=\"shell.php/\"\r\n\r\n<?php ?>\r\n--A--\r\n"
+
+	for _, tc := range []struct {
+		name, contentType, body string
+		preParsed               bool
+		want                    int
+	}{
+		{"boundary* parameter", "multipart/form-data; boundary=A; boundary*=utf-8''B", form("B", "../../etc") + form("A", "pictures"), false, http.StatusBadRequest},
+		{"whitespace after =", "multipart/form-data; boundary= A", form("A", "../../etc") + "-- A--\r\n", false, http.StatusBadRequest},
+		{"control: every part named", "multipart/form-data; boundary=A", named + form("A", "pictures"), false, http.StatusOK},
+		{"part without Content-Disposition", "multipart/form-data; boundary=A", withPart("Content-Type: text/plain"), false, http.StatusBadRequest},
+		{"form-data without name", "multipart/form-data; boundary=A", withPart("Content-Disposition: form-data"), false, http.StatusBadRequest},
+		{"attachment", "multipart/form-data; boundary=A", withPart(`Content-Disposition: attachment; name="folder"; filename="x.txt"`), false, http.StatusBadRequest},
+		{"control character in a field name", "multipart/form-data; boundary=A", controlName, false, http.StatusBadRequest},
+		{"pre-parsed control character in a field name", "multipart/form-data; boundary=A", controlName, true, http.StatusBadRequest},
+		{"CR and LF in a field name", "multipart/form-data; boundary=A", crlfName, false, http.StatusBadRequest},
+		{"pre-parsed CR and LF in a field name", "multipart/form-data; boundary=A", crlfName, true, http.StatusBadRequest},
+		{"field name the writer grows past the header limit", "multipart/form-data; boundary=A", grownName, false, http.StatusBadRequest},
+		{"filename handlers read shortened", "multipart/form-data; boundary=A", shortenedFilename, false, http.StatusBadRequest},
+		{"pre-parsed filename handlers read shortened", "multipart/form-data; boundary=A", shortenedFilename, true, http.StatusBadRequest},
+		{"control: filename with a directory", "multipart/form-data; boundary=A", named + "--A\r\nContent-Disposition: form-data; name=\"folder\"; filename=\"dir/sub/cat.png\"\r\n\r\npictures\r\n--A--\r\n", false, http.StatusOK},
+		{"base64 field part", "multipart/form-data; boundary=A", named + "--A\r\nContent-Disposition: form-data; name=\"folder\"\r\nContent-Transfer-Encoding: base64\r\n\r\nLi4vLi4vZXRj\r\n--A--\r\n", false, http.StatusBadRequest},
+		{"base64 field part after 8bit", "multipart/form-data; boundary=A", named + "--A\r\nContent-Disposition: form-data; name=\"folder\"\r\nContent-Transfer-Encoding: 8bit\r\nContent-Transfer-Encoding: base64\r\n\r\nLi4vLi4vZXRj\r\n--A--\r\n", false, http.StatusBadRequest},
+		{"control: 8BIT field part with a charset", "multipart/form-data; boundary=A", named + "--A\r\nContent-Disposition: form-data; name=\"folder\"\r\nContent-Type: text/plain; charset=ISO-8859-1\r\nContent-Transfer-Encoding: 8BIT\r\n\r\npictures\r\n--A--\r\n", false, http.StatusOK},
+		{"control: Binary field part", "multipart/form-data; boundary=A", named + "--A\r\nContent-Disposition: form-data; name=\"folder\"\r\nContent-Transfer-Encoding: Binary\r\n\r\npictures\r\n--A--\r\n", false, http.StatusOK},
+		{"control: base64 file part", "multipart/form-data; boundary=A", named + "--A\r\nContent-Disposition: form-data; name=\"folder\"; filename=\"cat.png\"\r\nContent-Transfer-Encoding: base64\r\n\r\npictures\r\n--A--\r\n", false, http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, got := send(tc.contentType, tc.body, tc.preParsed)
+			if status != tc.want {
+				t.Fatalf("expected status %d, got %d with body %q", tc.want, status, got)
+			}
+			if tc.want == http.StatusOK && got != "note=hello folder=pictures" {
+				t.Fatalf("expected the handler to read every part, got %q", got)
+			}
+		})
+	}
+
+	long := strings.Repeat("a", 70)
+	for _, tc := range []struct{ name, contentType, boundary string }{
+		{"quoted", `multipart/form-data; boundary="A b"`, "A b"},
+		{"other parameters", "multipart/form-data; charset=utf-8; boundary=A; x=y", "A"},
+		{"whitespace around ;", "multipart/form-data ;\tboundary=A ; charset=utf-8", "A"},
+		{"no whitespace", "multipart/form-data;boundary=A", "A"},
+		{"capitalized name", "multipart/form-data; Boundary=A", "A"},
+		{"upper-case name", "multipart/form-data; BOUNDARY=A", "A"},
+		{"70 characters", "multipart/form-data; boundary=" + long, long},
+		{"every RFC 2046 character", `multipart/form-data; boundary="'()+_,-./:=? 09azAZ"`, "'()+_,-./:=? 09azAZ"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if status, got := send(tc.contentType, form(tc.boundary, "pictures"), false); status != http.StatusOK || got != "folder=pictures" {
+				t.Fatalf("expected the handler to read the clean form, got %d with body %q", status, got)
+			}
+			if status, got := send(tc.contentType, form(tc.boundary, "../../etc"), false); status != http.StatusForbidden {
+				t.Fatalf("expected status 403, got %d with body %q", status, got)
+			}
+		})
+	}
+
+	t.Run("ReadForm's part limit applies before the walk", func(t *testing.T) {
+		refusal = nil
+		status, got := send("multipart/form-data; boundary=A", strings.Repeat(named, 1000)+"--A\r\n\r\nx\r\n--A--\r\n", false)
+		if status != http.StatusBadRequest || !errors.Is(refusal, multipart.ErrMessageTooLarge) {
+			t.Fatalf("expected status 400 for too many parts, got %d with body %q and error %v", status, got, refusal)
+		}
+	})
+
+	t.Run("form read from a streamed body ahead of the middleware", func(t *testing.T) {
+		// The body stream is drained by then, so the middleware gets an empty body.
+		app := fiber.New(fiber.Config{StreamRequestBody: true})
+		app.Use(func(c fiber.Ctx) error {
+			_ = c.FormValue("folder")
+			return c.Next()
+		})
+		app.Use(engine.Middleware())
+		app.Post("/", func(c fiber.Ctx) error {
+			fh, err := c.FormFile("file")
+			if err != nil {
+				return err
+			}
+			return c.SendString("folder=" + c.FormValue("folder") + " file=" + fh.Filename)
+		})
+
+		body := "--A\r\nContent-Disposition: form-data; name=\"folder\"\r\n\r\npictures\r\n" +
+			"--A\r\nContent-Disposition: form-data; name=\"file\"; filename=\"cat.png\"\r\n\r\npng\r\n--A--\r\n"
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+		req.Header.Set(fiber.HeaderContentType, "multipart/form-data; boundary=A")
+		resp := performRequest(t, app, req)
+		defer resp.Body.Close()
+		got, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK || string(got) != "folder=pictures file=cat.png" {
+			t.Fatalf("expected the handler to read the form, got %d with body %q", resp.StatusCode, got)
+		}
+	})
 }
 
 func TestNewEngineProvidesInstanceIsolation(t *testing.T) {

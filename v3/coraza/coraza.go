@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"os"
@@ -671,7 +672,7 @@ func processRequest(tx types.Transaction, req *http.Request, c fiber.Ctx) (*type
 		// No cut at BodyLimit: a re-serialized form can be longer than what was received.
 		body := io.Reader(req.Body)
 		if c.IsMultipart() {
-			form, err := multipartFormBody(c, req.Header.Get(fiber.HeaderContentType))
+			form, err := multipartFormBody(c, req.Header.Get(fiber.HeaderContentType), body)
 			if err != nil {
 				return nil, fmt.Errorf("%w: %w", errMultipartForm, err)
 			}
@@ -759,16 +760,46 @@ func decodeRequestBody(fiberReq *fasthttp.Request, req *http.Request, bodyLimit 
 
 // multipartFormBody writes the form the handlers read under the boundary Coraza
 // reads, so Coraza inspects exactly the parts the handlers see.
-func multipartFormBody(c fiber.Ctx, contentType string) (io.Reader, error) {
+func multipartFormBody(c fiber.Ctx, contentType string, body io.Reader) (io.Reader, error) {
 	_, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
 		return nil, err
 	}
 	boundary := params["boundary"]
+	// Fiber splits the form by its own reading of the boundary, mime readers by this one.
+	if boundary != string(c.Request().Header.MultipartFormBoundary()) {
+		return nil, errors.New("fasthttp and mime read different boundaries")
+	}
 
+	// First, so ReadForm's part and header limits bound the walk below.
 	form, err := c.MultipartForm()
 	if err != nil {
 		return nil, err
+	}
+
+	// A streaming reader sees the body as received, not as ReadForm kept it.
+	if err := checkFormParts(body, boundary); err != nil {
+		return nil, err
+	}
+
+	// The writer changes CR and LF in a field name, and other controls do not read back.
+	for name := range form.Value {
+		if strings.ContainsFunc(name, func(r rune) bool { return (r < ' ' && r != '\t') || r == 0x7f }) {
+			return nil, errors.New("form has a field name with control characters")
+		}
+	}
+
+	// Handlers read a filename without trailing separators; Coraza's FILES keeps them.
+	for _, files := range form.File {
+		for _, fh := range files {
+			_, params, err := mime.ParseMediaType(fh.Header.Get(fiber.HeaderContentDisposition))
+			if err != nil {
+				return nil, err
+			}
+			if !strings.HasSuffix(params["filename"], fh.Filename) {
+				return nil, errors.New("form has a filename handlers read shortened")
+			}
+		}
 	}
 
 	var buf bytes.Buffer
@@ -788,8 +819,39 @@ func multipartFormBody(c fiber.Ctx, contentType string) (io.Reader, error) {
 	if bytes.Count(buf.Bytes(), []byte("--"+boundary)) != parts+1 {
 		return nil, errors.New("form content contains its boundary")
 	}
+	// The writer can grow a header past what a reader accepts, e.g. by escaping backslashes.
+	if err := checkFormParts(bytes.NewReader(buf.Bytes()), boundary); err != nil {
+		return nil, fmt.Errorf("written form does not read back: %w", err)
+	}
 
 	return &buf, nil
+}
+
+// checkFormParts reads every part and fails on one ReadForm skips or keeps encoded.
+func checkFormParts(r io.Reader, boundary string) error {
+	mr := multipart.NewReader(r, boundary)
+	for {
+		p, err := mr.NextPart()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if p.FormName() == "" {
+			return errors.New("form has a part without a form-data name")
+		}
+		// NextPart has undone quoted-printable; the written form drops a field's other encodings.
+		if p.FileName() == "" {
+			for _, cte := range p.Header.Values("Content-Transfer-Encoding") {
+				switch strings.ToLower(strings.TrimSpace(cte)) {
+				case "", "7bit", "8bit", "binary":
+				default:
+					return errors.New("form has a field part with a transfer encoding")
+				}
+			}
+		}
+	}
 }
 
 func obtainStatusCodeFromInterruptionOrDefault(it *types.Interruption, defaultStatusCode int) int {
