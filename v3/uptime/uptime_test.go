@@ -859,7 +859,14 @@ func TestCachedSnapshotDoesNotHoldCallerContextError(t *testing.T) {
 
 	store := newSnapshotStore()
 	store.fail = true
-	u := newSnapshotUptime(store)
+	// A long interval gives the held error the 5s cap, so a slow run cannot outlast it.
+	u := newSnapshotUptimeWithConfig(store, Config{
+		ServiceID:      "api",
+		SampleInterval: time.Hour,
+		DaysToShow:     1,
+		RetentionDays:  1,
+		Timezone:       time.UTC,
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -870,7 +877,7 @@ func TestCachedSnapshotDoesNotHoldCallerContextError(t *testing.T) {
 		requireError(t, err)
 	}
 	requireEqual(t, 2, store.listServicesCalls)
-	requireEqual(t, time.Second, u.snapshotTTL)
+	requireEqual(t, 5*time.Second, u.snapshotTTL)
 }
 
 func TestSnapshotReturnsStoreError(t *testing.T) {
