@@ -885,6 +885,18 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		}
 	}
 
+	// Before the chain: a handler that drops the parsed form (RemoveMultipartFormFiles)
+	// leaves it looking like one fasthttp rejected unread.
+	preParsedForm, formArrived := false, true
+	if m.requestSize != nil {
+		req := ctx.Request()
+		preParsedForm = bytes.HasPrefix(req.Header.ContentType(), multipartFormPrefix)
+		// A stream is never sized, and reading it here would drain it.
+		if preParsedForm && !req.IsBodyStream() {
+			formArrived = formReceived(ctx)
+		}
+	}
+
 	chainErr := ctx.Next()
 
 	// Read here, not at the observation below: everything between is this middleware's
@@ -966,7 +978,6 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 
 		if m.requestSize != nil {
 			req := ctx.Request()
-			preParsedForm := bytes.HasPrefix(req.Header.ContentType(), multipartFormPrefix)
 
 			// Read per request rather than cached: one handler may be mounted on two
 			// apps with different limits. Only the multipart path reaches it, so an
@@ -976,9 +987,8 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 				bodyLimit = ctx.App().Config().BodyLimit
 			}
 
-			// fasthttp rejects an invalid URI unread too, at any length under BodyLimit.
 			size, known := requestBodySize(req.Header.ContentLength(), bodyLimit, preParsedForm, req)
-			if known && (!preParsedForm || formReceived(ctx)) {
+			if known && formArrived {
 				observe(sizeObserver(&s.requestSize, m.requestSize, s.labels), size, exemplar)
 			}
 		}

@@ -2764,7 +2764,8 @@ func TestTimedOutScrapeKeepsItsOwnFilter(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(prometheus.NewGauge(prometheus.GaugeOpts{Name: "scrape_filter_target"}))
 	release := make(chan struct{})
-	logged := make(lineLogger, 1)
+	registry.MustRegister(prometheus.NewGauge(prometheus.GaugeOpts{Name: "scrape_filter_other"}))
+	logged := make(lineLogger, 4)
 
 	app := fiber.New()
 	app.Use(New(Config{
@@ -2772,6 +2773,8 @@ func TestTimedOutScrapeKeepsItsOwnFilter(t *testing.T) {
 		Gatherer:        &blockingGatherer{Gatherer: registry, entered: make(chan struct{}, 1), release: release},
 		MetricsTimeout:  50 * time.Millisecond,
 		MetricsErrorLog: logged,
+		// One encode error per family, so the log counts what the filter selected.
+		MetricsErrorHandling: promhttp.ContinueOnError,
 	}))
 	app.Get("/healthz", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
@@ -2795,6 +2798,11 @@ func TestTimedOutScrapeKeepsItsOwnFilter(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("expected the scrape to encode the family its own name[] selected")
+	}
+	select {
+	case line := <-logged:
+		t.Fatalf("expected only the selected family to be encoded, got another encode error %q", line)
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 
@@ -3783,6 +3791,49 @@ func TestMultipartUploadIsNotReMarshalled(t *testing.T) {
 		if _, err := c.FormFile("file"); err != nil {
 			return err
 		}
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	req := httptest.NewRequest(fiber.MethodPost, "/upload", body)
+	req.Header.Set(fiber.HeaderContentType, writer.FormDataContentType())
+	resp, err := app.Test(req, noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	metrics := getMetrics(t, app, "")
+	series := `http_request_size_bytes_sum{method="POST",path="/upload",status_code="200"}`
+	if size := gaugeValue(t, metrics, series); size != announced {
+		t.Fatalf("expected the announced %v bytes, got %v", announced, size)
+	}
+}
+
+// TestRemovedFormFilesStillRecordTheUpload covers a handler that frees the parsed
+// form, which fasthttp recommends and which leaves no form or body behind.
+func TestRemovedFormFilesStillRecordTheUpload(t *testing.T) {
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", "payload.bin")
+	if err != nil {
+		t.Fatalf("creating the form file: %v", err)
+	}
+	if _, err := part.Write(bytes.Repeat([]byte("u"), 4096)); err != nil {
+		t.Fatalf("writing the form file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("closing the writer: %v", err)
+	}
+	announced := float64(body.Len())
+
+	app := newAppWithMiddleware(Config{}, "")
+	app.Post("/upload", func(c fiber.Ctx) error {
+		if _, err := c.FormFile("file"); err != nil {
+			return err
+		}
+		c.Request().RemoveMultipartFormFiles()
 		return c.SendStatus(fiber.StatusOK)
 	})
 
