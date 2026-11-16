@@ -104,6 +104,8 @@ func New(config ...Config) fiber.Handler {
 			return reject(c, jwt.ErrTokenUnverifiable)
 		}
 
+		// Raw may alias the request buffer, and a stored token can outlive the request.
+		token.Raw = strings.Clone(token.Raw)
 		// Store user information from token into context.
 		fiber.StoreInContext(c, tokenKey, token)
 

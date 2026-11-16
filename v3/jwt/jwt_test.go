@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -279,6 +280,30 @@ func TestJwtNonPointerClaimsConfigDoesNotPanic(t *testing.T) {
 	resp, err := app.Test(req)
 	assert.NoError(t, err)
 	assert.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestStoredTokenOutlivesTheRequest(t *testing.T) {
+	t.Parallel()
+
+	var stored *jwt.Token
+	app := fiber.New()
+	app.Use(jwtware.New(jwtware.Config{
+		SigningKey: jwtware.SigningKey{JWTAlg: hamac[0].SigningMethod, Key: []byte(defaultSigningKey)},
+	}))
+	app.Get("/", func(c fiber.Ctx) error {
+		stored = jwtware.FromContext(c)
+		return nil
+	})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/")
+	ctx.Request.Header.Set(fiber.HeaderAuthorization, "Bearer "+hamac[0].Token)
+	app.Handler()(ctx)
+	assert.Equal(t, fiber.StatusOK, ctx.Response.StatusCode())
+
+	// The next request on the connection reuses the header buffer.
+	ctx.Request.Header.Set(fiber.HeaderAuthorization, "Bearer "+strings.Repeat("x", len(hamac[0].Token)))
+	assert.Equal(t, hamac[0].Token, stored.Raw)
 }
 
 func TestJwtFromCookie(t *testing.T) {
