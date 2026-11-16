@@ -81,6 +81,11 @@ func New(config ...Config) fiber.Handler {
 		}
 
 		response := sentResponse(c)
+		// As in Fiber's logger: the timeout error keeps middleware before us off the handler's response.
+		var result error
+		if response != c.Response() {
+			result = chainErr
+		}
 
 		// Check if the logger has the appropriate level
 		var (
@@ -106,7 +111,7 @@ func New(config ...Config) fiber.Handler {
 
 		ce := cfg.Logger.Check(cfg.Levels[levelIndex], cfg.Messages[messageIndex])
 		if ce == nil {
-			return nil
+			return result
 		}
 
 		// Add fields
@@ -192,7 +197,7 @@ func New(config ...Config) fiber.Handler {
 
 		ce.Write(fields...)
 
-		return nil
+		return result
 	}
 }
 

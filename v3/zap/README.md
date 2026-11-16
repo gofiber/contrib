@@ -54,6 +54,10 @@ with an empty `resBody` unless `GetResBody` provides one, and its announced
 length as `bytesSent` (`0` when unknown).
 For a request Fiber's `timeout` middleware answered, `GetResBody` is not
 called: `resBody` is the body of the response the client received.
+As Fiber's logger does, the logger returns the timeout error for such a request,
+so middleware registered before it, such as `cache`, leaves that response alone;
+an error-handling middleware registered before it should check `c.IsAbandoned()`
+before it writes a response.
 A multipart form that fasthttp parsed within `BodyLimit` is marshaled back for
 `body`, as in Fiber's logger; use `SkipBody` to leave it out. `body` does not
 decode a `Content-Encoding`: such a body is logged as received.

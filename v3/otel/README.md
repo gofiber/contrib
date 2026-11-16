@@ -323,6 +323,10 @@ the handler keeps the context the timeout middleware gave it.
 `SpanNameFormatter` still get `c` for such a request, while its handler may
 still be running: they must not read `c.Response()` or anything the handler
 changes.
+As Fiber's logger does, the middleware returns the timeout error for such a
+request, so middleware registered before it, such as `cache`, leaves that response
+alone; an error-handling middleware registered before it should check
+`c.IsAbandoned()` before it writes a response.
 
 ### Panics
 

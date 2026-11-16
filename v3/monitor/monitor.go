@@ -109,14 +109,17 @@ func (m *middleware) instrument(c fiber.Ctx) error {
 	// out handler can still own the live response buffer. Read that response when
 	// present so a client-visible timeout status (503 by default) is not classified as a 200.
 	response := c.Response()
+	// As in Fiber's logger: the timeout error keeps middleware before us off the handler's response.
+	var result error
 	if timedOut := c.RequestCtx().LastTimeoutErrorResponse(); timedOut != nil {
 		response = timedOut
+		result = err
 	}
 	m.recordStatus(response.StatusCode())
 
 	elapsed := max(time.Since(started), 0)
 	m.latency.observeSharded(uint64(elapsed.Nanoseconds()), sequence)
-	return nil
+	return result
 }
 
 func (m *middleware) serveMonitor(c fiber.Ctx) error {

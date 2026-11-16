@@ -900,23 +900,26 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	// after the chain unwinds - so ctx.Response() still holds the default 200 the
 	// timed-out handler left.
 	resp := ctx.Response()
+	// As in Fiber's logger: the timeout error keeps middleware before us off the handler's response.
+	var result error
 	if timedOut := ctx.RequestCtx().LastTimeoutErrorResponse(); timedOut != nil {
 		resp = timedOut
+		result = chainErr
 	}
 
 	status := resp.StatusCode()
 	if _, ignore := m.skipStatusCodes[status]; ignore {
-		return nil
+		return result
 	}
 
 	class := statusClass(status)
 	if _, ignore := m.skipStatusClasses[class]; ignore {
-		return nil
+		return result
 	}
 
 	s := m.resolveSeries(ctx, routePath, method, status, class)
 	if s == nil {
-		return nil
+		return result
 	}
 
 	if s.total != nil {
@@ -966,7 +969,7 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 		s.byClass.Inc()
 	}
 
-	return nil
+	return result
 }
 
 // inFlightGauge returns the in-flight gauge child for a method on an app,

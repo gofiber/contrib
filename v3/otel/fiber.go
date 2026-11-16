@@ -251,10 +251,11 @@ func (m *middleware) handle(c fiber.Ctx) error {
 	}
 
 	// serve the request to the next middleware
-	if err := c.Next(); err != nil {
-		r.span.RecordError(err)
+	chainErr := c.Next()
+	if chainErr != nil {
+		r.span.RecordError(chainErr)
 		// Run the error handler now, as Fiber's logger does, so the recorded status is the one sent.
-		if handlerErr := c.App().ErrorHandler(c, err); handlerErr != nil {
+		if handlerErr := c.App().ErrorHandler(c, chainErr); handlerErr != nil {
 			_ = c.SendStatus(fiber.StatusInternalServerError) //nolint:errcheck // mirrors Fiber's own fallback
 		}
 	}
@@ -312,6 +313,10 @@ func (m *middleware) handle(c fiber.Ctx) error {
 		r.span.SetStatus(spanStatus, spanMessage)
 	}
 
+	// As in Fiber's logger: the timeout error keeps middleware before us off the handler's response.
+	if response != c.Response() {
+		return chainErr
+	}
 	return nil
 }
 
