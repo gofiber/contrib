@@ -2236,7 +2236,6 @@ func TestInvalidUTF8UnixPeerIsReplaced(t *testing.T) {
 	sr := tracetest.NewSpanRecorder()
 	app := fiber.New()
 	app.Use(func(c fiber.Ctx) error {
-		// A client may bind its socket to any path.
 		c.RequestCtx().SetRemoteAddr(&net.UnixAddr{Name: "/tmp/peer\xff.sock", Net: "unix"})
 		return c.Next()
 	})
