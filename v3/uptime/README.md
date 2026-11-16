@@ -311,7 +311,9 @@ backing store's own message goes to the log rather than the public payload. A
 failed refresh restarts the interval like a successful one, so an outage cannot
 turn every request into another attempt against the unavailable store. Before
 the first snapshot exists there is nothing to serve: the routes answer `500`
-and the failure is held for one `SampleInterval`, at most 5 seconds.
+and the failure is held for one `SampleInterval`, at most 5 seconds. A failure
+that comes back after the request's own context ended, for example under
+`timeout.New`, is not held.
 
 The same snapshot payload is available at `UI.Path + "/api/status"` for custom
 dashboards.
