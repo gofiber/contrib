@@ -102,7 +102,10 @@ For an overview and additional examples, see the Fiber Extractors guide:
   value you pass wins over the derived one. Configurations that leave the
   algorithm open (`KeyFunc`, `JWKSetURLs`, or a `SigningKey` without `JWTAlg`)
   are only as strict as the key material and the JWK `alg` allow, so pinning is
-  worth it.
+  worth it. When `SigningKeys` and `JWKSetURLs` are set together, a `kid` that
+  is configured is answered from `SigningKeys` alone and held to its `JWTAlg`;
+  only a `kid` that is not configured is looked up in the JWK Sets, so a key set
+  cannot replace a configured key by publishing its `kid`.
 - **`alg: none` is refused**, and keys are never read out of the token: the `jwk`,
   `jku`, `x5u` and `x5c` header parameters are ignored, per
   [RFC 8725 Sections 3.4 and 3.5](https://www.rfc-editor.org/rfc/rfc8725#section-3.4).
