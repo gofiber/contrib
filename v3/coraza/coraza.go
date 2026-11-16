@@ -758,6 +758,10 @@ func decodeRequestBody(fiberReq *fasthttp.Request, req *http.Request, bodyLimit 
 	return nil
 }
 
+func hasControl(s string) bool {
+	return strings.ContainsFunc(s, func(r rune) bool { return (r < ' ' && r != '\t') || r == 0x7f })
+}
+
 // multipartFormBody writes the form the handlers read under the boundary Coraza
 // reads, so Coraza inspects exactly the parts the handlers see.
 func multipartFormBody(c fiber.Ctx, contentType string, body io.Reader) (io.Reader, error) {
@@ -784,13 +788,17 @@ func multipartFormBody(c fiber.Ctx, contentType string, body io.Reader) (io.Read
 
 	// The writer changes CR and LF in a field name, and other controls do not read back.
 	for name := range form.Value {
-		if strings.ContainsFunc(name, func(r rune) bool { return (r < ' ' && r != '\t') || r == 0x7f }) {
+		if hasControl(name) {
 			return nil, errors.New("form has a field name with control characters")
 		}
 	}
 
-	// Handlers read a filename without trailing separators; Coraza's FILES keeps them.
-	for _, files := range form.File {
+	for name, files := range form.File {
+		// A file part keeps its own header, but field names follow one rule.
+		if hasControl(name) {
+			return nil, errors.New("form has a field name with control characters")
+		}
+		// Handlers read a filename without trailing separators; Coraza's FILES keeps them.
 		for _, fh := range files {
 			_, params, err := mime.ParseMediaType(fh.Header.Get(fiber.HeaderContentDisposition))
 			if err != nil {

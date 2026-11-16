@@ -715,6 +715,7 @@ SecRule FILES "@rx (?i)\.php$" "id:1003,phase:2,deny,status:403"`
 
 	controlName := withPart("Content-Disposition: form-data; name*=utf-8''x%01y")
 	crlfName := named + "--A\r\nContent-Disposition: form-data; name*=utf-8''x%0D%0Ay\r\n\r\nv\r\n--A--\r\n"
+	crlfFileName := named + "--A\r\nContent-Disposition: form-data; name*=utf-8''x%0D%0Ay; filename=\"x.txt\"\r\n\r\nv\r\n--A--\r\n"
 	// The writer doubles each backslash, so this 8 MB header grows past the 10 MB a part header may have.
 	grownName := withPart(`Content-Disposition: form-data; name="` + strings.Repeat(`\a`, 4<<20) + `"`)
 	shortenedFilename := named + "--A\r\nContent-Disposition: form-data; name=\"file\"; filename=\"shell.php/\"\r\n\r\n<?php ?>\r\n--A--\r\n"
@@ -734,6 +735,8 @@ SecRule FILES "@rx (?i)\.php$" "id:1003,phase:2,deny,status:403"`
 		{"pre-parsed control character in a field name", "multipart/form-data; boundary=A", controlName, true, http.StatusBadRequest},
 		{"CR and LF in a field name", "multipart/form-data; boundary=A", crlfName, false, http.StatusBadRequest},
 		{"pre-parsed CR and LF in a field name", "multipart/form-data; boundary=A", crlfName, true, http.StatusBadRequest},
+		{"CR and LF in a file field name", "multipart/form-data; boundary=A", crlfFileName, false, http.StatusBadRequest},
+		{"pre-parsed CR and LF in a file field name", "multipart/form-data; boundary=A", crlfFileName, true, http.StatusBadRequest},
 		{"field name the writer grows past the header limit", "multipart/form-data; boundary=A", grownName, false, http.StatusBadRequest},
 		{"filename handlers read shortened", "multipart/form-data; boundary=A", shortenedFilename, false, http.StatusBadRequest},
 		{"pre-parsed filename handlers read shortened", "multipart/form-data; boundary=A", shortenedFilename, true, http.StatusBadRequest},
