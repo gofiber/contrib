@@ -154,7 +154,7 @@ counterpart.
 | `SendQueueSize`     | `100`   | Per-connection outbound message queue capacity. |
 | `MaxSendRetry`      | `5`     | Max retries for transient socket write readiness issues. |
 | `RetrySendTimeout`  | `20ms`  | Backoff between retries while the connection is not ready. |
-| `RecoverHandler`    | `nil`   | Called on a panic inside a user `On` callback. If `nil`, panics are recovered silently. |
+| `RecoverHandler`    | `nil`   | Called on a panic inside a user `On` callback. If `nil`, panics are recovered silently. A panic in an `EventConnect` listener during accept also refuses the connection. |
 
 The legacy package-level vars (`PongTimeout`, `RetrySendTimeout`,
 `MaxSendRetry`, `SendQueueSize`, `ReadTimeout`) are still read once per
@@ -278,7 +278,7 @@ event.Fire("notify", []byte("broadcast"))
 | `EventPing`       | `ping`       | Fired when a WebSocket ping control frame is received.  |
 | `EventPong`       | `pong`       | Fired when a WebSocket pong control frame is received.  |
 | `EventDisconnect` | `disconnect` | Fired when the connection is closed. On an error close, `EventError` fires too. |
-| `EventConnect`    | `connect`    | Fired after the `New` callback runs, before the read loop starts. Not fired when the callback closed the connection. |
+| `EventConnect`    | `connect`    | Fired after the `New` callback runs, before the read loop starts. Not fired when the callback closed the connection. A listener that panics while the connection is being accepted refuses it with a 1011 close and `ErrorCallbackPanic`. |
 | `EventClose`      | `close`      | Fired when the server actively closes the connection.   |
 | `EventError`      | `error`      | Fired on a failed `EmitTo`, a dropped outbound message, or an error-driven disconnect. |
 

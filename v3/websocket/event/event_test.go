@@ -1500,6 +1500,159 @@ func TestConnectSkipsConnectionDeadAtDispatch(t *testing.T) {
 	require.Zero(t, fired.Load(), "EventConnect ran on a disconnected connection")
 }
 
+func TestConnectListenerPanicRefusesConnection(t *testing.T) {
+	resetState()
+
+	// An authorization listener that crashes before it gets to Close.
+	On(EventConnect, func(*EventPayload) { panic("connect boom") })
+	var later atomic.Int32
+	On(EventConnect, func(*EventPayload) { later.Add(1) })
+	disconnects := make(chan error, 1)
+	On(EventDisconnect, func(p *EventPayload) { disconnects <- p.Error })
+	errs := make(chan error, 1)
+	On(EventError, func(p *EventPayload) { errs <- p.Error })
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	accepted := make(chan *Websocket, 1)
+	app.Use(upgradeMiddleware)
+	app.Get("/", New(func(kws *Websocket) { accepted <- kws }))
+
+	go func() { _ = app.Listener(ln) }()
+
+	dialer := &websocket.Dialer{
+		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+		HandshakeTimeout: 5 * time.Second,
+	}
+	conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+	require.NoError(t, err)
+	defer conn.Close()
+	kws := <-accepted
+
+	require.Eventually(t, func() bool {
+		return !kws.isPending() || !kws.IsAlive()
+	}, 5*time.Second, time.Millisecond)
+	Broadcast([]byte("members only"))
+
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	_, msg, err := conn.ReadMessage()
+	require.True(t, websocket.IsCloseError(err, websocket.CloseInternalServerErr), "expected a 1011 close, got %q / %v", msg, err)
+	require.Zero(t, later.Load(), "an EventConnect listener ran after an earlier one panicked")
+	select {
+	case discErr := <-disconnects:
+		require.ErrorIs(t, discErr, ErrorCallbackPanic)
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventDisconnect was not fired for the panicking connect listener")
+	}
+	select {
+	case evErr := <-errs:
+		require.ErrorIs(t, evErr, ErrorCallbackPanic)
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventError was not fired for the panicking connect listener")
+	}
+	require.Eventually(t, func() bool {
+		return len(pool.snapshot()) == 0
+	}, 2*time.Second, 10*time.Millisecond)
+}
+
+func TestConnectListenerPanicAfterEmitReportsPanic(t *testing.T) {
+	resetState()
+
+	// Queued writes that fail on the close frame must not take over the disconnect cause.
+	On(EventConnect, func(p *EventPayload) {
+		for range SendQueueSize {
+			p.Kws.Emit([]byte("queued"))
+		}
+		panic("connect boom")
+	})
+	disconnects := make(chan error, 1)
+	On(EventDisconnect, func(p *EventPayload) { disconnects <- p.Error })
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	app.Use(upgradeMiddleware)
+	app.Get("/", New(func(*Websocket) {}))
+
+	go func() { _ = app.Listener(ln) }()
+
+	dialer := &websocket.Dialer{
+		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+		HandshakeTimeout: 5 * time.Second,
+	}
+	conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+	require.NoError(t, err)
+	defer conn.Close()
+	go func() {
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
+	select {
+	case discErr := <-disconnects:
+		require.ErrorIs(t, discErr, ErrorCallbackPanic)
+	case <-time.After(5 * time.Second):
+		t.Fatal("EventDisconnect was not fired for the panicking connect listener")
+	}
+}
+
+func TestConnectListenerPanicAfterAcceptKeepsConnection(t *testing.T) {
+	resetState()
+
+	var armed atomic.Bool
+	On(EventConnect, func(*EventPayload) {
+		if armed.Load() {
+			panic("connect boom")
+		}
+	})
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	accepted := make(chan *Websocket, 1)
+	app.Use(upgradeMiddleware)
+	app.Get("/", New(func(kws *Websocket) { accepted <- kws }))
+
+	go func() { _ = app.Listener(ln) }()
+
+	dialer := &websocket.Dialer{
+		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+		HandshakeTimeout: 5 * time.Second,
+	}
+	conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+	require.NoError(t, err)
+	defer conn.Close()
+	kws := <-accepted
+
+	require.Eventually(t, func() bool { return !kws.isPending() }, 5*time.Second, time.Millisecond)
+	// The app fires "connect" itself on a connection that is already a member.
+	armed.Store(true)
+	Fire(EventConnect, nil)
+	require.True(t, kws.IsAlive(), "an accepted connection was closed by a panic in an app-fired connect")
+
+	Broadcast([]byte("still here"))
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	_, msg, err := conn.ReadMessage()
+	require.NoError(t, err)
+	require.Equal(t, "still here", string(msg))
+}
+
 func TestCallbackEmitBeyondQueueSizeDoesNotBlock(t *testing.T) {
 	resetState()
 
