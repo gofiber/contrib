@@ -147,6 +147,14 @@ samplers can see it, as the semantic conventions ask. `url.scheme`,
 `X-Forwarded-Host` and the configured `ProxyHeader` only from a proxy Fiber
 trusts - see `fiber.Config.TrustProxy`.
 
+Bytes of the request that are not valid UTF-8 are replaced by `U+FFFD` in
+`url.path`, `url.query`, `server.address`, `client.address`,
+`network.peer.address`, `user_agent.original`, `enduser.id`, the captured
+headers, the span name and the message of a returned handler error, since
+protobuf refuses such strings and an OTLP exporter would otherwise lose the
+whole batch the span is in. A panic value is recorded by the SDK as it is, so
+keep request input out of it.
+
 ### Query redaction
 
 `url.query` holds the query string as the client sent it, except for the
@@ -196,8 +204,12 @@ app.Use(fiberotel.New(fiberotel.WithPublicEndpointFn(func(c fiber.Ctx) bool {
 })))
 ```
 
-Under the no-op tracer provider there is no new trace to start, so the caller's
-span context is simply not handed on.
+Of what the propagators extract from such a request, only the baggage reaches
+your handlers: the caller's span context and anything else a propagator keeps
+in the context, such as B3's debug flag, are dropped. Under the no-op tracer
+provider, or the global one while no SDK is installed, there is no new trace to
+start, so the caller's span context is simply not handed on. The function given
+to `WithPublicEndpointFn` runs for every request, whatever the tracer provider.
 
 ## Metrics
 
@@ -264,7 +276,8 @@ Under `fiber.Config{StreamRequestBody: true}`, request bodies reach the handler
 as streams and are left out of `http.server.request.body.size`: fasthttp
 pre-reads a bounded prefix and hands the rest to the handler, which may never
 read it, so the announced `Content-Length` is a client's claim rather than a
-measurement.
+measurement. The same goes for a request fasthttp rejects with its body unread,
+such as one over `BodyLimit` or with an invalid URI.
 
 A response that carries no body on the wire records zero, however much the
 handler wrote: a `HEAD`, a status that forbids a body (`1xx`, `204`, `304`),

@@ -3,12 +3,14 @@ package otel
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net"
 	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/utils/v2"
@@ -93,7 +95,10 @@ func (m *middleware) startAttributes(c fiber.Ctx, r *request, settings *appSetti
 	buf = append(buf, proxiedIP...)
 	values := utils.UnsafeString(buf)
 
-	query, userAgent, peer, client := values[pathEnd:queryEnd], values[queryEnd:userAgentEnd], values[userAgentEnd:peerEnd], values[peerEnd:]
+	// A Unix peer name is any path, and without EnableIPValidation Fiber returns the proxy header as sent.
+	address, urlPath := validString(values[:hostEnd]), validString(values[hostEnd:pathEnd])
+	query, userAgent := validString(values[pathEnd:queryEnd]), validString(values[queryEnd:userAgentEnd])
+	peer, client := validString(values[userAgentEnd:peerEnd]), validString(values[peerEnd:])
 	if !proxied {
 		client = peer
 	}
@@ -126,8 +131,8 @@ func (m *middleware) startAttributes(c fiber.Ctx, r *request, settings *appSetti
 	attrs = append(attrs,
 		semconv.HTTPRequestMethodKey.String(c.Method()),
 		semconv.URLScheme(c.Scheme()),
-		semconv.URLPath(values[hostEnd:pathEnd]),
-		semconv.ServerAddress(values[:hostEnd]),
+		semconv.URLPath(urlPath),
+		semconv.ServerAddress(address),
 		httpProtocolNameAttr,
 		httpProtocolVersionAttr(c),
 	)
@@ -156,7 +161,7 @@ func (m *middleware) startAttributes(c fiber.Ctx, r *request, settings *appSetti
 		attrs = append(attrs, semconv.HTTPRequestBodySize(int(r.requestSize)))
 	}
 	if hasUsername {
-		attrs = append(attrs, enduserIDKey.String(username))
+		attrs = append(attrs, enduserIDKey.String(validString(username)))
 	}
 
 	for _, header := range m.requestHeaders {
@@ -210,13 +215,13 @@ func capturedHeaders(prefix string, names []string) []capturedHeader {
 // requestHeaderValues copies the header's values; folding matches names case-insensitively.
 func requestHeaderValues(header *fasthttp.RequestHeader, name string, folding bool) []string {
 	if !folding {
-		return copyValues(header.PeekAll(name))
+		return validStrings(copyValues(header.PeekAll(name)))
 	}
 
 	var values []string
 	for key, value := range header.All() {
 		if utils.EqualFold(utils.UnsafeString(key), name) {
-			values = append(values, string(value))
+			values = append(values, validString(string(value)))
 		}
 	}
 
@@ -225,14 +230,43 @@ func requestHeaderValues(header *fasthttp.RequestHeader, name string, folding bo
 
 func responseHeaderValues(header *fasthttp.ResponseHeader, name string, folding bool) []string {
 	if !folding {
-		return copyValues(header.PeekAll(name))
+		return validStrings(copyValues(header.PeekAll(name)))
 	}
 
 	var values []string
 	for key, value := range header.All() {
 		if utils.EqualFold(utils.UnsafeString(key), name) {
-			values = append(values, string(value))
+			values = append(values, validString(string(value)))
 		}
+	}
+
+	return values
+}
+
+// validString replaces invalid UTF-8, which protobuf refuses, failing the OTLP export of
+// every span batched with this one. ASCII, the common case, is settled by the SIMD scan.
+func validString(value string) string {
+	if utils.IsASCII(value) || utf8.ValidString(value) {
+		return value
+	}
+
+	return strings.ToValidUTF8(value, "�")
+}
+
+// recordableError replaces an error whose message, often built from request input, is invalid UTF-8.
+func recordableError(err error) error {
+	msg := err.Error()
+	if valid := validString(msg); valid != msg {
+		return errors.New(valid)
+	}
+
+	return err
+}
+
+// validStrings is validString over a slice the caller owns.
+func validStrings(values []string) []string {
+	for i, value := range values {
+		values[i] = validString(value)
 	}
 
 	return values
@@ -266,12 +300,33 @@ func requestBodySize(c fiber.Ctx) (int64, bool) {
 		return bodyStreamSize(request.BodyStream())
 	}
 
-	// Content-Length avoids re-marshaling a parsed multipart body into memory.
+	// Content-Length avoids re-marshaling a parsed multipart body into memory, but Fiber also runs
+	// the chain for a request fasthttp rejected unread (over BodyLimit, invalid URI).
 	if contentLength := request.Header.ContentLength(); contentLength > 0 {
+		if !requestBodyRead(c) {
+			return 0, false
+		}
+
 		return int64(contentLength), true
 	}
 
 	return int64(len(request.Body())), true
+}
+
+// requestBodyRead reports whether fasthttp read the body Content-Length announces.
+func requestBodyRead(c fiber.Ctx) bool {
+	request := c.Request()
+	header := &request.Header
+	// fasthttp's pre-parse conditions: a form it parsed leaves no body behind, and MultipartForm
+	// returns it cached or fails at once on an empty body, so nothing is re-marshaled here.
+	if !c.App().Server().DisablePreParseMultipartForm &&
+		len(header.MultipartFormBoundary()) > 0 && len(header.ContentEncoding()) == 0 {
+		if _, err := request.MultipartForm(); err == nil {
+			return true
+		}
+	}
+
+	return len(request.Body()) > 0
 }
 
 // responseBodySize returns the response body size and whether it is known.

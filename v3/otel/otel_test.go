@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gofiber/contrib/v3/otel/internal"
 	"github.com/gofiber/fiber/v3"
@@ -2160,6 +2161,132 @@ func TestCapturedHeaders(t *testing.T) {
 	}
 }
 
+// Protobuf refuses invalid UTF-8, and an OTLP exporter then loses the whole span batch.
+func TestInvalidUTF8RequestValuesAreReplaced(t *testing.T) {
+	t.Parallel()
+
+	for _, disableNormalizing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("DisableHeaderNormalizing=%t", disableNormalizing), func(t *testing.T) {
+			t.Parallel()
+
+			sr := tracetest.NewSpanRecorder()
+			app := fiber.New(fiber.Config{
+				DisableHeaderNormalizing: disableNormalizing,
+				// app.Test connects from 0.0.0.0.
+				TrustProxy:       true,
+				TrustProxyConfig: fiber.TrustProxyConfig{Proxies: []string{"0.0.0.0"}},
+				ProxyHeader:      fiber.HeaderXForwardedFor,
+			})
+			app.Use(New(
+				WithTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))),
+				WithoutMetrics(true),
+				WithCapturedRequestHeaders("X-Request-Id"),
+				WithCapturedResponseHeaders("X-Echo"),
+			))
+			app.Get("/users/:id", func(c fiber.Ctx) error {
+				c.Set("X-Echo", c.Get("X-Request-Id"))
+				return c.SendStatus(http.StatusNoContent)
+			})
+
+			// fasthttp decodes %ff in the path to the byte 0xff; the query keeps it encoded, so send it raw.
+			r := httptest.NewRequest(http.MethodGet, "/users/%ff?q=\xff", nil)
+			r.Host = "a\xffb"
+			r.Header["User-Agent"] = []string{"agent\xff"}
+			r.Header["X-Request-Id"] = []string{"id\xff", "ok"}
+			// base64 of "\xff:x"
+			r.Header["Authorization"] = []string{"Basic /zp4"}
+			r.Header["X-Forwarded-For"] = []string{"1.2.3.4\xff"}
+			resp, err := app.Test(r)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+			spans := sr.Ended()
+			require.Len(t, spans, 1)
+			for _, attr := range spans[0].Attributes() {
+				switch attr.Value.Type() {
+				case attribute.STRING:
+					assert.True(t, utf8.ValidString(attr.Value.AsString()), "%s=%q", attr.Key, attr.Value.AsString())
+				case attribute.STRINGSLICE:
+					for _, value := range attr.Value.AsStringSlice() {
+						assert.True(t, utf8.ValidString(value), "%s=%q", attr.Key, value)
+					}
+				}
+			}
+
+			attrs := spanAttrs(spans[0])
+			assert.Contains(t, spans[0].Attributes(), semconv.URLPath("/users/�"))
+			assert.Contains(t, spans[0].Attributes(), semconv.URLQuery("q=�"))
+			assert.Contains(t, spans[0].Attributes(), semconv.ServerAddress("a�b"))
+			assert.Contains(t, spans[0].Attributes(), semconv.UserAgentOriginal("agent�"))
+			assert.Contains(t, spans[0].Attributes(), enduserIDKey.String("�"))
+			assert.Contains(t, spans[0].Attributes(), semconv.ClientAddress("1.2.3.4�"))
+			requestID, ok := attrs.Value("http.request.header.x-request-id")
+			require.True(t, ok)
+			assert.Equal(t, []string{"id�", "ok"}, requestID.AsStringSlice())
+			echo, ok := attrs.Value("http.response.header.x-echo")
+			require.True(t, ok)
+			assert.Equal(t, []string{"id�"}, echo.AsStringSlice())
+		})
+	}
+}
+
+func TestInvalidUTF8UnixPeerIsReplaced(t *testing.T) {
+	t.Parallel()
+
+	sr := tracetest.NewSpanRecorder()
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		c.RequestCtx().SetRemoteAddr(&net.UnixAddr{Name: "/tmp/peer\xff.sock", Net: "unix"})
+		return c.Next()
+	})
+	app.Use(New(
+		WithTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))),
+		WithoutMetrics(true),
+	))
+	app.Get("/", func(c fiber.Ctx) error {
+		return c.SendStatus(http.StatusNoContent)
+	})
+
+	_, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+	require.NoError(t, err)
+
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+	assert.Contains(t, spans[0].Attributes(), semconv.NetworkPeerAddress("/tmp/peer\uFFFD.sock"))
+	assert.Contains(t, spans[0].Attributes(), semconv.ClientAddress("/tmp/peer\uFFFD.sock"))
+}
+
+func TestInvalidUTF8ErrorAndSpanNameAreReplaced(t *testing.T) {
+	t.Parallel()
+
+	sr := tracetest.NewSpanRecorder()
+	app := fiber.New(fiber.Config{UnescapePath: true})
+	app.Use(recoverer.New())
+	app.Use(New(
+		WithTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))),
+		WithoutMetrics(true),
+		WithSpanNameFormatter(func(c fiber.Ctx) string { return strings.Clone(c.Path()) }),
+	))
+	app.Get("/users/:id", func(c fiber.Ctx) error {
+		return fmt.Errorf("no user %s", c.Params("id"))
+	})
+	app.Get("/panic/:id", func(fiber.Ctx) error {
+		panic("handler exploded")
+	})
+
+	_, err := app.Test(httptest.NewRequest(http.MethodGet, "/users/%ff", nil))
+	require.NoError(t, err)
+	_, err = app.Test(httptest.NewRequest(http.MethodGet, "/panic/%ff", nil))
+	require.NoError(t, err)
+
+	spans := sr.Ended()
+	require.Len(t, spans, 2)
+	assert.Equal(t, "/users/\uFFFD", spans[0].Name())
+	assert.Equal(t, "/panic/\uFFFD", spans[1].Name())
+	require.Len(t, spans[0].Events(), 1)
+	assert.Contains(t, spans[0].Events()[0].Attributes, semconv.ExceptionMessage("no user \uFFFD"))
+}
+
 func TestRedactedQueryParams(t *testing.T) {
 	t.Parallel()
 
@@ -2538,6 +2665,82 @@ func TestPublicEndpointWithoutTracing(t *testing.T) {
 
 	assert.False(t, handlerSpanContext.IsValid())
 	assert.Empty(t, resp.Header.Get("traceparent"))
+}
+
+// passthroughTracerProvider hands on the parent's span context whatever the start options say,
+// as the global tracer provider does until an SDK is installed.
+type passthroughTracerProvider struct{ tracenoop.TracerProvider }
+
+func (passthroughTracerProvider) Tracer(string, ...oteltrace.TracerOption) oteltrace.Tracer {
+	return tracenoop.Tracer{}
+}
+
+// Dropping the caller's trace is not left to the tracer; the baggage is kept.
+func TestPublicEndpointDoesNotRelyOnTheTracer(t *testing.T) {
+	t.Parallel()
+
+	_, traceparent := callerContext()
+
+	app := fiber.New()
+	app.Use(New(
+		WithTracerProvider(passthroughTracerProvider{}),
+		WithoutMetrics(true),
+		WithPropagators(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})),
+		WithPublicEndpoint(),
+	))
+	var (
+		handlerSpanContext oteltrace.SpanContext
+		tenant             string
+	)
+	app.Get("/", func(c fiber.Ctx) error {
+		handlerSpanContext = oteltrace.SpanContextFromContext(c.Context())
+		tenant = baggage.FromContext(c.Context()).Member("tenant").Value()
+		return c.SendStatus(http.StatusNoContent)
+	})
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("traceparent", traceparent)
+	r.Header.Set("baggage", "tenant=acme")
+	resp, err := app.Test(r)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	assert.False(t, handlerSpanContext.IsValid())
+	assert.Empty(t, resp.Header.Get("traceparent"))
+	assert.Equal(t, "acme", tenant)
+}
+
+// B3 keeps its debug flag, which forces sampling downstream, beside the span context.
+func TestPublicEndpointDropsB3Debug(t *testing.T) {
+	t.Parallel()
+
+	for name, provider := range map[string]oteltrace.TracerProvider{
+		"sdk":   sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.NeverSample()))),
+		"no-op": tracenoop.NewTracerProvider(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			app := fiber.New()
+			app.Use(New(
+				WithTracerProvider(provider),
+				WithoutMetrics(true),
+				WithPropagators(b3prop.New()),
+				WithPublicEndpoint(),
+			))
+			app.Get("/", func(c fiber.Ctx) error {
+				return c.SendStatus(http.StatusNoContent)
+			})
+
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.Header.Set("b3", "d")
+			resp, err := app.Test(r)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+			assert.False(t, strings.HasSuffix(resp.Header.Get("b3"), "d"), resp.Header.Get("b3"))
+		})
+	}
 }
 
 // fasthttp's stamp on a rejected keep-alive request is the previous request's.
@@ -3123,6 +3326,94 @@ func TestMiddleware_StreamedRequestIgnoresDeclaredLength(t *testing.T) {
 
 	require.Zero(t, observations,
 		"streamed request reported a body size; the declared length is not a measurement")
+}
+
+// fasthttp rejects these with the body unread, and Fiber still runs the Use chain for them.
+func TestMiddleware_UnreadRequestIgnoresDeclaredLength(t *testing.T) {
+	t.Parallel()
+
+	const declaredSize = "999999999999999999"
+
+	testCases := []struct {
+		name    string
+		request string
+		status  string
+	}{
+		{
+			name:    "over BodyLimit",
+			request: "POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: " + declaredSize + "\r\n\r\n",
+			status:  "413",
+		},
+		{
+			name: "multipart over BodyLimit",
+			request: "POST /upload HTTP/1.1\r\nHost: x\r\nContent-Type: multipart/form-data; boundary=b\r\n" +
+				"Content-Length: " + declaredSize + "\r\n\r\n",
+			status: "413",
+		},
+		{
+			name:    "invalid URI",
+			request: "POST http://[bad/ HTTP/1.1\r\nHost: x\r\nContent-Length: 1024\r\n\r\n",
+			status:  "400",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			reader := metric.NewManualReader()
+			sr := tracetest.NewSpanRecorder()
+
+			app := fiber.New()
+			app.Use(New(
+				WithMeterProvider(metric.NewMeterProvider(metric.WithReader(reader))),
+				WithTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))),
+			))
+			app.Post("/upload", func(c fiber.Ctx) error {
+				return c.SendStatus(http.StatusNoContent)
+			})
+
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+
+			served := make(chan error, 1)
+			go func() {
+				served <- app.Listener(listener, fiber.ListenConfig{DisableStartupMessage: true})
+			}()
+			t.Cleanup(func() {
+				require.NoError(t, app.Shutdown())
+				<-served
+			})
+
+			conn, err := net.Dial("tcp", listener.Addr().String())
+			require.NoError(t, err)
+
+			_, err = conn.Write([]byte(tc.request))
+			require.NoError(t, err)
+
+			require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+			statusLine, err := bufio.NewReader(conn).ReadString('\n')
+			require.NoError(t, err)
+			require.Contains(t, statusLine, tc.status)
+			require.NoError(t, conn.Close())
+
+			spans := sr.Ended()
+			require.Len(t, spans, 1)
+			for _, attr := range spans[0].Attributes() {
+				require.NotEqual(t, semconv.HTTPRequestBodySizeKey, attr.Key,
+					"unread request reported a body size; the declared length is not a measurement")
+			}
+
+			metrics := metricdata.ResourceMetrics{}
+			require.NoError(t, reader.Collect(context.Background(), &metrics))
+			for _, scope := range metrics.ScopeMetrics {
+				for _, m := range scope.Metrics {
+					require.NotEqual(t, MetricNameHTTPServerRequestBodySize, m.Name,
+						"unread request reported a body size; the declared length is not a measurement")
+				}
+			}
+		})
+	}
 }
 
 func TestMiddleware_NotFoundPathDoesNotHang(t *testing.T) {

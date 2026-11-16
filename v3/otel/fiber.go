@@ -13,6 +13,7 @@ import (
 	otelcontrib "go.opentelemetry.io/contrib"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
@@ -219,21 +220,21 @@ func (m *middleware) handle(c fiber.Ctx) error {
 			if caller := oteltrace.SpanContextFromContext(ctx); caller.IsValid() && caller.IsRemote() {
 				opts = append(opts, oteltrace.WithLinks(oteltrace.Link{SpanContext: caller}))
 			}
+			ctx = withoutCaller(base, ctx)
 		}
 		opts = append(opts, m.SpanStartOptions...)
 
 		// Named after the method until the route is known.
 		ctx, r.span = m.tracer.Start(ctx, c.Method(), opts...)
 	} else {
+		if m.PublicEndpointFn != nil && m.PublicEndpointFn(c) {
+			ctx = withoutCaller(base, ctx)
+		}
 		// Hand on the caller's span context, as a no-op tracer would.
 		r.span = oteltrace.SpanFromContext(ctx)
-		switch {
-		case r.span.IsRecording():
+		if r.span.IsRecording() {
 			// Another component's span: wrapped so nothing here ends or annotates it.
 			ctx, r.span = m.tracer.Start(ctx, "")
-		case r.span.SpanContext().IsRemote() && m.PublicEndpointFn != nil && m.PublicEndpointFn(c):
-			ctx = oteltrace.ContextWithSpanContext(ctx, oteltrace.SpanContext{})
-			r.span = oteltrace.SpanFromContext(ctx)
 		}
 	}
 	r.ctx = ctx
@@ -253,7 +254,10 @@ func (m *middleware) handle(c fiber.Ctx) error {
 	// serve the request to the next middleware
 	chainErr := c.Next()
 	if chainErr != nil {
-		r.span.RecordError(chainErr)
+		// RecordError is a no-op unless recording; skip the message check with it.
+		if r.span.IsRecording() {
+			r.span.RecordError(recordableError(chainErr))
+		}
 		// Run the error handler now, as Fiber's logger does, so the recorded status is the one sent.
 		if handlerErr := c.App().ErrorHandler(c, chainErr); handlerErr != nil {
 			_ = c.SendStatus(fiber.StatusInternalServerError) //nolint:errcheck // mirrors Fiber's own fallback
@@ -309,7 +313,7 @@ func (m *middleware) handle(c fiber.Ctx) error {
 			}
 		}
 		r.span.SetAttributes(append(attrs, customSpanAttrs...)...)
-		r.span.SetName(spanName)
+		r.span.SetName(validString(spanName))
 		r.span.SetStatus(spanStatus, spanMessage)
 	}
 
@@ -318,6 +322,17 @@ func (m *middleware) handle(c fiber.Ctx) error {
 		return chainErr
 	}
 	return nil
+}
+
+// withoutCaller keeps only the extracted baggage: the global tracer ignores WithNewRoot until an
+// SDK is installed, and B3 keeps its debug flag beside the span context.
+func withoutCaller(base, extracted context.Context) context.Context {
+	ctx := baggage.ContextWithBaggage(base, baggage.FromContext(extracted))
+	if oteltrace.SpanContextFromContext(ctx).IsRemote() {
+		ctx = oteltrace.ContextWithSpanContext(ctx, oteltrace.SpanContext{})
+	}
+
+	return ctx
 }
 
 // timedOutResponse returns what fasthttp sends for a request timeout.New gave up on, or nil.
@@ -404,7 +419,7 @@ func (m *middleware) end(c fiber.Ctx, r *request) {
 			if r.naming {
 				format = defaultSpanNameFormatter
 			}
-			r.span.SetName(format(c))
+			r.span.SetName(validString(format(c)))
 		}
 	}
 }
