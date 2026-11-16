@@ -6,7 +6,7 @@ require (
 	github.com/gofiber/fiber/v3 v3.7.0
 	github.com/gofiber/utils/v2 v2.6.5
 	github.com/stretchr/testify v1.12.1
-	github.com/valyala/fasthttp v1.78.0
+	github.com/valyala/fasthttp v1.79.0
 	go.opentelemetry.io/contrib v1.47.0
 	go.opentelemetry.io/contrib/propagators/b3 v1.47.0
 	go.opentelemetry.io/otel v1.47.0
