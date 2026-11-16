@@ -87,6 +87,8 @@ func New(config ...Config) fiber.Handler {
 		if err != nil {
 			return reject(c, err)
 		}
+		// Extractors may return a view into the request buffer, and the token can outlive the request.
+		auth = strings.Clone(auth)
 
 		if processToken != nil {
 			if auth, err = processToken(auth); err != nil {
@@ -104,8 +106,6 @@ func New(config ...Config) fiber.Handler {
 			return reject(c, jwt.ErrTokenUnverifiable)
 		}
 
-		// Raw may alias the request buffer, and a stored token can outlive the request.
-		token.Raw = strings.Clone(token.Raw)
 		// Store user information from token into context.
 		fiber.StoreInContext(c, tokenKey, token)
 
