@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -788,6 +789,28 @@ func TestConnCaptureCopiesStringAndByteLocals(t *testing.T) {
 
 	assert.Equal(t, "alice", conn.Locals("user"))
 	assert.Equal(t, []byte("alice"), conn.Locals("raw"))
+}
+
+func TestConnCaptureCopiesNamedStringAndByteLocals(t *testing.T) {
+	type userID string
+	type octet uint8
+	buf := []byte("alice")
+	octets := []octet("alice")
+	fctx := &fasthttp.RequestCtx{}
+	fctx.SetUserValue("user", userID(utils.UnsafeString(buf)))
+	fctx.SetUserValue("raw", json.RawMessage(buf))
+	fctx.SetUserValue("octets", octets)
+	fctx.SetUserValue("none", json.RawMessage(nil))
+
+	conn := &Conn{}
+	conn.capture(fctx)
+	copy(buf, "carol")
+	copy(octets, []octet("carol"))
+
+	assert.Equal(t, userID("alice"), conn.Locals("user"))
+	assert.Equal(t, json.RawMessage("alice"), conn.Locals("raw"))
+	assert.Equal(t, []octet("alice"), conn.Locals("octets"))
+	assert.Nil(t, conn.Locals("none"))
 }
 
 func TestConnCaptureResolvesRepeatedNamesLikeFiber(t *testing.T) {

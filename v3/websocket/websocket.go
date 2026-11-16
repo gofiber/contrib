@@ -252,6 +252,8 @@ func (conn *Conn) capture(fctx *fasthttp.RequestCtx) {
 			value = utils.CopyString(v)
 		case []byte:
 			value = utils.CopyBytes(v)
+		default:
+			value = copyNamedKind(value)
 		}
 		setEntry(&conn.locals, key, value)
 	})
@@ -279,6 +281,25 @@ func (conn *Conn) capture(fctx *fasthttp.RequestCtx) {
 			setEntry(&conn.headers, string(name), string(value))
 		}
 	}
+}
+
+// copyNamedKind copies a named string or byte-slice type, such as
+// json.RawMessage, which aliases request buffers as string and []byte do.
+func copyNamedKind(v any) any {
+	switch rv := reflect.ValueOf(v); rv.Kind() {
+	case reflect.String:
+		cp := reflect.New(rv.Type()).Elem()
+		cp.SetString(utils.CopyString(rv.String()))
+		return cp.Interface()
+	case reflect.Slice:
+		// Not Convert: it panics for an element type like `type B uint8`.
+		if rv.Type().Elem().Kind() == reflect.Uint8 && !rv.IsNil() {
+			cp := reflect.MakeSlice(rv.Type(), rv.Len(), rv.Len())
+			reflect.Copy(cp, rv)
+			return cp.Interface()
+		}
+	}
+	return v
 }
 
 // setEntry stores value under key in *m, allocating the map on first use so a
