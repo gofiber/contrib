@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +18,9 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/requestid"
+	"github.com/gofiber/fiber/v3/middleware/timeout"
 	"github.com/rs/zerolog"
+	"github.com/valyala/fasthttp"
 )
 
 func Test_GetResBody(t *testing.T) {
@@ -1085,4 +1088,101 @@ func Test_Body_LoggedAsReceived(t *testing.T) {
 			assert.Equal(t, wantBody, logs[FieldBody])
 		})
 	}
+}
+
+func Test_Logger_TimedOutHandler(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	wrote := make(chan struct{})
+
+	app := fiber.New()
+	app.Use(New(Config{
+		Logger:      &logger,
+		Fields:      []string{FieldStatus, FieldResBody, FieldBytesSent, FieldRequestID, FieldResHeaders},
+		WrapHeaders: true,
+	}))
+	app.Use(func(c fiber.Ctx) error {
+		err := c.Next()
+		<-wrote
+		return err
+	})
+	app.Get("/", timeout.New(func(c fiber.Ctx) error {
+		<-c.Context().Done()
+		c.Set(fiber.HeaderXRequestID, "late")
+		err := c.Status(fiber.StatusAccepted).SendString("late")
+		close(wrote)
+		// Still writing its answer while the entry is assembled.
+		_ = c.SendStatus(fiber.StatusAccepted)
+		return err
+	}, timeout.Config{Timeout: 10 * time.Millisecond}))
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+	assert.NoError(t, err)
+	assert.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
+
+	var logs map[string]any
+	assert.NoError(t, json.Unmarshal(buf.Bytes(), &logs))
+	assert.Equal(t, map[string]any{
+		"level":         "error",
+		"message":       "Server error",
+		FieldStatus:     float64(fiber.StatusServiceUnavailable),
+		FieldResBody:    fiber.ErrServiceUnavailable.Message,
+		FieldBytesSent:  float64(len(fiber.ErrServiceUnavailable.Message)),
+		FieldRequestID:  "",
+		FieldResHeaders: map[string]any{fiber.HeaderContentType: fiber.MIMETextPlainCharsetUTF8},
+	}, logs)
+}
+
+func Test_Logger_TimedOutHandler_GetResBody(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	wrote := make(chan struct{})
+
+	app := fiber.New()
+	app.Use(New(Config{
+		Logger: &logger,
+		Fields: []string{FieldResBody},
+		GetResBody: func(c fiber.Ctx) []byte {
+			return c.Response().Body()
+		},
+	}))
+	app.Use(func(c fiber.Ctx) error {
+		err := c.Next()
+		<-wrote
+		return err
+	})
+	app.Get("/", timeout.New(func(c fiber.Ctx) error {
+		<-c.Context().Done()
+		err := c.SendString("late")
+		close(wrote)
+		return err
+	}, timeout.Config{Timeout: 10 * time.Millisecond}))
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+	assert.NoError(t, err)
+	assert.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
+
+	var logs map[string]any
+	assert.NoError(t, json.Unmarshal(buf.Bytes(), &logs))
+	assert.Equal(t, fiber.ErrServiceUnavailable.Message, logs[FieldResBody])
+}
+
+// Not parallel, and measured against GetRespHeaders so an upgrade does not break it.
+func Test_Res_Headers_Allocs(t *testing.T) {
+	app := fiber.New()
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(c)
+	for i := range 10 {
+		c.Set("X-Header-"+strconv.Itoa(i), "value")
+	}
+
+	want := testing.AllocsPerRun(100, func() { _ = c.GetRespHeaders() })
+	got := testing.AllocsPerRun(100, func() { _ = responseHeaders(app, c.Response()) })
+	assert.Equal(t, want, got)
 }
