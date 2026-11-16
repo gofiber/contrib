@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/utils/v2"
@@ -93,7 +94,10 @@ func (m *middleware) startAttributes(c fiber.Ctx, r *request, settings *appSetti
 	buf = append(buf, proxiedIP...)
 	values := utils.UnsafeString(buf)
 
-	query, userAgent, peer, client := values[pathEnd:queryEnd], values[queryEnd:userAgentEnd], values[userAgentEnd:peerEnd], values[peerEnd:]
+	// Only the peer is formatted here; without EnableIPValidation, Fiber returns the proxy header as sent.
+	address, urlPath := validString(values[:hostEnd]), validString(values[hostEnd:pathEnd])
+	query, userAgent := validString(values[pathEnd:queryEnd]), validString(values[queryEnd:userAgentEnd])
+	peer, client := values[userAgentEnd:peerEnd], validString(values[peerEnd:])
 	if !proxied {
 		client = peer
 	}
@@ -126,8 +130,8 @@ func (m *middleware) startAttributes(c fiber.Ctx, r *request, settings *appSetti
 	attrs = append(attrs,
 		semconv.HTTPRequestMethodKey.String(c.Method()),
 		semconv.URLScheme(c.Scheme()),
-		semconv.URLPath(values[hostEnd:pathEnd]),
-		semconv.ServerAddress(values[:hostEnd]),
+		semconv.URLPath(urlPath),
+		semconv.ServerAddress(address),
 		httpProtocolNameAttr,
 		httpProtocolVersionAttr(c),
 	)
@@ -156,7 +160,7 @@ func (m *middleware) startAttributes(c fiber.Ctx, r *request, settings *appSetti
 		attrs = append(attrs, semconv.HTTPRequestBodySize(int(r.requestSize)))
 	}
 	if hasUsername {
-		attrs = append(attrs, enduserIDKey.String(username))
+		attrs = append(attrs, enduserIDKey.String(validString(username)))
 	}
 
 	for _, header := range m.requestHeaders {
@@ -210,13 +214,13 @@ func capturedHeaders(prefix string, names []string) []capturedHeader {
 // requestHeaderValues copies the header's values; folding matches names case-insensitively.
 func requestHeaderValues(header *fasthttp.RequestHeader, name string, folding bool) []string {
 	if !folding {
-		return copyValues(header.PeekAll(name))
+		return validStrings(copyValues(header.PeekAll(name)))
 	}
 
 	var values []string
 	for key, value := range header.All() {
 		if utils.EqualFold(utils.UnsafeString(key), name) {
-			values = append(values, string(value))
+			values = append(values, validString(string(value)))
 		}
 	}
 
@@ -225,14 +229,33 @@ func requestHeaderValues(header *fasthttp.RequestHeader, name string, folding bo
 
 func responseHeaderValues(header *fasthttp.ResponseHeader, name string, folding bool) []string {
 	if !folding {
-		return copyValues(header.PeekAll(name))
+		return validStrings(copyValues(header.PeekAll(name)))
 	}
 
 	var values []string
 	for key, value := range header.All() {
 		if utils.EqualFold(utils.UnsafeString(key), name) {
-			values = append(values, string(value))
+			values = append(values, validString(string(value)))
 		}
+	}
+
+	return values
+}
+
+// validString replaces invalid UTF-8, which protobuf refuses, failing the OTLP export of
+// every span batched with this one. ASCII, the common case, is settled by the SIMD scan.
+func validString(value string) string {
+	if utils.IsASCII(value) || utf8.ValidString(value) {
+		return value
+	}
+
+	return strings.ToValidUTF8(value, "�")
+}
+
+// validStrings is validString over a slice the caller owns.
+func validStrings(values []string) []string {
+	for i, value := range values {
+		values[i] = validString(value)
 	}
 
 	return values

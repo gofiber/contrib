@@ -147,6 +147,12 @@ samplers can see it, as the semantic conventions ask. `url.scheme`,
 `X-Forwarded-Host` and the configured `ProxyHeader` only from a proxy Fiber
 trusts - see `fiber.Config.TrustProxy`.
 
+Bytes of the request that are not valid UTF-8 are replaced by `U+FFFD` in
+`url.path`, `url.query`, `server.address`, `client.address`,
+`user_agent.original`, `enduser.id` and the captured headers, since protobuf
+refuses such strings and an OTLP exporter would otherwise lose the whole batch
+the span is in.
+
 ### Query redaction
 
 `url.query` holds the query string as the client sent it, except for the

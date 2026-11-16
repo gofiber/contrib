@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gofiber/contrib/v3/otel/internal"
 	"github.com/gofiber/fiber/v3"
@@ -2156,6 +2157,75 @@ func TestCapturedHeaders(t *testing.T) {
 			require.True(t, ok)
 			assert.Equal(t, []string{fiber.MIMEApplicationJSONCharsetUTF8}, contentType.AsStringSlice())
 			assert.False(t, attrs.HasValue("http.response.header.x-absent"))
+		})
+	}
+}
+
+// Protobuf refuses invalid UTF-8, and an OTLP exporter then loses the whole span batch.
+func TestInvalidUTF8RequestValuesAreReplaced(t *testing.T) {
+	t.Parallel()
+
+	for _, disableNormalizing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("DisableHeaderNormalizing=%t", disableNormalizing), func(t *testing.T) {
+			t.Parallel()
+
+			sr := tracetest.NewSpanRecorder()
+			app := fiber.New(fiber.Config{
+				DisableHeaderNormalizing: disableNormalizing,
+				// app.Test connects from 0.0.0.0.
+				TrustProxy:       true,
+				TrustProxyConfig: fiber.TrustProxyConfig{Proxies: []string{"0.0.0.0"}},
+				ProxyHeader:      fiber.HeaderXForwardedFor,
+			})
+			app.Use(New(
+				WithTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))),
+				WithoutMetrics(true),
+				WithCapturedRequestHeaders("X-Request-Id"),
+				WithCapturedResponseHeaders("X-Echo"),
+			))
+			app.Get("/users/:id", func(c fiber.Ctx) error {
+				c.Set("X-Echo", c.Get("X-Request-Id"))
+				return c.SendStatus(http.StatusNoContent)
+			})
+
+			// fasthttp decodes %ff in the path to the byte 0xff; the query keeps it encoded, so send it raw.
+			r := httptest.NewRequest(http.MethodGet, "/users/%ff?q=\xff", nil)
+			r.Host = "a\xffb"
+			r.Header["User-Agent"] = []string{"agent\xff"}
+			r.Header["X-Request-Id"] = []string{"id\xff", "ok"}
+			// base64 of "\xff:x"
+			r.Header["Authorization"] = []string{"Basic /zp4"}
+			r.Header["X-Forwarded-For"] = []string{"1.2.3.4\xff"}
+			resp, err := app.Test(r)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+			spans := sr.Ended()
+			require.Len(t, spans, 1)
+			for _, attr := range spans[0].Attributes() {
+				switch attr.Value.Type() {
+				case attribute.STRING:
+					assert.True(t, utf8.ValidString(attr.Value.AsString()), "%s=%q", attr.Key, attr.Value.AsString())
+				case attribute.STRINGSLICE:
+					for _, value := range attr.Value.AsStringSlice() {
+						assert.True(t, utf8.ValidString(value), "%s=%q", attr.Key, value)
+					}
+				}
+			}
+
+			attrs := spanAttrs(spans[0])
+			assert.Contains(t, spans[0].Attributes(), semconv.URLPath("/users/�"))
+			assert.Contains(t, spans[0].Attributes(), semconv.URLQuery("q=�"))
+			assert.Contains(t, spans[0].Attributes(), semconv.ServerAddress("a�b"))
+			assert.Contains(t, spans[0].Attributes(), semconv.UserAgentOriginal("agent�"))
+			assert.Contains(t, spans[0].Attributes(), enduserIDKey.String("�"))
+			assert.Contains(t, spans[0].Attributes(), semconv.ClientAddress("1.2.3.4�"))
+			requestID, ok := attrs.Value("http.request.header.x-request-id")
+			require.True(t, ok)
+			assert.Equal(t, []string{"id�", "ok"}, requestID.AsStringSlice())
+			echo, ok := attrs.Value("http.response.header.x-echo")
+			require.True(t, ok)
+			assert.Equal(t, []string{"id�"}, echo.AsStringSlice())
 		})
 	}
 }
