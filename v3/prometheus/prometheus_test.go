@@ -3958,6 +3958,32 @@ func TestUnreadFormIsNotRecorded(t *testing.T) {
 	}
 }
 
+// TestStreamedFormOverLimitIsNotRecorded covers a form fasthttp streams instead of
+// rejecting: once the handler closes the stream, Body() still holds the prefetched part.
+func TestStreamedFormOverLimitIsNotRecorded(t *testing.T) {
+	app := fiber.New(fiber.Config{BodyLimit: 1024, StreamRequestBody: true})
+	app.Use(New(Config{}))
+	app.Post("/upload", func(c fiber.Ctx) error {
+		if err := c.Request().CloseBodyStream(); err != nil {
+			return err
+		}
+		return c.SendStatus(fiber.StatusRequestEntityTooLarge)
+	})
+
+	send := dialRaw(t, app)
+	status := send("POST /upload HTTP/1.1\r\nHost: example.com\r\n" +
+		"Content-Type: multipart/form-data; boundary=zzz\r\nContent-Length: 500000000\r\n\r\n" +
+		strings.Repeat("x", 2048))
+	if status != fiber.StatusRequestEntityTooLarge {
+		t.Fatalf("expected status 413, got %d", status)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if strings.Contains(metrics, `http_request_size_bytes_sum{method="POST"`) {
+		t.Fatalf("expected no size for a form over BodyLimit, got %q", metrics)
+	}
+}
+
 // TestZeroLengthStreamIsRecorded covers c.SendStream(reader, 0): the length is
 // announced, not absent, so the observation belongs in the histogram - otherwise
 // _count under-reports against http_requests_total.
@@ -5235,42 +5261,10 @@ func TestRejectedRequestDurationExcludesKeepAliveIdle(t *testing.T) {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 
-	ln := fasthttputil.NewInmemoryListener()
-	served := make(chan error, 1)
-	go func() {
-		served <- app.Listener(ln, fiber.ListenConfig{DisableStartupMessage: true})
-	}()
-	t.Cleanup(func() {
-		if err := app.Shutdown(); err != nil {
-			t.Errorf("shutting down: %v", err)
-		}
-		<-served
-	})
-
-	conn, err := ln.Dial()
-	if err != nil {
-		t.Fatalf("dialing: %v", err)
-	}
-	defer conn.Close()
-	reader := bufio.NewReader(conn)
-
+	send := dialRaw(t, app)
 	post := func(body string) int {
 		t.Helper()
-
-		if _, err := fmt.Fprintf(conn, "POST /upload HTTP/1.1\r\nHost: example.com\r\nContent-Length: %d\r\n\r\n%s", len(body), body); err != nil {
-			t.Fatalf("writing the request: %v", err)
-		}
-		resp, err := http.ReadResponse(reader, nil)
-		if err != nil {
-			t.Fatalf("reading the response: %v", err)
-		}
-		if _, err := io.Copy(io.Discard, resp.Body); err != nil {
-			t.Fatalf("reading the response body: %v", err)
-		}
-		if err := resp.Body.Close(); err != nil {
-			t.Fatalf("closing the response body: %v", err)
-		}
-		return resp.StatusCode
+		return send(fmt.Sprintf("POST /upload HTTP/1.1\r\nHost: example.com\r\nContent-Length: %d\r\n\r\n%s", len(body), body))
 	}
 
 	if status := post("ok"); status != fiber.StatusNoContent {
