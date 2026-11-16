@@ -825,6 +825,54 @@ func TestCachedSnapshotThrottlesFailedRefreshes(t *testing.T) {
 	requireEqual(t, 2, store.listServicesCalls)
 }
 
+func TestCachedSnapshotThrottlesFailedRefreshesWithoutCache(t *testing.T) {
+	t.Parallel()
+
+	store := newSnapshotStore()
+	store.fail = true
+	u := newSnapshotUptimeWithConfig(store, Config{
+		ServiceID:      "api",
+		SampleInterval: time.Hour,
+		DaysToShow:     1,
+		RetentionDays:  1,
+		Timezone:       time.UTC,
+	})
+
+	for range 4 {
+		_, err := u.cachedSnapshot(context.Background())
+		requireError(t, err)
+		requireContains(t, err.Error(), "store failed")
+	}
+	requireEqual(t, 1, store.listServicesCalls)
+	requireEqual(t, 5*time.Second, u.snapshotTTL)
+
+	u.snapshotCachedAt = time.Now().Add(-u.snapshotTTL)
+	store.fail = false
+	snapshot, err := u.cachedSnapshot(context.Background())
+	requireNoError(t, err)
+	requireEqual(t, 1, len(snapshot.Services))
+	requireEqual(t, 2, store.listServicesCalls)
+}
+
+func TestCachedSnapshotDoesNotHoldCallerContextError(t *testing.T) {
+	t.Parallel()
+
+	store := newSnapshotStore()
+	store.fail = true
+	u := newSnapshotUptime(store)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := u.cachedSnapshot(ctx)
+	requireError(t, err)
+	for range 3 {
+		_, err = u.cachedSnapshot(context.Background())
+		requireError(t, err)
+	}
+	requireEqual(t, 2, store.listServicesCalls)
+	requireEqual(t, time.Second, u.snapshotTTL)
+}
+
 func TestSnapshotReturnsStoreError(t *testing.T) {
 	t.Parallel()
 
