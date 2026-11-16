@@ -88,6 +88,7 @@ func TestSnapshotCacheTTL(t *testing.T) {
 	}
 
 	started := time.Unix(100, 0)
+	m.now = func() time.Time { return started }
 	first := m.currentSnapshot(started)
 	second := m.currentSnapshot(started.Add(999 * time.Millisecond))
 	third := m.currentSnapshot(started.Add(time.Second))
@@ -118,6 +119,31 @@ func TestConcurrentCacheMissCollectsOnce(t *testing.T) {
 	}
 	group.Wait()
 	assert.Equal(t, int64(1), calls.Load())
+}
+
+func TestQueuedCallerSharesSnapshotWhenCollectionOutlastsTTL(t *testing.T) {
+	m, err := newMiddleware(Config{Refresh: time.Second})
+	require.NoError(t, err)
+	clock := time.Unix(100, 0)
+	m.now = func() time.Time { return clock }
+	var calls atomic.Int64
+	m.collectFn = func(now time.Time) snapshot {
+		calls.Add(1)
+		clock = clock.Add(2 * time.Second)
+		return snapshot{CollectedAt: now}
+	}
+
+	started := clock
+	first := m.currentSnapshot(started)
+	// Arrived more than one TTL into the collection above and was queued behind it.
+	queued := m.currentSnapshot(started.Add(1500 * time.Millisecond))
+	assert.Equal(t, first.CollectedAt, queued.CollectedAt)
+	assert.Equal(t, int64(1), calls.Load())
+
+	_ = m.currentSnapshot(started.Add(2999 * time.Millisecond))
+	assert.Equal(t, int64(1), calls.Load())
+	_ = m.currentSnapshot(started.Add(3 * time.Second))
+	assert.Equal(t, int64(2), calls.Load())
 }
 
 func TestNewerCacheWinsWhenCallerTimestampIsOlder(t *testing.T) {
