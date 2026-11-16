@@ -1509,6 +1509,8 @@ func TestConnectListenerPanicRefusesConnection(t *testing.T) {
 	On(EventConnect, func(*EventPayload) { later.Add(1) })
 	disconnects := make(chan error, 1)
 	On(EventDisconnect, func(p *EventPayload) { disconnects <- p.Error })
+	errs := make(chan error, 1)
+	On(EventError, func(p *EventPayload) { errs <- p.Error })
 
 	app := fiber.New()
 	ln := fasthttputil.NewInmemoryListener()
@@ -1546,6 +1548,12 @@ func TestConnectListenerPanicRefusesConnection(t *testing.T) {
 		require.ErrorIs(t, discErr, ErrorCallbackPanic)
 	case <-time.After(2 * time.Second):
 		t.Fatal("EventDisconnect was not fired for the panicking connect listener")
+	}
+	select {
+	case evErr := <-errs:
+		require.ErrorIs(t, evErr, ErrorCallbackPanic)
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventError was not fired for the panicking connect listener")
 	}
 	require.Eventually(t, func() bool {
 		return len(pool.snapshot()) == 0

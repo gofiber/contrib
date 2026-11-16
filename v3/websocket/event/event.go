@@ -70,7 +70,8 @@ var (
 	ErrorUUIDDuplication = errors.New("UUID already exists in the available connections pool")
 	// ErrorCallbackPanic is carried by the EventError fired when a connection
 	// callback panics, and by the EventDisconnect fired with it unless the
-	// callback had already closed the connection.
+	// callback had already closed the connection. An EventConnect listener that
+	// panics on a connection still being accepted fires both.
 	ErrorCallbackPanic = errors.New("connection callback panicked")
 )
 
@@ -158,7 +159,8 @@ type Config struct {
 	// RetrySendTimeout package var, then 20ms.
 	RetrySendTimeout time.Duration
 	// RecoverHandler is called on a panic inside a user On callback. If
-	// nil, panics are recovered silently.
+	// nil, panics are recovered silently. A panic in an EventConnect listener
+	// during accept also refuses the connection.
 	RecoverHandler func(event string, r any)
 }
 
@@ -1158,8 +1160,7 @@ func (kws *Websocket) invokeCallback(event string, cb EventCallback, p *EventPay
 			}
 			// The listener may have panicked before it could refuse the connection.
 			// Claim the cause first: queued writes fail once the close frame is out.
-			if event == EventConnect && kws.isPending() && kws.IsAlive() {
-				kws.disconnected(ErrorCallbackPanic)
+			if event == EventConnect && kws.isPending() && kws.disconnected(ErrorCallbackPanic) {
 				kws.writeClose(websocket.CloseInternalServerErr, "internal error")
 			}
 		}

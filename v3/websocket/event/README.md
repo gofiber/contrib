@@ -154,7 +154,7 @@ counterpart.
 | `SendQueueSize`     | `100`   | Per-connection outbound message queue capacity. |
 | `MaxSendRetry`      | `5`     | Max retries for transient socket write readiness issues. |
 | `RetrySendTimeout`  | `20ms`  | Backoff between retries while the connection is not ready. |
-| `RecoverHandler`    | `nil`   | Called on a panic inside a user `On` callback. If `nil`, panics are recovered silently. |
+| `RecoverHandler`    | `nil`   | Called on a panic inside a user `On` callback. If `nil`, panics are recovered silently. A panic in an `EventConnect` listener during accept also refuses the connection. |
 
 The legacy package-level vars (`PongTimeout`, `RetrySendTimeout`,
 `MaxSendRetry`, `SendQueueSize`, `ReadTimeout`) are still read once per
