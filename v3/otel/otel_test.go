@@ -2230,6 +2230,33 @@ func TestInvalidUTF8RequestValuesAreReplaced(t *testing.T) {
 	}
 }
 
+func TestInvalidUTF8UnixPeerIsReplaced(t *testing.T) {
+	t.Parallel()
+
+	sr := tracetest.NewSpanRecorder()
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		// A client may bind its socket to any path.
+		c.RequestCtx().SetRemoteAddr(&net.UnixAddr{Name: "/tmp/peer\xff.sock", Net: "unix"})
+		return c.Next()
+	})
+	app.Use(New(
+		WithTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))),
+		WithoutMetrics(true),
+	))
+	app.Get("/", func(c fiber.Ctx) error {
+		return c.SendStatus(http.StatusNoContent)
+	})
+
+	_, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+	require.NoError(t, err)
+
+	spans := sr.Ended()
+	require.Len(t, spans, 1)
+	assert.Contains(t, spans[0].Attributes(), semconv.NetworkPeerAddress("/tmp/peer\uFFFD.sock"))
+	assert.Contains(t, spans[0].Attributes(), semconv.ClientAddress("/tmp/peer\uFFFD.sock"))
+}
+
 func TestInvalidUTF8ErrorAndSpanNameAreReplaced(t *testing.T) {
 	t.Parallel()
 

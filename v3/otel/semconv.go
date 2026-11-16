@@ -95,10 +95,10 @@ func (m *middleware) startAttributes(c fiber.Ctx, r *request, settings *appSetti
 	buf = append(buf, proxiedIP...)
 	values := utils.UnsafeString(buf)
 
-	// Only the peer is formatted here; without EnableIPValidation, Fiber returns the proxy header as sent.
+	// A Unix peer name is any path, and without EnableIPValidation Fiber returns the proxy header as sent.
 	address, urlPath := validString(values[:hostEnd]), validString(values[hostEnd:pathEnd])
 	query, userAgent := validString(values[pathEnd:queryEnd]), validString(values[queryEnd:userAgentEnd])
-	peer, client := values[userAgentEnd:peerEnd], validString(values[peerEnd:])
+	peer, client := validString(values[userAgentEnd:peerEnd]), validString(values[peerEnd:])
 	if !proxied {
 		client = peer
 	}
