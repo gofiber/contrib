@@ -139,6 +139,42 @@ func TestNewRedisStoreIntegration(t *testing.T) {
 	t.Run("queries and writes", func(t *testing.T) { testRedisStoreQueriesAndWrites(t, url) })
 	t.Run("prefixes", func(t *testing.T) { testRedisStorePrefixes(t, url) })
 	t.Run("runtime and TTL", func(t *testing.T) { testRedisStoreRuntimeAndTTL(t, url) })
+	t.Run("late heartbeat", func(t *testing.T) { testRedisStoreRollupCountsLateHeartbeat(t, url) })
+}
+
+func testRedisStoreRollupCountsLateHeartbeat(t *testing.T, url string) {
+	ctx, client, borrowed := redisStoreTestRedis(t, url)
+	prefix := redisStoreTestPrefix(t, client)
+	store, err := uptime.NewRedisStore(ctx, uptime.RedisStoreConfig{Store: borrowed, StorageKeyPrefix: prefix})
+	redisStoreRequireNoError(t, err)
+	rollup := func(expected int) {
+		t.Helper()
+		redisStoreRequireNoError(t, store.RollupDaily(ctx, uptimestorage.RollupOptions{
+			BeforeDay: "2026-06-26", ExpectedSlots: func(uptimestorage.Service, string) int { return expected },
+		}))
+	}
+	requireDaily := func(up int) {
+		t.Helper()
+		daily, err := store.QueryDaily(ctx, uptimestorage.QueryDailyOptions{})
+		redisStoreRequireNoError(t, err)
+		if len(daily) != 1 || daily[0].UpSlots != up || daily[0].ExpectedSlots != 1440 || !daily[0].Finalized {
+			t.Fatalf("daily = %+v, want finalized up=%d expected=1440", daily, up)
+		}
+	}
+
+	now := time.Now().UTC()
+	redisStoreRequireNoError(t, store.UpsertService(ctx, uptimestorage.Service{ID: "api", Name: "API", CreatedAt: now, SampleInterval: time.Minute}))
+	redisStoreRequireNoError(t, store.WriteHeartbeat(ctx, uptimestorage.Heartbeat{ServiceID: "api", InstanceID: 1, Day: "2026-06-25", Slot: 1438, SeenAt: now}))
+	rollup(1440)
+	// A probe still in flight at midnight writes its slot after the day was finalized.
+	redisStoreRequireNoError(t, store.WriteHeartbeat(ctx, uptimestorage.Heartbeat{ServiceID: "api", InstanceID: 2, Day: "2026-06-25", Slot: 1439, SeenAt: now}))
+	rollup(96)
+	requireDaily(2)
+
+	// A lower recount, after samples were partly removed, still loses.
+	redisStoreRequireNoError(t, client.SRem(ctx, prefix+":samples:api:2026-06-25", "1438").Err())
+	rollup(1440)
+	requireDaily(2)
 }
 
 func testRedisStoreQueriesAndWrites(t *testing.T, url string) {

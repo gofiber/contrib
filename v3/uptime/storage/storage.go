@@ -30,7 +30,8 @@ type Store interface {
 	WriteHeartbeat(ctx context.Context, heartbeat Heartbeat) error
 
 	// RollupDaily finalizes raw samples for days before the exclusive boundary.
-	// Repeated or concurrent rollups must not overwrite a finalized daily row.
+	// Repeated or concurrent rollups must not overwrite a finalized daily row,
+	// except to raise its up slots when a later recount finds more samples.
 	RollupDaily(ctx context.Context, options RollupOptions) error
 	// Cleanup removes expired daily and raw sample data according to the
 	// exclusive boundaries in CleanupOptions.

@@ -1017,6 +1017,11 @@ func (c *fakeRedisClient) evalWriteDailyIfUnfinalized(keys []string, args ...int
 	if hash != nil {
 		current := hash["finalized"]
 		if current != "" && current != "0" {
+			newUp, _ := strconv.Atoi(upSlots)
+			oldUp, _ := strconv.Atoi(hash["up_slots"])
+			if newUp > oldUp {
+				hash["up_slots"] = upSlots
+			}
 			c.zaddLocked(daysKey, day, score)
 			touch()
 			return redis.NewCmdResult(int64(0), nil)

@@ -31,7 +31,9 @@ return 0
 // writeDailyIfUnfinalizedScript writes a finalized daily row only while the
 // row is not already finalized. This keeps late concurrent rollups from
 // replacing a previously finalized day after another instance has cleaned up
-// the raw samples. ARGV[7] refreshes the TTL backstop on both keys.
+// the raw samples. A higher recount still raises up_slots: sample sets only
+// grow, so it carries a heartbeat that landed after the day was rolled up.
+// ARGV[7] refreshes the TTL backstop on both keys.
 const writeDailyIfUnfinalizedScript = `
 local ttl = tonumber(ARGV[7])
 local function touch()
@@ -42,6 +44,10 @@ local function touch()
 end
 local finalized = redis.call("HGET", KEYS[1], "finalized")
 if finalized and finalized ~= "0" then
+	local current = tonumber(redis.call("HGET", KEYS[1], "up_slots")) or 0
+	if tonumber(ARGV[3]) > current then
+		redis.call("HSET", KEYS[1], "up_slots", ARGV[3])
+	end
 	redis.call("ZADD", KEYS[2], ARGV[6], ARGV[2])
 	touch()
 	return 0
