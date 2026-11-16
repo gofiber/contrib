@@ -182,7 +182,7 @@ For an overview and additional examples, see the Fiber Extractors guide:
   },
   ```
 
-  An `ErrorHandler` that lets the request on with `c.Next()` gets no challenge
+  An `ErrorHandler` that continues the chain with `c.Next()` gets no challenge
   for a request Fiber's `timeout` middleware answered: its response is the one
   that middleware sent, and the one on `c` stays with the handler, which may
   still be writing it.
