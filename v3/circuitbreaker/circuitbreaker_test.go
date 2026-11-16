@@ -829,6 +829,19 @@ func TestBindErrorsAreNeutral(t *testing.T) {
 		}
 		return c.SendStatus(fiber.StatusCreated)
 	})
+	app.Post("/wrapped", func(c fiber.Ctx) error {
+		var item struct{ ID int }
+		if err := c.Bind().Body(&item); err != nil {
+			return fmt.Errorf("decode item: %w", err)
+		}
+		return c.SendStatus(fiber.StatusCreated)
+	})
+	app.Post("/joined", func(c fiber.Ctx) error {
+		var q, b struct {
+			ID int `query:"id" json:"id"`
+		}
+		return errors.Join(c.Bind().Query(&q), c.Bind().Body(&b))
+	})
 	app.Get("/resp-header", func(c fiber.Ctx) error {
 		c.Set("X-Count", "many")
 		var h struct {
@@ -836,8 +849,8 @@ func TestBindErrorsAreNeutral(t *testing.T) {
 		}
 		return c.Bind().RespHeader(&h)
 	})
-	postMalformed := func() int {
-		req := httptest.NewRequest(fiber.MethodPost, "/items", strings.NewReader("{not json"))
+	postMalformed := func(target string) int {
+		req := httptest.NewRequest(fiber.MethodPost, target, strings.NewReader("{not json"))
 		req.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
 		resp, err := app.Test(req)
 		require.NoError(t, err)
@@ -845,7 +858,9 @@ func TestBindErrorsAreNeutral(t *testing.T) {
 	}
 
 	for range 5 {
-		require.Equal(t, fiber.StatusInternalServerError, postMalformed(), "the default ErrorHandler answers a bind error with 500")
+		require.Equal(t, fiber.StatusInternalServerError, postMalformed("/items"), "the default ErrorHandler answers a bind error with 500")
+		require.Equal(t, fiber.StatusInternalServerError, postMalformed("/wrapped"))
+		require.Equal(t, fiber.StatusInternalServerError, postMalformed("/joined?id=abc"))
 	}
 	require.Equal(t, circuitbreaker.StateClosed, cb.GetState(), "malformed bodies are not failures of the service")
 
@@ -855,7 +870,7 @@ func TestBindErrorsAreNeutral(t *testing.T) {
 
 	clock.Advance(time.Minute)
 	for range 5 {
-		require.Equal(t, fiber.StatusInternalServerError, postMalformed(), "a malformed probe gives its slot back without reopening")
+		require.Equal(t, fiber.StatusInternalServerError, postMalformed("/items"), "a malformed probe gives its slot back without reopening")
 	}
 	require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState(), "malformed probes say nothing about recovery")
 

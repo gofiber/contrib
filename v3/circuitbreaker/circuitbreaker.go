@@ -260,14 +260,24 @@ func isClientError(c fiber.Ctx, err error) bool {
 }
 
 // isRequestBindError reports malformed request input; RespHeader binds the server's own response.
-// Only the single-wrap chain counts, so a bind error joined with a server error still fails.
+// A joined error counts only if every part does, so a server error next to a bind error still fails.
 func isRequestBindError(err error) bool {
-	for ; err != nil; err = errors.Unwrap(err) {
-		if bindErr, ok := err.(*fiber.BindError); ok {
-			return bindErr.Source != fiber.BindSourceRespHeader
+	switch e := err.(type) {
+	case nil:
+		return false
+	case *fiber.BindError:
+		return e.Source != fiber.BindSourceRespHeader
+	case interface{ Unwrap() []error }:
+		parts := e.Unwrap()
+		for _, part := range parts {
+			if !isRequestBindError(part) {
+				return false
+			}
 		}
+		return len(parts) > 0
+	default:
+		return isRequestBindError(errors.Unwrap(err))
 	}
-	return false
 }
 
 // admit reports whether one request may proceed, how it was admitted, and the
