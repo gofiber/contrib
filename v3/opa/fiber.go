@@ -96,6 +96,10 @@ func routerPath(c fiber.Ctx) string {
 	}
 	if !cfg.StrictRouting && len(path) > 1 {
 		path = utils.TrimRight(path, '/')
+		// Slashes alone are the root, as in the router.
+		if path == "" {
+			path = "/"
+		}
 	}
 	return path
 }

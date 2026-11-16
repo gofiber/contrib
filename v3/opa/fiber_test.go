@@ -335,6 +335,7 @@ default allow := false
 
 allow if {
 	not startswith(input.path, "/admin")
+	input.path != "/"
 	input.path != "/private"
 	input.path != "/doc/ABC"
 }
@@ -352,6 +353,8 @@ allow if {
 		{path: "/%41dmin/secret/", statusCode: 400},
 		{path: "/private", statusCode: 400},
 		{path: "/private/", statusCode: 400},
+		{path: "//", statusCode: 400},
+		{path: "/.//", statusCode: 400},
 		{path: "/doc/abc", statusCode: 200},
 		{path: "/doc/ABC", statusCode: 400},
 		{config: fiber.Config{CaseSensitive: true}, path: "/ADMIN/secret", statusCode: 404},
@@ -368,6 +371,7 @@ allow if {
 			RegoQuery:  "data.example.authz.allow",
 			RegoPolicy: bytes.NewBufferString(module),
 		}))
+		app.Get("/", ok)
 		app.Get("/path", ok)
 		app.Get("/admin/secret", ok)
 		app.Get("/private", ok)
