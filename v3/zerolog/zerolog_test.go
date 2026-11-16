@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1171,6 +1172,47 @@ func Test_Logger_TimedOutHandler_GetResBody(t *testing.T) {
 	var logs map[string]any
 	assert.NoError(t, json.Unmarshal(buf.Bytes(), &logs))
 	assert.Equal(t, fiber.ErrServiceUnavailable.Message, logs[FieldResBody])
+}
+
+func Test_Logger_TimedOutHandler_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	for name, cfg := range map[string]Config{
+		"logged":   {},
+		"skipped":  {Skip: func(fiber.Ctx) bool { return true }},
+		"disabled": {Levels: []zerolog.Level{zerolog.Disabled}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			logger := zerolog.New(io.Discard)
+			cfg.Logger = &logger
+			errs := make(chan error, 1)
+
+			app := fiber.New()
+			app.Use(func(c fiber.Ctx) error {
+				err := c.Next()
+				errs <- err
+				return err
+			})
+			app.Use(New(cfg))
+			app.Get("/slow", timeout.New(func(c fiber.Ctx) error {
+				<-c.Context().Done()
+				return c.SendString("late")
+			}, timeout.Config{Timeout: 10 * time.Millisecond}))
+			app.Get("/bad", func(fiber.Ctx) error { return fiber.ErrBadRequest })
+
+			resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/slow", nil))
+			assert.NoError(t, err)
+			assert.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
+			assert.ErrorIs(t, <-errs, fiber.ErrServiceUnavailable)
+
+			resp, err = app.Test(httptest.NewRequest(http.MethodGet, "/bad", nil))
+			assert.NoError(t, err)
+			assert.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
+			assert.NoError(t, <-errs)
+		})
+	}
 }
 
 // Not parallel, and measured against GetRespHeaders so an upgrade does not break it.

@@ -31,14 +31,20 @@ func New(config ...Config) fiber.Handler {
 			}
 		}
 
+		response := sentResponse(c)
+		// As in Fiber's logger: the timeout error keeps middleware before us off the handler's response.
+		var result error
+		if response != c.Response() {
+			result = chainErr
+		}
+
 		// New: Skip check AFTER c.Next() but BEFORE log assembly
 		if cfg.Skip != nil && cfg.Skip(c) {
-			return nil
+			return result
 		}
 
 		latency := time.Since(start)
 
-		response := sentResponse(c)
 		status := response.StatusCode()
 
 		index := 0
@@ -59,7 +65,7 @@ func New(config ...Config) fiber.Handler {
 
 		// no log
 		if level == zerolog.NoLevel || level == zerolog.Disabled {
-			return nil
+			return result
 		}
 
 		messageIndex := index
@@ -88,7 +94,7 @@ func New(config ...Config) fiber.Handler {
 			logger.Trace().Ctx(ctx).Msg(message)
 		}
 
-		return nil
+		return result
 	}
 }
 
