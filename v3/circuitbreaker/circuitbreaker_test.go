@@ -863,6 +863,24 @@ func TestBindErrorsAreNeutral(t *testing.T) {
 	require.Equal(t, circuitbreaker.StateClosed, cb.GetState(), "a real success still closes it")
 }
 
+func TestBindErrorJoinedWithServerErrorFails(t *testing.T) {
+	t.Parallel()
+
+	for _, serverErr := range []error{fiber.ErrServiceUnavailable, errors.New("insert audit row: timeout")} {
+		cb := circuitbreaker.New(circuitbreaker.Config{FailureThreshold: 1, Timeout: time.Minute})
+		app := newApp(cb)
+		app.Post("/items", func(c fiber.Ctx) error {
+			var item struct{ ID int }
+			return errors.Join(c.Bind().Body(&item), serverErr)
+		})
+		req := httptest.NewRequest(fiber.MethodPost, "/items", strings.NewReader("{not json"))
+		req.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+		_, err := app.Test(req)
+		require.NoError(t, err)
+		require.Equal(t, circuitbreaker.StateOpen, cb.GetState(), "a server error next to a bind error still fails: %v", serverErr)
+	}
+}
+
 // TestDefaultOnCloseDoesNotAdvanceChainTwice guards the regression where a
 // default OnClose that called c.Next() advanced the chain past the middleware
 // that had already answered, reaching the protected handler a second time.

@@ -233,7 +233,7 @@ func (cb *CircuitBreaker) serve(c fiber.Ctx, next func() error) error {
 		return err
 	}
 
-	// A 4xx describes the request, not the service, so it is neither failure nor success.
+	// A 4xx or a malformed request describes the request, not the service, so it is neither failure nor success.
 	if isClientError(c, err) {
 		return err
 	}
@@ -245,8 +245,8 @@ func (cb *CircuitBreaker) serve(c fiber.Ctx, next func() error) error {
 	return err
 }
 
-// isClientError reports a 4xx outcome, taken from a returned *fiber.Error or else
-// from the response, or a request bind error; any other returned error is answered with 500.
+// isClientError reports an outcome the client caused: a 4xx from a returned *fiber.Error
+// or else from the response, or a request bind error.
 func isClientError(c fiber.Ctx, err error) bool {
 	status := c.Response().StatusCode()
 	if err != nil {
@@ -260,9 +260,14 @@ func isClientError(c fiber.Ctx, err error) bool {
 }
 
 // isRequestBindError reports malformed request input; RespHeader binds the server's own response.
+// Only the single-wrap chain counts, so a bind error joined with a server error still fails.
 func isRequestBindError(err error) bool {
-	bindErr, ok := errors.AsType[*fiber.BindError](err)
-	return ok && bindErr.Source != fiber.BindSourceRespHeader
+	for ; err != nil; err = errors.Unwrap(err) {
+		if bindErr, ok := err.(*fiber.BindError); ok {
+			return bindErr.Source != fiber.BindSourceRespHeader
+		}
+	}
+	return false
 }
 
 // admit reports whether one request may proceed, how it was admitted, and the
