@@ -459,7 +459,8 @@ func Test_RoutePermission_RouterSpelling(t *testing.T) {
 	m = r.sub == p.sub && keyMatch(r.obj, p.obj) && regexMatch(r.act, p.act)`
 
 	const restPolicy = `
-	p,bob,/*,GET,allow
+	p,bob,*,GET,allow
+	p,bob,/,GET,deny
 	p,bob,/admin,GET,deny
 	p,bob,/admin/*,GET,deny
 	p,bob,/blog/*,DELETE,allow
@@ -476,6 +477,8 @@ func Test_RoutePermission_RouterSpelling(t *testing.T) {
 		{desc: "denied path in upper case", url: "/ADMIN", method: "GET", statusCode: 403},
 		{desc: "denied path in escaped upper case", url: "/%41dmin", method: "GET", statusCode: 403},
 		{desc: "denied sub path in mixed case", url: "/Admin/users", method: "GET", statusCode: 403},
+		{desc: "denied root spelled with slashes only", url: "///", method: "GET", statusCode: 403},
+		{desc: "denied root behind a dot segment", url: "/.//", method: "GET", statusCode: 403},
 		{desc: "collection is not covered by the item pattern", url: "/blog", method: "DELETE", statusCode: 403},
 		{desc: "collection with a trailing slash", url: "/blog/", method: "DELETE", statusCode: 403},
 		{desc: "collection with trailing slashes", url: "/blog//", method: "DELETE", statusCode: 403},
@@ -511,6 +514,7 @@ func Test_RoutePermission_RouterSpelling(t *testing.T) {
 	for _, tC := range testCases {
 		app := fiber.New(tC.config)
 		app.Use(authz.RoutePermission())
+		app.Get("/", ok)
 		app.Get("/admin", ok)
 		app.Get("/admin/users", ok)
 		app.Get("/blog", ok)
