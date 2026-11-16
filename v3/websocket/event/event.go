@@ -1157,9 +1157,10 @@ func (kws *Websocket) invokeCallback(event string, cb EventCallback, p *EventPay
 				kws.settings.recover(event, r)
 			}
 			// The listener may have panicked before it could refuse the connection.
+			// Claim the cause first: queued writes fail once the close frame is out.
 			if event == EventConnect && kws.isPending() && kws.IsAlive() {
-				kws.writeClose(websocket.CloseInternalServerErr, "internal error")
 				kws.disconnected(ErrorCallbackPanic)
+				kws.writeClose(websocket.CloseInternalServerErr, "internal error")
 			}
 		}
 	}()

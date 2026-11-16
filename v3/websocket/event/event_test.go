@@ -1552,6 +1552,54 @@ func TestConnectListenerPanicRefusesConnection(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond)
 }
 
+func TestConnectListenerPanicAfterEmitReportsPanic(t *testing.T) {
+	resetState()
+
+	// Queued writes that fail on the close frame must not take over the disconnect cause.
+	On(EventConnect, func(p *EventPayload) {
+		for range SendQueueSize {
+			p.Kws.Emit([]byte("queued"))
+		}
+		panic("connect boom")
+	})
+	disconnects := make(chan error, 1)
+	On(EventDisconnect, func(p *EventPayload) { disconnects <- p.Error })
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	app.Use(upgradeMiddleware)
+	app.Get("/", New(func(*Websocket) {}))
+
+	go func() { _ = app.Listener(ln) }()
+
+	dialer := &websocket.Dialer{
+		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+		HandshakeTimeout: 5 * time.Second,
+	}
+	conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+	require.NoError(t, err)
+	defer conn.Close()
+	go func() {
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
+	select {
+	case discErr := <-disconnects:
+		require.ErrorIs(t, discErr, ErrorCallbackPanic)
+	case <-time.After(5 * time.Second):
+		t.Fatal("EventDisconnect was not fired for the panicking connect listener")
+	}
+}
+
 func TestConnectListenerPanicAfterAcceptKeepsConnection(t *testing.T) {
 	resetState()
 
