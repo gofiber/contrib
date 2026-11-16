@@ -71,7 +71,8 @@ var (
 	// ErrorCallbackPanic is carried by the EventError fired when a connection
 	// callback panics, and by the EventDisconnect fired with it unless the
 	// callback had already closed the connection. An EventConnect listener that
-	// panics on a connection still being accepted fires both.
+	// panics on a connection still being accepted fires both, unless it had
+	// already closed the connection.
 	ErrorCallbackPanic = errors.New("connection callback panicked")
 )
 
