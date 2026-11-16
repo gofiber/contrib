@@ -270,7 +270,8 @@ Under `fiber.Config{StreamRequestBody: true}`, request bodies reach the handler
 as streams and are left out of `http.server.request.body.size`: fasthttp
 pre-reads a bounded prefix and hands the rest to the handler, which may never
 read it, so the announced `Content-Length` is a client's claim rather than a
-measurement.
+measurement. The same goes for a request fasthttp rejects with its body unread,
+such as one over `BodyLimit` or with an invalid URI.
 
 A response that carries no body on the wire records zero, however much the
 handler wrote: a `HEAD`, a status that forbids a body (`1xx`, `204`, `304`),

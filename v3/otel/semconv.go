@@ -289,12 +289,33 @@ func requestBodySize(c fiber.Ctx) (int64, bool) {
 		return bodyStreamSize(request.BodyStream())
 	}
 
-	// Content-Length avoids re-marshaling a parsed multipart body into memory.
+	// Content-Length avoids re-marshaling a parsed multipart body into memory, but Fiber also runs
+	// the chain for a request fasthttp rejected unread (over BodyLimit, invalid URI).
 	if contentLength := request.Header.ContentLength(); contentLength > 0 {
+		if !requestBodyRead(c) {
+			return 0, false
+		}
+
 		return int64(contentLength), true
 	}
 
 	return int64(len(request.Body())), true
+}
+
+// requestBodyRead reports whether fasthttp read the body Content-Length announces.
+func requestBodyRead(c fiber.Ctx) bool {
+	request := c.Request()
+	header := &request.Header
+	// fasthttp's pre-parse conditions: a form it parsed leaves no body behind, and MultipartForm
+	// returns it cached or fails at once on an empty body, so nothing is re-marshaled here.
+	if !c.App().Server().DisablePreParseMultipartForm &&
+		len(header.MultipartFormBoundary()) > 0 && len(header.ContentEncoding()) == 0 {
+		if _, err := request.MultipartForm(); err == nil {
+			return true
+		}
+	}
+
+	return len(request.Body()) > 0
 }
 
 // responseBodySize returns the response body size and whether it is known.

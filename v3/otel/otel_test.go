@@ -3195,6 +3195,94 @@ func TestMiddleware_StreamedRequestIgnoresDeclaredLength(t *testing.T) {
 		"streamed request reported a body size; the declared length is not a measurement")
 }
 
+// fasthttp rejects these with the body unread, and Fiber still runs the Use chain for them.
+func TestMiddleware_UnreadRequestIgnoresDeclaredLength(t *testing.T) {
+	t.Parallel()
+
+	const declaredSize = "999999999999999999"
+
+	testCases := []struct {
+		name    string
+		request string
+		status  string
+	}{
+		{
+			name:    "over BodyLimit",
+			request: "POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: " + declaredSize + "\r\n\r\n",
+			status:  "413",
+		},
+		{
+			name: "multipart over BodyLimit",
+			request: "POST /upload HTTP/1.1\r\nHost: x\r\nContent-Type: multipart/form-data; boundary=b\r\n" +
+				"Content-Length: " + declaredSize + "\r\n\r\n",
+			status: "413",
+		},
+		{
+			name:    "invalid URI",
+			request: "POST http://[bad/ HTTP/1.1\r\nHost: x\r\nContent-Length: 1024\r\n\r\n",
+			status:  "400",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			reader := metric.NewManualReader()
+			sr := tracetest.NewSpanRecorder()
+
+			app := fiber.New()
+			app.Use(New(
+				WithMeterProvider(metric.NewMeterProvider(metric.WithReader(reader))),
+				WithTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))),
+			))
+			app.Post("/upload", func(c fiber.Ctx) error {
+				return c.SendStatus(http.StatusNoContent)
+			})
+
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+
+			served := make(chan error, 1)
+			go func() {
+				served <- app.Listener(listener, fiber.ListenConfig{DisableStartupMessage: true})
+			}()
+			t.Cleanup(func() {
+				require.NoError(t, app.Shutdown())
+				<-served
+			})
+
+			conn, err := net.Dial("tcp", listener.Addr().String())
+			require.NoError(t, err)
+
+			_, err = conn.Write([]byte(tc.request))
+			require.NoError(t, err)
+
+			require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+			statusLine, err := bufio.NewReader(conn).ReadString('\n')
+			require.NoError(t, err)
+			require.Contains(t, statusLine, tc.status)
+			require.NoError(t, conn.Close())
+
+			spans := sr.Ended()
+			require.Len(t, spans, 1)
+			for _, attr := range spans[0].Attributes() {
+				require.NotEqual(t, semconv.HTTPRequestBodySizeKey, attr.Key,
+					"unread request reported a body size; the declared length is not a measurement")
+			}
+
+			metrics := metricdata.ResourceMetrics{}
+			require.NoError(t, reader.Collect(context.Background(), &metrics))
+			for _, scope := range metrics.ScopeMetrics {
+				for _, m := range scope.Metrics {
+					require.NotEqual(t, MetricNameHTTPServerRequestBodySize, m.Name,
+						"unread request reported a body size; the declared length is not a measurement")
+				}
+			}
+		})
+	}
+}
+
 func TestMiddleware_NotFoundPathDoesNotHang(t *testing.T) {
 	t.Parallel()
 
