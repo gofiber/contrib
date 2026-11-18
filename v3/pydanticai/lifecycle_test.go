@@ -1862,7 +1862,7 @@ func Test_CompressKeepsTheCutOfAClientThatStoppedReading(t *testing.T) {
 			require.NoError(t, err)
 
 			// The run is over, and the server is stuck writing the end of the stream.
-			agenttest.Receive(t, closed, "OnClose")
+			require.NoError(t, agenttest.Receive(t, closed, "OnClose"), "the run completed")
 			if shutdown {
 				require.NoError(t, app.ShutdownWithTimeout(observeTimeout), "the shutdown waited for the client")
 			}
