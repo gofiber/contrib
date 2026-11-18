@@ -48,7 +48,7 @@ casbin.New(config ...casbin.Config) *casbin.Middleware
 | Unauthorized  | `func(fiber.Ctx) error`   | Response body for unauthorized responses | `Unauthorized`                                                      |
 | Forbidden     | `func(fiber.Ctx) error`   | Response body for forbidden responses    | `Forbidden`                                                         |
 
-Cached enforcers (`*casbin.CachedEnforcer`, `*casbin.SyncedCachedEnforcer`) keep answering from their cache after policies or roles change, so a revoked permission can still pass. Call `InvalidateCache()` after such changes or set a `SetExpireTime`. If policies change while requests are served, use a synced enforcer.
+Cached enforcers (`*casbin.CachedEnforcer`, `*casbin.SyncedCachedEnforcer`) keep answering from their cache after policies or roles change, so a revoked permission can still pass. Cached decisions never expire by default, and `InvalidateCache()` alone is not enough while requests are served: a request enforced before the change can write its old result back afterwards. Set `SetExpireTime` to bound how long a stale decision lives, or stop requests while changing policies and invalidating the cache.
 
 ### Examples
 - [Gorm Adapter](https://github.com/svcg/-fiber_casbin_demo)
