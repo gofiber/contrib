@@ -50,13 +50,11 @@ var ConfigDefault = Config{
 
 // Helper function to set default values
 func configDefault(config ...Config) (Config, error) {
-	// Return default config if nothing provided
-	if len(config) < 1 {
-		return ConfigDefault, nil
+	// No config still needs the default enforcer, so it takes the same path.
+	cfg := ConfigDefault
+	if len(config) > 0 {
+		cfg = config[0]
 	}
-
-	// Override default config
-	cfg := config[0]
 
 	if isNilEnforcer(cfg.Enforcer) {
 		if cfg.ModelFilePath == "" {

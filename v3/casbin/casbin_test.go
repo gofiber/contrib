@@ -657,3 +657,23 @@ func Test_NilEnforcerPointerUsesDefault(t *testing.T) {
 		t.Errorf("StatusCode: got %v - expected %v", resp.StatusCode, fiber.StatusOK)
 	}
 }
+
+func Test_NewWithoutConfigUsesDefaultFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "model.conf"), []byte(modelConf), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "policy.csv"), []byte(policyList), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	authz := New()
+
+	if ok, err := authz.enforce("alice", "blog", "create"); err != nil || !ok {
+		t.Errorf("alice blog:create: got %v, %v - expected true, nil", ok, err)
+	}
+	if ok, err := authz.enforce("bob", "blog", "create"); err != nil || ok {
+		t.Errorf("bob blog:create: got %v, %v - expected false, nil", ok, err)
+	}
+}

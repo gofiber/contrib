@@ -48,6 +48,8 @@ casbin.New(config ...casbin.Config) *casbin.Middleware
 | Unauthorized  | `func(fiber.Ctx) error`   | Response body for unauthorized responses | `Unauthorized`                                                      |
 | Forbidden     | `func(fiber.Ctx) error`   | Response body for forbidden responses    | `Forbidden`                                                         |
 
+Cached enforcers (`*casbin.CachedEnforcer`, `*casbin.SyncedCachedEnforcer`) keep answering from their cache after policies or roles change, so a revoked permission can still pass. Call `InvalidateCache()` after such changes or set a `SetExpireTime`. If policies change while requests are served, use a synced enforcer.
+
 ### Examples
 - [Gorm Adapter](https://github.com/svcg/-fiber_casbin_demo)
 - [File Adapter](https://github.com/gofiber/contrib/tree/master/v3/casbin/example)
