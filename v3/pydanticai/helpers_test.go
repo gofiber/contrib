@@ -309,6 +309,11 @@ func vercelFailure(t *testing.T, body string) string {
 	return last.ErrorText
 }
 
+// tellError is an ErrorMessage that sends the client the error itself, as an
+// application may do during development. By default a client reads the kind of
+// failure only, so the tests that tell failures apart by their message use it.
+func tellError(err error) string { return err.Error() }
+
 // drain reads the data of the records that remain in the stream.
 func drain(reader *pydanticaitest.Reader) []string {
 	var rest []string

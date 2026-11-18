@@ -208,9 +208,9 @@ app.Post("/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[Deps]{
 
 A user who brings their own key gets a model with that key: `ai.WithRunModel(openai.NewModel("gpt-5-mini", openai.WithAPIKey(key)))`, with `key` read from the request in `RunOptions`.
 
-### Hiding error details and logging
+### Error messages and logging
 
-A run that fails after the stream has started is reported to the client inside the stream, with `err.Error()` as the message. Provider errors can contain request IDs or parts of credentials. `ErrorMessage` replaces the message that the client receives, and `OnClose` still gets the original error for your logs:
+A run that fails after the stream has started is reported to the client inside the stream. By default the message tells the kind of failure and none of its details, because the error of a provider or of a tool can name a host, a request or a part of a credential. It is the reason phrase of the status that `StatusCode` derives from the error: `Too Many Requests` for a usage limit, `Bad Gateway` for a model that fails, and `Internal Server Error` for an error without a status, which includes a request that the adapter refuses after the stream has started. `OnClose` and `OnRunEnd` get the error itself, for your logs, and `ErrorMessage` sets what the client reads:
 
 ```go
 app.Post("/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[Deps]{
@@ -222,6 +222,8 @@ app.Post("/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[Deps]{
     },
 }))
 ```
+
+During development, `ErrorMessage: func(err error) string { return err.Error() }` shows the error in the browser. What a tool returns to the model is part of both protocols, also when it asks the model to try again, so the client reads that text whatever `ErrorMessage` says.
 
 `OnClose` is called once when the stream is over, with the dependencies of the run and the way the stream ended:
 
@@ -598,9 +600,9 @@ app.Post("/mcp", pydanticai.MCP(agent, pydanticai.MCPConfig[Deps]{
 The client sees one tool, `ask`, with the argument `question`. Its result is the output of the agent: text as it is, and any other output as JSON in the text, and also as structured content when it is a JSON object. `Tool` and `Description` name the tool and say what it is for, which the model of the client reads when it chooses a tool.
 
 - **Authenticate first.** Derive `Deps` from the authenticated request, never from the arguments of the tool, which a caller can set to anything. `Deps` is called for every message of the client, including those that set up the connection and list the tool, so keep it cheap.
-- **Errors.** A failed run is an error of the tool, which the model of the client reads and can react to. `ErrorMessage` replaces its text, as for the other handlers, and a panic is reported as `internal error`.
+- **Errors.** A failed run is an error of the tool, which the model of the client reads and can react to. As for the streaming handlers, its text is the kind of failure by default, such as `Gateway Timeout` for a run that exceeded `Timeout` and `Internal Server Error` for a panic, and `ErrorMessage` sets it.
 - **No sessions, no streams.** Every message is a request with a JSON response, so the server holds no state, and a shutdown never waits for an idle connection. The server cannot send progress, sampling or elicitation requests to the client. A server that needs them mounts `mcpsdk.NewStreamableHTTPHandler` with the `adaptor` middleware instead. A `GET` is answered with `405`, by Fiber when the route is mounted with `app.Post` as above, which tells a client that the server offers no stream.
-- **Timeouts.** A client that went away is not noticed before the response is written, so a call ends after `Timeout`: 5 minutes by default, and a negative value turns the bound off. `CancelOnShutdown` ends the calls when the server shuts down, and the client reads an error that says so.
+- **Timeouts.** A client that went away is not noticed before the response is written, so a call ends after `Timeout`: 5 minutes by default, and a negative value turns the bound off. `CancelOnShutdown` ends the calls when the server shuts down, and the client reads the error `Service Unavailable`.
 - **Context.** As for the other handlers, the `ctx` of a tool carries the values of `c.Context()`, for example the span of the [otel](https://github.com/gofiber/contrib/tree/main/v3/otel) middleware.
 - **Origins.** A request with an `Origin` header is answered with `403` unless `AllowedOrigins` lists it, as the MCP specification has a server validate the origin of its callers. That keeps a page of another site, or one that reaches the server by DNS rebinding and so looks like its own, from calling the tool in the browser of a user. A client that is not a browser sends no `Origin`. A page that you serve yourself has to be listed too, for example `AllowedOrigins: []string{"https://app.example.com"}`.
 - **One message per request.** A JSON-RPC batch, a body that is an array, is answered with `400`. The protocol versions before 2025-06-18 allow batches, and a request without `Mcp-Protocol-Version` counts as one of them, so each call of a batch would start a run at once behind the one request that a limiter counts.
@@ -692,12 +694,11 @@ Heartbeat comments are ignored by server-sent events parsers. `DisableHeartbeat`
 |:----------------------------|:-------------------------------------|:-------------------------------|
 | The run completes           | `RUN_FINISHED`                       | `finish` chunk, then `[DONE]`  |
 | `Timeout` elapses, or the server shuts down with `CancelOnShutdown` | `RUN_FINISHED` without an outcome | `abort` chunk, then `[DONE]` |
-| The run fails               | `RUN_ERROR`                          | `error` chunk, then `[DONE]`   |
-| The run panics              | `RUN_ERROR` with `internal error`    | `error` chunk, then `[DONE]`   |
+| The run fails or panics     | `RUN_ERROR`                          | `error` chunk, then `[DONE]`   |
 
 The status of the response is `200` in all of these cases, because it is sent before the run starts. When the client disconnects, the run is canceled, nothing more is sent and `OnClose` receives the error.
 
-A panic in a tool, in the validation of its arguments, in the model or in a callback of the handler ends the stream with an error event too. The client sees `internal error`, or what `ErrorMessage` returns, and the panic with its stack goes to the logger of Fiber and to `OnClose`. This covers tool calls that run concurrently on goroutines of their own, and the handling of their events by the adapter and the handler, the encoding of a tool result included. Other code that pydantic-ai-go runs on those goroutines, such as the event listeners of the agent, is not covered: recover the panics of such code yourself.
+A panic in a tool, in the validation of its arguments, in the model or in a callback of the handler ends the stream with an error event too. The client reads `Internal Server Error`, or what `ErrorMessage` returns for the plain `500` that it is given in the place of the panic. The panic with its stack goes to the logger of Fiber and to `OnClose`. This covers tool calls that run concurrently on goroutines of their own, and the handling of their events by the adapter and the handler, the encoding of a tool result included. Other code that pydantic-ai-go runs on those goroutines, such as the event listeners of the agent, is not covered: recover the panics of such code yourself.
 
 ## Errors of `Run`
 
@@ -754,7 +755,7 @@ The two streaming handlers take the same settings: `AGUIConfig` and `VercelConfi
 | Next              | `func(fiber.Ctx) bool`                        | Skips the handler when it returns `true`.                                                                                                                                                 | `nil`                  |
 | Deps              | `func(fiber.Ctx) (Deps, error)`               | Resolves the dependencies of the agent for one request. An error aborts the request before the body is read and the stream starts.                                                       | zero value of `Deps`   |
 | RunOptions        | `func(fiber.Ctx) ([]ai.RunOption, error)`     | Returns extra run options for one request.                                                                                                                                                | `nil`                  |
-| ErrorMessage      | `func(error) string`                          | Maps the error of a failed run to the message that the client receives, in the `RUN_ERROR` event (AG-UI) or the `error` chunk (Vercel AI). Also applies to a panic and to an event that cannot be encoded. A panic in it is logged, and the client receives `internal error`. | `err.Error()`          |
+| ErrorMessage      | `func(error) string`                          | Maps the error of a failed run to the message that the client receives, in the `RUN_ERROR` event (AG-UI) or the `error` chunk (Vercel AI). Also applies to a panic, which it is given as a plain `500`, and to an event that cannot be encoded. A panic in it is logged, and the client receives `Internal Server Error`. | the reason phrase of `StatusCode(err)` |
 | OnClose           | `func(Deps, error)`                           | Called once when the stream is over, with the dependencies of the run. The error is `nil` when the stream ended normally. The end of the response waits for it.                           | `nil`                  |
 | OnRunEnd          | `func(Deps, *ai.RunInfo, error)`              | Called once when the run has ended, before `OnClose`, with what the run consumed and how it ended. The run is `nil` when the agent did not start. The end of the response waits for it.   | `nil`                  |
 | Adapter           | `agui.Config` or `vercel.Config`              | Protocol version (`Version` for AG-UI, `SDKVersion` for Vercel AI), sanitization of client history and request limits (`MaxRequestBytes`, `AllowedContentTypes`, `DisableContentTypeCheck`). | the zero value         |
@@ -786,7 +787,7 @@ The two streaming handlers take the same settings: `AGUIConfig` and `VercelConfi
 | AllowedOrigins   | `[]string`                                | The origins of the browser pages that may call the handler, for example `https://app.example.com`. A request with another `Origin` header gets `403`, as the MCP specification requires. A client that is not a browser sends none. It panics when an origin is not a scheme, a host and an optional port. | `nil` (no page)                          |
 | Name, Version    | `string`                                  | Identify the server to its clients.                                                                                                          | the name of the agent or `pydantic-ai-go`, and `1.0.0` |
 | Tool, Description | `string`                                 | The name of the tool that runs the agent, 1 to 128 characters of `A-Z`, `a-z`, `0-9`, `_`, `.` and `-`, and what it is for.                  | `ask`, `Ask the agent a question`        |
-| ErrorMessage     | `func(error) string`                      | Maps the error of a failed run to the text that the client reads. Also applies to an output that cannot be encoded. A panic is reported with the error `internal error`. | `err.Error()`            |
+| ErrorMessage     | `func(error) string`                      | Maps the error of a failed run to the text that the client reads. Also applies to an output that cannot be encoded and to a panic, which it is given as a plain `500`. | the reason phrase of `StatusCode(err)` |
 | OnRunEnd         | `func(Deps, *ai.RunInfo, error)`          | Called once the agent has run, with what the run consumed and the error that ended it, also when the run panicked. The run is `nil` when the agent did not start. | `nil`                        |
 | Timeout          | `time.Duration`                           | Bounds the duration of one run. A client that left is not noticed before the response is written, so the timeout is what ends such a run. A negative value turns it off. | `5 * time.Minute`                        |
 | CancelOnShutdown | `bool`                                    | Cancels the runs when the server starts shutting down, instead of waiting for them.                                                          | `false`                                  |

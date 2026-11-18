@@ -181,7 +181,7 @@ func Test_AGUI_AgentError(t *testing.T) {
 
 	secret := errors.New("provider rejected the key sk-secret")
 
-	t.Run("reports the error to the client and OnClose", func(t *testing.T) {
+	t.Run("tells the client the kind of failure, and OnClose the error", func(t *testing.T) {
 		t.Parallel()
 
 		closed := make(chan error, 1)
@@ -191,7 +191,8 @@ func Test_AGUI_AgentError(t *testing.T) {
 
 		resp, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
 		require.Equal(t, fiber.StatusOK, resp.StatusCode, "the status is sent before the run starts")
-		require.Contains(t, aguiFailure(t, body), "sk-secret")
+		require.Equal(t, "Internal Server Error", aguiFailure(t, body))
+		require.NotContains(t, body, "sk-secret", "the error of the provider must not reach the client")
 		require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), secret)
 	})
 
@@ -209,6 +210,17 @@ func Test_AGUI_AgentError(t *testing.T) {
 		require.NotContains(t, body, "sk-secret")
 		require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), secret, "OnClose still receives the original error")
 	})
+
+	t.Run("ErrorMessage can send the error itself", func(t *testing.T) {
+		t.Parallel()
+
+		handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](agenttest.Failing(secret)), pydanticai.AGUIConfig[struct{}]{
+			ErrorMessage: tellError,
+		})
+
+		_, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
+		require.Contains(t, aguiFailure(t, body), "sk-secret")
+	})
 }
 
 func Test_AGUI_EventThatCannotBeEncoded(t *testing.T) {
@@ -224,8 +236,10 @@ func Test_AGUI_EventThatCannotBeEncoded(t *testing.T) {
 
 		resp, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
 		require.Equal(t, fiber.StatusOK, resp.StatusCode)
-		require.Contains(t, aguiFailure(t, body), "encode AG-UI event")
-		require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "cannot encode the payload")
+		require.Equal(t, "Internal Server Error", aguiFailure(t, body))
+		err := agenttest.Receive(t, closed, "OnClose")
+		require.ErrorContains(t, err, "encode AG-UI event")
+		require.ErrorContains(t, err, "cannot encode the payload")
 	})
 
 	t.Run("ErrorMessage replaces the message", func(t *testing.T) {
@@ -520,7 +534,7 @@ func Test_Vercel_AgentError(t *testing.T) {
 
 	secret := errors.New("provider rejected the key sk-secret")
 
-	t.Run("reports the error to the client and OnClose", func(t *testing.T) {
+	t.Run("tells the client the kind of failure, and OnClose the error", func(t *testing.T) {
 		t.Parallel()
 
 		closed := make(chan error, 1)
@@ -530,7 +544,8 @@ func Test_Vercel_AgentError(t *testing.T) {
 
 		resp, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
 		require.Equal(t, fiber.StatusOK, resp.StatusCode, "the status is sent before the run starts")
-		require.Contains(t, vercelFailure(t, body), "sk-secret")
+		require.Equal(t, "Internal Server Error", vercelFailure(t, body))
+		require.NotContains(t, body, "sk-secret", "the error of the provider must not reach the client")
 		require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), secret)
 	})
 
@@ -547,6 +562,17 @@ func Test_Vercel_AgentError(t *testing.T) {
 		require.Equal(t, "the model failed", vercelFailure(t, body))
 		require.NotContains(t, body, "sk-secret")
 		require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), secret, "OnClose still receives the original error")
+	})
+
+	t.Run("ErrorMessage can send the error itself", func(t *testing.T) {
+		t.Parallel()
+
+		handler := pydanticai.Vercel(ai.NewAgent[struct{}, string](agenttest.Failing(secret)), pydanticai.VercelConfig[struct{}]{
+			ErrorMessage: tellError,
+		})
+
+		_, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
+		require.Contains(t, vercelFailure(t, body), "sk-secret")
 	})
 }
 
@@ -565,8 +591,10 @@ func Test_Vercel_ChunkThatCannotBeEncoded(t *testing.T) {
 		require.Equal(t, fiber.StatusOK, resp.StatusCode)
 		_, done := vercelChunks(t, body)
 		require.True(t, done, "the stream still ends with [DONE]")
-		require.Contains(t, vercelFailure(t, body), "encode Vercel AI chunk")
-		require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "cannot encode the payload")
+		require.Equal(t, "Internal Server Error", vercelFailure(t, body))
+		err := agenttest.Receive(t, closed, "OnClose")
+		require.ErrorContains(t, err, "encode Vercel AI chunk")
+		require.ErrorContains(t, err, "cannot encode the payload")
 	})
 
 	t.Run("ErrorMessage replaces the message", func(t *testing.T) {

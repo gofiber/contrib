@@ -81,6 +81,21 @@ func StatusCode(err error) int {
 	return fiber.StatusInternalServerError
 }
 
+// statusText is the message that a client receives for err unless ErrorMessage
+// says otherwise: the reason phrase of its status code, which tells what kind of
+// failure it was and none of its details.
+func statusText(err error) string {
+	return utils.StatusMessage(StatusCode(err))
+}
+
+// messageFor returns the ErrorMessage of a config, or statusText without one.
+func messageFor(configured func(err error) string) func(err error) string {
+	if configured == nil {
+		return statusText
+	}
+	return configured
+}
+
 // isErrorStatus reports whether err is a client or server error with a reason phrase.
 func isErrorStatus(err *fiber.Error) bool {
 	return err != nil && err.Code >= 400 && err.Code <= 599 && utils.StatusMessage(err.Code) != ""

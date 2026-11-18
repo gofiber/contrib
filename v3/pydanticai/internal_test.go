@@ -353,6 +353,22 @@ func Test_heartbeatInterval(t *testing.T) {
 	require.Equal(t, 2*time.Second, heartbeatInterval(2*time.Second))
 }
 
+func Test_messageFor(t *testing.T) {
+	t.Parallel()
+
+	// Without an ErrorMessage a client reads the kind of failure and none of its details.
+	secret := errors.New("provider rejected the key sk-secret")
+	byDefault := messageFor(nil)
+	require.Equal(t, "Internal Server Error", byDefault(secret))
+	require.Equal(t, "Too Many Requests", byDefault(errors.Join(ai.ErrUsageLimitExceeded, secret)))
+	require.Equal(t, "Gateway Timeout", byDefault(errors.Join(context.DeadlineExceeded, secret)))
+	require.Equal(t, "Forbidden", byDefault(fiber.NewError(fiber.StatusForbidden, secret.Error())),
+		"the status of a Fiber error, and not its message")
+
+	configured := messageFor(func(err error) string { return "configured: " + err.Error() })
+	require.Equal(t, "configured: "+secret.Error(), configured(secret))
+}
+
 // closeRecorder is a connection that records whether it was closed.
 type closeRecorder struct {
 	net.Conn

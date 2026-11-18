@@ -753,20 +753,25 @@ func Test_MCPHandler_Output(t *testing.T) {
 		}))
 		result := mcpAsk(t, mcpConnect(t, mcpServe(t, app), ""), "Hello")
 		require.True(t, result.IsError)
-		require.Contains(t, mcpResultText(t, result), "encode the output of the agent")
+		require.Equal(t, "Internal Server Error", mcpResultText(t, result))
 		require.NoError(t, agenttest.Receive(t, ends, "OnRunEnd"), "the run had completed")
 	})
 
 	t.Run("ErrorMessage applies to an output that cannot be encoded", func(t *testing.T) {
 		t.Parallel()
 
+		var seen atomic.Value
 		agent := ai.NewAgent[struct{}, unwritable](fakes.NewTestModel())
 		app := mcpApp(pydanticai.MCP(agent, pydanticai.MCPConfig[struct{}]{
-			ErrorMessage: func(error) string { return "The assistant is not available." },
+			ErrorMessage: func(err error) string {
+				seen.Store(err.Error())
+				return "The assistant is not available."
+			},
 		}))
 		result := mcpAsk(t, mcpConnect(t, mcpServe(t, app), ""), "Hello")
 		require.True(t, result.IsError)
 		require.Equal(t, "The assistant is not available.", mcpResultText(t, result), "what went wrong stays on the server")
+		require.Contains(t, seen.Load(), "encode the output of the agent")
 	})
 }
 
@@ -1025,7 +1030,7 @@ func Test_MCPHandler_Errors(t *testing.T) {
 		}))
 		result := mcpAsk(t, mcpConnect(t, mcpServe(t, app), ""), "Hello")
 		require.True(t, result.IsError, "the model of the client can read the error")
-		require.Contains(t, mcpResultText(t, result), "sk-secret")
+		require.Equal(t, "Internal Server Error", mcpResultText(t, result), "the kind of failure, and none of its details")
 		require.ErrorIs(t, agenttest.Receive(t, ends, "OnRunEnd"), secret)
 	})
 
@@ -1082,7 +1087,7 @@ func Test_MCPHandler_Errors(t *testing.T) {
 		}))
 		result := mcpAsk(t, mcpConnect(t, mcpServe(t, app), ""), "Delete it")
 		require.True(t, result.IsError)
-		require.Contains(t, mcpResultText(t, result), "deferred tool calls")
+		require.Equal(t, "Not Implemented", mcpResultText(t, result))
 		require.ErrorContains(t, agenttest.Receive(t, ends, "OnRunEnd"), "deferred tool calls")
 	})
 }
@@ -1102,7 +1107,7 @@ func Test_MCPHandler_Timeout(t *testing.T) {
 
 	result := mcpAsk(t, mcpConnect(t, mcpServe(t, app), ""), "Hello")
 	require.True(t, result.IsError)
-	require.Contains(t, mcpResultText(t, result), "deadline exceeded")
+	require.Equal(t, "Gateway Timeout", mcpResultText(t, result))
 	require.ErrorIs(t, agenttest.Receive(t, canceled, "the cancellation of the model call"), context.DeadlineExceeded)
 }
 
@@ -1185,7 +1190,7 @@ func Test_MCPHandler_Panics_AreErrorsOfTheTool(t *testing.T) {
 			}))
 			result := mcpAsk(t, mcpConnect(t, mcpServe(t, app), ""), "Hello")
 			require.True(t, result.IsError)
-			require.Equal(t, "internal error", mcpResultText(t, result), "the client is not told what the panic was")
+			require.Equal(t, "Internal Server Error", mcpResultText(t, result), "the client is not told what the panic was")
 			require.ErrorContains(t, agenttest.Receive(t, ends, "OnRunEnd"), "panic in the run: "+test.cause)
 			require.Contains(t, logs.String(), "panic in the run: "+test.cause)
 		})
@@ -1202,7 +1207,7 @@ func Test_MCPHandler_Panics_AreErrorsOfTheTool(t *testing.T) {
 		}))
 		result := mcpAsk(t, mcpConnect(t, mcpServe(t, app), ""), "Hello")
 		require.Equal(t, "The assistant is not available.", mcpResultText(t, result))
-		require.Equal(t, "internal error", seen.Load(), "ErrorMessage is not given the value of the panic")
+		require.Equal(t, "Internal Server Error", seen.Load(), "ErrorMessage is not given the value of the panic")
 	})
 }
 
@@ -1236,7 +1241,7 @@ func Test_MCPHandler_PanicWhileEncodingTheOutput(t *testing.T) {
 	}))
 	result := mcpAsk(t, mcpConnect(t, mcpServe(t, app), ""), "Hello")
 	require.True(t, result.IsError)
-	require.Equal(t, "internal error", mcpResultText(t, result))
+	require.Equal(t, "Internal Server Error", mcpResultText(t, result))
 	require.NoError(t, agenttest.Receive(t, ends, "OnRunEnd"), "the run itself had ended")
 	require.Contains(t, logs.String(), "kaboom in MarshalJSON")
 }
@@ -1442,7 +1447,7 @@ func Test_MCPHandler_CancelOnShutdown(t *testing.T) {
 	got := agenttest.Receive(t, answered, "the answer")
 	require.NoError(t, got.err, "the client gets an answer, not a broken connection")
 	require.True(t, got.result.IsError)
-	require.Contains(t, mcpResultText(t, got.result), "the server is shutting down")
+	require.Equal(t, "Service Unavailable", mcpResultText(t, got.result))
 }
 
 // Both options watch the same run: the timeout must not hide the shutdown.
@@ -1470,7 +1475,7 @@ func Test_MCPHandler_CancelOnShutdownWithATimeout(t *testing.T) {
 	require.Less(t, time.Since(begin), 5*time.Second, "the shutdown waited for the run")
 	got := agenttest.Receive(t, answered, "the answer")
 	require.NoError(t, got.err)
-	require.Contains(t, mcpResultText(t, got.result), "the server is shutting down")
+	require.Equal(t, "Service Unavailable", mcpResultText(t, got.result), "the shutdown, which is not a Gateway Timeout")
 }
 
 func Test_MCPHandler_ShutdownWaitsForARunByDefault(t *testing.T) {

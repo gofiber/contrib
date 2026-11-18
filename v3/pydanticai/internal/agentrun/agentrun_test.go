@@ -13,6 +13,7 @@ import (
 	"github.com/Kludex/pydantic-ai-go/ai/models/fakes"
 	"github.com/gofiber/contrib/v3/pydanticai/internal/agentrun"
 	"github.com/gofiber/contrib/v3/pydanticai/internal/agenttest"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
 )
 
@@ -160,12 +161,15 @@ func Test_Recover(t *testing.T) {
 	})
 }
 
+// itself is a message that tells a client the error as it is.
+func itself(err error) string { return err.Error() }
+
 func Test_Text(t *testing.T) {
 	// Not parallel: the log is global, and CaptureLog replaces it.
 	logs := agenttest.CaptureLog(t)
 
 	failure := errors.New("provider rejected the key sk-secret")
-	require.Equal(t, failure.Error(), agentrun.Text(nil, failure))
+	require.Equal(t, failure.Error(), agentrun.Text(itself, failure), "the client reads what message returns")
 	require.Equal(t, "the run failed", agentrun.Text(func(error) string { return "the run failed" }, failure))
 
 	// The client is told what it is told for a panic, not what message hides.
@@ -177,12 +181,13 @@ func Test_Text(t *testing.T) {
 		panicErr := recovered("secret value of the panic")
 		require.ErrorContains(t, panicErr, "secret value of the panic", "the logs and OnRunEnd have it")
 
-		require.Equal(t, agentrun.ErrPanicked.Error(), agentrun.Text(nil, panicErr))
-		require.Equal(t, agentrun.ErrPanicked.Error(), agentrun.Text(nil, errors.Join(failure, panicErr)),
+		require.Equal(t, "Internal Server Error", agentrun.Text(itself, panicErr), "a plain 500, also for a message that tells the error")
+		require.Equal(t, "Internal Server Error", agentrun.Text(itself, errors.Join(failure, panicErr)),
 			"also when something else wrapped it")
 		var told error
 		require.Equal(t, "told", agentrun.Text(func(err error) string { told = err; return "told" }, panicErr))
 		require.Same(t, agentrun.ErrPanicked, told, "ErrorMessage is given ErrPanicked, and not the panic")
+		require.Equal(t, fiber.StatusInternalServerError, agentrun.ErrPanicked.Code, "which a message can tell by its status")
 	})
 }
 
@@ -485,7 +490,7 @@ func Test_Execute(t *testing.T) {
 		var recorded ends[struct{}]
 		_, err := execute(agenttest.ConcurrentAgent("explode", "waiting"), agentrun.Config[struct{}]{OnRunEnd: recorded.onRunEnd})
 		require.ErrorContains(t, err, "panic in the run: kaboom")
-		require.Equal(t, agentrun.ErrPanicked.Error(), agentrun.Text(nil, err), "a client is not told what panicked")
+		require.Equal(t, agentrun.ErrPanicked.Error(), agentrun.Text(itself, err), "a client is not told what panicked")
 
 		_, _, got := recorded.only(t)
 		require.Equal(t, err, got)

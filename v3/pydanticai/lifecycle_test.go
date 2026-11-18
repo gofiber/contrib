@@ -169,7 +169,7 @@ func Test_AGUI_APanicInTheRunEndsTheStreamWithAnError(t *testing.T) {
 
 		resp, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
 		require.Equal(t, fiber.StatusOK, resp.StatusCode)
-		require.Equal(t, "internal error", aguiFailure(t, body))
+		require.Equal(t, "Internal Server Error", aguiFailure(t, body))
 		require.NotContains(t, body, "kaboom", "the value of the panic stays on the server")
 		require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "panic in the run: kaboom")
 	})
@@ -185,7 +185,7 @@ func Test_AGUI_APanicInTheRunEndsTheStreamWithAnError(t *testing.T) {
 
 		_, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
 		require.Equal(t, "the run failed", aguiFailure(t, body))
-		require.Equal(t, "internal error", seen.Load())
+		require.Equal(t, "Internal Server Error", seen.Load())
 	})
 
 	// The panic and its stack are in the log, where nothing else would show them.
@@ -206,7 +206,7 @@ func Test_Vercel_APanicInTheRunEndsTheStreamWithAnError(t *testing.T) {
 	require.Equal(t, fiber.StatusOK, resp.StatusCode)
 	_, done := vercelChunks(t, body)
 	require.True(t, done, "the stream still ends with [DONE]")
-	require.Equal(t, "internal error", vercelFailure(t, body))
+	require.Equal(t, "Internal Server Error", vercelFailure(t, body))
 	require.NotContains(t, body, "kaboom", "the value of the panic stays on the server")
 	require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "panic in the run: kaboom")
 	require.Contains(t, logs.String(), "panic in the run: kaboom")
@@ -229,7 +229,7 @@ func Test_APanicInTheModelEndsTheStreamWithAnError(t *testing.T) {
 
 		resp, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
 		require.Equal(t, fiber.StatusOK, resp.StatusCode)
-		require.Equal(t, "internal error", aguiFailure(t, body))
+		require.Equal(t, "Internal Server Error", aguiFailure(t, body))
 		require.NotContains(t, body, "kaboom", "the value of the panic stays on the server")
 		require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "panic in the run: model kaboom")
 	})
@@ -244,7 +244,7 @@ func Test_APanicInTheModelEndsTheStreamWithAnError(t *testing.T) {
 		require.Equal(t, fiber.StatusOK, resp.StatusCode)
 		_, done := vercelChunks(t, body)
 		require.True(t, done, "the stream still ends with [DONE]")
-		require.Equal(t, "internal error", vercelFailure(t, body))
+		require.Equal(t, "Internal Server Error", vercelFailure(t, body))
 		require.NotContains(t, body, "kaboom", "the value of the panic stays on the server")
 		require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "panic in the run: model kaboom")
 	})
@@ -382,6 +382,55 @@ func Test_ARequestThatATimeoutMiddlewareGaveUpOnStartsNoRun(t *testing.T) {
 	}
 }
 
+// Without an ErrorMessage the client reads what the status of Run tells it: the
+// kind of failure. The error itself goes to the callbacks.
+func Test_AFailedRunTellsTheClientItsKind(t *testing.T) {
+	t.Parallel()
+
+	// The tool of the agent makes the run need a second model request.
+	limited := func(fiber.Ctx) ([]ai.RunOption, error) {
+		return []ai.RunOption{ai.WithRunUsageLimits(ai.UsageLimits{RequestLimit: 1})}, nil
+	}
+
+	t.Run("AG-UI", func(t *testing.T) {
+		t.Parallel()
+		closed := make(chan error, 1)
+		handler := pydanticai.AGUI(weatherAgent(), pydanticai.AGUIConfig[struct{}]{
+			RunOptions: limited,
+			OnClose:    func(_ struct{}, err error) { closed <- err },
+		})
+
+		_, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
+		require.Equal(t, "Too Many Requests", aguiFailure(t, body))
+		require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), ai.ErrUsageLimitExceeded)
+	})
+	t.Run("Vercel", func(t *testing.T) {
+		t.Parallel()
+		closed := make(chan error, 1)
+		handler := pydanticai.Vercel(weatherAgent(), pydanticai.VercelConfig[struct{}]{
+			RunOptions: limited,
+			OnClose:    func(_ struct{}, err error) { closed <- err },
+		})
+
+		_, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
+		require.Equal(t, "Too Many Requests", vercelFailure(t, body))
+		require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), ai.ErrUsageLimitExceeded)
+	})
+	t.Run("MCP", func(t *testing.T) {
+		t.Parallel()
+		ends := make(chan error, 1)
+		app := mcpApp(pydanticai.MCP(weatherAgent(), pydanticai.MCPConfig[struct{}]{
+			RunOptions: limited,
+			OnRunEnd:   func(_ struct{}, _ *ai.RunInfo, err error) { ends <- err },
+		}))
+
+		result := mcpAsk(t, mcpConnect(t, mcpServe(t, app), ""), "Hello")
+		require.True(t, result.IsError)
+		require.Equal(t, "Too Many Requests", mcpResultText(t, result))
+		require.ErrorIs(t, agenttest.Receive(t, ends, "OnRunEnd"), ai.ErrUsageLimitExceeded)
+	})
+}
+
 func Test_APanicInErrorMessageEndsTheStreamWithAnError(t *testing.T) {
 	// Not parallel: the log is global, and CaptureLog replaces it. Neither are the
 	// subtests, as the log is read after them.
@@ -416,7 +465,7 @@ func Test_APanicInErrorMessageEndsTheStreamWithAnError(t *testing.T) {
 			})
 
 			_, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
-			require.Equal(t, "internal error", aguiFailure(t, body))
+			require.Equal(t, "Internal Server Error", aguiFailure(t, body))
 			require.NotContains(t, body, "sk-secret", "the client is not told what ErrorMessage hides")
 			test.closed(t, agenttest.Receive(t, closed, "OnClose"))
 		})
@@ -428,7 +477,7 @@ func Test_APanicInErrorMessageEndsTheStreamWithAnError(t *testing.T) {
 			})
 
 			_, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
-			require.Equal(t, "internal error", vercelFailure(t, body))
+			require.Equal(t, "Internal Server Error", vercelFailure(t, body))
 			require.NotContains(t, body, "sk-secret", "the client is not told what ErrorMessage hides")
 			test.closed(t, agenttest.Receive(t, closed, "OnClose"))
 		})
@@ -821,7 +870,7 @@ func Test_APanicInAConcurrentToolCallEndsTheRunWithAnError(t *testing.T) {
 
 			resp, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
 			require.Equal(t, fiber.StatusOK, resp.StatusCode)
-			require.Equal(t, "internal error", aguiFailure(t, body))
+			require.Equal(t, "Internal Server Error", aguiFailure(t, body))
 			require.NotContains(t, body, "kaboom", "the value of the panic stays on the server")
 			require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "panic in the run: kaboom")
 			end := agenttest.Receive(t, ends, "OnRunEnd")
@@ -846,7 +895,7 @@ func Test_APanicInAConcurrentToolCallEndsTheRunWithAnError(t *testing.T) {
 			require.True(t, done, "the stream still ends with [DONE]")
 			require.Equal(t, "the run failed", vercelFailure(t, body))
 			require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "panic in the run: kaboom")
-			require.Equal(t, "internal error", seen, "ErrorMessage is not given the value of the panic")
+			require.Equal(t, "Internal Server Error", seen, "ErrorMessage is not given the value of the panic")
 		})
 
 		t.Run("Run: "+name, func(t *testing.T) {
@@ -966,7 +1015,8 @@ func Test_AnEventThatCannotBeSentWhileToolsRunConcurrently(t *testing.T) {
 			t.Parallel()
 			closed := make(chan error, 1)
 			handler := pydanticai.AGUI(agent, pydanticai.AGUIConfig[struct{}]{
-				OnClose: func(_ struct{}, err error) { closed <- err },
+				ErrorMessage: tellError,
+				OnClose:      func(_ struct{}, err error) { closed <- err },
 			})
 
 			resp, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
@@ -979,7 +1029,8 @@ func Test_AnEventThatCannotBeSentWhileToolsRunConcurrently(t *testing.T) {
 			t.Parallel()
 			closed := make(chan error, 1)
 			handler := pydanticai.Vercel(agent, pydanticai.VercelConfig[struct{}]{
-				OnClose: func(_ struct{}, err error) { closed <- err },
+				ErrorMessage: tellError,
+				OnClose:      func(_ struct{}, err error) { closed <- err },
 			})
 
 			resp, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
@@ -1006,7 +1057,8 @@ func Test_AnAdapterThatStopsEarlyWhileAToolEmitsLater(t *testing.T) {
 	})
 	closed := make(chan error, 1)
 	handler := pydanticai.AGUI(agent, pydanticai.AGUIConfig[struct{}]{
-		OnClose: func(_ struct{}, err error) { closed <- err },
+		ErrorMessage: tellError,
+		OnClose:      func(_ struct{}, err error) { closed <- err },
 	})
 
 	_, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
@@ -1036,7 +1088,8 @@ func Test_AnAdapterThatStopsEarlyWhileToolsEmitManyEventsLater(t *testing.T) {
 	}
 	closed := make(chan error, 1)
 	handler := pydanticai.AGUI(agent, pydanticai.AGUIConfig[struct{}]{
-		OnClose: func(_ struct{}, err error) { closed <- err },
+		ErrorMessage: tellError,
+		OnClose:      func(_ struct{}, err error) { closed <- err },
 	})
 
 	_, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
@@ -1072,7 +1125,8 @@ func Test_ARunStopsWhenItsStreamFailed(t *testing.T) {
 	})
 	closed := make(chan error, 1)
 	handler := pydanticai.AGUI(agent, pydanticai.AGUIConfig[struct{}]{
-		OnClose: func(_ struct{}, err error) { closed <- err },
+		ErrorMessage: tellError,
+		OnClose:      func(_ struct{}, err error) { closed <- err },
 	})
 
 	_, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
@@ -1114,7 +1168,7 @@ func Test_APanicWhileHandlingAToolResultEndsTheRunWithAnError(t *testing.T) {
 
 			resp, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
 			require.Equal(t, fiber.StatusOK, resp.StatusCode)
-			require.Equal(t, "internal error", aguiFailure(t, body))
+			require.Equal(t, "Internal Server Error", aguiFailure(t, body))
 			require.NotContains(t, body, "bug in MarshalJSON", "the value of the panic stays on the server")
 			require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "panic in the run: bug in MarshalJSON")
 		})
@@ -1127,7 +1181,7 @@ func Test_APanicWhileHandlingAToolResultEndsTheRunWithAnError(t *testing.T) {
 
 			resp, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
 			require.Equal(t, fiber.StatusOK, resp.StatusCode)
-			require.Equal(t, "internal error", vercelFailure(t, body))
+			require.Equal(t, "Internal Server Error", vercelFailure(t, body))
 			require.NotContains(t, body, "bug in MarshalJSON", "the value of the panic stays on the server")
 			require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "panic in the run: bug in MarshalJSON")
 		})
@@ -1183,7 +1237,7 @@ func Test_APanicWhileValidatingTheArgumentsOfAToolCallEndsTheRunWithAnError(t *t
 
 				resp, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
 				require.Equal(t, fiber.StatusOK, resp.StatusCode)
-				require.Equal(t, "internal error", aguiFailure(t, body))
+				require.Equal(t, "Internal Server Error", aguiFailure(t, body))
 				require.NotContains(t, body, test.cause, "the value of the panic stays on the server")
 				require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "panic in the run: "+test.cause)
 			})
@@ -1196,7 +1250,7 @@ func Test_APanicWhileValidatingTheArgumentsOfAToolCallEndsTheRunWithAnError(t *t
 
 				resp, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
 				require.Equal(t, fiber.StatusOK, resp.StatusCode)
-				require.Equal(t, "internal error", vercelFailure(t, body))
+				require.Equal(t, "Internal Server Error", vercelFailure(t, body))
 				require.NotContains(t, body, test.cause, "the value of the panic stays on the server")
 				require.ErrorContains(t, agenttest.Receive(t, closed, "OnClose"), "panic in the run: "+test.cause)
 			})
@@ -1227,7 +1281,7 @@ func Test_APanicWhileValidatingTheArgumentsOfAToolCallEndsTheRunWithAnError(t *t
 
 				result := mcpAsk(t, mcpConnect(t, mcpServe(t, app), ""), "Hello")
 				require.True(t, result.IsError)
-				require.Equal(t, "internal error", mcpResultText(t, result))
+				require.Equal(t, "Internal Server Error", mcpResultText(t, result))
 				require.ErrorContains(t, agenttest.Receive(t, ends, "OnRunEnd").err, "panic in the run: "+test.cause)
 			})
 		}
@@ -1318,7 +1372,8 @@ func Test_ACapabilityOfTheApplicationThatEndsTheStreamWhileAToolEmitsLater(t *te
 		RunOptions: func(fiber.Ctx) ([]ai.RunOption, error) {
 			return []ai.RunOption{ai.WithRunCapabilities(&rejectingProcessor{stopped: stopped})}, nil
 		},
-		OnClose: func(_ struct{}, err error) { closed <- err },
+		ErrorMessage: tellError,
+		OnClose:      func(_ struct{}, err error) { closed <- err },
 	})
 
 	_, body := post(t, newApp("/agui", handler), "/agui", aguiBody)

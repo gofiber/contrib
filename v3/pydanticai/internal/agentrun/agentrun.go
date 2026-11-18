@@ -15,11 +15,13 @@ import (
 	"time"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
+	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/log"
 )
 
-// errPanicked is what a client is told when the run panics.
-var errPanicked = errors.New("internal error")
+// errPanicked stands for the panic of a run wherever a client could read it: a
+// plain 500, which says nothing about the panic.
+var errPanicked = fiber.NewError(fiber.StatusInternalServerError)
 
 // errShutdown is why a run was canceled on shutdown. It wraps ai.ErrRunCancelled,
 // which stops the agent.
@@ -262,14 +264,12 @@ func Safely(name string, fn func()) {
 	fn()
 }
 
-// Text is the message that a client receives for err. A panic, or a panic in
-// message, is told as "internal error".
+// Text is the message that a client receives for err: what message returns for
+// it. A panic is given to message as a plain 500, and a panic in message is told
+// as one.
 func Text(message func(error) string, err error) string {
 	if _, panicked := errors.AsType[*panicError](err); panicked {
 		err = errPanicked
-	}
-	if message == nil {
-		return err.Error()
 	}
 	text := errPanicked.Error()
 	Safely("ErrorMessage", func() { text = message(err) })

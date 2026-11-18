@@ -36,7 +36,12 @@ const maxMCPRequestBytes int64 = mcpsdk.DefaultMaxRequestBodyBytes
 
 var mcpToolName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 
-var errMCPDeferred = errors.New("the run ended with deferred tool calls, which a tool call cannot resume")
+// errMCPDeferred has the status of errDeferred: by default a client reads its
+// reason phrase.
+var errMCPDeferred = fiber.NewError(
+	fiber.StatusNotImplemented,
+	"the run ended with deferred tool calls, which a tool call cannot resume",
+)
 
 // MCPConfig defines the config of the MCP handler.
 type MCPConfig[Deps any] struct {
@@ -78,10 +83,12 @@ type MCPConfig[Deps any] struct {
 	Tool        string
 	Description string
 
-	// ErrorMessage returns the text that the client receives for a failed run, to keep
-	// provider details away from it. It also applies to panics and encoding errors.
+	// ErrorMessage returns the text that the client receives for a failed run; it
+	// also applies to panics and encoding errors. The default tells the client what
+	// kind of failure it was and none of its details, such as those of a provider:
+	// return err.Error() to send them.
 	//
-	// Optional. Default: err.Error()
+	// Optional. Default: the reason phrase of StatusCode(err), such as "Bad Gateway"
 	ErrorMessage func(err error) string
 
 	// OnRunEnd is called once the agent has run, with what the run consumed and the
@@ -105,7 +112,7 @@ type MCPConfig[Deps any] struct {
 }
 
 func (cfg *MCPConfig[Deps]) failure(err error) error {
-	return errors.New(agentrun.Text(cfg.ErrorMessage, err))
+	return errors.New(agentrun.Text(messageFor(cfg.ErrorMessage), err))
 }
 
 type mcpAskInput struct {

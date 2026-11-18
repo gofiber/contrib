@@ -40,10 +40,11 @@ type StreamConfig[Deps, A any] struct {
 	RunOptions func(c fiber.Ctx) ([]ai.RunOption, error)
 
 	// ErrorMessage maps the error that failed a run to the message in the error
-	// event of the protocol, to keep provider details out of the browser. It also
-	// applies to panics and encoding errors.
+	// event of the protocol; it also applies to panics and encoding errors. The
+	// default tells the client what kind of failure it was and none of its details,
+	// such as those of a provider: return err.Error() to send them.
 	//
-	// Optional. Default: err.Error()
+	// Optional. Default: the reason phrase of StatusCode(err), such as "Bad Gateway"
 	ErrorMessage func(err error) string
 
 	// OnClose is called once when the stream is over, with the dependencies of the
@@ -188,7 +189,7 @@ func stream[Deps, A, In, E any](
 		func(ctx context.Context, run *agentrun.Run[Deps], options []ai.RunOption, send func([]byte) error) error {
 			return relay(ctx, p, func(ctx context.Context, options ...ai.RunOption) iter.Seq2[E, error] {
 				return runStream(ctx, request.input, request.deps, options...)
-			}, options, run, cfg.ErrorMessage, send)
+			}, options, run, messageFor(cfg.ErrorMessage), send)
 		})
 }
 
@@ -229,7 +230,9 @@ func relay[E, Deps any](
 				p.fail(send, errorMessage, panicErr)
 				break
 			}
-			if errorMessage != nil && p.failed(event) {
+			// The adapters put the text of the error in its event: replace it with what
+			// the client may read.
+			if p.failed(event) {
 				event = p.withMessage(event, agentrun.Text(errorMessage, runErr))
 			}
 		}
