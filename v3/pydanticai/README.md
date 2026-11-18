@@ -661,6 +661,8 @@ app.Post("/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[Deps]{Deps: d
 
 `cors` comes first, because preflight requests carry no credentials. The limiter counts the requests of each user, not of each address. The `timeout` middleware does not stop a stream or a run that has started, and a request that it gave up on before the run started, for example while `Deps` ran, is not run, by any of the handlers. `compress` works, see [Disconnects, timeouts and heartbeats](#disconnects-timeouts-and-heartbeats).
 
+A server that a browser can reach and that does not authenticate its callers, such as one on the machine of a developer or in a private network, also needs the [`hostauthorization`](https://docs.gofiber.io/next/middleware/hostauthorization) middleware in front of `AGUI`, `Vercel` and `Run`. A page of another site can reach such a server by DNS rebinding: the browser then takes the server for the site of the page, so `cors` does not apply, and the page can read the answer. The `Host` header still names the site of the page, which `hostauthorization` turns away. `MCP` checks the `Origin` header itself, see [Serving an agent as an MCP server](#serving-an-agent-as-an-mcp-server).
+
 ## Requests
 
 A request is checked before the agent runs. A rejected request is returned as a `*fiber.Error` and handled by the error handler of the app:
