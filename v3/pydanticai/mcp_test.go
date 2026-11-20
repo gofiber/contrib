@@ -34,8 +34,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The tests in this file are the recipes of the MCP section of the README. They
-// run against an MCP server over Streamable HTTP, like the ones that a
+// The Test_MCP_ tests use MCP servers as tools, in the ways that the MCP section
+// of the README and the MCP guide of pydantic-ai-go, which it links, describe.
+// They run against an MCP server over Streamable HTTP, like the ones that a
 // deployment connects to.
 
 type mcpSearchArgs struct {
