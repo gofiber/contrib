@@ -2,9 +2,11 @@ package agentrun_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -506,6 +508,39 @@ func Test_Execute(t *testing.T) {
 		require.ErrorContains(t, err, "panic in the run: kaboom in explode")
 		require.NotContains(t, err.Error(), "aftershock")
 		require.Contains(t, logs.String(), "kaboom in aftershock", "the second panic is logged all the same")
+	})
+
+	t.Run("a panic that the run survived does not explain a later failure", func(t *testing.T) {
+		// Not parallel: the log is global, and CaptureLog replaces it.
+		logs := agenttest.CaptureLog(t)
+
+		// The agent answers a tool that outlasted its timeout with a retry, whatever
+		// the call returned, so the run goes on after the panic and fails on its own.
+		failure := errors.New("the model failed")
+		var requests atomic.Int32
+		agent := ai.NewAgent[struct{}, string](fakes.NewFunctionModel(func(
+			context.Context, []ai.ModelMessage, ai.ModelRequestParams,
+		) (*ai.ModelResponse, error) {
+			if requests.Add(1) == 1 {
+				return &ai.ModelResponse{Parts: []ai.ResponsePart{
+					ai.ToolCallPart{ToolName: "late", Args: json.RawMessage(`{}`), ToolCallID: "call-1"},
+				}}, nil
+			}
+			return nil, failure
+		}))
+		ai.AddSimpleTool(agent, "late", func(ctx context.Context, _ struct{}) (string, error) {
+			<-ctx.Done()
+			panic("kaboom after the timeout")
+		}, ai.WithToolTimeout(10*time.Millisecond))
+
+		var recorded ends[struct{}]
+		_, err := execute(agent, agentrun.Config[struct{}]{OnRunEnd: recorded.onRunEnd})
+		require.ErrorIs(t, err, failure)
+		require.NotContains(t, err.Error(), "kaboom")
+		require.Contains(t, logs.String(), "kaboom after the timeout", "the panic is logged all the same")
+
+		_, _, got := recorded.only(t)
+		require.Equal(t, err, got)
 	})
 
 	t.Run("a panic in the model goes on after it was reported", func(t *testing.T) {

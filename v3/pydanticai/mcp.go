@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	ai "github.com/Kludex/pydantic-ai-go/ai"
 	"github.com/gofiber/contrib/v3/pydanticai/internal/agentrun"
@@ -231,14 +232,16 @@ func rejectBatch(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // mcpOrigins returns the allowed origins as browsers send them (lower case, no
-// default port). It panics on one that is not an origin.
+// default port). It panics on one that is not an origin, and on one that no
+// browser sends: an empty port, or a host that is not in its ASCII form.
 func mcpOrigins(allowed []string) []string {
 	origins := make([]string, len(allowed))
 	for i, origin := range allowed {
 		parsed, err := url.Parse(origin)
 		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" ||
-			parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
-			panic(fmt.Sprintf("pydanticai: invalid MCP origin %q, want a scheme, a host and a port", origin))
+			parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil ||
+			strings.HasSuffix(parsed.Host, ":") || strings.ContainsFunc(parsed.Host, func(r rune) bool { return r > unicode.MaxASCII }) {
+			panic(fmt.Sprintf("pydanticai: invalid MCP origin %q, want a scheme, a host and an optional port", origin))
 		}
 		host := parsed.Host
 		if port := parsed.Port(); (parsed.Scheme == "http" && port == "80") || (parsed.Scheme == "https" && port == "443") {

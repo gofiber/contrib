@@ -1330,6 +1330,7 @@ func Test_MCPHandler_AllowedOriginsMustBeOrigins(t *testing.T) {
 	for _, origin := range []string{
 		"", "*", "app.example.com", "https://", "ftp://app.example.com", "https://app.example.com/",
 		"https://app.example.com/path", "https://app.example.com?x=1", "https://user@app.example.com",
+		"https://app.example.com:", "https://bücher.example",
 	} {
 		require.Panics(t, func() {
 			pydanticai.MCP(agent, pydanticai.MCPConfig[struct{}]{AllowedOrigins: []string{"https://ok.example", origin}})

@@ -128,7 +128,8 @@ func (r *Run[Deps]) AfterExpiry(fn func()) (stop func() bool) {
 func notStopped() bool { return false }
 
 // Failure returns the error that a run which failed with err reports, and whether
-// a panic of a tool is why: it outranks the error that it caused.
+// a panic of a tool is why: it outranks the error that it caused. A panic that the
+// run went on to the model after is forgotten, see BeforeModelRequest.
 func (r *Run[Deps]) Failure(err error) (final error, panicked bool) {
 	if panicErr := r.panicked.Load(); panicErr != nil && err != nil {
 		return *panicErr, true
@@ -218,6 +219,19 @@ func (c capability[Deps]) WrapToolValidation(
 ) (validated any, err error) {
 	defer Recover(c.failed(&validated, &err))
 	return next(ctx, rawArgs)
+}
+
+// BeforeModelRequest forgets a panic that the run survived. The agent answers a
+// tool that outlasted its timeout with a retry whatever its call returned, and a
+// capability of the application can turn the error of a tool into a result: the
+// run then goes on to the model, and a later failure is not the panic's.
+func (c capability[Deps]) BeforeModelRequest(
+	_ context.Context, _ *ai.RunInfo, request ai.ModelRequestContext,
+) (ai.ModelRequestContext, error) {
+	if c.run.panicked.Load() != nil {
+		c.run.panicked.Store(nil)
+	}
+	return request, nil
 }
 
 // failed returns what Recover reports a panic with: the run keeps the first panic
