@@ -90,183 +90,252 @@ func Test_AGUI_MatchesNetHTTPHandler(t *testing.T) {
 	require.Equal(t, 1, tools, "the tool call should have run")
 }
 
-func Test_AGUI_Deps(t *testing.T) {
+func Test_Stream_Deps(t *testing.T) {
 	t.Parallel()
 
-	handler := pydanticai.AGUI(userAgent(), pydanticai.AGUIConfig[userDeps]{
-		Deps: userFromQuery,
-	})
-	app := newApp("/agui", handler)
+	for _, protocol := range streamProtocols[userDeps]() {
+		t.Run(protocol.name, func(t *testing.T) {
+			t.Parallel()
 
-	for _, user := range []string{"alice", "bob"} {
-		_, body := post(t, app, "/agui?user="+user, aguiBody)
-		require.Equal(t, "user="+user, pydanticaitest.AGUIText(aguiEvents(t, body)))
-	}
-
-	t.Run("zero value without Deps", func(t *testing.T) {
-		t.Parallel()
-		_, body := post(t, newApp("/agui", pydanticai.AGUI(userAgent())), "/agui", aguiBody)
-		require.Equal(t, "user=", pydanticaitest.AGUIText(aguiEvents(t, body)))
-	})
-}
-
-func Test_AGUI_DepsAreNotShared(t *testing.T) {
-	t.Parallel()
-
-	handler := pydanticai.AGUI(userAgent(), pydanticai.AGUIConfig[userDeps]{
-		Deps: userFromQuery,
-	})
-
-	for i, body := range concurrently(t, newApp("/agui", handler), "/agui", aguiBody) {
-		require.Equal(t, fmt.Sprintf("user=user-%d", i), pydanticaitest.AGUIText(aguiEvents(t, body)))
-	}
-}
-
-func Test_AGUI_DepsError(t *testing.T) {
-	t.Parallel()
-
-	model, called := unreachableModel()
-	handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](model), pydanticai.AGUIConfig[struct{}]{
-		Deps: func(fiber.Ctx) (struct{}, error) { return struct{}{}, fiber.ErrUnauthorized },
-	})
-	app := newApp("/agui", handler)
-
-	resp, body := post(t, app, "/agui", aguiBody)
-	require.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
-	require.NotContains(t, resp.Header.Get(fiber.HeaderContentType), "event-stream")
-	require.Equal(t, "Unauthorized", body)
-	require.False(t, called.Load(), "the agent must not run for a rejected request")
-
-	// A caller that is turned away does not get its payload parsed.
-	resp, _ = post(t, app, "/agui", "{")
-	require.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
-}
-
-func Test_AGUI_RunOptions(t *testing.T) {
-	t.Parallel()
-
-	handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](echoModel()), pydanticai.AGUIConfig[struct{}]{
-		RunOptions: func(c fiber.Ctx) ([]ai.RunOption, error) {
-			if c.Query("deny") != "" {
-				return nil, fiber.ErrForbidden
+			app := newApp(protocol.path, protocol.handler(userAgent(), streamConfig[userDeps]{Deps: userFromQuery}))
+			for _, user := range []string{"alice", "bob"} {
+				_, body := post(t, app, protocol.path+"?user="+user, protocol.body)
+				require.Equal(t, "user="+user, protocol.text(t, body))
 			}
-			return []ai.RunOption{ai.WithRunInstructions("from-options")}, nil
-		},
-	})
-	app := newApp("/agui", handler)
+			for i, body := range concurrently(t, app, protocol.path, protocol.body) {
+				require.Equal(t, fmt.Sprintf("user=user-%d", i), protocol.text(t, body))
+			}
 
-	_, body := post(t, app, "/agui", aguiBody)
-	require.Equal(t, "from-options", pydanticaitest.AGUIText(aguiEvents(t, body)))
-
-	resp, _ := post(t, app, "/agui?deny=1", aguiBody)
-	require.Equal(t, fiber.StatusForbidden, resp.StatusCode)
+			t.Run("zero value without Deps", func(t *testing.T) {
+				t.Parallel()
+				app := newApp(protocol.path, protocol.handler(userAgent(), streamConfig[userDeps]{}))
+				_, body := post(t, app, protocol.path, protocol.body)
+				require.Equal(t, "user=", protocol.text(t, body))
+			})
+		})
+	}
 }
 
-func Test_AGUI_PropagatesRequestContext(t *testing.T) {
+func Test_Stream_DepsError(t *testing.T) {
 	t.Parallel()
 
-	app := fiber.New()
-	app.Use(func(c fiber.Ctx) error {
-		c.SetContext(context.WithValue(c.Context(), ctxKey{}, "trace-1"))
-		return c.Next()
-	})
-	app.Post("/agui", pydanticai.AGUI(ai.NewAgent[struct{}, string](echoModel())))
+	for _, protocol := range streamProtocols[struct{}]() {
+		t.Run(protocol.name, func(t *testing.T) {
+			t.Parallel()
 
-	_, body := post(t, app, "/agui", aguiBody)
-	require.Equal(t, "|trace-1", pydanticaitest.AGUIText(aguiEvents(t, body)))
+			model, called := unreachableModel()
+			app := newApp(protocol.path, protocol.handler(ai.NewAgent[struct{}, string](model), streamConfig[struct{}]{
+				Deps: func(fiber.Ctx) (struct{}, error) { return struct{}{}, fiber.ErrUnauthorized },
+			}))
+
+			resp, body := post(t, app, protocol.path, protocol.body)
+			require.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
+			require.NotContains(t, resp.Header.Get(fiber.HeaderContentType), "event-stream")
+			require.Empty(t, resp.Header.Get("x-vercel-ai-ui-message-stream"))
+			require.Equal(t, "Unauthorized", body)
+			require.False(t, called.Load(), "the agent must not run for a rejected request")
+
+			// A caller that is turned away does not get its payload parsed.
+			resp, _ = post(t, app, protocol.path, "{")
+			require.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
+		})
+	}
 }
 
-func Test_AGUI_AgentError(t *testing.T) {
+func Test_Stream_RunOptionsAndContext(t *testing.T) {
+	t.Parallel()
+
+	for _, protocol := range streamProtocols[struct{}]() {
+		t.Run(protocol.name, func(t *testing.T) {
+			t.Parallel()
+
+			app := fiber.New()
+			app.Use(func(c fiber.Ctx) error {
+				c.SetContext(context.WithValue(c.Context(), ctxKey{}, "trace-1"))
+				return c.Next()
+			})
+			app.Post(protocol.path, protocol.handler(ai.NewAgent[struct{}, string](echoModel()), streamConfig[struct{}]{
+				RunOptions: func(c fiber.Ctx) ([]ai.RunOption, error) {
+					if c.Query("deny") != "" {
+						return nil, fiber.ErrForbidden
+					}
+					return []ai.RunOption{ai.WithRunInstructions("from-options")}, nil
+				},
+			}))
+
+			_, body := post(t, app, protocol.path, protocol.body)
+			require.Equal(t, "from-options|trace-1", protocol.text(t, body))
+
+			resp, _ := post(t, app, protocol.path+"?deny=1", protocol.body)
+			require.Equal(t, fiber.StatusForbidden, resp.StatusCode)
+		})
+	}
+}
+
+func Test_Stream_AgentError(t *testing.T) {
 	t.Parallel()
 
 	secret := errors.New("provider rejected the key sk-secret")
+	agent := ai.NewAgent[struct{}, string](agenttest.Failing(secret))
 
-	t.Run("tells the client the kind of failure, and OnClose the error", func(t *testing.T) {
-		t.Parallel()
+	for _, protocol := range streamProtocols[struct{}]() {
+		t.Run(protocol.name, func(t *testing.T) {
+			t.Parallel()
 
-		closed := make(chan error, 1)
-		handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](agenttest.Failing(secret)), pydanticai.AGUIConfig[struct{}]{
-			OnClose: func(_ struct{}, err error) { closed <- err },
+			t.Run("tells the client the kind of failure, and OnClose the error", func(t *testing.T) {
+				t.Parallel()
+				closed := make(chan error, 1)
+				handler := protocol.handler(agent, streamConfig[struct{}]{OnClose: func(_ struct{}, err error) { closed <- err }})
+
+				resp, body := post(t, newApp(protocol.path, handler), protocol.path, protocol.body)
+				require.Equal(t, fiber.StatusOK, resp.StatusCode, "the status is sent before the run starts")
+				require.Equal(t, "Internal Server Error", protocol.failure(t, body))
+				require.NotContains(t, body, "sk-secret", "the error of the provider must not reach the client")
+				require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), secret)
+			})
+
+			t.Run("ErrorMessage replaces the message", func(t *testing.T) {
+				t.Parallel()
+				closed := make(chan error, 1)
+				handler := protocol.handler(agent, streamConfig[struct{}]{
+					ErrorMessage: func(error) string { return "the model failed" },
+					OnClose:      func(_ struct{}, err error) { closed <- err },
+				})
+
+				_, body := post(t, newApp(protocol.path, handler), protocol.path, protocol.body)
+				require.Equal(t, "the model failed", protocol.failure(t, body))
+				require.NotContains(t, body, "sk-secret")
+				require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), secret, "OnClose still receives the original error")
+			})
+
+			t.Run("ErrorMessage can send the error itself", func(t *testing.T) {
+				t.Parallel()
+				handler := protocol.handler(agent, streamConfig[struct{}]{ErrorMessage: tellError})
+
+				_, body := post(t, newApp(protocol.path, handler), protocol.path, protocol.body)
+				require.Contains(t, protocol.failure(t, body), "sk-secret")
+			})
 		})
-
-		resp, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
-		require.Equal(t, fiber.StatusOK, resp.StatusCode, "the status is sent before the run starts")
-		require.Equal(t, "Internal Server Error", aguiFailure(t, body))
-		require.NotContains(t, body, "sk-secret", "the error of the provider must not reach the client")
-		require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), secret)
-	})
-
-	t.Run("ErrorMessage replaces the message", func(t *testing.T) {
-		t.Parallel()
-
-		closed := make(chan error, 1)
-		handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](agenttest.Failing(secret)), pydanticai.AGUIConfig[struct{}]{
-			ErrorMessage: func(error) string { return "the model failed" },
-			OnClose:      func(_ struct{}, err error) { closed <- err },
-		})
-
-		_, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
-		require.Equal(t, "the model failed", aguiFailure(t, body))
-		require.NotContains(t, body, "sk-secret")
-		require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), secret, "OnClose still receives the original error")
-	})
-
-	t.Run("ErrorMessage can send the error itself", func(t *testing.T) {
-		t.Parallel()
-
-		handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](agenttest.Failing(secret)), pydanticai.AGUIConfig[struct{}]{
-			ErrorMessage: tellError,
-		})
-
-		_, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
-		require.Contains(t, aguiFailure(t, body), "sk-secret")
-	})
+	}
 }
 
-func Test_AGUI_EventThatCannotBeEncoded(t *testing.T) {
+func Test_Stream_EventThatCannotBeEncoded(t *testing.T) {
 	t.Parallel()
 
-	t.Run("ends the stream with RUN_ERROR", func(t *testing.T) {
-		t.Parallel()
+	for _, protocol := range streamProtocols[struct{}]() {
+		t.Run(protocol.name, func(t *testing.T) {
+			t.Parallel()
 
-		closed := make(chan error, 1)
-		handler := pydanticai.AGUI(progressAgent(), pydanticai.AGUIConfig[struct{}]{
-			OnClose: func(_ struct{}, err error) { closed <- err },
+			t.Run("ends the stream with an error", func(t *testing.T) {
+				t.Parallel()
+				closed := make(chan error, 1)
+				handler := protocol.handler(progressAgent(), streamConfig[struct{}]{OnClose: func(_ struct{}, err error) { closed <- err }})
+
+				resp, body := post(t, newApp(protocol.path, handler), protocol.path, protocol.body)
+				require.Equal(t, fiber.StatusOK, resp.StatusCode)
+				require.Equal(t, "Internal Server Error", protocol.failure(t, body))
+				err := agenttest.Receive(t, closed, "OnClose")
+				require.ErrorContains(t, err, protocol.encodeError)
+				require.ErrorContains(t, err, "cannot encode the payload")
+			})
+
+			t.Run("ErrorMessage replaces the message", func(t *testing.T) {
+				t.Parallel()
+				handler := protocol.handler(progressAgent(), streamConfig[struct{}]{
+					ErrorMessage: func(error) string { return "the run failed" },
+				})
+
+				_, body := post(t, newApp(protocol.path, handler), protocol.path, protocol.body)
+				require.Equal(t, "the run failed", protocol.failure(t, body))
+			})
 		})
-
-		resp, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
-		require.Equal(t, fiber.StatusOK, resp.StatusCode)
-		require.Equal(t, "Internal Server Error", aguiFailure(t, body))
-		err := agenttest.Receive(t, closed, "OnClose")
-		require.ErrorContains(t, err, "encode AG-UI event")
-		require.ErrorContains(t, err, "cannot encode the payload")
-	})
-
-	t.Run("ErrorMessage replaces the message", func(t *testing.T) {
-		t.Parallel()
-
-		handler := pydanticai.AGUI(progressAgent(), pydanticai.AGUIConfig[struct{}]{
-			ErrorMessage: func(error) string { return "the run failed" },
-		})
-
-		_, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
-		require.Equal(t, "the run failed", aguiFailure(t, body))
-	})
+	}
 }
 
-func Test_AGUI_OnCloseReceivesTheDeps(t *testing.T) {
+func Test_Stream_OnCloseReceivesTheDeps(t *testing.T) {
 	t.Parallel()
 
-	closed := make(chan closeEvent, 1)
-	handler := pydanticai.AGUI(userAgent(), pydanticai.AGUIConfig[userDeps]{
-		Deps:    userFromQuery,
-		OnClose: func(deps userDeps, err error) { closed <- closeEvent{deps: deps, err: err} },
-	})
+	for _, protocol := range streamProtocols[userDeps]() {
+		t.Run(protocol.name, func(t *testing.T) {
+			t.Parallel()
 
-	post(t, newApp("/agui", handler), "/agui?user=alice", aguiBody)
-	event := agenttest.Receive(t, closed, "OnClose")
-	require.NoError(t, event.err)
-	require.Equal(t, userDeps{User: "alice"}, event.deps)
+			closed := make(chan closeEvent, 1)
+			handler := protocol.handler(userAgent(), streamConfig[userDeps]{
+				Deps:    userFromQuery,
+				OnClose: func(deps userDeps, err error) { closed <- closeEvent{deps: deps, err: err} },
+			})
+
+			post(t, newApp(protocol.path, handler), protocol.path+"?user=alice", protocol.body)
+			event := agenttest.Receive(t, closed, "OnClose")
+			require.NoError(t, event.err)
+			require.Equal(t, userDeps{User: "alice"}, event.deps)
+		})
+	}
+}
+
+func Test_Stream_Timeout(t *testing.T) {
+	t.Parallel()
+
+	for _, protocol := range streamProtocols[struct{}]() {
+		t.Run(protocol.name, func(t *testing.T) {
+			t.Parallel()
+
+			model, _, canceled := agenttest.Blocking()
+			closed := make(chan error, 1)
+			handler := protocol.handler(ai.NewAgent[struct{}, string](model), streamConfig[struct{}]{
+				Timeout: 100 * time.Millisecond,
+				OnClose: func(_ struct{}, err error) { closed <- err },
+			})
+
+			resp, body := post(t, newApp(protocol.path, handler), protocol.path, protocol.body)
+			require.Equal(t, fiber.StatusOK, resp.StatusCode)
+			require.Equal(t, protocol.timeoutReason, protocol.canceled(t, body), "the adapter tells a timeout from a cancellation")
+			require.ErrorIs(t, agenttest.Receive(t, canceled, "the cancellation of the model call"), context.DeadlineExceeded)
+			require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), context.DeadlineExceeded)
+		})
+	}
+}
+
+func Test_Stream_Heartbeat(t *testing.T) {
+	t.Parallel()
+
+	for _, protocol := range streamProtocols[struct{}]() {
+		t.Run(protocol.name, func(t *testing.T) {
+			t.Parallel()
+
+			// The model needs longer than the heartbeat interval to answer.
+			config := streamConfig[struct{}]{HeartbeatInterval: 30 * time.Millisecond}
+
+			_, body := post(t, newApp(protocol.path, protocol.handler(slowAgent(), config)), protocol.path, protocol.body)
+			data, heartbeats := parseSSE(body)
+			require.Positive(t, heartbeats, "an idle stream should carry heartbeat comments")
+			require.Equal(t, "done", protocol.text(t, body))
+			require.Len(t, data, protocol.records)
+
+			config.DisableHeartbeat = true
+			_, body = post(t, newApp(protocol.path, protocol.handler(slowAgent(), config)), protocol.path, protocol.body)
+			_, heartbeats = parseSSE(body)
+			require.Zero(t, heartbeats)
+		})
+	}
+}
+
+func Test_Stream_Panics(t *testing.T) {
+	t.Parallel()
+
+	agent := ai.NewAgent[struct{}, string](fakes.NewTestModel())
+	for _, protocol := range streamProtocols[struct{}]() {
+		require.Panics(t, func() { protocol.handler(nil, streamConfig[struct{}]{}) }, protocol.name)
+		require.Panics(t, func() {
+			protocol.handler(agent, streamConfig[struct{}]{Adapter: adapterLimits{MaxRequestBytes: -1}})
+		}, protocol.name)
+	}
+	require.Panics(t, func() {
+		pydanticai.AGUI(agent, pydanticai.AGUIConfig[struct{}]{Adapter: agui.Config{Version: "not-a-version"}})
+	})
+	require.Panics(t, func() {
+		pydanticai.Vercel(agent, pydanticai.VercelConfig[struct{}]{Adapter: vercel.Config{SDKVersion: 4}})
+	})
 }
 
 func Test_AGUI_ToolsSeeTheRequestContextAndItsCancellation(t *testing.T) {
@@ -302,60 +371,6 @@ func Test_AGUI_ToolsSeeTheRequestContextAndItsCancellation(t *testing.T) {
 
 	require.Equal(t, "trace-1", agenttest.Receive(t, seen, "the context value in the tool"))
 	require.ErrorIs(t, agenttest.Receive(t, canceled, "the cancellation of the tool call"), context.Canceled)
-}
-
-func Test_AGUI_Timeout(t *testing.T) {
-	t.Parallel()
-
-	model, _, canceled := agenttest.Blocking()
-	closed := make(chan error, 1)
-	handler := pydanticai.AGUI(ai.NewAgent[struct{}, string](model), pydanticai.AGUIConfig[struct{}]{
-		Timeout: 100 * time.Millisecond,
-		OnClose: func(_ struct{}, err error) { closed <- err },
-	})
-
-	resp, body := post(t, newApp("/agui", handler), "/agui", aguiBody)
-	require.Equal(t, fiber.StatusOK, resp.StatusCode)
-	events := aguiEvents(t, body)
-	last := events[len(events)-1]
-	require.Equal(t, agui.EventRunFinished, last.Type)
-	require.Nil(t, last.Outcome, "a canceled run has no outcome")
-	require.ErrorIs(t, agenttest.Receive(t, canceled, "the cancellation of the model call"), context.DeadlineExceeded)
-	require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), context.DeadlineExceeded)
-}
-
-func Test_AGUI_Heartbeat(t *testing.T) {
-	t.Parallel()
-
-	// The model needs longer than the heartbeat interval to answer.
-	config := pydanticai.AGUIConfig[struct{}]{HeartbeatInterval: 30 * time.Millisecond}
-
-	_, body := post(t, newApp("/agui", pydanticai.AGUI(slowAgent(), config)), "/agui", aguiBody)
-	data, heartbeats := parseSSE(body)
-	require.Positive(t, heartbeats, "an idle stream should carry heartbeat comments")
-	require.Equal(t, "done", pydanticaitest.AGUIText(aguiEvents(t, body)))
-	require.Len(t, data, 5)
-
-	config.DisableHeartbeat = true
-	_, body = post(t, newApp("/agui", pydanticai.AGUI(slowAgent(), config)), "/agui", aguiBody)
-	_, heartbeats = parseSSE(body)
-	require.Zero(t, heartbeats)
-}
-
-func Test_AGUI_Panics(t *testing.T) {
-	t.Parallel()
-
-	require.Panics(t, func() { pydanticai.AGUI[struct{}, string](nil) })
-	require.Panics(t, func() {
-		pydanticai.AGUI(ai.NewAgent[struct{}, string](fakes.NewTestModel()), pydanticai.AGUIConfig[struct{}]{
-			Adapter: agui.Config{MaxRequestBytes: -1},
-		})
-	})
-	require.Panics(t, func() {
-		pydanticai.AGUI(ai.NewAgent[struct{}, string](fakes.NewTestModel()), pydanticai.AGUIConfig[struct{}]{
-			Adapter: agui.Config{Version: "not-a-version"},
-		})
-	})
 }
 
 func Test_AGUI_UsesTheAppErrorHandler(t *testing.T) {
@@ -433,78 +448,6 @@ func Test_Vercel_MatchesNetHTTPHandler(t *testing.T) {
 	require.Contains(t, chunkTypes(got), vercel.ChunkToolOutputAvailable, "the tool call should have run")
 }
 
-func Test_Vercel_Deps(t *testing.T) {
-	t.Parallel()
-
-	handler := pydanticai.Vercel(userAgent(), pydanticai.VercelConfig[userDeps]{
-		Deps: userFromQuery,
-	})
-	app := newApp("/chat", handler)
-
-	for _, user := range []string{"alice", "bob"} {
-		_, body := post(t, app, "/chat?user="+user, vercelBody)
-		chunks, _ := vercelChunks(t, body)
-		require.Equal(t, "user="+user, pydanticaitest.VercelText(chunks))
-	}
-
-	for i, body := range concurrently(t, app, "/chat", vercelBody) {
-		chunks, _ := vercelChunks(t, body)
-		require.Equal(t, fmt.Sprintf("user=user-%d", i), pydanticaitest.VercelText(chunks))
-	}
-
-	t.Run("zero value without Deps", func(t *testing.T) {
-		t.Parallel()
-		_, body := post(t, newApp("/chat", pydanticai.Vercel(userAgent())), "/chat", vercelBody)
-		chunks, _ := vercelChunks(t, body)
-		require.Equal(t, "user=", pydanticaitest.VercelText(chunks))
-	})
-}
-
-func Test_Vercel_DepsError(t *testing.T) {
-	t.Parallel()
-
-	model, called := unreachableModel()
-	handler := pydanticai.Vercel(ai.NewAgent[struct{}, string](model), pydanticai.VercelConfig[struct{}]{
-		Deps: func(fiber.Ctx) (struct{}, error) { return struct{}{}, fiber.ErrUnauthorized },
-	})
-	app := newApp("/chat", handler)
-
-	resp, body := post(t, app, "/chat", vercelBody)
-	require.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
-	require.Empty(t, resp.Header.Get("x-vercel-ai-ui-message-stream"))
-	require.Equal(t, "Unauthorized", body)
-	require.False(t, called.Load(), "the agent must not run for a rejected request")
-
-	// A caller that is turned away does not get its payload parsed.
-	resp, _ = post(t, app, "/chat", "{")
-	require.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
-}
-
-func Test_Vercel_RunOptionsAndContext(t *testing.T) {
-	t.Parallel()
-
-	app := fiber.New()
-	app.Use(func(c fiber.Ctx) error {
-		c.SetContext(context.WithValue(c.Context(), ctxKey{}, "trace-1"))
-		return c.Next()
-	})
-	app.Post("/chat", pydanticai.Vercel(ai.NewAgent[struct{}, string](echoModel()), pydanticai.VercelConfig[struct{}]{
-		RunOptions: func(c fiber.Ctx) ([]ai.RunOption, error) {
-			if c.Query("deny") != "" {
-				return nil, fiber.ErrForbidden
-			}
-			return []ai.RunOption{ai.WithRunInstructions("from-options")}, nil
-		},
-	}))
-
-	_, body := post(t, app, "/chat", vercelBody)
-	chunks, _ := vercelChunks(t, body)
-	require.Equal(t, "from-options|trace-1", pydanticaitest.VercelText(chunks))
-
-	resp, _ := post(t, app, "/chat?deny=1", vercelBody)
-	require.Equal(t, fiber.StatusForbidden, resp.StatusCode)
-}
-
 func Test_Vercel_RequiresAChatID(t *testing.T) {
 	t.Parallel()
 
@@ -529,168 +472,16 @@ func Test_Vercel_RequiresAChatID(t *testing.T) {
 	}
 }
 
-func Test_Vercel_AgentError(t *testing.T) {
-	t.Parallel()
-
-	secret := errors.New("provider rejected the key sk-secret")
-
-	t.Run("tells the client the kind of failure, and OnClose the error", func(t *testing.T) {
-		t.Parallel()
-
-		closed := make(chan error, 1)
-		handler := pydanticai.Vercel(ai.NewAgent[struct{}, string](agenttest.Failing(secret)), pydanticai.VercelConfig[struct{}]{
-			OnClose: func(_ struct{}, err error) { closed <- err },
-		})
-
-		resp, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
-		require.Equal(t, fiber.StatusOK, resp.StatusCode, "the status is sent before the run starts")
-		require.Equal(t, "Internal Server Error", vercelFailure(t, body))
-		require.NotContains(t, body, "sk-secret", "the error of the provider must not reach the client")
-		require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), secret)
-	})
-
-	t.Run("ErrorMessage replaces the message", func(t *testing.T) {
-		t.Parallel()
-
-		closed := make(chan error, 1)
-		handler := pydanticai.Vercel(ai.NewAgent[struct{}, string](agenttest.Failing(secret)), pydanticai.VercelConfig[struct{}]{
-			ErrorMessage: func(error) string { return "the model failed" },
-			OnClose:      func(_ struct{}, err error) { closed <- err },
-		})
-
-		_, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
-		require.Equal(t, "the model failed", vercelFailure(t, body))
-		require.NotContains(t, body, "sk-secret")
-		require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), secret, "OnClose still receives the original error")
-	})
-
-	t.Run("ErrorMessage can send the error itself", func(t *testing.T) {
-		t.Parallel()
-
-		handler := pydanticai.Vercel(ai.NewAgent[struct{}, string](agenttest.Failing(secret)), pydanticai.VercelConfig[struct{}]{
-			ErrorMessage: tellError,
-		})
-
-		_, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
-		require.Contains(t, vercelFailure(t, body), "sk-secret")
-	})
-}
-
-func Test_Vercel_ChunkThatCannotBeEncoded(t *testing.T) {
-	t.Parallel()
-
-	t.Run("ends the stream with an error chunk", func(t *testing.T) {
-		t.Parallel()
-
-		closed := make(chan error, 1)
-		handler := pydanticai.Vercel(progressAgent(), pydanticai.VercelConfig[struct{}]{
-			OnClose: func(_ struct{}, err error) { closed <- err },
-		})
-
-		resp, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
-		require.Equal(t, fiber.StatusOK, resp.StatusCode)
-		_, done := vercelChunks(t, body)
-		require.True(t, done, "the stream still ends with [DONE]")
-		require.Equal(t, "Internal Server Error", vercelFailure(t, body))
-		err := agenttest.Receive(t, closed, "OnClose")
-		require.ErrorContains(t, err, "encode Vercel AI chunk")
-		require.ErrorContains(t, err, "cannot encode the payload")
-	})
-
-	t.Run("ErrorMessage replaces the message", func(t *testing.T) {
-		t.Parallel()
-
-		handler := pydanticai.Vercel(progressAgent(), pydanticai.VercelConfig[struct{}]{
-			ErrorMessage: func(error) string { return "the run failed" },
-		})
-
-		_, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
-		require.Equal(t, "the run failed", vercelFailure(t, body))
-	})
-}
-
-func Test_Vercel_OnCloseReceivesTheDeps(t *testing.T) {
-	t.Parallel()
-
-	closed := make(chan closeEvent, 1)
-	handler := pydanticai.Vercel(userAgent(), pydanticai.VercelConfig[userDeps]{
-		Deps:    userFromQuery,
-		OnClose: func(deps userDeps, err error) { closed <- closeEvent{deps: deps, err: err} },
-	})
-
-	post(t, newApp("/chat", handler), "/chat?user=alice", vercelBody)
-	event := agenttest.Receive(t, closed, "OnClose")
-	require.NoError(t, event.err)
-	require.Equal(t, userDeps{User: "alice"}, event.deps)
-}
-
-func Test_Vercel_Timeout(t *testing.T) {
-	t.Parallel()
-
-	model, _, canceled := agenttest.Blocking()
-	closed := make(chan error, 1)
-	handler := pydanticai.Vercel(ai.NewAgent[struct{}, string](model), pydanticai.VercelConfig[struct{}]{
-		Timeout: 100 * time.Millisecond,
-		OnClose: func(_ struct{}, err error) { closed <- err },
-	})
-
-	resp, body := post(t, newApp("/chat", handler), "/chat", vercelBody)
-	require.Equal(t, fiber.StatusOK, resp.StatusCode)
-	chunks, done := vercelChunks(t, body)
-	require.True(t, done, "a canceled run still ends with [DONE]")
-	last := chunks[len(chunks)-1]
-	require.Equal(t, vercel.ChunkAbort, last.Type)
-	require.Equal(t, "The agent run timed out.", last.Reason, "the adapter tells a timeout from a cancellation")
-	require.ErrorIs(t, agenttest.Receive(t, canceled, "the cancellation of the model call"), context.DeadlineExceeded)
-	require.ErrorIs(t, agenttest.Receive(t, closed, "OnClose"), context.DeadlineExceeded)
-}
-
-func Test_Vercel_Heartbeat(t *testing.T) {
-	t.Parallel()
-
-	config := pydanticai.VercelConfig[struct{}]{HeartbeatInterval: 30 * time.Millisecond}
-
-	_, body := post(t, newApp("/chat", pydanticai.Vercel(slowAgent(), config)), "/chat", vercelBody)
-	_, heartbeats := parseSSE(body)
-	require.Positive(t, heartbeats, "an idle stream should carry heartbeat comments")
-	chunks, done := vercelChunks(t, body)
-	require.True(t, done)
-	require.Equal(t, "done", pydanticaitest.VercelText(chunks))
-
-	config.DisableHeartbeat = true
-	_, body = post(t, newApp("/chat", pydanticai.Vercel(slowAgent(), config)), "/chat", vercelBody)
-	_, heartbeats = parseSSE(body)
-	require.Zero(t, heartbeats)
-}
-
-func Test_Vercel_Panics(t *testing.T) {
-	t.Parallel()
-
-	require.Panics(t, func() { pydanticai.Vercel[struct{}, string](nil) })
-	require.Panics(t, func() {
-		pydanticai.Vercel(ai.NewAgent[struct{}, string](fakes.NewTestModel()), pydanticai.VercelConfig[struct{}]{
-			Adapter: vercel.Config{MaxRequestBytes: -1},
-		})
-	})
-	require.Panics(t, func() {
-		pydanticai.Vercel(ai.NewAgent[struct{}, string](fakes.NewTestModel()), pydanticai.VercelConfig[struct{}]{
-			Adapter: vercel.Config{SDKVersion: 4},
-		})
-	})
-}
-
 // requestCase is a request to a streaming handler and the status that the
 // net/http handlers of pydantic-ai-go answer it with. The Fiber handlers have
 // to answer the same.
 type requestCase struct {
-	name                    string
-	method                  string
-	contentType             string
-	body                    string
-	maxBytes                int64
-	allowedContentTypes     []string
-	disableContentTypeCheck bool
-	status                  int
+	name        string
+	method      string
+	contentType string
+	body        string
+	limits      adapterLimits
+	status      int
 }
 
 // request builds the request of the case.
@@ -725,39 +516,39 @@ func requestCases(valid string) []requestCase {
 		{name: "string", method: post, contentType: json, body: `"text"`, status: fiber.StatusBadRequest},
 		{
 			name: "body at the limit", method: post, contentType: json,
-			body: valid, maxBytes: int64(len(valid)), status: fiber.StatusOK,
+			body: valid, limits: adapterLimits{MaxRequestBytes: int64(len(valid))}, status: fiber.StatusOK,
 		},
 		{
 			name: "body above the limit", method: post, contentType: json,
-			body: valid + " ", maxBytes: int64(len(valid)), status: fiber.StatusRequestEntityTooLarge,
+			body: valid + " ", limits: adapterLimits{MaxRequestBytes: int64(len(valid))}, status: fiber.StatusRequestEntityTooLarge,
 		},
 		{
 			name: "allowed content type", method: post, contentType: "application/x-json",
-			body: valid, allowedContentTypes: []string{"application/x-json"}, status: fiber.StatusOK,
+			body: valid, limits: adapterLimits{AllowedContentTypes: []string{"application/x-json"}}, status: fiber.StatusOK,
 		},
 		{
 			name: "json missing from the allowed content types", method: post, contentType: json,
-			body: valid, allowedContentTypes: []string{"application/x-json"}, status: fiber.StatusUnsupportedMediaType,
+			body: valid, limits: adapterLimits{AllowedContentTypes: []string{"application/x-json"}}, status: fiber.StatusUnsupportedMediaType,
 		},
 		{
 			name: "one of several allowed content types", method: post, contentType: "text/plain; charset=utf-8",
-			body: valid, allowedContentTypes: []string{"application/x-json", "text/plain"}, status: fiber.StatusOK,
+			body: valid, limits: adapterLimits{AllowedContentTypes: []string{"application/x-json", "text/plain"}}, status: fiber.StatusOK,
 		},
 		{
 			name: "no content type is allowed", method: post, contentType: json,
-			body: valid, allowedContentTypes: []string{}, status: fiber.StatusUnsupportedMediaType,
+			body: valid, limits: adapterLimits{AllowedContentTypes: []string{}}, status: fiber.StatusUnsupportedMediaType,
 		},
 		{
 			name: "content type check disabled", method: post, contentType: fiber.MIMETextPlain,
-			body: valid, disableContentTypeCheck: true, status: fiber.StatusOK,
+			body: valid, limits: adapterLimits{DisableContentTypeCheck: true}, status: fiber.StatusOK,
 		},
 		{
 			name: "content type check disabled without a content type", method: post,
-			body: valid, disableContentTypeCheck: true, status: fiber.StatusOK,
+			body: valid, limits: adapterLimits{DisableContentTypeCheck: true}, status: fiber.StatusOK,
 		},
 		{
 			name: "content type check disabled keeps the method check", method: fiber.MethodGet,
-			body: valid, disableContentTypeCheck: true, status: fiber.StatusMethodNotAllowed,
+			body: valid, limits: adapterLimits{DisableContentTypeCheck: true}, status: fiber.StatusMethodNotAllowed,
 		},
 	}
 }
@@ -789,44 +580,21 @@ func checkRequests(
 	}
 }
 
-func Test_AGUI_RequestChecksMatchTheNetHTTPHandler(t *testing.T) {
+func Test_Stream_RequestChecksMatchTheNetHTTPHandler(t *testing.T) {
 	t.Parallel()
 
 	agent := ai.NewAgent[struct{}, string](fakes.NewTestModel())
-	config := func(c requestCase) agui.Config {
-		return agui.Config{
-			MaxRequestBytes: c.maxBytes, AllowedContentTypes: c.allowedContentTypes,
-			DisableContentTypeCheck: c.disableContentTypeCheck,
-		}
+	for _, protocol := range streamProtocols[struct{}]() {
+		t.Run(protocol.name, func(t *testing.T) {
+			t.Parallel()
+			checkRequests(t, protocol.body,
+				func(c requestCase) http.Handler { return protocol.reference(agent, c.limits) },
+				func(c requestCase) fiber.Handler {
+					return protocol.handler(agent, streamConfig[struct{}]{Adapter: c.limits})
+				},
+			)
+		})
 	}
-	checkRequests(t, aguiBody,
-		func(c requestCase) http.Handler {
-			return agui.NewAdapter(agent, config(c)).Handler(struct{}{})
-		},
-		func(c requestCase) fiber.Handler {
-			return pydanticai.AGUI(agent, pydanticai.AGUIConfig[struct{}]{Adapter: config(c)})
-		},
-	)
-}
-
-func Test_Vercel_RequestChecksMatchTheNetHTTPHandler(t *testing.T) {
-	t.Parallel()
-
-	agent := ai.NewAgent[struct{}, string](fakes.NewTestModel())
-	config := func(c requestCase) vercel.Config {
-		return vercel.Config{
-			MaxRequestBytes: c.maxBytes, AllowedContentTypes: c.allowedContentTypes,
-			DisableContentTypeCheck: c.disableContentTypeCheck,
-		}
-	}
-	checkRequests(t, vercelBody,
-		func(c requestCase) http.Handler {
-			return vercel.NewAdapter(agent, config(c)).Handler(struct{}{})
-		},
-		func(c requestCase) fiber.Handler {
-			return pydanticai.Vercel(agent, pydanticai.VercelConfig[struct{}]{Adapter: config(c)})
-		},
-	)
 }
 
 // checkEncodedBodies sends bodies in encodings the handler does not decode and
@@ -857,30 +625,23 @@ func checkEncodedBodies(t *testing.T, app *fiber.App, path, body string, resolve
 	require.EqualValues(t, 4, resolved.Load())
 }
 
-func Test_AGUI_RejectsEncodedBodiesBeforeResolvingDeps(t *testing.T) {
+func Test_Stream_RejectsEncodedBodiesBeforeResolvingDeps(t *testing.T) {
 	t.Parallel()
 
-	var resolved atomic.Int32
-	app := newApp("/agui", pydanticai.AGUI(ai.NewAgent[struct{}, string](fakes.NewTestModel()), pydanticai.AGUIConfig[struct{}]{
-		Deps: func(fiber.Ctx) (struct{}, error) {
-			resolved.Add(1)
-			return struct{}{}, nil
-		},
-	}))
-	checkEncodedBodies(t, app, "/agui", aguiBody, &resolved)
-}
+	for _, protocol := range streamProtocols[struct{}]() {
+		t.Run(protocol.name, func(t *testing.T) {
+			t.Parallel()
 
-func Test_Vercel_RejectsEncodedBodiesBeforeResolvingDeps(t *testing.T) {
-	t.Parallel()
-
-	var resolved atomic.Int32
-	app := newApp("/chat", pydanticai.Vercel(ai.NewAgent[struct{}, string](fakes.NewTestModel()), pydanticai.VercelConfig[struct{}]{
-		Deps: func(fiber.Ctx) (struct{}, error) {
-			resolved.Add(1)
-			return struct{}{}, nil
-		},
-	}))
-	checkEncodedBodies(t, app, "/chat", vercelBody, &resolved)
+			var resolved atomic.Int32
+			app := newApp(protocol.path, protocol.handler(ai.NewAgent[struct{}, string](fakes.NewTestModel()), streamConfig[struct{}]{
+				Deps: func(fiber.Ctx) (struct{}, error) {
+					resolved.Add(1)
+					return struct{}{}, nil
+				},
+			}))
+			checkEncodedBodies(t, app, protocol.path, protocol.body, &resolved)
+		})
+	}
 }
 
 // A peer can write the name of a header in lower case, as HTTP/2 does, and an app

@@ -18,6 +18,7 @@ import (
 	"github.com/Kludex/pydantic-ai-go/ai/models/fakes"
 	"github.com/Kludex/pydantic-ai-go/ai/ui/agui"
 	"github.com/Kludex/pydantic-ai-go/ai/ui/vercel"
+	"github.com/gofiber/contrib/v3/pydanticai"
 	"github.com/gofiber/contrib/v3/pydanticai/internal/agenttest"
 	"github.com/gofiber/contrib/v3/pydanticai/pydanticaitest"
 	"github.com/gofiber/fiber/v3"
@@ -321,4 +322,142 @@ func drain(reader *pydanticaitest.Reader) []string {
 		rest = append(rest, data)
 	}
 	return rest
+}
+
+// timeoutCases are values of the Timeout of Run and MCP, and the deadline of the
+// run for each, 0 for none.
+var timeoutCases = []struct {
+	name          string
+	timeout, want time.Duration
+}{
+	{name: "unset is five minutes", want: 5 * time.Minute},
+	{name: "a negative value turns it off", timeout: -time.Second},
+	{name: "a positive value is used as it is", timeout: 30 * time.Second, want: 30 * time.Second},
+}
+
+// adapterLimits are the request limits that the adapter configs of both protocols have.
+type adapterLimits struct {
+	MaxRequestBytes         int64
+	AllowedContentTypes     []string
+	DisableContentTypeCheck bool
+}
+
+func (l adapterLimits) agui() agui.Config {
+	return agui.Config{
+		MaxRequestBytes: l.MaxRequestBytes, AllowedContentTypes: l.AllowedContentTypes,
+		DisableContentTypeCheck: l.DisableContentTypeCheck,
+	}
+}
+
+func (l adapterLimits) vercel() vercel.Config {
+	return vercel.Config{
+		MaxRequestBytes: l.MaxRequestBytes, AllowedContentTypes: l.AllowedContentTypes,
+		DisableContentTypeCheck: l.DisableContentTypeCheck,
+	}
+}
+
+// streamConfig is the config of a streaming handler of either protocol.
+type streamConfig[Deps any] = pydanticai.StreamConfig[Deps, adapterLimits]
+
+// withAdapter turns a streamConfig into the config of a protocol.
+func withAdapter[Deps, A any](c streamConfig[Deps], adapter A) pydanticai.StreamConfig[Deps, A] {
+	return pydanticai.StreamConfig[Deps, A]{
+		Next: c.Next, Deps: c.Deps, RunOptions: c.RunOptions, ErrorMessage: c.ErrorMessage,
+		OnClose: c.OnClose, OnRunEnd: c.OnRunEnd, Adapter: adapter, Timeout: c.Timeout,
+		HeartbeatInterval: c.HeartbeatInterval, DisableHeartbeat: c.DisableHeartbeat,
+		CancelOnShutdown: c.CancelOnShutdown,
+	}
+}
+
+// streamProtocol is the streaming handler of one protocol, and how its stream reads.
+type streamProtocol[Deps any] struct {
+	name, path, body string
+	emptyBody        string // a request that the adapter rejects before the agent runs
+	encodeError      string
+	startRecord      string
+	endRecord        string
+	errorRecord      string
+	uiMessageStream  string // the x-vercel-ai-ui-message-stream header
+	timeoutReason    string
+	records          int // the data records of a run that answers with text
+	handler          func(*ai.Agent[Deps, string], streamConfig[Deps]) fiber.Handler
+	reference        func(*ai.Agent[Deps, string], adapterLimits) http.Handler // the net/http handler of pydantic-ai-go
+	text, failure    func(t *testing.T, body string) string
+	completed        func(t *testing.T, body string)
+	canceled         func(t *testing.T, body string) (reason string)
+}
+
+func streamProtocols[Deps any]() []streamProtocol[Deps] {
+	var deps Deps
+	return []streamProtocol[Deps]{
+		{
+			name: "AG-UI", path: "/agui", body: aguiBody,
+			emptyBody:   `{"threadId":"thread-1","runId":"run-1","messages":[]}`,
+			encodeError: "encode AG-UI event", startRecord: `"type":"RUN_STARTED"`,
+			endRecord: `"type":"RUN_FINISHED"`, errorRecord: `"type":"RUN_ERROR"`, records: 5,
+			handler: func(agent *ai.Agent[Deps, string], c streamConfig[Deps]) fiber.Handler {
+				return pydanticai.AGUI(agent, withAdapter(c, c.Adapter.agui()))
+			},
+			reference: func(agent *ai.Agent[Deps, string], l adapterLimits) http.Handler {
+				return agui.NewAdapter(agent, l.agui()).Handler(deps)
+			},
+			text:    func(t *testing.T, body string) string { return pydanticaitest.AGUIText(aguiEvents(t, body)) },
+			failure: aguiFailure,
+			completed: func(t *testing.T, body string) {
+				outcome := aguiFinish(t, body).Outcome
+				require.NotNil(t, outcome, "the client was told that the run completed")
+				require.Equal(t, "success", outcome.Type)
+			},
+			canceled: func(t *testing.T, body string) string {
+				require.Nil(t, aguiFinish(t, body).Outcome, "a canceled run has no outcome")
+				return ""
+			},
+		},
+		{
+			name: "Vercel", path: "/chat", body: vercelBody,
+			emptyBody:   `{"trigger":"submit-message","id":"chat-1","messages":[]}`,
+			encodeError: "encode Vercel AI chunk", startRecord: `"type":"start"`,
+			endRecord: "[DONE]", errorRecord: `"type":"error"`, records: 8,
+			uiMessageStream: "v1", timeoutReason: "The agent run timed out.",
+			handler: func(agent *ai.Agent[Deps, string], c streamConfig[Deps]) fiber.Handler {
+				return pydanticai.Vercel(agent, withAdapter(c, c.Adapter.vercel()))
+			},
+			reference: func(agent *ai.Agent[Deps, string], l adapterLimits) http.Handler {
+				return vercel.NewAdapter(agent, l.vercel()).Handler(deps)
+			},
+			text: func(t *testing.T, body string) string {
+				chunks, done := vercelChunks(t, body)
+				require.True(t, done, "the stream ends with [DONE]")
+				return pydanticaitest.VercelText(chunks)
+			},
+			failure: vercelFailure,
+			completed: func(t *testing.T, body string) {
+				require.Equal(t, vercel.ChunkFinish, vercelEnd(t, body).Type, "the client was told that the run completed")
+			},
+			canceled: func(t *testing.T, body string) string {
+				end := vercelEnd(t, body)
+				require.Equal(t, vercel.ChunkAbort, end.Type)
+				return end.Reason
+			},
+		},
+	}
+}
+
+// aguiFinish returns the RUN_FINISHED event that ends the stream.
+func aguiFinish(t *testing.T, body string) agui.Event {
+	t.Helper()
+	events := aguiEvents(t, body)
+	require.NotEmpty(t, events)
+	last := events[len(events)-1]
+	require.Equal(t, agui.EventRunFinished, last.Type, body)
+	return last
+}
+
+// vercelEnd returns the chunk that ends the stream, which [DONE] follows.
+func vercelEnd(t *testing.T, body string) vercel.Chunk {
+	t.Helper()
+	chunks, done := vercelChunks(t, body)
+	require.True(t, done, "the stream ends with [DONE]")
+	require.NotEmpty(t, chunks)
+	return chunks[len(chunks)-1]
 }

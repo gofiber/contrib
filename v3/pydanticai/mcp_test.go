@@ -869,11 +869,19 @@ func Test_MCPHandler_ToolsActOnBehalfOfTheUser(t *testing.T) {
 	}))
 	endpoint := mcpServe(t, app)
 
-	for _, name := range []string{"alice", "bob"} {
-		result := mcpAsk(t, mcpConnect(t, endpoint, "Bearer "+name), "Who am I?")
-		require.False(t, result.IsError)
-		require.Equal(t, "user "+name, mcpResultText(t, result), "the tool saw the dependencies of the request")
+	var wg sync.WaitGroup
+	for i := range 16 {
+		name := "user-" + string(rune('a'+i))
+		wg.Go(func() {
+			session := mcpConnect(t, endpoint, "Bearer "+name)
+			for range 3 {
+				result := mcpAsk(t, session, "Who am I?")
+				require.False(t, result.IsError)
+				require.Equal(t, "user "+name, mcpResultText(t, result), "the tool saw the dependencies of the request")
+			}
+		})
 	}
+	wg.Wait()
 }
 
 type traceKey struct{}
@@ -1117,15 +1125,7 @@ func Test_MCPHandler_Timeout(t *testing.T) {
 func Test_MCPHandler_TimeoutDefaults(t *testing.T) {
 	t.Parallel()
 
-	for _, tc := range []struct {
-		name    string
-		timeout time.Duration
-		want    time.Duration // the deadline of the run, 0 for none
-	}{
-		{name: "unset is five minutes", want: 5 * time.Minute},
-		{name: "a negative value turns it off", timeout: -time.Second},
-		{name: "a positive value is used as it is", timeout: 30 * time.Second, want: 30 * time.Second},
-	} {
+	for _, tc := range timeoutCases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -1514,34 +1514,6 @@ func Test_MCPHandler_ShutdownWaitsForARunByDefault(t *testing.T) {
 	got := agenttest.Receive(t, answered, "the answer")
 	require.NoError(t, got.err)
 	require.Equal(t, "late", mcpResultText(t, got.result))
-}
-
-func Test_MCPHandler_Concurrent(t *testing.T) {
-	t.Parallel()
-
-	app := fiber.New()
-	app.Use("/mcp", func(c fiber.Ctx) error {
-		c.Locals("user", strings.TrimPrefix(c.Get("Authorization"), "Bearer "))
-		return c.Next()
-	})
-	app.All("/mcp", pydanticai.MCP(mcpUserAgent(), pydanticai.MCPConfig[user]{
-		Deps: func(c fiber.Ctx) (user, error) { return user{Name: fiber.Locals[string](c, "user")}, nil },
-	}))
-	endpoint := mcpServe(t, app)
-
-	var wg sync.WaitGroup
-	for i := range 16 {
-		name := "user-" + string(rune('a'+i))
-		wg.Go(func() {
-			session := mcpConnect(t, endpoint, "Bearer "+name)
-			for range 3 {
-				result := mcpAsk(t, session, "Who am I?")
-				require.False(t, result.IsError)
-				require.Equal(t, "user "+name, mcpResultText(t, result))
-			}
-		})
-	}
-	wg.Wait()
 }
 
 // An agent can use the server of another agent as a toolset.

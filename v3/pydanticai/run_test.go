@@ -332,15 +332,7 @@ func Test_Run_Timeout(t *testing.T) {
 func Test_Run_TimeoutDefaults(t *testing.T) {
 	t.Parallel()
 
-	for _, tc := range []struct {
-		name    string
-		timeout time.Duration
-		want    time.Duration // the deadline of the run, 0 for none
-	}{
-		{name: "unset is five minutes", want: 5 * time.Minute},
-		{name: "a negative value turns it off", timeout: -time.Second},
-		{name: "a positive value is used as it is", timeout: 30 * time.Second, want: 30 * time.Second},
-	} {
+	for _, tc := range timeoutCases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 

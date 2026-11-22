@@ -53,34 +53,31 @@ func serve(b *testing.B, handler fasthttp.RequestHandler, path, body string) {
 	}
 }
 
-// The benchmarks run a whole request: the admission, the run with a model that
-// streams deltas chunks, and the events written to the response.
-func Benchmark_AGUI(b *testing.B) {
+// benchmarkStream runs a whole request through a streaming handler: the admission,
+// the run with a model that streams deltas chunks, and the events written to the
+// response.
+func benchmarkStream[Config any](
+	b *testing.B, path, body string, handler func(*ai.Agent[struct{}, string], ...Config) fiber.Handler,
+) {
 	for _, deltas := range []int{1, 100} {
 		b.Run(fmt.Sprintf("%d deltas", deltas), func(b *testing.B) {
 			app := fiber.New()
-			app.Post("/agui", pydanticai.AGUI(ai.NewAgent[struct{}, string](streamingModel{deltas})))
-			handler := app.Handler()
+			app.Post(path, handler(ai.NewAgent[struct{}, string](streamingModel{deltas})))
+			serveRequest := app.Handler()
 			b.ReportAllocs()
 			for b.Loop() {
-				serve(b, handler, "/agui", aguiBody)
+				serve(b, serveRequest, path, body)
 			}
 		})
 	}
 }
 
+func Benchmark_AGUI(b *testing.B) {
+	benchmarkStream(b, "/agui", aguiBody, pydanticai.AGUI[struct{}, string])
+}
+
 func Benchmark_Vercel(b *testing.B) {
-	for _, deltas := range []int{1, 100} {
-		b.Run(fmt.Sprintf("%d deltas", deltas), func(b *testing.B) {
-			app := fiber.New()
-			app.Post("/chat", pydanticai.Vercel(ai.NewAgent[struct{}, string](streamingModel{deltas})))
-			handler := app.Handler()
-			b.ReportAllocs()
-			for b.Loop() {
-				serve(b, handler, "/chat", vercelBody)
-			}
-		})
-	}
+	benchmarkStream(b, "/chat", vercelBody, pydanticai.Vercel[struct{}, string])
 }
 
 func Benchmark_Run(b *testing.B) {
