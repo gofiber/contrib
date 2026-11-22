@@ -909,6 +909,17 @@ func TestUpgradeErrorWithoutStatus(t *testing.T) {
 	assert.ErrorIs(t, err, reason)
 	var fe *fiber.Error
 	assert.False(t, errors.As(err, &fe))
+
+	// With neither a status nor a reason there is nothing to unwrap, and no
+	// nil entry in the slice.
+	empty := &UpgradeError{}
+	assert.Nil(t, empty.Unwrap())
+	assert.Equal(t, utils.StatusMessage(fiber.StatusInternalServerError), empty.Error())
+
+	// A typed-nil *UpgradeError does not panic.
+	var typedNil *UpgradeError
+	assert.Equal(t, utils.StatusMessage(fiber.StatusInternalServerError), typedNil.Error())
+	assert.Nil(t, typedNil.Unwrap())
 }
 
 func TestConnCaptureAllocatesOnlyWhatTheRequestCarries(t *testing.T) {

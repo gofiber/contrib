@@ -226,25 +226,37 @@ type UpgradeError struct {
 
 // Error returns the status text of the response.
 func (e *UpgradeError) Error() string {
-	if e.status == nil {
+	if e == nil || e.status == nil {
 		// Built without a status, as outside this package: Fiber answers 500.
 		return utils.StatusMessage(fiber.StatusInternalServerError)
 	}
 	return e.status.Error()
 }
 
-// Unwrap returns the *fiber.Error carrying the status, then Err.
+// Unwrap returns the *fiber.Error carrying the status, then Err, leaving out
+// whichever is nil: an []error holding a nil error is invalid.
 func (e *UpgradeError) Unwrap() []error {
-	if e.status == nil {
-		return []error{e.Err}
+	if e == nil {
+		return nil
 	}
-	return []error{e.status, e.Err}
+	errs := make([]error, 0, 2)
+	if e.status != nil {
+		errs = append(errs, e.status)
+	}
+	if e.Err != nil {
+		errs = append(errs, e.Err)
+	}
+	if len(errs) == 0 {
+		return nil
+	}
+	return errs
 }
 
 // The upgrader chose the RFC 6455 status: 403 for a bad Origin, 400 for a
-// malformed handshake, 405 for a non-GET; section 4.4 asks for the supported
-// version on rejection. The *fiber.Error inside the UpgradeError keeps it on
-// the ErrorHandler path; reason is kept for errors.As.
+// malformed handshake, 405 for a non-GET. The 500 for application-set
+// Sec-WebSocket-Extensions is refused before the upgrader runs. Section 4.4
+// asks for the supported version on rejection. The *fiber.Error inside the
+// UpgradeError keeps it on the ErrorHandler path; reason is kept for errors.As.
 func rejectHandshake(c fiber.Ctx, status int, reason error) error {
 	c.Set(fiber.HeaderSecWebSocketVersion, supportedVersion)
 	return &UpgradeError{Err: reason, status: fiber.NewError(status, utils.StatusMessage(status))}

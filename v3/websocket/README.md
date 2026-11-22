@@ -126,6 +126,7 @@ assertion:
 | Origin not in `Origins` (RFC 6455 section 4.2.2)            | `403 Forbidden`           |
 | Missing/blank `Sec-WebSocket-Key`, unsupported version, or only one of the `Upgrade`/`Connection` signals | `400 Bad Request` |
 | Request method is not `GET`                                 | `405 Method Not Allowed`  |
+| Earlier middleware set `Sec-WebSocket-Extensions` on the response (application extensions are unsupported) | `500 Internal Server Error` |
 
 Rejected handshakes also carry `Sec-WebSocket-Version: 13` so a client that asked for
 another version learns which one the server speaks (RFC 6455 section 4.4). Headers set
