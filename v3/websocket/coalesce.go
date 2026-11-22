@@ -3,6 +3,7 @@ package websocket
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -412,12 +413,16 @@ func newUpgrader(cfg *Config, originAllowed func(origin string) bool) websocket.
 	}
 }
 
+// errApplicationExtensions is the reason for the one refusal made before the
+// upgrader runs, in the upgrader's own words for it.
+var errApplicationExtensions = errors.New("websocket: application specific 'Sec-WebSocket-Extensions' headers are unsupported")
+
 func upgrade(c fiber.Ctx, upgrader *websocket.Upgrader, conn *Conn, cfg *Config, handler func(*Conn)) error {
 	fctx := c.RequestCtx()
 	if len(fctx.Response.Header.Peek(fiber.HeaderSecWebSocketExtensions)) > 0 {
 		// Application extensions are unsupported, as on the fasthttp upgrader.
 		fctx.SetStatusCode(fiber.StatusInternalServerError)
-		return rejectHandshake(c, fiber.StatusInternalServerError)
+		return rejectHandshake(c, fiber.StatusInternalServerError, errApplicationExtensions)
 	}
 	cc := newCoalescingConn()
 	w := &upgradeResponseWriter{conn: cc}
@@ -432,7 +437,7 @@ func upgrade(c fiber.Ctx, upgrader *websocket.Upgrader, conn *Conn, cfg *Config,
 			status = fiber.StatusBadRequest
 		}
 		fctx.SetStatusCode(status)
-		return rejectHandshake(c, status)
+		return rejectHandshake(c, status, err)
 	}
 	// The library wrote the 101 into cc. fasthttp sends the response once the
 	// chain has unwound, so mirror those headers onto it.

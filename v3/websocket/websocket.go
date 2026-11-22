@@ -209,12 +209,45 @@ func runHandler(conn *Conn, fconn *websocket.Conn, recoverHandler, handler func(
 	returned = true
 }
 
+// UpgradeError is returned by the handler New builds when a request asks to
+// upgrade but the handshake is refused. It wraps the *fiber.Error carrying the
+// response status and Err, the reason for the refusal, so errors.As finds
+// either. Error returns the status text alone: the response the ErrorHandler
+// builds from it is the one a bare *fiber.Error gets, and the reason reaches
+// only code that asks for it.
+type UpgradeError struct {
+	// Err is why the handshake was refused: the HandshakeError from
+	// github.com/fasthttp/websocket's Upgrader, or this middleware's own reason
+	// for a refusal it makes before the upgrader runs.
+	Err error
+
+	status *fiber.Error
+}
+
+// Error returns the status text of the response.
+func (e *UpgradeError) Error() string {
+	if e.status == nil {
+		// Built without a status, as outside this package: Fiber answers 500.
+		return utils.StatusMessage(fiber.StatusInternalServerError)
+	}
+	return e.status.Error()
+}
+
+// Unwrap returns the *fiber.Error carrying the status, then Err.
+func (e *UpgradeError) Unwrap() []error {
+	if e.status == nil {
+		return []error{e.Err}
+	}
+	return []error{e.status, e.Err}
+}
+
 // The upgrader chose the RFC 6455 status: 403 for a bad Origin, 400 for a
 // malformed handshake, 405 for a non-GET; section 4.4 asks for the supported
-// version on rejection. A *fiber.Error keeps it on the ErrorHandler path.
-func rejectHandshake(c fiber.Ctx, status int) error {
+// version on rejection. The *fiber.Error inside the UpgradeError keeps it on
+// the ErrorHandler path; reason is kept for errors.As.
+func rejectHandshake(c fiber.Ctx, status int, reason error) error {
 	c.Set(fiber.HeaderSecWebSocketVersion, supportedVersion)
-	return fiber.NewError(status, utils.StatusMessage(status))
+	return &UpgradeError{Err: reason, status: fiber.NewError(status, utils.StatusMessage(status))}
 }
 
 // Conn https://godoc.org/github.com/gorilla/websocket#pkg-index
