@@ -141,6 +141,31 @@ func Test_Stream_DepsError(t *testing.T) {
 	}
 }
 
+func Test_Stream_ARejectedRequestGetsNoCallbacks(t *testing.T) {
+	t.Parallel()
+
+	for _, protocol := range streamProtocols[struct{}]() {
+		t.Run(protocol.name, func(t *testing.T) {
+			t.Parallel()
+
+			var resolved, callbacks atomic.Int32
+			app := newApp(protocol.path, protocol.handler(ai.NewAgent[struct{}, string](fakes.NewTestModel()), streamConfig[struct{}]{
+				Deps: func(fiber.Ctx) (struct{}, error) {
+					resolved.Add(1)
+					return struct{}{}, nil
+				},
+				OnRunEnd: func(struct{}, *ai.RunInfo, error) { callbacks.Add(1) },
+				OnClose:  func(struct{}, error) { callbacks.Add(1) },
+			}))
+
+			resp, _ := post(t, app, protocol.path, "{")
+			require.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
+			require.EqualValues(t, 1, resolved.Load(), "Deps ran")
+			require.Zero(t, callbacks.Load(), "neither OnRunEnd nor OnClose")
+		})
+	}
+}
+
 func Test_Stream_RunOptionsAndContext(t *testing.T) {
 	t.Parallel()
 

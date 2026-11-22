@@ -28,7 +28,8 @@ type StreamConfig[Deps, A any] struct {
 	// Deps resolves the dependencies of the agent for one request, for example from
 	// c.Locals. It runs before the body is read, and an error aborts the request
 	// through the Fiber error handler: return fiber.ErrUnauthorized to turn away a
-	// caller. c is valid until the run ends; do not keep it for longer.
+	// caller. c is valid until the run ends; do not keep it for longer. The request
+	// can still be rejected after Deps, for its body for example, without OnClose.
 	//
 	// Optional. Default: the zero value of Deps
 	Deps func(c fiber.Ctx) (Deps, error)
@@ -50,7 +51,9 @@ type StreamConfig[Deps, A any] struct {
 	// OnClose is called once when the stream is over, with the dependencies of the
 	// run. err is nil for a normal end, otherwise the agent error, the context error
 	// of Timeout or the write error of a client that left. The end of the response
-	// waits for it, so keep it short. A panic in it is logged and recovered.
+	// waits for it, so keep it short. A panic in it is logged and recovered. A request
+	// that the handler or a middleware rejects before its stream starts gets neither
+	// OnClose nor OnRunEnd.
 	//
 	// Optional. Default: nil
 	OnClose func(deps Deps, err error)
