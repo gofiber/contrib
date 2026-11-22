@@ -16,7 +16,6 @@ import (
 	"github.com/gofiber/fiber/v3/log"
 )
 
-// ObserveTimeout bounds how long a test waits for something in the background.
 const ObserveTimeout = 5 * time.Second
 
 // Receive waits for a value from channel or fails the test.
@@ -37,7 +36,6 @@ func receive[T any](t testing.TB, channel <-chan T, what string, timeout time.Du
 	return zero
 }
 
-// SyncBuffer is a log destination that can be read while it is written.
 type SyncBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -83,8 +81,7 @@ func Panicking(value any) *fakes.FunctionModel {
 	})
 }
 
-// Blocking is a model that waits until its context is canceled. started is closed
-// when it is called, and canceled receives the cause.
+// Blocking waits for its context: started is closed when it is called, and canceled gets the cause.
 func Blocking() (model *fakes.FunctionModel, started <-chan struct{}, canceled <-chan error) {
 	startedCh := make(chan struct{})
 	canceledCh := make(chan error, 1)

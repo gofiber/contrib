@@ -33,9 +33,7 @@ import (
 )
 
 func Test_AGUI_StringsFromTheRequestSurviveAClientThatLeft(t *testing.T) {
-	// Not parallel: with a single P, fasthttp hands the request of the client
-	// that left to the next client, which is what makes a violation of the
-	// lifetime of the request visible.
+	// Not parallel: with one P, fasthttp hands the request of a client that left to the next.
 	previous := runtime.GOMAXPROCS(1)
 	t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
 
@@ -76,7 +74,6 @@ func Test_AGUI_StringsFromTheRequestSurviveAClientThatLeft(t *testing.T) {
 	app.Get("/other", func(c fiber.Ctx) error { return c.SendString(c.Query("user")) })
 	base := listen(t, app)
 
-	// Client A leaves while its tool works.
 	conn, err := net.Dial("tcp", strings.TrimPrefix(base, "http://"))
 	require.NoError(t, err)
 	_, err = fmt.Fprintf(conn, "POST /agui?user=AAAAAAAAAAAA HTTP/1.1\r\nHost: x\r\n"+
@@ -108,7 +105,7 @@ func Test_AGUI_StringsFromTheRequestSurviveAClientThatLeft(t *testing.T) {
 }
 
 func Test_AGUI_APanicInOnCloseIsRecovered(t *testing.T) {
-	// Not parallel: the log is global, and CaptureLog replaces it.
+	// Not parallel: CaptureLog replaces the global log.
 	logs := agenttest.CaptureLog(t)
 
 	called := make(chan struct{}, 2)
@@ -120,7 +117,6 @@ func Test_AGUI_APanicInOnCloseIsRecovered(t *testing.T) {
 	})
 	app := newApp("/agui", handler)
 
-	// Nothing guards the goroutine that calls OnClose, so the process would be gone.
 	for range 2 {
 		resp, _ := post(t, app, "/agui", aguiBody)
 		require.Equal(t, fiber.StatusOK, resp.StatusCode)
@@ -132,11 +128,10 @@ func Test_AGUI_APanicInOnCloseIsRecovered(t *testing.T) {
 }
 
 func Test_ARequestWithoutCallbacksLogsNothing(t *testing.T) {
-	// Not parallel: the log is global, and CaptureLog replaces it.
+	// Not parallel: CaptureLog replaces the global log.
 	logs := agenttest.CaptureLog(t)
 
-	// A callback that is not configured is not called. The handlers recover the
-	// panic of a nil one and log it, so the log is where a call would show.
+	// A nil callback that was called would panic, which the handlers log.
 	agent := ai.NewAgent[struct{}, string](agenttest.Answering("hello"))
 	for _, test := range []struct {
 		name    string
@@ -156,7 +151,6 @@ func Test_ARequestWithoutCallbacksLogsNothing(t *testing.T) {
 }
 
 // runBehindRecover serves agent with Run at /ask behind the recover middleware.
-// ends receives the end of a run, and recovered what the middleware recovered.
 func runBehindRecover(agent *ai.Agent[struct{}, string]) (app *fiber.App, ends chan runEnd, recovered chan any) {
 	ends, recovered = make(chan runEnd, 1), make(chan any, 1)
 	app = fiber.New()
@@ -170,9 +164,7 @@ func runBehindRecover(agent *ai.Agent[struct{}, string]) (app *fiber.App, ends c
 	return app, ends, recovered
 }
 
-// requirePanicFails runs agent, which panics with value, through the handler of
-// protocol: the stream ends with a failure that keeps the value from the client,
-// and the callbacks receive the panic.
+// requirePanicFails runs agent, which panics with value, and expects a failure that hides the value.
 func requirePanicFails(t *testing.T, protocol streamProtocol[struct{}], agent *ai.Agent[struct{}, string], value string) {
 	t.Helper()
 
@@ -200,11 +192,9 @@ func requirePanicFails(t *testing.T, protocol streamProtocol[struct{}], agent *a
 	require.Equal(t, "Internal Server Error", seen.Load(), "ErrorMessage is not given the value of the panic")
 }
 
-// The run recovers a panic in a tool. The model is called outside of any tool
-// call, so the handler recovers its panic.
+// The run recovers a panic in a tool, and the handler one in the model.
 func Test_APanicInTheRunEndsTheStreamWithAnError(t *testing.T) {
-	// Not parallel: the log is global, and CaptureLog replaces it. Neither are the
-	// subtests, as the log is read after them.
+	// Not parallel, nor are the subtests: CaptureLog replaces the global log.
 	logs := agenttest.CaptureLog(t)
 
 	for name, test := range map[string]struct {
@@ -218,7 +208,6 @@ func Test_APanicInTheRunEndsTheStreamWithAnError(t *testing.T) {
 			t.Run(protocol.name+": "+name, func(t *testing.T) { requirePanicFails(t, protocol, test.agent, test.value) })
 		}
 	}
-	// The panic and its stack are in the log, where nothing else would show them.
 	require.Contains(t, logs.String(), "panic in the run: kaboom")
 	require.Contains(t, logs.String(), "panic in the run: model kaboom")
 	require.Contains(t, logs.String(), "goroutine ", "the stack of the panic")
@@ -282,7 +271,6 @@ func Test_AGUI_RunOutlivesAMiddlewareThatCancelsTheRequestContext(t *testing.T) 
 func Test_ARequestThatATimeoutMiddlewareGaveUpOnStartsNoRun(t *testing.T) {
 	t.Parallel()
 
-	// slowDeps outlasts the timeout middleware.
 	slowDeps := func(c fiber.Ctx) (struct{}, error) {
 		<-c.Context().Done()
 		return struct{}{}, nil
@@ -313,8 +301,7 @@ func Test_ARequestThatATimeoutMiddlewareGaveUpOnStartsNoRun(t *testing.T) {
 			},
 		},
 		{
-			// The run of a tool call does not see the cancellation of the request, so only
-			// the check before it starts keeps it from running.
+			// A tool call does not see the cancellation of the request: only the check before the run stops it.
 			name: "MCP", path: "/mcp", body: callMessage,
 			headers: map[string]string{
 				"Accept": "application/json, text/event-stream", "Mcp-Protocol-Version": "2026-07-28",
@@ -338,9 +325,7 @@ func Test_ARequestThatATimeoutMiddlewareGaveUpOnStartsNoRun(t *testing.T) {
 				return err
 			}, timeout.Config{Timeout: 10 * time.Millisecond}))
 
-			// The middleware answers for the handler and fasthttp never writes its
-			// response, so nobody would receive what a run produces, and a stream
-			// would never end.
+			// The middleware answered for the handler, so nobody would receive what a run produces.
 			request := newRequest(fiber.MethodPost, test.path, fiber.MIMEApplicationJSON, test.body)
 			for name, value := range test.headers {
 				request.Header.Set(name, value)
@@ -353,8 +338,6 @@ func Test_ARequestThatATimeoutMiddlewareGaveUpOnStartsNoRun(t *testing.T) {
 	}
 }
 
-// Without an ErrorMessage the client reads what the status of Run tells it: the
-// kind of failure. The error itself goes to the callbacks.
 func Test_AFailedRunTellsTheClientItsKind(t *testing.T) {
 	t.Parallel()
 
@@ -393,13 +376,11 @@ func Test_AFailedRunTellsTheClientItsKind(t *testing.T) {
 }
 
 func Test_APanicInErrorMessageEndsTheStreamWithAnError(t *testing.T) {
-	// Not parallel: the log is global, and CaptureLog replaces it. Neither are the
-	// subtests, as the log is read after them.
+	// Not parallel, nor are the subtests: CaptureLog replaces the global log.
 	logs := agenttest.CaptureLog(t)
 
 	secret := errors.New("provider rejected the key sk-secret")
 	errorMessage := func(error) string { panic("bug in ErrorMessage") }
-	// Each way in which a stream ends with an error, and what OnClose receives for it.
 	tests := map[string]struct {
 		agent  func() *ai.Agent[struct{}, string]
 		closed func(t *testing.T, err error)
@@ -436,7 +417,6 @@ func Test_APanicInErrorMessageEndsTheStreamWithAnError(t *testing.T) {
 	require.Contains(t, logs.String(), "panic in ErrorMessage: bug in ErrorMessage")
 }
 
-// runEnd is what an OnRunEnd callback received.
 type runEnd struct {
 	deps userDeps
 	run  *ai.RunInfo
@@ -452,7 +432,6 @@ func Test_OnRunEnd_StreamingHandlers(t *testing.T) {
 		t.Run(protocol.name, func(t *testing.T) {
 			t.Parallel()
 
-			// run posts body and returns what OnRunEnd received.
 			run := func(t *testing.T, agent *ai.Agent[userDeps, string], body string) runEnd {
 				t.Helper()
 				ends := make(chan runEnd, 1)
@@ -571,7 +550,7 @@ func Test_Run_OnRunEnd(t *testing.T) {
 }
 
 func Test_OnRunEnd_APanicIsRecovered(t *testing.T) {
-	// Not parallel: the log is global, and CaptureLog replaces it.
+	// Not parallel: CaptureLog replaces the global log.
 	logs := agenttest.CaptureLog(t)
 
 	closed := make(chan error, 1)
@@ -585,7 +564,6 @@ func Test_OnRunEnd_APanicIsRecovered(t *testing.T) {
 	require.NoError(t, agenttest.Receive(t, closed, "OnClose"), "the panic in OnRunEnd does not take OnClose with it")
 	require.Contains(t, logs.String(), "panic in OnRunEnd: bug in OnRunEnd")
 
-	// The same for the handler that answers on the goroutine of the request.
 	app := newApp("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](fakes.NewTestModel()), pydanticai.RunConfig[struct{}, string]{
 		OnRunEnd: func(struct{}, *ai.RunInfo, error) { panic("bug in OnRunEnd of Run") },
 	}))
@@ -595,13 +573,11 @@ func Test_OnRunEnd_APanicIsRecovered(t *testing.T) {
 	require.Contains(t, logs.String(), "panic in OnRunEnd: bug in OnRunEnd of Run")
 }
 
-// The agent is the one that stops these runs, before its model is called. They
-// were started all the same, and have a RunID.
+// A capability of the agent fails these runs after they started, before the model is called.
 func Test_OnRunEnd_ARunThatACapabilityOfTheAgentFailed(t *testing.T) {
 	t.Parallel()
 
 	blocked := errors.New("blocked by a capability")
-	// guarded returns an agent whose capability fails every run, and stores its RunID in seen.
 	guarded := func(seen *atomic.Value) *ai.Agent[userDeps, string] {
 		return ai.NewAgent[userDeps, string](fakes.NewTestModel(), ai.WithCapabilities(ai.BeforeRunFunc(
 			func(_ context.Context, run *ai.RunInfo) error {
@@ -646,10 +622,8 @@ func Test_OnRunEnd_ARunThatACapabilityOfTheAgentFailed(t *testing.T) {
 	})
 }
 
-// lingeringModel answers at once, and releases what it holds for the run only
-// once the context of the run is done. While the run closes, nothing but
-// Timeout or a shutdown can end that context, so they come after the result of
-// the run is final.
+// lingeringModel answers at once and holds the run open until its context is done, which
+// only Timeout or a shutdown can end, once the result of the run is final.
 type lingeringModel struct {
 	*fakes.FunctionModel
 	closing chan struct{}
@@ -659,7 +633,6 @@ func newLingeringModel() lingeringModel {
 	return lingeringModel{FunctionModel: agenttest.Answering("done"), closing: make(chan struct{}, 1)}
 }
 
-// OpenModel implements ai.ModelOpener.
 func (m lingeringModel) OpenModel(ctx context.Context) (ai.ModelCloseFunc, error) {
 	return func(context.Context) error {
 		select {
@@ -692,17 +665,13 @@ func Test_ATimeoutAfterTheRunCompletedDoesNotFailIt(t *testing.T) {
 	}
 }
 
-// pydantic-ai-go runs the tool calls of one model response concurrently, each
-// on a goroutine of its own that nothing guards. The tests in this file make
-// sure that what happens on those goroutines cannot end the process.
+// pydantic-ai-go runs the tool calls of one response on goroutines that nothing guards.
 
 func Test_APanicInAConcurrentToolCallEndsTheRunWithAnError(t *testing.T) {
-	// Not parallel: the log is global, and CaptureLog replaces it. Neither are the
-	// subtests, as the log is read after them.
+	// Not parallel, nor are the subtests: CaptureLog replaces the global log.
 	logs := agenttest.CaptureLog(t)
 
-	// "waiting" comes first: the panic cancels it, and its error is the first
-	// error of the calls, which the run reports.
+	// The panic cancels "waiting", whose error comes first, and still outranks it.
 	for _, calls := range [][]string{{"explode", "fine"}, {"fine", "explode"}, {"waiting", "explode"}} {
 		agent := agenttest.ConcurrentAgent(calls...)
 		name := strings.Join(calls, ", ")
@@ -720,8 +689,7 @@ func Test_APanicInAConcurrentToolCallEndsTheRunWithAnError(t *testing.T) {
 			end := agenttest.Receive(t, ends, "OnRunEnd")
 			require.ErrorContains(t, end.err, "panic in the run: kaboom")
 			require.NotNil(t, end.run)
-			// The tool ran on a goroutine that no middleware reaches: Run recovered
-			// the panic and failed the run, so the recover middleware saw nothing.
+			// The tool ran on a goroutine that no middleware reaches, and Run recovered the panic.
 			require.Empty(t, recovered)
 		})
 	}
@@ -729,8 +697,7 @@ func Test_APanicInAConcurrentToolCallEndsTheRunWithAnError(t *testing.T) {
 	require.Contains(t, logs.String(), "goroutine ", "the stack of the panic")
 }
 
-// slowTools adds two tools that ignore their context and return 300 and 600
-// milliseconds after they started, which started reports.
+// slowTools adds two tools that ignore their context and take 300 and 600 milliseconds.
 func slowTools(agent *ai.Agent[struct{}, string], started chan<- struct{}) {
 	for name, duration := range map[string]time.Duration{"first": 300 * time.Millisecond, "second": 600 * time.Millisecond} {
 		ai.AddSimpleTool(agent, name, func(context.Context, struct{}) (string, error) {
@@ -764,14 +731,12 @@ func Test_AClientThatLeavesWhileToolsRunConcurrently(t *testing.T) {
 			agenttest.Receive(t, started, "the second tool call")
 			closeConnection()
 
-			// The tools emit their results after the stream failed, which ended
-			// the process when the handler stopped taking the events of the run.
+			// The tools emit their results after the stream failed, which once ended the process.
 			require.Error(t, agenttest.Receive(t, closed, "OnClose"))
 		})
 	}
 }
 
-// unencodableToolResult is a tool result that JSON cannot encode.
 type unencodableToolResult struct {
 	Value float64 `json:"value"`
 }
@@ -791,8 +756,7 @@ func Test_AnEventThatCannotBeSentWhileToolsRunConcurrently(t *testing.T) {
 		return "ok", rc.Emit(ai.NewCustomEvent("progress", unencodable{}))
 	})
 	slow(progress)
-	// nan returns a result that the AG-UI adapter cannot convert and the Vercel
-	// handler cannot encode.
+	// nan returns a result that neither the AG-UI adapter nor the Vercel handler can encode.
 	nan := ai.NewAgent[struct{}, string](agenttest.ToolCalls("nan", "slow"))
 	ai.AddSimpleTool(nan, "nan", func(context.Context, struct{}) (unencodableToolResult, error) {
 		return unencodableToolResult{Value: math.NaN()}, nil
@@ -819,15 +783,14 @@ func Test_AnEventThatCannotBeSentWhileToolsRunConcurrently(t *testing.T) {
 	}
 }
 
-// The AG-UI adapter stops by itself when it cannot convert a tool result, while
-// a tool that ignores its context goes on and emits an event afterwards. The
-// stream guard keeps that event from reaching the loop that the adapter left.
+// The AG-UI adapter stops when it cannot convert a tool result, and a tool emits later: the
+// stream guard keeps that event from the loop that the adapter left.
 func Test_AnAdapterThatStopsEarlyWhileAToolEmitsLater(t *testing.T) {
 	t.Parallel()
 
 	agent := ai.NewAgent[struct{}, string](agenttest.ToolCalls("nan", "late"))
 	ai.AddSimpleTool(agent, "nan", func(context.Context, struct{}) (unencodableToolResult, error) {
-		return unencodableToolResult{Value: math.NaN()}, nil // the adapter cannot convert it
+		return unencodableToolResult{Value: math.NaN()}, nil
 	})
 	ai.AddTool(agent, "late", func(_ context.Context, rc *ai.RunContext[struct{}], _ struct{}) (string, error) {
 		time.Sleep(300 * time.Millisecond)
@@ -844,14 +807,13 @@ func Test_AnAdapterThatStopsEarlyWhileAToolEmitsLater(t *testing.T) {
 	require.NotContains(t, agenttest.Receive(t, closed, "OnClose").Error(), "panic")
 }
 
-// Two tools emit several events after the adapter stopped: each one that reaches
-// the loop which the adapter left would panic, not only the first.
+// Each event that reaches the loop that the adapter left would panic, not only the first.
 func Test_AnAdapterThatStopsEarlyWhileToolsEmitManyEventsLater(t *testing.T) {
 	t.Parallel()
 
 	agent := ai.NewAgent[struct{}, string](agenttest.ToolCalls("nan", "late1", "late2"))
 	ai.AddSimpleTool(agent, "nan", func(context.Context, struct{}) (unencodableToolResult, error) {
-		return unencodableToolResult{Value: math.NaN()}, nil // the adapter cannot convert it
+		return unencodableToolResult{Value: math.NaN()}, nil
 	})
 	finished := make(chan struct{}, 2)
 	for _, name := range []string{"late1", "late2"} {
@@ -878,8 +840,7 @@ func Test_AnAdapterThatStopsEarlyWhileToolsEmitManyEventsLater(t *testing.T) {
 	agenttest.Receive(t, finished, "the second late tool")
 }
 
-// A run that goes on after its stream failed spends the tokens of a client that is
-// gone, and repeats the side effects of its tools.
+// A run that outlives its stream spends tokens, and repeats the side effects of its tools.
 func Test_ARunStopsWhenItsStreamFailed(t *testing.T) {
 	t.Parallel()
 
@@ -899,7 +860,7 @@ func Test_ARunStopsWhenItsStreamFailed(t *testing.T) {
 	})
 	agent := ai.NewAgent[struct{}, string](model)
 	ai.AddTool(agent, "progress", func(_ context.Context, rc *ai.RunContext[struct{}], _ struct{}) (string, error) {
-		return "ok", rc.Emit(ai.NewCustomEvent("progress", unencodable{})) // no protocol can encode it
+		return "ok", rc.Emit(ai.NewCustomEvent("progress", unencodable{}))
 	})
 	closed := make(chan error, 1)
 	handler := pydanticai.AGUI(agent, pydanticai.AGUIConfig[struct{}]{
@@ -914,19 +875,14 @@ func Test_ARunStopsWhenItsStreamFailed(t *testing.T) {
 		"the run went on after its stream failed")
 }
 
-// panickingResult is a tool result that panics when it is encoded as JSON, as a
-// MarshalJSON with a bug does.
 type panickingResult struct{}
 
 func (panickingResult) MarshalJSON() ([]byte, error) { panic("bug in MarshalJSON") }
 
-// pydantic-ai-go emits the result of a tool on the goroutine of the tool call when
-// the response has more than one call, and the code that handles the event runs
-// there: the adapter and the encoding of the handler. A panic in it must not end
-// the process either.
+// With more than one call, the result of a tool is emitted on the goroutine of its call,
+// where the adapter and the encoding of the handler run.
 func Test_APanicWhileHandlingAToolResultEndsTheRunWithAnError(t *testing.T) {
-	// Not parallel: the log is global, and CaptureLog replaces it. Neither are the
-	// subtests, as the log is read after them.
+	// Not parallel, nor are the subtests: CaptureLog replaces the global log.
 	logs := agenttest.CaptureLog(t)
 
 	// A single call runs on the goroutine of the stream, two on goroutines of their own.
@@ -947,23 +903,16 @@ func Test_APanicWhileHandlingAToolResultEndsTheRunWithAnError(t *testing.T) {
 	require.Contains(t, logs.String(), "goroutine ", "the stack of the panic")
 }
 
-// emptyArgs are the arguments of a tool that takes none.
 type emptyArgs struct{}
 
-// panickingArgs are arguments that panic when they are decoded, as an UnmarshalJSON
-// with a bug does.
 type panickingArgs struct{}
 
 func (*panickingArgs) UnmarshalJSON([]byte) error { panic("bug in UnmarshalJSON") }
 
-// pydantic-ai-go decodes and validates the arguments of a tool call before it calls
-// the tool: outside the wrapper of the call, and when the response has more than one
-// call on the goroutine of the call. A panic in that code, which the arguments that
-// the model chose can reach, must not end the process either, whichever handler
-// runs the agent.
+// The arguments of a tool call, which the model chooses, are decoded and validated outside
+// the wrapper of the call, on its goroutine when the response has more than one call.
 func Test_APanicWhileValidatingTheArgumentsOfAToolCallEndsTheRunWithAnError(t *testing.T) {
-	// Not parallel: the log is global, and CaptureLog replaces it. Neither are the
-	// subtests, as the log is read after them.
+	// Not parallel, nor are the subtests: CaptureLog replaces the global log.
 	logs := agenttest.CaptureLog(t)
 
 	kinds := map[string]struct {
@@ -1040,8 +989,7 @@ func Test_ARunThatAToolCanceledEndsWithoutAnError(t *testing.T) {
 			// The client gets the end of a canceled run, which is not a failure.
 			protocol.canceled(t, body)
 
-			// And so do the callbacks: the guard of the stream cancels the context of
-			// the relay when the adapter stops, which is not why this run ended.
+			// So do the callbacks: the guard cancels the relay when the adapter stops, which is not why the run ended.
 			require.NoError(t, agenttest.Receive(t, closed, "OnClose").err, "a run that a tool canceled ended normally")
 			end := agenttest.Receive(t, ends, "OnRunEnd")
 			require.NoError(t, end.err)
@@ -1052,8 +1000,7 @@ func Test_ARunThatAToolCanceledEndsWithoutAnError(t *testing.T) {
 
 var errRejected = errors.New("rejected by the application")
 
-// rejectingProcessor fails the stream on the first tool result, as a content filter
-// of the application would, and reports that it did.
+// rejectingProcessor fails the stream at the first tool result, as a content filter would.
 type rejectingProcessor struct {
 	stopped chan struct{}
 	once    sync.Once
@@ -1069,11 +1016,9 @@ func (p *rejectingProcessor) ProcessStreamEvent(_ context.Context, _ *ai.RunInfo
 	return event, nil
 }
 
-// A capability that the application adds to a run with RunOptions can end the stream.
-// The guard sits next to the agent, behind it, so that the loop of the agent never
-// sees its consumer stop, whatever comes between them.
+// The guard sits next to the agent, so its loop never sees a consumer that stopped.
 func Test_ACapabilityOfTheApplicationThatEndsTheStreamWhileAToolEmitsLater(t *testing.T) {
-	// Not parallel: a panic goes to the log, which CaptureLog replaces.
+	// Not parallel: a panic would go to the log, which CaptureLog replaces.
 	logs := agenttest.CaptureLog(t)
 
 	stopped, finished := make(chan struct{}), make(chan struct{})
@@ -1172,7 +1117,6 @@ func Test_ShutdownWaitsForARunByDefault(t *testing.T) {
 	default:
 	}
 
-	// The run ends when its client leaves.
 	closeConnection()
 	require.ErrorIs(t, agenttest.Receive(t, canceled, "the cancellation of the model call"), context.Canceled)
 }
@@ -1216,8 +1160,7 @@ func Test_AShutdownAfterTheRunCompletedDoesNotFailIt(t *testing.T) {
 	require.NoError(t, agenttest.Receive(t, closed, "OnClose"))
 }
 
-// A RequestCtx that no fasthttp.Server serves, as tests and benchmarks build
-// it, gets the whole stream, with and without CancelOnShutdown.
+// A RequestCtx that no fasthttp.Server serves, as tests build one, gets the whole stream.
 func Test_ARequestCtxWithoutAServer(t *testing.T) {
 	t.Parallel()
 
@@ -1238,7 +1181,7 @@ func Test_ARequestCtxWithoutAServer(t *testing.T) {
 
 			require.NotPanics(t, func() { app.Handler()(ctx) })
 			require.Equal(t, fiber.StatusOK, ctx.Response.StatusCode())
-			events := aguiEvents(t, string(ctx.Response.Body())) // reads the stream to its end
+			events := aguiEvents(t, string(ctx.Response.Body()))
 			require.Equal(t, agui.EventRunFinished, events[len(events)-1].Type)
 			require.NoError(t, agenttest.Receive(t, closed, "OnClose"))
 		})
@@ -1262,11 +1205,8 @@ func Test_ARequestCtxWithoutAServer(t *testing.T) {
 	}
 }
 
-// The tests in this file talk to a server on a real socket. app.Test hands the
-// whole body over once the handler is done, so it cannot show that events are
-// flushed as they are written or that a closed socket stops the run.
+// app.Test hands the body over once the handler is done, so these tests use a real socket.
 
-// listen serves app on a free local port and returns its base URL.
 func listen(t *testing.T, app *fiber.App) string {
 	t.Helper()
 
@@ -1283,9 +1223,8 @@ func listen(t *testing.T, app *fiber.App) string {
 	return "http://" + ln.Addr().String()
 }
 
-// openStream posts body to url and returns the response, whose body can be read
-// while the server is still working, and a function that closes the connection.
-// prepare changes the request before it is sent.
+// openStream posts body to url and returns the response while the server works, and a
+// function that closes the connection. prepare changes the request before it is sent.
 func openStream(t *testing.T, url, body string, prepare ...func(*http.Request)) (*http.Response, context.CancelFunc) {
 	t.Helper()
 
@@ -1316,7 +1255,6 @@ func Test_AGUI_FlushesEventsWhileTheRunIsStillWorking(t *testing.T) {
 	require.Contains(t, response.TransferEncoding, "chunked")
 	scanner := pydanticaitest.NewReader(response.Body)
 
-	// The start of the run reaches the client while the model has not answered.
 	record, ok := scanner.NextData()
 	require.True(t, ok)
 	require.Contains(t, record, `"type":"RUN_STARTED"`)
@@ -1346,7 +1284,6 @@ func Test_AGUI_StreamsThroughCompress(t *testing.T) {
 	require.NoError(t, err)
 	scanner := pydanticaitest.NewReader(reader)
 
-	// The start of the run gets through the compression while the model has not answered.
 	record, ok := scanner.NextData()
 	require.True(t, ok)
 	require.Contains(t, record, `"type":"RUN_STARTED"`)
@@ -1408,7 +1345,7 @@ func Test_AGUI_ClosedSocketCancelsRunBehindCompress(t *testing.T) {
 	}))
 
 	response, closeConnection := openStream(t, listen(t, app)+"/agui", aguiBody, func(request *http.Request) {
-		request.Header.Set(fiber.HeaderAcceptEncoding, "gzip") // set by hand, so net/http leaves the body encoded
+		request.Header.Set(fiber.HeaderAcceptEncoding, "gzip")
 	})
 	reader, err := gzip.NewReader(response.Body)
 	require.NoError(t, err)
@@ -1423,8 +1360,7 @@ func Test_AGUI_ClosedSocketCancelsRunBehindCompress(t *testing.T) {
 	require.Error(t, agenttest.Receive(t, closed, "OnClose"))
 }
 
-// smallBuffers is a listener whose connections have small send buffers, so that
-// a client that does not read blocks the writes of the server soon.
+// smallBuffers makes the writes to a client that does not read block soon.
 type smallBuffers struct{ net.Listener }
 
 func (l smallBuffers) Accept() (net.Conn, error) {
@@ -1435,8 +1371,7 @@ func (l smallBuffers) Accept() (net.Conn, error) {
 	return conn, err
 }
 
-// postAndStopReading serves app with small socket buffers, and posts body to path
-// on a connection that never reads the response.
+// postAndStopReading posts body to path on a connection that never reads the response.
 func postAndStopReading(t *testing.T, app *fiber.App, path, body string) {
 	t.Helper()
 
@@ -1454,8 +1389,7 @@ func postAndStopReading(t *testing.T, app *fiber.App, path, body string) {
 	require.NoError(t, err)
 }
 
-// talkativeAgent answers with far more than the socket buffers of a client that
-// does not read can hold.
+// talkativeAgent answers with more than the socket buffers of a client can hold.
 func talkativeAgent() *ai.Agent[struct{}, string] {
 	parts := make([]ai.ResponsePart, 400)
 	for i := range parts {
@@ -1479,16 +1413,13 @@ func Test_TimeoutEndsAStreamWhoseClientStoppedReading(t *testing.T) {
 		OnClose:  func(_ struct{}, err error) { closed <- err },
 	}, 100*time.Millisecond)))
 
-	// The run is stuck in a write to the client, where its context does not
-	// reach it. Its connection is closed once the write blocked for the grace.
+	// The run is stuck in a write that its context does not reach, until the grace closes the connection.
 	postAndStopReading(t, app, "/agui", aguiBody)
 	require.Error(t, agenttest.Receive(t, ends, "OnRunEnd"))
 	require.Error(t, agenttest.Receive(t, closed, "OnClose"))
 }
 
-// stallingListener serves connections whose writes block, after the first, until
-// the connection is closed: a client that stopped reading, whatever the size of the
-// socket buffers.
+// stallingListener blocks every write after the first until the connection is closed.
 type stallingListener struct{ net.Listener }
 
 func (l stallingListener) Accept() (net.Conn, error) {
@@ -1519,8 +1450,7 @@ func (c *stallingConn) Close() error {
 	return c.Conn.Close()
 }
 
-// A compressor closes the body of the stream when it has read the stream, while the
-// server is still writing what it compressed to a client that stopped reading.
+// The compressor closes the stream once it has read it, while the server still writes to the client.
 func Test_CompressKeepsTheCutOfAClientThatStoppedReading(t *testing.T) {
 	t.Parallel()
 
@@ -1608,7 +1538,6 @@ func Test_AConnectionServesTheNextRequestAfterAStreamThatTimedOut(t *testing.T) 
 			client := &http.Client{Transport: &http.Transport{}} // asks for gzip, and decodes it
 			t.Cleanup(client.CloseIdleConnections)
 
-			// stream posts a request and returns whether it reused a connection.
 			stream := func() bool {
 				var reused bool
 				trace := &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) { reused = info.Reused }}

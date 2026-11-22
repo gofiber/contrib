@@ -30,34 +30,27 @@ const (
 	vercelBody = `{"trigger":"submit-message","id":"chat-1","messages":[{"id":"user-1","role":"user","parts":[{"type":"text","text":"Hello"}]}]}`
 	runBody    = `{"prompt":"Hello"}`
 
-	// observeTimeout bounds how long a test waits for something to happen in the background.
 	observeTimeout = agenttest.ObserveTimeout
 )
 
-// testConfig is the config of app.Test for the requests that a test does not give
-// one: the default timeout of a second is short for a runner under the race
-// detector, with a request that makes calls of its own to a server.
+// testConfig gives app.Test more than its default second, short for a runner under the race detector.
 var testConfig = fiber.TestConfig{Timeout: 10 * time.Second, FailOnTimeout: true}
 
-// userDeps are the dependencies of the agents that see a per-request user.
 type userDeps struct {
 	User string
 }
 
-// userFromQuery resolves the dependencies from the user query parameter.
 func userFromQuery(c fiber.Ctx) (userDeps, error) {
 	return userDeps{User: c.Query("user")}, nil
 }
 
 type ctxKey struct{}
 
-// closeEvent is what an OnClose callback received.
 type closeEvent struct {
 	deps userDeps
 	err  error
 }
 
-// unencodable is a payload that fails to encode as JSON.
 type unencodable struct{}
 
 func (unencodable) MarshalJSON() ([]byte, error) { return nil, errors.New("cannot encode the payload") }
@@ -71,7 +64,6 @@ func progressAgent() *ai.Agent[struct{}, string] {
 	return agent
 }
 
-// panicAgent has a tool that panics.
 func panicAgent() *ai.Agent[struct{}, string] {
 	agent := ai.NewAgent[struct{}, string](fakes.NewTestModel())
 	ai.AddSimpleTool(agent, "explode", func(context.Context, struct{}) (string, error) {
@@ -80,7 +72,6 @@ func panicAgent() *ai.Agent[struct{}, string] {
 	return agent
 }
 
-// weatherAgent has a tool, so its runs contain the tool call events as well.
 func weatherAgent() *ai.Agent[struct{}, string] {
 	agent := ai.NewAgent[struct{}, string](fakes.NewTestModel())
 	ai.AddSimpleTool(agent, "weather", func(context.Context, struct{}) (map[string]int, error) {
@@ -89,14 +80,11 @@ func weatherAgent() *ai.Agent[struct{}, string] {
 	return agent
 }
 
-// textResponse is a model response that only contains text.
 func textResponse(text string) *ai.ModelResponse {
 	return &ai.ModelResponse{Parts: []ai.ResponsePart{ai.TextPart{Content: text}}}
 }
 
-// echoModel answers with the instructions of the request, which shows what the
-// agent was configured with for this request, and with the value stored under
-// ctxKey in the context of the request.
+// echoModel answers with the instructions of the request and the value under ctxKey in its context.
 func echoModel() *fakes.FunctionModel {
 	return fakes.NewFunctionModel(func(
 		ctx context.Context, messages []ai.ModelMessage, _ ai.ModelRequestParams,
@@ -124,7 +112,6 @@ func userAgent() *ai.Agent[userDeps, string] {
 	return agent
 }
 
-// unreachableModel is a model that must not be called. It reports whether it was.
 func unreachableModel() (model *fakes.FunctionModel, called *atomic.Bool) {
 	called = new(atomic.Bool)
 	model = fakes.NewFunctionModel(func(
@@ -164,13 +151,11 @@ func slowAgent() *ai.Agent[struct{}, string] {
 	}))
 }
 
-// errorLog records the errors that reach the error handler of an app.
 type errorLog struct {
 	mu   sync.Mutex
 	last error
 }
 
-// config is a fiber.Config with the default error handler, wrapped to record the error.
 func (l *errorLog) config() fiber.Config {
 	return fiber.Config{ErrorHandler: func(c fiber.Ctx, err error) error {
 		l.mu.Lock()
@@ -180,21 +165,18 @@ func (l *errorLog) config() fiber.Config {
 	}}
 }
 
-// err returns the error that was recorded last.
 func (l *errorLog) err() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.last
 }
 
-// newApp serves handler for POST requests to path.
 func newApp(path string, handler fiber.Handler, config ...fiber.Config) *fiber.App {
 	app := fiber.New(config...)
 	app.Post(path, handler)
 	return app
 }
 
-// send sends a prepared request to app and returns the response with its body.
 func send(t *testing.T, app *fiber.App, request *http.Request, config ...fiber.TestConfig) (*http.Response, string) {
 	t.Helper()
 	if len(config) == 0 {
@@ -208,7 +190,7 @@ func send(t *testing.T, app *fiber.App, request *http.Request, config ...fiber.T
 	return response, string(content)
 }
 
-// newRequest builds a request. It has no content type when contentType is empty.
+// newRequest builds a request, without a content type when contentType is empty.
 func newRequest(method, target, contentType, body string) *http.Request {
 	request := httptest.NewRequest(method, target, strings.NewReader(body))
 	if contentType != "" {
@@ -217,7 +199,6 @@ func newRequest(method, target, contentType, body string) *http.Request {
 	return request
 }
 
-// do sends a request to app and returns the response with its body.
 func do(
 	t *testing.T, app *fiber.App, method, target, contentType, body string, config ...fiber.TestConfig,
 ) (*http.Response, string) {
@@ -225,14 +206,12 @@ func do(
 	return send(t, app, newRequest(method, target, contentType, body), config...)
 }
 
-// post sends a JSON body to app.
 func post(t *testing.T, app *fiber.App, target, body string) (*http.Response, string) {
 	t.Helper()
 	return do(t, app, fiber.MethodPost, target, fiber.MIMEApplicationJSON, body)
 }
 
-// concurrently posts body to target?user=user-N from 16 goroutines and returns
-// the response bodies by N. It does not touch the *testing.T from the goroutines.
+// concurrently posts as user-N from 16 goroutines and returns the bodies by N, without touching t there.
 func concurrently(t *testing.T, app *fiber.App, target, body string) []string {
 	t.Helper()
 	const requests = 16
@@ -261,8 +240,6 @@ func concurrently(t *testing.T, app *fiber.App, target, body string) []string {
 	return bodies
 }
 
-// parseSSE splits a server-sent events body into the data of its records and
-// the number of heartbeats.
 func parseSSE(body string) (data []string, heartbeats int) {
 	reader := pydanticaitest.NewReader(strings.NewReader(body))
 	for record, ok := reader.Next(); ok; record, ok = reader.Next() {
@@ -275,14 +252,12 @@ func parseSSE(body string) (data []string, heartbeats int) {
 	return data, heartbeats
 }
 
-// aguiEvents decodes the AG-UI events of a response body.
 func aguiEvents(t *testing.T, body string) []agui.Event {
 	t.Helper()
 	return pydanticaitest.AGUIEvents(t, strings.NewReader(body))
 }
 
-// vercelChunks decodes the chunks of a response body and reports whether the
-// stream ended with the [DONE] record.
+// vercelChunks decodes the chunks of a body, and reports whether [DONE] ended it.
 func vercelChunks(t *testing.T, body string) ([]vercel.Chunk, bool) {
 	t.Helper()
 	return pydanticaitest.VercelChunks(t, strings.NewReader(body))
@@ -298,8 +273,7 @@ func aguiFailure(t *testing.T, body string) string {
 	return last.Message
 }
 
-// vercelFailure returns the message of the error chunk that ends the stream,
-// which [DONE] follows.
+// vercelFailure returns the message of the error chunk that ends the stream before [DONE].
 func vercelFailure(t *testing.T, body string) string {
 	t.Helper()
 	chunks, done := vercelChunks(t, body)
@@ -310,12 +284,9 @@ func vercelFailure(t *testing.T, body string) string {
 	return last.ErrorText
 }
 
-// tellError is an ErrorMessage that sends the client the error itself, as an
-// application may do during development. By default a client reads the kind of
-// failure only, so the tests that tell failures apart by their message use it.
+// tellError sends the client the error itself, so that tests can tell failures apart.
 func tellError(err error) string { return err.Error() }
 
-// drain reads the data of the records that remain in the stream.
 func drain(reader *pydanticaitest.Reader) []string {
 	var rest []string
 	for data, ok := reader.NextData(); ok; data, ok = reader.NextData() {
@@ -324,8 +295,7 @@ func drain(reader *pydanticaitest.Reader) []string {
 	return rest
 }
 
-// timeoutCases are values of the Timeout of Run and MCP, and the deadline of the
-// run for each, 0 for none.
+// timeoutCases are Timeout values of Run and MCP, and the deadline of the run, 0 for none.
 var timeoutCases = []struct {
 	name          string
 	timeout, want time.Duration

@@ -28,7 +28,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// withoutTimestamps clears the only field of an event that differs between runs.
 func withoutTimestamps(events []agui.Event) []agui.Event {
 	for i := range events {
 		events[i].Timestamp = 0
@@ -303,7 +302,6 @@ func Test_Stream_Heartbeat(t *testing.T) {
 		t.Run(protocol.name, func(t *testing.T) {
 			t.Parallel()
 
-			// The model needs longer than the heartbeat interval to answer.
 			config := streamConfig[struct{}]{HeartbeatInterval: 30 * time.Millisecond}
 
 			_, body := post(t, newApp(protocol.path, protocol.handler(slowAgent(), config)), protocol.path, protocol.body)
@@ -362,7 +360,6 @@ func Test_AGUI_ToolsSeeTheRequestContextAndItsCancellation(t *testing.T) {
 		HeartbeatInterval: 20 * time.Millisecond,
 	}))
 
-	// The client leaves while the tool is the one that is busy.
 	response, closeConnection := openStream(t, listen(t, app)+"/agui", aguiBody)
 	_, ok := pydanticaitest.NewReader(response.Body).NextData()
 	require.True(t, ok)
@@ -431,7 +428,6 @@ func Test_Vercel_MatchesNetHTTPHandler(t *testing.T) {
 	agent := weatherAgent()
 	config := vercel.Config{ServerMessageID: "message-1", SDKVersion: 6}
 
-	// The handler of pydantic-ai-go is the reference for the wire format.
 	recorder := httptest.NewRecorder()
 	request := newRequest(fiber.MethodPost, "/", fiber.MIMEApplicationJSON, vercelBody)
 	vercel.NewAdapter(agent, config).Handler(struct{}{}).ServeHTTP(recorder, request)
@@ -472,9 +468,7 @@ func Test_Vercel_RequiresAChatID(t *testing.T) {
 	}
 }
 
-// requestCase is a request to a streaming handler and the status that the
-// net/http handlers of pydantic-ai-go answer it with. The Fiber handlers have
-// to answer the same.
+// requestCase is a request, and the status that both the net/http and the Fiber handlers answer.
 type requestCase struct {
 	name        string
 	method      string
@@ -484,13 +478,11 @@ type requestCase struct {
 	status      int
 }
 
-// request builds the request of the case.
 func (c requestCase) request() *http.Request {
 	return newRequest(c.method, "/", c.contentType, c.body)
 }
 
-// requestCases are the requests that the checks in front of a streaming handler
-// tell apart. valid is a complete request of the protocol.
+// requestCases are the requests that the checks tell apart; valid is a complete request.
 func requestCases(valid string) []requestCase {
 	const (
 		post = fiber.MethodPost
@@ -553,8 +545,7 @@ func requestCases(valid string) []requestCase {
 	}
 }
 
-// checkRequests sends the requestCases to the net/http handler of pydantic-ai-go
-// and to the Fiber handler, and expects the same status from both.
+// checkRequests expects the same status from the net/http handler of pydantic-ai-go and the Fiber one.
 func checkRequests(
 	t *testing.T, valid string, reference func(requestCase) http.Handler, handler func(requestCase) fiber.Handler,
 ) {
@@ -597,8 +588,7 @@ func Test_Stream_RequestChecksMatchTheNetHTTPHandler(t *testing.T) {
 	}
 }
 
-// checkEncodedBodies sends bodies in encodings the handler does not decode and
-// expects them to be turned away before the dependencies are resolved.
+// checkEncodedBodies expects encoded bodies to be turned away before Deps runs.
 func checkEncodedBodies(t *testing.T, app *fiber.App, path, body string, resolved *atomic.Int32) {
 	t.Helper()
 
@@ -618,7 +608,6 @@ func checkEncodedBodies(t *testing.T, app *fiber.App, path, body string, resolve
 	require.Equal(t, fiber.StatusUnsupportedMediaType, resp.StatusCode, "identity and gzip on two lines")
 	require.Zero(t, resolved.Load(), "Deps must not run for a body that is not read")
 
-	// The identity encoding is no encoding.
 	for _, encoding := range []string{"identity", "Identity", "IDENTITY", "idENTITy"} {
 		require.Equal(t, fiber.StatusOK, status(encoding), encoding)
 	}
@@ -644,8 +633,7 @@ func Test_Stream_RejectsEncodedBodiesBeforeResolvingDeps(t *testing.T) {
 	}
 }
 
-// A peer can write the name of a header in lower case, as HTTP/2 does, and an app
-// can keep the spelling that it got. The handlers find the header all the same.
+// A peer can write a header name in lower case, as HTTP/2 does, and an app can keep it.
 func Test_RejectsEncodedBodiesWhateverTheSpellingOfTheHeader(t *testing.T) {
 	t.Parallel()
 
@@ -675,13 +663,11 @@ func Test_RejectsEncodedBodiesWhateverTheSpellingOfTheHeader(t *testing.T) {
 			for _, name := range []string{"Content-Encoding", "content-encoding", "CONTENT-ENCODING"} {
 				require.Equal(t, fiber.StatusUnsupportedMediaType, status(http.Header{name: {"gzip"}}), name)
 			}
-			// The encodings can be listed over several lines of the header, in any spelling.
 			require.Equal(t, fiber.StatusUnsupportedMediaType,
 				status(http.Header{"Content-Encoding": {"identity"}, "content-encoding": {"gzip"}}))
 			require.Equal(t, fiber.StatusUnsupportedMediaType,
 				status(http.Header{"content-encoding": {"identity"}, "Content-Encoding": {"gzip"}}))
 
-			// No encoding, however it is spelled, and an empty line, are no encoding.
 			require.Equal(t, fiber.StatusOK, status(http.Header{"content-encoding": {"identity"}}))
 			require.Equal(t, fiber.StatusOK, status(http.Header{"content-encoding": {""}}))
 		})
@@ -719,9 +705,7 @@ func Test_Next(t *testing.T) {
 	}
 }
 
-// statusLine sends request to addr without closing the connection and returns
-// the status line of the answer, which has to arrive although the request is
-// not complete.
+// statusLine sends an incomplete request to addr and returns the status line of the answer.
 func statusLine(t *testing.T, addr, request string) string {
 	t.Helper()
 
@@ -736,12 +720,10 @@ func statusLine(t *testing.T, addr, request string) string {
 	return strings.TrimSpace(line)
 }
 
-// partialBody is how much of an announced body the tests send. fasthttp runs the
-// handler of a streamed body once it has received more than a buffer of it.
+// partialBody is more than the buffer after which fasthttp runs the handler of a streamed body.
 const partialBody = 8000
 
-// streamingApp serves handler with StreamRequestBody, which leaves a body above
-// the BodyLimit unread when the handler runs.
+// streamingApp serves handler with StreamRequestBody: a body above the BodyLimit is unread when it runs.
 func streamingApp(handler fiber.Handler) *fiber.App {
 	return newApp("/agui", handler, fiber.Config{StreamRequestBody: true, BodyLimit: 1 << 10})
 }
@@ -764,8 +746,7 @@ func Test_AGUI_StreamedBodiesAreReadUpToTheLimitOnly(t *testing.T) {
 
 	t.Run("declared length above a limit that the body has not reached", func(t *testing.T) {
 		t.Parallel()
-		// What was sent is below the limit, only the announced length is above it: the
-		// answer must not wait for the rest of a body that the handler will not accept.
+		// Only the announced length is above the limit: the answer must not wait for the rest.
 		large := pydanticai.AGUI(ai.NewAgent[struct{}, string](fakes.NewTestModel()), pydanticai.AGUIConfig[struct{}]{
 			Adapter: agui.Config{MaxRequestBytes: 1 << 20},
 		})
@@ -832,7 +813,6 @@ func Test_AGUI_AStreamedBodyThatDoesNotArriveIsABadRequest(t *testing.T) {
 		},
 	})
 	addr := strings.TrimPrefix(listen(t, app), "http://")
-	// The client announces more of the body than it sends.
 	const request = "POST /agui HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 100000\r\n\r\n"
 
 	tests := []struct {
@@ -889,8 +869,7 @@ func Test_AGUI_ReleasesTheBufferOfLargeBodies(t *testing.T) {
 	require.Zero(t, bodyLength(large))
 }
 
-// The limit is checked against the body plus one byte, which must not wrap
-// around for the largest limit.
+// The limit is checked against the body plus one byte, which must not overflow.
 func Test_MaxRequestBytesOfMaxInt64(t *testing.T) {
 	t.Parallel()
 

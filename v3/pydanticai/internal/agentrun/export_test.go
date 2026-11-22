@@ -1,7 +1,6 @@
 package agentrun
 
-// ErrPanicked and ErrShutdown are the errors of the module, for its tests: no
-// other package needs them.
+// ErrPanicked and ErrShutdown are exported for the tests only.
 var (
 	ErrPanicked = errPanicked
 	ErrShutdown = errShutdown

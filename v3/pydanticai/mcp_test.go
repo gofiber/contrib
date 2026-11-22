@@ -34,10 +34,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The Test_MCP_ tests use MCP servers as tools, in the ways that the MCP section
-// of the README and the MCP guide of pydantic-ai-go, which it links, describe.
-// They run against an MCP server over Streamable HTTP, like the ones that a
-// deployment connects to.
+// The Test_MCP_ tests use MCP servers as tools, over Streamable HTTP as a deployment does.
 
 type mcpSearchArgs struct {
 	Query string `json:"query" jsonschema:"what to look for"`
@@ -57,13 +54,10 @@ type mcpWeatherResult struct {
 
 type mcpRefreshArgs struct{}
 
-// mcpCall is a call of a tool that reached the MCP server.
 type mcpCall struct{ tool, authorization string }
 
-// mcpCatalog is an MCP server with a tool that searches a catalog, an MCP App
-// that shows the weather, and a tool that only the page of that app may call. It
-// records the calls that reach it, and the Authorization header of every HTTP
-// request.
+// mcpCatalog is an MCP server with a search tool, an MCP App that shows the weather, and a tool
+// for that app only. It records the calls and the Authorization header of every request.
 type mcpCatalog struct {
 	URL string
 
@@ -71,8 +65,7 @@ type mcpCatalog struct {
 	calls    []mcpCall
 	requests []string
 
-	// searching reports that a search has started, and search waits for its
-	// context or for release when block is set.
+	// searching reports a search that started; with block, a search waits for release.
 	block     bool
 	searching chan struct{}
 }
@@ -83,7 +76,6 @@ func (c *mcpCatalog) record(tool string, req *mcpsdk.CallToolRequest) {
 	c.calls = append(c.calls, mcpCall{tool: tool, authorization: req.Extra.Header.Get("Authorization")})
 }
 
-// called returns the calls that reached the server, in a stable order.
 func (c *mcpCatalog) called() []mcpCall {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -94,7 +86,6 @@ func (c *mcpCatalog) called() []mcpCall {
 	return calls
 }
 
-// authorizations returns the Authorization header of every HTTP request.
 func (c *mcpCatalog) authorizations() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -154,7 +145,6 @@ func newMCPCatalog(t *testing.T, block ...bool) *mcpCatalog {
 	return catalog
 }
 
-// toolCallNames returns the names of the tools that an AG-UI stream called, sorted.
 func toolCallNames(events []agui.Event) []string {
 	var names []string
 	for _, event := range events {
@@ -258,7 +248,6 @@ func Test_MCP_ToolsActOnBehalfOfTheUser(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Every call carried the token of the user that made the request.
 	var seen []string
 	for _, call := range catalog.called() {
 		if call.tool == "search" {
@@ -274,8 +263,7 @@ func Test_MCP_ToolsActOnBehalfOfTheUser(t *testing.T) {
 	require.Len(t, catalog.authorizations(), before)
 }
 
-// The headers of a toolset are for the server that it was configured with. A
-// server that redirects to another origin does not get them.
+// A server that redirects to another origin does not get the headers of the toolset.
 func Test_MCP_CredentialsStayWithTheServer(t *testing.T) {
 	t.Parallel()
 
@@ -354,8 +342,7 @@ func Test_MCP_ProviderHostedServerWithALocalFallback(t *testing.T) {
 	t.Parallel()
 
 	catalog := newMCPCatalog(t)
-	// A model that cannot run MCP servers itself, like the fakes, gets the tools
-	// through the local client.
+	// A model that cannot run MCP servers itself, like the fakes, gets the tools from the local client.
 	capability := aimcp.NewHTTPServerCapability[struct{}](aimcp.HTTPServerCapabilityConfig{
 		Native: ai.MCPServerTool{
 			ID:                 "catalog",
@@ -398,8 +385,7 @@ func Test_MCP_ServersOfAConfigFile(t *testing.T) {
 	for _, name := range names {
 		require.True(t, strings.HasPrefix(name, "catalog"), "the name of the server prefixes the tools: %s", name)
 	}
-	// Calls that never reach the server leave the stream with their events too: look at
-	// what the server received. The calls run together, in any order.
+	// Calls that never reach the server have events too, so check what it received, in any order.
 	require.ElementsMatch(t, []mcpCall{
 		{tool: "search", authorization: "Bearer from-the-environment"},
 		{tool: "weather", authorization: "Bearer from-the-environment"},
@@ -453,8 +439,7 @@ func Test_MCP_Apps(t *testing.T) {
 	})
 }
 
-// The page of an MCP App cannot reach the MCP server, so the application relays
-// what the page asks for on a session that it keeps.
+// The page of an MCP App cannot reach the server, so the application relays its requests.
 func Test_MCP_RelayForAnApp(t *testing.T) {
 	t.Parallel()
 
@@ -516,7 +501,6 @@ func Test_MCP_RelayForAnApp(t *testing.T) {
 	require.Contains(t, body, "not available to apps")
 }
 
-// A server in memory tests an agent with MCP tools without a network.
 func Test_MCP_ServerInMemory(t *testing.T) {
 	t.Parallel()
 
@@ -547,9 +531,6 @@ func Test_MCP_ServerInMemory(t *testing.T) {
 	require.Equal(t, []string{"search"}, toolCallNames(events))
 }
 
-// The tests talk to the handler as an MCP client does, over a real socket.
-
-// serve serves app on a free local port and returns the URL of the MCP route.
 func mcpServe(t *testing.T, app *fiber.App) string {
 	t.Helper()
 
@@ -560,10 +541,8 @@ func mcpServe(t *testing.T, app *fiber.App) string {
 		served <- app.Listener(ln, fiber.ListenConfig{DisableStartupMessage: true})
 	}()
 	t.Cleanup(func() {
-		// fasthttp counts a connection that has not sent a request as idle only
-		// after 5 seconds. A client that dialed a connection it did not need,
-		// as the HTTP client does when requests overlap, would keep the
-		// shutdown waiting for that long.
+		// fasthttp counts a connection without a request as idle after 5 seconds only, so a
+		// connection that the HTTP client dialed and did not use would delay the shutdown.
 		http.DefaultTransport.(*http.Transport).CloseIdleConnections()
 		require.NoError(t, app.ShutdownWithTimeout(observeTimeout))
 		require.NoError(t, <-served)
@@ -571,7 +550,6 @@ func mcpServe(t *testing.T, app *fiber.App) string {
 	return "http://" + ln.Addr().String() + "/mcp"
 }
 
-// mcpHeader adds the header to every request that the client sends.
 type mcpHeader struct{ name, value string }
 
 func (h mcpHeader) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -580,8 +558,7 @@ func (h mcpHeader) RoundTrip(r *http.Request) (*http.Response, error) {
 	return http.DefaultTransport.RoundTrip(r)
 }
 
-// connect connects an MCP client to the route, with an Authorization header
-// when authorization is not empty.
+// mcpConnect connects a client, with an Authorization header unless authorization is empty.
 func mcpConnect(t *testing.T, endpoint, authorization string, options ...*mcpsdk.ClientOptions) *mcpsdk.ClientSession {
 	t.Helper()
 
@@ -602,7 +579,6 @@ func mcpConnect(t *testing.T, endpoint, authorization string, options ...*mcpsdk
 	return session
 }
 
-// ask calls the tool of the handler with the question.
 func mcpAsk(t *testing.T, session *mcpsdk.ClientSession, question string) *mcpsdk.CallToolResult {
 	t.Helper()
 
@@ -615,7 +591,6 @@ func mcpAsk(t *testing.T, session *mcpsdk.ClientSession, question string) *mcpsd
 	return result
 }
 
-// resultText returns the text of the first content of a result.
 func mcpResultText(t *testing.T, result *mcpsdk.CallToolResult) string {
 	t.Helper()
 
@@ -707,7 +682,6 @@ type listing struct{ Items []string }
 
 func (l listing) MarshalJSON() ([]byte, error) { return json.Marshal(l.Items) }
 
-// unwritable is an output that cannot be encoded.
 type unwritable struct{ Value string }
 
 func (unwritable) MarshalJSON() ([]byte, error) { return nil, errors.New("cannot be encoded") }
@@ -778,8 +752,7 @@ func Test_MCPHandler_Output(t *testing.T) {
 
 type user struct{ Name string }
 
-// userAgent calls a tool that reports the user that the run works for, and
-// answers with what the tool returned.
+// mcpUserAgent answers with what its tool reports of the user of the run.
 func mcpUserAgent() *ai.Agent[user, string] {
 	agent := ai.NewAgent[user, string](fakes.NewFunctionModel(func(
 		_ context.Context, messages []ai.ModelMessage, _ ai.ModelRequestParams,
@@ -907,10 +880,8 @@ func Test_MCPHandler_RequestContextValuesAreAvailableToTools(t *testing.T) {
 	require.Equal(t, "trace-42", seen.Load())
 }
 
-// A tool can keep a goroutine that reads its context after the call was
-// answered. That context must not end in the RequestCtx of fasthttp, which is
-// pooled: the requests that follow write its values while the goroutine reads
-// them. The race detector reports it.
+// A goroutine of a tool can read its context after the call. That context must not end in the
+// pooled RequestCtx, which the requests that follow write: the race detector reports it.
 func Test_MCPHandler_ToolContextOutlivesTheCall(t *testing.T) {
 	t.Parallel()
 
@@ -1120,8 +1091,7 @@ func Test_MCPHandler_Timeout(t *testing.T) {
 	require.ErrorIs(t, agenttest.Receive(t, canceled, "the cancellation of the model call"), context.DeadlineExceeded)
 }
 
-// A client that went away is not noticed, so a run is bounded unless the
-// timeout is turned off.
+// A client that went away is not noticed, so a run is bounded by default.
 func Test_MCPHandler_TimeoutDefaults(t *testing.T) {
 	t.Parallel()
 
@@ -1160,8 +1130,7 @@ func Test_MCPHandler_OnRunEnd(t *testing.T) {
 }
 
 func Test_MCPHandler_Panics_AreErrorsOfTheTool(t *testing.T) {
-	// Not parallel: the log is global, and CaptureLog replaces it. Neither are the
-	// subtests, as the log is read after them.
+	// Not parallel, nor are the subtests: CaptureLog replaces the global log.
 	logs := agenttest.CaptureLog(t)
 
 	boom := func(tools ...string) *ai.Agent[struct{}, string] {
@@ -1213,7 +1182,7 @@ func Test_MCPHandler_Panics_AreErrorsOfTheTool(t *testing.T) {
 }
 
 func Test_MCPHandler_PanicsInCallbacksAreLogged(t *testing.T) {
-	// Not parallel: the log is global, and CaptureLog replaces it.
+	// Not parallel: CaptureLog replaces the global log.
 	logs := agenttest.CaptureLog(t)
 
 	agent := ai.NewAgent[struct{}, string](agenttest.Answering("ok"))
@@ -1226,13 +1195,12 @@ func Test_MCPHandler_PanicsInCallbacksAreLogged(t *testing.T) {
 	require.Contains(t, logs.String(), "panic in OnRunEnd: bug in OnRunEnd")
 }
 
-// A panic while the output is encoded ends the call as well.
 type explosive struct{}
 
 func (explosive) MarshalJSON() ([]byte, error) { panic("kaboom in MarshalJSON") }
 
 func Test_MCPHandler_PanicWhileEncodingTheOutput(t *testing.T) {
-	// Not parallel: the log is global, and CaptureLog replaces it.
+	// Not parallel: CaptureLog replaces the global log.
 	logs := agenttest.CaptureLog(t)
 
 	ends := make(chan error, 1)
@@ -1250,9 +1218,7 @@ func Test_MCPHandler_PanicWhileEncodingTheOutput(t *testing.T) {
 func Test_MCPHandler_Methods(t *testing.T) {
 	t.Parallel()
 
-	// The MCP specification has the endpoint answer 405 to a GET when it offers
-	// no stream. Mounted for POST only, as the documentation does, Fiber answers
-	// it before the handler is reached.
+	// The specification has a GET answered with 405, which Fiber does for a route of POST only.
 	handler := pydanticai.MCP(ai.NewAgent[struct{}, string](agenttest.Answering("ok")))
 	postOnly := fiber.New()
 	postOnly.Post("/mcp", handler)
@@ -1267,11 +1233,8 @@ func Test_MCPHandler_Methods(t *testing.T) {
 	require.Equal(t, fiber.MethodPost, response.Header.Get(fiber.HeaderAllow))
 }
 
-// The MCP specification has a server validate the Origin header and answer an
-// invalid one with 403. That keeps a page of another site, and a page that
-// reaches the server by DNS rebinding and so looks like its own, from calling
-// the tool in the browser of the user. A client that is not a browser sends no
-// Origin.
+// The specification has a server answer an invalid Origin with 403, against pages of other
+// sites and pages that look like its own through DNS rebinding. Other clients send none.
 func Test_MCPHandler_Origin(t *testing.T) {
 	t.Parallel()
 
@@ -1344,8 +1307,7 @@ func Test_MCPHandler_AllowedOriginsMustBeOrigins(t *testing.T) {
 	}
 }
 
-// A client that wants to hear about changes of the tools gets an answer at once.
-// A subscription that stayed open would keep the shutdown of the server waiting.
+// A subscription is answered at once: one that stayed open would hold up the shutdown.
 func Test_MCPHandler_SubscriptionsDoNotKeepRequestsOpen(t *testing.T) {
 	t.Parallel()
 
@@ -1367,10 +1329,8 @@ func Test_MCPHandler_SubscriptionsDoNotKeepRequestsOpen(t *testing.T) {
 	app.All("/mcp", pydanticai.MCP(ai.NewAgent[struct{}, string](agenttest.Answering("ok"))))
 	endpoint := mcpServe(t, app)
 
-	// The response to a subscription ends with its result, because the server
-	// has nothing to tell: post returns when the response is over. Whether the
-	// client of the SDK subscribes depends on its version, which asks for what the
-	// server advertises, so the test sends the requests itself.
+	// The server has nothing to tell, so the response ends with its result. The test subscribes
+	// itself, as whether the client of the SDK does depends on its version.
 	subscribe := func(id int, notifications string) {
 		t.Helper()
 		response, body := mcpPost(t, endpoint, fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"subscriptions/listen","params":{`+
@@ -1384,7 +1344,6 @@ func Test_MCPHandler_SubscriptionsDoNotKeepRequestsOpen(t *testing.T) {
 	subscribe(7, `{"toolsListChanged":true}`)
 	subscribe(8, `{"toolsListChanged":true,"promptsListChanged":true,"resourcesListChanged":true}`)
 
-	// A client of the SDK that has a handler connects and calls the tool.
 	changed := make(chan struct{}, 1)
 	session := mcpConnect(t, endpoint, "", &mcpsdk.ClientOptions{
 		ToolListChangedHandler: func(context.Context, *mcpsdk.ToolListChangedRequest) { changed <- struct{}{} },
@@ -1397,7 +1356,6 @@ func Test_MCPHandler_SubscriptionsDoNotKeepRequestsOpen(t *testing.T) {
 	require.GreaterOrEqual(t, strings.Count(strings.Join(methods, " "), "subscriptions/listen"), 2, "the requests reached the route")
 }
 
-// callAsync calls the tool without waiting for its result.
 func mcpCallAsync(session *mcpsdk.ClientSession, question string) <-chan mcpCallResult {
 	answered := make(chan mcpCallResult, 1)
 	go func() {
@@ -1516,7 +1474,6 @@ func Test_MCPHandler_ShutdownWaitsForARunByDefault(t *testing.T) {
 	require.Equal(t, "late", mcpResultText(t, got.result))
 }
 
-// An agent can use the server of another agent as a toolset.
 func Test_MCPHandler_AnotherAgentUsesTheServer(t *testing.T) {
 	t.Parallel()
 
@@ -1555,7 +1512,6 @@ func Test_MCPHandler_AnotherAgentUsesTheServer(t *testing.T) {
 	require.Equal(t, []string{"Your order shipped yesterday."}, returned)
 }
 
-// send sends one JSON-RPC message to the route as a plain HTTP client does.
 func mcpSend(t *testing.T, method, endpoint, message string, headers map[string]string) (*http.Response, string) {
 	t.Helper()
 
@@ -1576,15 +1532,13 @@ func mcpSend(t *testing.T, method, endpoint, message string, headers map[string]
 	return response, string(body)
 }
 
-// post sends one JSON-RPC message with POST.
 func mcpPost(t *testing.T, endpoint, message string, headers map[string]string) (*http.Response, string) {
 	t.Helper()
 	return mcpSend(t, http.MethodPost, endpoint, message, headers)
 }
 
-// With StreamRequestBody the handler runs while most of a large body is still on
-// the connection, and fasthttp does not apply the BodyLimit. The adaptor reads
-// the whole of it, so the handler reads what the SDK accepts first, and no more.
+// With StreamRequestBody the handler runs before most of a large body arrived, without the
+// BodyLimit: it reads what the SDK accepts, and no more.
 func Test_MCPHandler_StreamedBodiesAreReadUpToTheLimitOnly(t *testing.T) {
 	t.Parallel()
 
@@ -1597,13 +1551,11 @@ func Test_MCPHandler_StreamedBodiesAreReadUpToTheLimitOnly(t *testing.T) {
 		headers  = "POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n" +
 			"Accept: application/json, text/event-stream\r\n" + protocol
 	)
-	// message is a call of the tool, padded with spaces to size bytes. Above the
-	// BodyLimit of the app, fasthttp streams it.
+	// message pads a call of the tool to size bytes. Above the BodyLimit, fasthttp streams it.
 	message := func(size int) string { return callMessage + strings.Repeat(" ", size-len(callMessage)) }
 
 	t.Run("declared length above the limit", func(t *testing.T) {
 		t.Parallel()
-		// Most of the body is announced and never sent: the answer must not wait for it.
 		line := statusLine(t, addr, headers+"Content-Length: 1000000000\r\n\r\n"+strings.Repeat("a", partialBody))
 		require.Contains(t, line, "413")
 	})
@@ -1630,8 +1582,7 @@ func Test_MCPHandler_StreamedBodiesAreReadUpToTheLimitOnly(t *testing.T) {
 
 	t.Run("one byte above the limit", func(t *testing.T) {
 		t.Parallel()
-		// The answer comes before the body is read, and the server closes the connection
-		// that the client is still writing to: read it on the side.
+		// The server answers and closes the connection while the client still writes: read on the side.
 		conn, err := net.Dial("tcp", addr)
 		require.NoError(t, err)
 		defer func() { _ = conn.Close() }()
@@ -1646,14 +1597,12 @@ func Test_MCPHandler_StreamedBodiesAreReadUpToTheLimitOnly(t *testing.T) {
 
 	t.Run("a complete body that fits", func(t *testing.T) {
 		t.Parallel()
-		// With a length...
 		response, body := mcpPost(t, url+"/mcp", message(2<<10), map[string]string{
 			"Mcp-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": "ask",
 		})
 		require.Equal(t, fiber.StatusOK, response.StatusCode, body)
 		require.Contains(t, body, `"text":"Paris."`)
 
-		// ...and without.
 		conn, err := net.Dial("tcp", addr)
 		require.NoError(t, err)
 		defer func() { _ = conn.Close() }()
@@ -1668,7 +1617,6 @@ func Test_MCPHandler_StreamedBodiesAreReadUpToTheLimitOnly(t *testing.T) {
 	})
 }
 
-// The caller is turned away before any of the body is read.
 func Test_MCPHandler_StreamedBodiesWaitForDeps(t *testing.T) {
 	t.Parallel()
 
@@ -1684,9 +1632,8 @@ func Test_MCPHandler_StreamedBodiesWaitForDeps(t *testing.T) {
 	require.Contains(t, line, "401")
 }
 
-// A JSON-RPC batch starts all of its calls at once, behind the one request that a
-// limiter in front of the route counts. The protocol versions since 2025-06-18
-// have no batches, and the SDK takes a request without a version for 2025-03-26.
+// A batch starts all of its calls behind the one request that a limiter counts. Versions since
+// 2025-06-18 have no batches, and the SDK takes a request without a version for 2025-03-26.
 func Test_MCPHandler_RejectsBatches(t *testing.T) {
 	t.Parallel()
 
@@ -1746,8 +1693,7 @@ func Test_MCPHandler_RejectsBatches(t *testing.T) {
 	}
 }
 
-// Every answer is one JSON document, never a stream: the route has no
-// connection to keep open.
+// Every answer is one JSON document: the route has no stream to keep open.
 func Test_MCPHandler_AnswersWithJSON(t *testing.T) {
 	t.Parallel()
 
@@ -1769,9 +1715,7 @@ func Test_MCPHandler_AnswersWithJSON(t *testing.T) {
 	}
 }
 
-// Clients of the protocol versions before 2026-07-28 set a connection up with
-// initialize, and expect a server without sessions to answer every message on
-// its own.
+// Clients before 2026-07-28 set up with initialize, and need every message answered on its own.
 func Test_MCPHandler_ClientsOfEarlierVersions(t *testing.T) {
 	t.Parallel()
 
@@ -1802,9 +1746,8 @@ func Test_MCPHandler_ClientsOfEarlierVersions(t *testing.T) {
 
 type supportDeps struct{ UserID string }
 
-// MCP serves an agent to MCP clients at one route. The route is authenticated
-// by the middleware in front of it, and the dependencies of the agent are those
-// of the authenticated user.
+// MCP serves an agent at one route, behind the authentication middleware, with the
+// dependencies of the authenticated user.
 func ExampleMCP() {
 	agent := ai.NewAgent[supportDeps, string](openai.NewModel("gpt-5-mini"))
 

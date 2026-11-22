@@ -33,7 +33,6 @@ func (r *recorder) Fatalf(format string, args ...any) {
 	runtime.Goexit()
 }
 
-// failure runs fn as a test and returns the message that it failed with.
 func failure(fn func(t testing.TB)) string {
 	r := new(recorder)
 	done := make(chan struct{})
@@ -202,7 +201,6 @@ func Test_Vercel_Fails(t *testing.T) {
 	require.Contains(t, message, "read the stream: connection reset")
 }
 
-// The functions decode what the handlers write.
 func Test_HandlerResponses(t *testing.T) {
 	t.Parallel()
 
@@ -211,7 +209,6 @@ func Test_HandlerResponses(t *testing.T) {
 	app.Post("/agui", pydanticai.AGUI(agent))
 	app.Post("/chat", pydanticai.Vercel(agent))
 
-	// post returns the body of the response of app.
 	post := func(path, body string) io.Reader {
 		t.Helper()
 		request := httptest.NewRequest(fiber.MethodPost, path, strings.NewReader(body))

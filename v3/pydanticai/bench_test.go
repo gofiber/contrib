@@ -14,8 +14,7 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// streamingModel streams a text of deltas chunks, one event each, like a
-// provider does.
+// streamingModel streams a text of deltas chunks, one event each, as a provider does.
 type streamingModel struct{ deltas int }
 
 func (streamingModel) Name() string { return "streaming-benchmark" }
@@ -37,8 +36,7 @@ func (m streamingModel) StreamRequest(
 	}, nil
 }
 
-// serve runs one request through handler without a server, and reads the
-// response to its end.
+// serve runs one request through handler without a server, and reads the response.
 func serve(b *testing.B, handler fasthttp.RequestHandler, path, body string) {
 	b.Helper()
 
@@ -53,9 +51,7 @@ func serve(b *testing.B, handler fasthttp.RequestHandler, path, body string) {
 	}
 }
 
-// benchmarkStream runs a whole request through a streaming handler: the admission,
-// the run with a model that streams deltas chunks, and the events written to the
-// response.
+// benchmarkStream runs whole requests: the admission, a run that streams deltas chunks, the events.
 func benchmarkStream[Config any](
 	b *testing.B, path, body string, handler func(*ai.Agent[struct{}, string], ...Config) fiber.Handler,
 ) {
@@ -90,8 +86,7 @@ func Benchmark_Run(b *testing.B) {
 	}
 }
 
-// The benchmarks send the messages of an MCP client to the handler without a
-// server, the second as a client of the 2026-07-28 protocol sends it.
+// The MCP benchmarks send the messages of a client of the 2026-07-28 protocol, without a server.
 const (
 	discoverMessage = `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"c","version":"1"},"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}`
 	callMessage     = `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"_meta":{"io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"c","version":"1"},"io.modelcontextprotocol/protocolVersion":"2026-07-28"},"name":"ask","arguments":{"question":"Hello"}}}`

@@ -19,14 +19,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// end is one call of OnRunEnd.
 type end[Deps any] struct {
 	deps Deps
 	run  *ai.RunInfo
 	err  error
 }
 
-// ends records what OnRunEnd receives.
 type ends[Deps any] struct {
 	mu    sync.Mutex
 	calls []end[Deps]
@@ -47,7 +45,6 @@ func (e *ends[Deps]) only(t *testing.T) (deps Deps, run *ai.RunInfo, err error) 
 	return e.calls[0].deps, e.calls[0].run, e.calls[0].err
 }
 
-// newRun starts to supervise a run that ends with the test.
 func newRun(t *testing.T, cfg agentrun.Config[struct{}]) *agentrun.Run[struct{}] {
 	t.Helper()
 	run, _ := agentrun.New(context.Background(), cfg, nil)
@@ -55,19 +52,16 @@ func newRun(t *testing.T, cfg agentrun.Config[struct{}]) *agentrun.Run[struct{}]
 	return run
 }
 
-// execute runs agent as a handler that answers with one response does.
 func execute[Deps any](agent *ai.Agent[Deps, string], cfg agentrun.Config[Deps]) (*ai.RunResult[string], error) {
 	return agentrun.Execute(context.Background(), agent, "Hi", nil, cfg)
 }
 
-// expiry returns a channel that is closed when run expires.
 func expiry[Deps any](run *agentrun.Run[Deps]) <-chan struct{} {
 	expired := make(chan struct{})
 	run.AfterExpiry(func() { close(expired) })
 	return expired
 }
 
-// fired reports whether the channel is closed.
 func fired(channel <-chan struct{}) bool {
 	select {
 	case <-channel:
@@ -77,7 +71,6 @@ func fired(channel <-chan struct{}) bool {
 	}
 }
 
-// recovered returns the error that Recover reports for a panic with value.
 func recovered(value any) (err error) {
 	defer agentrun.Recover(func(panicErr error) { err = panicErr })
 	panic(value)
@@ -88,14 +81,11 @@ type describedValue struct{ text string }
 
 func (d *describedValue) String() string { return d.text }
 
-// shortCircuit is a capability of the caller that answers for the run without
-// starting it.
+// shortCircuit is a capability of the caller that answers for the run without starting it.
 type shortCircuit struct{}
 
-// Setup implements ai.Capability.
 func (shortCircuit) Setup(*ai.CapabilityRegistry) error { return nil }
 
-// WrapRun implements ai.RunWrapper.
 func (shortCircuit) WrapRun(context.Context, *ai.RunInfo, ai.RunFunc) (ai.RunOutcome, error) {
 	return ai.CompletedRunOutcome("answered"), nil
 }
@@ -103,7 +93,6 @@ func (shortCircuit) WrapRun(context.Context, *ai.RunInfo, ai.RunFunc) (ai.RunOut
 func Test_OneShotTimeout(t *testing.T) {
 	t.Parallel()
 
-	// The default is part of the documentation of the handlers: five minutes.
 	require.Equal(t, 5*time.Minute, agentrun.OneShotTimeout(0))
 	require.Zero(t, agentrun.OneShotTimeout(-1), "a negative value turns the bound off")
 	require.Zero(t, agentrun.OneShotTimeout(-time.Hour))
@@ -118,7 +107,7 @@ func Test_ErrShutdown(t *testing.T) {
 }
 
 func Test_Safely(t *testing.T) {
-	// Not parallel: the log is global, and CaptureLog replaces it.
+	// Not parallel: CaptureLog replaces the global log.
 	logs := agenttest.CaptureLog(t)
 
 	called := false
@@ -132,7 +121,7 @@ func Test_Safely(t *testing.T) {
 }
 
 func Test_Recover(t *testing.T) {
-	// Not parallel: the log is global, and CaptureLog replaces it.
+	// Not parallel: CaptureLog replaces the global log.
 	logs := agenttest.CaptureLog(t)
 
 	t.Run("a panic", func(t *testing.T) {
@@ -140,8 +129,7 @@ func Test_Recover(t *testing.T) {
 		require.Contains(t, logs.String(), "panic in the run: kaboom")
 		require.Contains(t, logs.String(), "goroutine ", "the stack of the panic")
 
-		// A panic with an error does not make the error the cause: it would turn
-		// the panic into a retry or a failure of a tool.
+		// A panic with an error does not make it the cause, which would turn the panic into a retry.
 		cause := errors.New("cause")
 		require.NotErrorIs(t, recovered(cause), cause)
 	})
@@ -163,11 +151,10 @@ func Test_Recover(t *testing.T) {
 	})
 }
 
-// itself is a message that tells a client the error as it is.
 func itself(err error) string { return err.Error() }
 
 func Test_Text(t *testing.T) {
-	// Not parallel: the log is global, and CaptureLog replaces it.
+	// Not parallel: CaptureLog replaces the global log.
 	logs := agenttest.CaptureLog(t)
 
 	failure := errors.New("provider rejected the key sk-secret")
@@ -194,8 +181,7 @@ func Test_Text(t *testing.T) {
 }
 
 func Test_Run(t *testing.T) {
-	// Not parallel: the subtests that capture the log are not, and they have to
-	// run apart from the ones that are.
+	// Not parallel: the subtests that capture the log must run apart from the parallel ones.
 	t.Run("the end of the run is reported once", func(t *testing.T) {
 		t.Parallel()
 
@@ -254,9 +240,7 @@ func Test_Run(t *testing.T) {
 	t.Run("the supervision is ahead of the capabilities of the caller", func(t *testing.T) {
 		t.Parallel()
 
-		// A wrapper of the caller that answers for the run does not start it. The
-		// supervision would not see the run if it came after the wrapper, and
-		// OnRunEnd would not be told what the run consumed.
+		// The supervision comes before a wrapper of the caller that answers for the run, or misses the run.
 		var recorded ends[struct{}]
 		agent := ai.NewAgent[struct{}, string](agenttest.Answering("not asked"))
 		run, options := agentrun.New(context.Background(), agentrun.Config[struct{}]{OnRunEnd: recorded.onRunEnd},
@@ -286,21 +270,19 @@ func Test_Run(t *testing.T) {
 	})
 
 	t.Run("a panic in a tool", func(t *testing.T) {
-		// Not parallel: the log is global, and CaptureLog replaces it.
+		// Not parallel: CaptureLog replaces the global log.
 		logs := agenttest.CaptureLog(t)
 
 		agent := agenttest.ConcurrentAgent("explode", "waiting")
 		run, options := agentrun.New(context.Background(), agentrun.Config[struct{}]{}, nil)
 		t.Cleanup(run.Cancel)
 
-		// The two tools run on goroutines of their own: without the supervision
-		// the panic would end the process.
+		// The two tools run on goroutines of their own: unsupervised, the panic would end the process.
 		_, err := agent.Run(run.Context(), "Hello", struct{}{}, options...)
 		require.Error(t, err)
 		require.Contains(t, logs.String(), "panic in the run: kaboom")
 
-		// The error of the run carries the value of the panic, or the error of a
-		// tool that the panic canceled: what is reported is the panic.
+		// The panic is reported, not the error of a tool that it canceled.
 		final, panicked := run.Failure(err)
 		require.True(t, panicked)
 		require.ErrorContains(t, final, "panic in the run: kaboom")
@@ -429,10 +411,8 @@ func Test_Run(t *testing.T) {
 	t.Run("the goroutine that waits for the shutdown ends with the run", func(t *testing.T) {
 		t.Parallel()
 
-		// synctest.Test fails the test when a goroutine of the bubble is still
-		// blocked once the function returned, which is what a goroutine that does
-		// not end with its run is: it keeps waiting for a shutdown that may never
-		// come, one for each request.
+		// synctest.Test fails the test when a goroutine of the bubble is still blocked at the end:
+		// a goroutine that outlives its run, waiting for a shutdown, one for each request.
 		synctest.Test(t, func(t *testing.T) {
 			shutdown := make(chan struct{})
 			for range 100 {
@@ -444,8 +424,7 @@ func Test_Run(t *testing.T) {
 }
 
 func Test_Execute(t *testing.T) {
-	// Not parallel: the subtests that capture the log are not, and they have to
-	// run apart from the ones that are.
+	// Not parallel: the subtests that capture the log must run apart from the parallel ones.
 	t.Run("a run that completes", func(t *testing.T) {
 		t.Parallel()
 
@@ -486,7 +465,7 @@ func Test_Execute(t *testing.T) {
 	})
 
 	t.Run("a panic in a tool outranks the error that it caused", func(t *testing.T) {
-		// Not parallel: the log is global, and CaptureLog replaces it.
+		// Not parallel: CaptureLog replaces the global log.
 		agenttest.CaptureLog(t)
 
 		var recorded ends[struct{}]
@@ -499,11 +478,10 @@ func Test_Execute(t *testing.T) {
 	})
 
 	t.Run("the first panic in a tool is the one that is reported", func(t *testing.T) {
-		// Not parallel: the log is global, and CaptureLog replaces it.
+		// Not parallel: CaptureLog replaces the global log.
 		logs := agenttest.CaptureLog(t)
 
-		// The failure of the first tool cancels the run, and the second tool panics
-		// when it notices.
+		// The failure of the first tool cancels the run, and the second tool panics when it notices.
 		_, err := execute(agenttest.ConcurrentAgent("explode", "aftershock"), agentrun.Config[struct{}]{})
 		require.ErrorContains(t, err, "panic in the run: kaboom in explode")
 		require.NotContains(t, err.Error(), "aftershock")
@@ -511,11 +489,10 @@ func Test_Execute(t *testing.T) {
 	})
 
 	t.Run("a panic that the run survived does not explain a later failure", func(t *testing.T) {
-		// Not parallel: the log is global, and CaptureLog replaces it.
+		// Not parallel: CaptureLog replaces the global log.
 		logs := agenttest.CaptureLog(t)
 
-		// The agent answers a tool that outlasted its timeout with a retry, whatever
-		// the call returned, so the run goes on after the panic and fails on its own.
+		// The agent retries a tool that outlasted its timeout, so the run goes on after the panic.
 		failure := errors.New("the model failed")
 		var requests atomic.Int32
 		agent := ai.NewAgent[struct{}, string](fakes.NewFunctionModel(func(
@@ -565,7 +542,7 @@ func Test_Execute(t *testing.T) {
 	})
 
 	t.Run("a panic in OnRunEnd is recovered", func(t *testing.T) {
-		// Not parallel: the log is global, and CaptureLog replaces it.
+		// Not parallel: CaptureLog replaces the global log.
 		logs := agenttest.CaptureLog(t)
 
 		agent := ai.NewAgent[struct{}, string](agenttest.Answering("hello"))
@@ -656,8 +633,7 @@ func Test_Execute(t *testing.T) {
 	t.Run("what supervises the run ends with it", func(t *testing.T) {
 		t.Parallel()
 
-		// As for New: synctest.Test fails the test when the goroutine that waits for
-		// the shutdown is still blocked once the run is over.
+		// As for New: synctest.Test fails the test if the goroutine that waits for the shutdown is left.
 		synctest.Test(t, func(t *testing.T) {
 			agent := ai.NewAgent[struct{}, string](agenttest.Answering("hello"))
 			_, err := execute(agent, agentrun.Config[struct{}]{Shutdown: make(chan struct{})})

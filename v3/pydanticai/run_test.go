@@ -24,14 +24,12 @@ type weather struct {
 	TempC int    `json:"temp_c"`
 }
 
-// weatherOutputAgent answers with a structured output.
 func weatherOutputAgent() *ai.Agent[struct{}, weather] {
 	model := fakes.NewTestModel()
 	model.CustomOutputArgs = json.RawMessage(`{"city":"Paris","temp_c":21}`)
 	return ai.NewAgent[struct{}, weather](model)
 }
 
-// decodeObject decodes a JSON object response.
 func decodeObject(t *testing.T, body string) map[string]any {
 	t.Helper()
 	var object map[string]any
@@ -283,7 +281,6 @@ func Test_Run_AgentErrorsAreMappedAndHidden(t *testing.T) {
 	require.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
 	require.Equal(t, "Internal Server Error", body, "the error of the provider must not reach the client")
 
-	// The cause stays available to the error handler.
 	runErr, ok := errors.AsType[*pydanticai.Error](log.err())
 	require.True(t, ok)
 	require.Equal(t, fiber.StatusInternalServerError, runErr.Code)
@@ -327,8 +324,7 @@ func Test_Run_Timeout(t *testing.T) {
 	require.ErrorIs(t, agenttest.Receive(t, canceled, "the cancellation of the model call"), context.DeadlineExceeded)
 }
 
-// Run cannot tell that its client left, so a run is bounded unless the
-// timeout is turned off.
+// Run cannot tell that its client left, so a run is bounded by default.
 func Test_Run_TimeoutDefaults(t *testing.T) {
 	t.Parallel()
 
@@ -531,7 +527,6 @@ func Test_RunOptions_ChooseTheModelPerRequest(t *testing.T) {
 		{"", "the model of the agent"},
 		{"pro", "the model of the plan"},
 	} {
-		// body returns the body of the response to a request of this plan.
 		body := func(path, content string) string {
 			request := newRequest(fiber.MethodPost, path, fiber.MIMEApplicationJSON, content)
 			request.Header.Set("X-Plan", plan.header)

@@ -22,7 +22,6 @@ import (
 	"github.com/valyala/fasthttp/fasthttputil"
 )
 
-// benchContext returns a request context of app for a POST with the headers.
 func benchContext(b testing.TB, app *fiber.App, body string, headers map[string]string) fiber.Ctx {
 	b.Helper()
 
@@ -84,9 +83,7 @@ func Benchmark_admit(b *testing.B) {
 	}
 }
 
-// parsedContentTypeAllows is the reference verdict that allowsContentType has to
-// agree with: the header is parsed, and the media type must be one of the
-// configured ones, as the net/http handlers of pydantic-ai-go check it.
+// parsedContentTypeAllows is the reference verdict: the header is parsed, as pydantic-ai-go does.
 func parsedContentTypeAllows(contentTypes []string, header string) bool {
 	if contentTypes == nil {
 		contentTypes = defaultContentTypes
@@ -97,7 +94,6 @@ func parsedContentTypeAllows(contentTypes []string, header string) bool {
 	})
 }
 
-// contentTypeLists are the accepted media types that the tests configure.
 var contentTypeLists = [][]string{
 	nil,
 	{},
@@ -115,18 +111,14 @@ var contentTypeLists = [][]string{
 	{"application/jſon", "text/\u212Aplain"},
 }
 
-// contentTypeHeaders returns the Content-Type headers that the tests send: the
-// media types that the lists accept or nearly accept, followed by every kind of
-// parameters, so that most of them are one of the usual forms but off by a byte.
+// contentTypeHeaders returns accepted and nearly accepted headers, with every kind of parameters.
 func contentTypeHeaders() []string {
 	bases := []string{
 		"", "application/json", "Application/JSON", "APPLICATION/JSON", "application/jsoN", "application/js0n",
 		" application/json", "application/json ", "\tapplication/json\t", "application/json\x00", "\x00application/json",
 		"application/jsonx", "application/jso", "application/json+x", "application/*", "json", "text/plain", "TEXT/PLAIN",
 		"application/x-ndjson", "text/event-stream", "application/json;", "application/json; charset=utf-8",
-		// Bytes whose lower or upper case is a letter only for a Unicode-aware comparison, or that
-		// differ from a letter by the bit that an ASCII case fold clears: ';' is ESC with it,
-		// '/' is SI, '-' is CR, '=' is GS and '8' is CAN.
+		// Bytes that fold to a letter only for Unicode, or differ from one by the bit of an ASCII fold.
 		"application/json\x1b", "application/\x6ason", "application/jſon", "applicatioN/json", "application\x0fjson",
 		"text/\u212Aplain", "text/kplain", "text/plain\x0d", "appl\u0131cation/json", "application/JSON\u00a0",
 	}
@@ -162,8 +154,7 @@ func Test_requestLimits_allowsContentType(t *testing.T) {
 			}
 			require.Equal(t, want, limits.allowsContentType(header), "%q accepted by %q", header, list)
 		}
-		// The comparison is only worth something with headers on both sides of it.
-		// A type with a parameter, which a header never spells, is the exception.
+		// The comparison needs headers on both sides, except for a type with a parameter.
 		if slices.ContainsFunc(list, func(contentType string) bool {
 			return strings.TrimSpace(contentType) != "" && !strings.Contains(contentType, ";")
 		}) {
@@ -180,8 +171,7 @@ func Test_newRequestLimits_plain(t *testing.T) {
 		" application/json ", "Text/Plain", "application/*", "json", "", "application/json;",
 		"application/json; charset=utf-8", "text/event-stream\t",
 	}, 0, false)
-	// What mime.ParseMediaType takes as it is written is compared, including a wildcard
-	// and a single token. A type with parameters or an empty one is not: those are parsed.
+	// What mime.ParseMediaType takes as written is compared; a type with parameters, or none, is parsed.
 	require.Equal(t, []string{"application/json", "Text/Plain", "application/*", "json", "text/event-stream"}, limits.plain)
 	require.Equal(t, []string{
 		"application/json", "Text/Plain", "application/*", "json", "", "application/json;",
@@ -193,9 +183,7 @@ func Test_newRequestLimits_plain(t *testing.T) {
 	require.NotNil(t, newRequestLimits([]string{}, 0, false).contentTypes, "an empty list accepts nothing, unlike nil")
 }
 
-// The usual headers are told apart without parsing them, which allocates.
-//
-// Not parallel: testing.AllocsPerRun panics when it is called by a parallel test.
+// Not parallel: testing.AllocsPerRun panics in a parallel test.
 func Test_requestLimits_allowsContentType_DoesNotAllocate(t *testing.T) {
 	limits := newRequestLimits(nil, 0, false)
 	for _, header := range []string{
@@ -223,8 +211,7 @@ func Fuzz_requestLimits_allowsContentType(f *testing.F) {
 	})
 }
 
-// Benchmark_contentTypeCheck compares the check of the media type that parses
-// the header with the one that compares it, on the same headers.
+// Benchmark_contentTypeCheck compares parsing the media type with comparing it.
 func Benchmark_contentTypeCheck(b *testing.B) {
 	limits := newRequestLimits(nil, 0, false)
 	for _, header := range []string{
@@ -246,7 +233,6 @@ func Benchmark_contentTypeCheck(b *testing.B) {
 	}
 }
 
-// resolved runs resolve with the context of a request.
 func resolved[Deps any](
 	t *testing.T,
 	deps func(fiber.Ctx) (Deps, error),
@@ -356,7 +342,6 @@ func Test_heartbeatInterval(t *testing.T) {
 func Test_messageFor(t *testing.T) {
 	t.Parallel()
 
-	// Without an ErrorMessage a client reads the kind of failure and none of its details.
 	secret := errors.New("provider rejected the key sk-secret")
 	byDefault := messageFor(nil)
 	require.Equal(t, "Internal Server Error", byDefault(secret))
@@ -369,7 +354,6 @@ func Test_messageFor(t *testing.T) {
 	require.Equal(t, "configured: "+secret.Error(), configured(secret))
 }
 
-// closeRecorder is a connection that records whether it was closed.
 type closeRecorder struct {
 	net.Conn
 	closed atomic.Bool
@@ -380,9 +364,7 @@ func (c *closeRecorder) Close() error {
 	return nil
 }
 
-// fakeRun is a supervised run that records what the hold does to it. The test is
-// the server: expire ends the run, as the server does when its timeout elapses or
-// it starts shutting down.
+// fakeRun is a supervised run, and the test is the server: expire ends the run.
 type fakeRun struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
@@ -426,7 +408,6 @@ func (f *fakeRun) recorded() string {
 	return strings.Join(f.calls, ", ")
 }
 
-// expire is the server ending the run, which calls what the hold asked for.
 func (f *fakeRun) expire(t *testing.T) {
 	t.Helper()
 	f.mu.Lock()
@@ -443,8 +424,7 @@ func text(err error) string {
 	return err.Error()
 }
 
-// newTestHold returns the hold of a fake run, on a connection that records that
-// it was closed. OnClose is recorded as a call of the run.
+// newTestHold returns the hold of a fake run, which records OnClose, on a recorded connection.
 func newTestHold(grace time.Duration) (*requestHold, *fakeRun, *closeRecorder) {
 	run, conn := newFakeRun(), new(closeRecorder)
 	hold := newRequestHold(nil, conn, run, grace, func(err error) { run.record("close " + text(err)) })
@@ -492,8 +472,7 @@ func Test_requestHold_expire(t *testing.T) {
 func Test_requestHold_cut(t *testing.T) {
 	t.Parallel()
 
-	// armed returns a hold whose check is armed, and whose write has been
-	// blocked for blocked, or that waits for the run when blocked is 0.
+	// armed returns a hold whose check is armed and whose write is blocked for blocked, if not 0.
 	armed := func(t *testing.T, grace, blocked time.Duration) (*requestHold, *closeRecorder) {
 		t.Helper()
 		h, _, conn := newTestHold(grace)
@@ -528,8 +507,7 @@ func Test_requestHold_cut(t *testing.T) {
 		h, conn := armed(t, grace, grace-100*time.Millisecond)
 		h.cut()
 		require.False(t, conn.closed.Load())
-		// The next check comes when the write has been blocked for the grace,
-		// not a whole grace later.
+		// The next check comes when the write was blocked for the grace, not a grace later.
 		require.Eventually(t, conn.closed.Load, grace/2, time.Millisecond)
 	})
 
@@ -614,8 +592,7 @@ func Test_holdingBody_Read(t *testing.T) {
 	t.Cleanup(hold.finish)
 	body := &holdingBody{ReadCloser: io.NopCloser(strings.NewReader("events")), hold: hold}
 
-	// How long a write has been blocked comes from the monotonic clock: a step of the
-	// wall clock, as an NTP correction or a restored snapshot make, must not change it.
+	// Blocked time comes from the monotonic clock, which a step of the wall clock does not move.
 	require.Contains(t, hold.base.String(), "m=", "the base has a monotonic clock reading")
 
 	p := make([]byte, 16)
@@ -653,13 +630,11 @@ func Test_holdingBody_Close(t *testing.T) {
 		hold.streamEnded(nil)
 		body := &holdingBody{ReadCloser: io.NopCloser(strings.NewReader("events")), hold: hold}
 
-		// The server ended the run while a write to the client is blocked: the check
-		// that closes the connection is armed.
+		// The server ended the run during a blocked write: the check is armed.
 		hold.stampWrite(time.Hour)
 		hold.expire()
 
-		// A compressor closes the body when it has read the stream, while the server is
-		// still writing what it compressed: the check goes on.
+		// A compressor closes the body once it has read the stream, and the check goes on.
 		require.NoError(t, body.Close())
 		require.Zero(t, inCallback, "the callbacks are not a write to the client")
 		require.False(t, closedDuring, "a slow OnClose does not get the connection closed")
@@ -738,8 +713,7 @@ func Test_requestHold_finish(t *testing.T) {
 	hold.stampWrite(time.Hour)
 	hold.expire()
 
-	// fasthttp closes the values of a request once it is done with the response,
-	// and the connection can serve another request.
+	// fasthttp closes the values of a request once the response is done.
 	require.NoError(t, responseDone{hold}.Close())
 	time.Sleep(4 * grace) // a check that finish did not stop would have fired by now
 	require.False(t, conn.closed.Load(), "the connection of the next request is left alone")
@@ -747,8 +721,7 @@ func Test_requestHold_finish(t *testing.T) {
 	require.Equal(t, "cancel", run.recorded(), "the run lets go of its timers")
 }
 
-// lazyStream is a body that starts its handler with the first read, as the stream
-// of the sse middleware does, and whose Close waits for the handler.
+// lazyStream starts its handler with the first read, as the sse stream does, and Close waits for it.
 type lazyStream struct {
 	hold    *requestHold
 	started bool
@@ -775,7 +748,6 @@ func (s *lazyStream) Close() error {
 	return nil
 }
 
-// closedRecorder is a body that records that it was closed.
 type closedRecorder struct {
 	io.Reader
 	closed atomic.Bool
@@ -789,8 +761,7 @@ func (c *closedRecorder) Close() error {
 func Test_requestHold_SendStream(t *testing.T) {
 	t.Parallel()
 
-	// newCtx returns a context of the request, and the function that ends the request
-	// as a timeout middleware does: with a cause for its context.
+	// newCtx returns a request context and a cancel with a cause, as a timeout middleware has.
 	newCtx := func(t *testing.T) (fiber.Ctx, context.CancelCauseFunc) {
 		t.Helper()
 		app := fiber.New()
@@ -874,8 +845,7 @@ func Test_requestHold_SendStream(t *testing.T) {
 		body := &holdingBody{ReadCloser: io.NopCloser(strings.NewReader("events")), hold: hold}
 		cancel(errors.New("the middleware gave up"))
 
-		// fasthttp does not close the body of a response that it drops: the hold does,
-		// and it leaves the connection alone, which serves other requests.
+		// fasthttp does not close the body of a response that it drops: the hold does.
 		require.NoError(t, hold.install(body))
 		require.Equal(t, "end "+text(errStreamFailed)+", close "+text(errStreamFailed)+", cancel", run.recorded())
 		hold.stampWrite(time.Hour)
@@ -885,8 +855,7 @@ func Test_requestHold_SendStream(t *testing.T) {
 	})
 }
 
-// WithStreamEndGrace returns cfg with the time that a write to a client that
-// stopped reading may block, once the run was told to end, set to grace.
+// WithStreamEndGrace returns cfg with grace as the time that a write to a stalled client may block.
 func WithStreamEndGrace[Deps, A any](cfg StreamConfig[Deps, A], grace time.Duration) StreamConfig[Deps, A] {
 	cfg.grace = grace
 	return cfg
