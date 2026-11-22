@@ -461,14 +461,14 @@ app.Post("/chat", pydanticai.Vercel(agent, pydanticai.VercelConfig[Deps]{Deps: d
 
 `AGUI`, `Vercel` and `Run` check a request before the agent runs. A rejected request goes to the error handler of the app as a `*fiber.Error`:
 
-| Status | Reason                                                                                                                               |
-|:-------|:-------------------------------------------------------------------------------------------------------------------------------------|
-| `405`  | The method is not `POST`.                                                                                                            |
-| `415`  | The content type is not `application/json`, or the body has a `Content-Encoding` other than `identity`: bodies are not decompressed. |
-| `413`  | The body is larger than `MaxRequestBytes`, 10 MiB by default.                                                                        |
-| `400`  | The body does not decode into the request of the protocol, a Vercel AI request has no chat `id`, or a `Run` request has no `prompt`. |
+| Status | Reason                                                                                                                                                   |
+|:-------|:---------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `405`  | The method is not `POST`.                                                                                                                                |
+| `415`  | The content type is not `application/json`, or the body has a `Content-Encoding` other than `identity`: bodies are not decompressed.                     |
+| `413`  | The body is larger than `MaxRequestBytes`, 10 MiB by default.                                                                                            |
+| `400`  | The body does not decode into the request of the protocol, a Vercel AI request has no chat `id`, or the `prompt` of a `Run` request is missing or blank. |
 
-- **Body limit.** Fiber's `BodyLimit`, 4 MiB by default, applies as well: raise it to accept larger bodies, such as inline images. A body of more than 64 KiB is released once it is decoded, so a middleware that runs after the handler sees an empty body.
+- **Body limit.** Fiber's `BodyLimit`, 4 MiB by default, applies as well: raise it to accept larger bodies, such as inline images. `AGUI` and `Vercel` release a body of more than 64 KiB once it is decoded, so a middleware that runs after them sees an empty body.
 - **Cross-site requests.** The content type check keeps cross-site form posts from reaching the agent. Turn it off with `DisableContentTypeCheck` of the adapter config only behind another CSRF protection.
 - **History.** A chat frontend sends the whole conversation with each request, so the history is untrusted input. The adapters sanitize it, for example by removing system prompts, and `Sanitization` of the adapter config relaxes that. See the [AG-UI](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/ag-ui.md) and [Vercel AI](https://github.com/Kludex/pydantic-ai-go/blob/main/docs/vercel-ai.md) pages of pydantic-ai-go for what the adapters support.
 

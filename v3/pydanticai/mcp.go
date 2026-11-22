@@ -1,6 +1,7 @@
 package pydanticai
 
 import (
+	"bufio"
 	"bytes"
 	"cmp"
 	"context"
@@ -209,26 +210,27 @@ func MCP[Deps, Output any](agent *ai.Agent[Deps, Output], config ...MCPConfig[De
 // ignores, and reads no more than the SDK would.
 func rejectBatch(w http.ResponseWriter, r *http.Request) bool {
 	body := http.MaxBytesReader(w, r.Body, maxMCPRequestBytes)
-	r.Body = body
-	var first [1]byte
-	for {
-		n, err := body.Read(first[:])
-		if n == 1 && first[0] != ' ' && first[0] != '\t' && first[0] != '\n' && first[0] != '\r' {
-			break
-		}
-		if err != nil { // empty, blank or too large: the handler of the SDK answers it
-			return false
-		}
-	}
-	if first[0] == '[' {
-		http.Error(w, "JSON-RPC batching is not supported", http.StatusBadRequest)
-		return true
-	}
+	// Buffered: a body of blank space would otherwise cost one Read per byte.
+	buffered := bufio.NewReaderSize(body, 512)
 	r.Body = struct {
 		io.Reader
 		io.Closer
-	}{io.MultiReader(bytes.NewReader(first[:]), body), body}
-	return false
+	}{buffered, body}
+	for {
+		first, err := buffered.ReadByte()
+		if err != nil { // empty, blank or too large: the handler of the SDK answers it
+			return false
+		}
+		switch first {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '[':
+			http.Error(w, "JSON-RPC batching is not supported", http.StatusBadRequest)
+			return true
+		}
+		_ = buffered.UnreadByte()
+		return false
+	}
 }
 
 // mcpOrigins returns the allowed origins as browsers send them (lower case, no

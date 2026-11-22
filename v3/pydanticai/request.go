@@ -35,6 +35,9 @@ type requestLimits struct {
 	plain                []string
 	maxBytes             int64
 	skipContentTypeCheck bool
+	// releaseBody lets admit release a large body once it is decoded: for a stream,
+	// whose response can take minutes. Run keeps it for Respond and the middleware.
+	releaseBody bool
 }
 
 func newRequestLimits(contentTypes []string, maxBytes int64, skipContentTypeCheck bool) requestLimits {
@@ -187,7 +190,7 @@ func admit[Deps, In any](
 	if err := json.Unmarshal(body, &request.input); err != nil {
 		return nil, fiber.NewError(fiber.StatusBadRequest, "invalid "+protocol+" request")
 	}
-	if len(body) > releaseBodySize {
+	if limits.releaseBody && len(body) > releaseBodySize {
 		// Fiber keeps the request while the response is written, which can take minutes:
 		// release a large buffer, as the input holds all the run needs.
 		c.Request().ReleaseBody(0)

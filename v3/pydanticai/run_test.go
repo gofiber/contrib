@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -144,6 +145,7 @@ func Test_Run_RejectsInvalidRequests(t *testing.T) {
 	}{
 		{"missing prompt", fiber.MethodPost, fiber.MIMEApplicationJSON, `{}`, fiber.StatusBadRequest},
 		{"empty prompt", fiber.MethodPost, fiber.MIMEApplicationJSON, `{"prompt":""}`, fiber.StatusBadRequest},
+		{"blank prompt", fiber.MethodPost, fiber.MIMEApplicationJSON, `{"prompt":" \n\t"}`, fiber.StatusBadRequest},
 		{"invalid json", fiber.MethodPost, fiber.MIMEApplicationJSON, `{`, fiber.StatusBadRequest},
 		{"wrong content type", fiber.MethodPost, fiber.MIMETextPlain, runBody, fiber.StatusUnsupportedMediaType},
 		{"missing content type", fiber.MethodPost, "", runBody, fiber.StatusUnsupportedMediaType},
@@ -269,6 +271,20 @@ func Test_Run_CustomRespond(t *testing.T) {
 	require.JSONEq(t, `{"city":"Paris","requests":1}`, body)
 }
 
+func Test_Run_RespondReadsALargeBody(t *testing.T) {
+	t.Parallel()
+
+	request := `{"prompt":"` + strings.Repeat("a", 128<<10) + `"}`
+	app := newApp("/ask", pydanticai.Run(ai.NewAgent[struct{}, string](fakes.NewTestModel()), pydanticai.RunConfig[struct{}, string]{
+		Respond: func(c fiber.Ctx, _ *ai.RunResult[string]) error {
+			return c.SendString(strconv.Itoa(len(c.Body())))
+		},
+	}))
+
+	_, body := post(t, app, "/ask", request)
+	require.Equal(t, strconv.Itoa(len(request)), body, "Run keeps the body for Respond")
+}
+
 func Test_Run_AgentErrorsAreMappedAndHidden(t *testing.T) {
 	t.Parallel()
 
@@ -356,7 +372,10 @@ func Test_Run_DeferredToolCallsAreNotImplemented(t *testing.T) {
 		t.Parallel()
 
 		var log errorLog
-		app := newApp("/ask", pydanticai.Run(agent), log.config())
+		ended := make(chan error, 1)
+		app := newApp("/ask", pydanticai.Run(agent, pydanticai.RunConfig[struct{}, string]{
+			OnRunEnd: func(_ struct{}, _ *ai.RunInfo, err error) { ended <- err },
+		}), log.config())
 
 		resp, body := post(t, app, "/ask", runBody)
 		require.Equal(t, fiber.StatusNotImplemented, resp.StatusCode)
@@ -366,6 +385,7 @@ func Test_Run_DeferredToolCallsAreNotImplemented(t *testing.T) {
 		require.True(t, ok)
 		require.ErrorContains(t, runErr.Err, "AGUI or Vercel")
 		require.Equal(t, pydanticai.StatusCode(runErr.Err), runErr.Code, "Code is what StatusCode derives from Err")
+		require.ErrorIs(t, agenttest.Receive(t, ended, "OnRunEnd"), runErr.Err, "OnRunEnd is told why the run failed")
 	})
 
 	t.Run("Respond receives the deferred run", func(t *testing.T) {

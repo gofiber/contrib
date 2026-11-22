@@ -6,6 +6,7 @@ import (
 	ai "github.com/Kludex/pydantic-ai-go/ai"
 	"github.com/gofiber/contrib/v3/pydanticai/internal/agentrun"
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
 )
 
 // RunConfig defines the config for the Run handler.
@@ -115,7 +116,7 @@ func Run[Deps, Output any](agent *ai.Agent[Deps, Output], config ...RunConfig[De
 			if err != nil {
 				return err
 			}
-			if request.input.Prompt == "" {
+			if utils.TrimSpace(request.input.Prompt) == "" {
 				return fiber.NewError(fiber.StatusBadRequest, "prompt is required")
 			}
 			prompt, deps, options = request.input.Prompt, request.deps, request.options
@@ -125,10 +126,16 @@ func Run[Deps, Output any](agent *ai.Agent[Deps, Output], config ...RunConfig[De
 		}
 
 		// A panic of the model or a callback goes on, after OnRunEnd.
+		var deferred error
+		if cfg.Respond == nil {
+			// The default response fails a deferred run: OnRunEnd is told so too.
+			deferred = errDeferred
+		}
 		result, err := agentrun.Execute(c.Context(), agent, prompt, options, agentrun.Config[Deps]{
 			Deps:     deps,
 			OnRunEnd: cfg.OnRunEnd,
 			Timeout:  agentrun.OneShotTimeout(cfg.Timeout),
+			Deferred: deferred,
 		})
 		if err != nil {
 			return newError(err)
@@ -140,10 +147,9 @@ func Run[Deps, Output any](agent *ai.Agent[Deps, Output], config ...RunConfig[De
 	}
 }
 
+// respondJSON writes the default response. A deferred run does not get here:
+// Execute fails it with errDeferred.
 func respondJSON[Output any](c fiber.Ctx, result *ai.RunResult[Output]) error {
-	if result.Deferred() != nil {
-		return newError(errDeferred)
-	}
 	return c.JSON(runResponse[Output]{
 		Output:         result.Output,
 		RunID:          result.RunID(),

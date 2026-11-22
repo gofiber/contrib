@@ -23,6 +23,7 @@ func Vercel[Deps, Output any](agent *ai.Agent[Deps, Output], config ...VercelCon
 	}
 	adapter := vercel.NewAdapter(agent, cfg.Adapter)
 	limits := newRequestLimits(cfg.Adapter.AllowedContentTypes, cfg.Adapter.MaxRequestBytes, cfg.Adapter.DisableContentTypeCheck)
+	limits.releaseBody = true
 
 	return func(c fiber.Ctx) error {
 		if cfg.Next != nil && cfg.Next(c) {
