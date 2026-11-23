@@ -9,7 +9,7 @@ require (
 )
 
 require (
-	github.com/bmatcuk/doublestar/v4 v4.10.4 // indirect
+	github.com/bmatcuk/doublestar/v4 v4.10.7 // indirect
 	github.com/casbin/govaluate v1.10.0 // indirect
 	github.com/gofiber/schema v1.10.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
