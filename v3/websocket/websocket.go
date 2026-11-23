@@ -209,12 +209,77 @@ func runHandler(conn *Conn, fconn *websocket.Conn, recoverHandler, handler func(
 	returned = true
 }
 
+// UpgradeError is returned by the handler New builds when a request asks to
+// upgrade but the handshake is refused. It wraps the *fiber.Error carrying the
+// response status and Err, the reason for the refusal, so errors.As finds
+// either; a type assertion to *fiber.Error does not match it. Error returns
+// the status text alone, so an ErrorHandler that matches with errors.As, as
+// Fiber's default does, builds the response a bare *fiber.Error gets, and the
+// reason reaches only code that asks for it.
+type UpgradeError struct {
+	// Err is why the handshake was refused: the HandshakeError from
+	// github.com/fasthttp/websocket's Upgrader, or this middleware's own reason
+	// for a refusal it makes before the upgrader runs.
+	Err error
+
+	status *fiber.Error
+}
+
+// NewUpgradeError returns an UpgradeError with status and reason, as the
+// handler New builds returns for a refused handshake, so code outside the
+// package, such as a test of an ErrorHandler, can produce one. A zero status
+// means none: the error is then answered with 500, as an UpgradeError literal
+// is.
+func NewUpgradeError(status int, reason error) *UpgradeError {
+	if status == 0 {
+		return &UpgradeError{Err: reason}
+	}
+	return &UpgradeError{Err: reason, status: fiber.NewError(status)}
+}
+
+// Error returns the status text of the response.
+func (e *UpgradeError) Error() string {
+	if e == nil || e.status == nil {
+		// No status, as in a literal or from a zero status: Fiber answers 500.
+		return utils.StatusMessage(fiber.StatusInternalServerError)
+	}
+	return e.status.Error()
+}
+
+// StatusCode returns the HTTP status the refused handshake is answered with,
+// 500 when the error carries none.
+func (e *UpgradeError) StatusCode() int {
+	if e == nil || e.status == nil {
+		return fiber.StatusInternalServerError
+	}
+	return e.status.Code
+}
+
+// Unwrap returns the *fiber.Error carrying the status, then Err when it is
+// set. Without a status, as in a literal or from a zero status, the first is
+// Fiber's 500, so a *fiber.Error inside Err cannot pick another status.
+func (e *UpgradeError) Unwrap() []error {
+	if e == nil {
+		return nil
+	}
+	status := e.status
+	if status == nil {
+		status = fiber.ErrInternalServerError
+	}
+	if e.Err == nil {
+		return []error{status}
+	}
+	return []error{status, e.Err}
+}
+
 // The upgrader chose the RFC 6455 status: 403 for a bad Origin, 400 for a
-// malformed handshake, 405 for a non-GET; section 4.4 asks for the supported
-// version on rejection. A *fiber.Error keeps it on the ErrorHandler path.
-func rejectHandshake(c fiber.Ctx, status int) error {
+// malformed handshake, 405 for a non-GET. The 500 for application-set
+// Sec-WebSocket-Extensions is refused before the upgrader runs. Section 4.4
+// asks for the supported version on rejection. The *fiber.Error inside the
+// UpgradeError keeps it on the ErrorHandler path; reason is kept for errors.As.
+func rejectHandshake(c fiber.Ctx, status int, reason error) error {
 	c.Set(fiber.HeaderSecWebSocketVersion, supportedVersion)
-	return fiber.NewError(status, utils.StatusMessage(status))
+	return NewUpgradeError(status, reason)
 }
 
 // Conn https://godoc.org/github.com/gorilla/websocket#pkg-index

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -663,7 +664,13 @@ func TestNewPanicsOnNilHandler(t *testing.T) {
 }
 
 func TestWebSocketNonUpgradeRequestIsUpgradeRequired(t *testing.T) {
-	app := fiber.New()
+	errs := make(chan error, 1)
+	app := fiber.New(fiber.Config{
+		ErrorHandler: func(c fiber.Ctx, err error) error {
+			errs <- err
+			return fiber.DefaultErrorHandler(c, err)
+		},
+	})
 	app.Get("/ws", New(func(*Conn) {}))
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/ws", nil))
@@ -671,6 +678,9 @@ func TestWebSocketNonUpgradeRequestIsUpgradeRequired(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, fiber.StatusUpgradeRequired, resp.StatusCode)
+	// No upgrader ran, so there is no reason to wrap: the sentinel itself.
+	require.Len(t, errs, 1)
+	require.Same(t, fiber.ErrUpgradeRequired, <-errs)
 }
 
 func TestWebSocketPartialHandshakeIsBadRequest(t *testing.T) {
@@ -749,13 +759,215 @@ func TestWebSocketRejectedHandshakeReachesErrorHandler(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	// The rejection is a *fiber.Error with the upgrader's status, so the
+	// The rejection wraps a *fiber.Error with the upgrader's status, so the
 	// app's own error formatting, logging and metrics all see it.
 	assert.Equal(t, fiber.StatusForbidden, resp.StatusCode)
 	assert.Equal(t, int32(1), handled.Load())
 	assert.Equal(t, fiber.MIMEApplicationJSONCharsetUTF8, resp.Header.Get(fiber.HeaderContentType))
 	assert.Equal(t, "req-1", resp.Header.Get("X-Request-ID"))
 	assert.Equal(t, "13", resp.Header.Get(fiber.HeaderSecWebSocketVersion))
+}
+
+func TestWebSocketRejectedHandshakeExposesReason(t *testing.T) {
+	handshake := func(extra ...[2]string) [][2]string {
+		return append([][2]string{
+			{fiber.HeaderConnection, "Upgrade"},
+			{fiber.HeaderUpgrade, "websocket"},
+			{fiber.HeaderSecWebSocketVersion, "13"},
+			{fiber.HeaderSecWebSocketKey, "dGhlIHNhbXBsZSBub25jZQ=="},
+		}, extra...)
+	}
+	cases := []struct {
+		name    string
+		method  string
+		headers [][2]string
+		cfg     Config
+		before  fiber.Handler // middleware in front of the upgrade
+		status  int
+		// The upgrader's HandshakeError is matched on a keyword, so a reworded
+		// message in a dependency bump does not fail the test; reasons this
+		// middleware gives itself are matched exactly.
+		keyword string
+		reason  error
+	}{
+		{
+			name:    "origin not allowed",
+			headers: handshake([2]string{fiber.HeaderOrigin, "http://evil"}),
+			cfg:     Config{Origins: []string{"http://allowed"}},
+			status:  fiber.StatusForbidden,
+			keyword: "origin",
+		},
+		{
+			name:    "invalid key",
+			headers: handshake([2]string{fiber.HeaderSecWebSocketKey, "not-a-key"}),
+			status:  fiber.StatusBadRequest,
+			keyword: "Sec-WebSocket-Key",
+		},
+		{
+			name:    "unsupported version",
+			headers: handshake([2]string{fiber.HeaderSecWebSocketVersion, "12"}),
+			status:  fiber.StatusBadRequest,
+			keyword: "version",
+		},
+		{
+			name:    "upgrade without connection",
+			headers: [][2]string{{fiber.HeaderUpgrade, "websocket"}},
+			status:  fiber.StatusBadRequest,
+			keyword: "'Connection' header",
+		},
+		{
+			// The upgrader answers 426; the middleware turns it into 400.
+			name:    "connection without upgrade",
+			headers: [][2]string{{fiber.HeaderConnection, "Upgrade"}},
+			status:  fiber.StatusBadRequest,
+			keyword: "'Upgrade' header",
+		},
+		{
+			name:    "method not GET",
+			method:  fiber.MethodPost,
+			headers: handshake(),
+			status:  fiber.StatusMethodNotAllowed,
+			keyword: "method",
+		},
+		{
+			name:    "extensions set by the application",
+			headers: handshake(),
+			before: func(c fiber.Ctx) error {
+				c.Set(fiber.HeaderSecWebSocketExtensions, "x-custom")
+				return c.Next()
+			},
+			status: fiber.StatusInternalServerError,
+			reason: errApplicationExtensions,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := make(chan error, 1)
+			app := fiber.New(fiber.Config{
+				ErrorHandler: func(c fiber.Ctx, err error) error {
+					errs <- err
+					return fiber.DefaultErrorHandler(c, err)
+				},
+			})
+			if tc.before != nil {
+				app.Use(tc.before)
+			}
+			app.All("/ws", New(func(*Conn) {}, tc.cfg))
+
+			method := tc.method
+			if method == "" {
+				method = fiber.MethodGet
+			}
+			req := httptest.NewRequest(method, "/ws", nil)
+			for _, h := range tc.headers {
+				req.Header.Set(h[0], h[1])
+			}
+			resp, err := app.Test(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+
+			// The response is the one a bare *fiber.Error gets: the reason stays
+			// out of the body.
+			text := utils.StatusMessage(tc.status)
+			assert.Equal(t, tc.status, resp.StatusCode)
+			assert.Equal(t, text, string(body))
+			assert.Equal(t, "13", resp.Header.Get(fiber.HeaderSecWebSocketVersion))
+
+			require.Len(t, errs, 1)
+			got := <-errs
+			assert.Equal(t, text, got.Error())
+
+			var fe *fiber.Error
+			require.ErrorAs(t, got, &fe)
+			assert.Equal(t, tc.status, fe.Code)
+			assert.Equal(t, text, fe.Message)
+
+			var ue *UpgradeError
+			require.ErrorAs(t, got, &ue)
+			assert.Equal(t, tc.status, ue.StatusCode())
+			require.Error(t, ue.Err)
+			if tc.reason != nil {
+				assert.ErrorIs(t, got, tc.reason)
+				return
+			}
+			var he websocket.HandshakeError
+			require.ErrorAs(t, got, &he)
+			assert.Equal(t, he, ue.Err)
+			assert.Contains(t, he.Error(), tc.keyword)
+		})
+	}
+}
+
+func TestUpgradeErrorWithoutStatus(t *testing.T) {
+	// Built as a literal there is no status: errors.As finds Fiber's 500, the
+	// status Fiber answers with, and never a nil *fiber.Error.
+	reason := errors.New("reason")
+	ue := &UpgradeError{Err: reason}
+	err := error(ue)
+
+	assert.Equal(t, utils.StatusMessage(fiber.StatusInternalServerError), err.Error())
+	assert.Equal(t, fiber.StatusInternalServerError, ue.StatusCode())
+	assert.ErrorIs(t, err, reason)
+	var fe *fiber.Error
+	require.ErrorAs(t, err, &fe)
+	assert.Equal(t, fiber.StatusInternalServerError, fe.Code)
+
+	// A *fiber.Error in the reason does not pick the status either.
+	lit := &UpgradeError{Err: fiber.ErrForbidden}
+	require.ErrorAs(t, lit, &fe)
+	assert.Equal(t, fiber.StatusInternalServerError, fe.Code)
+	assert.ErrorIs(t, lit, fiber.ErrForbidden)
+
+	// With neither a status nor a reason only the 500 is left to unwrap, and
+	// no nil entry.
+	empty := &UpgradeError{}
+	assert.Equal(t, []error{fiber.ErrInternalServerError}, empty.Unwrap())
+	assert.Equal(t, utils.StatusMessage(fiber.StatusInternalServerError), empty.Error())
+	assert.Equal(t, fiber.StatusInternalServerError, empty.StatusCode())
+
+	// A typed-nil *UpgradeError does not panic.
+	var typedNil *UpgradeError
+	assert.Equal(t, utils.StatusMessage(fiber.StatusInternalServerError), typedNil.Error())
+	assert.Equal(t, fiber.StatusInternalServerError, typedNil.StatusCode())
+	assert.Nil(t, typedNil.Unwrap())
+}
+
+func TestNewUpgradeError(t *testing.T) {
+	// A test of an ErrorHandler stands in for a refused handshake with it, so
+	// the default ErrorHandler must answer it as it does the middleware's own;
+	// a zero status means none, as in a literal.
+	cases := map[string]struct {
+		status int
+		reason error
+		want   int
+	}{
+		"forbidden":   {fiber.StatusForbidden, errors.New("reason"), fiber.StatusForbidden},
+		"zero status": {0, errors.New("reason"), fiber.StatusInternalServerError},
+		// A *fiber.Error in the reason does not pick the status: the error's own
+		// comes first, and without one it is 500.
+		"reason with a status":       {0, fiber.ErrForbidden, fiber.StatusInternalServerError},
+		"reason with another status": {fiber.StatusBadRequest, fiber.ErrForbidden, fiber.StatusBadRequest},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			ue := NewUpgradeError(tc.status, tc.reason)
+			assert.Equal(t, tc.want, ue.StatusCode())
+			assert.Equal(t, utils.StatusMessage(tc.want), ue.Error())
+			assert.ErrorIs(t, ue, tc.reason)
+
+			app := fiber.New()
+			app.Get("/", func(fiber.Ctx) error { return ue })
+			resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, resp.StatusCode)
+			assert.Equal(t, utils.StatusMessage(tc.want), string(body))
+		})
+	}
 }
 
 func TestConnCaptureAllocatesOnlyWhatTheRequestCarries(t *testing.T) {

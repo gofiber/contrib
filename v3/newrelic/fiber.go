@@ -2,6 +2,7 @@ package newrelic
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -204,8 +205,12 @@ func transport(schema string) newrelic.TransportType {
 	return newrelic.TransportUnknown
 }
 
+// DefaultErrorStatusCodeHandler returns the code of the *fiber.Error that err
+// is or wraps, found with errors.As, and otherwise the response's status code.
+// The middleware calls it before the ErrorHandler runs, so for any other error
+// that is the status the handler set, 200 if it set none.
 func DefaultErrorStatusCodeHandler(c fiber.Ctx, err error) int {
-	if fiberErr, ok := err.(*fiber.Error); ok {
+	if fiberErr, ok := errors.AsType[*fiber.Error](err); ok && fiberErr != nil {
 		return fiberErr.Code
 	}
 

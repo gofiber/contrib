@@ -2,6 +2,7 @@ package newrelic
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -388,6 +389,49 @@ func TestDefaultErrorStatusCodeHandler(t *testing.T) {
 		resp, err := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 		assert.NoError(t, err)
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("should return fiber status code when the fiber error is wrapped", func(t *testing.T) {
+		wrapped := map[string]error{
+			"single": fmt.Errorf("context: %w", fiber.ErrForbidden),
+			"joined": errors.Join(errors.New("cause"), fiber.ErrForbidden),
+		}
+		for name, wrappedErr := range wrapped {
+			t.Run(name, func(t *testing.T) {
+				// given
+				app := fiber.New()
+				app.Get("/", func(ctx fiber.Ctx) error {
+					// The response still holds the default 200: only the error carries the code.
+					assert.Equal(t, http.StatusForbidden, DefaultErrorStatusCodeHandler(ctx, wrappedErr))
+					return wrappedErr
+				})
+
+				// when
+				resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+
+				// then
+				assert.NoError(t, err)
+				assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+			})
+		}
+	})
+
+	t.Run("should return context status code when the fiber error is nil", func(t *testing.T) {
+		// given
+		app := fiber.New()
+		app.Get("/", func(ctx fiber.Ctx) error {
+			ctx.Status(http.StatusTeapot)
+			var fiberErr *fiber.Error
+			assert.Equal(t, http.StatusTeapot, DefaultErrorStatusCodeHandler(ctx, fiberErr))
+			return nil
+		})
+
+		// when
+		resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+
+		// then
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusTeapot, resp.StatusCode)
 	})
 }
 
