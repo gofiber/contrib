@@ -3,6 +3,7 @@ package zerolog
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/requestid"
+	"github.com/gofiber/fiber/v3/middleware/sse"
 	"github.com/gofiber/fiber/v3/middleware/timeout"
 	"github.com/rs/zerolog"
 	"github.com/valyala/fasthttp"
@@ -1227,4 +1229,104 @@ func Test_Res_Headers_Allocs(t *testing.T) {
 	want := testing.AllocsPerRun(100, func() { _ = c.GetRespHeaders() })
 	got := testing.AllocsPerRun(100, func() { _ = responseHeaders(app, c.Response()) })
 	assert.Equal(t, want, got)
+}
+
+type ctxValueKey struct{}
+
+func Test_Logger_HookReadsUserContext(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf).Hook(zerolog.HookFunc(func(e *zerolog.Event, _ zerolog.Level, _ string) {
+		if v, ok := e.GetCtx().Value(ctxValueKey{}).(string); ok {
+			e.Str("ctx_value", v)
+		}
+		if id := requestid.FromContext(e.GetCtx()); id != "" {
+			e.Str("hook_request_id", id)
+		}
+	}))
+
+	app := fiber.New()
+	app.Use(requestid.New())
+	app.Use(New(Config{Logger: &logger}))
+	app.Get("/", func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(c.Context(), ctxValueKey{}, "from-user-context"))
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	req := httptest.NewRequest(fiber.MethodGet, "/", nil)
+	req.Header.Set(fiber.HeaderXRequestID, "rid-123")
+	resp, err := app.Test(req)
+	assert.NoError(t, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+
+	var logs map[string]any
+	assert.NoError(t, json.Unmarshal(buf.Bytes(), &logs))
+	assert.Equal(t, "from-user-context", logs["ctx_value"])
+	assert.Equal(t, "rid-123", logs["hook_request_id"])
+}
+
+func Test_Logger_TimedOutHandler_HookContext(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf).Hook(zerolog.HookFunc(func(e *zerolog.Event, _ zerolog.Level, _ string) {
+		if v, ok := e.GetCtx().Value(ctxValueKey{}).(string); ok {
+			e.Str("ctx_value", v)
+		}
+		e.Str("hook_request_id", requestid.FromContext(e.GetCtx()))
+	}))
+	wrote := make(chan struct{})
+
+	app := fiber.New()
+	app.Use(requestid.New())
+	app.Use(func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(c.Context(), ctxValueKey{}, "from-user-context"))
+		return c.Next()
+	})
+	app.Use(New(Config{Logger: &logger}))
+	app.Get("/", timeout.New(func(c fiber.Ctx) error {
+		<-c.Context().Done()
+		c.Locals("late", true)
+		close(wrote)
+		return nil
+	}, timeout.Config{Timeout: 10 * time.Millisecond}))
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+	assert.NoError(t, err)
+	assert.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
+	<-wrote
+
+	var logs map[string]any
+	assert.NoError(t, json.Unmarshal(buf.Bytes(), &logs))
+	assert.Equal(t, "from-user-context", logs["ctx_value"])
+	assert.Empty(t, logs["hook_request_id"])
+}
+
+func Test_Logger_SSE_HookReadsLocals(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf).Hook(zerolog.HookFunc(func(e *zerolog.Event, _ zerolog.Level, _ string) {
+		e.Str("hook_request_id", requestid.FromContext(e.GetCtx()))
+	}))
+
+	app := fiber.New()
+	app.Use(requestid.New())
+	app.Use(New(Config{Logger: &logger}))
+	app.Get("/", sse.New(sse.Config{Handler: func(c fiber.Ctx, _ *sse.Stream) error {
+		c.Locals("late", true)
+		return nil
+	}}))
+
+	req := httptest.NewRequest(fiber.MethodGet, "/", nil)
+	req.Header.Set(fiber.HeaderXRequestID, "rid-123")
+	resp, err := app.Test(req)
+	assert.NoError(t, err)
+	_, err = io.ReadAll(resp.Body)
+	assert.NoError(t, err)
+
+	var logs map[string]any
+	assert.NoError(t, json.Unmarshal(buf.Bytes(), &logs))
+	assert.Equal(t, "rid-123", logs["hook_request_id"])
 }
