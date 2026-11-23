@@ -2,6 +2,7 @@ package newrelic
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -204,8 +205,11 @@ func transport(schema string) newrelic.TransportType {
 	return newrelic.TransportUnknown
 }
 
+// DefaultErrorStatusCodeHandler returns the code of the *fiber.Error that err is
+// or wraps, as Fiber's DefaultErrorHandler finds it, and otherwise the
+// response's status code.
 func DefaultErrorStatusCodeHandler(c fiber.Ctx, err error) int {
-	if fiberErr, ok := err.(*fiber.Error); ok {
+	if fiberErr, ok := errors.AsType[*fiber.Error](err); ok && fiberErr != nil {
 		return fiberErr.Code
 	}
 
