@@ -1,6 +1,7 @@
 package zerolog
 
 import (
+	"context"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -21,6 +22,8 @@ func New(config ...Config) fiber.Handler {
 		}
 
 		start := time.Now()
+		// What hooks get if timeout.New answered: its handler may still be setting the context then.
+		reqCtx := c.Context()
 
 		// Handle request, store err for logging
 		chainErr := c.Next()
@@ -75,7 +78,10 @@ func New(config ...Config) fiber.Handler {
 		message := cfg.Messages[messageIndex]
 
 		logger := cfg.logger(c, response, latency, chainErr)
-		ctx := c
+		ctx := reqCtx
+		if response == c.Response() {
+			ctx = logContext{Context: c.Context(), c: c}
+		}
 
 		switch level {
 		case zerolog.DebugLevel:
@@ -96,6 +102,20 @@ func New(config ...Config) fiber.Handler {
 
 		return result
 	}
+}
+
+// logContext is c.Context() for zerolog hooks, falling back to c.Value so
+// values kept only in c.Locals (e.g. the request ID) stay visible.
+type logContext struct {
+	context.Context
+	c fiber.Ctx
+}
+
+func (l logContext) Value(key any) any {
+	if v := l.Context.Value(key); v != nil {
+		return v
+	}
+	return l.c.Value(key)
 }
 
 // sentResponse is what the client gets: timeout.New parks its own while the handler keeps c's.

@@ -71,6 +71,14 @@ A multipart form that fasthttp parsed within `BodyLimit` is marshaled back for
 `body`, as in Fiber's logger; use `SkipField` to leave it out. `body` does not
 decode a `Content-Encoding`: such a body is logged as received.
 
+Zerolog hooks get `c.Context()` through `e.GetCtx()`, not `c` itself: what
+`c.SetContext` stored, such as the span of an `otel` middleware registered
+before the logger, with its cancellation and deadline, and a fallback to
+`c.Locals`. For a request the `timeout` middleware answered, the timed-out
+handler may still be using `c`, so hooks get the context `c` had when the
+logger was reached, without that fallback; `PassLocalsToContext` puts values
+such as the request ID in that context as well.
+
 ## Example
 
 ```go
