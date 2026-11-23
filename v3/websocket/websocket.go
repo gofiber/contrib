@@ -234,6 +234,15 @@ func (e *UpgradeError) Error() string {
 	return e.status.Error()
 }
 
+// StatusCode returns the HTTP status the refused handshake is answered with,
+// 500 when the error carries none.
+func (e *UpgradeError) StatusCode() int {
+	if e == nil || e.status == nil {
+		return fiber.StatusInternalServerError
+	}
+	return e.status.Code
+}
+
 // Unwrap returns the *fiber.Error carrying the status, then Err, leaving out
 // whichever is nil: an []error holding a nil error is invalid.
 func (e *UpgradeError) Unwrap() []error {

@@ -134,16 +134,16 @@ by earlier middleware are left in place.
 
 The `Err` field of the `*websocket.UpgradeError` holds why the handshake was refused,
 usually the upgrader's [`HandshakeError`](https://pkg.go.dev/github.com/fasthttp/websocket#HandshakeError),
-such as `websocket: request origin not allowed by Upgrader.CheckOrigin`. Its `Error()`
-returns only the status text, so the reason reaches the client only if the
-`ErrorHandler` sends it. To log it:
+such as `websocket: request origin not allowed by Upgrader.CheckOrigin`, and its
+`StatusCode()` method returns the status. `Error()` returns only the status text, so
+the reason reaches the client only if the `ErrorHandler` sends it. To log it:
 
 ```go
 app := fiber.New(fiber.Config{
     ErrorHandler: func(c fiber.Ctx, err error) error {
         var upgradeErr *websocket.UpgradeError
         if errors.As(err, &upgradeErr) {
-            log.Printf("websocket upgrade refused: %v", upgradeErr.Err)
+            log.Printf("websocket upgrade refused (%d): %v", upgradeErr.StatusCode(), upgradeErr.Err)
         }
         return fiber.DefaultErrorHandler(c, err)
     },

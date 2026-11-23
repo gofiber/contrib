@@ -886,6 +886,7 @@ func TestWebSocketRejectedHandshakeExposesReason(t *testing.T) {
 
 			var ue *UpgradeError
 			require.ErrorAs(t, got, &ue)
+			assert.Equal(t, tc.status, ue.StatusCode())
 			require.Error(t, ue.Err)
 			if tc.reason != nil {
 				assert.ErrorIs(t, got, tc.reason)
@@ -903,9 +904,11 @@ func TestUpgradeErrorWithoutStatus(t *testing.T) {
 	// Built outside the package there is no status: Fiber answers 500, and
 	// errors.As must not hand out a nil *fiber.Error.
 	reason := errors.New("reason")
-	err := error(&UpgradeError{Err: reason})
+	ue := &UpgradeError{Err: reason}
+	err := error(ue)
 
 	assert.Equal(t, utils.StatusMessage(fiber.StatusInternalServerError), err.Error())
+	assert.Equal(t, fiber.StatusInternalServerError, ue.StatusCode())
 	assert.ErrorIs(t, err, reason)
 	var fe *fiber.Error
 	assert.False(t, errors.As(err, &fe))
@@ -915,10 +918,12 @@ func TestUpgradeErrorWithoutStatus(t *testing.T) {
 	empty := &UpgradeError{}
 	assert.Nil(t, empty.Unwrap())
 	assert.Equal(t, utils.StatusMessage(fiber.StatusInternalServerError), empty.Error())
+	assert.Equal(t, fiber.StatusInternalServerError, empty.StatusCode())
 
 	// A typed-nil *UpgradeError does not panic.
 	var typedNil *UpgradeError
 	assert.Equal(t, utils.StatusMessage(fiber.StatusInternalServerError), typedNil.Error())
+	assert.Equal(t, fiber.StatusInternalServerError, typedNil.StatusCode())
 	assert.Nil(t, typedNil.Unwrap())
 }
 
