@@ -212,9 +212,10 @@ func runHandler(conn *Conn, fconn *websocket.Conn, recoverHandler, handler func(
 // UpgradeError is returned by the handler New builds when a request asks to
 // upgrade but the handshake is refused. It wraps the *fiber.Error carrying the
 // response status and Err, the reason for the refusal, so errors.As finds
-// either. Error returns the status text alone: the response the ErrorHandler
-// builds from it is the one a bare *fiber.Error gets, and the reason reaches
-// only code that asks for it.
+// either; a type assertion to *fiber.Error does not match it. Error returns
+// the status text alone, so an ErrorHandler that matches with errors.As, as
+// Fiber's default does, builds the response a bare *fiber.Error gets, and the
+// reason reaches only code that asks for it.
 type UpgradeError struct {
 	// Err is why the handshake was refused: the HandshakeError from
 	// github.com/fasthttp/websocket's Upgrader, or this middleware's own reason
