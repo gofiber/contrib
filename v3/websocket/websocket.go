@@ -225,10 +225,22 @@ type UpgradeError struct {
 	status *fiber.Error
 }
 
+// NewUpgradeError returns an UpgradeError with status and reason, as the
+// handler New builds returns for a refused handshake, so code outside the
+// package, such as a test of an ErrorHandler, can produce one. A zero status
+// means none: the error is then answered with 500, as an UpgradeError literal
+// is.
+func NewUpgradeError(status int, reason error) *UpgradeError {
+	if status == 0 {
+		return &UpgradeError{Err: reason}
+	}
+	return &UpgradeError{Err: reason, status: fiber.NewError(status)}
+}
+
 // Error returns the status text of the response.
 func (e *UpgradeError) Error() string {
 	if e == nil || e.status == nil {
-		// Built without a status, as outside this package: Fiber answers 500.
+		// No status, as in a literal or from a zero status: Fiber answers 500.
 		return utils.StatusMessage(fiber.StatusInternalServerError)
 	}
 	return e.status.Error()
@@ -269,7 +281,7 @@ func (e *UpgradeError) Unwrap() []error {
 // UpgradeError keeps it on the ErrorHandler path; reason is kept for errors.As.
 func rejectHandshake(c fiber.Ctx, status int, reason error) error {
 	c.Set(fiber.HeaderSecWebSocketVersion, supportedVersion)
-	return &UpgradeError{Err: reason, status: fiber.NewError(status, utils.StatusMessage(status))}
+	return NewUpgradeError(status, reason)
 }
 
 // Conn https://godoc.org/github.com/gorilla/websocket#pkg-index

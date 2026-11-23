@@ -901,8 +901,8 @@ func TestWebSocketRejectedHandshakeExposesReason(t *testing.T) {
 }
 
 func TestUpgradeErrorWithoutStatus(t *testing.T) {
-	// Built outside the package there is no status: Fiber answers 500, and
-	// errors.As must not hand out a nil *fiber.Error.
+	// Built as a literal there is no status: Fiber answers 500, and errors.As
+	// must not hand out a nil *fiber.Error.
 	reason := errors.New("reason")
 	ue := &UpgradeError{Err: reason}
 	err := error(ue)
@@ -925,6 +925,35 @@ func TestUpgradeErrorWithoutStatus(t *testing.T) {
 	assert.Equal(t, utils.StatusMessage(fiber.StatusInternalServerError), typedNil.Error())
 	assert.Equal(t, fiber.StatusInternalServerError, typedNil.StatusCode())
 	assert.Nil(t, typedNil.Unwrap())
+}
+
+func TestNewUpgradeError(t *testing.T) {
+	// A test of an ErrorHandler stands in for a refused handshake with it, so
+	// the default ErrorHandler must answer it as it does the middleware's own;
+	// a zero status means none, as in a literal.
+	cases := map[string]struct{ status, want int }{
+		"forbidden":   {fiber.StatusForbidden, fiber.StatusForbidden},
+		"zero status": {0, fiber.StatusInternalServerError},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			reason := errors.New("reason")
+			ue := NewUpgradeError(tc.status, reason)
+			assert.Equal(t, tc.want, ue.StatusCode())
+			assert.Equal(t, utils.StatusMessage(tc.want), ue.Error())
+			assert.ErrorIs(t, ue, reason)
+
+			app := fiber.New()
+			app.Get("/", func(fiber.Ctx) error { return ue })
+			resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, resp.StatusCode)
+			assert.Equal(t, utils.StatusMessage(tc.want), string(body))
+		})
+	}
 }
 
 func TestConnCaptureAllocatesOnlyWhatTheRequestCarries(t *testing.T) {

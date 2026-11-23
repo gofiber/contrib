@@ -150,6 +150,10 @@ app := fiber.New(fiber.Config{
 })
 ```
 
+`websocket.NewUpgradeError(status, reason)` builds one, for example to test an
+`ErrorHandler` without a handshake. A zero status means none, and the error is then
+answered with `500 Internal Server Error`.
+
 ## Reads and writes
 
 `c.ReadMessage()` reads messages up to 64 KiB into a pooled buffer and returns an exact-size
