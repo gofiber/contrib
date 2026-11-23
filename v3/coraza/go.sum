@@ -2,8 +2,8 @@ github.com/corazawaf/coraza-coreruleset v0.0.0-20240226094324-415b1017abdc h1:Ol
 github.com/corazawaf/coraza-coreruleset v0.0.0-20240226094324-415b1017abdc/go.mod h1:7rsocqNDkTCira5T0M7buoKR2ehh7YZiPkzxRuAgvVU=
 github.com/corazawaf/coraza/v3 v3.8.1 h1:dMV55FbMR2vOks/acrT43RShR+VkzU6jwp+XPdxay8o=
 github.com/corazawaf/coraza/v3 v3.8.1/go.mod h1:nPVk2JqADYBcKLYvo9cRsr+z4JhanU0WniGhZZBZD6c=
-github.com/corazawaf/libinjection-go v0.3.6 h1:cXqACFY1anDzC9W127WguanVYvzvvcdQJI0BmErixdk=
-github.com/corazawaf/libinjection-go v0.3.6/go.mod h1:Ik/+w3UmTWH9yn366RgS9D95K3y7Atb5m/H/gXzzPCk=
+github.com/corazawaf/libinjection-go v0.3.7 h1:gkHsTmd9vRP4xdUGe9gL//1ETQ0rU2DclU3l0it0muc=
+github.com/corazawaf/libinjection-go v0.3.7/go.mod h1:Ik/+w3UmTWH9yn366RgS9D95K3y7Atb5m/H/gXzzPCk=
 github.com/foxcpp/go-mockdns v1.2.0 h1:omK3OrHRD1IWJz1FuFBCFquhXslXoF17OvBS6JPzZF0=
 github.com/foxcpp/go-mockdns v1.2.0/go.mod h1:IhLeSFGed3mJIAXPH2aiRQB+kqz7oqu8ld2qVbOu7Wk=
 github.com/fxamacker/cbor/v2 v2.10.0 h1:HVF3T5vYwLqO81ebPirWEPNv2SMrUMD3HLnKgEr6uWE=
