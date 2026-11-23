@@ -901,8 +901,8 @@ func TestWebSocketRejectedHandshakeExposesReason(t *testing.T) {
 }
 
 func TestUpgradeErrorWithoutStatus(t *testing.T) {
-	// Built as a literal there is no status: Fiber answers 500, and errors.As
-	// must not hand out a nil *fiber.Error.
+	// Built as a literal there is no status: errors.As finds Fiber's 500, the
+	// status Fiber answers with, and never a nil *fiber.Error.
 	reason := errors.New("reason")
 	ue := &UpgradeError{Err: reason}
 	err := error(ue)
@@ -911,12 +911,19 @@ func TestUpgradeErrorWithoutStatus(t *testing.T) {
 	assert.Equal(t, fiber.StatusInternalServerError, ue.StatusCode())
 	assert.ErrorIs(t, err, reason)
 	var fe *fiber.Error
-	assert.False(t, errors.As(err, &fe))
+	require.ErrorAs(t, err, &fe)
+	assert.Equal(t, fiber.StatusInternalServerError, fe.Code)
 
-	// With neither a status nor a reason there is nothing to unwrap, and no
-	// nil entry in the slice.
+	// A *fiber.Error in the reason does not pick the status either.
+	lit := &UpgradeError{Err: fiber.ErrForbidden}
+	require.ErrorAs(t, lit, &fe)
+	assert.Equal(t, fiber.StatusInternalServerError, fe.Code)
+	assert.ErrorIs(t, lit, fiber.ErrForbidden)
+
+	// With neither a status nor a reason only the 500 is left to unwrap, and
+	// no nil entry.
 	empty := &UpgradeError{}
-	assert.Nil(t, empty.Unwrap())
+	assert.Equal(t, []error{fiber.ErrInternalServerError}, empty.Unwrap())
 	assert.Equal(t, utils.StatusMessage(fiber.StatusInternalServerError), empty.Error())
 	assert.Equal(t, fiber.StatusInternalServerError, empty.StatusCode())
 
@@ -931,17 +938,24 @@ func TestNewUpgradeError(t *testing.T) {
 	// A test of an ErrorHandler stands in for a refused handshake with it, so
 	// the default ErrorHandler must answer it as it does the middleware's own;
 	// a zero status means none, as in a literal.
-	cases := map[string]struct{ status, want int }{
-		"forbidden":   {fiber.StatusForbidden, fiber.StatusForbidden},
-		"zero status": {0, fiber.StatusInternalServerError},
+	cases := map[string]struct {
+		status int
+		reason error
+		want   int
+	}{
+		"forbidden":   {fiber.StatusForbidden, errors.New("reason"), fiber.StatusForbidden},
+		"zero status": {0, errors.New("reason"), fiber.StatusInternalServerError},
+		// A *fiber.Error in the reason does not pick the status: the error's own
+		// comes first, and without one it is 500.
+		"reason with a status":       {0, fiber.ErrForbidden, fiber.StatusInternalServerError},
+		"reason with another status": {fiber.StatusBadRequest, fiber.ErrForbidden, fiber.StatusBadRequest},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			reason := errors.New("reason")
-			ue := NewUpgradeError(tc.status, reason)
+			ue := NewUpgradeError(tc.status, tc.reason)
 			assert.Equal(t, tc.want, ue.StatusCode())
 			assert.Equal(t, utils.StatusMessage(tc.want), ue.Error())
-			assert.ErrorIs(t, ue, reason)
+			assert.ErrorIs(t, ue, tc.reason)
 
 			app := fiber.New()
 			app.Get("/", func(fiber.Ctx) error { return ue })

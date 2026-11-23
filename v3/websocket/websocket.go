@@ -255,23 +255,21 @@ func (e *UpgradeError) StatusCode() int {
 	return e.status.Code
 }
 
-// Unwrap returns the *fiber.Error carrying the status, then Err, leaving out
-// whichever is nil: an []error holding a nil error is invalid.
+// Unwrap returns the *fiber.Error carrying the status, then Err when it is
+// set. Without a status, as in a literal or from a zero status, the first is
+// Fiber's 500, so a *fiber.Error inside Err cannot pick another status.
 func (e *UpgradeError) Unwrap() []error {
 	if e == nil {
 		return nil
 	}
-	errs := make([]error, 0, 2)
-	if e.status != nil {
-		errs = append(errs, e.status)
+	status := e.status
+	if status == nil {
+		status = fiber.ErrInternalServerError
 	}
-	if e.Err != nil {
-		errs = append(errs, e.Err)
+	if e.Err == nil {
+		return []error{status}
 	}
-	if len(errs) == 0 {
-		return nil
-	}
-	return errs
+	return []error{status, e.Err}
 }
 
 // The upgrader chose the RFC 6455 status: 403 for a bad Origin, 400 for a
