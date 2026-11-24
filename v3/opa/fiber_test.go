@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/recover"
 	"github.com/gofiber/utils/v2"
 	"github.com/stretchr/testify/assert"
 )
@@ -540,5 +541,53 @@ allow if secret == "x"
 		if handlerErr != nil {
 			assert.NotContains(t, handlerErr.Error(), "s3cr3t")
 		}
+	}
+}
+
+func TestOpaRequestWithNilCustomInput(t *testing.T) {
+	module := `
+package example.authz
+
+default allow := false
+
+allow if input.query.ok == ["1"]
+
+allow if input.headers["X-Ok"] == "1"
+
+allow if is_null(input)
+`
+
+	testCases := []struct {
+		desc               string
+		includeQueryString bool
+		includeHeaders     []string
+	}{
+		{desc: "query string", includeQueryString: true},
+		{desc: "headers", includeHeaders: []string{"X-Ok"}},
+		{desc: "neither"},
+	}
+
+	for _, tC := range testCases {
+		app := fiber.New()
+		app.Use(recover.New())
+		app.Use(New(Config{
+			RegoQuery:          "data.example.authz.allow",
+			RegoPolicy:         bytes.NewBufferString(module),
+			IncludeQueryString: tC.includeQueryString,
+			IncludeHeaders:     tC.includeHeaders,
+			InputCreationMethod: func(c fiber.Ctx) (map[string]any, error) {
+				return nil, nil
+			},
+		}))
+		app.Get("/", func(ctx fiber.Ctx) error {
+			return ctx.SendStatus(200)
+		})
+
+		r := httptest.NewRequest("GET", "/?ok=1", nil)
+		r.Header.Set("X-Ok", "1")
+		resp, err := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+
+		assert.NoError(t, err)
+		assert.Equal(t, fiber.StatusOK, resp.StatusCode, tC.desc)
 	}
 }

@@ -51,6 +51,10 @@ func New(cfg Config) fiber.Handler {
 			c.Response().SetBodyString(fmt.Sprintf("Error creating input: %s", err))
 			return err
 		}
+		// A nil map leaves the input null unless query or headers have to go into it.
+		if input == nil && (cfg.IncludeQueryString || len(cfg.IncludeHeaders) > 0) {
+			input = make(map[string]any)
+		}
 		if cfg.IncludeQueryString {
 			queryStringData := make(map[string][]string)
 			for key, value := range c.Request().URI().QueryArgs().All() {
