@@ -1358,3 +1358,13 @@ func TestReadLimitErrorStopsNextReader(t *testing.T) {
 		t.Fatal("NextReader blocked after ErrReadLimit")
 	}
 }
+
+func TestSentinelErrorsMatchTheLibrary(t *testing.T) {
+	for _, pair := range [][2]error{
+		{websocket.ErrBadHandshake, ErrBadHandshake},
+		{websocket.ErrCloseSent, ErrCloseSent},
+		{websocket.ErrReadLimit, ErrReadLimit},
+	} {
+		require.ErrorIs(t, pair[0], pair[1])
+	}
+}
