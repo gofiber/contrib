@@ -40,6 +40,7 @@ type runtime struct {
 
 	storeMu           sync.Mutex
 	storeReady        bool
+	storeInit         chan struct{} // closed when the Init in flight returns
 	registeredTargets map[string]struct{}
 
 	errMu     sync.RWMutex
@@ -523,17 +524,40 @@ func (u *runtime) ensureTargetRegistered(ctx context.Context, target recordTarge
 	return nil
 }
 
+// ensureStoreReady runs one Init at a time without holding storeMu across it, so a
+// caller waits for another's attempt only as long as its own context allows.
 func (u *runtime) ensureStoreReady(ctx context.Context) error {
 	u.storeMu.Lock()
-	defer u.storeMu.Unlock()
-
+	for u.storeInit != nil {
+		inFlight := u.storeInit
+		u.storeMu.Unlock()
+		select {
+		case <-inFlight:
+		case <-ctx.Done():
+			return fmt.Errorf("init store: %w", ctx.Err())
+		}
+		u.storeMu.Lock()
+	}
 	if u.storeReady {
+		u.storeMu.Unlock()
 		return nil
 	}
+	done := make(chan struct{})
+	u.storeInit = done
+	u.storeMu.Unlock()
+
+	ready := false
+	defer func() {
+		u.storeMu.Lock()
+		u.storeReady = ready
+		u.storeInit = nil
+		u.storeMu.Unlock()
+		close(done)
+	}()
 	if err := u.store.Init(ctx); err != nil {
 		return fmt.Errorf("init store: %w", err)
 	}
-	u.storeReady = true
+	ready = true
 	return nil
 }
 

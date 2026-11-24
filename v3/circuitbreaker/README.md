@@ -54,6 +54,14 @@ client can cause, such as struct validator or `c.FormFile` errors, still count a
 make them neutral, return a 4xx `*fiber.Error` for them (from the validator, for example). An
 `IsFailure` that does not count them makes them successes instead.
 
+A request Fiber's server refused before routing, such as a connection reset before the request
+arrived, is neutral whatever its status: no route runs for it, and `IsFailure` is not asked.
+It is recognised by an error status already set on a request no route handler serves
+(`c.Endpoint()` is nil), which includes paths only `Use` middleware such as `proxy.Balancer` or
+`static` answers. A middleware placed before this one that sets a 4xx or 5xx status and calls
+`Next` makes such a request neutral whatever a later handler answers, and one that resets the
+status below 400 makes a refused request count, so register the circuit breaker before them.
+
 ## Benefits of Using a Circuit Breaker
 
 ✅ **Prevents cascading failures** in microservices.  
@@ -91,7 +99,7 @@ reclaims it, or `Timeout` has passed since it was taken.
 | SuccessThreshold | `int` | Number of successful probes required to close the circuit | `1` |
 | HalfOpenMaxConcurrent | `int` | Max concurrent probes in half-open state | `1` |
 | Interval | `time.Duration` | Period after which failure counts reset in closed state. Zero means failures accumulate until the circuit opens. | `0` |
-| IsFailure | `func(c fiber.Ctx, err error) bool` | Decides whether a served request counts as a failure. An outcome it does not count that ends with a 4xx status or a request `*fiber.BindError` is neutral. | `Status >= 500`, taken from a returned `*fiber.Error` or else from the response; any other returned error except a request `*fiber.BindError` |
+| IsFailure | `func(c fiber.Ctx, err error) bool` | Decides whether a served request counts as a failure; it is not asked for a request the server refused before routing. An outcome it does not count that ends with a 4xx status or a request `*fiber.BindError` is neutral, unless the bind error carries a 5xx or nil `*fiber.Error`. | `Status >= 500`, taken from a returned `*fiber.Error` or else from the response; any other returned error except a request `*fiber.BindError` |
 | Clock | `func() time.Time` | Reads the current time. Recovery is derived from it, so substituting a clock drives the circuit through every state without waiting. | `time.Now` |
 | OnOpen | `func(fiber.Ctx) error` | Answers a request **refused because the circuit is open** | `503 response` |
 | OnHalfOpen | `func(fiber.Ctx) error` | Answers a request **refused because half-open is already at `HalfOpenMaxConcurrent`** | `429 response` |

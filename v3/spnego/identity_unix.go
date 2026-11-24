@@ -7,12 +7,12 @@ import (
 	"syscall"
 )
 
-// fileRevisionID returns the device and inode, so a rotation by rename is
-// detected even at the same size and mtime.
+// fileRevisionID returns the device, inode and ctime, so a rotation by rename is
+// detected even at the same size and mtime, and even on a reused inode number.
 func fileRevisionID(info fs.FileInfo) fileID {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
 		return fileID{}
 	}
-	return fileID{a: uint64(stat.Dev), b: uint64(stat.Ino)}
+	return fileID{a: uint64(stat.Dev), b: uint64(stat.Ino), c: changeTime(stat)}
 }

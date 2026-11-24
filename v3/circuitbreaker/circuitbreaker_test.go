@@ -4,17 +4,20 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/gofiber/contrib/v3/circuitbreaker"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 )
 
 // fakeClock is the only source of time the circuit breaker reads when it is
@@ -898,6 +901,126 @@ func TestBindErrorJoinedWithServerErrorFails(t *testing.T) {
 		_, err := app.Test(req)
 		require.NoError(t, err)
 		require.Equal(t, circuitbreaker.StateOpen, cb.GetState(), "a server error next to a bind error still fails: %v", serverErr)
+	}
+}
+
+func TestNilErrorsCountAsServerErrors(t *testing.T) {
+	t.Parallel()
+
+	var nilErr *fiber.Error
+	var nilBindErr *fiber.BindError
+	for _, handlerErr := range []error{nilErr, fmt.Errorf("lookup: %w", nilErr), nilBindErr, &fiber.BindError{Source: fiber.BindSourceBody, Err: nilErr}} {
+		for _, tc := range []struct {
+			isFailure func(fiber.Ctx, error) bool
+			want      circuitbreaker.State
+		}{
+			{want: circuitbreaker.StateOpen},
+			{isFailure: func(fiber.Ctx, error) bool { return false }, want: circuitbreaker.StateClosed},
+		} {
+			cb := circuitbreaker.New(circuitbreaker.Config{FailureThreshold: 1, Timeout: time.Minute, IsFailure: tc.isFailure})
+			panics := make(chan any, 1)
+			app := fiber.New()
+			app.Use(func(c fiber.Ctx) error {
+				defer func() {
+					if r := recover(); r != nil {
+						panics <- r
+					}
+				}()
+				return c.Next()
+			})
+			app.Use(circuitbreaker.Middleware(cb))
+			app.Get("/", func(fiber.Ctx) error {
+				return handlerErr
+			})
+
+			get(t, app, "/")
+			select {
+			case r := <-panics:
+				t.Fatalf("%#v: %v", handlerErr, r)
+			default:
+			}
+			require.Equal(t, tc.want, cb.GetState(), "%#v", handlerErr)
+		}
+	}
+}
+
+func TestCustomIsFailureCountsANilFiberErrorInABindErrorAsSuccess(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 1,
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
+		IsFailure:        func(fiber.Ctx, error) bool { return false },
+	})
+	cb.ReportFailure()
+	clock.Advance(2 * time.Minute)
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("panic: %v", r)
+			}
+		}()
+		return c.Next()
+	})
+	app.Use(circuitbreaker.Middleware(cb))
+	app.Get("/", func(fiber.Ctx) error {
+		return &fiber.BindError{Source: fiber.BindSourceBody, Err: (*fiber.Error)(nil)}
+	})
+
+	get(t, app, "/")
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState())
+}
+
+// refuse reports a connection reset before any request arrived, as fasthttp does.
+func refuse(t *testing.T, app *fiber.App) {
+	t.Helper()
+	fctx := &fasthttp.RequestCtx{}
+	app.Server().ErrorHandler(fctx, &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET})
+	require.Equal(t, fiber.StatusBadGateway, fctx.Response.StatusCode())
+}
+
+func TestRequestsRefusedByTheServerAreNeutral(t *testing.T) {
+	t.Parallel()
+
+	for name, isFailure := range map[string]func(fiber.Ctx, error) bool{
+		"default": nil,
+		"status": func(c fiber.Ctx, err error) bool {
+			return err != nil || c.Response().StatusCode() >= fiber.StatusInternalServerError
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			clock := newFakeClock()
+			cb := circuitbreaker.New(circuitbreaker.Config{
+				FailureThreshold:      2,
+				SuccessThreshold:      1,
+				HalfOpenMaxConcurrent: 1,
+				Timeout:               time.Minute,
+				Clock:                 clock.Now,
+				IsFailure:             isFailure,
+			})
+			app := newApp(cb)
+			app.Handler()
+
+			for range 5 {
+				refuse(t, app)
+			}
+			require.Equal(t, circuitbreaker.StateClosed, cb.GetState(), "a request the server refused is not a failure of the service")
+
+			trip(t, app, 2)
+			clock.Advance(time.Minute)
+			for range 5 {
+				refuse(t, app)
+			}
+			require.Equal(t, circuitbreaker.StateHalfOpen, cb.GetState(), "a refused probe neither fails nor passes")
+
+			require.Equal(t, fiber.StatusOK, get(t, app, "/ok").StatusCode)
+			require.Equal(t, circuitbreaker.StateClosed, cb.GetState())
+		})
 	}
 }
 

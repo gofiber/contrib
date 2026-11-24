@@ -71,6 +71,9 @@ var ConfigDefault = &Config{
 	LangHandler:      defaultLangHandler,
 }
 
+// Hoisted: a literal variadic argument to Vary is heap-allocated on every call.
+var varyAcceptLanguage = []string{fiber.HeaderAcceptLanguage}
+
 func defaultLangHandler(c fiber.Ctx, defaultLang string) string {
 	if c == nil || c.Request() == nil {
 		return defaultLang
@@ -78,6 +81,8 @@ func defaultLangHandler(c fiber.Ctx, defaultLang string) string {
 	if lang := c.Query("lang"); lang != "" {
 		return utils.CopyString(lang)
 	}
+	// The header picks the language from here on, also when it is absent.
+	c.Vary(varyAcceptLanguage...)
 	if lang := c.Get("Accept-Language"); lang != "" {
 		return utils.CopyString(lang)
 	}

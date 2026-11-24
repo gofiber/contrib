@@ -347,12 +347,7 @@ func TestKeytabStaleGraceExpires(t *testing.T) {
 
 // An episode ending on the cache-hit path, when a restore leaves size and mtime.
 func TestKeytabStaleGraceResetsAfterRecovery(t *testing.T) {
-	dir := t.TempDir()
-	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
-	original, err := os.ReadFile(filename)
-	require.NoError(t, err)
-	info, err := os.Stat(filename)
-	require.NoError(t, err)
+	filename, corrupt, restore := swappableKeytab(t)
 
 	now := time.Now()
 	cache := &keytabFileCache{
@@ -364,14 +359,12 @@ func TestKeytabStaleGraceResetsAfterRecovery(t *testing.T) {
 	require.NoError(t, err)
 
 	// Corrupt it, and confirm the degraded episode has started.
-	require.NoError(t, os.WriteFile(filename, []byte("12"), 0o600))
+	corrupt()
 	_, err = cache.load()
 	require.NoError(t, err)
 	require.True(t, cache.degraded.Load())
 
-	// Restore byte-for-byte, preserving size and mtime.
-	require.NoError(t, os.WriteFile(filename, original, 0o600))
-	require.NoError(t, os.Chtimes(filename, info.ModTime(), info.ModTime()))
+	restore()
 	served, err := cache.load()
 	require.NoError(t, err)
 	require.Same(t, good, served)
@@ -2301,25 +2294,19 @@ func TestEndEpisodeIfCurrentOnAlreadyClearedEpisode(t *testing.T) {
 	flog.SetOutput(&logged)
 	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
 
-	dir := t.TempDir()
-	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
-	original, err := os.ReadFile(filename)
-	require.NoError(t, err)
-	info, err := os.Stat(filename)
-	require.NoError(t, err)
+	filename, corrupt, restore := swappableKeytab(t)
 
 	cache := newKeytabFileCache([]string{filename})
-	_, err = cache.load()
+	_, err := cache.load()
 	require.NoError(t, err)
 	stamps := cache.snapshot.Load().stamps
 
 	// Open an episode, then restore the keytab to the snapshotted revision.
-	require.NoError(t, os.WriteFile(filename, []byte("12"), 0o600))
+	corrupt()
 	_, err = cache.load()
 	require.NoError(t, err)
 	require.True(t, cache.degraded.Load())
-	require.NoError(t, os.WriteFile(filename, original, 0o600))
-	require.NoError(t, os.Chtimes(filename, info.ModTime(), info.ModTime()))
+	restore()
 
 	// The first arrival closes it and announces.
 	cache.endEpisodeIfCurrent(stamps)
@@ -3139,19 +3126,14 @@ func TestUnderLockMatchClosesEpisode(t *testing.T) {
 	flog.SetOutput(&logged)
 	t.Cleanup(func() { flog.SetOutput(os.Stderr) })
 
-	dir := t.TempDir()
-	filename := writeMockKeytab(t, dir, "sso.keytab", "HTTP/sso.example.com")
-	original, err := os.ReadFile(filename)
-	require.NoError(t, err)
-	info, err := os.Stat(filename)
-	require.NoError(t, err)
+	filename, corrupt, restore := swappableKeytab(t)
 
 	cache := newKeytabFileCache([]string{filename})
-	_, err = cache.load()
+	_, err := cache.load()
 	require.NoError(t, err)
 
 	// Open an episode on a broken revision.
-	require.NoError(t, os.WriteFile(filename, []byte("12"), 0o600))
+	corrupt()
 	_, err = cache.load()
 	require.NoError(t, err)
 	require.True(t, cache.degraded.Load())
@@ -3165,8 +3147,7 @@ func TestUnderLockMatchClosesEpisode(t *testing.T) {
 	}()
 	// Waited for: a loader that had not stat'd would close it through the lock-free path.
 	waitUntilBlockedOnMutex(t, "(*keytabFileCache).load(")
-	require.NoError(t, os.WriteFile(filename, original, 0o600))
-	require.NoError(t, os.Chtimes(filename, info.ModTime(), info.ModTime()))
+	restore()
 	cache.mu.Unlock()
 	<-done
 
@@ -3227,6 +3208,29 @@ func TestFileStampTracksSizeAndModTime(t *testing.T) {
 		require.NoError(t, err)
 		require.NotSame(t, before, after, "a same-mtime rewrite must be detected by size")
 	})
+}
+
+// swappableKeytab returns a symlinked keytab path and swaps to switch it between a broken file
+// and the original; any rewrite would give the original a new ctime and so a new revision.
+func swappableKeytab(t *testing.T) (filename string, corrupt, restore func()) {
+	t.Helper()
+	dir := t.TempDir()
+	good := writeMockKeytab(t, dir, "good.keytab", "HTTP/sso.example.com")
+	bad := path.Join(dir, "bad.keytab")
+	require.NoError(t, os.WriteFile(bad, []byte("12"), 0o600))
+	filename = path.Join(dir, "sso.keytab")
+	point := func(target string) {
+		require.NoError(t, os.Symlink(target, filename+".tmp"))
+		require.NoError(t, os.Rename(filename+".tmp", filename))
+	}
+	if err := os.Symlink(good, filename); err != nil {
+		if runtime.GOOS != "windows" {
+			require.NoError(t, err)
+		}
+		// Windows allows symlinks only in Developer Mode or with a privilege.
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	return filename, func() { point(bad) }, func() { point(good) }
 }
 
 // testKeytabLookup returns a lookup over a throwaway mock keytab.

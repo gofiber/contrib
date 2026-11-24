@@ -880,6 +880,45 @@ func TestCachedSnapshotDoesNotHoldCallerContextError(t *testing.T) {
 	requireEqual(t, 5*time.Second, u.snapshotTTL)
 }
 
+func TestCachedSnapshotLifetimeStartsAfterRefresh(t *testing.T) {
+	t.Parallel()
+
+	store := newSnapshotStore()
+	u := newSnapshotUptime(store)
+	u.store = &slowListStore{snapshotStore: store, delay: 1100 * time.Millisecond}
+
+	_, err := u.cachedSnapshot(context.Background())
+	requireNoError(t, err)
+	requireEqual(t, time.Second, u.snapshotTTL)
+	_, err = u.cachedSnapshot(context.Background())
+	requireNoError(t, err)
+	requireEqual(t, 1, store.listServicesCalls)
+}
+
+func TestEnsureStoreReadyStopsWaitingAtCallerDeadline(t *testing.T) {
+	t.Parallel()
+
+	store := &blockingInitStore{snapshotStore: newSnapshotStore(), entered: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() { close(store.release) })
+	u := newSnapshotUptime(store.snapshotStore)
+	u.store = store
+
+	go func() { _ = u.ensureStoreReady(context.Background()) }()
+	<-store.entered
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- u.ensureStoreReady(ctx) }()
+	select {
+	case err := <-done:
+		requireError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("ensureStoreReady waited for another caller's Init past its own deadline")
+	}
+	requireEqual(t, int32(1), store.inits.Load())
+}
+
 func TestSnapshotReturnsStoreError(t *testing.T) {
 	t.Parallel()
 
@@ -1858,6 +1897,31 @@ type snapshotStore struct {
 	cleanupCalls           int
 	rollupOptions          storage.RollupOptions
 	closeCalls             int
+}
+
+type slowListStore struct {
+	*snapshotStore
+	delay time.Duration
+}
+
+func (s *slowListStore) ListServices(ctx context.Context) ([]storage.Service, error) {
+	time.Sleep(s.delay)
+	return s.snapshotStore.ListServices(ctx)
+}
+
+type blockingInitStore struct {
+	*snapshotStore
+	inits   atomic.Int32
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingInitStore) Init(ctx context.Context) error {
+	if s.inits.Add(1) == 1 {
+		close(s.entered)
+	}
+	<-s.release
+	return s.snapshotStore.Init(ctx)
 }
 
 func newSnapshotStore() *snapshotStore {
