@@ -653,8 +653,8 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 	kws.postGate.Lock()
 	defer kws.postGate.Unlock()
 
-	// The POST ahead of us may have torn the session down (e.g. refused auth).
-	if !kws.IsAlive() {
+	// The POST ahead of us may have torn the session down (e.g. refused auth), or Close may have begun.
+	if !kws.acceptsInbound() {
 		return writePollingError(c, 1)
 	}
 
@@ -686,7 +686,7 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 	rest := body
 	count := 0
 	// Checked before each packet, as read() does: a tear-down stops the dispatch.
-	for len(rest) > 0 && kws.IsAlive() {
+	for len(rest) > 0 && kws.acceptsInbound() {
 		if count >= MaxBatchPackets {
 			kws.fireEvent(EventError, nil, ErrBatchPacketsExceeded)
 			break

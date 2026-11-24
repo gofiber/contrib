@@ -1845,6 +1845,12 @@ func (kws *Websocket) IsAlive() bool {
 	return kws.isAlive.Load()
 }
 
+// acceptsInbound turns false once Close begins, before the session is marked
+// dead: EventClose listeners and a full send queue can hold Close open.
+func (kws *Websocket) acceptsInbound() bool {
+	return kws.isAlive.Load() && !kws.closeStarted.Load()
+}
+
 func (kws *Websocket) isConnected() bool {
 	return kws.connected.Load() && kws.isAlive.Load()
 }
@@ -2057,7 +2063,7 @@ func (kws *Websocket) run() {
 func (kws *Websocket) installControlHandlers() {
 	conn := kws.Conn
 	conn.SetPingHandler(func(data string) error {
-		if kws.IsAlive() {
+		if kws.acceptsInbound() {
 			kws.fireEvent(EventPing, []byte(data), nil)
 		}
 		err := conn.WriteControl(PongMessage, []byte(data), time.Now().Add(controlWriteTimeout))
@@ -2071,7 +2077,7 @@ func (kws *Websocket) installControlHandlers() {
 		return err
 	})
 	conn.SetPongHandler(func(string) error {
-		if kws.IsAlive() {
+		if kws.acceptsInbound() {
 			kws.fireEvent(EventPong, nil, nil)
 		}
 		return nil
@@ -2215,6 +2221,11 @@ func (kws *Websocket) read() {
 		// heartbeat enforcer.
 		kws.lastPongNanos.Store(time.Now().UnixNano())
 
+		// Still proof of life, but a peer being closed reaches no listener.
+		if !kws.acceptsInbound() {
+			continue
+		}
+
 		switch mType {
 		case BinaryMessage:
 			// ReadMessage hands over a buffer the caller owns, so the
@@ -2260,7 +2271,7 @@ func (kws *Websocket) dispatchEIOFrame(msg []byte) {
 		return
 	}
 	rest, count := msg, 0
-	for len(rest) > 0 && kws.IsAlive() {
+	for len(rest) > 0 && kws.acceptsInbound() {
 		if count >= MaxBatchPackets {
 			logf("warn", "batched_frame_overflow", "uuid", kws.UUID, "limit", MaxBatchPackets)
 			kws.fireEvent(EventError, nil, ErrBatchPacketsExceeded)

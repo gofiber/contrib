@@ -740,6 +740,71 @@ func TestSocketIOEventCloseListenerEmitsBeforeDisconnect(t *testing.T) {
 	require.Equal(t, "41", string(msg))
 }
 
+func TestSocketIOCloseStopsDispatchBeforeTeardown(t *testing.T) {
+	resetSIOGlobals(t)
+	kwsCh := captureConnect(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	releaseClose := sync.OnceFunc(func() { close(release) })
+	On(EventClose, func(*EventPayload) {
+		close(entered)
+		<-release
+	})
+	var dispatched atomic.Int32
+	On("chat", func(*EventPayload) { dispatched.Add(1) })
+	On(EventPing, func(*EventPayload) { dispatched.Add(1) })
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+	kws := awaitSession(t, kwsCh)
+
+	closed := make(chan struct{})
+	go func() {
+		kws.Close()
+		close(closed)
+	}()
+	defer releaseClose()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventClose did not fire")
+	}
+
+	pong := make(chan struct{}, 1)
+	conn.SetPongHandler(func(string) error {
+		select {
+		case pong <- struct{}{}:
+		default:
+		}
+		return nil
+	})
+	go func() {
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`42["chat"]`)))
+	require.NoError(t, conn.WriteControl(websocket.PingMessage, []byte("p"), time.Now().Add(time.Second)))
+	select {
+	case <-pong:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not answer the ping")
+	}
+	require.Zero(t, dispatched.Load())
+
+	releaseClose()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return")
+	}
+}
+
 // TestSocketIOHandshakeRejectionDeliversConnectError verifies that a
 // rejected CONNECT still gets its CONNECT_ERROR through before the socket
 // is closed, with a Close frame in between.

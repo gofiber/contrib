@@ -1222,6 +1222,51 @@ func TestPollingBinaryInbound(t *testing.T) {
 	}
 }
 
+func TestPollingCloseStopsDispatchBeforeTeardown(t *testing.T) {
+	resetSIOGlobals(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	releaseClose := sync.OnceFunc(func() { close(release) })
+	On(EventClose, func(*EventPayload) {
+		close(entered)
+		<-release
+	})
+	var chats atomic.Int32
+	On("chat", func(*EventPayload) { chats.Add(1) })
+	sessions := make(chan *Websocket, 1)
+	_, c, td := newPollingTestServer(t, func(kws *Websocket) { sessions <- kws })
+	defer td()
+	defer releaseClose()
+
+	sid, _, _ := pollOpen(t, c)
+	_, st := pollPost(t, c, sid, []byte(`40`))
+	require.Equal(t, http.StatusOK, st)
+	kws := <-sessions
+
+	closed := make(chan struct{})
+	go func() {
+		kws.Close()
+		close(closed)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventClose did not fire")
+	}
+
+	body, st := pollPost(t, c, sid, []byte(`42["chat"]`))
+	require.Equal(t, http.StatusBadRequest, st)
+	require.Contains(t, string(body), `"code":1`)
+	require.Zero(t, chats.Load())
+
+	releaseClose()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return")
+	}
+}
+
 func TestPollingUndecodableBinaryCountsTowardMaxBatchPackets(t *testing.T) {
 	resetSIOGlobals(t)
 
