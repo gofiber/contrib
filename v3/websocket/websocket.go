@@ -5,6 +5,7 @@
 package websocket
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -308,15 +309,18 @@ func (conn *Conn) capture(fctx *fasthttp.RequestCtx) {
 	fctx.VisitUserValuesAll(func(key, value any) {
 		if s, ok := key.(string); ok {
 			key = utils.CopyString(s)
-		} else if key != nil && !reflect.ValueOf(key).Comparable() {
-			return // fasthttp accepts e.g. a slice key, a map panics on it
+		} else if key != nil {
+			if !reflect.ValueOf(key).Comparable() {
+				return // fasthttp accepts e.g. a slice key, a map panics on it
+			}
+			key = copyNamedKind(key)
 		}
 		// Request strings and bytes alias buffers the next request reuses.
 		switch v := value.(type) {
 		case string:
 			value = utils.CopyString(v)
 		case []byte:
-			value = utils.CopyBytes(v)
+			value = bytes.Clone(v) // keeps nil, so a nil check reads as it did in middleware
 		default:
 			value = copyNamedKind(value)
 		}

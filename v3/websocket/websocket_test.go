@@ -1039,6 +1039,36 @@ func TestConnCaptureCopiesStringAndByteLocals(t *testing.T) {
 	assert.Equal(t, []byte("alice"), conn.Locals("raw"))
 }
 
+func TestConnCaptureKeepsNilByteLocalNil(t *testing.T) {
+	fctx := &fasthttp.RequestCtx{}
+	fctx.SetUserValue("user", []byte(nil))
+	fctx.SetUserValue("empty", []byte{})
+
+	conn := &Conn{}
+	conn.capture(fctx)
+
+	user, ok := conn.Locals("user").([]byte)
+	require.True(t, ok)
+	assert.Nil(t, user)
+	empty, ok := conn.Locals("empty").([]byte)
+	require.True(t, ok)
+	assert.NotNil(t, empty)
+}
+
+func TestConnCaptureCopiesNamedStringLocalKeys(t *testing.T) {
+	type roomGrant string
+	buf := []byte("lobby")
+	fctx := &fasthttp.RequestCtx{}
+	fctx.SetUserValue(roomGrant(utils.UnsafeString(buf)), true)
+
+	conn := &Conn{}
+	conn.capture(fctx)
+	copy(buf, "staff")
+
+	assert.Equal(t, true, conn.Locals(roomGrant("lobby")))
+	assert.Nil(t, conn.Locals(roomGrant("staff")))
+}
+
 func TestConnCaptureCopiesNamedStringAndByteLocals(t *testing.T) {
 	type userID string
 	type octet uint8
