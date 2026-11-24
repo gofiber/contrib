@@ -467,7 +467,8 @@ func Test_RoutePermission_RouterSpelling(t *testing.T) {
 	p,bob,/admin,GET,deny
 	p,bob,/admin/*,GET,deny
 	p,bob,/blog/*,DELETE,allow
-	p,bob,/doc/abc,PUT,allow`
+	p,bob,/doc/abc,PUT,allow
+	p,bob,/doc/ABC/*,PUT,allow`
 
 	testCases := []struct {
 		desc       string
@@ -491,6 +492,7 @@ func Test_RoutePermission_RouterSpelling(t *testing.T) {
 		{desc: "allowed path in upper case", url: "/BLOG/", method: "GET", statusCode: 200},
 		{desc: "allowed parameter", url: "/doc/abc", method: "PUT", statusCode: 200},
 		{desc: "another parameter that folds to the allowed one", url: "/doc/ABC", method: "PUT", statusCode: 403},
+		{desc: "another parameter that folds to the allowed one, with a trailing slash", url: "/doc/ABC/", method: "PUT", statusCode: 403},
 		{desc: "case sensitive router", config: fiber.Config{CaseSensitive: true}, url: "/ADMIN", method: "GET", statusCode: 404},
 		{desc: "strict router", config: fiber.Config{StrictRouting: true}, url: "/blog/", method: "DELETE", statusCode: 404},
 	}
