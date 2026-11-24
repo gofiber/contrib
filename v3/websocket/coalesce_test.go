@@ -373,6 +373,35 @@ func TestCoalescingConnCloseFailsStalledWriterWithoutWriteDeadline(t *testing.T)
 	assert.True(t, src.isClosed())
 }
 
+func TestCoalescingConnLateWriterKeepsCloseBound(t *testing.T) {
+	c, src := attachedConn(t)
+	feedAndRead(t, c, src, "frame1frame2")
+	_, err := c.Write([]byte("reply"))
+	require.NoError(t, err)
+	src.stallWrites()
+
+	closed := make(chan error, 1)
+	go func() { closed <- c.Close() }()
+	select {
+	case <-src.writing:
+	case <-time.After(time.Second):
+		t.Fatal("Close never flushed what was pending")
+	}
+
+	require.NoError(t, c.SetWriteDeadline(time.Time{}))
+	require.NoError(t, c.SetDeadline(time.Time{}))
+	_, err = c.Write([]byte("late"))
+	require.ErrorIs(t, err, net.ErrClosed)
+
+	src.mu.Lock()
+	last := src.writeDeadlines[len(src.writeDeadlines)-1]
+	src.mu.Unlock()
+	assert.False(t, last.IsZero(), "a late writer lifted the bound on Close's flush")
+
+	src.release()
+	require.NoError(t, <-closed)
+}
+
 func TestCoalescingConnReaderDoesNotWaitForStalledWriter(t *testing.T) {
 	c, src := attachedConn(t)
 	src.stallWrites()
