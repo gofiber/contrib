@@ -55,7 +55,7 @@ The middleware copies the credential before parsing it, so the string `TokenProc
 | Extractor          | `Extractor`                          | Function used to extract the token from the request.                                  | `FromAuthHeader("Bearer")`   |
 | TokenProcessorFunc | `func(token string) (string, error)` | TokenProcessorFunc processes the token extracted using the Extractor.                 | `nil`                        |
 | KeyFunc            | `jwt.Keyfunc`                        | User-defined function that supplies the public key for token validation.              | `nil` (uses internal default)|
-| JWKSetURLs         | `[]string`                           | List of JSON Web Key (JWK) Set URLs used to obtain signing keys for parsing JWTs.     | `nil`                        |
+| JWKSetURLs         | `[]string`                           | List of JSON Web Key (JWK) Set URLs used to obtain signing keys for parsing JWTs. A set larger than 1 MiB is refused. | `nil`                        |
 | ParserOptions      | `[]jwt.ParserOption`                 | List of [`jwt.ParserOption`](https://pkg.go.dev/github.com/golang-jwt/jwt/v5#ParserOption), provides additional options for JWT parsing.                | `nil`                        |
 | KnownCriticalHeaders | `[]string`                         | JWS `crit` header parameters this application understands and processes itself.       | `nil`                        |
 

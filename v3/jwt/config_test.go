@@ -1,7 +1,11 @@
 package jwtware
 
 import (
+	"compress/gzip"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
@@ -89,6 +93,34 @@ func TestPanicOnInvalidJWKSetURLs(t *testing.T) {
 		JWKSetURLs: []string{"invalid-url"}, // This would cause panic in keyfunc
 	})
 	require.Panics(t, func() { makeCfg(config) })
+}
+
+func TestJWKSetSizeIsBounded(t *testing.T) {
+	t.Parallel()
+
+	const empty = `{"keys":[]}`
+	for _, gzipped := range []bool{false, true} {
+		for size, accepted := range map[int]bool{maxJWKSetSize: true, maxJWKSetSize + 1: false} {
+			body := empty[:len(empty)-1] + strings.Repeat(" ", size-len(empty)) + "}"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if !gzipped {
+					_, _ = w.Write([]byte(body))
+					return
+				}
+				w.Header().Set(fiber.HeaderContentEncoding, "gzip")
+				gz := gzip.NewWriter(w)
+				_, _ = gz.Write([]byte(body))
+				_ = gz.Close()
+			}))
+			newCfg := func() { makeCfg([]Config{{JWKSetURLs: []string{server.URL}}}) }
+			if accepted {
+				require.NotPanics(t, newCfg, "size %d, gzip %v", size, gzipped)
+			} else {
+				require.Panics(t, newCfg, "size %d, gzip %v", size, gzipped)
+			}
+			server.Close()
+		}
+	}
 }
 
 func TestCustomClaims(t *testing.T) {

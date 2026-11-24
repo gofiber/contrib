@@ -1,9 +1,13 @@
 package jwtware
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"net/url"
 	"slices"
 	"time"
@@ -81,6 +85,7 @@ type Config struct {
 	// - Auto-refresh on new "kid" in JWT.
 	// - Rate limit refreshes to once every 5 minutes.
 	// - Timeout refreshes after 10 seconds.
+	// - Refuse a JWK Set larger than 1 MiB once decompressed.
 	// At least one of the following is required: KeyFunc, JWKSetURLs, SigningKeys, or SigningKey.
 	JWKSetURLs []string
 
@@ -306,7 +311,27 @@ func keyfuncOptions() keyfunc.Options {
 		RefreshRateLimit:  time.Minute * 5,
 		RefreshTimeout:    time.Second * 10,
 		RefreshUnknownKID: true,
+		ResponseExtractor: extractJWKSet,
 	}
+}
+
+// maxJWKSetSize bounds a JWK Set after decompression; real ones are a few KB.
+const maxJWKSetSize = 1 << 20
+
+// extractJWKSet is keyfunc.ResponseExtractorStatusOK with a size limit.
+func extractJWKSet(_ context.Context, resp *http.Response) (json.RawMessage, error) {
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: %d", keyfunc.ErrInvalidHTTPStatusCode, resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxJWKSetSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read JWK Set: %w", err)
+	}
+	if len(body) > maxJWKSetSize {
+		return nil, fmt.Errorf("JWK Set is larger than %d bytes", maxJWKSetSize)
+	}
+	return body, nil
 }
 
 // signingKeyFunc returns the key function for a single configured key. A key
