@@ -3223,7 +3223,13 @@ func swappableKeytab(t *testing.T) (filename string, corrupt, restore func()) {
 		require.NoError(t, os.Symlink(target, filename+".tmp"))
 		require.NoError(t, os.Rename(filename+".tmp", filename))
 	}
-	point(good)
+	if err := os.Symlink(good, filename); err != nil {
+		if runtime.GOOS != "windows" {
+			require.NoError(t, err)
+		}
+		// Windows allows symlinks only in Developer Mode or with a privilege.
+		t.Skipf("symlinks unavailable: %v", err)
+	}
 	return filename, func() { point(bad) }, func() { point(good) }
 }
 
