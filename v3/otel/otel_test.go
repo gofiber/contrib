@@ -2287,6 +2287,35 @@ func TestInvalidUTF8ErrorAndSpanNameAreReplaced(t *testing.T) {
 	assert.Contains(t, spans[0].Events()[0].Attributes, semconv.ExceptionMessage("no user \uFFFD"))
 }
 
+func TestErrorMessageOutlivesRequest(t *testing.T) {
+	t.Parallel()
+
+	app, sr := newTracedApp(t, fiber.Config{})
+	app.Get("/fail", func(c fiber.Ctx) error {
+		return fiber.NewError(fiber.StatusBadRequest, c.Query("reason"))
+	})
+
+	handler := app.Handler()
+	var fctx fasthttp.RequestCtx
+	for _, uri := range []string{"/fail?reason=first", "/fail?reason=other", "/fail?reason=%FF%FF"} {
+		fctx.Request.Reset()
+		fctx.Response.Reset()
+		fctx.Request.SetRequestURI(uri)
+		handler(&fctx)
+	}
+
+	spans := sr.Ended()
+	require.Len(t, spans, 3)
+	for i, message := range []string{"first", "other", "\uFFFD"} {
+		require.Len(t, spans[i].Events(), 1)
+		assert.Equal(t, semconv.ExceptionEventName, spans[i].Events()[0].Name)
+		assert.ElementsMatch(t, []attribute.KeyValue{
+			semconv.ExceptionType("*fiber.Error"),
+			semconv.ExceptionMessage(message),
+		}, spans[i].Events()[0].Attributes)
+	}
+}
+
 func TestRedactedQueryParams(t *testing.T) {
 	t.Parallel()
 

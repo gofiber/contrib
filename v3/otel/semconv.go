@@ -3,10 +3,10 @@ package otel
 import (
 	"bytes"
 	"encoding/base64"
-	"errors"
 	"io"
 	"net"
 	"net/netip"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -253,14 +253,22 @@ func validString(value string) string {
 	return strings.ToValidUTF8(value, "�")
 }
 
-// recordableError replaces an error whose message, often built from request input, is invalid UTF-8.
-func recordableError(err error) error {
-	msg := err.Error()
-	if valid := validString(msg); valid != msg {
-		return errors.New(valid)
+// exceptionAttributes is RecordError's event for err, its message validated and copied off request buffers.
+func exceptionAttributes(err error) []attribute.KeyValue {
+	return []attribute.KeyValue{
+		semconv.ExceptionType(exceptionType(err)),
+		semconv.ExceptionMessage(strings.Clone(validString(err.Error()))),
+	}
+}
+
+// exceptionType names err's type as the SDK's RecordError does.
+func exceptionType(err error) string {
+	t := reflect.TypeOf(err)
+	if t.PkgPath() == "" && t.Name() == "" {
+		return t.String()
 	}
 
-	return err
+	return t.PkgPath() + "." + t.Name()
 }
 
 // validStrings is validString over a slice the caller owns.

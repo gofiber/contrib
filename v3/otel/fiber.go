@@ -254,9 +254,9 @@ func (m *middleware) handle(c fiber.Ctx) error {
 	// serve the request to the next middleware
 	chainErr := c.Next()
 	if chainErr != nil {
-		// RecordError is a no-op unless recording; skip the message check with it.
+		// Not RecordError: it keeps the error's own text, which may alias this request's buffers.
 		if r.span.IsRecording() {
-			r.span.RecordError(recordableError(chainErr))
+			r.span.AddEvent(semconv.ExceptionEventName, oteltrace.WithAttributes(exceptionAttributes(chainErr)...))
 		}
 		// Run the error handler now, as Fiber's logger does, so the recorded status is the one sent.
 		if handlerErr := c.App().ErrorHandler(c, chainErr); handlerErr != nil {
