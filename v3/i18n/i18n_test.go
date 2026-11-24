@@ -386,3 +386,25 @@ func Test_defaultLangHandler(t *testing.T) {
 		assert.Equal(t, "zh", string(body))
 	})
 }
+
+func Test_defaultLangHandlerVary(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	app.Get("/", func(c fiber.Ctx) error {
+		c.Vary(fiber.HeaderOrigin)
+		defaultLangHandler(c, language.English.String())
+		return c.SendString(defaultLangHandler(c, language.English.String()))
+	})
+
+	for target, want := range map[string]string{
+		"/":         "Origin, Accept-Language",
+		"/?lang=zh": "Origin",
+	} {
+		for _, lang := range []language.Tag{language.Und, language.Chinese} {
+			resp, err := makeRequest(lang, target[1:], app)
+			assert.NoError(t, err)
+			assert.Equal(t, want, resp.Header.Get(fiber.HeaderVary), "%s with Accept-Language %q", target, lang)
+		}
+	}
+}
