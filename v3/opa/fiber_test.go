@@ -357,6 +357,8 @@ allow if {
 		{path: "/.//", statusCode: 400},
 		{path: "/doc/abc", statusCode: 200},
 		{path: "/doc/ABC", statusCode: 400},
+		{path: "/doc/ABC/", statusCode: 400},
+		{path: "/doc/abc/", statusCode: 200},
 		{config: fiber.Config{CaseSensitive: true}, path: "/ADMIN/secret", statusCode: 404},
 		{config: fiber.Config{StrictRouting: true}, path: "/private/", statusCode: 404},
 	}

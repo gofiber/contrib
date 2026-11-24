@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/utils/v2"
@@ -62,11 +63,12 @@ func New(cfg Config) fiber.Handler {
 			input["headers"] = headers
 		}
 		res, err := query.Eval(context.Background(), rego.EvalInput(input))
-		// The router matches a case-folded, slash-trimmed path, so the policy has to allow that spelling too.
-		if path := c.Path(); err == nil && res.Allowed() && input["path"] == path {
-			if routed := routerPath(c); routed != path {
-				input["path"] = routed
-				res, err = query.Eval(context.Background(), rego.EvalInput(input))
+		// The router serves other readings of the request alike, so the policy has to allow those too.
+		if err == nil && res.Allowed() {
+			for _, in := range routerInputs(c, input) {
+				if res, err = query.Eval(context.Background(), rego.EvalInput(in)); err != nil || !res.Allowed() {
+					break
+				}
 			}
 		}
 		if err != nil {
@@ -85,23 +87,45 @@ func New(cfg Config) fiber.Handler {
 	}
 }
 
-// routerPath returns c.Path() as the router matches it: ASCII lower-cased unless
-// CaseSensitive, trailing slashes trimmed unless StrictRouting.
-func routerPath(c fiber.Ctx) string {
-	path := c.Path()
-	cfg := c.App().Config()
-
-	if !cfg.CaseSensitive {
-		path = utilsstrings.ToLower(path)
-	}
-	if !cfg.StrictRouting && len(path) > 1 {
-		path = utils.TrimRight(path, '/')
-		// Slashes alone are the root, as in the router.
-		if path == "" {
-			path = "/"
+// routerInputs returns a copy of input for each other spelling of the path the
+// router works with, as far as input carries c.Path().
+func routerInputs(c fiber.Ctx, input map[string]any) []map[string]any {
+	var inputs []map[string]any
+	if input["path"] == c.Path() {
+		for _, path := range routerPaths(c) {
+			in := maps.Clone(input)
+			in["path"] = path
+			inputs = append(inputs, in)
 		}
 	}
-	return path
+	return inputs
+}
+
+// routerPaths returns the other spellings of c.Path() the router works with: slash-trimmed,
+// which route params are cut from, and that case-folded, which routes match on.
+func routerPaths(c fiber.Ctx) []string {
+	path := c.Path()
+	cfg := c.App().Config()
+	var paths []string
+
+	trimmed := path
+	if !cfg.StrictRouting && len(trimmed) > 1 {
+		trimmed = utils.TrimRight(trimmed, '/')
+		// Slashes alone are the root, as in the router.
+		if trimmed == "" {
+			trimmed = "/"
+		}
+	}
+	if trimmed != path {
+		paths = append(paths, trimmed)
+	}
+
+	if !cfg.CaseSensitive {
+		if routed := utilsstrings.ToLower(trimmed); routed != trimmed {
+			paths = append(paths, routed)
+		}
+	}
+	return paths
 }
 
 func (c *Config) fillAndValidate() error {
