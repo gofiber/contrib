@@ -497,3 +497,48 @@ allow if {
 		assert.Equal(t, tC.statusCode, resp.StatusCode, tC.desc)
 	}
 }
+
+func TestOpaEvalErrorDoesNotRevealPolicyValues(t *testing.T) {
+	module := `
+package example.authz
+
+default allow := false
+
+secret := "s3cr3t-a" if input.path == "/conflict"
+
+secret := "s3cr3t-b" if startswith(input.path, "/conflict")
+
+allow if secret == "x"
+`
+
+	var handlerErr error
+	keepBody := func(c fiber.Ctx, err error) error {
+		handlerErr = err
+		c.Status(fiber.StatusInternalServerError)
+		return nil
+	}
+
+	for _, errorHandler := range []fiber.ErrorHandler{nil, keepBody} {
+		handlerErr = nil
+		app := fiber.New(fiber.Config{ErrorHandler: errorHandler})
+		app.Use(New(Config{
+			RegoQuery:  "data.example.authz.allow",
+			RegoPolicy: bytes.NewBufferString(module),
+		}))
+		app.Get("/conflict", func(ctx fiber.Ctx) error {
+			return ctx.SendStatus(200)
+		})
+
+		r := httptest.NewRequest("GET", "/conflict", nil)
+		resp, err := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+		assert.NoError(t, err)
+		assert.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
+
+		readedBytes, err := io.ReadAll(resp.Body)
+		assert.NoError(t, err)
+		assert.Equal(t, "Error evaluating rego policy", utils.UnsafeString(readedBytes))
+		if handlerErr != nil {
+			assert.NotContains(t, handlerErr.Error(), "s3cr3t")
+		}
+	}
+}

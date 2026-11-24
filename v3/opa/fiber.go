@@ -8,10 +8,13 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/log"
 	"github.com/gofiber/utils/v2"
 	utilsstrings "github.com/gofiber/utils/v2/strings"
 	"github.com/open-policy-agent/opa/v1/rego"
 )
+
+const evalErrorMessage = "Error evaluating rego policy"
 
 type InputCreationFunc func(c fiber.Ctx) (map[string]any, error)
 
@@ -84,9 +87,11 @@ func New(cfg Config) fiber.Handler {
 			}
 		}
 		if err != nil {
+			// OPA errors can quote values the policy computed, so they go to the log, not the client.
+			log.Errorf("opa: error evaluating rego policy: %v", err)
 			c.Response().SetStatusCode(fiber.StatusInternalServerError)
-			c.Response().SetBodyString(fmt.Sprintf("Error evaluating rego policy: %s", err))
-			return err
+			c.Response().SetBodyString(evalErrorMessage)
+			return fiber.NewError(fiber.StatusInternalServerError, evalErrorMessage)
 		}
 
 		if !res.Allowed() {

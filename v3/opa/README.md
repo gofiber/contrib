@@ -71,6 +71,8 @@ OPA Fiber middleware sends the following example data to the policy engine as in
 
 A header listed in `IncludeHeaders` that the request carries on more than one line is refused with `DeniedStatusCode`, because handlers can read another line than the policy saw. The typical case is `X-Forwarded-For` behind a proxy that adds a line of its own instead of appending to the existing one. `Cookie` lines are joined with `; ` instead.
 
+When the policy cannot be evaluated, the client gets a 500 with `Error evaluating rego policy` and the `ErrorHandler` gets a `*fiber.Error` with the same text. OPA's error can quote values the policy computed, so it is only logged.
+
 ```go
 package main
 
