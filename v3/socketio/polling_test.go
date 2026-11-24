@@ -1222,6 +1222,31 @@ func TestPollingBinaryInbound(t *testing.T) {
 	}
 }
 
+func TestPollingUndecodableBinaryCountsTowardMaxBatchPackets(t *testing.T) {
+	resetSIOGlobals(t)
+
+	var decodeErrors, overflows atomic.Int32
+	On(EventError, func(p *EventPayload) {
+		if errors.Is(p.Error, ErrBatchPacketsExceeded) {
+			overflows.Add(1)
+		} else {
+			decodeErrors.Add(1)
+		}
+	})
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	_, st := pollPost(t, c, sid, []byte(`40`))
+	require.Equal(t, http.StatusOK, st)
+
+	_, st = pollPost(t, c, sid, bytes.Repeat([]byte("b=\x1e"), 4*MaxBatchPackets))
+	require.Equal(t, http.StatusOK, st)
+	require.EqualValues(t, MaxBatchPackets, decodeErrors.Load())
+	require.EqualValues(t, 1, overflows.Load())
+}
+
 // TestPollingBatchedBinaryStopsAfterDisconnect verifies that when a binary
 // polling packet listener closes the session, later packets in the same
 // RS-separated POST body are not dispatched.

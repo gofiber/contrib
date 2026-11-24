@@ -701,6 +701,8 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 		if len(packet) == 0 {
 			continue
 		}
+		// Whatever its outcome, as dispatchEIOFrame does: a packet that only fires EventError counts too.
+		count++
 		// Before CONNECT only "4" (carrying "40") may pass, as on the WebSocket handshake.
 		if !kws.connectFired.Load() && (packet[0] != eioMessage || len(packet) == 1) {
 			kws.fireEvent(EventError, packet, fmt.Errorf("%w: EIO packet type %q", ErrPollingBeforeConnect, packet[0]))
@@ -720,7 +722,6 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 				continue
 			}
 			kws.fireEvent(EventMessage, decoded[:n], nil)
-			count++
 			continue
 		}
 		// packet is a sub-slice of the body buffer we already copied
@@ -728,7 +729,6 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 		// (and through it to listener callbacks) without an
 		// additional per-packet allocation.
 		kws.dispatchEIOPacket(packet)
-		count++
 	}
 
 	c.Set(fiber.HeaderContentType, "text/html")
