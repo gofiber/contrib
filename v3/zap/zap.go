@@ -81,9 +81,10 @@ func New(config ...Config) fiber.Handler {
 		}
 
 		response := sentResponse(c)
+		timedOut := response != c.Response()
 		// As in Fiber's logger: the timeout error keeps middleware before us off the handler's response.
 		var result error
-		if response != c.Response() {
+		if timedOut {
 			result = chainErr
 		}
 
@@ -123,6 +124,10 @@ func New(config ...Config) fiber.Handler {
 		}
 
 		for _, field := range cfg.Fields {
+			// As in Fiber's logger: the timed-out handler may still use the request, and reading it writes.
+			if timedOut && readsRequest(c, field) {
+				continue
+			}
 			switch field {
 			case "referer":
 				fields = append(fields, zap.String("referer", c.Get(fiber.HeaderReferer)))
@@ -151,7 +156,7 @@ func New(config ...Config) fiber.Handler {
 			case "resBody":
 				if cfg.SkipResBody == nil || !cfg.SkipResBody(c) {
 					// GetResBody reads c, whose response a timed-out handler still owns.
-					if cfg.GetResBody == nil || response != c.Response() {
+					if cfg.GetResBody == nil || timedOut {
 						fields = append(fields, zap.ByteString("resBody", responseBody(response)))
 					} else {
 						fields = append(fields, zap.ByteString("resBody", cfg.GetResBody(c)))
@@ -164,7 +169,7 @@ func New(config ...Config) fiber.Handler {
 					fields = append(fields, zap.ByteString("body", requestBody(c)))
 				}
 			case "bytesReceived":
-				fields = append(fields, zap.Int("bytesReceived", bytesReceived(c)))
+				fields = append(fields, zap.Int("bytesReceived", bytesReceived(c, timedOut)))
 			case "bytesSent":
 				fields = append(fields, zap.Int("bytesSent", bytesSent(response)))
 			case "route":
@@ -213,6 +218,19 @@ func sentResponse(c fiber.Ctx) *fasthttp.Response {
 	return c.Response()
 }
 
+// readsRequest reports whether field reads the headers, query or body, which fasthttp parses on first use.
+func readsRequest(c fiber.Ctx, field string) bool {
+	switch field {
+	case "referer", "ips", "ua", "queryParams", "body", "reqHeaders":
+		return true
+	case "ip", "host":
+		// From the proxy's headers once it is trusted, from the connection and the URI otherwise.
+		return c.IsProxyTrusted()
+	}
+
+	return false
+}
+
 // requestBody is the body as received; a stream or a body past BodyLimit is skipped,
 // as reading it buffers all of it. c.Body() would also decode it and can set the status.
 func requestBody(c fiber.Ctx) []byte {
@@ -224,11 +242,11 @@ func requestBody(c fiber.Ctx) []byte {
 	return c.BodyRaw()
 }
 
-// bytesReceived is the announced Content-Length, as in Fiber's logger, so no stream is read.
-func bytesReceived(c fiber.Ctx) int {
+// bytesReceived is the announced Content-Length, as in Fiber's logger, so no stream or timed-out body is read.
+func bytesReceived(c fiber.Ctx, timedOut bool) int {
 	req := c.Request()
-	if n := req.Header.ContentLength(); n > 0 {
-		return n
+	if n := req.Header.ContentLength(); n > 0 || timedOut {
+		return max(n, 0)
 	}
 	if req.IsBodyStream() {
 		return 0

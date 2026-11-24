@@ -4,6 +4,7 @@ package prometheus
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"hash/maphash"
 	"maps"
@@ -587,7 +588,8 @@ func detachRequest(h http.Handler) http.Handler {
 		req.Header = header
 		req.URL = detachURL(req.URL)
 
-		h.ServeHTTP(rsp, req)
+		// Detached from the request context too: the timeout's timer outlives the request.
+		h.ServeHTTP(rsp, req.WithContext(context.Background()))
 	})
 }
 
@@ -848,6 +850,9 @@ func (m *middleware) skipRequested(ctx fiber.Ctx) (skip bool) {
 // serveMetrics answers a scrape request, rejecting methods the Prometheus
 // exposition endpoint does not support.
 func (m *middleware) serveMetrics(ctx fiber.Ctx) error {
+	// Live, and maybe admitted by Next for this client only: no cache may replay it.
+	ctx.Set(fiber.HeaderCacheControl, "no-store")
+
 	if method := ctx.Method(); method != fiber.MethodGet && method != fiber.MethodHead {
 		ctx.Set(fiber.HeaderAllow, fiber.MethodGet+", "+fiber.MethodHead)
 		return fiber.ErrMethodNotAllowed
@@ -970,13 +975,18 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 	// installs a background context when none was set, costing an extra user value to
 	// clear on release. Skip it when every histogram family is disabled.
 	if m.observes {
-		exemplar := m.exemplarFor(ctx)
+		// The handler timeout.New gave up on may still be changing its context and reading its body.
+		abandoned := ctx.IsAbandoned()
+		var exemplar prometheus.Labels
+		if !abandoned {
+			exemplar = m.exemplarFor(ctx)
+		}
 
 		if s.duration != nil {
 			observe(s.duration, elapsed, exemplar)
 		}
 
-		if m.requestSize != nil {
+		if m.requestSize != nil && !abandoned {
 			req := ctx.Request()
 
 			// Read per request rather than cached: one handler may be mounted on two
@@ -990,6 +1000,10 @@ func (m *middleware) instrument(ctx fiber.Ctx) error {
 			size, known := requestBodySize(req.Header.ContentLength(), bodyLimit, preParsedForm, req)
 			if known && formArrived {
 				observe(sizeObserver(&s.requestSize, m.requestSize, s.labels), size, exemplar)
+			}
+		} else if m.requestSize != nil && formArrived {
+			if n := ctx.Request().Header.ContentLength(); n >= 0 {
+				observe(sizeObserver(&s.requestSize, m.requestSize, s.labels), float64(n), exemplar)
 			}
 		}
 

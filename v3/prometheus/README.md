@@ -443,7 +443,10 @@ client receives (`503` by default since Fiber v3.6.0, or whatever `OnTimeout`
 returns). That middleware answers through fasthttp's
 `RequestCtx.TimeoutErrorWithCode`, which parks the response and installs it only
 after the whole chain has unwound, so the live response still reads `200` at the
-point metrics are taken; the middleware reads the parked one instead.
+point metrics are taken; the middleware reads the parked one instead. Its handler
+may still be changing the context and reading the body, so such a request is
+recorded without an exemplar and with its announced `Content-Length`, if any, as
+its request size.
 As Fiber's logger does, the middleware returns the timeout error for such a
 request, so middleware mounted before it, such as `cache`, leaves that response
 alone; an error-handling middleware mounted before it should check
@@ -533,7 +536,8 @@ do not come from your monitoring system.
 A scrape discloses more than request counts: the default collectors report the
 exact Go version, process memory, open file descriptors and start time, and the
 `path` label enumerates every registered route pattern in the application. Treat
-it as internal.
+it as internal. Scrape responses carry `Cache-Control: no-store`, so a cache in
+front does not replay one to a client `Config.Next` would refuse.
 
 ### Protecting the scrape endpoint
 
@@ -554,7 +558,8 @@ app.Use(fiberprometheus.New(fiberprometheus.Config{
 returns while the gathering goroutine runs on to completion, still holding its
 `MetricsMaxRequestsInFlight` slot. A gatherer that regularly outruns the timeout
 will therefore still exhaust the cap — fix the slow collector rather than raising
-the limit.
+the limit. A scrape in flight when the server shuts down is answered once it
+finishes or `MetricsTimeout` passes.
 
 ## Native histograms
 

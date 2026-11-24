@@ -589,3 +589,60 @@ func TestCreateTransactionName(t *testing.T) {
 		})
 	}
 }
+
+func TestNoticedErrorOutlivesRequest(t *testing.T) {
+	var noticed []newrelic.ErrorInfo
+	nrApp, err := newrelic.NewApplication(
+		newrelic.ConfigAppName("test"),
+		newrelic.ConfigLicense("0123456789abcdef0123456789abcdef01234567"),
+		newrelic.ConfigEnabled(true),
+		func(cfg *newrelic.Config) { cfg.ServerlessMode.Enabled = true },
+		newrelic.ConfigSetErrorGroupCallbackFunction(func(info newrelic.ErrorInfo) string {
+			if info.Error != nil {
+				noticed = append(noticed, info)
+			}
+			return ""
+		}),
+	)
+	assert.NoError(t, err)
+	t.Cleanup(func() { nrApp.Shutdown(0) })
+
+	buf := []byte("acme")
+	tenant := utils.UnsafeString(buf)
+	tenantErr := newrelic.Error{Message: tenant, Class: tenant, Attributes: map[string]any{"tenant": tenant}}
+
+	app := fiber.New()
+	app.Use(New(Config{Application: nrApp}))
+	app.Get("/fiber", func(fiber.Ctx) error {
+		return fiber.NewError(http.StatusBadRequest, tenant)
+	})
+	app.Get("/newrelic", func(fiber.Ctx) error {
+		return tenantErr
+	})
+	app.Get("/wrapped", func(fiber.Ctx) error {
+		return fmt.Errorf("lookup: %w", tenantErr)
+	})
+
+	for _, target := range []string{"/fiber", "/newrelic", "/wrapped"} {
+		resp, err := app.Test(httptest.NewRequest(http.MethodGet, target, http.NoBody))
+		assert.NoError(t, err)
+		assert.NoError(t, resp.Body.Close())
+	}
+	copy(buf, "evil")
+
+	var messages, classes []string
+	var tenants []any
+	for _, info := range noticed {
+		messages = append(messages, info.Message)
+		classes = append(classes, info.Class)
+		value, _ := info.GetErrorAttribute("tenant")
+		tenants = append(tenants, value)
+	}
+	assert.Equal(t, []string{"acme", "acme", "lookup: acme"}, messages)
+	assert.Equal(t, []string{"*fiber.Error", "acme", "acme"}, classes)
+	assert.Equal(t, []any{nil, "acme", "acme"}, tenants)
+
+	var fiberErr *fiber.Error
+	assert.True(t, len(noticed) > 0 && errors.As(noticed[0].Error, &fiberErr))
+	assert.NotPanics(t, func() { _ = map[error]bool{noticed[0].Error: true} })
+}

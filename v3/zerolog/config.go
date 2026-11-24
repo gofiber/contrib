@@ -150,8 +150,13 @@ func (c *Config) loggerCtx(fc fiber.Ctx) zerolog.Context {
 
 func (c *Config) logger(fc fiber.Ctx, resp *fasthttp.Response, latency time.Duration, err error) zerolog.Logger {
 	zc := c.loggerCtx(fc)
+	timedOut := resp != fc.Response()
 
 	for _, field := range c.Fields {
+		// As in Fiber's logger: the timed-out handler may still use the request, and reading it writes.
+		if timedOut && readsRequest(fc, field) {
+			continue
+		}
 		if c.SkipField != nil && c.SkipField(field, fc) {
 			continue
 		}
@@ -188,7 +193,7 @@ func (c *Config) logger(fc fiber.Ctx, resp *fasthttp.Response, latency time.Dura
 			}
 			resBody := responseBody(resp)
 			// GetResBody reads fc, whose response a timed-out handler still owns.
-			if c.GetResBody != nil && resp == fc.Response() {
+			if c.GetResBody != nil && !timedOut {
 				if customResBody := c.GetResBody(fc); customResBody != nil {
 					resBody = customResBody
 				}
@@ -203,7 +208,7 @@ func (c *Config) logger(fc fiber.Ctx, resp *fasthttp.Response, latency time.Dura
 			if c.FieldsSnakeCase {
 				field = fieldBytesReceived_
 			}
-			zc = zc.Int(field, bytesReceived(fc))
+			zc = zc.Int(field, bytesReceived(fc, timedOut))
 		case FieldBytesSent:
 			if c.FieldsSnakeCase {
 				field = fieldBytesSent_
@@ -322,6 +327,19 @@ func (c *Config) logger(fc fiber.Ctx, resp *fasthttp.Response, latency time.Dura
 	return zc.Logger()
 }
 
+// readsRequest reports whether field reads the headers, query or body, which fasthttp parses on first use.
+func readsRequest(fc fiber.Ctx, field string) bool {
+	switch field {
+	case FieldReferer, FieldIPs, FieldUserAgent, FieldQueryParams, FieldBody, FieldReqHeaders:
+		return true
+	case FieldIP, FieldHost:
+		// From the proxy's headers once it is trusted, from the connection and the URI otherwise.
+		return fc.IsProxyTrusted()
+	}
+
+	return false
+}
+
 // requestBody is the body as received; a stream or a body past BodyLimit is skipped,
 // as reading it buffers all of it. fc.Body() would also decode it and can set the status.
 func requestBody(fc fiber.Ctx) []byte {
@@ -333,11 +351,11 @@ func requestBody(fc fiber.Ctx) []byte {
 	return fc.BodyRaw()
 }
 
-// bytesReceived is the announced Content-Length, as in Fiber's logger, so no stream is read.
-func bytesReceived(fc fiber.Ctx) int {
+// bytesReceived is the announced Content-Length, as in Fiber's logger, so no stream or timed-out body is read.
+func bytesReceived(fc fiber.Ctx, timedOut bool) int {
 	req := fc.Request()
-	if n := req.Header.ContentLength(); n > 0 {
-		return n
+	if n := req.Header.ContentLength(); n > 0 || timedOut {
+		return max(n, 0)
 	}
 	if req.IsBodyStream() {
 		return 0

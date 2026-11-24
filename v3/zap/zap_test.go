@@ -721,6 +721,72 @@ func Test_Logger_TimedOutHandler_ReturnsError(t *testing.T) {
 	}
 }
 
+// go test -race -run Test_Logger_TimedOutHandler_Request
+func Test_Logger_TimedOutHandler_Request(t *testing.T) {
+	for name, tc := range map[string]struct {
+		config fiber.Config
+		want   map[string]any
+	}{
+		"direct": {
+			want: map[string]any{
+				"status":        int64(fiber.StatusServiceUnavailable),
+				"ip":            "0.0.0.0",
+				"host":          "example.com",
+				"path":          "/",
+				"bytesReceived": int64(0),
+			},
+		},
+		"trusted proxy": {
+			config: fiber.Config{
+				TrustProxy:       true,
+				TrustProxyConfig: fiber.TrustProxyConfig{Proxies: []string{"0.0.0.0"}},
+				ProxyHeader:      fiber.HeaderXForwardedFor,
+			},
+			want: map[string]any{
+				"status":        int64(fiber.StatusServiceUnavailable),
+				"path":          "/",
+				"bytesReceived": int64(0),
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			logger, logs := setupLogsCapture()
+			finished := make(chan struct{})
+			// Held until the 503 is out: a handler that returns first can win timeout.New's select.
+			release := make(chan struct{})
+			free := sync.OnceFunc(func() { close(release) })
+			t.Cleanup(free)
+
+			app := fiber.New(tc.config)
+			app.Use(New(Config{
+				Logger: logger,
+				Fields: []string{"status", "ip", "host", "path", "referer", "ips", "ua", "queryParams", "body", "reqHeaders", "bytesReceived"},
+			}))
+			app.Post("/", timeout.New(func(c fiber.Ctx) error {
+				defer close(finished)
+				<-c.Context().Done()
+				_, _, _, _ = c.IP(), c.Query("a"), c.Cookies("b"), c.GetReqHeaders()
+				<-release
+				return nil
+			}, timeout.Config{Timeout: 10 * time.Millisecond}))
+
+			req := httptest.NewRequest(http.MethodPost, "/?a=1", bytes.NewReader([]byte("body")))
+			req.TransferEncoding = []string{"chunked"}
+			req.Header.Set(fiber.HeaderCookie, "b=2")
+			req.Header.Set(fiber.HeaderReferer, "https://example.com/")
+			req.Header.Set(fiber.HeaderUserAgent, "test")
+			req.Header.Set(fiber.HeaderXForwardedFor, "203.0.113.7")
+			resp, err := app.Test(req)
+			free()
+			assert.NoError(t, err)
+			assert.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
+			<-finished
+
+			assert.Equal(t, tc.want, logs.All()[0].ContextMap())
+		})
+	}
+}
+
 // go test -run Test_Body_LoggedAsReceived
 func Test_Body_LoggedAsReceived(t *testing.T) {
 	gzipped := func(b []byte) []byte {

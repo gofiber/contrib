@@ -53,6 +53,7 @@ func New(config ...Config) fiber.Handler {
 		// Catch panics
 		defer func() {
 			if err := recover(); err != nil {
+				hub.Scope().AddEventProcessor(copyPanicText)
 				eventID := hub.RecoverWithContext(
 					context.WithValue(context.Background(), sentry.RequestContextKey, c),
 					err,
@@ -71,6 +72,15 @@ func New(config ...Config) fiber.Handler {
 		// Return err if exist, else move to next handler
 		return c.Next()
 	}
+}
+
+// copyPanicText copies the event's text off a panic value that may alias request buffers.
+func copyPanicText(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
+	event.Message = strings.Clone(event.Message)
+	for i := range event.Exception {
+		event.Exception[i].Value = strings.Clone(event.Exception[i].Value)
+	}
+	return event
 }
 
 // cloneRequest returns a deep copy of r whose strings no longer alias
