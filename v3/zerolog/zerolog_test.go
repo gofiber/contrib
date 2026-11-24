@@ -13,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1256,6 +1257,10 @@ func Test_Logger_TimedOutHandler_Request(t *testing.T) {
 			var buf bytes.Buffer
 			logger := zerolog.New(&buf)
 			finished := make(chan struct{})
+			// Held until the 503 is out: a handler that returns first can win timeout.New's select.
+			release := make(chan struct{})
+			free := sync.OnceFunc(func() { close(release) })
+			t.Cleanup(free)
 
 			app := fiber.New(tc.config)
 			app.Use(New(Config{
@@ -1270,6 +1275,7 @@ func Test_Logger_TimedOutHandler_Request(t *testing.T) {
 				defer close(finished)
 				<-c.Context().Done()
 				_, _, _, _ = c.IP(), c.Query("a"), c.Cookies("b"), c.GetReqHeaders()
+				<-release
 				return nil
 			}, timeout.Config{Timeout: 10 * time.Millisecond}))
 
@@ -1280,6 +1286,7 @@ func Test_Logger_TimedOutHandler_Request(t *testing.T) {
 			req.Header.Set(fiber.HeaderUserAgent, "test")
 			req.Header.Set(fiber.HeaderXForwardedFor, "203.0.113.7")
 			resp, err := app.Test(req)
+			free()
 			assert.NoError(t, err)
 			assert.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
 			<-finished
