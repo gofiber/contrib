@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
@@ -498,6 +499,54 @@ allow if {
 		assert.NoError(t, err)
 		assert.Equal(t, tC.statusCode, resp.StatusCode, tC.desc)
 	}
+}
+
+func TestOpaUserAgentOnTwoLinesReadsAsOneValue(t *testing.T) {
+	module := `
+package example.authz
+
+default allow := false
+
+allow if input.headers["User-Agent"] == "two"
+`
+	app := fiber.New()
+	app.Use(New(Config{
+		RegoQuery:      "data.example.authz.allow",
+		RegoPolicy:     bytes.NewBufferString(module),
+		IncludeHeaders: []string{"User-Agent"},
+	}))
+	app.Get("/data", func(ctx fiber.Ctx) error {
+		return ctx.SendString(ctx.Get(fiber.HeaderUserAgent))
+	})
+
+	r := httptest.NewRequest("GET", "/data", nil)
+	r.Header["User-Agent"] = []string{"one", "two"}
+	resp, err := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+	assert.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	assert.NoError(t, err)
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, "two", string(body))
+}
+
+func TestOpaKeepsTheCookieLinesHandlersRead(t *testing.T) {
+	app := fiber.New()
+	app.Use(New(Config{
+		RegoQuery:      "data.example.authz.allow",
+		RegoPolicy:     bytes.NewBufferString("package example.authz\n\ndefault allow := true\n"),
+		IncludeHeaders: []string{"X-Tenant"},
+	}))
+	app.Get("/data", func(ctx fiber.Ctx) error {
+		return ctx.SendString(ctx.Get(fiber.HeaderCookie) + "|" + strconv.Itoa(len(ctx.GetAll(fiber.HeaderCookie))))
+	})
+
+	r := httptest.NewRequest("GET", "/data", nil)
+	r.Header["Cookie"] = []string{"theme=dark", "lang=en"}
+	resp, err := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+	assert.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	assert.NoError(t, err)
+	assert.Equal(t, "theme=dark|2", string(body))
 }
 
 func TestOpaEvalErrorDoesNotRevealPolicyValues(t *testing.T) {

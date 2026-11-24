@@ -64,10 +64,11 @@ func New(cfg Config) fiber.Handler {
 			input["query"] = queryStringData
 		}
 		if len(cfg.IncludeHeaders) > 0 {
+			canonical := !c.App().Config().DisableHeaderNormalizing
 			headers := make(map[string]string)
 			for _, header := range cfg.IncludeHeaders {
 				// Readers pick different lines of a repeated field, so it is refused; Cookie lines form one list.
-				if lines := c.GetAll(header); len(lines) > 1 || headerLines(c, header) > 1 {
+				if lines := c.GetAll(header); len(lines) > 1 || headerLines(c, header, canonical) > 1 {
 					if !utils.EqualFold(header, fiber.HeaderCookie) {
 						c.Response().SetStatusCode(cfg.DeniedStatusCode)
 						c.Response().SetBodyString(cfg.DeniedResponseMessage)
@@ -184,7 +185,11 @@ func defaultInput(ctx fiber.Ctx) (map[string]any, error) {
 }
 
 // headerLines counts the lines of a header in any letter case, empty ones included.
-func headerLines(c fiber.Ctx, name string) int {
+func headerLines(c fiber.Ctx, name string, canonical bool) int {
+	if canonical {
+		// Parsing normalized every spelling; PeekAll leaves the Cookie lines as received.
+		return len(c.Request().Header.PeekAll(name))
+	}
 	n := 0
 	for key := range c.Request().Header.All() {
 		if utils.EqualFold(utils.UnsafeString(key), name) {
