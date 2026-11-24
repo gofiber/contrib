@@ -567,10 +567,13 @@ func (kws *Websocket) GetStringAttribute(key string) string {
 // fires EventError on the originating connection (kws); unlike the package-level
 // EmitToList, errors are not silently ignored.
 func (kws *Websocket) EmitToList(uuids []string, message []byte, mType ...int) {
+	t, message := msgType(mType), cloneBytes(message)
 	for _, wsUUID := range uuids {
-		// EmitTo already fires EventError on failure, so it is not fired again
+		// emitTarget already fires EventError on failure, so it is not fired again
 		// here to avoid a duplicate event per failed UUID.
-		_ = kws.EmitTo(wsUUID, message, mType...)
+		if conn, err := kws.emitTarget(wsUUID); err == nil {
+			conn.write(t, message)
+		}
 	}
 }
 
@@ -578,8 +581,11 @@ func (kws *Websocket) EmitToList(uuids []string, message []byte, mType ...int) {
 // silently ignored and, unlike the (*Websocket).EmitToList method form, no
 // EventError is fired.
 func EmitToList(uuids []string, message []byte, mType ...int) {
+	t, message := msgType(mType), cloneBytes(message)
 	for _, wsUUID := range uuids {
-		_ = EmitTo(wsUUID, message, mType...)
+		if conn, err := emitTarget(wsUUID); err == nil {
+			conn.write(t, message)
+		}
 	}
 }
 
@@ -587,40 +593,56 @@ func EmitToList(uuids []string, message []byte, mType ...int) {
 // fires EventError on the originating connection (kws) and returns the error;
 // the package-level EmitTo does not fire EventError.
 func (kws *Websocket) EmitTo(uuid string, message []byte, mType ...int) error {
+	conn, err := kws.emitTarget(uuid)
+	if err != nil {
+		return err
+	}
+	conn.Emit(message, mType...)
+	return nil
+}
+
+func (kws *Websocket) emitTarget(uuid string) (ws, error) {
 	conn, err := pool.get(uuid)
 	if err != nil {
 		kws.fireOwnedEvent(EventError, []byte(uuid), ErrorInvalidConnection)
-		return ErrorInvalidConnection
+		return nil, ErrorInvalidConnection
 	}
 	if !conn.IsAlive() || (conn != ws(kws) && conn.isPending()) {
 		kws.fireOwnedEvent(EventError, []byte(uuid), ErrorInvalidConnection)
-		return ErrorInvalidConnection
+		return nil, ErrorInvalidConnection
 	}
-
-	conn.Emit(message, mType...)
-	return nil
+	return conn, nil
 }
 
 // EmitTo emits a message to a connection UUID. It returns the error to the
 // caller and, unlike the (*Websocket).EmitTo method form, does not fire
 // EventError.
 func EmitTo(uuid string, message []byte, mType ...int) error {
-	conn, err := pool.get(uuid)
+	conn, err := emitTarget(uuid)
 	if err != nil {
-		return ErrorInvalidConnection
+		return err
 	}
-	if !conn.IsAlive() || conn.isPending() {
-		return ErrorInvalidConnection
-	}
-
 	conn.Emit(message, mType...)
 	return nil
+}
+
+func emitTarget(uuid string) (ws, error) {
+	conn, err := pool.get(uuid)
+	if err != nil {
+		return nil, ErrorInvalidConnection
+	}
+	if !conn.IsAlive() || conn.isPending() {
+		return nil, ErrorInvalidConnection
+	}
+	return conn, nil
 }
 
 // Broadcast emits to all active connections, skipping the originating
 // connection (kws) when except is true. Each failed target fires EventError on
 // kws; the package-level Broadcast does not.
 func (kws *Websocket) Broadcast(message []byte, except bool, mType ...int) {
+	// One copy for every queue: the senders only read it.
+	t, message := msgType(mType), cloneBytes(message)
 	for _, conn := range pool.snapshot() {
 		// Identity rather than UUID: no lock, and right under a concurrent SetUUID.
 		if except && conn == ws(kws) {
@@ -636,15 +658,16 @@ func (kws *Websocket) Broadcast(message []byte, except bool, mType ...int) {
 			kws.fireOwnedEvent(EventError, []byte(conn.GetUUID()), ErrorInvalidConnection)
 			continue
 		}
-		conn.Emit(message, mType...)
+		conn.write(t, message)
 	}
 }
 
 // Broadcast emits to all active connections.
 func Broadcast(message []byte, mType ...int) {
+	t, message := msgType(mType), cloneBytes(message)
 	for _, kws := range pool.snapshot() {
 		if !kws.isPending() {
-			kws.Emit(message, mType...)
+			kws.write(t, message)
 		}
 	}
 }
@@ -674,13 +697,17 @@ func Fire(event string, data []byte) {
 	fireGlobalEvent(event, data, nil)
 }
 
-// Emit writes a message to the current connection.
+// Emit writes a message to the current connection. The message is copied, so
+// the caller may reuse it once Emit returns.
 func (kws *Websocket) Emit(message []byte, mType ...int) {
-	t := TextMessage
+	kws.write(msgType(mType), cloneBytes(message))
+}
+
+func msgType(mType []int) int {
 	if len(mType) > 0 {
-		t = mType[0]
+		return mType[0]
 	}
-	kws.write(t, message)
+	return TextMessage
 }
 
 // closeFrameMaxReason caps the reason payload in a close frame so the

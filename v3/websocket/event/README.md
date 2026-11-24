@@ -127,7 +127,9 @@ Use the method forms when you want delivery failures surfaced as `EventError`
 events; use the package forms for fire-and-forget fan-out. `Emit` enqueues the
 message on the connection's outbound queue, which a dedicated goroutine drains
 in order; if the queue is full it blocks until a slot frees up or the connection
-closes. The queue is drained from before the `New` callback runs, so a callback
+closes. The message is copied first, so the caller may reuse the slice, such as
+`c.Body()`, once the call returns; `Broadcast` and `EmitToList` copy it once for all
+recipients. The queue is drained from before the `New` callback runs, so a callback
 may emit more than `SendQueueSize` messages, for instance to replay history.
 
 Until the `New` callback and the `EventConnect` listeners have returned, a new

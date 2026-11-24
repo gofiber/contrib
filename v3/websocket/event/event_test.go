@@ -1129,8 +1129,8 @@ func (s *WebsocketMock) pong(_ context.Context) {
 	panic("implement me")
 }
 
-func (s *WebsocketMock) write(_ int, _ []byte) {
-	panic("implement me")
+func (s *WebsocketMock) write(_ int, message []byte) {
+	s.Emit(message)
 }
 
 func (s *WebsocketMock) run(_ context.Context, _ context.CancelFunc, _ *sync.WaitGroup) {
@@ -1994,6 +1994,47 @@ func TestMethodBroadcastSkipsSelfAndReportsDead(t *testing.T) {
 	require.Equal(t, int32(1), atomic.LoadInt32(&errs))
 	// The sender was skipped, so nothing was queued on it.
 	require.Empty(t, sender.queue)
+}
+
+func TestEmitQueuesACopyOfTheMessage(t *testing.T) {
+	emits := map[string]func(t *testing.T, first, second *Websocket, msg []byte){
+		"Emit": func(_ *testing.T, first, second *Websocket, msg []byte) {
+			first.Emit(msg)
+			second.Emit(msg)
+		},
+		"EmitTo": func(t *testing.T, first, second *Websocket, msg []byte) {
+			require.NoError(t, EmitTo(first.UUID, msg))
+			require.NoError(t, first.EmitTo(second.UUID, msg))
+		},
+		"EmitToList": func(_ *testing.T, first, second *Websocket, msg []byte) {
+			EmitToList([]string{first.UUID, second.UUID}, msg)
+		},
+		"EmitToList method": func(_ *testing.T, first, second *Websocket, msg []byte) {
+			first.EmitToList([]string{first.UUID, second.UUID}, msg)
+		},
+		"Broadcast":        func(_ *testing.T, _, _ *Websocket, msg []byte) { Broadcast(msg) },
+		"Broadcast method": func(_ *testing.T, first, _ *Websocket, msg []byte) { first.Broadcast(msg, false) },
+	}
+	for name, emit := range emits {
+		t.Run(name, func(t *testing.T) {
+			resetState()
+			first, second := createWS(), createWS()
+			pool.set(first)
+			pool.set(second)
+
+			msg := []byte("announcement")
+			emit(t, first, second, msg)
+			copy(msg, "password=123")
+
+			toFirst, toSecond := <-first.queue, <-second.queue
+			require.Equal(t, "announcement", string(toFirst.data))
+			require.Equal(t, "announcement", string(toSecond.data))
+			if strings.HasPrefix(name, "EmitToList") {
+				require.Same(t, &toFirst.data[0], &toSecond.data[0])
+			}
+		})
+	}
+	resetState()
 }
 
 func BenchmarkFireEventNoListeners(b *testing.B) {
