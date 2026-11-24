@@ -87,14 +87,21 @@ func New(cfg Config) fiber.Handler {
 	}
 }
 
-// routerInputs returns a copy of input for each other spelling of the path the
-// router works with, as far as input carries c.Path().
+// routerInputs returns copies of input with each other path spelling, if input carries c.Path(),
+// and with GET for HEAD, which the router answers with GET handlers unless DisableHeadAutoRegister.
 func routerInputs(c fiber.Ctx, input map[string]any) []map[string]any {
 	var inputs []map[string]any
 	if input["path"] == c.Path() {
 		for _, path := range routerPaths(c) {
 			in := maps.Clone(input)
 			in["path"] = path
+			inputs = append(inputs, in)
+		}
+	}
+	if method := c.Method(); method == fiber.MethodHead && input["method"] == method && !c.App().Config().DisableHeadAutoRegister {
+		for _, in := range append([]map[string]any{input}, inputs...) {
+			in = maps.Clone(in)
+			in["method"] = fiber.MethodGet
 			inputs = append(inputs, in)
 		}
 	}

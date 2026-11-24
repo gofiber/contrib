@@ -386,3 +386,62 @@ allow if {
 		assert.Equal(t, tC.statusCode, resp.StatusCode, tC.path)
 	}
 }
+
+func TestOpaRequestMethodRegoPolicyShouldCoverAutoHead(t *testing.T) {
+	module := `
+package example.authz
+
+default allow := false
+
+allow if not hidden
+
+hidden if {
+	input.method == "GET"
+	startswith(input.path, "/admin")
+}
+
+hidden if {
+	input.method == "HEAD"
+	input.path == "/archive"
+}
+`
+
+	testCases := []struct {
+		config     fiber.Config
+		method     string
+		path       string
+		statusCode int
+	}{
+		{method: "GET", path: "/admin/secret", statusCode: 400},
+		{method: "HEAD", path: "/admin/secret", statusCode: 400},
+		{method: "HEAD", path: "/Admin/secret", statusCode: 400},
+		{method: "HEAD", path: "/admin/probe", statusCode: 400},
+		{method: "HEAD", path: "/public", statusCode: 200},
+		{method: "GET", path: "/archive", statusCode: 200},
+		{method: "HEAD", path: "/archive", statusCode: 400},
+		{config: fiber.Config{DisableHeadAutoRegister: true}, method: "HEAD", path: "/admin/secret", statusCode: 405},
+		{config: fiber.Config{DisableHeadAutoRegister: true}, method: "HEAD", path: "/admin/probe", statusCode: 200},
+	}
+
+	ok := func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(200)
+	}
+
+	for _, tC := range testCases {
+		app := fiber.New(tC.config)
+		app.Use(New(Config{
+			RegoQuery:  "data.example.authz.allow",
+			RegoPolicy: bytes.NewBufferString(module),
+		}))
+		app.Get("/admin/secret", ok)
+		app.Head("/admin/probe", ok)
+		app.Get("/public", ok)
+		app.Get("/archive", ok)
+
+		r := httptest.NewRequest(tC.method, tC.path, nil)
+		resp, err := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+
+		assert.NoError(t, err)
+		assert.Equal(t, tC.statusCode, resp.StatusCode, tC.method+" "+tC.path)
+	}
+}
