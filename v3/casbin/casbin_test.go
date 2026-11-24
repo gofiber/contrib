@@ -12,6 +12,7 @@ import (
 	"github.com/casbin/casbin/v3/model"
 	"github.com/casbin/casbin/v3/persist"
 	"github.com/gofiber/fiber/v3"
+	"github.com/valyala/fasthttp"
 )
 
 var (
@@ -538,6 +539,73 @@ func Test_RoutePermission_RouterSpelling(t *testing.T) {
 
 			if resp.StatusCode != tC.statusCode {
 				t.Errorf(`StatusCode: got %v - expected %v`, resp.StatusCode, tC.statusCode)
+			}
+		})
+	}
+}
+
+type retainingEnforcer struct {
+	casbin.IEnforcer
+	subjects []string
+	objects  []string
+}
+
+func (e *retainingEnforcer) Enforce(rvals ...any) (bool, error) {
+	e.subjects = append(e.subjects, rvals[0].(string))
+	e.objects = append(e.objects, rvals[1].(string))
+	return true, nil
+}
+
+func (e *retainingEnforcer) GetRolesForUser(name string, _ ...string) ([]string, error) {
+	e.subjects = append(e.subjects, name)
+	return []string{"admin"}, nil
+}
+
+func Test_EnforcerGetsCopiesOfRequestStrings(t *testing.T) {
+	testCases := []struct {
+		desc    string
+		handler func(*Middleware) fiber.Handler
+		objects string
+	}{
+		{"RoutePermission", func(m *Middleware) fiber.Handler { return m.RoutePermission() }, "/first"},
+		{"RequiresPermissions", func(m *Middleware) fiber.Handler { return m.RequiresPermissions([]string{"blog:create"}) }, "blog"},
+		{"RequiresRoles", func(m *Middleware) fiber.Handler { return m.RequiresRoles([]string{"admin"}) }, ""},
+	}
+
+	for _, tC := range testCases {
+		t.Run(tC.desc, func(t *testing.T) {
+			fctx := &fasthttp.RequestCtx{}
+			for range 50 {
+				enf := &retainingEnforcer{}
+				authz := New(Config{
+					Enforcer: enf,
+					Lookup:   func(c fiber.Ctx) string { return c.Get("X-User") },
+				})
+
+				app := fiber.New()
+				app.Get("/:name", tC.handler(authz), func(c fiber.Ctx) error {
+					return c.SendStatus(fiber.StatusOK)
+				})
+				h := app.Handler()
+
+				for _, r := range []struct{ path, user string }{{"/first", "alice"}, {"/other", "admin"}} {
+					fctx.Request.Reset()
+					fctx.Request.SetRequestURI(r.path)
+					fctx.Request.Header.Set("X-User", r.user)
+					h(fctx)
+
+					if code := fctx.Response.StatusCode(); code != fiber.StatusOK {
+						t.Fatalf("StatusCode: got %v - expected %v", code, fiber.StatusOK)
+					}
+				}
+
+				var object string
+				if len(enf.objects) > 0 {
+					object = enf.objects[0]
+				}
+				if enf.subjects[0] != "alice" || object != tC.objects {
+					t.Fatalf("first request's strings after the next request: got %q, %q - expected %q, %q", enf.subjects[0], object, "alice", tC.objects)
+				}
 			}
 		})
 	}

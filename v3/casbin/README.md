@@ -134,6 +134,19 @@ func main() {
 }
 ```
 
+If the model matches roles by pattern with a matching function on `g` or `g2`, such as `util.KeyMatch2`, the request path or subject reaches that function. Register one that cannot panic:
+
+```go
+enforcer.AddNamedMatchingFunc("g2", "KeyMatch2", func(a, b string) (ok bool) {
+  defer func() {
+    if recover() != nil {
+      ok = false
+    }
+  }()
+  return util.KeyMatch2(a, b)
+})
+```
+
 ## RoleAuthorization
 
 ```go

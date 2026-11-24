@@ -29,7 +29,8 @@ func New(config ...Config) *Middleware {
 	}
 
 	return &Middleware{
-		lookup:          cfg.Lookup,
+		// The enforcer may keep the subject, so it must not view a request buffer.
+		lookup:          func(c fiber.Ctx) string { return utils.CopyString(cfg.Lookup(c)) },
 		unauthorized:    cfg.Unauthorized,
 		forbidden:       cfg.Forbidden,
 		enforce:         cfg.Enforcer.Enforce,
@@ -105,7 +106,8 @@ func (m *Middleware) RoutePermission() fiber.Handler {
 // routePaths returns c.Path(), which route params are cut from, and, if it
 // differs, the case-folded, slash-trimmed form the router matches routes on.
 func routePaths(c fiber.Ctx) []string {
-	path := c.Path()
+	// The enforcer may keep the path, so it must not view the pooled path buffer.
+	path := utils.CopyString(c.Path())
 	cfg := c.App().Config()
 
 	routed := path
