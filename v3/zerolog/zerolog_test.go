@@ -1217,6 +1217,80 @@ func Test_Logger_TimedOutHandler_ReturnsError(t *testing.T) {
 	}
 }
 
+func Test_Logger_TimedOutHandler_Request(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		config fiber.Config
+		want   map[string]any
+	}{
+		"direct": {
+			want: map[string]any{
+				"level":            "error",
+				"message":          "Server error",
+				FieldStatus:        float64(fiber.StatusServiceUnavailable),
+				FieldIP:            "0.0.0.0",
+				FieldHost:          "example.com",
+				FieldPath:          "/",
+				FieldBytesReceived: float64(0),
+			},
+		},
+		"trusted proxy": {
+			config: fiber.Config{
+				TrustProxy:       true,
+				TrustProxyConfig: fiber.TrustProxyConfig{Proxies: []string{"0.0.0.0"}},
+				ProxyHeader:      fiber.HeaderXForwardedFor,
+			},
+			want: map[string]any{
+				"level":            "error",
+				"message":          "Server error",
+				FieldStatus:        float64(fiber.StatusServiceUnavailable),
+				FieldPath:          "/",
+				FieldBytesReceived: float64(0),
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var buf bytes.Buffer
+			logger := zerolog.New(&buf)
+			finished := make(chan struct{})
+
+			app := fiber.New(tc.config)
+			app.Use(New(Config{
+				Logger: &logger,
+				Fields: []string{
+					FieldStatus, FieldIP, FieldHost, FieldPath, FieldReferer, FieldIPs, FieldUserAgent,
+					FieldQueryParams, FieldBody, FieldReqHeaders, FieldBytesReceived,
+				},
+				WrapHeaders: true,
+			}))
+			app.Post("/", timeout.New(func(c fiber.Ctx) error {
+				defer close(finished)
+				<-c.Context().Done()
+				_, _, _, _ = c.IP(), c.Query("a"), c.Cookies("b"), c.GetReqHeaders()
+				return nil
+			}, timeout.Config{Timeout: 10 * time.Millisecond}))
+
+			req := httptest.NewRequest(http.MethodPost, "/?a=1", strings.NewReader("body"))
+			req.TransferEncoding = []string{"chunked"}
+			req.Header.Set(fiber.HeaderCookie, "b=2")
+			req.Header.Set(fiber.HeaderReferer, "https://example.com/")
+			req.Header.Set(fiber.HeaderUserAgent, "test")
+			req.Header.Set(fiber.HeaderXForwardedFor, "203.0.113.7")
+			resp, err := app.Test(req)
+			assert.NoError(t, err)
+			assert.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
+			<-finished
+
+			var logs map[string]any
+			assert.NoError(t, json.Unmarshal(buf.Bytes(), &logs))
+			assert.Equal(t, tc.want, logs)
+		})
+	}
+}
+
 // Not parallel, and measured against GetRespHeaders so an upgrade does not break it.
 func Test_Res_Headers_Allocs(t *testing.T) {
 	app := fiber.New()
