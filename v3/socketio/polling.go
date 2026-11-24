@@ -452,8 +452,11 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 	c.RequestCtx().VisitUserValuesAll(func(k, v any) {
 		if s, ok := k.(string); ok {
 			k = utils.CopyString(s)
-		} else if k != nil && !reflect.ValueOf(k).Comparable() {
-			return // fasthttp accepts e.g. a slice key, a map panics on it
+		} else if k != nil {
+			if !reflect.ValueOf(k).Comparable() {
+				return // fasthttp accepts e.g. a slice key, a map panics on it
+			}
+			k = copyNamedKind(k)
 		}
 		// Request strings and bytes alias buffers the next request reuses.
 		switch val := v.(type) {

@@ -256,6 +256,30 @@ func TestPollingOpenCopiesNamedStringAndByteLocals(t *testing.T) {
 	require.Same(t, ptr, kws.Locals("ptr"))
 }
 
+func TestPollingOpenCopiesNamedStringLocalKeys(t *testing.T) {
+	resetSIOGlobals(t)
+	prevEnable := EnablePolling
+	EnablePolling = true
+	t.Cleanup(func() { EnablePolling = prevEnable })
+
+	type roomGrant string
+	buf := []byte("lobby")
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		c.Locals(roomGrant(utils.UnsafeString(buf)), true)
+		return c.Next()
+	})
+	app.Get("/", New(func(*Websocket) {}))
+
+	req, err := http.NewRequest(http.MethodGet, "/?EIO=4&transport=polling", nil)
+	require.NoError(t, err)
+	kws := pollOpenSession(t, app, req)
+	copy(buf, "staff")
+
+	require.Equal(t, true, kws.Locals(roomGrant("lobby")))
+	require.Nil(t, kws.Locals(roomGrant("staff")))
+}
+
 func TestPollingOpenResolvesRepeatedNamesLikeFiber(t *testing.T) {
 	resetSIOGlobals(t)
 	prevEnable := EnablePolling
