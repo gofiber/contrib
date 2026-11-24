@@ -272,6 +272,8 @@ type Websocket struct {
 	acceptDone atomic.Bool
 	acceptOnce sync.Once
 	sendErr    error
+	// Set when Close starts; its close frame can wait up to WriteTimeout to go out.
+	closing atomic.Bool
 	// queue stores outbound messages.
 	queue chan message
 	// done signals goroutines to stop gracefully.
@@ -721,13 +723,15 @@ func msgType(mType []int) int {
 // (2 bytes status code + up to 123 bytes reason).
 const closeFrameMaxReason = 123
 
-// Close actively closes the current connection from the server.
+// Close actively closes the current connection from the server. Messages,
+// pings and pongs from the peer stop reaching listeners as soon as it starts.
 func (kws *Websocket) Close() {
 	if !kws.IsAlive() {
 		return
 	}
 
 	kws.closeOnce.Do(func() {
+		kws.closing.Store(true)
 		kws.writeClose(websocket.CloseNormalClosure, "Connection closed")
 		kws.fireEvent(EventClose, nil, nil)
 		kws.disconnected(nil)
@@ -934,6 +938,9 @@ func (kws *Websocket) run(ctx context.Context, cancelFunc context.CancelFunc, wg
 			// keep firing events once shutdown started. Shutdown correctness
 			// does not depend on winning this race: run closes the underlying
 			// connection, which no deadline refresh can undo.
+			if kws.closing.Load() {
+				return nil
+			}
 			select {
 			case <-kws.done:
 				return nil
@@ -946,6 +953,9 @@ func (kws *Websocket) run(ctx context.Context, cancelFunc context.CancelFunc, wg
 		conn.SetPingHandler(func(data string) error {
 			// Same short circuit as the pong handler; RFC 6455 section 5.5.2 lets an
 			// endpoint skip the pong once a close is under way.
+			if kws.closing.Load() {
+				return nil
+			}
 			select {
 			case <-kws.done:
 				return nil
@@ -1022,6 +1032,10 @@ func (kws *Websocket) read(ctx context.Context) {
 			}
 			kws.disconnected(err)
 			return
+		}
+		// Keep reading until Close is done, so the peer's own close still ends it.
+		if kws.closing.Load() {
+			continue
 		}
 
 		if now := time.Now(); now.After(nextRefresh) {
@@ -1297,6 +1311,7 @@ func CloseAll(ctx context.Context, code int, reason string) error {
 		go func(kws *Websocket) {
 			defer wg.Done()
 			kws.closeOnce.Do(func() {
+				kws.closing.Store(true)
 				kws.writeClose(code, reason)
 				kws.fireEvent(EventClose, nil, nil)
 				kws.disconnected(nil)

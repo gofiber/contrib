@@ -107,7 +107,8 @@ app.Get("/ws/:id", event.New(func(kws *event.Websocket) {
 Listeners run in registration order, global before per-connection. Once one of
 them has ended the connection (for example with `Close`), the listeners after it
 are skipped; only `EventDisconnect`, `EventClose` and `EventError` always reach
-every listener.
+every listener. Messages, pings and pongs that arrive once `Close` or `CloseAll`
+has started are not delivered, even while the close frame waits on a slow peer.
 
 ## Sending messages
 

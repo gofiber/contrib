@@ -1779,6 +1779,69 @@ func TestSendFailureDuringCallbackDisconnectsAfterIt(t *testing.T) {
 	require.Empty(t, pool.snapshot())
 }
 
+func TestCloseStopsPeerEventsBeforeTheCloseFrameIsOut(t *testing.T) {
+	closers := map[string]func(*Websocket){
+		"Close":    func(kws *Websocket) { kws.Close() },
+		"CloseAll": func(*Websocket) { _ = CloseAll(context.Background(), websocket.CloseGoingAway, "bye") },
+	}
+	for name, closeConn := range closers {
+		t.Run(name, func(t *testing.T) {
+			resetState()
+
+			peerEvents := make(chan string, 3)
+			for _, event := range []string{EventMessage, EventPing, EventPong} {
+				On(event, func(p *EventPayload) { peerEvents <- p.Name })
+			}
+			accepted := make(chan *Websocket, 1)
+			On(EventConnect, func(p *EventPayload) { accepted <- p.Kws })
+			inClose, release := make(chan struct{}, 1), make(chan struct{})
+			On(EventClose, func(*EventPayload) {
+				inClose <- struct{}{}
+				<-release
+			})
+
+			app := fiber.New()
+			ln := fasthttputil.NewInmemoryListener()
+			defer func() {
+				_ = app.Shutdown()
+				_ = ln.Close()
+			}()
+			app.Use(upgradeMiddleware)
+			app.Get("/", New(func(*Websocket) {}))
+			go func() { _ = app.Listener(ln) }()
+
+			dialer := &websocket.Dialer{
+				NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+				HandshakeTimeout: 5 * time.Second,
+			}
+			conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+			require.NoError(t, err)
+			defer conn.Close()
+
+			kws := <-accepted
+			closed := make(chan struct{})
+			go func() {
+				closeConn(kws)
+				close(closed)
+			}()
+			<-inClose
+
+			deadline := time.Now().Add(time.Second)
+			require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte("after close")))
+			require.NoError(t, conn.WriteControl(websocket.PingMessage, nil, deadline))
+			require.NoError(t, conn.WriteControl(websocket.PongMessage, nil, deadline))
+			select {
+			case event := <-peerEvents:
+				t.Errorf("%s reached a listener after Close started", event)
+			case <-time.After(100 * time.Millisecond):
+			}
+
+			close(release)
+			<-closed
+		})
+	}
+}
+
 func TestPendingConnectionGetsNoPoolTraffic(t *testing.T) {
 	for _, refuse := range []bool{false, true} {
 		t.Run(fmt.Sprintf("refuse=%v", refuse), func(t *testing.T) {
