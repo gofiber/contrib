@@ -22,6 +22,7 @@ import (
 	"unsafe"
 
 	"github.com/gofiber/fiber/v3"
+	fibercache "github.com/gofiber/fiber/v3/middleware/cache"
 	recoverer "github.com/gofiber/fiber/v3/middleware/recover"
 	"github.com/gofiber/fiber/v3/middleware/timeout"
 	"github.com/prometheus/client_golang/prometheus"
@@ -556,6 +557,35 @@ func TestMetricsEndpointRejectsOtherMethods(t *testing.T) {
 	// serveMetrics does not simply return the error.
 	if allow := resp.Header.Get(fiber.HeaderAllow); allow != "GET, HEAD" {
 		t.Fatalf("expected Allow header %q, got %q", "GET, HEAD", allow)
+	}
+}
+
+func TestCacheInFrontDoesNotReplayScrape(t *testing.T) {
+	app := fiber.New()
+	app.Use(fibercache.New())
+	app.Use(New(Config{
+		Next: func(c fiber.Ctx) bool {
+			return c.Path() == "/metrics" && c.Get("X-Scrape-Token") != "monitoring"
+		},
+	}))
+
+	allowed := httptest.NewRequest(fiber.MethodGet, "/metrics", nil)
+	allowed.Header.Set("X-Scrape-Token", "monitoring")
+	resp, err := app.Test(allowed, noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("scraping metrics: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected the monitoring system to scrape with 200, got %d", resp.StatusCode)
+	}
+
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/metrics", nil), noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("scraping metrics without the token: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusNotFound {
+		t.Fatalf("expected Next to refuse the client with 404, got %d (X-Cache: %q)",
+			resp.StatusCode, resp.Header.Get("X-Cache"))
 	}
 }
 
@@ -2423,6 +2453,25 @@ func TestMetricsMaxRequestsInFlightRejectsExcess(t *testing.T) {
 	release()
 	if status := <-firstDone; status != fiber.StatusOK {
 		t.Fatalf("expected the first scrape to succeed, got %d", status)
+	}
+}
+
+func TestDetachRequestDropsContext(t *testing.T) {
+	type key struct{}
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req = req.WithContext(context.WithValue(req.Context(), key{}, "recycled"))
+
+	var seen context.Context
+	handler := detachRequest(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		seen = r.Context()
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if seen == nil {
+		t.Fatal("expected the wrapped handler to run")
+	}
+	if value := seen.Value(key{}); value != nil {
+		t.Fatalf("expected a context detached from the request's, got one that reads %v from it", value)
 	}
 }
 
@@ -4640,6 +4689,48 @@ func TestFiberTimeoutIsRecordedAsTimeout(t *testing.T) {
 	}
 	if strings.Contains(metrics, `path="/slow",status_code="200"`) {
 		t.Fatalf("expected no 200 series for the timed-out request, got %q", metrics)
+	}
+}
+
+type spyContext struct {
+	context.Context
+	lookups *atomic.Int64
+}
+
+func (s spyContext) Value(key any) any {
+	s.lookups.Add(1)
+	return s.Context.Value(key)
+}
+
+func TestFiberTimeoutLeavesTheRequestToItsHandler(t *testing.T) {
+	var lookups atomic.Int64
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	app := newAppWithMiddleware(Config{}, "")
+	app.Get("/slow", timeout.New(func(c fiber.Ctx) error {
+		c.SetContext(spyContext{Context: c.Context(), lookups: &lookups})
+		<-release
+		return c.SendString("late")
+	}, timeout.Config{Timeout: 10 * time.Millisecond}))
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/slow", strings.NewReader("abcde")), noTimeoutConfig)
+	if err != nil {
+		t.Fatalf("unexpected request error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusServiceUnavailable {
+		t.Fatalf("expected the client to receive 503, got %d", resp.StatusCode)
+	}
+	if n := lookups.Load(); n != 0 {
+		t.Fatalf("expected the timed-out request's context to be left to its handler, got %d lookups", n)
+	}
+
+	metrics := getMetrics(t, app, "")
+	if !strings.Contains(metrics, `http_requests_total{method="GET",path="/slow",status_code="503"} 1`) {
+		t.Fatalf("expected the timeout to be recorded as 503, got %q", metrics)
+	}
+	if !strings.Contains(metrics, `http_request_size_bytes_sum{method="GET",path="/slow",status_code="503"} 5`) {
+		t.Fatalf("expected the timed-out request's announced length as its size, got %q", metrics)
 	}
 }
 
