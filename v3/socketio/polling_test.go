@@ -2263,6 +2263,46 @@ func TestPollingQueueOverflowDisconnect(t *testing.T) {
 	}
 }
 
+func TestPollingQueueOverflowDuringCallbackFiresDisconnectAfterwards(t *testing.T) {
+	resetSIOGlobals(t)
+	prevCap := PollQueueMaxFrames
+	PollQueueMaxFrames = 4
+	t.Cleanup(func() { PollQueueMaxFrames = prevCap })
+
+	var mu sync.Mutex
+	var order []string
+	var errs []error
+	On(EventDisconnect, func(p *EventPayload) {
+		mu.Lock()
+		order = append(order, "disconnect")
+		errs = append(errs, p.Error)
+		mu.Unlock()
+	})
+	_, c, td := newPollingTestServer(t, func(kws *Websocket) {
+		for i := 0; i < 20 && kws.IsAlive(); i++ {
+			kws.EmitEvent("e", []byte(`1`))
+		}
+		mu.Lock()
+		order = append(order, "accept returned")
+		mu.Unlock()
+	})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	_, _ = pollPost(t, c, sid, []byte(`40`))
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(order) == 2
+	}, 3*time.Second, 5*time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"accept returned", "disconnect"}, order)
+	require.Len(t, errs, 1)
+	require.ErrorIs(t, errs[0], ErrSendQueueClosed)
+}
+
 // TestPollingHandshakeTimerStoppedAfterConnect verifies the polling
 // HandshakeTimeout AfterFunc is stopped as soon as SIO CONNECT arrives, so the
 // closure does not pin the *Websocket on the runtime timer heap after the

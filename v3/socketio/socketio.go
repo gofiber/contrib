@@ -541,6 +541,9 @@ type Websocket struct {
 	// closeStarted flips on the first Close call; concurrent or re-entrant
 	// callers return immediately.
 	closeStarted atomic.Bool
+	// acceptState and sendErr hold a send failure's events until accept ends, see sendFailed.
+	acceptState atomic.Int32
+	sendErr     error
 	// closeRequested reports that the closing handshake has been queued:
 	// disconnected then keeps the socket open, bounded by closeGrace, so
 	// the read loop can consume the peer's Close frame.
@@ -956,6 +959,7 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 		ctx, cancelCtx := context.WithCancel(context.Background())
 		kws.ctx = ctx
 		kws.cancelCtx = cancelCtx
+		kws.acceptState.Store(accepting)
 		go kws.send(ctx)
 
 		// 3. Execute the user callback on a fully established socket.
@@ -964,6 +968,7 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 		//    the polling path in openPollingSession.
 		if r := runUserCallback(callback, kws); r != nil {
 			logf("error", "ws_callback_panic", "uuid", kws.UUID, "panic", fmt.Sprintf("%v", r))
+			kws.finishAccept()
 			kws.disconnected(fmt.Errorf("socketio: WebSocket callback panic: %v", r))
 			kws.finishRun()
 			return
@@ -975,6 +980,7 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 		// runs to completion: read drains until the peer's Close frame or
 		// the CloseTimeout deadline, exactly as it would after run.
 		if !kws.IsAlive() {
+			kws.finishAccept()
 			kws.read()
 			kws.finishRun()
 			return
@@ -985,6 +991,7 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 		if kws.IsAlive() {
 			kws.connected.Store(true)
 		}
+		kws.finishAccept()
 
 		// 5. Heartbeat and read loop; blocks until the connection closes.
 		kws.run()
@@ -1976,7 +1983,7 @@ func (kws *Websocket) write(messageType int, messageBytes []byte) {
 			kws.fireEvent(EventError, nil, ErrSendQueueOverflow)
 		case enqueueRejectedDisconnect:
 			logf("error", "poll_queue_overflow_disconnect", "uuid", kws.UUID, "cap", PollQueueMaxFrames)
-			kws.disconnected(ErrSendQueueClosed)
+			kws.sendFailed(ErrSendQueueClosed)
 		case enqueueOK:
 		}
 		return
@@ -1994,7 +2001,7 @@ func (kws *Websocket) write(messageType int, messageBytes []byte) {
 		// Queue is full and send is not draining; tear down rather than
 		// pin the calling goroutine.
 		logf("error", "queue_overflow_disconnect", "uuid", kws.UUID, "queue_cap", cap(kws.queue))
-		kws.disconnected(ErrSendQueueClosed)
+		kws.sendFailed(ErrSendQueueClosed)
 	}
 }
 
@@ -2020,7 +2027,7 @@ func (kws *Websocket) send(ctx context.Context) {
 				_ = conn.SetWriteDeadline(time.Now().Add(kws.writeTimeout))
 			}
 			if err := conn.WriteMessage(msg.mType, msg.data); err != nil {
-				kws.disconnected(err)
+				kws.sendFailed(err)
 				return
 			}
 		}
@@ -2485,6 +2492,8 @@ func (kws *Websocket) connectPolling(ns, auth []byte) {
 	kws.write(TextMessage, buildSIOConnectAckSID(kws.getNamespace(), kws.UUID))
 	pollCallback := kws.pollCallback
 	kws.pollCallback = nil
+	kws.acceptState.Store(accepting)
+	defer kws.finishAccept()
 	if r := runUserCallback(pollCallback, kws); r != nil {
 		logf("error", "polling_callback_panic", "uuid", kws.UUID, "panic", fmt.Sprintf("%v", r))
 		kws.disconnected(fmt.Errorf("socketio: polling callback panic: %v", r))
@@ -2518,6 +2527,13 @@ func (kws *Websocket) connectPolling(ns, auth []byte) {
 // read parked in ReadMessage or a write stalled on a peer that stopped
 // reading, so no error path can wedge the tear-down.
 func (kws *Websocket) disconnected(err error) {
+	if kws.end(err) {
+		kws.fireDisconnect(err)
+	}
+}
+
+// end is the half of disconnected that takes effect at once; only the first call runs it.
+func (kws *Websocket) end(err error) bool {
 	first := false
 	kws.once.Do(func() {
 		first = true
@@ -2549,7 +2565,7 @@ func (kws *Websocket) disconnected(err error) {
 		}
 	})
 	if !first {
-		return
+		return false
 	}
 
 	// Remove from the pool BEFORE firing user events so that listeners
@@ -2558,7 +2574,34 @@ func (kws *Websocket) disconnected(err error) {
 	// the two sets at any time.
 	pool.delete(kws.GetUUID())
 	kws.releaseEIOSession()
+	return true
+}
 
+const (
+	acceptIdle int32 = iota
+	accepting        // the New callback or EventConnect is running
+	acceptHeld       // and a send failure waits for them to return
+)
+
+// sendFailed ends the session now; during accept its events wait for New and EventConnect to return.
+func (kws *Websocket) sendFailed(err error) {
+	if !kws.end(err) {
+		return
+	}
+	kws.sendErr = err
+	if !kws.acceptState.CompareAndSwap(accepting, acceptHeld) {
+		kws.fireDisconnect(err)
+	}
+}
+
+func (kws *Websocket) finishAccept() {
+	if kws.acceptState.Swap(acceptIdle) == acceptHeld {
+		kws.fireDisconnect(kws.sendErr)
+	}
+}
+
+// fireDisconnect is the half of disconnected that user code sees; it runs once, after end.
+func (kws *Websocket) fireDisconnect(err error) {
 	// Drain pending outbound ack callbacks: invoke each with
 	// ErrAckDisconnected so callers can distinguish "ack received" (cb
 	// gets ack bytes, err nil) from "connection closed" (cb gets nil,

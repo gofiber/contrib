@@ -238,6 +238,115 @@ func TestSocketIODrainingSetEmptyAfterConcurrentTeardown(t *testing.T) {
 	require.Empty(t, drainingSessions(), "finished sessions must not linger in the draining set")
 }
 
+func TestSocketIOSendFailureDuringAcceptFiresDisconnectAfterwards(t *testing.T) {
+	for _, stage := range []string{"callback", "connect listener", "callback panic"} {
+		t.Run(stage, func(t *testing.T) {
+			resetSIOGlobals(t)
+			var mu sync.Mutex
+			var order []string
+			var errs []error
+			disconnected := make(chan struct{}, 1)
+			On(EventDisconnect, func(p *EventPayload) {
+				mu.Lock()
+				order = append(order, "disconnect")
+				errs = append(errs, p.Error)
+				mu.Unlock()
+				select {
+				case disconnected <- struct{}{}:
+				default:
+				}
+			})
+			proceed := make(chan struct{})
+			replay := func(kws *Websocket) {
+				<-proceed
+				for i := 0; i < 50 && kws.IsAlive(); i++ {
+					kws.Emit([]byte(`"replay"`))
+					time.Sleep(time.Millisecond)
+				}
+				select {
+				case <-disconnected:
+				case <-time.After(300 * time.Millisecond):
+				}
+				mu.Lock()
+				order = append(order, "accept returned")
+				mu.Unlock()
+			}
+			callback := func(*Websocket) {}
+			switch stage {
+			case "callback":
+				callback = replay
+			case "connect listener":
+				On(EventConnect, func(p *EventPayload) { replay(p.Kws) })
+			case "callback panic":
+				callback = func(kws *Websocket) {
+					replay(kws)
+					panic("boom")
+				}
+			}
+			ln, teardown := newSIOTestServer(t, callback)
+			defer teardown()
+
+			conn := dialSIO(t, ln)
+			require.NoError(t, sioHandshake(t, conn))
+			require.NoError(t, conn.Close())
+			close(proceed)
+
+			require.Eventually(t, func() bool {
+				mu.Lock()
+				defer mu.Unlock()
+				return len(order) == 2
+			}, 3*time.Second, 5*time.Millisecond)
+			mu.Lock()
+			defer mu.Unlock()
+			require.Equal(t, []string{"accept returned", "disconnect"}, order)
+			require.Len(t, errs, 1)
+			require.Error(t, errs[0])
+		})
+	}
+}
+
+func TestSocketIOQueueOverflowDuringCallbackFiresDisconnectAfterwards(t *testing.T) {
+	resetSIOGlobals(t)
+	prevSize := SendQueueSize
+	SendQueueSize = 4
+	t.Cleanup(func() { SendQueueSize = prevSize })
+
+	var mu sync.Mutex
+	var order []string
+	var errs []error
+	On(EventDisconnect, func(p *EventPayload) {
+		mu.Lock()
+		order = append(order, "disconnect")
+		errs = append(errs, p.Error)
+		mu.Unlock()
+	})
+	big := bytes.Repeat([]byte("x"), 64*1024)
+	ln, teardown := newSIOTestServer(t, func(kws *Websocket) {
+		for i := 0; i < 1000 && kws.IsAlive(); i++ {
+			kws.Emit(big, BinaryMessage)
+		}
+		mu.Lock()
+		order = append(order, "accept returned")
+		mu.Unlock()
+	})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(order) == 2
+	}, 3*time.Second, 5*time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"accept returned", "disconnect"}, order)
+	require.Len(t, errs, 1)
+	require.ErrorIs(t, errs[0], ErrSendQueueClosed)
+}
+
 // TestSocketIOStalledPeerDoesNotWedgeTeardown floods a peer that stopped
 // reading over a real TCP socket, so the send goroutine blocks inside a
 // write. The queue overflow tears the session down, and the tear-down must
