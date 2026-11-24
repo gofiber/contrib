@@ -475,6 +475,7 @@ allow if {
 		{desc: "refused cookie on a second line", headers: [][2]string{{"Cookie", "theme=dark"}, {"Cookie", "tenant=globex"}}, statusCode: 400},
 		{desc: "allowed cookies on two lines", headers: [][2]string{{"Cookie", "theme=dark"}, {"Cookie", "lang=en"}}, statusCode: 200},
 		{desc: "refused tenant in another letter case", config: fiber.Config{DisableHeaderNormalizing: true}, headers: [][2]string{{"X-Tenant", "demo"}, {"x-tenant", "globex"}}, statusCode: 400},
+		{desc: "empty tenant in another letter case", config: fiber.Config{DisableHeaderNormalizing: true}, headers: [][2]string{{"X-Tenant", "demo"}, {"x-tenant", ""}}, statusCode: 400},
 	}
 
 	for _, tC := range testCases {

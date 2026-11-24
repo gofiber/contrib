@@ -67,8 +67,7 @@ func New(cfg Config) fiber.Handler {
 			headers := make(map[string]string)
 			for _, header := range cfg.IncludeHeaders {
 				// Readers pick different lines of a repeated field, so it is refused; Cookie lines form one list.
-				// GetAll matches the name in any letter case.
-				if lines := c.GetAll(header); len(lines) > 1 || len(c.Request().Header.PeekAll(header)) > 1 {
+				if lines := c.GetAll(header); len(lines) > 1 || headerLines(c, header) > 1 {
 					if !utils.EqualFold(header, fiber.HeaderCookie) {
 						c.Response().SetStatusCode(cfg.DeniedStatusCode)
 						c.Response().SetBodyString(cfg.DeniedResponseMessage)
@@ -182,4 +181,15 @@ func defaultInput(ctx fiber.Ctx) (map[string]any, error) {
 		"path":   ctx.Path(),
 	}
 	return input, nil
+}
+
+// headerLines counts the lines of a header in any letter case, empty ones included.
+func headerLines(c fiber.Ctx, name string) int {
+	n := 0
+	for key := range c.Request().Header.All() {
+		if utils.EqualFold(utils.UnsafeString(key), name) {
+			n++
+		}
+	}
+	return n
 }
