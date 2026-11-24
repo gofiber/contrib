@@ -77,9 +77,9 @@ var DefaultConfig = Config{
 			return true
 		}
 		// Below 500 a *fiber.Error is about the request (route miss, 405, 4xx), which any client can cause.
-		// A nil *fiber.Error is answered with 500, so it falls through to the plain error case.
-		if fiberErr, ok := errors.AsType[*fiber.Error](err); ok && fiberErr != nil {
-			return fiberErr.Code >= http.StatusInternalServerError
+		// Fiber answers a nil *fiber.Error with 500, also inside a bind error.
+		if fiberErr, ok := errors.AsType[*fiber.Error](err); ok {
+			return fiberErr == nil || fiberErr.Code >= http.StatusInternalServerError
 		}
 		return !isRequestBindError(err)
 	},
@@ -266,8 +266,11 @@ func isClientError(c fiber.Ctx, err error) bool {
 			return false
 		}
 		fiberErr, ok := errors.AsType[*fiber.Error](err)
-		if !ok || fiberErr == nil {
+		if !ok {
 			return isRequestBindError(err)
+		}
+		if fiberErr == nil {
+			return false
 		}
 		status = fiberErr.Code
 	}

@@ -909,7 +909,7 @@ func TestNilErrorsCountAsServerErrors(t *testing.T) {
 
 	var nilErr *fiber.Error
 	var nilBindErr *fiber.BindError
-	for _, handlerErr := range []error{nilErr, fmt.Errorf("lookup: %w", nilErr), nilBindErr} {
+	for _, handlerErr := range []error{nilErr, fmt.Errorf("lookup: %w", nilErr), nilBindErr, &fiber.BindError{Source: fiber.BindSourceBody, Err: nilErr}} {
 		for _, tc := range []struct {
 			isFailure func(fiber.Ctx, error) bool
 			want      circuitbreaker.State
@@ -942,6 +942,36 @@ func TestNilErrorsCountAsServerErrors(t *testing.T) {
 			require.Equal(t, tc.want, cb.GetState(), "%#v", handlerErr)
 		}
 	}
+}
+
+func TestCustomIsFailureCountsANilFiberErrorInABindErrorAsSuccess(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: 1,
+		Timeout:          time.Minute,
+		Clock:            clock.Now,
+		IsFailure:        func(fiber.Ctx, error) bool { return false },
+	})
+	cb.ReportFailure()
+	clock.Advance(2 * time.Minute)
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("panic: %v", r)
+			}
+		}()
+		return c.Next()
+	})
+	app.Use(circuitbreaker.Middleware(cb))
+	app.Get("/", func(fiber.Ctx) error {
+		return &fiber.BindError{Source: fiber.BindSourceBody, Err: (*fiber.Error)(nil)}
+	})
+
+	get(t, app, "/")
+	require.Equal(t, circuitbreaker.StateClosed, cb.GetState())
 }
 
 // refuse reports a connection reset before any request arrived, as fasthttp does.
