@@ -870,6 +870,33 @@ SecRule FILES "@rx (?i)\.php$" "id:1003,phase:2,deny,status:403"`
 	})
 }
 
+func TestEngineMiddlewareGivesForcedURLENCODEDTheFormArgumentsFirst(t *testing.T) {
+	engine, err := newTestEngineWithRules(t, `SecRuleEngine On
+SecRequestBodyAccess On
+SecAction "id:1000,phase:1,pass,nolog,ctl:requestBodyProcessor=URLENCODED"
+SecRule ARGS "@contains <script" "id:1001,phase:2,t:none,t:lowercase,deny,status:403"
+`)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+	app := fiber.New()
+	app.Use(engine.Middleware())
+	app.Post("/", func(c fiber.Ctx) error {
+		return c.SendStatus(http.StatusOK)
+	})
+
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.SetMethod(http.MethodPost)
+	ctx.Request.SetRequestURI("/")
+	ctx.Request.Header.SetHost("example.com")
+	ctx.Request.Header.SetContentType("multipart/form-data; boundary=A")
+	ctx.Request.SetBodyString(strings.Repeat("x=0&", 1000) + "\r\n--A\r\nContent-Disposition: form-data; name=\"note\"\r\n\r\n<script>\r\n--A--\r\n")
+	app.Handler()(&ctx)
+	if status := ctx.Response.StatusCode(); status != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d", http.StatusForbidden, status)
+	}
+}
+
 func TestEngineMiddlewareGivesForcedBodyProcessorsTheMultipartBodyAsReceived(t *testing.T) {
 	form := "--A\r\nContent-Disposition: form-data; name=\"note\"\r\n\r\nhello\r\n--A--\r\n"
 	withNote := func(header, value string) string {
@@ -932,7 +959,7 @@ SecRule REQUEST_BODY "@contains <script" "id:1001,phase:2,t:none,t:lowercase,den
 		})
 	}
 
-	// The 69-byte written form fits the limit, the 116 received bytes followed by it do not.
+	// The clean form fits the limit as received and as written, but not both together.
 	limit := "SecRequestBodyLimit 128\nSecRequestBodyLimitAction "
 	for _, tc := range []struct {
 		name, rules string
@@ -947,7 +974,7 @@ SecRule REQUEST_BODY "@contains <script" "id:1001,phase:2,t:none,t:lowercase,den
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			app := newApp(t, "RAW", tc.rules)
-			if status, got := send(app, qpNote); status != tc.want {
+			if status, got := send(app, form); status != tc.want {
 				t.Fatalf("expected status %d, got %d with body %q", tc.want, status, got)
 			}
 		})

@@ -687,12 +687,12 @@ func processRequest(tx types.Transaction, req *http.Request, c fiber.Ctx) (*type
 			if st, ok = tx.(plugintypes.TransactionState); !ok {
 				return nil, fmt.Errorf("%w: transaction does not expose its body processor", errMultipartForm)
 			}
-			// A forced RAW or URLENCODED processor inspects bytes: give it the body raw readers
-			// get, which holds what the form drops, then the form handlers parse.
+			// A forced RAW or URLENCODED processor inspects bytes: give it the form handlers parse,
+			// first so raw bytes cannot spend the argument limit, then the body raw readers get.
 			if !strings.EqualFold(st.Variables().RequestBodyProcessor().Get(), "MULTIPART") {
 				received := c.Request().Body()
 				wantBody += len(received)
-				body = io.MultiReader(bytes.NewReader(received), form)
+				body = io.MultiReader(form, bytes.NewReader(received))
 			}
 		}
 
