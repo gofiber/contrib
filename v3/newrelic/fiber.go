@@ -114,12 +114,78 @@ func New(cfg Config) fiber.Handler {
 
 		if handlerErr != nil {
 			statusCode = cfg.ErrorStatusCodeHandler(c, handlerErr)
-			txn.NoticeError(handlerErr)
+			txn.NoticeError(newNoticedError(handlerErr))
 		}
 
 		txn.SetWebResponse(nil).WriteHeader(statusCode)
 
 		return handlerErr
+	}
+}
+
+// noticedError copies what the agent keeps from an error until its harvest: text, class and attributes.
+type noticedError struct {
+	err        error
+	msg        string
+	class      string
+	attributes map[string]any
+	stack      []uintptr
+}
+
+func (e *noticedError) Error() string { return e.msg }
+
+// Unwrap keeps the handler's error matchable with errors.Is and errors.As.
+func (e *noticedError) Unwrap() error { return e.err }
+
+func (e *noticedError) ErrorClass() string { return e.class }
+
+func (e *noticedError) ErrorAttributes() map[string]any { return e.attributes }
+
+func (e *noticedError) StackTrace() []uintptr { return e.stack }
+
+// newNoticedError looks where the agent does: on err, then on its deepest cause.
+func newNoticedError(err error) *noticedError {
+	noticed := &noticedError{err: err, msg: utils.CopyString(err.Error())}
+
+	for _, e := range [...]error{err, errorCause(err)} {
+		if classer, ok := e.(interface{ ErrorClass() string }); ok && noticed.class == "" {
+			noticed.class = utils.CopyString(classer.ErrorClass())
+		}
+		if attributer, ok := e.(interface{ ErrorAttributes() map[string]any }); ok && noticed.attributes == nil {
+			noticed.attributes = copyAttributes(attributer.ErrorAttributes())
+		}
+		if tracer, ok := e.(interface{ StackTrace() []uintptr }); ok && noticed.stack == nil {
+			noticed.stack = tracer.StackTrace()
+		}
+	}
+
+	return noticed
+}
+
+// copyAttributes copies keys and string values, the only accepted values that can alias.
+func copyAttributes(attributes map[string]any) map[string]any {
+	if attributes == nil {
+		return nil
+	}
+
+	owned := make(map[string]any, len(attributes))
+	for key, value := range attributes {
+		if text, ok := value.(string); ok {
+			value = utils.CopyString(text)
+		}
+		owned[utils.CopyString(key)] = value
+	}
+
+	return owned
+}
+
+func errorCause(err error) error {
+	for {
+		next := errors.Unwrap(err)
+		if next == nil {
+			return err
+		}
+		err = next
 	}
 }
 

@@ -14,6 +14,8 @@ Only the headers the New Relic agent itself consumes are forwarded to New Relic 
 
 Transactions are named `{method} {route}`, for example `GET /users/:id`. A request that no route handles (404, 405) is named after its method alone, so clients cannot create new transaction names, and the metrics the agent keeps for each of them, by varying the path. A handler can still rename its transaction with `FromContext(c).SetName(...)`.
 
+An error returned by a handler is noticed with copies of its message, class and attributes, as the agent keeps them until its next harvest and they may come from request values such as `c.Get(...)`. In an `ErrorGroupCallback`, `ErrorInfo.Error` therefore wraps the handler's error; match it with `errors.Is` or `errors.As`.
+
 **Compatible with Fiber v3.**
 
 ## Go version support
