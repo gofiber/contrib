@@ -599,6 +599,8 @@ SecRule ARGS_POST "@contains ../" "id:1001,phase:2,deny,status:403"`
 	phpUpload := part(`name="file"; filename="shell.php"`, "<?php ?>")
 	boundaryB := part(`name="folder"`, "../../etc") +
 		part(`name="decoy"`, "\r\n--B\r\nContent-Disposition: form-data; name=\"folder\"\r\n\r\npictures\r\n--B--") + "--A--\r\n"
+	boundaryNested := part(`name="decoy"`, "\r\n--a\r\nContent-Disposition: form-data; name=\"folder\"\r\n\r\npictures\r\n--a--") +
+		part(`name="folder"`, "../../etc") + "--A--\r\n"
 
 	clean := qpNote("hello=0D=0A") + part(`name="folder"`, "pictures") + part(`name="file"; filename="cat.png"`, "png") + "--A--\r\n"
 
@@ -613,6 +615,9 @@ SecRule ARGS_POST "@contains ../" "id:1001,phase:2,deny,status:403"`
 		{"quoted-printable note closing the re-serialized form", "multipart/form-data; boundary=A", qpNote("hello=0D=0A--A--=0D=0A") + phpUpload + "--A--\r\n", true, http.StatusBadRequest},
 		{"control: one boundary parameter", "multipart/form-data; boundary=A", boundaryB, false, http.StatusForbidden},
 		{"duplicate boundary parameter", "multipart/form-data; boundary=A; boundary*=utf-8''B", boundaryB, false, http.StatusBadRequest},
+		{"control: quoted boundary* parameter", "multipart/form-data; boundary=A; boundary*=\"utf-8';'A\"", boundaryNested, false, http.StatusForbidden},
+		{"boundary* parameter", "multipart/form-data; boundary=A; boundary*=\u00a0\"utf-8';'A\"", boundaryNested, false, http.StatusBadRequest},
+		{"pre-parsed boundary* parameter", "multipart/form-data; boundary=A; boundary*=\u00a0\"utf-8';'A\"", boundaryNested, true, http.StatusBadRequest},
 		{"control: plain field", "multipart/form-data; boundary=A", part(`name="folder"`, "../../etc") + "--A--\r\n", false, http.StatusForbidden},
 		{"filename* parameter", "multipart/form-data; boundary=A", part(`name="folder"; filename*=iso-8859-1''x`, "../../etc") + "--A--\r\n", false, http.StatusForbidden},
 	} {

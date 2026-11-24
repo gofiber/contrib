@@ -772,6 +772,13 @@ func hasControl(s string) bool {
 // multipartFormBody writes the form the handlers read under the boundary Coraza
 // reads, so Coraza inspects exactly the parts the handlers see.
 func multipartFormBody(c fiber.Ctx, contentType string, body io.Reader) (io.Reader, error) {
+	// First, so ReadForm's part and header limits bound the walk below, and so the check,
+	// Coraza and the handlers use the same boundary.
+	form, err := c.MultipartForm()
+	if err != nil {
+		return nil, err
+	}
+
 	_, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
 		return nil, err
@@ -780,12 +787,6 @@ func multipartFormBody(c fiber.Ctx, contentType string, body io.Reader) (io.Read
 	// Fiber splits the form by its own reading of the boundary, mime readers by this one.
 	if boundary != string(c.Request().Header.MultipartFormBoundary()) {
 		return nil, errors.New("fasthttp and mime read different boundaries")
-	}
-
-	// First, so ReadForm's part and header limits bound the walk below.
-	form, err := c.MultipartForm()
-	if err != nil {
-		return nil, err
 	}
 
 	// A streaming reader sees the body as received, not as ReadForm kept it.
