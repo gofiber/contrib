@@ -1250,8 +1250,9 @@ func (kws *Websocket) GetStringAttribute(key string) string {
 // Per-target failures are surfaced as EventError on kws by EmitTo (not
 // returned). See Websocket.Emit for the meaning of mType.
 func (kws *Websocket) EmitToList(uuids []string, message []byte, mType ...int) {
+	var cache broadcastFrames
 	for _, wsUUID := range uuids {
-		_ = kws.EmitTo(wsUUID, message, mType...)
+		_ = kws.emitTo(&cache, wsUUID, message, mType)
 	}
 }
 
@@ -1259,8 +1260,9 @@ func (kws *Websocket) EmitToList(uuids []string, message []byte, mType ...int) {
 // message to every connection whose UUID appears in uuids. Errors are
 // silently ignored; use the method form to receive them via EventError.
 func EmitToList(uuids []string, message []byte, mType ...int) {
+	var cache broadcastFrames
 	for _, wsUUID := range uuids {
-		_ = EmitTo(wsUUID, message, mType...)
+		_ = emitTo(&cache, wsUUID, message, mType)
 	}
 }
 
@@ -1270,6 +1272,11 @@ func EmitToList(uuids []string, message []byte, mType ...int) {
 // fan-out callers (EmitToList, Broadcast) do not have to re-fire it. See
 // Websocket.Emit for the meaning of mType.
 func (kws *Websocket) EmitTo(uuid string, message []byte, mType ...int) error {
+	return kws.emitTo(&broadcastFrames{}, uuid, message, mType)
+}
+
+// emitTo takes the frame cache from its caller so an EmitToList builds or copies the message once.
+func (kws *Websocket) emitTo(cache *broadcastFrames, uuid string, message []byte, mType []int) error {
 	conn, err := pool.get(uuid)
 	if err != nil {
 		kws.fireEvent(EventError, []byte(uuid), err)
@@ -1280,7 +1287,7 @@ func (kws *Websocket) EmitTo(uuid string, message []byte, mType ...int) error {
 		return ErrorInvalidConnection
 	}
 
-	conn.Emit(message, mType...)
+	cache.deliver(conn, message, mType)
 	return nil
 }
 
@@ -1288,6 +1295,10 @@ func (kws *Websocket) EmitTo(uuid string, message []byte, mType ...int) error {
 // the connection identified by uuid and returns ErrorInvalidConnection when
 // the target is unknown or already closed.
 func EmitTo(uuid string, message []byte, mType ...int) error {
+	return emitTo(&broadcastFrames{}, uuid, message, mType)
+}
+
+func emitTo(cache *broadcastFrames, uuid string, message []byte, mType []int) error {
 	conn, err := pool.get(uuid)
 	if err != nil {
 		return err
@@ -1297,7 +1308,7 @@ func EmitTo(uuid string, message []byte, mType ...int) error {
 		return ErrorInvalidConnection
 	}
 
-	conn.Emit(message, mType...)
+	cache.deliver(conn, message, mType)
 	return nil
 }
 
@@ -1317,6 +1328,7 @@ func frameType(mType []int) int {
 type broadcastFrames struct {
 	root   []byte
 	frames map[string][]byte
+	raw    []byte // the copy shared by recipients of a non-text message
 }
 
 func (b *broadcastFrames) frame(namespace, message []byte) []byte {
@@ -1337,12 +1349,28 @@ func (b *broadcastFrames) frame(namespace, message []byte) []byte {
 	return f
 }
 
+func (b *broadcastFrames) verbatim(message []byte) []byte {
+	if b.raw == nil {
+		b.raw = utils.CopyBytes(message)
+	}
+	return b.raw
+}
+
+func (b *broadcastFrames) deliver(conn ws, message []byte, mType []int) {
+	if w, ok := conn.(*Websocket); ok {
+		w.emitShared(b, message, frameType(mType))
+		return
+	}
+	conn.Emit(message, mType...)
+}
+
 // emitShared is Emit for a fan-out: text messages reuse the per-namespace
-// frame from cache. The frame is shared read-only between the send queues
-// of every recipient; nothing on the write path mutates queued bytes.
+// frame from cache, other types one copy of message. The bytes are shared
+// read-only between the send queues of every recipient; nothing on the
+// write path mutates queued bytes.
 func (kws *Websocket) emitShared(cache *broadcastFrames, message []byte, mType int) {
 	if mType != TextMessage {
-		kws.write(mType, message)
+		kws.write(mType, cache.verbatim(message))
 		return
 	}
 	kws.write(TextMessage, cache.frame(kws.getNamespace(), message))
@@ -1427,13 +1455,15 @@ func Fire(event string, data []byte) {
 //
 // Concurrency-safe: enqueues onto the per-connection send queue. Calls on
 // already-disconnected sockets are a no-op. Behavior on a full queue is
-// governed by DropFramesOnOverflow.
+// governed by DropFramesOnOverflow. The caller may reuse message once Emit
+// returns.
 func (kws *Websocket) Emit(message []byte, mType ...int) {
 	t := frameType(mType)
 	if t == TextMessage {
 		kws.write(TextMessage, buildSIOEvent(kws.getNamespace(), EventMessage, message))
 	} else {
-		kws.write(t, message)
+		// Written after Emit returns, so the queue must not alias a borrowed buffer such as c.Body().
+		kws.write(t, utils.CopyBytes(message))
 	}
 }
 

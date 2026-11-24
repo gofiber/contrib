@@ -1026,6 +1026,33 @@ func TestBroadcastFramesCache(t *testing.T) {
 	require.NotSame(t, &root[0], &admin[0])
 }
 
+func TestEmitBinaryQueuesCopyOfMessage(t *testing.T) {
+	resetSIOGlobals(t)
+	t.Cleanup(pool.reset)
+
+	first, second := createWS(), createWS()
+	first.queue = make(chan message, 3)
+	second.queue = make(chan message, 2)
+	pool.set(first)
+	pool.set(second)
+
+	buf := []byte("announcement")
+	first.Emit(buf, BinaryMessage)
+	Broadcast(buf, BinaryMessage)
+	first.EmitToList([]string{first.UUID, second.UUID}, buf, BinaryMessage)
+	copy(buf, "another user")
+
+	emitted, toFirst, toSecond := <-first.queue, <-first.queue, <-second.queue
+	require.Equal(t, "announcement", string(emitted.data))
+	require.Equal(t, "announcement", string(toFirst.data))
+	require.Equal(t, "announcement", string(toSecond.data))
+	require.Same(t, &toFirst.data[0], &toSecond.data[0], "a broadcast copies the message once")
+	listFirst, listSecond := <-first.queue, <-second.queue
+	require.Equal(t, "announcement", string(listFirst.data))
+	require.Equal(t, "announcement", string(listSecond.data))
+	require.Same(t, &listFirst.data[0], &listSecond.data[0], "a list copies the message once")
+}
+
 // Compared with a pool sharing one namespace rather than a fixed budget, so
 // the check holds on any machine and under -race.
 func TestBroadcastDistinctNamespacesStaysLinear(t *testing.T) {
