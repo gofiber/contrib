@@ -1,6 +1,7 @@
 package swaggo
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"html/template"
@@ -55,6 +56,12 @@ func New(config ...Config) fiber.Handler {
 		}
 
 		p := utils.CopyString(c.Params("*"))
+
+		// The pages load assets by relative URL, which a browser resolves against the path as sent.
+		// An escape in its last segment can be a slash only the router decodes (UnescapePath).
+		if p != "" && lastSegmentEscaped(c.Request().URI().PathOriginal()) {
+			return fiber.ErrNotFound
+		}
 
 		switch p {
 		case defaultIndex:
@@ -115,6 +122,10 @@ func New(config ...Config) fiber.Handler {
 			return c.Send(data)
 		}
 	}
+}
+
+func lastSegmentEscaped(rawPath []byte) bool {
+	return bytes.IndexByte(rawPath[bytes.LastIndexByte(rawPath, '/')+1:], '%') >= 0
 }
 
 // getForwardedPrefix honors the header only from a trusted proxy, like Fiber's

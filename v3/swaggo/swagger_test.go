@@ -364,3 +364,28 @@ func Test_Swagger_Forwarded_Prefix_Keeps_Cache_Control(t *testing.T) {
 		})
 	}
 }
+
+func Test_Swagger_Escaped_Last_Segment(t *testing.T) {
+	registrationOnce.Do(func() {
+		swag.Register(swag.Name, &mockedSwag{})
+	})
+
+	app := fiber.New(fiber.Config{UnescapePath: true})
+	app.Get("/swag/*", New())
+
+	for url, statusCode := range map[string]int{
+		"/uploads/mallory/..%2F..%2Fswag%2Findex.html":    fiber.StatusNotFound,
+		"/uploads/mallory/..%2f..%2fswag%2f%2findex.html": fiber.StatusNotFound,
+		"/swag%2Findex.html":                              fiber.StatusNotFound,
+		"/swag/index%2Ehtml":                              fiber.StatusNotFound,
+		"/swag/index.html":                                fiber.StatusOK,
+		"/swag/swagger-ui-bundle.js":                      fiber.StatusOK,
+		"/swag/..%2Fswag/index.html":                      fiber.StatusOK,
+		"/swag/":                                          fiber.StatusMovedPermanently,
+	} {
+		resp, _ := swaggerRequest(t, app, url, "")
+		if resp.StatusCode != statusCode {
+			t.Fatalf("%s: got %d, expected %d", url, resp.StatusCode, statusCode)
+		}
+	}
+}
