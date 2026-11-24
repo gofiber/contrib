@@ -73,8 +73,12 @@ var DefaultConfig = Config{
 		if err == nil {
 			return c.Response().StatusCode() >= http.StatusInternalServerError
 		}
+		if isNilBindError(err) {
+			return true
+		}
 		// Below 500 a *fiber.Error is about the request (route miss, 405, 4xx), which any client can cause.
-		if fiberErr, ok := errors.AsType[*fiber.Error](err); ok {
+		// A nil *fiber.Error is answered with 500, so it falls through to the plain error case.
+		if fiberErr, ok := errors.AsType[*fiber.Error](err); ok && fiberErr != nil {
 			return fiberErr.Code >= http.StatusInternalServerError
 		}
 		return !isRequestBindError(err)
@@ -226,7 +230,15 @@ func (cb *CircuitBreaker) serve(c fiber.Ctx, next func() error) error {
 	}
 	defer release()
 
+	// Fiber replays the Use chain with the refusal's status already set for a request
+	// its server could not read; no route runs for it, so it says nothing about the service.
+	refused := c.Response().StatusCode() >= http.StatusBadRequest && c.Endpoint() == nil
+
 	err := next()
+
+	if refused {
+		return err
+	}
 
 	if cb.config.IsFailure(c, err) {
 		cb.recordFailure(cb.clock(), adm)
@@ -250,13 +262,23 @@ func (cb *CircuitBreaker) serve(c fiber.Ctx, next func() error) error {
 func isClientError(c fiber.Ctx, err error) bool {
 	status := c.Response().StatusCode()
 	if err != nil {
+		if isNilBindError(err) {
+			return false
+		}
 		fiberErr, ok := errors.AsType[*fiber.Error](err)
-		if !ok {
+		if !ok || fiberErr == nil {
 			return isRequestBindError(err)
 		}
 		status = fiberErr.Code
 	}
 	return status >= http.StatusBadRequest && status < http.StatusInternalServerError
+}
+
+// isNilBindError reports a nil *fiber.BindError: errors.As would panic calling its Unwrap,
+// and Fiber answers it with 500 like any other error.
+func isNilBindError(err error) bool {
+	bindErr, ok := err.(*fiber.BindError)
+	return ok && bindErr == nil
 }
 
 // isRequestBindError reports malformed request input; RespHeader binds the server's own response.
