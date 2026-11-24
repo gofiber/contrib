@@ -463,7 +463,7 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 		case string:
 			v = utils.CopyString(val)
 		case []byte:
-			v = utils.CopyBytes(val)
+			v = bytes.Clone(val) // keeps nil, so a nil check reads as it did in middleware
 		default:
 			v = copyNamedKind(v)
 		}

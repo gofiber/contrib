@@ -221,6 +221,32 @@ func TestPollingOpenCopiesStringAndByteLocals(t *testing.T) {
 	require.Equal(t, []byte("alice"), kws.Locals("raw"))
 }
 
+func TestPollingOpenKeepsNilByteLocalNil(t *testing.T) {
+	resetSIOGlobals(t)
+	prevEnable := EnablePolling
+	EnablePolling = true
+	t.Cleanup(func() { EnablePolling = prevEnable })
+
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		c.Locals("user", []byte(nil))
+		c.Locals("empty", []byte{})
+		return c.Next()
+	})
+	app.Get("/", New(func(*Websocket) {}))
+
+	req, err := http.NewRequest(http.MethodGet, "/?EIO=4&transport=polling", nil)
+	require.NoError(t, err)
+	kws := pollOpenSession(t, app, req)
+
+	user, ok := kws.Locals("user").([]byte)
+	require.True(t, ok)
+	require.Nil(t, user)
+	empty, ok := kws.Locals("empty").([]byte)
+	require.True(t, ok)
+	require.NotNil(t, empty)
+}
+
 func TestPollingOpenCopiesNamedStringAndByteLocals(t *testing.T) {
 	resetSIOGlobals(t)
 	prevEnable := EnablePolling
