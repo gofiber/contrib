@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,8 +31,10 @@ var (
 	// labelled order of magnitude (78*13 ~= 1KB, 5041*13 ~= 64KB).
 	benchBody1KBAllow = bytes.Repeat([]byte("payload=safe&"), 78)
 	// benchBody1KBBlock ends in "payload=attack" so it triggers benchBodyRules.
-	benchBody1KBBlock   = append(bytes.Repeat([]byte("payload=safe&"), 77), []byte("payload=attack")...)
-	benchBody64KBAllow  = bytes.Repeat([]byte("payload=safe&"), 5041)
+	benchBody1KBBlock  = append(bytes.Repeat([]byte("payload=safe&"), 77), []byte("payload=attack")...)
+	benchBody64KBAllow = bytes.Repeat([]byte("payload=safe&"), 5041)
+	benchBodyMultipart = []byte("--A\r\nContent-Disposition: form-data; name=\"payload\"\r\n\r\nsafe\r\n" +
+		"--A\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n\r\n" + strings.Repeat("a", 1024) + "\r\n--A--\r\n")
 	benchObserveLatency = 2 * time.Millisecond
 )
 
@@ -111,6 +114,39 @@ func BenchmarkCoraza_BodyRule_POST_64KB_Allow(b *testing.B) {
 	app := newBenchmarkApp(b, engine)
 	benchmarkAppRequest(b, app, http.StatusOK, func() *http.Request {
 		return newBenchmarkPostRequest(benchBody64KBAllow)
+	})
+}
+
+func BenchmarkCoraza_BodyRule_POST_1KB_Gzip_Allow(b *testing.B) {
+	b.ReportAllocs()
+
+	engine := newBenchmarkEngine(b, benchBodyRules)
+	app := newBenchmarkApp(b, engine)
+	body := fasthttp.AppendGzipBytes(nil, benchBody1KBAllow)
+	benchmarkAppRequest(b, app, http.StatusOK, func() *http.Request {
+		req := newBenchmarkPostRequest(body)
+		req.Header.Set("Content-Encoding", "gzip")
+		return req
+	})
+}
+
+func BenchmarkCoraza_BodyRule_POST_Multipart_Allow(b *testing.B) {
+	b.ReportAllocs()
+
+	engine := newBenchmarkEngine(b, benchBodyRules)
+	app := newBenchmarkApp(b, engine)
+	benchmarkAppRequest(b, app, http.StatusOK, func() *http.Request {
+		return newBenchmarkMultipartRequest(benchBodyMultipart)
+	})
+}
+
+func BenchmarkCoraza_RawBodyRule_POST_Multipart_Allow(b *testing.B) {
+	b.ReportAllocs()
+
+	engine := newBenchmarkEngine(b, benchBodyRules+"\nSecAction \"id:1000,phase:1,pass,nolog,ctl:requestBodyProcessor=RAW\"")
+	app := newBenchmarkApp(b, engine)
+	benchmarkAppRequest(b, app, http.StatusOK, func() *http.Request {
+		return newBenchmarkMultipartRequest(benchBodyMultipart)
 	})
 }
 
@@ -338,6 +374,12 @@ func benchmarkAppRequest(b *testing.B, app *fiber.App, wantStatus int, newReq fu
 func newBenchmarkPostRequest(body []byte) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return req
+}
+
+func newBenchmarkMultipartRequest(body []byte) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=A")
 	return req
 }
 
