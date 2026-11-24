@@ -951,8 +951,8 @@ func (kws *Websocket) run(ctx context.Context, cancelFunc context.CancelFunc, wg
 			return nil
 		})
 		conn.SetPingHandler(func(data string) error {
-			// Same short circuit as the pong handler; RFC 6455 section 5.5.2 lets an
-			// endpoint skip the pong once a close is under way.
+			// Same short circuit as the pong handler. The pong is skipped too: Close writes
+			// its Close frame right after setting closing, and the library refuses writes after it.
 			if kws.closing.Load() {
 				return nil
 			}
