@@ -989,6 +989,7 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 		// 5. Heartbeat and read loop; blocks until the connection closes.
 		kws.run()
 	}, config...)
+	guard := newPollingGuard(config)
 
 	return func(c fiber.Ctx) error {
 		// Reject unsupported Engine.IO protocol versions BEFORE the
@@ -1011,7 +1012,7 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 		// the WebSocket transport carries over a single full-duplex
 		// frame stream. See polling.go.
 		if EnablePolling {
-			if handled, err := handlePolling(c, callback); handled {
+			if handled, err := handlePolling(c, guard, callback); handled {
 				return err
 			}
 			// Reject requests that carry an explicit transport value

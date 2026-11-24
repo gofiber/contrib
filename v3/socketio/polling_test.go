@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	fws "github.com/gofiber/contrib/v3/websocket"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/utils/v2"
 	"github.com/stretchr/testify/require"
@@ -2351,4 +2352,129 @@ func TestPollingUUIDIsNotSessionID(t *testing.T) {
 	body, status := pollGet(t, client, sid)
 	require.Equal(t, http.StatusOK, status)
 	require.Contains(t, string(body), `40{"sid":`)
+}
+
+// pollAs sends one polling request through app.Test; without a sid it opens a
+// session and returns the sid in place of the body.
+func pollAs(t *testing.T, app *fiber.App, method, sid, body, origin string, header ...string) (int, string) {
+	t.Helper()
+	target := "/?EIO=4&transport=polling"
+	if sid != "" {
+		target += "&sid=" + sid
+	}
+	req, err := http.NewRequest(method, target, strings.NewReader(body))
+	require.NoError(t, err)
+	if origin != "" {
+		req.Header.Set(fiber.HeaderOrigin, origin)
+	}
+	for i := 0; i+1 < len(header); i += 2 {
+		req.Header.Set(header[i], header[i+1])
+	}
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	out, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	if sid == "" && resp.StatusCode == http.StatusOK {
+		var open eioOpenPacket
+		require.NoError(t, json.Unmarshal(out[1:], &open))
+		return resp.StatusCode, open.SID
+	}
+	return resp.StatusCode, string(out)
+}
+
+func TestPollingHonorsConfigNext(t *testing.T) {
+	resetSIOGlobals(t)
+	prevEnable := EnablePolling
+	EnablePolling = true
+	t.Cleanup(func() { EnablePolling = prevEnable })
+
+	var callbacks, events atomic.Int32
+	On("whoami", func(*EventPayload) { events.Add(1) })
+	app := fiber.New()
+	app.All("/", New(func(*Websocket) { callbacks.Add(1) }, fws.Config{
+		Next: func(c fiber.Ctx) bool { return c.Get("X-Member") == "" },
+	}), func(c fiber.Ctx) error { return c.SendStatus(fiber.StatusUnauthorized) })
+
+	status, _ := pollAs(t, app, http.MethodGet, "", "", "")
+	require.Equal(t, fiber.StatusUnauthorized, status)
+	status, sid := pollAs(t, app, http.MethodGet, "", "", "", "X-Member", "1")
+	require.Equal(t, http.StatusOK, status)
+
+	for _, body := range []string{"40", `42["whoami"]`} {
+		status, _ = pollAs(t, app, http.MethodPost, sid, body, "")
+		require.Equal(t, fiber.StatusUnauthorized, status)
+	}
+	status, _ = pollAs(t, app, http.MethodGet, sid, "", "")
+	require.Equal(t, fiber.StatusUnauthorized, status)
+	require.Zero(t, callbacks.Load())
+
+	for _, body := range []string{"40", `42["whoami"]`} {
+		status, _ = pollAs(t, app, http.MethodPost, sid, body, "", "X-Member", "1")
+		require.Equal(t, http.StatusOK, status)
+	}
+	require.EqualValues(t, 1, callbacks.Load())
+	require.EqualValues(t, 1, events.Load())
+}
+
+func TestPollingHonorsConfigOrigins(t *testing.T) {
+	resetSIOGlobals(t)
+	prevEnable := EnablePolling
+	EnablePolling = true
+	t.Cleanup(func() { EnablePolling = prevEnable })
+
+	const allowed, foreign = "https://app.example", "https://evil.example"
+	var callbacks, events atomic.Int32
+	On("whoami", func(*EventPayload) { events.Add(1) })
+	newApp := func(cfg fws.Config) *fiber.App {
+		app := fiber.New()
+		app.All("/", New(func(*Websocket) { callbacks.Add(1) }, cfg))
+		return app
+	}
+
+	origins := []string{allowed}
+	app := newApp(fws.Config{Origins: origins})
+	origins[0] = foreign
+
+	status, body := pollAs(t, app, http.MethodGet, "", "", foreign)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Contains(t, body, `"code":4`)
+
+	status, sid := pollAs(t, app, http.MethodGet, "", "", "")
+	require.Equal(t, http.StatusOK, status)
+	for _, origin := range []string{foreign, "null", ""} {
+		status, body = pollAs(t, app, http.MethodPost, sid, "40", origin)
+		require.Equal(t, http.StatusForbidden, status, "origin %q", origin)
+		require.Contains(t, body, `"code":4`)
+	}
+	require.Zero(t, callbacks.Load())
+
+	status, _ = pollAs(t, app, http.MethodPost, sid, "40", "HTTPS://APP.EXAMPLE")
+	require.Equal(t, http.StatusOK, status)
+	require.EqualValues(t, 1, callbacks.Load())
+
+	status, _ = pollAs(t, app, http.MethodPost, sid, `42["whoami"]`, foreign)
+	require.Equal(t, http.StatusForbidden, status)
+	status, _ = pollAs(t, app, http.MethodGet, sid, "", foreign)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Zero(t, events.Load())
+	status, _ = pollAs(t, app, http.MethodPost, sid, `42["whoami"]`, allowed)
+	require.Equal(t, http.StatusOK, status)
+	require.EqualValues(t, 1, events.Load())
+
+	lenient := newApp(fws.Config{Origins: []string{allowed}, AllowEmptyOrigin: true})
+	status, sid = pollAs(t, lenient, http.MethodGet, "", "", "")
+	require.Equal(t, http.StatusOK, status)
+	status, _ = pollAs(t, lenient, http.MethodPost, sid, "40", foreign)
+	require.Equal(t, http.StatusForbidden, status)
+	status, _ = pollAs(t, lenient, http.MethodPost, sid, "40", "")
+	require.Equal(t, http.StatusOK, status)
+	require.EqualValues(t, 2, callbacks.Load())
+
+	wildcard := newApp(fws.Config{Origins: []string{allowed, "*"}})
+	status, sid = pollAs(t, wildcard, http.MethodGet, "", "", foreign)
+	require.Equal(t, http.StatusOK, status)
+	status, _ = pollAs(t, wildcard, http.MethodPost, sid, "40", "")
+	require.Equal(t, http.StatusOK, status)
+	require.EqualValues(t, 3, callbacks.Load())
 }

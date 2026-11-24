@@ -157,6 +157,8 @@ const socket = io("http://localhost:3000", {
 
 > CORS is not handled by the middleware. If your client connects from a different origin, mount your preferred CORS middleware (e.g. `github.com/gofiber/fiber/v3/middleware/cors`) upstream of the route. Long-polling holds a request open for up to ~25s by default, so reverse-proxy timeouts must accommodate (`proxy_read_timeout` >= 60s on nginx, `proxy_buffering off`).
 
+The `Next`, `Origins` and `AllowEmptyOrigin` fields of the `websocket.Config` passed to `New` apply to every polling request as well. A `Next` that skips every request that is not a WebSocket upgrade (for example `return !websocket.IsWebSocketUpgrade(c)`) therefore skips polling too. A refused origin gets `403` with Engine.IO error code 4. A polling `GET` may omit `Origin`, as browsers do on same-origin requests; a `POST` without one needs `AllowEmptyOrigin`.
+
 #### Polling pitfalls
 
 - **Forgot to mount POST.** Polling clients send packets via POST; without `app.Post(path, h)` (or `app.All(...)`) the server returns 404 and the client loops with `transport error`. Always mount both `GET` and `POST` for polling routes.
