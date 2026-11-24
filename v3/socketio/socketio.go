@@ -1269,9 +1269,10 @@ func EmitToList(uuids []string, message []byte, mType ...int) {
 
 // EmitTo sends message to the connection identified by uuid. Returns the
 // underlying pool error (typically ErrorInvalidConnection) when the target is
-// unknown or already closed; in either case an EventError is fired on kws so
-// fan-out callers (EmitToList, Broadcast) do not have to re-fire it. See
-// Websocket.Emit for the meaning of mType.
+// unknown, already closed or not yet admitted (see Broadcast); in each case
+// an EventError is fired on kws so fan-out callers (EmitToList, Broadcast)
+// do not have to re-fire it. A connecting session may still address itself.
+// See Websocket.Emit for the meaning of mType.
 func (kws *Websocket) EmitTo(uuid string, message []byte, mType ...int) error {
 	return kws.emitTo(&broadcastFrames{}, uuid, message, mType)
 }
@@ -1283,7 +1284,7 @@ func (kws *Websocket) emitTo(cache *broadcastFrames, uuid string, message []byte
 		kws.fireEvent(EventError, []byte(uuid), err)
 		return err
 	}
-	if !conn.IsAlive() {
+	if !conn.IsAlive() || (conn != ws(kws) && notAdmitted(conn)) {
 		kws.fireEvent(EventError, []byte(uuid), ErrorInvalidConnection)
 		return ErrorInvalidConnection
 	}
@@ -1294,7 +1295,7 @@ func (kws *Websocket) emitTo(cache *broadcastFrames, uuid string, message []byte
 
 // EmitTo is the package-level form of Websocket.EmitTo. It sends message to
 // the connection identified by uuid and returns ErrorInvalidConnection when
-// the target is unknown or already closed.
+// the target is unknown, already closed or not yet admitted.
 func EmitTo(uuid string, message []byte, mType ...int) error {
 	return emitTo(&broadcastFrames{}, uuid, message, mType)
 }
@@ -1305,12 +1306,18 @@ func emitTo(cache *broadcastFrames, uuid string, message []byte, mType []int) er
 		return err
 	}
 
-	if !conn.IsAlive() {
+	if !conn.IsAlive() || notAdmitted(conn) {
 		return ErrorInvalidConnection
 	}
 
 	cache.deliver(conn, message, mType)
 	return nil
+}
+
+// notAdmitted reports a session whose New callback or EventConnect listeners may still refuse it.
+func notAdmitted(conn ws) bool {
+	w, ok := conn.(*Websocket)
+	return ok && !w.connected.Load()
 }
 
 // frameType resolves the optional mType argument of the emit APIs.

@@ -461,6 +461,64 @@ func TestSocketIOBroadcastSkipsSessionInEventConnect(t *testing.T) {
 	require.Equal(t, "41", string(msg), "the refused session must receive nothing but SIO DISCONNECT")
 }
 
+func TestSocketIOEmitToSkipsSessionInEventConnect(t *testing.T) {
+	resetSIOGlobals(t)
+	kwsCh := captureConnect(t)
+	release := make(chan struct{})
+	releaseGuest := sync.OnceFunc(func() { close(release) })
+	On(EventConnect, func(p *EventPayload) {
+		if string(p.HandshakeAuth) == `{"token":"member"}` {
+			return
+		}
+		<-release
+		p.Kws.Close()
+	})
+	var undelivered atomic.Int32
+	On(EventError, func(p *EventPayload) {
+		if errors.Is(p.Error, ErrorInvalidConnection) {
+			undelivered.Add(1)
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+	defer releaseGuest()
+
+	member := dialSIO(t, ln)
+	defer member.Close()
+	sioHandshakeWithConnect(t, member, `{"token":"member"}`)
+	memberKws := awaitSession(t, kwsCh)
+	require.Eventually(t, memberKws.isConnected, 2*time.Second, 5*time.Millisecond)
+
+	guest := dialSIO(t, ln)
+	defer guest.Close()
+	sioHandshakeWithConnect(t, guest, `{"token":"wrong"}`)
+	guestKws := awaitSession(t, kwsCh)
+	uuid := guestKws.GetUUID()
+
+	require.ErrorIs(t, EmitTo(uuid, []byte(`"secret"`)), ErrorInvalidConnection)
+	require.ErrorIs(t, memberKws.EmitTo(uuid, []byte(`"secret"`)), ErrorInvalidConnection)
+	EmitToList([]string{uuid}, []byte(`"secret"`))
+	memberKws.EmitToList([]string{uuid}, []byte(`"secret"`))
+	require.EqualValues(t, 2, undelivered.Load())
+
+	require.NoError(t, guestKws.EmitTo(uuid, []byte(`"to myself"`)))
+	require.NoError(t, EmitTo(memberKws.GetUUID(), []byte(`"hello"`)))
+	releaseGuest()
+
+	_ = member.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, msg, err := sioReadSkipPings(member)
+	require.NoError(t, err)
+	require.Equal(t, `42["message","hello"]`, string(msg))
+
+	_ = guest.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for _, want := range []string{`42["message","to myself"]`, "41"} {
+		_, msg, err = sioReadSkipPings(guest)
+		require.NoError(t, err)
+		require.Equal(t, want, string(msg))
+	}
+}
+
 // TestSocketIOShutdownWaitsForClosingSessions verifies that Shutdown also
 // waits for a session that was closed just before it was called and is
 // still draining its closing handshake, even though it already left the

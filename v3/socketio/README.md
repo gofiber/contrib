@@ -280,7 +280,7 @@ socketio.On(socketio.EventConnect, func(ep *socketio.EventPayload) {
 })
 ```
 
-To reject a client, call `kws.Close()` from the `New` callback or the `EventConnect` listener. A panic in either place also ends the session. Listeners registered after the one that closed the session are skipped (`EventDisconnect`, `EventClose` and `EventError` always reach every listener). A session joins the `Broadcast` and `Fire` fan-out only after the handshake, the `New` callback and the `EventConnect` listeners have completed without closing it, so nothing broadcast while a client is still connecting reaches a peer the application has not admitted. Use `kws.Emit` to address the connecting session itself from inside those callbacks.
+To reject a client, call `kws.Close()` from the `New` callback or the `EventConnect` listener. A panic in either place also ends the session. Listeners registered after the one that closed the session are skipped (`EventDisconnect`, `EventClose` and `EventError` always reach every listener). A session joins the `Broadcast` and `Fire` fan-out, and becomes an `EmitTo` and `EmitToList` target, only after the handshake, the `New` callback and the `EventConnect` listeners have completed without closing it, so nothing sent while a client is still connecting reaches a peer the application has not admitted. Use `kws.Emit` to address the connecting session itself from inside those callbacks.
 
 ## Signatures
 
