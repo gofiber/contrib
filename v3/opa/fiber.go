@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/utils/v2"
@@ -58,6 +59,17 @@ func New(cfg Config) fiber.Handler {
 		if len(cfg.IncludeHeaders) > 0 {
 			headers := make(map[string]string)
 			for _, header := range cfg.IncludeHeaders {
+				// Readers pick different lines of a repeated field, so it is refused; Cookie lines form one list.
+				// GetAll matches the name in any letter case.
+				if lines := c.GetAll(header); len(lines) > 1 || len(c.Request().Header.PeekAll(header)) > 1 {
+					if !utils.EqualFold(header, fiber.HeaderCookie) {
+						c.Response().SetStatusCode(cfg.DeniedStatusCode)
+						c.Response().SetBodyString(cfg.DeniedResponseMessage)
+						return nil
+					}
+					headers[header] = strings.Join(lines, "; ")
+					continue
+				}
 				headers[header] = c.Get(header)
 			}
 			input["headers"] = headers

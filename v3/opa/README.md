@@ -69,6 +69,8 @@ OPA Fiber middleware sends the following example data to the policy engine as in
 
 `path` is the path as the client sent it. Unless `fiber.Config.CaseSensitive` and `StrictRouting` are set, the router matches routes on the lower-cased path without trailing slashes, while route params are cut from the path without trailing slashes in the client's letter case; the policy is evaluated again with each of these forms that differs from `path` and has to allow all of them. Write policy paths lower-case and without trailing slashes. An `InputCreationMethod` that sets `path` to `ctx.Path()` gets the same check. Unless `DisableHeadAutoRegister` is set, the router answers `HEAD` with the handlers of `GET` routes, so a `HEAD` request is evaluated again with `method` set to `GET` and needs both allowed, even on a route with its own `HEAD` handler; this applies when `method` is `ctx.Method()`. Clients that only send `HEAD`, such as health checks, need `GET` allowed too, or set `DisableHeadAutoRegister`.
 
+A header listed in `IncludeHeaders` that the request carries on more than one line is refused with `DeniedStatusCode`, because handlers can read another line than the policy saw. The typical case is `X-Forwarded-For` behind a proxy that adds a line of its own instead of appending to the existing one. `Cookie` lines are joined with `; ` instead.
+
 ```go
 package main
 

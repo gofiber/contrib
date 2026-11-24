@@ -445,3 +445,55 @@ hidden if {
 		assert.Equal(t, tC.statusCode, resp.StatusCode, tC.method+" "+tC.path)
 	}
 }
+
+func TestOpaRequestHeadersOnSeveralLines(t *testing.T) {
+	module := `
+package example.authz
+
+default allow := false
+
+allow if {
+	input.headers["X-Tenant"] != "globex"
+	not contains(input.headers.Cookie, "tenant=globex")
+}
+`
+
+	testCases := []struct {
+		desc       string
+		config     fiber.Config
+		headers    [][2]string
+		statusCode int
+	}{
+		{desc: "no headers", statusCode: 200},
+		{desc: "allowed tenant", headers: [][2]string{{"X-Tenant", "demo"}}, statusCode: 200},
+		{desc: "refused tenant", headers: [][2]string{{"X-Tenant", "globex"}}, statusCode: 400},
+		{desc: "refused tenant after an allowed one", headers: [][2]string{{"X-Tenant", "demo"}, {"X-Tenant", "globex"}}, statusCode: 400},
+		{desc: "allowed tenant after a refused one", headers: [][2]string{{"X-Tenant", "globex"}, {"X-Tenant", "demo"}}, statusCode: 400},
+		{desc: "empty tenant after an allowed one", headers: [][2]string{{"X-Tenant", "demo"}, {"X-Tenant", ""}}, statusCode: 400},
+		{desc: "refused cookie", headers: [][2]string{{"Cookie", "theme=dark; tenant=globex"}}, statusCode: 400},
+		{desc: "refused cookie on a second line", headers: [][2]string{{"Cookie", "theme=dark"}, {"Cookie", "tenant=globex"}}, statusCode: 400},
+		{desc: "allowed cookies on two lines", headers: [][2]string{{"Cookie", "theme=dark"}, {"Cookie", "lang=en"}}, statusCode: 200},
+		{desc: "refused tenant in another letter case", config: fiber.Config{DisableHeaderNormalizing: true}, headers: [][2]string{{"X-Tenant", "demo"}, {"x-tenant", "globex"}}, statusCode: 400},
+	}
+
+	for _, tC := range testCases {
+		app := fiber.New(tC.config)
+		app.Use(New(Config{
+			RegoQuery:      "data.example.authz.allow",
+			RegoPolicy:     bytes.NewBufferString(module),
+			IncludeHeaders: []string{"X-Tenant", "Cookie"},
+		}))
+		app.Get("/data", func(ctx fiber.Ctx) error {
+			return ctx.SendStatus(200)
+		})
+
+		r := httptest.NewRequest("GET", "/data", nil)
+		for _, h := range tC.headers {
+			r.Header[h[0]] = append(r.Header[h[0]], h[1])
+		}
+		resp, err := app.Test(r, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+
+		assert.NoError(t, err)
+		assert.Equal(t, tC.statusCode, resp.StatusCode, tC.desc)
+	}
+}
