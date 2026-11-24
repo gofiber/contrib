@@ -530,9 +530,14 @@ func asksToUpgrade(fctx *fasthttp.RequestCtx) bool {
 }
 
 // IsWebSocketUpgrade returns true if the client requested upgrade to the
-// WebSocket protocol.
+// WebSocket protocol. Like New it reads every Connection and Upgrade field line.
 func IsWebSocketUpgrade(c fiber.Ctx) bool {
-	return websocket.FastHTTPIsWebSocketUpgrade(c.RequestCtx())
+	fctx := c.RequestCtx()
+	if !asksToUpgrade(fctx) {
+		return false
+	}
+	// Tokens on later field lines need the same copy New upgrades from.
+	return websocket.FastHTTPIsWebSocketUpgrade(fctx) || websocket.IsWebSocketUpgrade(upgradeRequest(fctx))
 }
 
 // JoinMessages concatenates received messages to create a single io.Reader.
