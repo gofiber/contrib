@@ -20,6 +20,7 @@ import (
 	"github.com/fasthttp/websocket"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 )
 
 // sioHandshakeWithConnect performs the EIO/SIO handshake but lets the caller
@@ -484,6 +485,44 @@ func TestSocketIOEIO3Rejected(t *testing.T) {
 		string(body),
 		"unexpected error body: %q", string(body),
 	)
+}
+
+func TestSocketIOEIOVersionMismatchLogOwnsItsFields(t *testing.T) {
+	resetSIOGlobals(t)
+
+	var logged []any
+	prev := Logger
+	Logger = func(_, msg string, fields ...any) {
+		if msg == "eio_version_mismatch" {
+			logged = fields
+		}
+	}
+	t.Cleanup(func() { Logger = prev })
+
+	app := fiber.New(fiber.Config{
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Loopback: true},
+		ProxyHeader:      fiber.HeaderXForwardedFor,
+	})
+	app.Get("/", New(func(_ *Websocket) {}))
+	handler := app.Handler()
+
+	requested := strings.Repeat("A", 32)
+	want := []any{"requested", requested, "supported", "4", "remote", "203.0.113.9"}
+	fctx := &fasthttp.RequestCtx{}
+	fctx.SetRemoteAddr(&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 4000})
+	fctx.Request.SetRequestURI("/?a=1&EIO=" + requested)
+	fctx.Request.Header.Set(fiber.HeaderXForwardedFor, "203.0.113.9")
+	handler(fctx)
+	require.Equal(t, fiber.StatusBadRequest, fctx.Response.StatusCode())
+	require.Equal(t, want, logged)
+
+	fctx.Request.Reset()
+	fctx.Response.Reset()
+	fctx.Request.SetRequestURI("/?a=1&token=another-clients-secret")
+	fctx.Request.Header.Set(fiber.HeaderXForwardedFor, "198.51.100.77")
+	handler(fctx)
+	require.Equal(t, want, logged)
 }
 
 // TestSocketIOEmitWithAckArgsDistinguishesArrayArg verifies that a client ack

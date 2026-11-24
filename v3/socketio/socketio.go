@@ -1001,7 +1001,8 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 		// backwards compatibility with non-strict callers and tests
 		// that dial the WebSocket endpoint directly.
 		if eio := c.Query("EIO"); eio != "" && eio != "4" {
-			logf("warn", "eio_version_mismatch", "requested", eio, "supported", "4", "remote", c.IP())
+			// Copied: a Logger may keep its fields past the request.
+			logf("warn", "eio_version_mismatch", "requested", utils.CopyString(eio), "supported", "4", "remote", utils.CopyString(c.IP()))
 			c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
 			return c.Status(fiber.StatusBadRequest).SendString(unsupportedEIOVersionBody)
 		}
