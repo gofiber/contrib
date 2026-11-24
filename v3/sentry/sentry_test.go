@@ -3,14 +3,17 @@ package sentry
 import (
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/getsentry/sentry-go"
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/utils/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -323,5 +326,47 @@ func Test_Sentry_KeepsResponseStatusForUndecodableBody(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, resp.Body.Close())
 		require.Equal(t, http.StatusOK, resp.StatusCode, encoding)
+	}
+}
+
+func Test_Sentry_PanicMessageOutlivesRequest(t *testing.T) {
+	events := make(chan *sentry.Event, 1)
+	require.NoError(t, sentry.Init(sentry.ClientOptions{
+		BeforeSend: func(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
+			events <- event
+			return event
+		},
+	}))
+
+	requestMemory := []byte("first")
+	app := fiber.New()
+	app.Use(New())
+	app.Get("/string", func(fiber.Ctx) error {
+		panic(utils.UnsafeString(requestMemory))
+	})
+	app.Get("/error", func(fiber.Ctx) error {
+		panic(errors.New(utils.UnsafeString(requestMemory)))
+	})
+
+	testCases := []struct {
+		desc string
+		text func(*sentry.Event) string
+	}{
+		{desc: "string", text: func(event *sentry.Event) string { return event.Message }},
+		{desc: "error", text: func(event *sentry.Event) string { return event.Exception[0].Value }},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.desc, func(t *testing.T) {
+			copy(requestMemory, "first")
+			resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/"+tc.desc, http.NoBody))
+			require.NoError(t, err)
+			require.NoError(t, resp.Body.Close())
+
+			require.Len(t, events, 1)
+			event := <-events
+			copy(requestMemory, "other")
+			require.Equal(t, "first", tc.text(event))
+		})
 	}
 }
