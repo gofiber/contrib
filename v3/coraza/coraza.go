@@ -22,6 +22,7 @@ import (
 
 	"github.com/corazawaf/coraza/v3"
 	"github.com/corazawaf/coraza/v3/experimental"
+	"github.com/corazawaf/coraza/v3/experimental/plugins/plugintypes"
 	"github.com/corazawaf/coraza/v3/types"
 	"github.com/gofiber/fiber/v3"
 	fiberlog "github.com/gofiber/fiber/v3/log"
@@ -665,12 +666,15 @@ func processRequest(tx types.Transaction, req *http.Request, c fiber.Ctx) (*type
 	}
 
 	if tx.IsRequestBodyAccessible() && req.Body != nil && req.Body != http.NoBody {
-		if err := decodeRequestBody(c.Request(), req, c.App().Config().BodyLimit); err != nil {
+		bodyLimit := c.App().Config().BodyLimit
+		if err := decodeRequestBody(c.Request(), req, bodyLimit); err != nil {
 			return nil, fmt.Errorf("%w: %w", errRequestBodyDecode, err)
 		}
 
 		// No cut at BodyLimit: a re-serialized form can be longer than what was received.
 		body := io.Reader(req.Body)
+		var st plugintypes.TransactionState
+		wantBody := 0
 		contentType := req.Header.Get(fiber.HeaderContentType)
 		if c.IsMultipart() || corazaReadsMultipart(contentType) {
 			form, err := multipartFormBody(c, contentType, body)
@@ -678,14 +682,34 @@ func processRequest(tx types.Transaction, req *http.Request, c fiber.Ctx) (*type
 				return nil, fmt.Errorf("%w: %w", errMultipartForm, err)
 			}
 			body = form
+			wantBody = form.Len()
+			var ok bool
+			if st, ok = tx.(plugintypes.TransactionState); !ok {
+				return nil, fmt.Errorf("%w: transaction does not expose its body processor", errMultipartForm)
+			}
+			// A forced RAW or URLENCODED processor inspects bytes: give it the form handlers parse,
+			// first so raw bytes cannot spend the argument limit, then the body raw readers get.
+			if !strings.EqualFold(st.Variables().RequestBodyProcessor().Get(), "MULTIPART") {
+				received := c.Request().Body()
+				wantBody += len(received)
+				body = io.MultiReader(form, bytes.NewReader(received))
+			}
 		}
 
-		it, _, err := tx.ReadRequestBodyFrom(body)
+		it, n, err := tx.ReadRequestBodyFrom(body)
 		if err != nil {
 			return nil, err
 		}
 		if it != nil {
 			return it, nil
+		}
+		// ProcessPartial cut what Coraza reads, though the body as received fits: block as Reject
+		// would. Interrupt leaves DetectionOnly and Off unblocked.
+		if n < wantBody && min(receivedBodyLength(c.Request()), bodyLimit) <= n {
+			st.Interrupt(&types.Interruption{Action: "deny", Status: http.StatusRequestEntityTooLarge})
+			if it := tx.Interruption(); it != nil {
+				return it, nil
+			}
 		}
 	}
 
@@ -739,7 +763,12 @@ func decodeRequestBody(fiberReq *fasthttp.Request, req *http.Request, bodyLimit 
 		if err != nil {
 			return err
 		}
+		// Pool the replaced buffer only at the request's reset: BodyRaw results taken ahead of
+		// this middleware may still alias it.
+		keep := fiberReq.KeepBodyBuffer
+		fiberReq.KeepBodyBuffer = true
 		fiberReq.SetBodyRaw(body)
+		fiberReq.KeepBodyBuffer = keep
 	}
 
 	for _, name := range names {
@@ -759,6 +788,14 @@ func decodeRequestBody(fiberReq *fasthttp.Request, req *http.Request, bodyLimit 
 	return nil
 }
 
+// receivedBodyLength is the length of the body as received, which Body of a pre-parsed form is not.
+func receivedBodyLength(req *fasthttp.Request) int {
+	if n := req.Header.ContentLength(); n > 0 {
+		return n
+	}
+	return len(req.Body())
+}
+
 // corazaReadsMultipart matches how Coraza picks its multipart processor, which also
 // trims Unicode spaces Fiber's media type match keeps.
 func corazaReadsMultipart(contentType string) bool {
@@ -771,7 +808,14 @@ func hasControl(s string) bool {
 
 // multipartFormBody writes the form the handlers read under the boundary Coraza
 // reads, so Coraza inspects exactly the parts the handlers see.
-func multipartFormBody(c fiber.Ctx, contentType string, body io.Reader) (io.Reader, error) {
+func multipartFormBody(c fiber.Ctx, contentType string, body io.Reader) (*bytes.Buffer, error) {
+	// First, so ReadForm's part and header limits bound the walk below, and so the check,
+	// Coraza and the handlers use the same boundary.
+	form, err := c.MultipartForm()
+	if err != nil {
+		return nil, err
+	}
+
 	_, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
 		return nil, err
@@ -780,12 +824,6 @@ func multipartFormBody(c fiber.Ctx, contentType string, body io.Reader) (io.Read
 	// Fiber splits the form by its own reading of the boundary, mime readers by this one.
 	if boundary != string(c.Request().Header.MultipartFormBoundary()) {
 		return nil, errors.New("fasthttp and mime read different boundaries")
-	}
-
-	// First, so ReadForm's part and header limits bound the walk below.
-	form, err := c.MultipartForm()
-	if err != nil {
-		return nil, err
 	}
 
 	// A streaming reader sees the body as received, not as ReadForm kept it.

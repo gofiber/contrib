@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"mime/multipart"
@@ -489,6 +490,50 @@ SecRule REQUEST_BODY "@contains attack" "id:1002,phase:2,deny,status:403,msg:'bo
 	}
 }
 
+func TestEngineMiddlewareKeepsTheDecodedBodyBufferWithTheRequest(t *testing.T) {
+	engine, err := newTestEngineWithRules(t, "SecRuleEngine On\nSecRequestBodyAccess On")
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	sent := fasthttp.AppendGzipBytes(nil, []byte("hello"))
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		received := c.BodyRaw()
+		if err := c.Next(); err != nil {
+			return err
+		}
+		// Takes its body buffer from fasthttp's pool, like any request read meanwhile.
+		var other fasthttp.Request
+		other.SetBody(bytes.Repeat([]byte("x"), len(sent)))
+		if !bytes.Equal(received, sent) {
+			t.Errorf("expected the body as received, got %q", received)
+		}
+		return nil
+	})
+	app.Use(engine.Middleware())
+	app.Post("/", func(c fiber.Ctx) error {
+		return c.Send(c.Body())
+	})
+
+	for range 20 {
+		// Outside a server, as behind adaptor.FiberApp, the request does not keep its buffer.
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(http.MethodPost)
+		ctx.Request.SetRequestURI("/")
+		ctx.Request.Header.SetHost("example.com")
+		ctx.Request.Header.Set(fiber.HeaderContentEncoding, "gzip")
+		ctx.Request.SetBody(sent)
+		app.Handler()(&ctx)
+		if got := string(ctx.Response.Body()); got != "hello" {
+			t.Fatalf("expected the decoded body, got %q", got)
+		}
+		if ctx.Request.KeepBodyBuffer {
+			t.Fatal("expected KeepBodyBuffer to be left as it was")
+		}
+	}
+}
+
 func TestEngineMiddlewareInspectsMultipartFormThatGrowsBeyondBodyLimit(t *testing.T) {
 	uploadRules := `SecRuleEngine On
 SecRequestBodyAccess On
@@ -599,6 +644,8 @@ SecRule ARGS_POST "@contains ../" "id:1001,phase:2,deny,status:403"`
 	phpUpload := part(`name="file"; filename="shell.php"`, "<?php ?>")
 	boundaryB := part(`name="folder"`, "../../etc") +
 		part(`name="decoy"`, "\r\n--B\r\nContent-Disposition: form-data; name=\"folder\"\r\n\r\npictures\r\n--B--") + "--A--\r\n"
+	boundaryNested := part(`name="decoy"`, "\r\n--a\r\nContent-Disposition: form-data; name=\"folder\"\r\n\r\npictures\r\n--a--") +
+		part(`name="folder"`, "../../etc") + "--A--\r\n"
 
 	clean := qpNote("hello=0D=0A") + part(`name="folder"`, "pictures") + part(`name="file"; filename="cat.png"`, "png") + "--A--\r\n"
 
@@ -613,6 +660,9 @@ SecRule ARGS_POST "@contains ../" "id:1001,phase:2,deny,status:403"`
 		{"quoted-printable note closing the re-serialized form", "multipart/form-data; boundary=A", qpNote("hello=0D=0A--A--=0D=0A") + phpUpload + "--A--\r\n", true, http.StatusBadRequest},
 		{"control: one boundary parameter", "multipart/form-data; boundary=A", boundaryB, false, http.StatusForbidden},
 		{"duplicate boundary parameter", "multipart/form-data; boundary=A; boundary*=utf-8''B", boundaryB, false, http.StatusBadRequest},
+		{"control: quoted boundary* parameter", "multipart/form-data; boundary=A; boundary*=\"utf-8';'A\"", boundaryNested, false, http.StatusForbidden},
+		{"boundary* parameter", "multipart/form-data; boundary=A; boundary*=\u00a0\"utf-8';'A\"", boundaryNested, false, http.StatusBadRequest},
+		{"pre-parsed boundary* parameter", "multipart/form-data; boundary=A; boundary*=\u00a0\"utf-8';'A\"", boundaryNested, true, http.StatusBadRequest},
 		{"control: plain field", "multipart/form-data; boundary=A", part(`name="folder"`, "../../etc") + "--A--\r\n", false, http.StatusForbidden},
 		{"filename* parameter", "multipart/form-data; boundary=A", part(`name="folder"; filename*=iso-8859-1''x`, "../../etc") + "--A--\r\n", false, http.StatusForbidden},
 	} {
@@ -818,6 +868,180 @@ SecRule FILES "@rx (?i)\.php$" "id:1003,phase:2,deny,status:403"`
 			t.Fatalf("expected the handler to read the form, got %d with body %q", resp.StatusCode, got)
 		}
 	})
+}
+
+func TestEngineMiddlewareGivesForcedURLENCODEDTheFormArgumentsFirst(t *testing.T) {
+	engine, err := newTestEngineWithRules(t, `SecRuleEngine On
+SecRequestBodyAccess On
+SecArgumentsLimit 10
+SecAction "id:1000,phase:1,pass,nolog,ctl:requestBodyProcessor=URLENCODED"
+SecRule ARGS "@contains <script" "id:1001,phase:2,t:none,t:lowercase,deny,status:403"
+`)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+	app := fiber.New()
+	app.Use(engine.Middleware())
+	app.Post("/", func(c fiber.Ctx) error {
+		return c.SendStatus(http.StatusOK)
+	})
+
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.SetMethod(http.MethodPost)
+	ctx.Request.SetRequestURI("/")
+	ctx.Request.Header.SetHost("example.com")
+	ctx.Request.Header.SetContentType("multipart/form-data; boundary=A")
+	ctx.Request.SetBodyString(strings.Repeat("x=0&", 20) + "\r\n--A\r\nContent-Disposition: form-data; name=\"note\"\r\n\r\n<script>\r\n--A--\r\n")
+	app.Handler()(&ctx)
+	if status := ctx.Response.StatusCode(); status != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d", http.StatusForbidden, status)
+	}
+}
+
+func TestEngineMiddlewareGivesForcedBodyProcessorsTheMultipartBodyAsReceived(t *testing.T) {
+	form := "--A\r\nContent-Disposition: form-data; name=\"note\"\r\n\r\nhello\r\n--A--\r\n"
+	withNote := func(header, value string) string {
+		return "--A\r\nContent-Disposition: form-data; " + header + "\r\n\r\n" + value + "\r\n--A--\r\n"
+	}
+	qpNote := withNote("name=\"note\"\r\nContent-Transfer-Encoding: quoted-printable", "=3Cscript>")
+	newApp := func(t *testing.T, processor, rules string) *fiber.App {
+		t.Helper()
+		engine, err := newTestEngineWithRules(t, `SecRuleEngine On
+SecRequestBodyAccess On
+SecAction "id:1000,phase:1,pass,nolog,ctl:requestBodyProcessor=`+processor+`"
+SecRule REQUEST_BODY "@contains <script" "id:1001,phase:2,t:none,t:lowercase,deny,status:403"
+`+rules)
+		if err != nil {
+			t.Fatalf("failed to create engine: %v", err)
+		}
+		app := fiber.New()
+		app.Use(engine.Middleware())
+		app.Post("/", func(c fiber.Ctx) error {
+			return c.Send(c.Body())
+		})
+		return app
+	}
+	// A chunked form reaches the handlers as received.
+	send := func(app *fiber.App, body string) (int, string) {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(http.MethodPost)
+		ctx.Request.SetRequestURI("/")
+		ctx.Request.Header.SetHost("example.com")
+		ctx.Request.Header.SetContentType("multipart/form-data; boundary=A")
+		ctx.Request.SetBodyString(body)
+		app.Handler()(&ctx)
+		return ctx.Response.StatusCode(), string(ctx.Response.Body())
+	}
+
+	for _, processor := range []string{"RAW", "URLENCODED"} {
+		t.Run(processor, func(t *testing.T) {
+			app := newApp(t, processor, "")
+			for _, tc := range []struct {
+				name, body string
+				want       int
+			}{
+				{"control: clean form", form, http.StatusOK},
+				{"control: payload in a part", withNote(`name="note"`, "<script>"), http.StatusForbidden},
+				{"control: quoted-printable payload in a part", qpNote, http.StatusForbidden},
+				{"payload ahead of the parts", "<script>\r\n" + form, http.StatusForbidden},
+				{"payload behind the parts", form + "<script>\r\n", http.StatusForbidden},
+				{"payload in a field part header", withNote("name=\"note\"\r\nX-Note: <script>", "hello"), http.StatusForbidden},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					status, got := send(app, tc.body)
+					if status != tc.want {
+						t.Fatalf("expected status %d, got %d with body %q", tc.want, status, got)
+					}
+					if tc.want == http.StatusOK && got != tc.body {
+						t.Fatalf("expected the handler to read the body as received, got %q", got)
+					}
+				})
+			}
+		})
+	}
+
+	// The clean form fits the limit as received and as written, but not both together.
+	limit := "SecRequestBodyLimit 128\nSecRequestBodyLimitAction "
+	for _, tc := range []struct {
+		name, rules string
+		want        int
+	}{
+		{"received body and written form beyond SecRequestBodyLimit with ProcessPartial", limit + "ProcessPartial", http.StatusRequestEntityTooLarge},
+		{"received body and written form beyond SecRequestBodyLimit with Reject", limit + "Reject", http.StatusRequestEntityTooLarge},
+		{"received body and written form beyond SecRequestBodyLimit with Reject after a rule sets DetectionOnly", limit + "Reject\n" + `SecAction "id:1003,phase:1,pass,nolog,ctl:ruleEngine=DetectionOnly"`, http.StatusRequestEntityTooLarge},
+		{"control: received body and written form beyond SecRequestBodyLimit in DetectionOnly", limit + "Reject\nSecRuleEngine DetectionOnly", http.StatusOK},
+		{"control: received body and written form beyond SecRequestBodyLimit after a rule sets DetectionOnly", limit + "ProcessPartial\n" + `SecAction "id:1003,phase:1,pass,nolog,ctl:ruleEngine=DetectionOnly"`, http.StatusOK},
+		{"control: rule engine turned off by a rule", `SecAction "id:1003,phase:1,pass,nolog,ctl:ruleEngine=Off"`, http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := newApp(t, "RAW", tc.rules)
+			if status, got := send(app, form); status != tc.want {
+				t.Fatalf("expected status %d, got %d with body %q", tc.want, status, got)
+			}
+		})
+	}
+}
+
+func TestEngineMiddlewareBlocksMultipartFormTheRewriteTakesBeyondSecRequestBodyLimit(t *testing.T) {
+	// Compact part headers with LF line endings grow when the form is written back.
+	body := strings.Repeat("--A\ncontent-disposition:form-data;name=a\n\nX\n", 30) +
+		"--A\ncontent-disposition:form-data;name=a\n\n<script>\n--A--\n"
+	limit := fmt.Sprintf("SecRequestBodyLimit %d\nSecRequestBodyLimitAction ", len(body)+1)
+
+	for _, tc := range []struct {
+		name, rules       string
+		stream, readAhead bool
+		want              int
+	}{
+		{"control: no limit", "", false, false, http.StatusForbidden},
+		{"ProcessPartial", limit + "ProcessPartial", false, false, http.StatusRequestEntityTooLarge},
+		{"streamed with ProcessPartial", limit + "ProcessPartial", true, false, http.StatusRequestEntityTooLarge},
+		{"streamed and read ahead with ProcessPartial", limit + "ProcessPartial", true, true, http.StatusRequestEntityTooLarge},
+		{"control: body beyond the limit as received", "SecRequestBodyLimit 200\nSecRequestBodyLimitAction ProcessPartial", false, false, http.StatusOK},
+		{"control: DetectionOnly", limit + "ProcessPartial\nSecRuleEngine DetectionOnly", false, false, http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, err := newTestEngineWithRules(t, `SecRuleEngine On
+SecRequestBodyAccess On
+SecRule ARGS "@contains <script" "id:1001,phase:2,t:none,t:lowercase,deny,status:403"
+`+tc.rules)
+			if err != nil {
+				t.Fatalf("failed to create engine: %v", err)
+			}
+			app := fiber.New(fiber.Config{BodyLimit: len(body) + 1, StreamRequestBody: tc.stream})
+			if tc.readAhead {
+				app.Use(func(c fiber.Ctx) error {
+					_ = c.FormValue("a")
+					return c.Next()
+				})
+			}
+			app.Use(engine.Middleware())
+			app.Post("/", func(c fiber.Ctx) error {
+				return c.SendStatus(http.StatusOK)
+			})
+
+			var status int
+			if tc.stream {
+				var ctx fasthttp.RequestCtx
+				ctx.Request.Header.SetMethod(http.MethodPost)
+				ctx.Request.SetRequestURI("/")
+				ctx.Request.Header.SetHost("example.com")
+				ctx.Request.Header.SetContentType("multipart/form-data; boundary=A")
+				ctx.Request.SetBodyStream(strings.NewReader(body), -1)
+				app.Handler()(&ctx)
+				status = ctx.Response.StatusCode()
+			} else {
+				req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+				req.Header.Set(fiber.HeaderContentType, "multipart/form-data; boundary=A")
+				resp := performRequest(t, app, req)
+				defer resp.Body.Close()
+				status = resp.StatusCode
+			}
+			if status != tc.want {
+				t.Fatalf("expected status %d, got %d", tc.want, status)
+			}
+		})
+	}
 }
 
 func TestNewEngineProvidesInstanceIsolation(t *testing.T) {
