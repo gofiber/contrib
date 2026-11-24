@@ -54,6 +54,11 @@ with an empty `resBody` unless `GetResBody` provides one, and its announced
 length as `bytesSent` (`0` when unknown).
 For a request Fiber's `timeout` middleware answered, `GetResBody` is not
 called: `resBody` is the body of the response the client received.
+Its handler may still be using the request, so, as in Fiber's logger, the
+entry leaves out `referer`, `ips`, `ua`, `queryParams`, `body` and
+`reqHeaders`, behind a trusted proxy also `ip` and `host`, and
+`bytesReceived` is only the announced `Content-Length`. `FieldsFunc` and
+`SkipResBody` should not read the request of such a `c` either.
 As Fiber's logger does, the logger returns the timeout error for such a request,
 so middleware registered before it, such as `cache`, leaves that response alone;
 an error-handling middleware registered before it should check `c.IsAbandoned()`
