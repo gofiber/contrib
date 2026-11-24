@@ -29,7 +29,8 @@ func New(config ...Config) *Middleware {
 	}
 
 	return &Middleware{
-		lookup:          cfg.Lookup,
+		// The enforcer may keep the subject, so it must not view a request buffer.
+		lookup:          func(c fiber.Ctx) string { return utils.CopyString(cfg.Lookup(c)) },
 		unauthorized:    cfg.Unauthorized,
 		forbidden:       cfg.Forbidden,
 		enforce:         cfg.Enforcer.Enforce,
@@ -82,7 +83,8 @@ func (m *Middleware) RequiresPermissions(permissions []string, opts ...Option) f
 // RoutePermission tries to find the current subject and determine if the
 // subject has the required permissions according to predefined Casbin policies.
 // This method uses http Path and Method as object and action. When the router
-// matches another spelling of the path, both have to be allowed.
+// works with other spellings of the path, all of them have to be allowed, and
+// so does GET for a HEAD request.
 func (m *Middleware) RoutePermission() fiber.Handler {
 	return func(c fiber.Ctx) error {
 		sub := m.lookup(c)
@@ -90,11 +92,19 @@ func (m *Middleware) RoutePermission() fiber.Handler {
 			return m.unauthorized(c)
 		}
 
+		methods := []string{c.Method()}
+		// The router answers HEAD with the handlers of GET routes, so GET has to be allowed too.
+		if methods[0] == fiber.MethodHead && !c.App().Config().DisableHeadAutoRegister {
+			methods = append(methods, fiber.MethodGet)
+		}
+
 		for _, path := range routePaths(c) {
-			if ok, err := m.enforce(sub, path, c.Method()); err != nil {
-				return c.SendStatus(fiber.StatusInternalServerError)
-			} else if !ok {
-				return m.forbidden(c)
+			for _, method := range methods {
+				if ok, err := m.enforce(sub, path, method); err != nil {
+					return c.SendStatus(fiber.StatusInternalServerError)
+				} else if !ok {
+					return m.forbidden(c)
+				}
 			}
 		}
 
@@ -102,28 +112,32 @@ func (m *Middleware) RoutePermission() fiber.Handler {
 	}
 }
 
-// routePaths returns c.Path(), which route params are cut from, and, if it
-// differs, the case-folded, slash-trimmed form the router matches routes on.
+// routePaths returns c.Path() and, where they differ, its slash-trimmed form,
+// which route params are cut from, and that case-folded, which routes match on.
 func routePaths(c fiber.Ctx) []string {
-	path := c.Path()
+	// The enforcer may keep the path, so it must not view the pooled path buffer.
+	path := utils.CopyString(c.Path())
 	cfg := c.App().Config()
+	paths := []string{path}
 
-	routed := path
-	if !cfg.CaseSensitive {
-		routed = utilsstrings.ToLower(routed)
-	}
-	if !cfg.StrictRouting && len(routed) > 1 {
-		routed = utils.TrimRight(routed, '/')
+	trimmed := path
+	if !cfg.StrictRouting && len(trimmed) > 1 {
+		trimmed = utils.TrimRight(trimmed, '/')
 		// Slashes alone are the root, as in the router.
-		if routed == "" {
-			routed = "/"
+		if trimmed == "" {
+			trimmed = "/"
 		}
 	}
-
-	if routed == path {
-		return []string{path}
+	if trimmed != path {
+		paths = append(paths, trimmed)
 	}
-	return []string{path, routed}
+
+	if !cfg.CaseSensitive {
+		if routed := utilsstrings.ToLower(trimmed); routed != trimmed {
+			paths = append(paths, routed)
+		}
+	}
+	return paths
 }
 
 // RequiresRoles tries to find the current subject and determine if the

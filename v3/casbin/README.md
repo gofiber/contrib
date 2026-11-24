@@ -48,7 +48,7 @@ casbin.New(config ...casbin.Config) *casbin.Middleware
 | Unauthorized  | `func(fiber.Ctx) error`   | Response body for unauthorized responses | `Unauthorized`                                                      |
 | Forbidden     | `func(fiber.Ctx) error`   | Response body for forbidden responses    | `Forbidden`                                                         |
 
-Cached enforcers (`*casbin.CachedEnforcer`, `*casbin.SyncedCachedEnforcer`) keep answering from their cache after policies or roles change, so a revoked permission can still pass, and cached decisions never expire by default. Call `InvalidateCache()` after such changes. A request enforced before the change can still write its old result back afterward, so also call `SetExpireTime` before serving requests (it only applies to decisions cached later), or stop requests while changing policies. If policies change while requests are served, use `*casbin.SyncedCachedEnforcer` or synchronize enforcement and policy updates yourself.
+Cached enforcers (`*casbin.CachedEnforcer`, `*casbin.SyncedCachedEnforcer`) keep answering from their cache after policies or roles change, so a revoked permission can still pass, and cached decisions never expire by default. Call `InvalidateCache()` after such changes. A request enforced before the change can still write its old result back afterward, so also call `SetExpireTime` before serving requests (it only applies to decisions cached later), or stop requests while changing policies. If policies change while requests are served, use `*casbin.SyncedCachedEnforcer` or synchronize enforcement and policy updates yourself. Their default cache has no size limit, and `SetExpireTime` does not remove a decision that is not asked for again. `RoutePermission` caches a decision for every path a client sends, so give it a size-limited cache with `SetCache` or an uncached enforcer. Every enforcer also caches role function results (`g`, `g2`) per argument set without a limit, so with a model that passes the path or another client value to them, such as `g2(r.obj, p.obj)`, build the enforcer yourself, call `EnableGFunctionCache(false)` on it before serving requests and again after `LoadModel` or `SetModel`, and pass it as `Enforcer`.
 
 ### Examples
 - [Gorm Adapter](https://github.com/svcg/-fiber_casbin_demo)
@@ -98,7 +98,7 @@ func main() {
 
 ## RoutePermission
 
-Unless `fiber.Config.CaseSensitive` and `StrictRouting` are set, the router matches routes on the lower-cased path without trailing slashes. When the request path differs from that form, `RoutePermission` enforces both, so write path objects lower-case and without trailing slashes.
+Unless `fiber.Config.CaseSensitive` and `StrictRouting` are set, the router matches routes on the lower-cased path without trailing slashes, while route params are cut from the path without trailing slashes in the client's letter case. `RoutePermission` enforces the request path and each of these forms that differs from it, so write path objects lower-case and without trailing slashes. Unless `DisableHeadAutoRegister` is set, the router answers `HEAD` with the handlers of `GET` routes, so a `HEAD` request needs `GET` allowed as well, even on a route with its own `HEAD` handler. Subjects that only send `HEAD`, such as health checks, need the `GET` rule too, or set `DisableHeadAutoRegister`.
 
 ```go
 package main
@@ -132,6 +132,19 @@ func main() {
 
   app.Listen(":8080")
 }
+```
+
+If the model matches roles by pattern with a matching function on `g` or `g2`, such as `util.KeyMatch2`, the request path or subject reaches that function. Register one that cannot panic:
+
+```go
+enforcer.AddNamedMatchingFunc("g2", "KeyMatch2", func(a, b string) (ok bool) {
+  defer func() {
+    if recover() != nil {
+      ok = false
+    }
+  }()
+  return util.KeyMatch2(a, b)
+})
 ```
 
 ## RoleAuthorization

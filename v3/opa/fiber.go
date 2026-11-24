@@ -4,12 +4,17 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/log"
 	"github.com/gofiber/utils/v2"
 	utilsstrings "github.com/gofiber/utils/v2/strings"
 	"github.com/open-policy-agent/opa/v1/rego"
 )
+
+const evalErrorMessage = "Error evaluating rego policy"
 
 type InputCreationFunc func(c fiber.Ctx) (map[string]any, error)
 
@@ -46,6 +51,10 @@ func New(cfg Config) fiber.Handler {
 			c.Response().SetBodyString(fmt.Sprintf("Error creating input: %s", err))
 			return err
 		}
+		// A nil map leaves the input null unless query or headers have to go into it.
+		if input == nil && (cfg.IncludeQueryString || len(cfg.IncludeHeaders) > 0) {
+			input = make(map[string]any)
+		}
 		if cfg.IncludeQueryString {
 			queryStringData := make(map[string][]string)
 			for key, value := range c.Request().URI().QueryArgs().All() {
@@ -55,24 +64,38 @@ func New(cfg Config) fiber.Handler {
 			input["query"] = queryStringData
 		}
 		if len(cfg.IncludeHeaders) > 0 {
+			canonical := !c.App().Config().DisableHeaderNormalizing
 			headers := make(map[string]string)
 			for _, header := range cfg.IncludeHeaders {
+				// Readers pick different lines of a repeated field, so it is refused; Cookie lines form one list.
+				if lines := c.GetAll(header); len(lines) > 1 || headerLines(c, header, canonical) > 1 {
+					if !utils.EqualFold(header, fiber.HeaderCookie) {
+						c.Response().SetStatusCode(cfg.DeniedStatusCode)
+						c.Response().SetBodyString(cfg.DeniedResponseMessage)
+						return nil
+					}
+					headers[header] = strings.Join(lines, "; ")
+					continue
+				}
 				headers[header] = c.Get(header)
 			}
 			input["headers"] = headers
 		}
 		res, err := query.Eval(context.Background(), rego.EvalInput(input))
-		// The router matches a case-folded, slash-trimmed path, so the policy has to allow that spelling too.
-		if path := c.Path(); err == nil && res.Allowed() && input["path"] == path {
-			if routed := routerPath(c); routed != path {
-				input["path"] = routed
-				res, err = query.Eval(context.Background(), rego.EvalInput(input))
+		// The router serves other readings of the request alike, so the policy has to allow those too.
+		if err == nil && res.Allowed() {
+			for _, in := range routerInputs(c, input) {
+				if res, err = query.Eval(context.Background(), rego.EvalInput(in)); err != nil || !res.Allowed() {
+					break
+				}
 			}
 		}
 		if err != nil {
+			// OPA errors can quote values the policy computed, so they go to the log, not the client.
+			log.Errorf("opa: error evaluating rego policy: %v", err)
 			c.Response().SetStatusCode(fiber.StatusInternalServerError)
-			c.Response().SetBodyString(fmt.Sprintf("Error evaluating rego policy: %s", err))
-			return err
+			c.Response().SetBodyString(evalErrorMessage)
+			return fiber.NewError(fiber.StatusInternalServerError, evalErrorMessage)
 		}
 
 		if !res.Allowed() {
@@ -85,23 +108,52 @@ func New(cfg Config) fiber.Handler {
 	}
 }
 
-// routerPath returns c.Path() as the router matches it: ASCII lower-cased unless
-// CaseSensitive, trailing slashes trimmed unless StrictRouting.
-func routerPath(c fiber.Ctx) string {
-	path := c.Path()
-	cfg := c.App().Config()
-
-	if !cfg.CaseSensitive {
-		path = utilsstrings.ToLower(path)
-	}
-	if !cfg.StrictRouting && len(path) > 1 {
-		path = utils.TrimRight(path, '/')
-		// Slashes alone are the root, as in the router.
-		if path == "" {
-			path = "/"
+// routerInputs returns copies of input with each other path spelling, if input carries c.Path(),
+// and with GET for HEAD, which the router answers with GET handlers unless DisableHeadAutoRegister.
+func routerInputs(c fiber.Ctx, input map[string]any) []map[string]any {
+	var inputs []map[string]any
+	if input["path"] == c.Path() {
+		for _, path := range routerPaths(c) {
+			in := maps.Clone(input)
+			in["path"] = path
+			inputs = append(inputs, in)
 		}
 	}
-	return path
+	if method := c.Method(); method == fiber.MethodHead && input["method"] == method && !c.App().Config().DisableHeadAutoRegister {
+		for _, in := range append([]map[string]any{input}, inputs...) {
+			in = maps.Clone(in)
+			in["method"] = fiber.MethodGet
+			inputs = append(inputs, in)
+		}
+	}
+	return inputs
+}
+
+// routerPaths returns the other spellings of c.Path() the router works with: slash-trimmed,
+// which route params are cut from, and that case-folded, which routes match on.
+func routerPaths(c fiber.Ctx) []string {
+	path := c.Path()
+	cfg := c.App().Config()
+	var paths []string
+
+	trimmed := path
+	if !cfg.StrictRouting && len(trimmed) > 1 {
+		trimmed = utils.TrimRight(trimmed, '/')
+		// Slashes alone are the root, as in the router.
+		if trimmed == "" {
+			trimmed = "/"
+		}
+	}
+	if trimmed != path {
+		paths = append(paths, trimmed)
+	}
+
+	if !cfg.CaseSensitive {
+		if routed := utilsstrings.ToLower(trimmed); routed != trimmed {
+			paths = append(paths, routed)
+		}
+	}
+	return paths
 }
 
 func (c *Config) fillAndValidate() error {
@@ -130,4 +182,19 @@ func defaultInput(ctx fiber.Ctx) (map[string]any, error) {
 		"path":   ctx.Path(),
 	}
 	return input, nil
+}
+
+// headerLines counts the lines of a header in any letter case, empty ones included.
+func headerLines(c fiber.Ctx, name string, canonical bool) int {
+	if canonical {
+		// Parsing normalized every spelling; PeekAll leaves the Cookie lines as received.
+		return len(c.Request().Header.PeekAll(name))
+	}
+	n := 0
+	for key := range c.Request().Header.All() {
+		if utils.EqualFold(utils.UnsafeString(key), name) {
+			n++
+		}
+	}
+	return n
 }

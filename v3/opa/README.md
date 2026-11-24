@@ -67,7 +67,11 @@ OPA Fiber middleware sends the following example data to the policy engine as in
 }
 ```
 
-`path` is the path as the client sent it. Unless `fiber.Config.CaseSensitive` and `StrictRouting` are set, the router matches routes on the lower-cased path without trailing slashes; when `path` differs from that form, the policy is evaluated again with it and has to allow both. Write policy paths lower-case and without trailing slashes. An `InputCreationMethod` that sets `path` to `ctx.Path()` gets the same check.
+`path` is the path as the client sent it. Unless `fiber.Config.CaseSensitive` and `StrictRouting` are set, the router matches routes on the lower-cased path without trailing slashes, while route params are cut from the path without trailing slashes in the client's letter case; the policy is evaluated again with each of these forms that differs from `path` and has to allow all of them. Write policy paths lower-case and without trailing slashes. An `InputCreationMethod` that sets `path` to `ctx.Path()` gets the same check. Unless `DisableHeadAutoRegister` is set, the router answers `HEAD` with the handlers of `GET` routes, so a `HEAD` request is evaluated again with `method` set to `GET` and needs both allowed, even on a route with its own `HEAD` handler; this applies when `method` is `ctx.Method()`. Clients that only send `HEAD`, such as health checks, need `GET` allowed too, or set `DisableHeadAutoRegister`.
+
+A header listed in `IncludeHeaders` that the request carries on more than one line is refused with `DeniedStatusCode`, because handlers can read another line than the policy saw. The typical case is `X-Forwarded-For` behind a proxy that adds a line of its own instead of appending to the existing one. `Cookie` lines are joined with `; ` instead. A header the server keeps as one value, such as `User-Agent` (the last line) or two identical `Content-Type` lines, is not refused, since the policy and handlers read that value.
+
+When the policy cannot be evaluated, the client gets a 500 with `Error evaluating rego policy` and the `ErrorHandler` gets a `*fiber.Error` with the same text. OPA's error can quote values the policy computed, so it is only logged.
 
 ```go
 package main
