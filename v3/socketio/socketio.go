@@ -541,6 +541,9 @@ type Websocket struct {
 	// closeStarted flips on the first Close call; concurrent or re-entrant
 	// callers return immediately.
 	closeStarted atomic.Bool
+	// acceptState and sendErr hold a send failure's events until accept ends, see sendFailed.
+	acceptState atomic.Int32
+	sendErr     error
 	// closeRequested reports that the closing handshake has been queued:
 	// disconnected then keeps the socket open, bounded by closeGrace, so
 	// the read loop can consume the peer's Close frame.
@@ -956,6 +959,7 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 		ctx, cancelCtx := context.WithCancel(context.Background())
 		kws.ctx = ctx
 		kws.cancelCtx = cancelCtx
+		kws.acceptState.Store(accepting)
 		go kws.send(ctx)
 
 		// 3. Execute the user callback on a fully established socket.
@@ -964,6 +968,7 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 		//    the polling path in openPollingSession.
 		if r := runUserCallback(callback, kws); r != nil {
 			logf("error", "ws_callback_panic", "uuid", kws.UUID, "panic", fmt.Sprintf("%v", r))
+			kws.finishAccept()
 			kws.disconnected(fmt.Errorf("socketio: WebSocket callback panic: %v", r))
 			kws.finishRun()
 			return
@@ -975,6 +980,7 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 		// runs to completion: read drains until the peer's Close frame or
 		// the CloseTimeout deadline, exactly as it would after run.
 		if !kws.IsAlive() {
+			kws.finishAccept()
 			kws.read()
 			kws.finishRun()
 			return
@@ -985,10 +991,12 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 		if kws.IsAlive() {
 			kws.connected.Store(true)
 		}
+		kws.finishAccept()
 
 		// 5. Heartbeat and read loop; blocks until the connection closes.
 		kws.run()
 	}, config...)
+	guard := newPollingGuard(config)
 
 	return func(c fiber.Ctx) error {
 		// Reject unsupported Engine.IO protocol versions BEFORE the
@@ -1000,7 +1008,8 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 		// backwards compatibility with non-strict callers and tests
 		// that dial the WebSocket endpoint directly.
 		if eio := c.Query("EIO"); eio != "" && eio != "4" {
-			logf("warn", "eio_version_mismatch", "requested", eio, "supported", "4", "remote", c.IP())
+			// Copied: a Logger may keep its fields past the request.
+			logf("warn", "eio_version_mismatch", "requested", utils.CopyString(eio), "supported", "4", "remote", utils.CopyString(c.IP()))
 			c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
 			return c.Status(fiber.StatusBadRequest).SendString(unsupportedEIOVersionBody)
 		}
@@ -1011,7 +1020,7 @@ func New(callback func(kws *Websocket), config ...websocket.Config) func(fiber.C
 		// the WebSocket transport carries over a single full-duplex
 		// frame stream. See polling.go.
 		if EnablePolling {
-			if handled, err := handlePolling(c, callback); handled {
+			if handled, err := handlePolling(c, guard, callback); handled {
 				return err
 			}
 			// Reject requests that carry an explicit transport value
@@ -1249,8 +1258,9 @@ func (kws *Websocket) GetStringAttribute(key string) string {
 // Per-target failures are surfaced as EventError on kws by EmitTo (not
 // returned). See Websocket.Emit for the meaning of mType.
 func (kws *Websocket) EmitToList(uuids []string, message []byte, mType ...int) {
+	var cache broadcastFrames
 	for _, wsUUID := range uuids {
-		_ = kws.EmitTo(wsUUID, message, mType...)
+		_ = kws.emitTo(&cache, wsUUID, message, mType)
 	}
 }
 
@@ -1258,46 +1268,63 @@ func (kws *Websocket) EmitToList(uuids []string, message []byte, mType ...int) {
 // message to every connection whose UUID appears in uuids. Errors are
 // silently ignored; use the method form to receive them via EventError.
 func EmitToList(uuids []string, message []byte, mType ...int) {
+	var cache broadcastFrames
 	for _, wsUUID := range uuids {
-		_ = EmitTo(wsUUID, message, mType...)
+		_ = emitTo(&cache, wsUUID, message, mType)
 	}
 }
 
 // EmitTo sends message to the connection identified by uuid. Returns the
 // underlying pool error (typically ErrorInvalidConnection) when the target is
-// unknown or already closed; in either case an EventError is fired on kws so
-// fan-out callers (EmitToList, Broadcast) do not have to re-fire it. See
-// Websocket.Emit for the meaning of mType.
+// unknown, already closed or not yet admitted (see Broadcast); in each case
+// an EventError is fired on kws so fan-out callers (EmitToList, Broadcast)
+// do not have to re-fire it. A connecting session may still address itself.
+// See Websocket.Emit for the meaning of mType.
 func (kws *Websocket) EmitTo(uuid string, message []byte, mType ...int) error {
+	return kws.emitTo(&broadcastFrames{}, uuid, message, mType)
+}
+
+// emitTo takes the frame cache from its caller so an EmitToList builds or copies the message once.
+func (kws *Websocket) emitTo(cache *broadcastFrames, uuid string, message []byte, mType []int) error {
 	conn, err := pool.get(uuid)
 	if err != nil {
 		kws.fireEvent(EventError, []byte(uuid), err)
 		return err
 	}
-	if !conn.IsAlive() {
+	if !conn.IsAlive() || (conn != ws(kws) && notAdmitted(conn)) {
 		kws.fireEvent(EventError, []byte(uuid), ErrorInvalidConnection)
 		return ErrorInvalidConnection
 	}
 
-	conn.Emit(message, mType...)
+	cache.deliver(conn, message, mType)
 	return nil
 }
 
 // EmitTo is the package-level form of Websocket.EmitTo. It sends message to
 // the connection identified by uuid and returns ErrorInvalidConnection when
-// the target is unknown or already closed.
+// the target is unknown, already closed or not yet admitted.
 func EmitTo(uuid string, message []byte, mType ...int) error {
+	return emitTo(&broadcastFrames{}, uuid, message, mType)
+}
+
+func emitTo(cache *broadcastFrames, uuid string, message []byte, mType []int) error {
 	conn, err := pool.get(uuid)
 	if err != nil {
 		return err
 	}
 
-	if !conn.IsAlive() {
+	if !conn.IsAlive() || notAdmitted(conn) {
 		return ErrorInvalidConnection
 	}
 
-	conn.Emit(message, mType...)
+	cache.deliver(conn, message, mType)
 	return nil
+}
+
+// notAdmitted reports a session whose New callback or EventConnect listeners may still refuse it.
+func notAdmitted(conn ws) bool {
+	w, ok := conn.(*Websocket)
+	return ok && !w.connected.Load()
 }
 
 // frameType resolves the optional mType argument of the emit APIs.
@@ -1316,6 +1343,7 @@ func frameType(mType []int) int {
 type broadcastFrames struct {
 	root   []byte
 	frames map[string][]byte
+	raw    []byte // the copy shared by recipients of a non-text message
 }
 
 func (b *broadcastFrames) frame(namespace, message []byte) []byte {
@@ -1336,12 +1364,28 @@ func (b *broadcastFrames) frame(namespace, message []byte) []byte {
 	return f
 }
 
+func (b *broadcastFrames) verbatim(message []byte) []byte {
+	if b.raw == nil {
+		b.raw = utils.CopyBytes(message)
+	}
+	return b.raw
+}
+
+func (b *broadcastFrames) deliver(conn ws, message []byte, mType []int) {
+	if w, ok := conn.(*Websocket); ok {
+		w.emitShared(b, message, frameType(mType))
+		return
+	}
+	conn.Emit(message, mType...)
+}
+
 // emitShared is Emit for a fan-out: text messages reuse the per-namespace
-// frame from cache. The frame is shared read-only between the send queues
-// of every recipient; nothing on the write path mutates queued bytes.
+// frame from cache, other types one copy of message. The bytes are shared
+// read-only between the send queues of every recipient; nothing on the
+// write path mutates queued bytes.
 func (kws *Websocket) emitShared(cache *broadcastFrames, message []byte, mType int) {
 	if mType != TextMessage {
-		kws.write(mType, message)
+		kws.write(mType, cache.verbatim(message))
 		return
 	}
 	kws.write(TextMessage, cache.frame(kws.getNamespace(), message))
@@ -1426,13 +1470,15 @@ func Fire(event string, data []byte) {
 //
 // Concurrency-safe: enqueues onto the per-connection send queue. Calls on
 // already-disconnected sockets are a no-op. Behavior on a full queue is
-// governed by DropFramesOnOverflow.
+// governed by DropFramesOnOverflow. The caller may reuse message once Emit
+// returns.
 func (kws *Websocket) Emit(message []byte, mType ...int) {
 	t := frameType(mType)
 	if t == TextMessage {
 		kws.write(TextMessage, buildSIOEvent(kws.getNamespace(), EventMessage, message))
 	} else {
-		kws.write(t, message)
+		// Written after Emit returns, so the queue must not alias a borrowed buffer such as c.Body().
+		kws.write(t, utils.CopyBytes(message))
 	}
 }
 
@@ -1813,6 +1859,12 @@ func (kws *Websocket) IsAlive() bool {
 	return kws.isAlive.Load()
 }
 
+// acceptsInbound turns false once Close begins, before the session is marked
+// dead: EventClose listeners and a full send queue can hold Close open.
+func (kws *Websocket) acceptsInbound() bool {
+	return kws.isAlive.Load() && !kws.closeStarted.Load()
+}
+
 func (kws *Websocket) isConnected() bool {
 	return kws.connected.Load() && kws.isAlive.Load()
 }
@@ -1931,7 +1983,7 @@ func (kws *Websocket) write(messageType int, messageBytes []byte) {
 			kws.fireEvent(EventError, nil, ErrSendQueueOverflow)
 		case enqueueRejectedDisconnect:
 			logf("error", "poll_queue_overflow_disconnect", "uuid", kws.UUID, "cap", PollQueueMaxFrames)
-			kws.disconnected(ErrSendQueueClosed)
+			kws.sendFailed(ErrSendQueueClosed)
 		case enqueueOK:
 		}
 		return
@@ -1949,7 +2001,7 @@ func (kws *Websocket) write(messageType int, messageBytes []byte) {
 		// Queue is full and send is not draining; tear down rather than
 		// pin the calling goroutine.
 		logf("error", "queue_overflow_disconnect", "uuid", kws.UUID, "queue_cap", cap(kws.queue))
-		kws.disconnected(ErrSendQueueClosed)
+		kws.sendFailed(ErrSendQueueClosed)
 	}
 }
 
@@ -1975,7 +2027,7 @@ func (kws *Websocket) send(ctx context.Context) {
 				_ = conn.SetWriteDeadline(time.Now().Add(kws.writeTimeout))
 			}
 			if err := conn.WriteMessage(msg.mType, msg.data); err != nil {
-				kws.disconnected(err)
+				kws.sendFailed(err)
 				return
 			}
 		}
@@ -2025,7 +2077,7 @@ func (kws *Websocket) run() {
 func (kws *Websocket) installControlHandlers() {
 	conn := kws.Conn
 	conn.SetPingHandler(func(data string) error {
-		if kws.IsAlive() {
+		if kws.acceptsInbound() {
 			kws.fireEvent(EventPing, []byte(data), nil)
 		}
 		err := conn.WriteControl(PongMessage, []byte(data), time.Now().Add(controlWriteTimeout))
@@ -2039,7 +2091,7 @@ func (kws *Websocket) installControlHandlers() {
 		return err
 	})
 	conn.SetPongHandler(func(string) error {
-		if kws.IsAlive() {
+		if kws.acceptsInbound() {
 			kws.fireEvent(EventPong, nil, nil)
 		}
 		return nil
@@ -2183,6 +2235,11 @@ func (kws *Websocket) read() {
 		// heartbeat enforcer.
 		kws.lastPongNanos.Store(time.Now().UnixNano())
 
+		// Still proof of life, but a peer being closed reaches no listener.
+		if !kws.acceptsInbound() {
+			continue
+		}
+
 		switch mType {
 		case BinaryMessage:
 			// ReadMessage hands over a buffer the caller owns, so the
@@ -2228,7 +2285,7 @@ func (kws *Websocket) dispatchEIOFrame(msg []byte) {
 		return
 	}
 	rest, count := msg, 0
-	for len(rest) > 0 && kws.IsAlive() {
+	for len(rest) > 0 && kws.acceptsInbound() {
 		if count >= MaxBatchPackets {
 			logf("warn", "batched_frame_overflow", "uuid", kws.UUID, "limit", MaxBatchPackets)
 			kws.fireEvent(EventError, nil, ErrBatchPacketsExceeded)
@@ -2435,6 +2492,8 @@ func (kws *Websocket) connectPolling(ns, auth []byte) {
 	kws.write(TextMessage, buildSIOConnectAckSID(kws.getNamespace(), kws.UUID))
 	pollCallback := kws.pollCallback
 	kws.pollCallback = nil
+	kws.acceptState.Store(accepting)
+	defer kws.finishAccept()
 	if r := runUserCallback(pollCallback, kws); r != nil {
 		logf("error", "polling_callback_panic", "uuid", kws.UUID, "panic", fmt.Sprintf("%v", r))
 		kws.disconnected(fmt.Errorf("socketio: polling callback panic: %v", r))
@@ -2468,6 +2527,13 @@ func (kws *Websocket) connectPolling(ns, auth []byte) {
 // read parked in ReadMessage or a write stalled on a peer that stopped
 // reading, so no error path can wedge the tear-down.
 func (kws *Websocket) disconnected(err error) {
+	if kws.end(err) {
+		kws.fireDisconnect(err)
+	}
+}
+
+// end is the half of disconnected that takes effect at once; only the first call runs it.
+func (kws *Websocket) end(err error) bool {
 	first := false
 	kws.once.Do(func() {
 		first = true
@@ -2499,7 +2565,7 @@ func (kws *Websocket) disconnected(err error) {
 		}
 	})
 	if !first {
-		return
+		return false
 	}
 
 	// Remove from the pool BEFORE firing user events so that listeners
@@ -2508,7 +2574,34 @@ func (kws *Websocket) disconnected(err error) {
 	// the two sets at any time.
 	pool.delete(kws.GetUUID())
 	kws.releaseEIOSession()
+	return true
+}
 
+const (
+	acceptIdle int32 = iota
+	accepting        // the New callback or EventConnect is running
+	acceptHeld       // and a send failure waits for them to return
+)
+
+// sendFailed ends the session now; during accept its events wait for New and EventConnect to return.
+func (kws *Websocket) sendFailed(err error) {
+	if !kws.end(err) {
+		return
+	}
+	kws.sendErr = err
+	if !kws.acceptState.CompareAndSwap(accepting, acceptHeld) {
+		kws.fireDisconnect(err)
+	}
+}
+
+func (kws *Websocket) finishAccept() {
+	if kws.acceptState.Swap(acceptIdle) == acceptHeld {
+		kws.fireDisconnect(kws.sendErr)
+	}
+}
+
+// fireDisconnect is the half of disconnected that user code sees; it runs once, after end.
+func (kws *Websocket) fireDisconnect(err error) {
 	// Drain pending outbound ack callbacks: invoke each with
 	// ErrAckDisconnected so callers can distinguish "ack received" (cb
 	// gets ack bytes, err nil) from "connection closed" (cb gets nil,

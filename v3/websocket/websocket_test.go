@@ -710,6 +710,42 @@ func TestWebSocketPartialHandshakeIsBadRequest(t *testing.T) {
 	}
 }
 
+func TestIsWebSocketUpgradeSeesEveryHandshakeNewUpgrades(t *testing.T) {
+	var asked atomic.Bool
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		asked.Store(IsWebSocketUpgrade(c))
+		return c.Next()
+	})
+	app.Get("/ws", New(func(*Conn) {}))
+
+	cases := map[string]struct {
+		lines  [][2]string
+		status int
+	}{
+		"one line each":            {[][2]string{{fiber.HeaderConnection, "keep-alive, Upgrade"}, {fiber.HeaderUpgrade, "websocket"}}, fiber.StatusSwitchingProtocols},
+		"connection on line two":   {[][2]string{{fiber.HeaderConnection, "keep-alive"}, {fiber.HeaderConnection, "Upgrade"}, {fiber.HeaderUpgrade, "websocket"}}, fiber.StatusSwitchingProtocols},
+		"upgrade on line two":      {[][2]string{{fiber.HeaderConnection, "Upgrade"}, {fiber.HeaderUpgrade, "h2c"}, {fiber.HeaderUpgrade, "websocket"}}, fiber.StatusSwitchingProtocols},
+		"no websocket on any line": {[][2]string{{fiber.HeaderConnection, "keep-alive"}, {fiber.HeaderConnection, "Upgrade"}, {fiber.HeaderUpgrade, "h2c"}}, fiber.StatusBadRequest},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(fiber.MethodGet, "/ws", nil)
+			for _, h := range tc.lines {
+				req.Header.Add(h[0], h[1])
+			}
+			req.Header.Set(fiber.HeaderSecWebSocketVersion, "13")
+			req.Header.Set(fiber.HeaderSecWebSocketKey, "dGhlIHNhbXBsZSBub25jZQ==")
+			resp, err := app.Test(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			assert.Equal(t, tc.status, resp.StatusCode)
+			assert.Equal(t, tc.status == fiber.StatusSwitchingProtocols, asked.Load())
+		})
+	}
+}
+
 func TestWebSocketRejectedHandshakeKeepsUpgraderResponse(t *testing.T) {
 	app := fiber.New()
 	app.Get("/ws", New(func(*Conn) {}))
@@ -1003,6 +1039,36 @@ func TestConnCaptureCopiesStringAndByteLocals(t *testing.T) {
 	assert.Equal(t, []byte("alice"), conn.Locals("raw"))
 }
 
+func TestConnCaptureKeepsNilByteLocalNil(t *testing.T) {
+	fctx := &fasthttp.RequestCtx{}
+	fctx.SetUserValue("user", []byte(nil))
+	fctx.SetUserValue("empty", []byte{})
+
+	conn := &Conn{}
+	conn.capture(fctx)
+
+	user, ok := conn.Locals("user").([]byte)
+	require.True(t, ok)
+	assert.Nil(t, user)
+	empty, ok := conn.Locals("empty").([]byte)
+	require.True(t, ok)
+	assert.NotNil(t, empty)
+}
+
+func TestConnCaptureCopiesNamedStringLocalKeys(t *testing.T) {
+	type roomGrant string
+	buf := []byte("lobby")
+	fctx := &fasthttp.RequestCtx{}
+	fctx.SetUserValue(roomGrant(utils.UnsafeString(buf)), true)
+
+	conn := &Conn{}
+	conn.capture(fctx)
+	copy(buf, "staff")
+
+	assert.Equal(t, true, conn.Locals(roomGrant("lobby")))
+	assert.Nil(t, conn.Locals(roomGrant("staff")))
+}
+
 func TestConnCaptureCopiesNamedStringAndByteLocals(t *testing.T) {
 	type userID string
 	type octet uint8
@@ -1290,5 +1356,15 @@ func TestReadLimitErrorStopsNextReader(t *testing.T) {
 		require.ErrorIs(t, err, ErrReadLimit, "NextReader returned the message pipelined behind the oversized one")
 	case <-time.After(5 * time.Second):
 		t.Fatal("NextReader blocked after ErrReadLimit")
+	}
+}
+
+func TestSentinelErrorsMatchTheLibrary(t *testing.T) {
+	for _, pair := range [][2]error{
+		{websocket.ErrBadHandshake, ErrBadHandshake},
+		{websocket.ErrCloseSent, ErrCloseSent},
+		{websocket.ErrReadLimit, ErrReadLimit},
+	} {
+		require.ErrorIs(t, pair[0], pair[1])
 	}
 }

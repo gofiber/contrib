@@ -21,6 +21,7 @@ import (
 	fws "github.com/gofiber/contrib/v3/websocket"
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp/fasthttputil"
@@ -1129,8 +1130,8 @@ func (s *WebsocketMock) pong(_ context.Context) {
 	panic("implement me")
 }
 
-func (s *WebsocketMock) write(_ int, _ []byte) {
-	panic("implement me")
+func (s *WebsocketMock) write(_ int, message []byte) {
+	s.Emit(message)
 }
 
 func (s *WebsocketMock) run(_ context.Context, _ context.CancelFunc, _ *sync.WaitGroup) {
@@ -1704,6 +1705,143 @@ func TestCallbackEmitBeyondQueueSizeDoesNotBlock(t *testing.T) {
 	}, 5*time.Second, 10*time.Millisecond)
 }
 
+func TestFinishAcceptFiresAFailedSendOnce(t *testing.T) {
+	resetState()
+	var disconnects atomic.Int32
+	On(EventDisconnect, func(*EventPayload) { disconnects.Add(1) })
+	kws := createWS()
+	pool.set(kws)
+
+	kws.sendFailed(errors.New("broken pipe"))
+	kws.finishAccept()
+	kws.finishAccept()
+
+	require.Equal(t, int32(1), disconnects.Load())
+	resetState()
+}
+
+func TestSendFailureDuringCallbackDisconnectsAfterIt(t *testing.T) {
+	resetState()
+
+	var mu sync.Mutex
+	var order []string
+	record := func(s string) {
+		mu.Lock()
+		order = append(order, s)
+		mu.Unlock()
+	}
+	disconnected := make(chan struct{}, 1)
+	On(EventDisconnect, func(*EventPayload) {
+		record("disconnect")
+		disconnected <- struct{}{}
+	})
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	hungUp := make(chan struct{})
+	app.Use(upgradeMiddleware)
+	app.Get("/", New(func(kws *Websocket) {
+		<-hungUp
+		kws.Emit([]byte("history"))
+		assert.Eventually(t, func() bool { return !kws.IsAlive() }, 5*time.Second, time.Millisecond)
+		kws.On(EventDisconnect, func(*EventPayload) { record("local disconnect") })
+		select {
+		case <-disconnected:
+		case <-time.After(100 * time.Millisecond):
+		}
+		record("callback returned")
+	}))
+
+	go func() { _ = app.Listener(ln) }()
+
+	dialer := &websocket.Dialer{
+		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+		HandshakeTimeout: 5 * time.Second,
+	}
+	conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+	close(hungUp)
+
+	assert.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(order) == 3
+	}, 5*time.Second, time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"callback returned", "disconnect", "local disconnect"}, order)
+	require.Empty(t, pool.snapshot())
+}
+
+func TestCloseStopsPeerEventsBeforeTheCloseFrameIsOut(t *testing.T) {
+	closers := map[string]func(*Websocket){
+		"Close":    func(kws *Websocket) { kws.Close() },
+		"CloseAll": func(*Websocket) { _ = CloseAll(context.Background(), websocket.CloseGoingAway, "bye") },
+	}
+	for name, closeConn := range closers {
+		t.Run(name, func(t *testing.T) {
+			resetState()
+
+			peerEvents := make(chan string, 3)
+			for _, event := range []string{EventMessage, EventPing, EventPong} {
+				On(event, func(p *EventPayload) { peerEvents <- p.Name })
+			}
+			accepted := make(chan *Websocket, 1)
+			On(EventConnect, func(p *EventPayload) { accepted <- p.Kws })
+			inClose, release := make(chan struct{}, 1), make(chan struct{})
+			On(EventClose, func(*EventPayload) {
+				inClose <- struct{}{}
+				<-release
+			})
+
+			app := fiber.New()
+			ln := fasthttputil.NewInmemoryListener()
+			defer func() {
+				_ = app.Shutdown()
+				_ = ln.Close()
+			}()
+			app.Use(upgradeMiddleware)
+			app.Get("/", New(func(*Websocket) {}))
+			go func() { _ = app.Listener(ln) }()
+
+			dialer := &websocket.Dialer{
+				NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+				HandshakeTimeout: 5 * time.Second,
+			}
+			conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+			require.NoError(t, err)
+			defer conn.Close()
+
+			kws := <-accepted
+			closed := make(chan struct{})
+			go func() {
+				closeConn(kws)
+				close(closed)
+			}()
+			<-inClose
+
+			deadline := time.Now().Add(time.Second)
+			require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte("after close")))
+			require.NoError(t, conn.WriteControl(websocket.PingMessage, nil, deadline))
+			require.NoError(t, conn.WriteControl(websocket.PongMessage, nil, deadline))
+			select {
+			case event := <-peerEvents:
+				t.Errorf("%s reached a listener after Close started", event)
+			case <-time.After(100 * time.Millisecond):
+			}
+
+			close(release)
+			<-closed
+		})
+	}
+}
+
 func TestPendingConnectionGetsNoPoolTraffic(t *testing.T) {
 	for _, refuse := range []bool{false, true} {
 		t.Run(fmt.Sprintf("refuse=%v", refuse), func(t *testing.T) {
@@ -1994,6 +2132,47 @@ func TestMethodBroadcastSkipsSelfAndReportsDead(t *testing.T) {
 	require.Equal(t, int32(1), atomic.LoadInt32(&errs))
 	// The sender was skipped, so nothing was queued on it.
 	require.Empty(t, sender.queue)
+}
+
+func TestEmitQueuesACopyOfTheMessage(t *testing.T) {
+	emits := map[string]func(t *testing.T, first, second *Websocket, msg []byte){
+		"Emit": func(_ *testing.T, first, second *Websocket, msg []byte) {
+			first.Emit(msg)
+			second.Emit(msg)
+		},
+		"EmitTo": func(t *testing.T, first, second *Websocket, msg []byte) {
+			require.NoError(t, EmitTo(first.UUID, msg))
+			require.NoError(t, first.EmitTo(second.UUID, msg))
+		},
+		"EmitToList": func(_ *testing.T, first, second *Websocket, msg []byte) {
+			EmitToList([]string{first.UUID, second.UUID}, msg)
+		},
+		"EmitToList method": func(_ *testing.T, first, second *Websocket, msg []byte) {
+			first.EmitToList([]string{first.UUID, second.UUID}, msg)
+		},
+		"Broadcast":        func(_ *testing.T, _, _ *Websocket, msg []byte) { Broadcast(msg) },
+		"Broadcast method": func(_ *testing.T, first, _ *Websocket, msg []byte) { first.Broadcast(msg, false) },
+	}
+	for name, emit := range emits {
+		t.Run(name, func(t *testing.T) {
+			resetState()
+			first, second := createWS(), createWS()
+			pool.set(first)
+			pool.set(second)
+
+			msg := []byte("announcement")
+			emit(t, first, second, msg)
+			copy(msg, "password=123")
+
+			toFirst, toSecond := <-first.queue, <-second.queue
+			require.Equal(t, "announcement", string(toFirst.data))
+			require.Equal(t, "announcement", string(toSecond.data))
+			if strings.HasPrefix(name, "EmitToList") {
+				require.Same(t, &toFirst.data[0], &toSecond.data[0])
+			}
+		})
+	}
+	resetState()
 }
 
 func BenchmarkFireEventNoListeners(b *testing.B) {

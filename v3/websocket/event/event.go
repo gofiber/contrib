@@ -268,6 +268,12 @@ type Websocket struct {
 	isAlive bool
 	// pending is set until the New callback and EventConnect have accepted the connection.
 	pending atomic.Bool
+	// The second of finishAccept and sendFailed to swap acceptDone fires sendErr.
+	acceptDone atomic.Bool
+	acceptOnce sync.Once
+	sendErr    error
+	// Set when Close starts; its close frame can wait up to WriteTimeout to go out.
+	closing atomic.Bool
 	// queue stores outbound messages.
 	queue chan message
 	// done signals goroutines to stop gracefully.
@@ -455,6 +461,7 @@ func NewWithConfig(callback func(kws *Websocket), eventCfg Config, wsConfig ...w
 			kws.mu.Lock()
 			kws.Conn = nil
 			kws.mu.Unlock()
+			kws.finishAccept()
 			// A callback that closed the connection before panicking already spent the
 			// one disconnect; still report the crash.
 			if !kws.disconnected(ErrorCallbackPanic) {
@@ -472,6 +479,7 @@ func NewWithConfig(callback func(kws *Websocket), eventCfg Config, wsConfig ...w
 		if kws.IsAlive() {
 			kws.pending.Store(false)
 		}
+		kws.finishAccept()
 		kws.run(ctx, cancelFunc, &wg)
 		completed = true
 	}, wsConfig...)
@@ -567,10 +575,13 @@ func (kws *Websocket) GetStringAttribute(key string) string {
 // fires EventError on the originating connection (kws); unlike the package-level
 // EmitToList, errors are not silently ignored.
 func (kws *Websocket) EmitToList(uuids []string, message []byte, mType ...int) {
+	t, message := msgType(mType), cloneBytes(message)
 	for _, wsUUID := range uuids {
-		// EmitTo already fires EventError on failure, so it is not fired again
+		// emitTarget already fires EventError on failure, so it is not fired again
 		// here to avoid a duplicate event per failed UUID.
-		_ = kws.EmitTo(wsUUID, message, mType...)
+		if conn, err := kws.emitTarget(wsUUID); err == nil {
+			conn.write(t, message)
+		}
 	}
 }
 
@@ -578,8 +589,11 @@ func (kws *Websocket) EmitToList(uuids []string, message []byte, mType ...int) {
 // silently ignored and, unlike the (*Websocket).EmitToList method form, no
 // EventError is fired.
 func EmitToList(uuids []string, message []byte, mType ...int) {
+	t, message := msgType(mType), cloneBytes(message)
 	for _, wsUUID := range uuids {
-		_ = EmitTo(wsUUID, message, mType...)
+		if conn, err := emitTarget(wsUUID); err == nil {
+			conn.write(t, message)
+		}
 	}
 }
 
@@ -587,40 +601,56 @@ func EmitToList(uuids []string, message []byte, mType ...int) {
 // fires EventError on the originating connection (kws) and returns the error;
 // the package-level EmitTo does not fire EventError.
 func (kws *Websocket) EmitTo(uuid string, message []byte, mType ...int) error {
+	conn, err := kws.emitTarget(uuid)
+	if err != nil {
+		return err
+	}
+	conn.Emit(message, mType...)
+	return nil
+}
+
+func (kws *Websocket) emitTarget(uuid string) (ws, error) {
 	conn, err := pool.get(uuid)
 	if err != nil {
 		kws.fireOwnedEvent(EventError, []byte(uuid), ErrorInvalidConnection)
-		return ErrorInvalidConnection
+		return nil, ErrorInvalidConnection
 	}
 	if !conn.IsAlive() || (conn != ws(kws) && conn.isPending()) {
 		kws.fireOwnedEvent(EventError, []byte(uuid), ErrorInvalidConnection)
-		return ErrorInvalidConnection
+		return nil, ErrorInvalidConnection
 	}
-
-	conn.Emit(message, mType...)
-	return nil
+	return conn, nil
 }
 
 // EmitTo emits a message to a connection UUID. It returns the error to the
 // caller and, unlike the (*Websocket).EmitTo method form, does not fire
 // EventError.
 func EmitTo(uuid string, message []byte, mType ...int) error {
-	conn, err := pool.get(uuid)
+	conn, err := emitTarget(uuid)
 	if err != nil {
-		return ErrorInvalidConnection
+		return err
 	}
-	if !conn.IsAlive() || conn.isPending() {
-		return ErrorInvalidConnection
-	}
-
 	conn.Emit(message, mType...)
 	return nil
+}
+
+func emitTarget(uuid string) (ws, error) {
+	conn, err := pool.get(uuid)
+	if err != nil {
+		return nil, ErrorInvalidConnection
+	}
+	if !conn.IsAlive() || conn.isPending() {
+		return nil, ErrorInvalidConnection
+	}
+	return conn, nil
 }
 
 // Broadcast emits to all active connections, skipping the originating
 // connection (kws) when except is true. Each failed target fires EventError on
 // kws; the package-level Broadcast does not.
 func (kws *Websocket) Broadcast(message []byte, except bool, mType ...int) {
+	// One copy for every queue: the senders only read it.
+	t, message := msgType(mType), cloneBytes(message)
 	for _, conn := range pool.snapshot() {
 		// Identity rather than UUID: no lock, and right under a concurrent SetUUID.
 		if except && conn == ws(kws) {
@@ -636,15 +666,16 @@ func (kws *Websocket) Broadcast(message []byte, except bool, mType ...int) {
 			kws.fireOwnedEvent(EventError, []byte(conn.GetUUID()), ErrorInvalidConnection)
 			continue
 		}
-		conn.Emit(message, mType...)
+		conn.write(t, message)
 	}
 }
 
 // Broadcast emits to all active connections.
 func Broadcast(message []byte, mType ...int) {
+	t, message := msgType(mType), cloneBytes(message)
 	for _, kws := range pool.snapshot() {
 		if !kws.isPending() {
-			kws.Emit(message, mType...)
+			kws.write(t, message)
 		}
 	}
 }
@@ -674,13 +705,17 @@ func Fire(event string, data []byte) {
 	fireGlobalEvent(event, data, nil)
 }
 
-// Emit writes a message to the current connection.
+// Emit writes a message to the current connection. The message is copied, so
+// the caller may reuse it once Emit returns.
 func (kws *Websocket) Emit(message []byte, mType ...int) {
-	t := TextMessage
+	kws.write(msgType(mType), cloneBytes(message))
+}
+
+func msgType(mType []int) int {
 	if len(mType) > 0 {
-		t = mType[0]
+		return mType[0]
 	}
-	kws.write(t, message)
+	return TextMessage
 }
 
 // closeFrameMaxReason caps the reason payload in a close frame so the
@@ -688,13 +723,15 @@ func (kws *Websocket) Emit(message []byte, mType ...int) {
 // (2 bytes status code + up to 123 bytes reason).
 const closeFrameMaxReason = 123
 
-// Close actively closes the current connection from the server.
+// Close actively closes the current connection from the server. Messages,
+// pings and pongs from the peer stop reaching listeners as soon as it starts.
 func (kws *Websocket) Close() {
 	if !kws.IsAlive() {
 		return
 	}
 
 	kws.closeOnce.Do(func() {
+		kws.closing.Store(true)
 		kws.writeClose(websocket.CloseNormalClosure, "Connection closed")
 		kws.fireEvent(EventClose, nil, nil)
 		kws.disconnected(nil)
@@ -865,7 +902,7 @@ func (kws *Websocket) send(ctx context.Context) {
 			err := conn.WriteMessage(msg.mType, msg.data)
 			if err != nil {
 				kws.drainQueue()
-				kws.disconnected(err)
+				kws.sendFailed(err)
 				return
 			}
 		case <-ctx.Done():
@@ -901,6 +938,9 @@ func (kws *Websocket) run(ctx context.Context, cancelFunc context.CancelFunc, wg
 			// keep firing events once shutdown started. Shutdown correctness
 			// does not depend on winning this race: run closes the underlying
 			// connection, which no deadline refresh can undo.
+			if kws.closing.Load() {
+				return nil
+			}
 			select {
 			case <-kws.done:
 				return nil
@@ -911,8 +951,11 @@ func (kws *Websocket) run(ctx context.Context, cancelFunc context.CancelFunc, wg
 			return nil
 		})
 		conn.SetPingHandler(func(data string) error {
-			// Same short circuit as the pong handler; RFC 6455 section 5.5.2 lets an
-			// endpoint skip the pong once a close is under way.
+			// Same short circuit as the pong handler. The pong is skipped too: Close writes
+			// its Close frame right after setting closing, and the library refuses writes after it.
+			if kws.closing.Load() {
+				return nil
+			}
 			select {
 			case <-kws.done:
 				return nil
@@ -990,6 +1033,10 @@ func (kws *Websocket) read(ctx context.Context) {
 			kws.disconnected(err)
 			return
 		}
+		// Keep reading until Close is done, so the peer's own close still ends it.
+		if kws.closing.Load() {
+			continue
+		}
 
 		if now := time.Now(); now.After(nextRefresh) {
 			_ = conn.SetReadDeadline(now.Add(kws.settings.readIdleTimeout))
@@ -1009,25 +1056,51 @@ func (kws *Websocket) read(ctx context.Context) {
 // disconnected tears the connection down once and reports whether this call
 // was the one that did it; later calls are no-ops that return false.
 func (kws *Websocket) disconnected(err error) bool {
-	disconnected := false
+	if !kws.end() {
+		return false
+	}
+	kws.fireDisconnect(err)
+	return true
+}
+
+// end tears the connection down; only the first call does and returns true.
+func (kws *Websocket) end() bool {
+	ended := false
 	kws.once.Do(func() {
-		disconnected = true
+		ended = true
 		kws.setAlive(false)
 		kws.doneOnce.Do(func() {
 			close(kws.done)
 		})
 		pool.delete(kws.GetUUID())
 	})
+	return ended
+}
 
-	if !disconnected {
-		return false
-	}
-
+func (kws *Websocket) fireDisconnect(err error) {
 	kws.fireEvent(EventDisconnect, nil, err)
 	if err != nil {
 		kws.fireEvent(EventError, nil, err)
 	}
-	return true
+}
+
+// sendFailed holds the events until accept is done, so later callback state sees them.
+func (kws *Websocket) sendFailed(err error) {
+	if !kws.end() {
+		return
+	}
+	kws.sendErr = err
+	if kws.acceptDone.Swap(true) {
+		kws.fireDisconnect(err)
+	}
+}
+
+func (kws *Websocket) finishAccept() {
+	kws.acceptOnce.Do(func() {
+		if kws.acceptDone.Swap(true) {
+			kws.fireDisconnect(kws.sendErr)
+		}
+	})
 }
 
 // unblockRead closes the underlying network connection so a read goroutine
@@ -1238,6 +1311,7 @@ func CloseAll(ctx context.Context, code int, reason string) error {
 		go func(kws *Websocket) {
 			defer wg.Done()
 			kws.closeOnce.Do(func() {
+				kws.closing.Store(true)
 				kws.writeClose(code, reason)
 				kws.fireEvent(EventClose, nil, nil)
 				kws.disconnected(nil)

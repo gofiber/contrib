@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"slices"
 	"sync"
 	"time"
 
+	"github.com/gofiber/contrib/v3/websocket"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/utils/v2"
 )
@@ -300,12 +302,19 @@ func writePollingError(c fiber.Ctx, code int) error {
 //	1 Session ID unknown     - sid query has no matching session
 //	2 Bad handshake method   - new session opened with non-GET
 //	3 Bad request            - JSONP, transport mismatch, malformed
-//	4 Forbidden              - reserved (authorisation denied)
+//	4 Forbidden              - Origin refused by websocket.Config
 //	5 Unsupported protocol   - EIO != 4 (validated upstream)
-func handlePolling(c fiber.Ctx, callback func(kws *Websocket)) (handled bool, err error) {
+func handlePolling(c fiber.Ctx, guard *pollingGuard, callback func(kws *Websocket)) (handled bool, err error) {
 	transport := c.Query("transport")
 	if transport != "polling" {
 		return false, nil
+	}
+	// Every request, not only the OPEN: a sid must not carry one the config refuses.
+	if guard.next != nil && guard.next(c) {
+		return true, c.Next()
+	}
+	if !guard.originAllowed(c) {
+		return true, writePollingError(c, 4)
 	}
 	if c.Query("j") != "" {
 		// JSONP polling fallback is not implemented. Reject cleanly so
@@ -351,6 +360,45 @@ func handlePolling(c fiber.Ctx, callback func(kws *Websocket)) (handled bool, er
 	default:
 		return true, writePollingError(c, 2)
 	}
+}
+
+// pollingGuard holds the websocket.Config fields that decide who may use the
+// route. The upgrader enforces them, and a polling request never reaches it.
+type pollingGuard struct {
+	next             func(fiber.Ctx) bool
+	origins          []string // empty allows every origin
+	allowEmptyOrigin bool
+}
+
+func newPollingGuard(config []websocket.Config) *pollingGuard {
+	g := &pollingGuard{}
+	if len(config) == 0 {
+		return g
+	}
+	g.next = config[0].Next
+	g.allowEmptyOrigin = config[0].AllowEmptyOrigin
+	if !slices.Contains(config[0].Origins, "*") {
+		g.origins = slices.Clone(config[0].Origins)
+	}
+	return g
+}
+
+// originAllowed matches Origin as the upgrader does, except that a GET may omit
+// it: browsers send none on a same-origin GET, and CONNECT only arrives by POST.
+func (g *pollingGuard) originAllowed(c fiber.Ctx) bool {
+	if len(g.origins) == 0 {
+		return true
+	}
+	origin := c.Get(fiber.HeaderOrigin)
+	if origin == "" {
+		return g.allowEmptyOrigin || c.Method() == fiber.MethodGet
+	}
+	for _, o := range g.origins {
+		if utils.EqualFold(o, origin) {
+			return true
+		}
+	}
+	return false
 }
 
 // openPollingSession creates a fresh polling session and writes the Engine.IO
@@ -404,15 +452,18 @@ func openPollingSession(c fiber.Ctx, callback func(kws *Websocket)) error {
 	c.RequestCtx().VisitUserValuesAll(func(k, v any) {
 		if s, ok := k.(string); ok {
 			k = utils.CopyString(s)
-		} else if k != nil && !reflect.ValueOf(k).Comparable() {
-			return // fasthttp accepts e.g. a slice key, a map panics on it
+		} else if k != nil {
+			if !reflect.ValueOf(k).Comparable() {
+				return // fasthttp accepts e.g. a slice key, a map panics on it
+			}
+			k = copyNamedKind(k)
 		}
 		// Request strings and bytes alias buffers the next request reuses.
 		switch val := v.(type) {
 		case string:
 			v = utils.CopyString(val)
 		case []byte:
-			v = utils.CopyBytes(val)
+			v = bytes.Clone(val) // keeps nil, so a nil check reads as it did in middleware
 		default:
 			v = copyNamedKind(v)
 		}
@@ -605,8 +656,8 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 	kws.postGate.Lock()
 	defer kws.postGate.Unlock()
 
-	// The POST ahead of us may have torn the session down (e.g. refused auth).
-	if !kws.IsAlive() {
+	// The POST ahead of us may have torn the session down (e.g. refused auth), or Close may have begun.
+	if !kws.acceptsInbound() {
 		return writePollingError(c, 1)
 	}
 
@@ -638,7 +689,7 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 	rest := body
 	count := 0
 	// Checked before each packet, as read() does: a tear-down stops the dispatch.
-	for len(rest) > 0 && kws.IsAlive() {
+	for len(rest) > 0 && kws.acceptsInbound() {
 		if count >= MaxBatchPackets {
 			kws.fireEvent(EventError, nil, ErrBatchPacketsExceeded)
 			break
@@ -653,6 +704,8 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 		if len(packet) == 0 {
 			continue
 		}
+		// Whatever its outcome, as dispatchEIOFrame does: a packet that only fires EventError counts too.
+		count++
 		// Before CONNECT only "4" (carrying "40") may pass, as on the WebSocket handshake.
 		if !kws.connectFired.Load() && (packet[0] != eioMessage || len(packet) == 1) {
 			kws.fireEvent(EventError, packet, fmt.Errorf("%w: EIO packet type %q", ErrPollingBeforeConnect, packet[0]))
@@ -672,7 +725,6 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 				continue
 			}
 			kws.fireEvent(EventMessage, decoded[:n], nil)
-			count++
 			continue
 		}
 		// packet is a sub-slice of the body buffer we already copied
@@ -680,7 +732,6 @@ func ingestPolling(c fiber.Ctx, kws *Websocket) error {
 		// (and through it to listener callbacks) without an
 		// additional per-packet allocation.
 		kws.dispatchEIOPacket(packet)
-		count++
 	}
 
 	c.Set(fiber.HeaderContentType, "text/html")

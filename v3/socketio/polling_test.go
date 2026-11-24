@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	fws "github.com/gofiber/contrib/v3/websocket"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/utils/v2"
 	"github.com/stretchr/testify/require"
@@ -220,6 +221,32 @@ func TestPollingOpenCopiesStringAndByteLocals(t *testing.T) {
 	require.Equal(t, []byte("alice"), kws.Locals("raw"))
 }
 
+func TestPollingOpenKeepsNilByteLocalNil(t *testing.T) {
+	resetSIOGlobals(t)
+	prevEnable := EnablePolling
+	EnablePolling = true
+	t.Cleanup(func() { EnablePolling = prevEnable })
+
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		c.Locals("user", []byte(nil))
+		c.Locals("empty", []byte{})
+		return c.Next()
+	})
+	app.Get("/", New(func(*Websocket) {}))
+
+	req, err := http.NewRequest(http.MethodGet, "/?EIO=4&transport=polling", nil)
+	require.NoError(t, err)
+	kws := pollOpenSession(t, app, req)
+
+	user, ok := kws.Locals("user").([]byte)
+	require.True(t, ok)
+	require.Nil(t, user)
+	empty, ok := kws.Locals("empty").([]byte)
+	require.True(t, ok)
+	require.NotNil(t, empty)
+}
+
 func TestPollingOpenCopiesNamedStringAndByteLocals(t *testing.T) {
 	resetSIOGlobals(t)
 	prevEnable := EnablePolling
@@ -253,6 +280,30 @@ func TestPollingOpenCopiesNamedStringAndByteLocals(t *testing.T) {
 	require.Equal(t, []octet("alice"), kws.Locals("octets"))
 	require.Nil(t, kws.Locals("none"))
 	require.Same(t, ptr, kws.Locals("ptr"))
+}
+
+func TestPollingOpenCopiesNamedStringLocalKeys(t *testing.T) {
+	resetSIOGlobals(t)
+	prevEnable := EnablePolling
+	EnablePolling = true
+	t.Cleanup(func() { EnablePolling = prevEnable })
+
+	type roomGrant string
+	buf := []byte("lobby")
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		c.Locals(roomGrant(utils.UnsafeString(buf)), true)
+		return c.Next()
+	})
+	app.Get("/", New(func(*Websocket) {}))
+
+	req, err := http.NewRequest(http.MethodGet, "/?EIO=4&transport=polling", nil)
+	require.NoError(t, err)
+	kws := pollOpenSession(t, app, req)
+	copy(buf, "staff")
+
+	require.Equal(t, true, kws.Locals(roomGrant("lobby")))
+	require.Nil(t, kws.Locals(roomGrant("staff")))
 }
 
 func TestPollingOpenResolvesRepeatedNamesLikeFiber(t *testing.T) {
@@ -1221,6 +1272,76 @@ func TestPollingBinaryInbound(t *testing.T) {
 	}
 }
 
+func TestPollingCloseStopsDispatchBeforeTeardown(t *testing.T) {
+	resetSIOGlobals(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	releaseClose := sync.OnceFunc(func() { close(release) })
+	On(EventClose, func(*EventPayload) {
+		close(entered)
+		<-release
+	})
+	var chats atomic.Int32
+	On("chat", func(*EventPayload) { chats.Add(1) })
+	sessions := make(chan *Websocket, 1)
+	_, c, td := newPollingTestServer(t, func(kws *Websocket) { sessions <- kws })
+	defer td()
+	defer releaseClose()
+
+	sid, _, _ := pollOpen(t, c)
+	_, st := pollPost(t, c, sid, []byte(`40`))
+	require.Equal(t, http.StatusOK, st)
+	kws := <-sessions
+
+	closed := make(chan struct{})
+	go func() {
+		kws.Close()
+		close(closed)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventClose did not fire")
+	}
+
+	body, st := pollPost(t, c, sid, []byte(`42["chat"]`))
+	require.Equal(t, http.StatusBadRequest, st)
+	require.Contains(t, string(body), `"code":1`)
+	require.Zero(t, chats.Load())
+
+	releaseClose()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return")
+	}
+}
+
+func TestPollingUndecodableBinaryCountsTowardMaxBatchPackets(t *testing.T) {
+	resetSIOGlobals(t)
+
+	var decodeErrors, overflows atomic.Int32
+	On(EventError, func(p *EventPayload) {
+		if errors.Is(p.Error, ErrBatchPacketsExceeded) {
+			overflows.Add(1)
+		} else {
+			decodeErrors.Add(1)
+		}
+	})
+
+	_, c, td := newPollingTestServer(t, func(_ *Websocket) {})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	_, st := pollPost(t, c, sid, []byte(`40`))
+	require.Equal(t, http.StatusOK, st)
+
+	_, st = pollPost(t, c, sid, bytes.Repeat([]byte("b=\x1e"), 4*MaxBatchPackets))
+	require.Equal(t, http.StatusOK, st)
+	require.EqualValues(t, MaxBatchPackets, decodeErrors.Load())
+	require.EqualValues(t, 1, overflows.Load())
+}
+
 // TestPollingBatchedBinaryStopsAfterDisconnect verifies that when a binary
 // polling packet listener closes the session, later packets in the same
 // RS-separated POST body are not dispatched.
@@ -2142,6 +2263,46 @@ func TestPollingQueueOverflowDisconnect(t *testing.T) {
 	}
 }
 
+func TestPollingQueueOverflowDuringCallbackFiresDisconnectAfterwards(t *testing.T) {
+	resetSIOGlobals(t)
+	prevCap := PollQueueMaxFrames
+	PollQueueMaxFrames = 4
+	t.Cleanup(func() { PollQueueMaxFrames = prevCap })
+
+	var mu sync.Mutex
+	var order []string
+	var errs []error
+	On(EventDisconnect, func(p *EventPayload) {
+		mu.Lock()
+		order = append(order, "disconnect")
+		errs = append(errs, p.Error)
+		mu.Unlock()
+	})
+	_, c, td := newPollingTestServer(t, func(kws *Websocket) {
+		for i := 0; i < 20 && kws.IsAlive(); i++ {
+			kws.EmitEvent("e", []byte(`1`))
+		}
+		mu.Lock()
+		order = append(order, "accept returned")
+		mu.Unlock()
+	})
+	defer td()
+
+	sid, _, _ := pollOpen(t, c)
+	_, _ = pollPost(t, c, sid, []byte(`40`))
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(order) == 2
+	}, 3*time.Second, 5*time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"accept returned", "disconnect"}, order)
+	require.Len(t, errs, 1)
+	require.ErrorIs(t, errs[0], ErrSendQueueClosed)
+}
+
 // TestPollingHandshakeTimerStoppedAfterConnect verifies the polling
 // HandshakeTimeout AfterFunc is stopped as soon as SIO CONNECT arrives, so the
 // closure does not pin the *Websocket on the runtime timer heap after the
@@ -2351,4 +2512,129 @@ func TestPollingUUIDIsNotSessionID(t *testing.T) {
 	body, status := pollGet(t, client, sid)
 	require.Equal(t, http.StatusOK, status)
 	require.Contains(t, string(body), `40{"sid":`)
+}
+
+// pollAs sends one polling request through app.Test; without a sid it opens a
+// session and returns the sid in place of the body.
+func pollAs(t *testing.T, app *fiber.App, method, sid, body, origin string, header ...string) (int, string) {
+	t.Helper()
+	target := "/?EIO=4&transport=polling"
+	if sid != "" {
+		target += "&sid=" + sid
+	}
+	req, err := http.NewRequest(method, target, strings.NewReader(body))
+	require.NoError(t, err)
+	if origin != "" {
+		req.Header.Set(fiber.HeaderOrigin, origin)
+	}
+	for i := 0; i+1 < len(header); i += 2 {
+		req.Header.Set(header[i], header[i+1])
+	}
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	out, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	if sid == "" && resp.StatusCode == http.StatusOK {
+		var open eioOpenPacket
+		require.NoError(t, json.Unmarshal(out[1:], &open))
+		return resp.StatusCode, open.SID
+	}
+	return resp.StatusCode, string(out)
+}
+
+func TestPollingHonorsConfigNext(t *testing.T) {
+	resetSIOGlobals(t)
+	prevEnable := EnablePolling
+	EnablePolling = true
+	t.Cleanup(func() { EnablePolling = prevEnable })
+
+	var callbacks, events atomic.Int32
+	On("whoami", func(*EventPayload) { events.Add(1) })
+	app := fiber.New()
+	app.All("/", New(func(*Websocket) { callbacks.Add(1) }, fws.Config{
+		Next: func(c fiber.Ctx) bool { return c.Get("X-Member") == "" },
+	}), func(c fiber.Ctx) error { return c.SendStatus(fiber.StatusUnauthorized) })
+
+	status, _ := pollAs(t, app, http.MethodGet, "", "", "")
+	require.Equal(t, fiber.StatusUnauthorized, status)
+	status, sid := pollAs(t, app, http.MethodGet, "", "", "", "X-Member", "1")
+	require.Equal(t, http.StatusOK, status)
+
+	for _, body := range []string{"40", `42["whoami"]`} {
+		status, _ = pollAs(t, app, http.MethodPost, sid, body, "")
+		require.Equal(t, fiber.StatusUnauthorized, status)
+	}
+	status, _ = pollAs(t, app, http.MethodGet, sid, "", "")
+	require.Equal(t, fiber.StatusUnauthorized, status)
+	require.Zero(t, callbacks.Load())
+
+	for _, body := range []string{"40", `42["whoami"]`} {
+		status, _ = pollAs(t, app, http.MethodPost, sid, body, "", "X-Member", "1")
+		require.Equal(t, http.StatusOK, status)
+	}
+	require.EqualValues(t, 1, callbacks.Load())
+	require.EqualValues(t, 1, events.Load())
+}
+
+func TestPollingHonorsConfigOrigins(t *testing.T) {
+	resetSIOGlobals(t)
+	prevEnable := EnablePolling
+	EnablePolling = true
+	t.Cleanup(func() { EnablePolling = prevEnable })
+
+	const allowed, foreign = "https://app.example", "https://evil.example"
+	var callbacks, events atomic.Int32
+	On("whoami", func(*EventPayload) { events.Add(1) })
+	newApp := func(cfg fws.Config) *fiber.App {
+		app := fiber.New()
+		app.All("/", New(func(*Websocket) { callbacks.Add(1) }, cfg))
+		return app
+	}
+
+	origins := []string{allowed}
+	app := newApp(fws.Config{Origins: origins})
+	origins[0] = foreign
+
+	status, body := pollAs(t, app, http.MethodGet, "", "", foreign)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Contains(t, body, `"code":4`)
+
+	status, sid := pollAs(t, app, http.MethodGet, "", "", "")
+	require.Equal(t, http.StatusOK, status)
+	for _, origin := range []string{foreign, "null", ""} {
+		status, body = pollAs(t, app, http.MethodPost, sid, "40", origin)
+		require.Equal(t, http.StatusForbidden, status, "origin %q", origin)
+		require.Contains(t, body, `"code":4`)
+	}
+	require.Zero(t, callbacks.Load())
+
+	status, _ = pollAs(t, app, http.MethodPost, sid, "40", "HTTPS://APP.EXAMPLE")
+	require.Equal(t, http.StatusOK, status)
+	require.EqualValues(t, 1, callbacks.Load())
+
+	status, _ = pollAs(t, app, http.MethodPost, sid, `42["whoami"]`, foreign)
+	require.Equal(t, http.StatusForbidden, status)
+	status, _ = pollAs(t, app, http.MethodGet, sid, "", foreign)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Zero(t, events.Load())
+	status, _ = pollAs(t, app, http.MethodPost, sid, `42["whoami"]`, allowed)
+	require.Equal(t, http.StatusOK, status)
+	require.EqualValues(t, 1, events.Load())
+
+	lenient := newApp(fws.Config{Origins: []string{allowed}, AllowEmptyOrigin: true})
+	status, sid = pollAs(t, lenient, http.MethodGet, "", "", "")
+	require.Equal(t, http.StatusOK, status)
+	status, _ = pollAs(t, lenient, http.MethodPost, sid, "40", foreign)
+	require.Equal(t, http.StatusForbidden, status)
+	status, _ = pollAs(t, lenient, http.MethodPost, sid, "40", "")
+	require.Equal(t, http.StatusOK, status)
+	require.EqualValues(t, 2, callbacks.Load())
+
+	wildcard := newApp(fws.Config{Origins: []string{allowed, "*"}})
+	status, sid = pollAs(t, wildcard, http.MethodGet, "", "", foreign)
+	require.Equal(t, http.StatusOK, status)
+	status, _ = pollAs(t, wildcard, http.MethodPost, sid, "40", "")
+	require.Equal(t, http.StatusOK, status)
+	require.EqualValues(t, 3, callbacks.Load())
 }

@@ -25,7 +25,7 @@ This middleware implements the full Engine.IO v4 / Socket.IO v5 wire protocol. H
 - **Outbound acks.** Server-initiated `EmitWithAck`, `EmitWithAckTimeout`, and `EmitWithAckArgs` round-trip a callback id and invoke the supplied callback when the client acks (or on timeout/disconnect).
 - **Multi-arg events.** Inbound events expose every argument tuple as `EventPayload.Args [][]byte`; outbound `EmitArgs` / `EmitWithAckArgs` send pre-encoded JSON tuples.
 - **Deterministic heartbeat.** Server PINGs every `PingInterval`; the connection is torn down if no PONG arrives within `PingTimeout`. The heartbeat is a runtime timer, not a goroutine, and an idle read deadline of `PingInterval + PingTimeout` backs it up.
-- **Closing handshake.** `Close` queues the SIO DISCONNECT packet and a Close frame behind the emits already pending, keeps reading until the peer's Close frame arrives (bounded by `CloseTimeout`), then closes the socket, so `socket.io-client` reports `io server disconnect` and does not reconnect. A client SIO DISCONNECT is answered the same way. Every tear-down releases the socket, including when a write is stalled on a peer that stopped reading.
+- **Closing handshake.** `Close` queues the SIO DISCONNECT packet and a Close frame behind the emits already pending, keeps reading until the peer's Close frame arrives (bounded by `CloseTimeout`), then closes the socket, so `socket.io-client` reports `io server disconnect` and does not reconnect. A client SIO DISCONNECT is answered the same way. Once `Close` has begun, packets from the peer, acks included, are no longer dispatched: WebSocket frames are still read until the peer's Close frame arrives, and a polling `POST` gets `400` with Engine.IO error code 1. Every tear-down releases the socket, including when a write is stalled on a peer that stopped reading.
 - **Two goroutines per connection.** The upgrade handler's goroutine runs the read loop and one goroutine serialises writes; polling sessions own no goroutine at all.
 - **Zero-copy inbound, SWAR outbound.** Inbound events are validated once and split into sub-slices of the frame they arrived in; outbound frames are built in a single pre-sized allocation with the SWAR JSON string encoder from `gofiber/utils`, and a broadcast builds each namespace's frame once for all its recipients.
 - **Coalesced writes.** On top of the websocket middleware's write coalescing, replies to a burst of pipelined client frames leave in one write.
@@ -157,6 +157,8 @@ const socket = io("http://localhost:3000", {
 
 > CORS is not handled by the middleware. If your client connects from a different origin, mount your preferred CORS middleware (e.g. `github.com/gofiber/fiber/v3/middleware/cors`) upstream of the route. Long-polling holds a request open for up to ~25s by default, so reverse-proxy timeouts must accommodate (`proxy_read_timeout` >= 60s on nginx, `proxy_buffering off`).
 
+The `Next`, `Origins` and `AllowEmptyOrigin` fields of the `websocket.Config` passed to `New` apply to every polling request as well. A `Next` that skips every request that is not a WebSocket upgrade (for example `return !websocket.IsWebSocketUpgrade(c)`) therefore skips polling too. A refused origin gets `403` with Engine.IO error code 4. A polling `GET` may omit `Origin`, as browsers do on same-origin requests; a `POST` without one needs `AllowEmptyOrigin`.
+
 #### Polling pitfalls
 
 - **Forgot to mount POST.** Polling clients send packets via POST; without `app.Post(path, h)` (or `app.All(...)`) the server returns 404 and the client loops with `transport error`. Always mount both `GET` and `POST` for polling routes.
@@ -278,7 +280,7 @@ socketio.On(socketio.EventConnect, func(ep *socketio.EventPayload) {
 })
 ```
 
-To reject a client, call `kws.Close()` from the `New` callback or the `EventConnect` listener. A panic in either place also ends the session. Listeners registered after the one that closed the session are skipped (`EventDisconnect`, `EventClose` and `EventError` always reach every listener). A session joins the `Broadcast` and `Fire` fan-out only after the handshake, the `New` callback and the `EventConnect` listeners have completed without closing it, so nothing broadcast while a client is still connecting reaches a peer the application has not admitted. Use `kws.Emit` to address the connecting session itself from inside those callbacks.
+To reject a client, call `kws.Close()` from the `New` callback or the `EventConnect` listener. A panic in either place also ends the session. Listeners registered after the one that closed the session are skipped (`EventDisconnect`, `EventClose` and `EventError` always reach every listener). A session joins the `Broadcast` and `Fire` fan-out, and becomes an `EmitTo` and `EmitToList` target, only after the handshake, the `New` callback and the `EventConnect` listeners have completed without closing it, so nothing sent while a client is still connecting reaches a peer the application has not admitted. Use `kws.Emit` to address the connecting session itself from inside those callbacks.
 
 ## Signatures
 
@@ -534,7 +536,7 @@ socket.on("disconnect", (reason) => {
 | EventMessage    | `message`    | Fired when a `socket.emit("message", …)` event is received from the client                                                                                |
 | EventPing       | `ping`       | Fired when a WebSocket PING control frame is received (RFC 6455); `Data` carries its payload. Engine.IO PING is server-originated and not surfaced via this event. |
 | EventPong       | `pong`       | Fired when an Engine.IO PONG (`"3"`) replies to the server's heartbeat or when a WebSocket PONG control frame is received.                                 |
-| EventDisconnect | `disconnect` | Fired exactly once on disconnection. `Error` is nil for a clean close (`Close`, a client SIO DISCONNECT, or a peer Close frame with code 1000, 1001 or none, RFC 6455 section 11.7) and carries the cause otherwise. |
+| EventDisconnect | `disconnect` | Fired exactly once on disconnection. `Error` is nil for a clean close (`Close`, a client SIO DISCONNECT, or a peer Close frame with code 1000, 1001 or none, RFC 6455 section 11.7) and carries the cause otherwise. A failed write or a send queue overflow while the `New` callback or an `EventConnect` listener runs is reported after they return. |
 | EventConnect    | `connect`    | Fired after the Engine.IO / Socket.IO handshake completes; `ep.HandshakeAuth` is populated with the client's `auth` payload (raw JSON, nil if not provided) |
 | EventClose      | `close`      | Fired exactly once when the connection is actively closed from the server via `Close`, before the closing frames are queued: frames a listener emits still reach the client. Different from client disconnection |
 | EventError      | `error`      | Fired when some error appears useful also for debugging websockets                                                                                         |

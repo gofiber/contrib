@@ -324,6 +324,11 @@ func (c *coalescingConn) SetDeadline(t time.Time) error {
 	if c.raw == nil {
 		return nil
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return c.raw.SetReadDeadline(t)
+	}
 	return c.raw.SetDeadline(t)
 }
 
@@ -336,6 +341,12 @@ func (c *coalescingConn) SetReadDeadline(t time.Time) error {
 
 func (c *coalescingConn) SetWriteDeadline(t time.Time) error {
 	if c.raw == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Close's deadline bounds its flush, and the library resets it before every write.
+	if c.closed {
 		return nil
 	}
 	return c.raw.SetWriteDeadline(t)

@@ -238,6 +238,115 @@ func TestSocketIODrainingSetEmptyAfterConcurrentTeardown(t *testing.T) {
 	require.Empty(t, drainingSessions(), "finished sessions must not linger in the draining set")
 }
 
+func TestSocketIOSendFailureDuringAcceptFiresDisconnectAfterwards(t *testing.T) {
+	for _, stage := range []string{"callback", "connect listener", "callback panic"} {
+		t.Run(stage, func(t *testing.T) {
+			resetSIOGlobals(t)
+			var mu sync.Mutex
+			var order []string
+			var errs []error
+			disconnected := make(chan struct{}, 1)
+			On(EventDisconnect, func(p *EventPayload) {
+				mu.Lock()
+				order = append(order, "disconnect")
+				errs = append(errs, p.Error)
+				mu.Unlock()
+				select {
+				case disconnected <- struct{}{}:
+				default:
+				}
+			})
+			proceed := make(chan struct{})
+			replay := func(kws *Websocket) {
+				<-proceed
+				for i := 0; i < 50 && kws.IsAlive(); i++ {
+					kws.Emit([]byte(`"replay"`))
+					time.Sleep(time.Millisecond)
+				}
+				select {
+				case <-disconnected:
+				case <-time.After(300 * time.Millisecond):
+				}
+				mu.Lock()
+				order = append(order, "accept returned")
+				mu.Unlock()
+			}
+			callback := func(*Websocket) {}
+			switch stage {
+			case "callback":
+				callback = replay
+			case "connect listener":
+				On(EventConnect, func(p *EventPayload) { replay(p.Kws) })
+			case "callback panic":
+				callback = func(kws *Websocket) {
+					replay(kws)
+					panic("boom")
+				}
+			}
+			ln, teardown := newSIOTestServer(t, callback)
+			defer teardown()
+
+			conn := dialSIO(t, ln)
+			require.NoError(t, sioHandshake(t, conn))
+			require.NoError(t, conn.Close())
+			close(proceed)
+
+			require.Eventually(t, func() bool {
+				mu.Lock()
+				defer mu.Unlock()
+				return len(order) == 2
+			}, 3*time.Second, 5*time.Millisecond)
+			mu.Lock()
+			defer mu.Unlock()
+			require.Equal(t, []string{"accept returned", "disconnect"}, order)
+			require.Len(t, errs, 1)
+			require.Error(t, errs[0])
+		})
+	}
+}
+
+func TestSocketIOQueueOverflowDuringCallbackFiresDisconnectAfterwards(t *testing.T) {
+	resetSIOGlobals(t)
+	prevSize := SendQueueSize
+	SendQueueSize = 4
+	t.Cleanup(func() { SendQueueSize = prevSize })
+
+	var mu sync.Mutex
+	var order []string
+	var errs []error
+	On(EventDisconnect, func(p *EventPayload) {
+		mu.Lock()
+		order = append(order, "disconnect")
+		errs = append(errs, p.Error)
+		mu.Unlock()
+	})
+	big := bytes.Repeat([]byte("x"), 64*1024)
+	ln, teardown := newSIOTestServer(t, func(kws *Websocket) {
+		for i := 0; i < 1000 && kws.IsAlive(); i++ {
+			kws.Emit(big, BinaryMessage)
+		}
+		mu.Lock()
+		order = append(order, "accept returned")
+		mu.Unlock()
+	})
+	defer teardown()
+
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(order) == 2
+	}, 3*time.Second, 5*time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"accept returned", "disconnect"}, order)
+	require.Len(t, errs, 1)
+	require.ErrorIs(t, errs[0], ErrSendQueueClosed)
+}
+
 // TestSocketIOStalledPeerDoesNotWedgeTeardown floods a peer that stopped
 // reading over a real TCP socket, so the send goroutine blocks inside a
 // write. The queue overflow tears the session down, and the tear-down must
@@ -459,6 +568,64 @@ func TestSocketIOBroadcastSkipsSessionInEventConnect(t *testing.T) {
 	_, msg, err = sioReadSkipPings(guest)
 	require.NoError(t, err)
 	require.Equal(t, "41", string(msg), "the refused session must receive nothing but SIO DISCONNECT")
+}
+
+func TestSocketIOEmitToSkipsSessionInEventConnect(t *testing.T) {
+	resetSIOGlobals(t)
+	kwsCh := captureConnect(t)
+	release := make(chan struct{})
+	releaseGuest := sync.OnceFunc(func() { close(release) })
+	On(EventConnect, func(p *EventPayload) {
+		if string(p.HandshakeAuth) == `{"token":"member"}` {
+			return
+		}
+		<-release
+		p.Kws.Close()
+	})
+	var undelivered atomic.Int32
+	On(EventError, func(p *EventPayload) {
+		if errors.Is(p.Error, ErrorInvalidConnection) {
+			undelivered.Add(1)
+		}
+	})
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+	defer releaseGuest()
+
+	member := dialSIO(t, ln)
+	defer member.Close()
+	sioHandshakeWithConnect(t, member, `{"token":"member"}`)
+	memberKws := awaitSession(t, kwsCh)
+	require.Eventually(t, memberKws.isConnected, 2*time.Second, 5*time.Millisecond)
+
+	guest := dialSIO(t, ln)
+	defer guest.Close()
+	sioHandshakeWithConnect(t, guest, `{"token":"wrong"}`)
+	guestKws := awaitSession(t, kwsCh)
+	uuid := guestKws.GetUUID()
+
+	require.ErrorIs(t, EmitTo(uuid, []byte(`"secret"`)), ErrorInvalidConnection)
+	require.ErrorIs(t, memberKws.EmitTo(uuid, []byte(`"secret"`)), ErrorInvalidConnection)
+	EmitToList([]string{uuid}, []byte(`"secret"`))
+	memberKws.EmitToList([]string{uuid}, []byte(`"secret"`))
+	require.EqualValues(t, 2, undelivered.Load())
+
+	require.NoError(t, guestKws.EmitTo(uuid, []byte(`"to myself"`)))
+	require.NoError(t, EmitTo(memberKws.GetUUID(), []byte(`"hello"`)))
+	releaseGuest()
+
+	_ = member.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, msg, err := sioReadSkipPings(member)
+	require.NoError(t, err)
+	require.Equal(t, `42["message","hello"]`, string(msg))
+
+	_ = guest.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for _, want := range []string{`42["message","to myself"]`, "41"} {
+		_, msg, err = sioReadSkipPings(guest)
+		require.NoError(t, err)
+		require.Equal(t, want, string(msg))
+	}
 }
 
 // TestSocketIOShutdownWaitsForClosingSessions verifies that Shutdown also
@@ -738,6 +905,71 @@ func TestSocketIOEventCloseListenerEmitsBeforeDisconnect(t *testing.T) {
 	_, msg, err = sioReadSkipPings(conn)
 	require.NoError(t, err)
 	require.Equal(t, "41", string(msg))
+}
+
+func TestSocketIOCloseStopsDispatchBeforeTeardown(t *testing.T) {
+	resetSIOGlobals(t)
+	kwsCh := captureConnect(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	releaseClose := sync.OnceFunc(func() { close(release) })
+	On(EventClose, func(*EventPayload) {
+		close(entered)
+		<-release
+	})
+	var dispatched atomic.Int32
+	On("chat", func(*EventPayload) { dispatched.Add(1) })
+	On(EventPing, func(*EventPayload) { dispatched.Add(1) })
+
+	ln, teardown := newSIOTestServer(t, func(_ *Websocket) {})
+	defer teardown()
+	conn := dialSIO(t, ln)
+	defer conn.Close()
+	require.NoError(t, sioHandshake(t, conn))
+	kws := awaitSession(t, kwsCh)
+
+	closed := make(chan struct{})
+	go func() {
+		kws.Close()
+		close(closed)
+	}()
+	defer releaseClose()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventClose did not fire")
+	}
+
+	pong := make(chan struct{}, 1)
+	conn.SetPongHandler(func(string) error {
+		select {
+		case pong <- struct{}{}:
+		default:
+		}
+		return nil
+	})
+	go func() {
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`42["chat"]`)))
+	require.NoError(t, conn.WriteControl(websocket.PingMessage, []byte("p"), time.Now().Add(time.Second)))
+	select {
+	case <-pong:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not answer the ping")
+	}
+	require.Zero(t, dispatched.Load())
+
+	releaseClose()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return")
+	}
 }
 
 // TestSocketIOHandshakeRejectionDeliversConnectError verifies that a
@@ -1024,6 +1256,33 @@ func TestBroadcastFramesCache(t *testing.T) {
 	require.Equal(t, `42/admin,["message","m"]`, string(admin))
 	require.Same(t, &admin[0], &c.frame([]byte("/admin"), msg)[0], "namespace frame must be built once")
 	require.NotSame(t, &root[0], &admin[0])
+}
+
+func TestEmitBinaryQueuesCopyOfMessage(t *testing.T) {
+	resetSIOGlobals(t)
+	t.Cleanup(pool.reset)
+
+	first, second := createWS(), createWS()
+	first.queue = make(chan message, 3)
+	second.queue = make(chan message, 2)
+	pool.set(first)
+	pool.set(second)
+
+	buf := []byte("announcement")
+	first.Emit(buf, BinaryMessage)
+	Broadcast(buf, BinaryMessage)
+	first.EmitToList([]string{first.UUID, second.UUID}, buf, BinaryMessage)
+	copy(buf, "another user")
+
+	emitted, toFirst, toSecond := <-first.queue, <-first.queue, <-second.queue
+	require.Equal(t, "announcement", string(emitted.data))
+	require.Equal(t, "announcement", string(toFirst.data))
+	require.Equal(t, "announcement", string(toSecond.data))
+	require.Same(t, &toFirst.data[0], &toSecond.data[0], "a broadcast copies the message once")
+	listFirst, listSecond := <-first.queue, <-second.queue
+	require.Equal(t, "announcement", string(listFirst.data))
+	require.Equal(t, "announcement", string(listSecond.data))
+	require.Same(t, &listFirst.data[0], &listSecond.data[0], "a list copies the message once")
 }
 
 // Compared with a pool sharing one namespace rather than a fixed budget, so

@@ -5,7 +5,7 @@
 package websocket
 
 import (
-	"errors"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -308,15 +308,18 @@ func (conn *Conn) capture(fctx *fasthttp.RequestCtx) {
 	fctx.VisitUserValuesAll(func(key, value any) {
 		if s, ok := key.(string); ok {
 			key = utils.CopyString(s)
-		} else if key != nil && !reflect.ValueOf(key).Comparable() {
-			return // fasthttp accepts e.g. a slice key, a map panics on it
+		} else if key != nil {
+			if !reflect.ValueOf(key).Comparable() {
+				return // fasthttp accepts e.g. a slice key, a map panics on it
+			}
+			key = copyNamedKind(key)
 		}
 		// Request strings and bytes alias buffers the next request reuses.
 		switch v := value.(type) {
 		case string:
 			value = utils.CopyString(v)
 		case []byte:
-			value = utils.CopyBytes(v)
+			value = bytes.Clone(v) // keeps nil, so a nil check reads as it did in middleware
 		default:
 			value = copyNamedKind(value)
 		}
@@ -494,13 +497,13 @@ const (
 var (
 	// ErrBadHandshake is returned when the server response to opening handshake is
 	// invalid.
-	ErrBadHandshake = errors.New("websocket: bad handshake")
+	ErrBadHandshake = websocket.ErrBadHandshake
 	// ErrCloseSent is returned when the application writes a message to the
 	// connection after sending a close message.
-	ErrCloseSent = errors.New("websocket: close sent")
+	ErrCloseSent = websocket.ErrCloseSent
 	// ErrReadLimit is returned when reading a message that is larger than the
 	// read limit set for the connection.
-	ErrReadLimit = errors.New("websocket: read limit exceeded")
+	ErrReadLimit = websocket.ErrReadLimit
 )
 
 // FormatCloseMessage formats closeCode and text as a WebSocket close message.
@@ -530,9 +533,14 @@ func asksToUpgrade(fctx *fasthttp.RequestCtx) bool {
 }
 
 // IsWebSocketUpgrade returns true if the client requested upgrade to the
-// WebSocket protocol.
+// WebSocket protocol. Like New it reads every Connection and Upgrade field line.
 func IsWebSocketUpgrade(c fiber.Ctx) bool {
-	return websocket.FastHTTPIsWebSocketUpgrade(c.RequestCtx())
+	fctx := c.RequestCtx()
+	if !asksToUpgrade(fctx) {
+		return false
+	}
+	// Tokens on later field lines need the same copy New upgrades from.
+	return websocket.FastHTTPIsWebSocketUpgrade(fctx) || websocket.IsWebSocketUpgrade(upgradeRequest(fctx))
 }
 
 // JoinMessages concatenates received messages to create a single io.Reader.
