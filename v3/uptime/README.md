@@ -302,8 +302,8 @@ integration.
 The dashboard and JSON API share an in-memory snapshot, limiting backing-store
 work on public status routes. It is held for one `SampleInterval`, or for the
 shortest interval any service in it is tracked at when an endpoint is probed
-faster than that, so a snapshot is never served past the point where its own
-`current_status` would have changed.
+faster than that, counted from the end of the refresh that built it, so a
+snapshot outlives its own `current_status` by no more than that refresh took.
 
 If a refresh fails, the last snapshot is served with `storage.status` set to
 `degraded` and the same fixed `last_error` label the live status uses; the

@@ -156,7 +156,8 @@ func (u *runtime) cachedSnapshot(ctx context.Context) (Snapshot, error) {
 	}
 
 	u.snapshotCache = cloneSnapshot(snapshot)
-	u.snapshotCachedAt = now
+	// Aged from the end of the refresh, so callers queued behind a slow one share it.
+	u.snapshotCachedAt = time.Now()
 	u.snapshotTTL = snapshotLifetime(u.config.SampleInterval, snapshot)
 	u.snapshotHasCache = true
 	u.snapshotErr = nil
