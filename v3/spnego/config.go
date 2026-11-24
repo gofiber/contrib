@@ -130,6 +130,7 @@ type fileStamp struct {
 type fileID struct {
 	a uint64
 	b uint64
+	c uint64
 }
 
 // keytabSnapshot pairs the merged keytab with the revisions it was built from,
