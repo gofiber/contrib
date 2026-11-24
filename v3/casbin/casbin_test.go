@@ -546,6 +546,90 @@ func Test_RoutePermission_RouterSpelling(t *testing.T) {
 	}
 }
 
+func Test_RoutePermission_AutoHead(t *testing.T) {
+	const restModel = `
+	[request_definition]
+	r = sub, obj, act
+
+	[policy_definition]
+	p = sub, obj, act, eft
+
+	[policy_effect]
+	e = some(where (p.eft == allow)) && !some(where (p.eft == deny))
+
+	[matchers]
+	m = r.sub == p.sub && keyMatch(r.obj, p.obj) && regexMatch(r.act, p.act)`
+
+	const restPolicy = `
+	p,bob,/reports/*,.*,allow
+	p,bob,/reports/export,GET,deny
+	p,bob,/reports/archive,HEAD,deny
+	p,bob,/reports/probe,GET,deny`
+
+	testCases := []struct {
+		desc       string
+		config     fiber.Config
+		url        string
+		method     string
+		statusCode int
+	}{
+		{desc: "GET denied", url: "/reports/export", method: "GET", statusCode: 403},
+		{desc: "HEAD on a path denied for GET", url: "/reports/export", method: "HEAD", statusCode: 403},
+		{desc: "HEAD on a path denied for GET, with a trailing slash", url: "/reports/export/", method: "HEAD", statusCode: 403},
+		{desc: "HEAD on a path allowed for GET", url: "/reports/summary", method: "HEAD", statusCode: 200},
+		{desc: "HEAD denied", url: "/reports/archive", method: "HEAD", statusCode: 403},
+		{desc: "GET on a path denied for HEAD", url: "/reports/archive", method: "GET", statusCode: 200},
+		{desc: "own HEAD route on a path denied for GET", url: "/reports/probe", method: "HEAD", statusCode: 403},
+		{desc: "no automatic HEAD routes", config: fiber.Config{DisableHeadAutoRegister: true}, url: "/reports/export", method: "HEAD", statusCode: 405},
+		{desc: "own HEAD route without automatic HEAD routes", config: fiber.Config{DisableHeadAutoRegister: true}, url: "/reports/probe", method: "HEAD", statusCode: 200},
+	}
+
+	m, err := model.NewModelFromString(restModel)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	enf, err := casbin.NewEnforcer(m, newMockAdapter(restPolicy))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	authz := New(Config{
+		Enforcer: enf,
+		Lookup:   subjectBob,
+	})
+
+	ok := func(c fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	}
+
+	for _, tC := range testCases {
+		app := fiber.New(tC.config)
+		app.Get("/reports/export", authz.RoutePermission(), ok)
+		app.Get("/reports/summary", authz.RoutePermission(), ok)
+		app.Get("/reports/archive", authz.RoutePermission(), ok)
+		app.Get("/reports/probe", authz.RoutePermission(), ok)
+		app.Head("/reports/probe", authz.RoutePermission(), ok)
+
+		t.Run(tC.desc, func(t *testing.T) {
+			req, err := http.NewRequest(tC.method, tC.url, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Host = "localhost"
+
+			resp, err := app.Test(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if resp.StatusCode != tC.statusCode {
+				t.Errorf(`StatusCode: got %v - expected %v`, resp.StatusCode, tC.statusCode)
+			}
+		})
+	}
+}
+
 type retainingEnforcer struct {
 	casbin.IEnforcer
 	subjects []string

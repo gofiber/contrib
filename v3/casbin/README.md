@@ -98,7 +98,7 @@ func main() {
 
 ## RoutePermission
 
-Unless `fiber.Config.CaseSensitive` and `StrictRouting` are set, the router matches routes on the lower-cased path without trailing slashes, while route params are cut from the path without trailing slashes in the client's letter case. `RoutePermission` enforces the request path and each of these forms that differs from it, so write path objects lower-case and without trailing slashes.
+Unless `fiber.Config.CaseSensitive` and `StrictRouting` are set, the router matches routes on the lower-cased path without trailing slashes, while route params are cut from the path without trailing slashes in the client's letter case. `RoutePermission` enforces the request path and each of these forms that differs from it, so write path objects lower-case and without trailing slashes. Unless `DisableHeadAutoRegister` is set, the router answers `HEAD` with the handlers of `GET` routes, so a `HEAD` request needs `GET` allowed as well, even on a route with its own `HEAD` handler. Subjects that only send `HEAD`, such as health checks, need the `GET` rule too, or set `DisableHeadAutoRegister`.
 
 ```go
 package main
