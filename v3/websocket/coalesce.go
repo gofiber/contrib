@@ -117,18 +117,23 @@ func (c *coalescingConn) attach(src net.Conn) {
 	c.mu.Lock()
 	c.src, c.raw, c.rd, c.stash = src, raw, rd, stash
 	c.mu.Unlock()
+	// The stash is one fill captured at attach. The library drains it in
+	// small reads (two header bytes at a time), so decide once from the
+	// whole fill whether replies to it may be coalesced.
+	c.batch.Store(len(stash) >= minCoalesceFill)
 }
 
 func (c *coalescingConn) Read(p []byte) (int, error) {
+	if len(c.stash) > 0 {
+		// Still consuming a fill already in hand: keep its batch flag and
+		// do not flush, so replies to a pipelined burst stay together.
+		n := copy(p, c.stash)
+		c.stash = c.stash[n:]
+		return n, nil
+	}
 	c.batch.Store(false)
 	if err := c.flush(); err != nil {
 		return 0, err
-	}
-	if len(c.stash) > 0 {
-		n := copy(p, c.stash)
-		c.stash = c.stash[n:]
-		c.batch.Store(n >= minCoalesceFill)
-		return n, nil
 	}
 	n, err := c.rd.Read(p)
 	c.batch.Store(n >= minCoalesceFill)
