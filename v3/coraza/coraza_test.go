@@ -490,6 +490,50 @@ SecRule REQUEST_BODY "@contains attack" "id:1002,phase:2,deny,status:403,msg:'bo
 	}
 }
 
+func TestEngineMiddlewareKeepsTheDecodedBodyBufferWithTheRequest(t *testing.T) {
+	engine, err := newTestEngineWithRules(t, "SecRuleEngine On\nSecRequestBodyAccess On")
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	sent := fasthttp.AppendGzipBytes(nil, []byte("hello"))
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		received := c.BodyRaw()
+		if err := c.Next(); err != nil {
+			return err
+		}
+		// Takes its body buffer from fasthttp's pool, like any request read meanwhile.
+		var other fasthttp.Request
+		other.SetBody(bytes.Repeat([]byte("x"), len(sent)))
+		if !bytes.Equal(received, sent) {
+			t.Errorf("expected the body as received, got %q", received)
+		}
+		return nil
+	})
+	app.Use(engine.Middleware())
+	app.Post("/", func(c fiber.Ctx) error {
+		return c.Send(c.Body())
+	})
+
+	for range 20 {
+		// Outside a server, as behind adaptor.FiberApp, the request does not keep its buffer.
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(http.MethodPost)
+		ctx.Request.SetRequestURI("/")
+		ctx.Request.Header.SetHost("example.com")
+		ctx.Request.Header.Set(fiber.HeaderContentEncoding, "gzip")
+		ctx.Request.SetBody(sent)
+		app.Handler()(&ctx)
+		if got := string(ctx.Response.Body()); got != "hello" {
+			t.Fatalf("expected the decoded body, got %q", got)
+		}
+		if ctx.Request.KeepBodyBuffer {
+			t.Fatal("expected KeepBodyBuffer to be left as it was")
+		}
+	}
+}
+
 func TestEngineMiddlewareInspectsMultipartFormThatGrowsBeyondBodyLimit(t *testing.T) {
 	uploadRules := `SecRuleEngine On
 SecRequestBodyAccess On

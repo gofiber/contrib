@@ -763,7 +763,12 @@ func decodeRequestBody(fiberReq *fasthttp.Request, req *http.Request, bodyLimit 
 		if err != nil {
 			return err
 		}
+		// Pool the replaced buffer only at the request's reset: BodyRaw results taken ahead of
+		// this middleware may still alias it.
+		keep := fiberReq.KeepBodyBuffer
+		fiberReq.KeepBodyBuffer = true
 		fiberReq.SetBodyRaw(body)
+		fiberReq.KeepBodyBuffer = keep
 	}
 
 	for _, name := range names {
