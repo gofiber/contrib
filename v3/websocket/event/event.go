@@ -268,6 +268,10 @@ type Websocket struct {
 	isAlive bool
 	// pending is set until the New callback and EventConnect have accepted the connection.
 	pending atomic.Bool
+	// The second of finishAccept and sendFailed to swap acceptDone fires sendErr.
+	acceptDone atomic.Bool
+	acceptOnce sync.Once
+	sendErr    error
 	// queue stores outbound messages.
 	queue chan message
 	// done signals goroutines to stop gracefully.
@@ -455,6 +459,7 @@ func NewWithConfig(callback func(kws *Websocket), eventCfg Config, wsConfig ...w
 			kws.mu.Lock()
 			kws.Conn = nil
 			kws.mu.Unlock()
+			kws.finishAccept()
 			// A callback that closed the connection before panicking already spent the
 			// one disconnect; still report the crash.
 			if !kws.disconnected(ErrorCallbackPanic) {
@@ -472,6 +477,7 @@ func NewWithConfig(callback func(kws *Websocket), eventCfg Config, wsConfig ...w
 		if kws.IsAlive() {
 			kws.pending.Store(false)
 		}
+		kws.finishAccept()
 		kws.run(ctx, cancelFunc, &wg)
 		completed = true
 	}, wsConfig...)
@@ -892,7 +898,7 @@ func (kws *Websocket) send(ctx context.Context) {
 			err := conn.WriteMessage(msg.mType, msg.data)
 			if err != nil {
 				kws.drainQueue()
-				kws.disconnected(err)
+				kws.sendFailed(err)
 				return
 			}
 		case <-ctx.Done():
@@ -1036,25 +1042,51 @@ func (kws *Websocket) read(ctx context.Context) {
 // disconnected tears the connection down once and reports whether this call
 // was the one that did it; later calls are no-ops that return false.
 func (kws *Websocket) disconnected(err error) bool {
-	disconnected := false
+	if !kws.end() {
+		return false
+	}
+	kws.fireDisconnect(err)
+	return true
+}
+
+// end tears the connection down; only the first call does and returns true.
+func (kws *Websocket) end() bool {
+	ended := false
 	kws.once.Do(func() {
-		disconnected = true
+		ended = true
 		kws.setAlive(false)
 		kws.doneOnce.Do(func() {
 			close(kws.done)
 		})
 		pool.delete(kws.GetUUID())
 	})
+	return ended
+}
 
-	if !disconnected {
-		return false
-	}
-
+func (kws *Websocket) fireDisconnect(err error) {
 	kws.fireEvent(EventDisconnect, nil, err)
 	if err != nil {
 		kws.fireEvent(EventError, nil, err)
 	}
-	return true
+}
+
+// sendFailed holds the events until accept is done, so later callback state sees them.
+func (kws *Websocket) sendFailed(err error) {
+	if !kws.end() {
+		return
+	}
+	kws.sendErr = err
+	if kws.acceptDone.Swap(true) {
+		kws.fireDisconnect(err)
+	}
+}
+
+func (kws *Websocket) finishAccept() {
+	kws.acceptOnce.Do(func() {
+		if kws.acceptDone.Swap(true) {
+			kws.fireDisconnect(kws.sendErr)
+		}
+	})
 }
 
 // unblockRead closes the underlying network connection so a read goroutine

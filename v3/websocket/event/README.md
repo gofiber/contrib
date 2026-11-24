@@ -136,7 +136,9 @@ Until the `New` callback and the `EventConnect` listeners have returned, a new
 connection is not yet a member: `EmitTo`, `EmitToList`, `Broadcast` and `Fire`
 from elsewhere skip it, so a client the callback refuses never receives traffic
 meant for accepted clients. To send to it during that time use `kws.Emit` or the
-method forms on `kws` itself.
+method forms on `kws` itself. A write that fails meanwhile ends the connection at
+once, but its `EventDisconnect` and `EventError` fire only after they have
+returned.
 
 ## Configuration
 

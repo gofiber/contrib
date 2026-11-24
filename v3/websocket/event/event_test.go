@@ -21,6 +21,7 @@ import (
 	fws "github.com/gofiber/contrib/v3/websocket"
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp/fasthttputil"
@@ -1702,6 +1703,80 @@ func TestCallbackEmitBeyondQueueSizeDoesNotBlock(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return len(pool.snapshot()) == 0
 	}, 5*time.Second, 10*time.Millisecond)
+}
+
+func TestFinishAcceptFiresAFailedSendOnce(t *testing.T) {
+	resetState()
+	var disconnects atomic.Int32
+	On(EventDisconnect, func(*EventPayload) { disconnects.Add(1) })
+	kws := createWS()
+	pool.set(kws)
+
+	kws.sendFailed(errors.New("broken pipe"))
+	kws.finishAccept()
+	kws.finishAccept()
+
+	require.Equal(t, int32(1), disconnects.Load())
+	resetState()
+}
+
+func TestSendFailureDuringCallbackDisconnectsAfterIt(t *testing.T) {
+	resetState()
+
+	var mu sync.Mutex
+	var order []string
+	record := func(s string) {
+		mu.Lock()
+		order = append(order, s)
+		mu.Unlock()
+	}
+	disconnected := make(chan struct{}, 1)
+	On(EventDisconnect, func(*EventPayload) {
+		record("disconnect")
+		disconnected <- struct{}{}
+	})
+
+	app := fiber.New()
+	ln := fasthttputil.NewInmemoryListener()
+	defer func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	}()
+
+	hungUp := make(chan struct{})
+	app.Use(upgradeMiddleware)
+	app.Get("/", New(func(kws *Websocket) {
+		<-hungUp
+		kws.Emit([]byte("history"))
+		assert.Eventually(t, func() bool { return !kws.IsAlive() }, 5*time.Second, time.Millisecond)
+		kws.On(EventDisconnect, func(*EventPayload) { record("local disconnect") })
+		select {
+		case <-disconnected:
+		case <-time.After(100 * time.Millisecond):
+		}
+		record("callback returned")
+	}))
+
+	go func() { _ = app.Listener(ln) }()
+
+	dialer := &websocket.Dialer{
+		NetDial:          func(_, _ string) (net.Conn, error) { return ln.Dial() },
+		HandshakeTimeout: 5 * time.Second,
+	}
+	conn, _, err := dialWithRetry(dialer, "ws://"+ln.Addr().String())
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+	close(hungUp)
+
+	assert.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(order) == 3
+	}, 5*time.Second, time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"callback returned", "disconnect", "local disconnect"}, order)
+	require.Empty(t, pool.snapshot())
 }
 
 func TestPendingConnectionGetsNoPoolTraffic(t *testing.T) {
