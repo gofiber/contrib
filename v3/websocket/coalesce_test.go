@@ -790,3 +790,40 @@ func listenTestApp(t *testing.T, app *fiber.App) string {
 	})
 	return ln.Addr().String()
 }
+
+// The library reads through a bufio reader sized by ReadBufferSize. When
+// fasthttp has buffered a burst past the handshake, the stash is drained in
+// those buffer-sized reads; the batch must stay set until the reader has
+// consumed the fill.
+func TestCoalescingConnStashDrainedInBufferReadsStillCoalesces(t *testing.T) {
+	src, raw := newScriptedConn(), newScriptedConn()
+	stash := bytes.Repeat([]byte("x"), 1536) // one full 1024-byte read, then a partial one
+	src.reads <- stash
+	c := newCoalescingConn()
+	c.maxDelay = time.Hour
+	c.attach(&hijackedConn{scriptedConn: src, raw: raw})
+
+	buf := make([]byte, 1024)
+	n, err := c.Read(buf)
+	require.NoError(t, err)
+	assert.Equal(t, 1024, n)
+
+	_, err = c.Write([]byte("r1"))
+	require.NoError(t, err)
+	assert.Empty(t, raw.written(), "a reply queued between stash reads is held")
+
+	n, err = c.Read(buf)
+	require.NoError(t, err)
+	assert.Equal(t, 512, n)
+	assert.Empty(t, raw.written(), "draining the rest of the stash must not flush early")
+
+	_, err = c.Write([]byte("r2"))
+	require.NoError(t, err)
+	assert.Empty(t, raw.written(), "both replies are held for the pipelined burst")
+	// The reader coming back for more flushes what was held.
+	raw.reads <- []byte("next")
+	n, err = c.Read(buf)
+	require.NoError(t, err)
+	assert.Equal(t, "next", string(buf[:n]))
+	assert.Equal(t, [][]byte{[]byte("r1r2")}, raw.written())
+}
